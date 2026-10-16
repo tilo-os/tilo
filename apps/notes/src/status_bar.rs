@@ -1,20 +1,29 @@
-//! `StatusModel` — the note's save + page/word status, surfaced as a
-//! transient floating [`ui::StatusBubble`] rather than a permanent bottom
+//! `StatusModel` — the note's save + page/word status, surfaced on the
+//! framework's [`ui::SaveStatusSurface`] rather than a permanent bottom
 //! strip (which stole a row of vertical space from the editor at every
 //! width, and read especially poorly on mobile).
 //!
-//! `NotesApp` refreshes a [`StatusBarState`] snapshot and, when it changes,
-//! pokes the bubble for save or navigation changes, then quietly fades.
-//! Word counts update without reopening it; failures remain visible. The
-//! bubble also appears while the pointer hovers the bottom-right corner.
+//! `NotesApp` refreshes a [`StatusBarState`] snapshot every event and
+//! reports its save state to the surface, which shows only a failure and
+//! the save that ends it: autosave is invisible. The snapshot, counts
+//! included, stays readable as the window's accessibility status.
 //!
 //! This type owns no CRDT state and does no rendering — it holds the
 //! snapshot and formats the labels, which keeps it trivially unit-testable.
 
-use ui::theme::Theme;
-use vello::peniko::Color;
-
-use crate::storage::SaveStatus;
+/// Whether the notebook's changes are on disk, as the accessibility status says it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum SaveStatus {
+    /// Nothing waits to be written.
+    #[default]
+    Saved,
+    /// A write is queued or in progress.
+    Saving,
+    /// The last write failed; sticky until a write succeeds.
+    Failed,
+    /// The record exists only in this session and has no durable writer.
+    SessionOnly,
+}
 
 /// Snapshot of the note's status. Cheap to clone (small strings, two
 /// numbers, one enum).
@@ -23,6 +32,8 @@ pub struct StatusBarState {
     /// Combined save-state — the worse of (workspace saver, page saver)
     /// so the UI surfaces the most actionable signal.
     pub save_status: SaveStatus,
+    /// Why the note is not durable, for a failed or session-only save.
+    pub save_problem: Option<String>,
     /// Breadcrumb path of the selected page, e.g. `Notes / Welcome`.
     /// Empty when nothing is selected.
     pub page_path: String,
@@ -49,6 +60,7 @@ impl StatusModel {
     /// (so the caller can poke the bubble only on a real change).
     pub fn set_state(&mut self, new: StatusBarState) -> bool {
         let changed = self.state.save_status != new.save_status
+            || self.state.save_problem != new.save_problem
             || self.state.page_path != new.page_path
             || self.state.page_count != new.page_count
             || self.state.word_count != new.word_count;
@@ -68,18 +80,33 @@ impl StatusModel {
             SaveStatus::Saved => "Saved",
             SaveStatus::Saving => "Saving…",
             SaveStatus::Failed => "Save failed",
-            SaveStatus::SessionOnly => "Session only",
+            SaveStatus::SessionOnly => "Not saved",
         }
     }
 
-    pub fn save_color(&self, theme: &Theme) -> Color {
-        match self.state.save_status {
-            SaveStatus::Saved | SaveStatus::SessionOnly => theme.tokens.colors.text_dim,
-            SaveStatus::Saving => theme.accent_primary,
-            SaveStatus::Failed => theme.tokens.colors.semantic.danger,
+    /// A note that is not durable is never a quiet state: it stays on screen
+    /// until it is saved again.
+    pub fn needs_attention(&self) -> bool {
+        matches!(
+            self.state.save_status,
+            SaveStatus::Failed | SaveStatus::SessionOnly
+        )
+    }
+
+    /// The save state with why it is not durable and what to do about it.
+    pub fn save_detail(&self) -> String {
+        let fix = "Copy this note somewhere safe, then reopen Notes";
+        match (self.state.save_status, self.state.save_problem.as_deref()) {
+            (SaveStatus::Failed, Some(reason)) => format!("Save failed: {reason}. {fix}"),
+            (SaveStatus::Failed, None) => format!("Save failed. {fix}"),
+            (SaveStatus::SessionOnly, _) => {
+                format!("Not saved: this note has no storage on this device. {fix}")
+            }
+            _ => self.save_text().to_owned(),
         }
     }
 
+    /// How much the notebook and the open note hold, as a sentence fragment.
     pub fn right_text(&self) -> String {
         let pages = match self.state.page_count {
             1 => "1 note".to_string(),
@@ -91,7 +118,7 @@ impl StatusModel {
                     1 => "1 word".to_string(),
                     _ => format!("{w} words"),
                 };
-                format!("{pages} · {words}")
+                format!("{pages}, {words}")
             }
             None => pages,
         }
@@ -99,7 +126,10 @@ impl StatusModel {
 
     /// The full bubble label: save state, then the page/word counts.
     pub fn bubble_text(&self) -> String {
-        format!("{}  ·  {}", self.save_text(), self.right_text())
+        if self.needs_attention() {
+            return self.save_detail();
+        }
+        format!("{}\n{}", self.save_text(), self.right_text())
     }
 }
 
@@ -135,12 +165,13 @@ mod tests {
         // (page path, pages, words, right-hand text): counts singularize and a
         // missing word count is dropped.
         for (page_path, page_count, word_count, text) in [
-            ("Welcome", 1, Some(1), "1 note · 1 word"),
-            ("Welcome", 4, Some(142), "4 notes · 142 words"),
+            ("Welcome", 1, Some(1), "1 note, 1 word"),
+            ("Welcome", 4, Some(142), "4 notes, 142 words"),
             ("", 3, None, "3 notes"),
         ] {
             bar.set_state(StatusBarState {
                 save_status: SaveStatus::Saved,
+                save_problem: None,
                 page_path: page_path.into(),
                 page_count,
                 word_count,
@@ -171,6 +202,7 @@ mod tests {
         let mut bar = StatusModel::new();
         let s = StatusBarState {
             save_status: SaveStatus::Saved,
+            save_problem: None,
             page_path: "X".into(),
             page_count: 1,
             word_count: Some(0),
@@ -183,11 +215,43 @@ mod tests {
         assert!(
             bar.set_state(StatusBarState {
                 save_status: SaveStatus::Saving,
+                save_problem: None,
                 page_path: "X".into(),
                 page_count: 1,
                 word_count: Some(0),
             }),
             "a save-state flip is a change"
         );
+    }
+
+    #[test]
+    fn a_note_that_is_not_durable_stays_visible_with_its_reason() {
+        let mut bar = StatusModel::new();
+        bar.set_state(StatusBarState {
+            save_status: SaveStatus::Failed,
+            save_problem: Some("record persistence unavailable".into()),
+            page_count: 1,
+            ..Default::default()
+        });
+        assert!(bar.needs_attention());
+        assert!(
+            bar.bubble_text()
+                .starts_with("Save failed: record persistence unavailable."),
+            "{}",
+            bar.bubble_text()
+        );
+        bar.set_state(StatusBarState {
+            save_status: SaveStatus::SessionOnly,
+            page_count: 1,
+            ..Default::default()
+        });
+        assert!(bar.needs_attention());
+        assert!(bar.bubble_text().contains("no storage on this device"));
+        bar.set_state(StatusBarState {
+            save_status: SaveStatus::Saved,
+            page_count: 1,
+            ..Default::default()
+        });
+        assert!(!bar.needs_attention());
     }
 }

@@ -1,134 +1,127 @@
-use crate::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
-use crate::tokens::{PaletteSpec, Tokens};
-use serde::{Deserialize, Serialize};
+pub use crate::theme_document::{
+    Preset, THEME_SCHEMA_VERSION, ThemeDensity, ThemeDocument, ThemeMaterial, ThemeMotion,
+    ThemeShape, ThemeType,
+};
+pub use crate::theme_layers::{
+    AccessibilityLayer, CUSTOM_THEMES_KEY, ContentSurface, DARK_THEME_KEY, DENSITY_KEY,
+    DISTRIBUTION_DEFAULTS_KEY, DISTRIBUTION_DEFAULTS_SCHEMA_VERSION, DISTRIBUTION_LAYER_ID,
+    DistributionDefaults, DistributionPolicy, LIGHT_THEME_KEY, MODE_KEY, PIN_DENSITY, PIN_EMPHASIS,
+    PIN_MATERIAL, PIN_MOTION, PIN_PALETTE, PIN_PRESENCE, PIN_SHAPE, PIN_TYPE, PINNABLE,
+    ThemeLayerStack, WORKSPACE_TEMPERATURES_KEY, resolve_theme_layers, user_document,
+    workspace_temperature_override,
+};
+pub use crate::tokens::contrast::{ContrastFinding, ContrastFloor, Role as ContrastRole};
+use crate::tokens::{Colors, PresenceHue, Tokens};
+pub use settings_store::day_schedule::{AUTOMATIC_MODE, is_automatic as is_automatic_mode};
 use vello::peniko::Color;
 
-pub const CUSTOM_THEME_SCHEMA_VERSION: u32 = 1;
-
-/// Stable, app-independent representation of a user-authored OS theme.
-/// Theme Studio edits it; the shell and every UI app consume it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CustomThemeSpec {
-    pub schema_version: u32,
-    pub id: String,
-    pub name: String,
-    pub dark_base: bool,
-    pub accent: [u8; 3],
-    pub accent_hover: [u8; 3],
-    pub surface_base: [u8; 3],
-    pub surface_raised: [u8; 3],
-    pub text_primary: [u8; 3],
-    pub text_dim: [u8; 3],
-    pub border: [u8; 3],
-    pub success: [u8; 3],
-    pub warning: [u8; 3],
-    pub danger: [u8; 3],
-    pub info: [u8; 3],
-    pub radius_px: f32,
-    pub spacing_px: f32,
-    pub font: String,
-}
-
-impl CustomThemeSpec {
-    /// The `spacing_px` band a theme is actually built at. [`Self::validate`]
-    /// admits the schema-v1 contract (`2.0..=64.0`) so a settings file
-    /// written by an older build still opens, but the whole spacing scale is
-    /// proportional to `spacing_px` (`s3`), so 2 px would put `s1` under a
-    /// pixel and 64 px would put `s6` at 128; [`Theme::from_custom_spec`]
-    /// clamps to this band instead. Same range as the Themes app's spacing
-    /// control.
-    pub const SPACING_PX_MIN: f32 = 6.0;
-    /// See [`Self::SPACING_PX_MIN`].
-    pub const SPACING_PX_MAX: f32 = 22.0;
-
-    /// # Errors
-    ///
-    /// Returns a static message describing which field is out of range —
-    /// unsupported schema version, an empty/oversize/control-char id, name or
-    /// font, or a radius/spacing outside its accepted range.
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if self.schema_version != CUSTOM_THEME_SCHEMA_VERSION {
-            return Err("unsupported custom theme schema");
-        }
-        if self.id.trim().is_empty() || self.id.len() > 128 || self.id.chars().any(char::is_control)
-        {
-            return Err("invalid custom theme id");
-        }
-        if self.name.trim().is_empty()
-            || self.name.len() > 128
-            || self.name.chars().any(char::is_control)
-        {
-            return Err("invalid custom theme name");
-        }
-        if self.font.trim().is_empty()
-            || self.font.len() > 128
-            || self.font.chars().any(char::is_control)
-        {
-            return Err("invalid custom theme font");
-        }
-        if !self.radius_px.is_finite() || !(0.0..=64.0).contains(&self.radius_px) {
-            return Err("invalid custom theme radius");
-        }
-        if !self.spacing_px.is_finite() || !(2.0..=64.0).contains(&self.spacing_px) {
-            return Err("invalid custom theme spacing");
-        }
-        Ok(())
+fn mix_spring(
+    a: crate::tokens::SpringParams,
+    b: crate::tokens::SpringParams,
+    t: f32,
+) -> crate::tokens::SpringParams {
+    crate::tokens::SpringParams {
+        stiffness: a.stiffness + (b.stiffness - a.stiffness) * t,
+        damping: a.damping + (b.damping - a.damping) * t,
+        mass: a.mass + (b.mass - a.mass) * t,
     }
 }
 
-fn mix_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to [0.0, 255.0] immediately above, so the cast to u8 is exact"
-    )]
-    let channel = |x: u8, y: u8| {
-        (f32::from(x) + (f32::from(y) - f32::from(x)) * t)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    };
-    [
-        channel(a[0], b[0]),
-        channel(a[1], b[1]),
-        channel(a[2], b[2]),
-    ]
+/// `1` leaves the stock springs. Below that the snappy spring moves toward
+/// subtle; above it, toward bouncy. Heavy and tracking stay put.
+fn apply_motion_character(motion: &mut crate::tokens::Motion, character: f32) {
+    let stock = motion.springs;
+    let calm = (1.0 - character).clamp(0.0, 1.0);
+    let lively = (character - 1.0).clamp(0.0, 1.0);
+    motion.springs.snappy = mix_spring(
+        mix_spring(stock.snappy, stock.subtle, calm),
+        stock.bouncy,
+        lively,
+    );
+    motion.springs.bouncy = mix_spring(stock.bouncy, stock.snappy, calm);
 }
 
-fn rgb(value: [u8; 3]) -> Color {
-    Color::from_rgb8(value[0], value[1], value[2])
+fn clamp_to(value: f32, band: &std::ops::RangeInclusive<f32>) -> f32 {
+    value.clamp(*band.start(), *band.end())
 }
 
-#[derive(Clone, Debug)]
+/// The colour tokens `document` paints with for the person wearing `you`,
+/// repaired where a floor is missed.
+fn colors_of(document: &ThemeDocument, you: PresenceHue) -> Colors {
+    let mut colors =
+        Colors::of_palette(&document.palette, document.emphasis, document.presence, you);
+    colors.set_material(
+        clamp_to(document.material.blur, &ThemeMaterial::BLUR_USABLE),
+        clamp_to(
+            document.material.tint_opacity,
+            &ThemeMaterial::TINT_ADMITTED,
+        ),
+    );
+    colors
+}
+
+/// Every token `document` produces, with values outside a role's usable
+/// band clamped. The document is assumed admitted.
+fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
+    let mut tokens = Tokens::around(colors_of(document, you));
+    tokens.radii = crate::tokens::Radii::from_window_radius(clamp_to(
+        document.shape.window_radius,
+        &ThemeShape::USABLE,
+    ));
+    // Proportional on every step; `Metrics` stay at their defaults, so a
+    // gutter preference never shrinks a pointer target.
+    tokens.spacing = crate::tokens::Spacing::BASE
+        .scaled(clamp_to(document.density.spacing, &ThemeDensity::USABLE));
+    tokens.typography.set_face(&document.type_.face);
+    tokens.typography.set_reading_face(&document.type_.reading);
+    tokens
+        .typography
+        .set_ground(crate::text_render::TextGround::of(
+            tokens.colors.surfaces.content,
+        ));
+    tokens.typography.distinct_letters = document.type_.distinguishes_letters();
+    let size = clamp_to(document.type_.base_size, &ThemeType::USABLE) / ThemeType::BASE_SIZE;
+    tokens.typography.scale = tokens.typography.scale.scaled(size);
+    let character = clamp_to(document.motion.character, &ThemeMotion::ADMITTED);
+    apply_motion_character(&mut tokens.motion, character);
+    tokens.motion_character = character;
+    tokens
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Theme {
     pub name: String,
+    /// The document this theme was built from, as applied: after the
+    /// workspace temperature and high contrast.
+    pub document: ThemeDocument,
     pub tokens: Tokens,
-    // Legacy shortcuts — derived from tokens on construction, kept for compat during migration.
-    pub bg_app: Color,
-    pub bg_primary: Color,
-    pub bg_hover: Color,
-    pub bg_active: Color,
+    // Shortcuts — derived from tokens on construction. Grounds are not
+    // among them: the framework paints `surfaces.content` and each region's
+    // tier ([`Theme::region`]); a hover or pressed fill is the lift of the
+    // ground the control sits on (`intent.selection_hover`/`selection`, or
+    // `Colors::lift_on`).
     pub border_standard: Color,
+    /// The focus ring: the person's own colour ([`crate::tokens::Intents::you`]).
     pub border_focus: Color,
     pub text_primary: Color,
     /// Second tier of the type hierarchy (captions, sub-labels).
     pub text_dim: Color,
     /// Quietest legible tier (timestamps, hints), below [`Theme::text_dim`].
     pub text_tertiary: Color,
-    /// Active states (slider track, checkbox tick, toggle on, focused
-    /// caret). For hover use [`Theme::accent_hover`] instead.
-    pub accent_primary: Color,
-    /// One step darker than [`Theme::accent_primary`].
-    pub accent_hover: Color,
     pub status_success: Color,
+    /// The control radius ([`crate::tokens::Radii::control`]).
     pub radius_standard: f64,
     pub padding_standard: f32,
     pub gap_standard: f32,
     /// Carried on the theme (not passed through `draw`) so every widget
     /// reacts without new plumbing. Default `false`.
     pub reduce_motion: bool,
-    /// `1.0` = default. Baked into `tokens.typography.scale`/
-    /// `font_size_base` by [`Theme::with_text_scale`]; kept here too so a
-    /// widget can scale a size it computes itself.
+    /// Floating chrome draws its material opaque instead of over the blurred
+    /// backdrop (`crate::floating_surface::Material`). Default `false`.
+    pub reduce_transparency: bool,
+    /// `1.0` = default. Baked into every [`Theme::text`] role by
+    /// [`Theme::with_text_scale`]; kept here too so a widget can scale a
+    /// size it computes itself.
     pub text_scale: f32,
     /// The "make everything bigger" knob — spacing, radii, and type scale
     /// together, distinct from [`Theme::text_scale`] (type only). Baked in
@@ -140,6 +133,9 @@ pub struct Theme {
     /// folds in the accessibility preference once, keeping file I/O out of
     /// widget draw paths.
     pub caret_width: f64,
+    /// High contrast or forced colours is the active track. Content surfaces
+    /// ask [`Theme::colors_are_forced`] instead of comparing [`Theme::name`].
+    pub forced_colors: bool,
 }
 
 impl Default for Theme {
@@ -148,26 +144,18 @@ impl Default for Theme {
     }
 }
 
-/// Every shipped palette, including the accessibility tracks, so an
-/// assertion about "a theme's surfaces" covers all of them. Crate-visible
-/// (test builds only) because sibling-module widget tests sweep the same
-/// list.
+/// Every shipped theme, so an assertion about "a theme's surfaces" covers
+/// all of them. Crate-visible (test builds only) because sibling-module
+/// widget tests sweep the same list.
 #[cfg(test)]
 pub(crate) const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
     Theme::dark,
+    || Theme::preset(Preset::DarkCool),
+    || Theme::preset(Preset::DarkGraphite),
+    || Theme::preset(Preset::DarkSoft),
     Theme::light,
-    Theme::tilo_blue,
-    Theme::dracula,
-    Theme::nord,
-    Theme::gruvbox,
-    Theme::gruvbox_light,
-    Theme::catppuccin_mocha,
-    Theme::catppuccin_latte,
-    Theme::solarized,
-    Theme::oled,
-    Theme::warm_light,
-    Theme::rose_pine,
     Theme::high_contrast,
+    || Theme::preset(Preset::HighContrastLight),
 ];
 
 /// Polled by [`crate::app::App`] once per frame and reconciled against the
@@ -194,12 +182,10 @@ pub fn local_moment() -> settings_store::day_schedule::LocalMoment {
     use chrono::{Datelike, Offset, Timelike};
     // Through the epoch offset: chrono converts only std's clock type, which
     // is not the toolkit clock in the browser.
-    let since = crate::time::wall()
-        .duration_since(crate::time::UNIX_EPOCH)
-        .unwrap_or_default();
+    let since_ms = crate::time::unix_now_ms();
     let local = chrono::DateTime::from_timestamp(
-        i64::try_from(since.as_secs()).unwrap_or(i64::MAX),
-        since.subsec_nanos(),
+        i64::try_from(since_ms / 1000).unwrap_or(i64::MAX),
+        u32::try_from(since_ms % 1000).unwrap_or(0) * 1_000_000,
     )
     .unwrap_or_default()
     .with_timezone(&chrono::Local);
@@ -219,54 +205,153 @@ impl Theme {
         tokens.syntax = crate::tokens::SyntaxPalette::from_colors(&tokens.colors);
     }
 
-    fn from_tokens(name: &str, mut tokens: Tokens) -> Self {
+    /// The theme `document` describes, worn by `you`. The document is
+    /// assumed admitted; values outside a role's usable band are clamped and
+    /// a missed contrast floor is repaired.
+    fn built(document: ThemeDocument, you: PresenceHue) -> Self {
+        let mut tokens = tokens_of(&document, you);
         Self::derive_palettes(&mut tokens);
         let c = &tokens.colors;
         Self {
-            name: name.into(),
-            bg_app: c.surfaces.base,
-            bg_primary: c.surfaces.raised,
-            bg_hover: c.neutral[4],
-            bg_active: c.neutral[2],
+            name: document.name.clone(),
             border_standard: c.border_standard,
             border_focus: c.border_focus,
             text_primary: c.text_primary,
             text_dim: c.text_dim,
             text_tertiary: c.text_tertiary,
-            accent_primary: c.accent[ACCENT_PRIMARY_IDX],
-            accent_hover: c.accent[ACCENT_HOVER_IDX],
             status_success: c.semantic.success,
-            radius_standard: f64::from(tokens.radii.md),
+            radius_standard: f64::from(tokens.radii.control),
             padding_standard: tokens.spacing.s3,
             gap_standard: tokens.spacing.s3,
             reduce_motion: false,
+            reduce_transparency: false,
             text_scale: 1.0,
             ui_scale: 1.0,
             caret_width: 2.0,
+            forced_colors: document.palette.high_contrast,
+            document,
             tokens,
         }
     }
+
+    /// The theme a document describes, or `None` for one this build does not
+    /// admit ([`ThemeDocument::validate`]). Values outside a role's usable
+    /// band are clamped, and a pairing that misses a contrast floor is
+    /// repaired, so every theme that materializes is legible.
+    #[must_use]
+    pub fn from_document(document: &ThemeDocument) -> Option<Self> {
+        document.validate().ok()?;
+        Some(Self::built(document.clone(), PresenceHue::Blue))
+    }
+
+    /// A shipped theme.
+    #[must_use]
+    pub fn preset(preset: Preset) -> Self {
+        Self::built(preset.document(), PresenceHue::Blue)
+    }
+
+    /// The default: pure neutral dark.
     pub fn dark() -> Self {
-        Self::from_tokens("Dark", Tokens::dark())
+        Self::preset(Preset::Dark)
     }
+
+    /// The light theme.
     pub fn light() -> Self {
-        Self::from_tokens("Light", Tokens::light())
+        Self::preset(Preset::Light)
     }
 
-    pub fn on_card(&self) -> crate::tokens::colors::OnCard {
-        self.tokens.colors.on_card()
+    /// Black ground under near-white ink, every text pairing at WCAG AAA.
+    /// Selected when [`A11ySettings::high_contrast`](crate::a11y::A11ySettings)
+    /// is set on a dark theme.
+    pub fn high_contrast() -> Self {
+        Self::preset(Preset::HighContrast)
     }
 
-    /// [`Self::on_card`] for any surface a widget actually paints on — a
+    /// Ink tiers on the content surface — the window ground every app
+    /// paints on.
+    pub fn on_content(&self) -> crate::tokens::OnSurface {
+        self.tokens.colors.on_content()
+    }
+
+    /// The ground of `region` (HIG §9.2): `surfaces.content`,
+    /// `surfaces.sidebar` or `surfaces.inspector`. The framework paints it
+    /// ([`crate::surface::region`]); a caller reads it to measure against.
+    #[must_use]
+    pub fn region(&self, region: crate::surface::Region) -> Color {
+        let s = &self.tokens.colors.surfaces;
+        match region {
+            crate::surface::Region::Content => s.content,
+            crate::surface::Region::Sidebar => s.sidebar,
+            crate::surface::Region::Inspector => s.inspector,
+        }
+    }
+
+    /// This theme as seen by a widget standing on `ground`: a region tier, a
+    /// raised well, a document's paper. `surfaces.content` becomes `ground`,
+    /// the text tiers are re-measured against it ([`Self::on_surface`]) and
+    /// the selection lift steps from it, so a widget that paints "ink on
+    /// the window ground" or "the selected row" is right on whatever ground
+    /// its container handed it. `surfaces.raised` stays off the ground
+    /// ([`crate::tokens::Colors::raised_on`]), so a control's face never
+    /// sinks into a lighter panel. When `ground` has the other polarity
+    /// from the palette (the near-black `media.letterbox` under a light
+    /// theme), the inverted fill is re-derived too: primary ink on that
+    /// ground as the fill and the ground as its label, so a `Primary`
+    /// button over media still reads as the inverted control. Every other
+    /// token is unchanged.
+    #[must_use]
+    pub fn on_ground(&self, ground: Color) -> Self {
+        let mut theme = self.clone();
+        if ground == self.tokens.colors.surfaces.content {
+            return theme;
+        }
+        let on = self.tokens.colors.on_surface(ground);
+        let c = &mut theme.tokens.colors;
+        c.surfaces.raised = c.raised_on(ground);
+        c.surfaces.content = ground;
+        c.text_primary = on.ink;
+        c.text_dim = on.ink_dim;
+        c.text_tertiary = on.ink_tertiary;
+        c.intent.selection = c.lift_on(ground, 1.0);
+        c.intent.selection_hover = c.lift_on(ground, 0.5);
+        let ground_dark = crate::color::relative_luminance(ground) < Self::POLARITY_LUMINANCE;
+        if ground_dark != c.palette.dark && matches!(c.emphasis, crate::tokens::Emphasis::Inverted)
+        {
+            // The same construction the palette uses on its own ground:
+            // primary ink as the fill, hover 12 % of the way back toward
+            // the ground, the ground as the label.
+            c.intent.inverted = on.ink;
+            c.intent.inverted_hover = crate::tokens::colors::over(on.ink, ground, 0.12);
+            c.intent.on_inverted = ground;
+        }
+        theme
+            .tokens
+            .typography
+            .set_ground(crate::text_render::TextGround::of(ground));
+        theme.refresh_colour_shortcuts();
+        theme
+    }
+
+    /// Relative luminance below which a ground counts as dark: the point
+    /// where black and white ink contrast equally with it.
+    const POLARITY_LUMINANCE: f64 = 0.179;
+
+    /// [`Self::on_ground`] for one of the window's regions.
+    #[must_use]
+    pub fn in_region(&self, region: crate::surface::Region) -> Self {
+        self.on_ground(self.region(region))
+    }
+
+    /// [`Self::on_content`] for any surface a widget actually paints on — a
     /// document's paper, a tinted placeholder box, a chart panel. See
     /// [`crate::tokens::Colors::on_surface`] for why the surface is a
     /// parameter.
-    pub fn on_surface(&self, surface: Color) -> crate::tokens::colors::OnCard {
+    pub fn on_surface(&self, surface: Color) -> crate::tokens::OnSurface {
         self.tokens.colors.on_surface(surface)
     }
 
     /// [`Self::on_surface`] against a caller-chosen contrast floor.
-    pub fn on_surface_at(&self, surface: Color, min_ratio: f64) -> crate::tokens::colors::OnCard {
+    pub fn on_surface_at(&self, surface: Color, min_ratio: f64) -> crate::tokens::OnSurface {
         self.tokens.colors.on_surface_at(surface, min_ratio)
     }
 
@@ -276,357 +361,70 @@ impl Theme {
         self.tokens.colors.window_edge()
     }
 
-    /// Re-points the three text tiers at the ink the **window card** takes
-    /// ([`Theme::on_card`]) — handed to shared widgets by a hosted app that
-    /// paints no background of its own, so `EmptyState`, `Button` and
-    /// friends stay legible on the card without an on-card colour parameter
-    /// on every widget.
+    /// The same theme in a workspace whose temperature is `hue` (OKLCH
+    /// degrees). Only the neutral material's hue moves — never its chroma,
+    /// so a palette with chroma 0 (the default dark) shows no temperature
+    /// at all, and the light palette, pure grey until now, takes its
+    /// chroma at this hue. Presence, status, emphasis and the person's own
+    /// colour keep their hues, and every contrast promise holds at every
+    /// hue. A workspace's temperature comes from [`workspace_hue`].
     #[must_use]
-    pub fn on_window_card(&self) -> Self {
-        let on = self.on_card();
-        let mut card = self.clone();
-        card.text_primary = on.ink;
-        card.text_dim = on.ink_dim;
-        card.text_tertiary = on.ink_tertiary;
-        card
+    pub fn with_neutral_hue(mut self, hue: f32) -> Self {
+        if !hue.is_finite() || self.document.palette.chroma <= 0.0 {
+            return self;
+        }
+        self.document.palette.hue = Some(hue.rem_euclid(360.0));
+        self.recolour();
+        self
     }
 
-    /// Typography/spacing/motion tokens come from the matching (dark or
-    /// light) base; the colour set is expanded by [`Colors::themed`].
-    fn from_palette(name: &str, spec: &PaletteSpec) -> Self {
-        let mut t = if spec.dark {
-            Tokens::dark()
-        } else {
-            Tokens::light()
-        };
-        t.colors = crate::tokens::Colors::themed(spec);
-        Self::from_tokens(name, t)
+    /// The person's own colour becomes their focus ring, text caret and
+    /// text-selection tint, painted at this theme's presence lightness and
+    /// chroma. A colour is identity, not theme: the host that knows who sits
+    /// here applies it ([`PresenceHue::chosen_in`], [`PresenceHue::of_identity`]).
+    #[must_use]
+    pub fn with_your_colour(mut self, hue: PresenceHue) -> Self {
+        if self.tokens.colors.you != hue {
+            self.tokens.colors.you = hue;
+            self.recolour();
+        }
+        self
     }
 
-    pub fn from_custom_spec(spec: &CustomThemeSpec) -> Option<Self> {
-        spec.validate().ok()?;
-        let popover = if spec.dark_base {
-            mix_rgb(spec.surface_base, [0, 0, 0], 0.40)
-        } else {
-            [255, 255, 255]
-        };
-        let text_tertiary = mix_rgb(spec.text_dim, spec.surface_base, 0.40);
-        let mut theme = Self::from_palette(
-            &spec.name,
-            &PaletteSpec {
-                dark: spec.dark_base,
-                base: rgb(spec.surface_base),
-                raised: rgb(spec.surface_raised),
-                popover: rgb(popover),
-                text: rgb(spec.text_primary),
-                text_dim: rgb(spec.text_dim),
-                text_tertiary: rgb(text_tertiary),
-                border: rgb(spec.border),
-                focus: rgb(spec.accent),
-                accent: rgb(spec.accent),
-                accent_hover: rgb(spec.accent_hover),
-                success: rgb(spec.success),
-                warning: rgb(spec.warning),
-                danger: rgb(spec.danger),
-                info: rgb(spec.info),
-                window_card: None,
-            },
-        );
-        // `radius_px` is the `md` step and `spacing_px` the `s3` step; the
-        // rest of each scale follows in the stock proportions (radii
-        // 1:2:3:6, spacing 1:2:3:4:6:8:12:16) so a custom theme at the
-        // stock value reproduces the stock scale exactly and a denser one
-        // stays proportional on every step — `Column`'s `s6` inset is still
-        // twice `padding_standard`, a card's `s2`/`s4` pair keeps its 1:2.
-        // `Metrics` stay at their defaults: a gutter preference must not
-        // shrink a pointer target.
-        let radii = crate::tokens::Radii::default();
-        let radius_ratio = spec.radius_px / radii.md;
-        theme.tokens.radii.sm = radii.sm * radius_ratio;
-        theme.tokens.radii.md = spec.radius_px;
-        theme.tokens.radii.lg = radii.lg * radius_ratio;
-        theme.tokens.radii.xl = radii.xl * radius_ratio;
-        // The schema admits 2..=64 px; the scale is built inside the usable
-        // band (see `CustomThemeSpec::SPACING_PX_MIN`) rather than rejecting
-        // the file and silently dropping the user's theme.
-        let spacing_px = spec.spacing_px.clamp(
-            CustomThemeSpec::SPACING_PX_MIN,
-            CustomThemeSpec::SPACING_PX_MAX,
-        );
-        theme.tokens.spacing =
-            crate::tokens::Spacing::BASE.scaled(spacing_px / crate::tokens::Spacing::BASE.s3);
-        theme.tokens.typography.sans_family.clone_from(&spec.font);
-        // Rebuild through the central funnel after shape/type edits so every
-        // legacy shortcut and the terminal palette matches the token tree.
-        Some(Self::from_tokens(&spec.name, theme.tokens))
+    /// The same theme on the high-contrast palette of its polarity: shape,
+    /// density, type and motion stay, the person keeps their colour, and
+    /// content surfaces are asked to force their colours.
+    #[must_use]
+    pub fn with_high_contrast(mut self) -> Self {
+        if self.document.palette.high_contrast {
+            return self;
+        }
+        self.document = self.document.in_high_contrast();
+        self.name.clone_from(&self.document.name);
+        self.forced_colors = true;
+        self.recolour();
+        self
     }
 
-    /// Kept verbatim as a preset so nothing from the first design is lost.
-    pub fn tilo_blue() -> Self {
-        let mut t = Tokens::dark();
-        t.colors = crate::tokens::Colors::tilo_blue();
-        Self::from_tokens("Tilo Blue", t)
+    /// Rebuild the colour tokens from [`Self::document`] after its palette,
+    /// emphasis, presence or material changed, keeping every other token
+    /// (scaled spacing and type stay scaled).
+    fn recolour(&mut self) {
+        self.tokens.colors = colors_of(&self.document, self.tokens.colors.you);
+        self.refresh_colour_shortcuts();
     }
 
-    pub fn dracula() -> Self {
-        Self::from_palette(
-            "Dracula",
-            &PaletteSpec {
-                dark: true,
-                base: Color::from_rgb8(0x28, 0x2A, 0x36), // background
-                raised: Color::from_rgb8(0x34, 0x37, 0x46),
-                popover: Color::from_rgb8(0x21, 0x22, 0x2C), // "darker"
-                text: Color::from_rgb8(0xF8, 0xF8, 0xF2),    // foreground
-                text_dim: Color::from_rgb8(0xC9, 0xCB, 0xE0),
-                text_tertiary: Color::from_rgb8(0x8A, 0x90, 0xBE), // lifted comment
-                border: Color::from_rgb8(0x44, 0x47, 0x5A),        // current line
-                focus: Color::from_rgb8(0xBD, 0x93, 0xF9),         // purple
-                accent: Color::from_rgb8(0xFF, 0x79, 0xC6),        // pink
-                accent_hover: Color::from_rgb8(0xE8, 0x5B, 0xAE),
-                success: Color::from_rgb8(0x50, 0xFA, 0x7B), // green
-                warning: Color::from_rgb8(0xF1, 0xFA, 0x8C), // yellow
-                danger: Color::from_rgb8(0xFF, 0x55, 0x55),  // red
-                info: Color::from_rgb8(0x8B, 0xE9, 0xFD),    // cyan
-                window_card: None,
-            },
-        )
-    }
-
-    pub fn nord() -> Self {
-        Self::from_palette(
-            "Nord",
-            &PaletteSpec {
-                dark: true,
-                base: Color::from_rgb8(0x2E, 0x34, 0x40), // nord0
-                raised: Color::from_rgb8(0x3B, 0x42, 0x52), // nord1
-                popover: Color::from_rgb8(0x27, 0x2C, 0x36),
-                text: Color::from_rgb8(0xEC, 0xEF, 0xF4), // nord6
-                text_dim: Color::from_rgb8(0xB8, 0xC0, 0xCE),
-                text_tertiary: Color::from_rgb8(0x7B, 0x84, 0x94),
-                border: Color::from_rgb8(0x43, 0x4C, 0x5E), // nord2
-                focus: Color::from_rgb8(0x81, 0xA1, 0xC1),  // nord9
-                accent: Color::from_rgb8(0x88, 0xC0, 0xD0), // nord8 frost
-                accent_hover: Color::from_rgb8(0x6F, 0xAF, 0xC4),
-                success: Color::from_rgb8(0xA3, 0xBE, 0x8C), // nord14
-                warning: Color::from_rgb8(0xEB, 0xCB, 0x8B), // nord13
-                danger: Color::from_rgb8(0xBF, 0x61, 0x6A),  // nord11
-                info: Color::from_rgb8(0x81, 0xA1, 0xC1),    // nord9
-                window_card: None,
-            },
-        )
-    }
-
-    pub fn gruvbox() -> Self {
-        let mut t = Self::from_palette(
-            "Gruvbox",
-            &PaletteSpec {
-                dark: true,
-                base: Color::from_rgb8(0x28, 0x28, 0x28), // bg0
-                raised: Color::from_rgb8(0x3C, 0x38, 0x36), // bg1
-                popover: Color::from_rgb8(0x1D, 0x20, 0x21), // bg0_hard
-                text: Color::from_rgb8(0xEB, 0xDB, 0xB2), // fg1
-                text_dim: Color::from_rgb8(0xBD, 0xAE, 0x93), // fg3
-                text_tertiary: Color::from_rgb8(0x92, 0x83, 0x74), // gray
-                border: Color::from_rgb8(0x50, 0x49, 0x45), // bg2
-                focus: Color::from_rgb8(0xFE, 0x80, 0x19), // orange
-                accent: Color::from_rgb8(0xFA, 0xBD, 0x2F), // yellow
-                accent_hover: Color::from_rgb8(0xE0, 0xA5, 0x26),
-                success: Color::from_rgb8(0xB8, 0xBB, 0x26), // green
-                warning: Color::from_rgb8(0xFA, 0xBD, 0x2F), // yellow
-                danger: Color::from_rgb8(0xFB, 0x49, 0x34),  // red
-                info: Color::from_rgb8(0x83, 0xA5, 0x98),    // blue
-                window_card: None,
-            },
-        );
-        // Gruvbox reads as square-edged; keep the near-flat corner shape.
-        t.tokens.radii.sm = 1.0;
-        t.tokens.radii.md = 2.0;
-        t.tokens.radii.lg = 3.0;
-        t.tokens.radii.xl = 4.0;
-        t.radius_standard = 2.0;
-        t
-    }
-
-    pub fn gruvbox_light() -> Self {
-        let mut t = Self::from_palette(
-            "Gruvbox Light",
-            &PaletteSpec {
-                dark: false,
-                base: Color::from_rgb8(0xFB, 0xF1, 0xC7), // bg0
-                raised: Color::from_rgb8(0xF9, 0xF5, 0xD7), // bg0_hard
-                popover: Color::from_rgb8(0xF9, 0xF5, 0xD7),
-                text: Color::from_rgb8(0x3C, 0x38, 0x36), // fg1
-                text_dim: Color::from_rgb8(0x66, 0x5C, 0x54), // fg3
-                text_tertiary: Color::from_rgb8(0x7C, 0x6F, 0x64), // fg4
-                border: Color::from_rgb8(0xD5, 0xC4, 0xA1), // bg2
-                focus: Color::from_rgb8(0xAF, 0x3A, 0x03), // orange (dark)
-                accent: Color::from_rgb8(0xD7, 0x99, 0x21), // yellow (dark)
-                accent_hover: Color::from_rgb8(0xB5, 0x76, 0x14),
-                success: Color::from_rgb8(0x98, 0x97, 0x1A), // green (dark)
-                warning: Color::from_rgb8(0xD7, 0x99, 0x21), // yellow (dark)
-                danger: Color::from_rgb8(0xCC, 0x24, 0x1D),  // red (dark)
-                info: Color::from_rgb8(0x45, 0x85, 0x88),    // blue (dark)
-                window_card: None,
-            },
-        );
-        t.tokens.radii.sm = 1.0;
-        t.tokens.radii.md = 2.0;
-        t.tokens.radii.lg = 3.0;
-        t.tokens.radii.xl = 4.0;
-        t.radius_standard = 2.0;
-        t
-    }
-
-    pub fn catppuccin_mocha() -> Self {
-        Self::from_palette(
-            "Catppuccin Mocha",
-            &PaletteSpec {
-                dark: true,
-                base: Color::from_rgb8(0x1E, 0x1E, 0x2E), // base
-                raised: Color::from_rgb8(0x31, 0x32, 0x44), // surface0
-                popover: Color::from_rgb8(0x18, 0x18, 0x25), // mantle
-                text: Color::from_rgb8(0xCD, 0xD6, 0xF4), // text
-                text_dim: Color::from_rgb8(0xA6, 0xAD, 0xC8), // subtext0
-                text_tertiary: Color::from_rgb8(0x7F, 0x84, 0x9C), // overlay1
-                border: Color::from_rgb8(0x45, 0x47, 0x5A), // surface1
-                focus: Color::from_rgb8(0x89, 0xB4, 0xFA), // blue
-                accent: Color::from_rgb8(0x89, 0xB4, 0xFA), // blue
-                accent_hover: Color::from_rgb8(0x6E, 0x9D, 0xF0),
-                success: Color::from_rgb8(0xA6, 0xE3, 0xA1), // green
-                warning: Color::from_rgb8(0xF9, 0xE2, 0xAF), // yellow
-                danger: Color::from_rgb8(0xF3, 0x8B, 0xA8),  // red
-                info: Color::from_rgb8(0x89, 0xDC, 0xEB),    // sky
-                window_card: None,
-            },
-        )
-    }
-
-    pub fn catppuccin_latte() -> Self {
-        Self::from_palette(
-            "Catppuccin Latte",
-            &PaletteSpec {
-                dark: false,
-                base: Color::from_rgb8(0xEF, 0xF1, 0xF5), // base
-                raised: Color::from_rgb8(0xFF, 0xFF, 0xFF),
-                popover: Color::from_rgb8(0xFF, 0xFF, 0xFF),
-                text: Color::from_rgb8(0x4C, 0x4F, 0x69), // text
-                text_dim: Color::from_rgb8(0x6C, 0x6F, 0x85), // subtext0
-                text_tertiary: Color::from_rgb8(0x8C, 0x8F, 0xA1), // overlay1
-                border: Color::from_rgb8(0xCC, 0xD0, 0xDA), // surface0
-                focus: Color::from_rgb8(0x1E, 0x66, 0xF5), // blue
-                accent: Color::from_rgb8(0x1E, 0x66, 0xF5), // blue
-                accent_hover: Color::from_rgb8(0x15, 0x52, 0xCC),
-                success: Color::from_rgb8(0x40, 0xA0, 0x2B), // green
-                warning: Color::from_rgb8(0xDF, 0x8E, 0x1D), // yellow
-                danger: Color::from_rgb8(0xD2, 0x0F, 0x39),  // red
-                info: Color::from_rgb8(0x04, 0xA5, 0xE5),    // sky
-                window_card: None,
-            },
-        )
-    }
-
-    pub fn solarized() -> Self {
-        let mut t = Self::from_palette(
-            "Solarized",
-            &PaletteSpec {
-                dark: true,
-                base: Color::from_rgb8(0x00, 0x2B, 0x36), // base03
-                raised: Color::from_rgb8(0x07, 0x36, 0x42), // base02
-                popover: Color::from_rgb8(0x00, 0x21, 0x2B),
-                text: Color::from_rgb8(0x93, 0xA1, 0xA1), // base1
-                text_dim: Color::from_rgb8(0x83, 0x94, 0x96), // base0
-                text_tertiary: Color::from_rgb8(0x58, 0x6E, 0x75), // base01
-                border: Color::from_rgb8(0x0F, 0x4A, 0x59),
-                focus: Color::from_rgb8(0x26, 0x8B, 0xD2), // blue
-                accent: Color::from_rgb8(0x2A, 0xA1, 0x98), // cyan
-                accent_hover: Color::from_rgb8(0x1E, 0x8C, 0x84),
-                success: Color::from_rgb8(0x85, 0x99, 0x00), // green
-                warning: Color::from_rgb8(0xB5, 0x89, 0x00), // yellow
-                danger: Color::from_rgb8(0xDC, 0x32, 0x2F),  // red
-                info: Color::from_rgb8(0x26, 0x8B, 0xD2),    // blue
-                window_card: None,
-            },
-        );
-        t.tokens.radii.sm = 0.0;
-        t.tokens.radii.md = 0.0;
-        t.tokens.radii.lg = 2.0;
-        t.tokens.radii.xl = 4.0;
-        t.radius_standard = 0.0;
-        t
-    }
-
-    pub fn oled() -> Self {
-        Self::from_palette(
-            "OLED",
-            &PaletteSpec {
-                dark: true,
-                base: Color::from_rgb8(0x00, 0x00, 0x00), // true black
-                raised: Color::from_rgb8(0x0C, 0x0C, 0x0F),
-                popover: Color::from_rgb8(0x05, 0x05, 0x06),
-                text: Color::from_rgb8(0xFF, 0xFF, 0xFF),
-                text_dim: Color::from_rgb8(0xB4, 0xB7, 0xBE),
-                text_tertiary: Color::from_rgb8(0x7A, 0x7D, 0x85),
-                border: Color::from_rgb8(0x24, 0x25, 0x2A),
-                focus: Color::from_rgb8(0x4C, 0x9A, 0xFF),
-                accent: Color::from_rgb8(0x4C, 0x9A, 0xFF), // pops on black
-                accent_hover: Color::from_rgb8(0x3D, 0x86, 0xE6),
-                success: Color::from_rgb8(0x37, 0xD6, 0x7A),
-                warning: Color::from_rgb8(0xFF, 0xB0, 0x20),
-                danger: Color::from_rgb8(0xFF, 0x5C, 0x5C),
-                info: Color::from_rgb8(0x4C, 0xC2, 0xFF),
-                // Black so it disappears behind app content instead of
-                // flashing a white card on a black desktop.
-                window_card: Some(Color::from_rgb8(0x0A, 0x0A, 0x0A)),
-            },
-        )
-    }
-
-    pub fn warm_light() -> Self {
-        Self::from_palette(
-            "Beige",
-            &PaletteSpec {
-                dark: false,
-                base: Color::from_rgb8(0xF3, 0xEE, 0xE3), // warm paper
-                raised: Color::from_rgb8(0xFB, 0xF7, 0xEF),
-                popover: Color::from_rgb8(0xFF, 0xFF, 0xFF),
-                text: Color::from_rgb8(0x33, 0x30, 0x2A), // warm near-black
-                text_dim: Color::from_rgb8(0x6B, 0x65, 0x5A),
-                text_tertiary: Color::from_rgb8(0x97, 0x90, 0x7F),
-                border: Color::from_rgb8(0xDD, 0xD3, 0xC2),
-                focus: Color::from_rgb8(0xBC, 0x6C, 0x3C), // terracotta
-                accent: Color::from_rgb8(0xBC, 0x6C, 0x3C), // terracotta
-                accent_hover: Color::from_rgb8(0xA1, 0x5A, 0x2E),
-                success: Color::from_rgb8(0x5B, 0x8C, 0x4E), // olive
-                warning: Color::from_rgb8(0xC0, 0x8A, 0x2E),
-                danger: Color::from_rgb8(0xB4, 0x46, 0x2F), // brick
-                info: Color::from_rgb8(0x3E, 0x7C, 0xA8),
-                window_card: None,
-            },
-        )
-    }
-
-    pub fn rose_pine() -> Self {
-        Self::from_palette(
-            "Rosé Pine",
-            &PaletteSpec {
-                dark: true,
-                base: Color::from_rgb8(0x19, 0x17, 0x24), // base
-                raised: Color::from_rgb8(0x1F, 0x1D, 0x2E), // surface
-                popover: Color::from_rgb8(0x16, 0x14, 0x1F),
-                text: Color::from_rgb8(0xE0, 0xDE, 0xF4), // text
-                text_dim: Color::from_rgb8(0x90, 0x8C, 0xAA), // subtle
-                text_tertiary: Color::from_rgb8(0x6E, 0x6A, 0x86), // muted
-                border: Color::from_rgb8(0x40, 0x3D, 0x52), // highlight med
-                focus: Color::from_rgb8(0xC4, 0xA7, 0xE7), // iris
-                accent: Color::from_rgb8(0xEB, 0xBC, 0xBA), // rose
-                accent_hover: Color::from_rgb8(0xD9, 0xA6, 0xA4),
-                success: Color::from_rgb8(0x9C, 0xCF, 0xD8), // foam
-                warning: Color::from_rgb8(0xF6, 0xC1, 0x77), // gold
-                danger: Color::from_rgb8(0xEB, 0x6F, 0x92),  // love
-                info: Color::from_rgb8(0xC4, 0xA7, 0xE7),    // iris
-                window_card: None,
-            },
-        )
+    /// Re-derive every shortcut and derived palette after the colour tokens
+    /// changed in place.
+    fn refresh_colour_shortcuts(&mut self) {
+        Self::derive_palettes(&mut self.tokens);
+        let c = &self.tokens.colors;
+        self.border_standard = c.border_standard;
+        self.border_focus = c.border_focus;
+        self.text_primary = c.text_primary;
+        self.text_dim = c.text_dim;
+        self.text_tertiary = c.text_tertiary;
+        self.status_success = c.semantic.success;
     }
 
     /// Reads `$XDG_CONFIG_HOME/tilo/settings.json` (falling back to
@@ -655,205 +453,95 @@ impl Theme {
     }
 
     fn configured_from_text(text: &str, reduce_motion_override: bool) -> Self {
-        let document = serde_json::from_str::<serde_json::Value>(text).ok();
-        // The accessibility switch is separate from the theme choice and wins
-        // over it, as it does for apps reading the appearance portal.
-        let high_contrast = document
-            .as_ref()
-            .and_then(|v| v.get("appearance")?.get("high_contrast")?.as_bool())
-            .unwrap_or(false);
-        let mut theme = if high_contrast {
-            Self::high_contrast()
-        } else {
-            Self::from_settings_json(text).unwrap_or_else(Self::dark)
+        let mut stack =
+            crate::theme_layers::ThemeLayerStack::from_settings_json(text, local_moment());
+        // Hosts apply text and UI scale on top of this theme (`App::rebuild_theme`).
+        // Baking the file's factors here would apply them twice. Reduced motion
+        // follows the host override: the compositor is itself a UI host, so an
+        // explicitly reduced-motion session must not keep full-desktop
+        // transitions running even when settings.json has not been written yet.
+        // A file schema this build rejects does not contribute contrast or
+        // caret. The host override is its own admitted layer.
+        let file = stack.accessibility;
+        let admitted = file.validate().is_ok();
+        stack.accessibility = crate::theme_layers::AccessibilityLayer {
+            high_contrast: admitted && file.high_contrast,
+            forced_colors: admitted && file.forced_colors,
+            thick_caret: admitted && file.thick_caret,
+            reduce_transparency: admitted && file.reduce_transparency,
+            hyperlegible: admitted && file.hyperlegible,
+            distinct_letters: file.distinct_letters.filter(|_| admitted),
+            text_scale: 1.0,
+            ui_scale: 1.0,
+            reduce_motion: reduce_motion_override,
+            ..crate::theme_layers::AccessibilityLayer::default()
         };
-        let thick = document
-            .as_ref()
-            .and_then(|v| v.get("accessibility")?.get("thick_text_caret")?.as_bool())
-            .unwrap_or(false);
-        theme.caret_width = if thick { 4.0 } else { 2.0 };
-        // Match standalone apps' accessibility override.  The compositor is
-        // itself a UI host, so an explicitly reduced-motion session must not
-        // keep full-desktop transitions running even when settings.json has
-        // not been written yet (notably the disposable software-rendered VM).
-        if reduce_motion_override {
-            theme.reduce_motion = true;
-        }
-        theme
+        resolve_theme_layers(&stack)
     }
 
-    /// Parser shared by runtime loading and hermetic tests. An "Automatic"
-    /// theme resolves against the local time now.
+    /// The user's theme in a settings document, if it names one this build
+    /// admits. Automatic mode resolves against the local time now.
     pub fn from_settings_json(text: &str) -> Option<Self> {
         Self::from_settings_json_at(text, local_moment())
     }
 
-    /// [`Self::from_settings_json`] at an explicit local moment: "Automatic"
-    /// is the light theme by day and the dark theme by night, on the schedule
-    /// night light shares (`settings_store::day_schedule`).
+    /// [`Self::from_settings_json`] at an explicit local moment: automatic
+    /// mode is the light theme by day and the dark theme by night, on the
+    /// schedule night light shares (`settings_store::day_schedule`).
     pub fn from_settings_json_at(
         text: &str,
         moment: settings_store::day_schedule::LocalMoment,
     ) -> Option<Self> {
-        let v: serde_json::Value = serde_json::from_str(text).ok()?;
-        let appearance = v.get("appearance")?;
-        let active = appearance.get("theme")?.as_str()?;
-        if settings_store::day_schedule::is_automatic(active) {
-            let schedule = settings_store::day_schedule::Scheduled::from_settings(v.as_object()?);
-            return Some(if schedule.is_night(moment) {
-                Self::dark()
-            } else {
-                Self::light()
-            });
-        }
-        if let Some(id) = active.strip_prefix("custom:") {
-            let spec: CustomThemeSpec =
-                serde_json::from_value(appearance.get("custom_theme")?.clone()).ok()?;
-            if spec.id != id {
-                return None;
-            }
-            return Self::from_custom_spec(&spec);
-        }
-        Self::named(active)
+        let settings: serde_json::Value = serde_json::from_str(text).ok()?;
+        let document = crate::theme_layers::user_document(&settings, moment)?;
+        Self::from_document(&document)
     }
 
-    /// The day/night schedule an "Automatic" theme in `settings` follows, or
-    /// `None` when the theme is fixed. Hosts keep it to notice sunrise and
+    /// The day/night schedule an automatic appearance in `settings` follows,
+    /// or `None` when the mode is fixed. Hosts keep it to notice sunrise and
     /// sunset, which change the theme without changing the file.
     pub fn automatic_schedule_from(
         settings: Option<&std::path::Path>,
     ) -> Option<settings_store::day_schedule::Scheduled> {
         let document = settings_store::load_at(settings?);
-        let theme = document.get("appearance")?.get("theme")?.as_str()?;
-        settings_store::day_schedule::is_automatic(theme)
+        let mode = document
+            .get("appearance")?
+            .get(settings_store::day_schedule::MODE_KEY)?
+            .as_str()?;
+        settings_store::day_schedule::is_automatic(mode)
             .then(|| settings_store::day_schedule::Scheduled::from_settings(&document))
-    }
-
-    /// Pure black surfaces under pure-white text (WCAG AAA, 21:1 — the
-    /// maximum possible), crisp white borders, a high-visibility yellow
-    /// focus ring. Selected when
-    /// [`A11ySettings::high_contrast`](crate::a11y::A11ySettings) is set.
-    pub fn high_contrast() -> Self {
-        let mut t = Tokens::dark();
-        let c = &mut t.colors;
-
-        // Solid (non-translucent) surfaces — pure black so text/borders pop.
-        c.surfaces.base = Color::BLACK;
-        c.surfaces.raised = Color::BLACK;
-        c.surfaces.overlay = Color::from_rgba8(0, 0, 0, 255);
-        c.surfaces.glass = Color::from_rgba8(0, 0, 0, 255);
-        c.surfaces.glass_blur_px = 0.0;
-        c.surfaces.window_card = Color::BLACK;
-        c.surfaces.window_card_border = Color::WHITE;
-
-        // `text_dim` stays near-white so secondary copy clears AAA on black
-        // instead of fading to a low-contrast grey.
-        c.text_primary = Color::WHITE;
-        c.text_dim = Color::from_rgb8(230, 230, 230);
-        c.text_tertiary = Color::from_rgb8(210, 210, 210);
-
-        c.border_standard = Color::WHITE;
-        c.border_focus = Color::from_rgb8(255, 255, 0); // high-visibility yellow
-
-        // State veneers, re-solved for this preset. The dark tiers this theme
-        // starts from assume a ground around #16171B; against pure black they
-        // collapse to a 1.08:1 step, which is exactly the feedback a low-vision
-        // user cannot see. These alphas trade the "barely there" intent for a
-        // visible one — a 1.7:1 / 2.5:1 / 4.1:1 step off black — while staying
-        // under the point where the theme's white text would drop below AA on
-        // top of them (the strongest tier still measures 5.1:1 for white).
-        // The two hairline tiers go brighter still: nothing hosts text on them.
-        let w = |a: u8| Color::from_rgba8(255, 255, 255, a);
-        c.set_overlays((w(51), w(77), w(110), w(153), w(217)));
-
-        // Distinct from the yellow focus ring, and keeps the white
-        // checkmark/knob it backs readable on top.
-        c.accent.stops[ACCENT_PRIMARY_IDX] = Color::from_rgb8(0, 153, 255);
-        c.accent.stops[ACCENT_HOVER_IDX] = Color::from_rgb8(64, 176, 255);
-
-        // Keep semantic colours bright enough to read on black.
-        c.semantic.success = Color::from_rgb8(0, 230, 118);
-        c.semantic.warning = Color::from_rgb8(255, 214, 0);
-        c.semantic.danger = Color::from_rgb8(255, 82, 82);
-        c.semantic.info = Color::from_rgb8(64, 196, 255);
-
-        Self::from_tokens("High Contrast", t)
     }
 
     /// Every theme Tilo ships, by the name [`Theme::named`] resolves.
     ///
     /// Exists so a check can be run against *all* of them rather than against
-    /// whichever two someone remembered. A colour defect that only shows up in
-    /// one polarity — a veneer that lightens when it needed to darken, a label
-    /// pinned to white against an accent that turned out pale — survives any
-    /// test that only looks at the default dark theme. Adding a preset without
-    /// adding it here will fail [`Theme::named`]'s round-trip test.
-    pub const ALL: [&'static str; 14] = [
-        "Dark",
-        "Light",
-        "Tilo Blue",
-        "Catppuccin Mocha",
-        "Catppuccin Latte",
-        "Dracula",
-        "Nord",
-        "Gruvbox",
-        "Gruvbox Light",
-        "Solarized",
-        "OLED",
-        "Beige",
-        "Rosé Pine",
-        "High Contrast",
+    /// whichever two someone remembered.
+    pub const ALL: [&'static str; 7] = [
+        Preset::Dark.name(),
+        Preset::DarkCool.name(),
+        Preset::DarkGraphite.name(),
+        Preset::DarkSoft.name(),
+        Preset::Light.name(),
+        Preset::HighContrast.name(),
+        Preset::HighContrastLight.name(),
     ];
 
-    /// Accepts the exact display name as well as loose forms —
-    /// case-insensitive, spaces / hyphens / underscores ignored
-    /// (`"gruvbox-light"`, `"catppuccinmocha"`) — so the same lookup serves
-    /// the settings picker, the persisted preference, and the `--shots`
-    /// theme override. Returns `None` for an unknown name.
+    /// A shipped theme by id or name, loosely ([`Preset::find`]), so the
+    /// same lookup serves a picker, the persisted preference and the
+    /// `--shots` theme override. `None` for an unknown name.
     pub fn named(name: &str) -> Option<Self> {
-        let key: String = name
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect();
-        Some(match key.as_str() {
-            "dark" | "tilodark" => Self::dark(),
-            "light" => Self::light(),
-            "tiloblue" | "blue" | "midnight" => Self::tilo_blue(),
-            "catppuccinmocha" | "mocha" => Self::catppuccin_mocha(),
-            "catppuccinlatte" | "latte" => Self::catppuccin_latte(),
-            "dracula" => Self::dracula(),
-            "nord" => Self::nord(),
-            "gruvbox" | "gruvboxdark" => Self::gruvbox(),
-            "gruvboxlight" => Self::gruvbox_light(),
-            "solarized" | "solarizeddark" => Self::solarized(),
-            "oled" | "oleddark" | "black" => Self::oled(),
-            "beige" | "warmlight" | "paper" => Self::warm_light(),
-            "rosépine" | "rosepine" | "rosé" | "rose" => Self::rose_pine(),
-            "highcontrast" | "contrast" => Self::high_contrast(),
-            _ => return None,
-        })
-    }
-
-    /// Re-accented with a colour the host chose — the macOS or desktop
-    /// accent a standalone app follows. The ramp, focus ring and derived
-    /// palettes follow it as they follow a preset's accent; hover is the same
-    /// colour a shade darker.
-    #[must_use]
-    pub fn with_accent(mut self, accent: [u8; 3]) -> Self {
-        let hover = rgb(mix_rgb(accent, [0, 0, 0], 0.15));
-        self.tokens.colors.set_accent(rgb(accent), hover);
-        Self::derive_palettes(&mut self.tokens);
-        let c = &self.tokens.colors;
-        self.accent_primary = c.accent[ACCENT_PRIMARY_IDX];
-        self.accent_hover = c.accent[ACCENT_HOVER_IDX];
-        self.border_focus = c.border_focus;
-        self
+        Preset::find(name).map(Self::preset)
     }
 
     #[must_use]
     pub fn with_reduce_motion(mut self, on: bool) -> Self {
         self.reduce_motion = on;
+        self
+    }
+
+    #[must_use]
+    pub fn with_reduce_transparency(mut self, on: bool) -> Self {
+        self.reduce_transparency = on;
         self
     }
 
@@ -864,23 +552,42 @@ impl Theme {
     #[must_use]
     pub fn with_text_scale(mut self, factor: f32) -> Self {
         let factor = factor.clamp(0.5, 4.0);
+        self.regrow_icons(self.text_scale, factor);
         self.text_scale = factor;
         self.multiply_type_sizes(factor);
         self
     }
 
-    fn multiply_type_sizes(&mut self, factor: f32) {
-        let scale = &mut self.tokens.typography.scale;
-        scale.xs *= factor;
-        scale.sm *= factor;
-        scale.base *= factor;
-        scale.lg *= factor;
-        scale.xl *= factor;
-        scale.x2l *= factor;
-        scale.x3l *= factor;
-        scale.x4l *= factor;
+    /// Glyph metrics follow the text scale by
+    /// [`crate::tokens::Metrics::icon_growth`]: re-grow them from the scale
+    /// they were grown for to `to`.
+    fn regrow_icons(&mut self, from: f32, to: f32) {
+        use crate::tokens::Metrics;
+        let factor = Metrics::icon_growth(to) / Metrics::icon_growth(from);
+        if (factor - 1.0).abs() > f32::EPSILON {
+            self.tokens.metrics = self.tokens.metrics.with_icons_scaled(factor);
+        }
+    }
 
-        self.tokens.font_size_base *= factor;
+    fn multiply_type_sizes(&mut self, factor: f32) {
+        self.tokens.typography.scale = self.tokens.typography.scale.scaled(factor);
+    }
+
+    /// This theme with the accessibility text scale taken back out: type at
+    /// its 1× sizes (glyphs too), everything else unchanged. For content whose size is
+    /// the document's own (a slide's text, laid out at the slide's size and
+    /// then scaled as a whole), which must not grow a second time with the
+    /// reader's text setting. [`Theme::with_text_scale`] multiplies, so it
+    /// cannot undo a scale already applied.
+    #[must_use]
+    pub fn at_unit_text_scale(&self) -> Self {
+        let mut theme = self.clone();
+        if (theme.text_scale - 1.0).abs() > f32::EPSILON {
+            theme.multiply_type_sizes(1.0 / theme.text_scale);
+            theme.regrow_icons(theme.text_scale, 1.0);
+            theme.text_scale = 1.0;
+        }
+        theme
     }
 
     /// `1.0` = unchanged. Multiplies spacing, radii, and type together,
@@ -892,7 +599,7 @@ impl Theme {
         self.ui_scale = factor;
         self.multiply_dimensions(factor);
         self.multiply_type_sizes(factor);
-        self.radius_standard = f64::from(self.tokens.radii.md);
+        self.radius_standard = f64::from(self.tokens.radii.control);
         self.padding_standard = self.tokens.spacing.s3;
         self.gap_standard = self.tokens.spacing.s3;
         self
@@ -903,10 +610,11 @@ impl Theme {
         self.tokens.metrics = self.tokens.metrics.scaled(factor);
 
         let r = &mut self.tokens.radii;
-        r.sm *= factor;
-        r.md *= factor;
-        r.lg *= factor;
-        r.xl *= factor;
+        r.tile *= factor;
+        r.panel *= factor;
+        r.control *= factor;
+        r.item *= factor;
+        r.detail *= factor;
         // `full` is a "make it a pill" sentinel, not a real length — leave it.
     }
 
@@ -926,6 +634,7 @@ impl Theme {
         let ui_ratio = ui_scale / self.ui_scale;
         self.multiply_type_sizes(text_scale / self.text_scale * ui_ratio);
         self.multiply_dimensions(ui_ratio);
+        self.regrow_icons(self.text_scale, text_scale);
         // Unlike the public builder, preserve independently customized aliases.
         self.radius_standard *= f64::from(ui_ratio);
         self.padding_standard *= ui_ratio;
@@ -946,21 +655,21 @@ impl Theme {
     /// The one factor the responsive shells multiply an authored,
     /// text-sized breakpoint or pane width by: `ui_scale × text_growth()`.
     ///
-    /// An app authors its shell inputs at 1× (`with_breakpoint(760.0)`,
-    /// `with_sidebar_width(260.0)`) and the shell resolves them against the
-    /// theme in `build_layout`, so at 200 % text a 760 px breakpoint pushes
-    /// at 1520 px — the window that has the room a 760 px window has at 1× —
-    /// without the app multiplying anything. `1.0` on a stock theme, so 1×
-    /// geometry is untouched. A width sized by icons rather than text (a
-    /// rail) follows [`Theme::ui_scale`] alone; the shells expose an
-    /// `icon_*` builder for it.
+    /// `NavShell` grows its metric widths by it, and a painted app's
+    /// `SidebarDrawer` its authored ones (`breakpoint(760.0)`), so at 200 %
+    /// text a 760 px breakpoint pushes at 1520 px — the window that has the
+    /// room a 760 px window has at 1× — without the app multiplying
+    /// anything. `1.0` on a stock theme, so 1× geometry is untouched. A width
+    /// sized by icons rather than text (a rail) follows [`Theme::ui_scale`]
+    /// alone.
     #[must_use]
     pub fn responsive_scale(&self) -> f64 {
         f64::from(self.ui_scale) * f64::from(self.text_growth())
     }
 
     /// UI scale first so it grows the whole system, then text scale layers
-    /// additional type growth on top.
+    /// additional type growth on top. High contrast keeps the theme's
+    /// polarity, shape, density and type, and the person's own colour.
     #[must_use]
     pub fn with_a11y(
         self,
@@ -969,7 +678,7 @@ impl Theme {
         ui_scale: f32,
     ) -> Self {
         let base = if settings.high_contrast {
-            Self::high_contrast()
+            self.with_high_contrast()
         } else {
             self
         };
@@ -979,412 +688,328 @@ impl Theme {
     }
 }
 
+/// What the host showing a window knows about where, and for whom, it is
+/// shown: the temperature of the workspace the window is in and the colour
+/// of the person sitting at it. The shell resolves both and hands them to
+/// its own chrome and, over the shell-ui channel, to every app window
+/// (`crate::floating_surface::FloatingSurfaceHostMessage::Appearance`). A
+/// window nobody told stays neutral and wears the default colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WindowAppearance {
+    /// The workspace's temperature (OKLCH degrees), `None` while it has
+    /// none: a grey wallpaper, or no shell.
+    pub workspace_hue: Option<f32>,
+    /// The person's own colour ("your colour"), `None` when the host does
+    /// not know who sits here.
+    pub your_colour: Option<PresenceHue>,
+}
+
+impl Theme {
+    /// This theme as the window `appearance` describes sees it: the
+    /// workspace's temperature on the neutrals (nothing on a palette with
+    /// chroma 0, nothing while there is no temperature) and the person's
+    /// colour as focus ring, caret and selection. Both are applied to the
+    /// theme as configured, so a window moving to a neutral workspace loses
+    /// the temperature of the one it left.
+    #[must_use]
+    pub fn in_window(self, appearance: &WindowAppearance) -> Self {
+        let theme = match appearance.workspace_hue {
+            Some(hue) => self.with_neutral_hue(hue),
+            None => self,
+        };
+        match appearance.your_colour {
+            Some(hue) => theme.with_your_colour(hue),
+            None => theme,
+        }
+    }
+}
+
+/// The neutral temperature a workspace takes from its wallpaper (RGBA8
+/// pixels): the image's dominant hue, or `None` for a wallpaper with none
+/// (a grey photograph, a missing file), which leaves the material neutral.
+/// Only the hue is taken — the material never gains chroma from a
+/// wallpaper.
+#[must_use]
+pub fn workspace_hue(wallpaper_rgba: &[u8]) -> Option<f32> {
+    crate::color::dominant_hue(wallpaper_rgba)
+}
+
 #[cfg(test)]
 mod tests {
-    //! Pin each theme's accent shortcuts and identity so a ramp swap or an
-    //! [`ACCENT_PRIMARY_IDX`] / [`ACCENT_HOVER_IDX`] index change becomes a
-    //! visible failure.
     use super::*;
+
+    #[test]
+    fn a_primary_control_on_a_flipped_ground_stays_inverted_and_legible() {
+        use crate::a11y::contrast_ratio;
+        for theme in [Theme::light(), Theme::dark()] {
+            let letterbox = theme.tokens.colors.media.letterbox;
+            let on = theme.on_ground(letterbox);
+            let i = &on.tokens.colors.intent;
+            assert!(
+                contrast_ratio(i.on_inverted, i.inverted) >= 4.5,
+                "the label on the inverted fill must read over media",
+            );
+            assert!(
+                contrast_ratio(i.inverted, letterbox) >= 3.0,
+                "the inverted fill must stand off the media ground",
+            );
+            assert_ne!(i.inverted, i.inverted_hover);
+        }
+        // A ground of the palette's own polarity keeps the authored fill.
+        let dark = Theme::dark();
+        let sidebar = dark.tokens.colors.surfaces.sidebar;
+        assert_eq!(
+            dark.on_ground(sidebar).tokens.colors.intent.inverted,
+            dark.tokens.colors.intent.inverted
+        );
+    }
+
+    use crate::a11y::contrast_ratio;
+    use crate::color::Oklch;
     use crate::color_compat::ColorCompat;
-    use crate::tokens::Radii;
+    use crate::tokens::Emphasis;
 
-    use crate::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
-
-    fn rgb(c: Color) -> [u8; 3] {
-        [c.r(), c.g(), c.b()]
+    fn quiet_ocean(spacing: f32) -> ThemeDocument {
+        let mut doc = Preset::DarkCool.document();
+        doc.id = "quiet-ocean".into();
+        doc.name = "Quiet ocean".into();
+        doc.palette.hue = Some(220.0);
+        doc.density.spacing = spacing;
+        doc.type_.face = "Inter".into();
+        doc
     }
 
     #[test]
-    fn preset_palettes_resolve_to_their_canonical_colours_and_accents() {
-        // Case `dark_default_accent_shortcuts_are_the_restrained_blue`.
+    fn the_shipped_themes_resolve_by_name_and_keep_every_floor() {
+        // phase: every_name_round_trips
         {
-            let theme = Theme::dark();
-            assert_eq!(
-                rgb(theme.accent_primary),
-                [0x58, 0x91, 0xE8],
-                "restrained blue"
-            );
-            assert_eq!(
-                rgb(theme.accent_hover),
-                [0x48, 0x7B, 0xD1],
-                "hover one step darker"
-            );
-            assert_ne!(rgb(theme.text_primary), rgb(theme.text_dim));
-            assert_ne!(rgb(theme.text_dim), rgb(theme.text_tertiary));
-        }
-
-        // Case `tilo_blue_preserves_the_indigo_concept_accent`.
-        {
-            let theme = Theme::tilo_blue();
-            assert_eq!(theme.name, "Tilo Blue");
-            assert_eq!(
-                rgb(theme.accent_primary),
-                [0x63, 0x66, 0xf1],
-                "indigo-500 #6366f1"
-            );
-            assert_eq!(
-                rgb(theme.accent_hover),
-                [0x4f, 0x46, 0xe5],
-                "indigo-600 #4f46e5"
-            );
-        }
-
-        // Case `accent_indices_pin_to_palette_positions`.
-        {
-            // If these drift, every other assertion in this module goes meaningless.
-            assert_eq!(ACCENT_PRIMARY_IDX, 5);
-            assert_eq!(ACCENT_HOVER_IDX, 4);
-        }
-
-        // Case `preset_palettes_read_as_their_real_canonical_colours`.
-        {
-            // Canonical upstream hex values, so a preset can't silently drift
-            // into the default.
-            let cases: &[(Theme, [u8; 3], [u8; 3])] = &[
-                (Theme::dracula(), [0x28, 0x2A, 0x36], [0xFF, 0x79, 0xC6]),
-                (Theme::nord(), [0x2E, 0x34, 0x40], [0x88, 0xC0, 0xD0]),
-                (Theme::gruvbox(), [0x28, 0x28, 0x28], [0xFA, 0xBD, 0x2F]),
-                (
-                    Theme::gruvbox_light(),
-                    [0xFB, 0xF1, 0xC7],
-                    [0xD7, 0x99, 0x21],
-                ),
-                (
-                    Theme::catppuccin_mocha(),
-                    [0x1E, 0x1E, 0x2E],
-                    [0x89, 0xB4, 0xFA],
-                ),
-                (
-                    Theme::catppuccin_latte(),
-                    [0xEF, 0xF1, 0xF5],
-                    [0x1E, 0x66, 0xF5],
-                ),
-                (Theme::solarized(), [0x00, 0x2B, 0x36], [0x2A, 0xA1, 0x98]),
-                (Theme::oled(), [0x00, 0x00, 0x00], [0x4C, 0x9A, 0xFF]),
-                (Theme::rose_pine(), [0x19, 0x17, 0x24], [0xEB, 0xBC, 0xBA]),
-            ];
-            for (theme, base, accent) in cases {
-                assert_eq!(rgb(theme.bg_app), *base, "{} ground", theme.name);
-                assert_eq!(rgb(theme.accent_primary), *accent, "{} accent", theme.name);
-                assert_eq!(rgb(theme.tokens.colors.accent[ACCENT_PRIMARY_IDX]), *accent);
+            for name in Theme::ALL {
+                let theme = Theme::named(name).unwrap_or_else(|| panic!("{name} resolves"));
+                assert_eq!(theme.name, name);
             }
+            assert_eq!(Theme::named("high-contrast").unwrap().name, "High contrast");
+            assert_eq!(Theme::named("dark-soft").unwrap().name, "Dark soft");
+            assert!(Theme::named("Dracula").is_none(), "no third-party palettes");
+            assert_eq!(ALL_PRESETS_FOR_TEST.len(), Theme::ALL.len());
         }
-
-        // Case `oled_ground_is_true_black`.
+        // phase: every_shipped_theme_keeps_every_floor
         {
-            let t = Theme::oled();
-            assert_eq!(rgb(t.bg_app), [0, 0, 0], "OLED must be pure #000000");
-        }
-
-        // Case `named_resolves_every_preset_to_its_own_theme`.
-        {
-            for name in [
-                "Dark",
-                "Light",
-                "Tilo Blue",
-                "Catppuccin Mocha",
-                "Catppuccin Latte",
-                "Dracula",
-                "Nord",
-                "Gruvbox",
-                "Gruvbox Light",
-                "Solarized",
-                "OLED",
-                "Beige",
-                "Rosé Pine",
-                "High Contrast",
-            ] {
-                let t = Theme::named(name).unwrap_or_else(|| panic!("named({name}) resolves"));
-                assert_eq!(t.name, name, "named({name:?}) returns its own theme");
-            }
-            assert_eq!(
-                Theme::named("gruvbox-light").map(|t| t.name),
-                Some("Gruvbox Light".into())
-            );
-            assert_eq!(
-                Theme::named("catppuccinmocha").map(|t| t.name),
-                Some("Catppuccin Mocha".into())
-            );
-            assert!(Theme::named("not-a-theme").is_none());
-        }
-    }
-
-    #[test]
-    fn preset_ink_and_focus_ring_clear_contrast_on_every_ground() {
-        // Case `preset_default_body_text_clears_aa_on_its_ground`.
-        {
-            use crate::a11y::contrast_ratio;
+            use crate::tokens::contrast::audit;
             for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-                let r = contrast_ratio(t.text_primary, t.bg_app);
+                let findings = audit(&t.tokens.colors);
                 assert!(
-                    r >= 4.5,
-                    "{} primary text on ground = {r:.2}:1 (< AA)",
-                    t.name
-                );
-            }
-        }
-
-        // Case `on_surface_ink_clears_aa_on_any_ground_a_caller_paints_on`:
-        // Both ink tiers clear AA on any surface, not only the window card —
-        // ink can't come from darkening the background by a fixed fraction (a
-        // hand-rolled shade), which produces about the same ratio whatever the
-        // palette: that is how high-contrast ended up *less* legible than
-        // light, 4.37:1 against 4.52:1.
-        {
-            use crate::a11y::contrast_ratio;
-            // Sampled across the light/dark line, including the near-white tints
-            // a paper-like surface produces.
-            let grounds = [
-                ("paper", Color::from_rgb8(0xfc, 0xfc, 0xfa)),
-                ("paper tint", Color::from_rgb8(0xee, 0xee, 0xec)),
-                ("paper tint, cool", Color::from_rgb8(0xdf, 0xdf, 0xe2)),
-                ("mid grey", Color::from_rgb8(0x80, 0x80, 0x80)),
-                ("near black", Color::from_rgb8(0x0a, 0x0a, 0x0a)),
-                ("black", Color::from_rgb8(0, 0, 0)),
-                ("white", Color::from_rgb8(255, 255, 255)),
-            ];
-            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-                for (label, ground) in grounds {
-                    let on = t.on_surface(ground);
-                    let r = contrast_ratio(on.ink, ground);
-                    assert!(r >= 4.5, "{} ink on {label} = {r:.2}:1 (< AA)", t.name);
-                    let rd = contrast_ratio(on.ink_dim, ground);
-                    assert!(
-                        rd >= 4.5,
-                        "{} dim ink on {label} = {rd:.2}:1 (< AA) — this is the tier a \
-                     caption or a placeholder label uses",
-                        t.name,
-                    );
-                }
-            }
-        }
-
-        // Case `the_high_contrast_preset_is_not_the_least_legible_one`:
-        // A palette authored for more contrast must deliver more of it — cannot
-        // come out behind the ordinary preset on the same box.
-        {
-            use crate::a11y::contrast_ratio;
-            // A tint of a document's paper, which is light under every preset.
-            let ground = Color::from_rgb8(0xee, 0xee, 0xec);
-            let dim_ratio = |t: &Theme| contrast_ratio(t.on_surface(ground).ink_dim, ground);
-            let hc = dim_ratio(&Theme::high_contrast());
-            for t in [Theme::light(), Theme::dark()] {
-                let r = dim_ratio(&t);
-                assert!(
-                    hc >= r,
-                    "high-contrast reads at {hc:.2}:1 where {} reads at {r:.2}:1",
+                    findings.is_empty(),
+                    "{} misses: {}",
                     t.name,
+                    findings
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 );
             }
         }
-
-        // Case `on_card_ink_clears_aa_on_every_preset_card`:
-        // Every preset, including the accessibility ones — `high_contrast` and
-        // `oled` are the whole point of the list, since their window card is
-        // black / `#0A0A0A` and ink pulled from the wrong end of the ramp reads
-        // as dark-on-dark (or, on a light preset, near-white-on-white).
+        // phase: the_shortcuts_mirror_the_tokens
         {
-            use crate::a11y::contrast_ratio;
             for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-                let card = t.tokens.colors.surfaces.window_card;
-                let on = t.on_card();
-                let r = contrast_ratio(on.ink, card);
-                assert!(r >= 4.5, "{} on-card ink = {r:.2}:1 (< AA)", t.name);
-                let rd = contrast_ratio(on.ink_dim, card);
-                assert!(rd >= 4.5, "{} on-card dim ink = {rd:.2}:1 (< AA)", t.name);
-                // How quiet the tertiary tier is is a property of the palette's
-                // authorship, not this derivation — Solarized runs at 2.8:1 on
-                // its own ground on purpose, against a large-text-AA target of
-                // 3:1. So the bar is: clear 3:1, or be no worse than the
-                // palette already manages on its own ground.
-                let rt = contrast_ratio(on.ink_tertiary, card);
-                let floor = contrast_ratio(t.text_tertiary, t.bg_app).min(3.0) - 0.01;
-                assert!(
-                    rt >= floor,
-                    "{} on-card tertiary ink = {rt:.2}:1, below the {floor:.2}:1 \
-                 this palette manages on its own ground",
-                    t.name
-                );
+                let c = &t.tokens.colors;
+                assert_eq!(t.text_primary, c.text_primary, "{}", t.name);
+                assert_eq!(t.border_focus, c.intent.you, "{}", t.name);
+                assert!((t.radius_standard - f64::from(t.tokens.radii.control)).abs() < 1e-9);
             }
-        }
-
-        // Case `high_contrast_beats_dark_on_fg_bg_contrast`.
-        {
-            use crate::a11y::contrast_ratio;
-            let dark = Theme::dark();
-            let hc = Theme::high_contrast();
-
-            let dark_ratio = contrast_ratio(dark.text_primary, dark.bg_app);
-            let hc_ratio = contrast_ratio(hc.text_primary, hc.bg_app);
-
-            assert!(
-                hc_ratio > dark_ratio,
-                "high_contrast fg/bg ({hc_ratio:.2}:1) must exceed dark ({dark_ratio:.2}:1)",
-            );
-            // It should also clear WCAG AAA (7:1) — and in fact hit the 21:1 max
-            // for pure white-on-black.
-            assert!(
-                hc_ratio >= 7.0,
-                "high_contrast must clear WCAG AAA, got {hc_ratio:.2}:1"
-            );
-            assert!(
-                (hc_ratio - 21.0).abs() < 0.01,
-                "white-on-black is the 21:1 maximum"
-            );
-        }
-
-        // Case `high_contrast_uses_a_strong_distinct_focus_ring`.
-        {
-            use crate::a11y::contrast_ratio;
-            let hc = Theme::high_contrast();
-            assert!(
-                contrast_ratio(hc.border_focus, hc.bg_app) >= 7.0,
-                "focus ring must clear AAA against the background",
-            );
-            // Must also differ from the standard border so focus reads as a
-            // distinct state, not just "a border".
-            assert_ne!(
-                (
-                    hc.border_focus.r(),
-                    hc.border_focus.g(),
-                    hc.border_focus.b()
-                ),
-                (
-                    hc.border_standard.r(),
-                    hc.border_standard.g(),
-                    hc.border_standard.b()
-                ),
-            );
+            assert!(Theme::high_contrast().colors_are_forced());
+            assert!(Theme::preset(Preset::HighContrastLight).colors_are_forced());
+            assert!(!Theme::dark().colors_are_forced());
         }
     }
 
     #[test]
-    fn window_card_and_edge_register_against_their_ground() {
-        // Case `window_edge_registers_against_the_desktop_on_every_preset`:
-        // A constant per palette can only be right about a surface someone
-        // checked; the desktop is the one ground that's always knowable,
-        // unlike the app content a window may sit over.
+    fn the_window_edge_and_content_surface_register_against_their_ground() {
+        // phase: window_edge_registers_against_the_desktop_on_every_theme
         {
             use crate::a11y::relative_luminance;
             for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
                 let ground = t.tokens.colors.surfaces.base;
-                let edge = t.window_edge();
-                // What the eye receives where the hairline meets the desktop.
-                let a = f32::from(edge.a()) / 255.0;
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "clamped to [0.0, 255.0] immediately above, so the cast to u8 is exact"
-                )]
-                let ch = |o: u8, g: u8| {
-                    (f32::from(o) * a + f32::from(g) * (1.0 - a))
-                        .round()
-                        .clamp(0.0, 255.0) as u8
-                };
-                let seen = Color::from_rgb8(
-                    ch(edge.r(), ground.r()),
-                    ch(edge.g(), ground.g()),
-                    ch(edge.b(), ground.b()),
-                );
+                let seen = crate::tokens::colors::composite(t.window_edge(), ground);
                 let moved = (relative_luminance(seen) - relative_luminance(ground)).abs();
-                assert!(
-                    moved >= 0.02,
-                    "{}: the window edge composites to within {moved:.4} of the \
-                 desktop it is drawn on — that is not an edge, it is the \
-                 desktop. Edge {:?} on ground {:?}",
-                    t.name,
-                    [edge.r(), edge.g(), edge.b(), edge.a()],
-                    [ground.r(), ground.g(), ground.b()],
-                );
+                assert!(moved >= 0.02, "{}: the window edge is not an edge", t.name);
             }
         }
-
-        // Case `window_edge_flips_a_border_its_ground_would_swallow`:
-        // The derivation has to flip a border that matches its own ground, not
-        // pass it through — without this, the sweep above would be satisfied
-        // by every preset happening to declare a workable border, and the
-        // fallback branch would never be exercised.
+        // phase: window_edge_flips_a_border_its_ground_would_swallow
         {
             let mut t = Theme::dark();
-            // A white hairline on a white desktop — an edge declared without
-            // reference to what it lands on.
             t.tokens.colors.surfaces.base = Color::WHITE;
-            t.tokens.colors.surfaces.window_card_border = Color::from_rgba8(255, 255, 255, 51);
+            t.tokens.colors.surfaces.content_edge = Color::from_rgba8(255, 255, 255, 51);
             let edge = t.window_edge();
-            assert_eq!(
-                [edge.r(), edge.g(), edge.b()],
-                [0, 0, 0],
-                "a white edge on a white desktop must flip to the dark polarity; \
-             got {:?}",
-                [edge.r(), edge.g(), edge.b(), edge.a()],
-            );
-            assert_eq!(
-                edge.a(),
-                51,
-                "flipping the polarity must keep the declared weight — an edge \
-             that changes strength as well as side stops being the same \
-             design decision",
-            );
+            assert_eq!([edge.r(), edge.g(), edge.b(), edge.a()], [0, 0, 0, 51]);
         }
-
-        // Case `on_window_card_repoints_the_three_text_tiers`:
-        // `Theme::on_window_card` is what shared widgets are handed when they
-        // draw onto the card, so its three text tiers have to be the on-card
-        // ink — not the chrome's.
+        // phase: the_content_surface_hosts_the_theme_s_own_ink
         {
             for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-                let on = t.on_card();
-                let card_theme = t.on_window_card();
-                assert_eq!(card_theme.text_primary, on.ink, "{}", t.name);
-                assert_eq!(card_theme.text_dim, on.ink_dim, "{}", t.name);
-                assert_eq!(card_theme.text_tertiary, on.ink_tertiary, "{}", t.name);
-                // Everything else is the ambient theme, untouched.
-                assert_eq!(card_theme.accent_primary, t.accent_primary, "{}", t.name);
-                assert_eq!(card_theme.bg_app, t.bg_app, "{}", t.name);
+                let on = t.on_content();
+                assert_eq!(on.ink, t.text_primary, "{}", t.name);
+                assert_eq!(on.ink_dim, t.text_dim, "{}", t.name);
+                assert_eq!(on.ink_tertiary, t.text_tertiary, "{}", t.name);
+                let r = contrast_ratio(on.tint, t.tokens.colors.surfaces.content);
+                assert!(r < 1.6, "{}: the tint reads as a panel ({r:.2}:1)", t.name);
             }
         }
-
-        // Case `on_card_tint_reads_as_a_tint_not_a_panel`:
-        // The tint is a whisper on the card (a gutter strip, a zebra row), not
-        // a second surface: it must stay far closer to the card than the ink
-        // is, in either direction.
+        // phase: a_region_theme_measures_ink_and_selection_against_its_ground
         {
-            use crate::a11y::contrast_ratio;
+            use crate::surface::Region;
             for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-                let card = t.tokens.colors.surfaces.window_card;
-                let on = t.on_card();
-                let r = contrast_ratio(on.tint, card);
-                assert!(
-                    r < 1.6,
-                    "{} on-card tint is {r:.2}:1 from the card — that reads as a \
-                 panel, not a tint",
-                    t.name
-                );
-            }
-        }
-
-        // Case `window_card_shares_the_ground_s_colour_family`:
-        // The window card and the app ground fill are the same colour family,
-        // so a window whose app painted nothing (like Notes, which shows the
-        // bare card) does not flip light/dark against a window beside it that
-        // fills its own background. `tilo_blue` is excluded deliberately: its
-        // white card is preserved verbatim from the first design.
-        {
-            use crate::a11y::contrast_ratio;
-            for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-                if t.name == "Tilo Blue" {
-                    continue;
+                for region in [Region::Content, Region::Sidebar, Region::Inspector] {
+                    let ground = t.region(region);
+                    let r = t.in_region(region);
+                    let c = &r.tokens.colors;
+                    assert_eq!(c.surfaces.content, ground, "{} {region:?}", t.name);
+                    assert_eq!(r.text_primary, c.text_primary, "{} {region:?}", t.name);
+                    for (tier, ink) in [("primary", r.text_primary), ("secondary", r.text_dim)] {
+                        let ratio = contrast_ratio(ink, ground);
+                        assert!(
+                            ratio >= 4.5,
+                            "{} {region:?}: {tier} ink {ratio:.2}:1",
+                            t.name
+                        );
+                    }
+                    let step = contrast_ratio(c.intent.selection, ground);
+                    assert!(step >= 1.15, "{} {region:?}: lift {step:.3}:1", t.name);
+                    assert_eq!(c.surfaces.raised, t.tokens.colors.surfaces.raised);
+                    assert_eq!(c.intent.inverted, t.tokens.colors.intent.inverted);
                 }
-                let card = t.tokens.colors.surfaces.window_card;
-                let r = contrast_ratio(card, t.bg_app);
-                assert!(
-                    r < 3.0,
-                    "{}: window card is {r:.2}:1 from the app ground — an empty \
-                 window would flip the frame's colour family against a \
-                 window that fills its own background",
+                assert_eq!(
+                    t.in_region(Region::Content).tokens.colors.intent.selection,
+                    t.tokens.colors.intent.selection,
+                    "{}: the content region is the theme itself",
                     t.name
                 );
             }
+        }
+    }
+
+    /// A control's face stands off every ground it is placed on the way it
+    /// stands off the window: on a floating panel lighter than the raised
+    /// tier, a secondary button or a field does not sink into the panel.
+    #[test]
+    fn a_raised_face_stands_off_every_ground() {
+        use crate::color::Oklch;
+        let l = |c: Color| Oklch::from_color(c).l;
+        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            let colors = &t.tokens.colors;
+            let step = l(colors.surfaces.raised) - l(colors.surfaces.content);
+            if step.abs() <= f32::EPSILON {
+                continue;
+            }
+            let panel = crate::chrome::panel_ground(&t);
+            for ground in [
+                colors.surfaces.content,
+                colors.surfaces.sidebar,
+                colors.surfaces.inspector,
+                panel,
+            ] {
+                let raised = t.on_ground(ground).tokens.colors.surfaces.raised;
+                let off = (l(raised) - l(ground)).abs();
+                assert!(
+                    off + 1e-4 >= step.abs() / 2.0,
+                    "{}: a face on {ground:?} stands {off:.3} off it (step {step:.3})",
+                    t.name
+                );
+            }
+            // The window's regions keep the raised tier itself.
+            assert_eq!(
+                t.in_region(crate::surface::Region::Sidebar)
+                    .tokens
+                    .colors
+                    .surfaces
+                    .raised,
+                colors.surfaces.raised,
+                "{}",
+                t.name
+            );
+        }
+    }
+
+    #[test]
+    fn temperature_and_your_colour_are_theme_builders() {
+        // phase: a_tinted_palette_takes_the_workspace_hue
+        {
+            let warm = Theme::light().with_neutral_hue(60.0);
+            let h = Oklch::from_color(warm.tokens.colors.surfaces.sidebar).h;
+            assert!((h - 60.0).abs() <= 25.0, "sidebar hue {h:.0}");
+            assert_eq!(
+                warm.region(crate::surface::Region::Content),
+                warm.tokens.colors.surfaces.content
+            );
+            assert_eq!(warm.text_dim, warm.tokens.colors.text_dim);
+            assert_eq!(warm.name, "Light");
+            assert_eq!(warm.document.palette.hue, Some(60.0));
+            let same = Theme::light().with_neutral_hue(f32::NAN);
+            assert_eq!(
+                same.tokens.colors.surfaces.content,
+                Theme::light().tokens.colors.surfaces.content,
+                "a NaN hue is ignored"
+            );
+        }
+        // phase: the_neutral_default_shows_no_temperature
+        {
+            let dark = Theme::dark().with_neutral_hue(60.0);
+            assert_eq!(
+                dark.tokens.colors.surfaces.base,
+                Theme::dark().tokens.colors.surfaces.base
+            );
+            assert_eq!(
+                dark.tokens.colors.surfaces.content,
+                Theme::dark().tokens.colors.surfaces.content
+            );
+        }
+        // phase: your_colour_is_the_focus_ring_and_survives_every_track
+        {
+            let mine = Theme::dark().with_your_colour(PresenceHue::Magenta);
+            let you = mine.tokens.colors.intent.you;
+            assert_eq!(mine.border_focus, you);
+            assert_ne!(you, Theme::dark().tokens.colors.intent.you);
+            let warm = mine.clone().with_neutral_hue(40.0);
+            assert_eq!(warm.tokens.colors.you, PresenceHue::Magenta);
+            let hc = mine.with_a11y(
+                &crate::a11y::A11ySettings {
+                    high_contrast: true,
+                    ..Default::default()
+                },
+                1.0,
+                1.0,
+            );
+            assert_eq!(hc.tokens.colors.you, PresenceHue::Magenta);
+            let hue = |c: Color| Oklch::from_color(c).h;
+            let d = (hue(hc.border_focus) - hue(you)).rem_euclid(360.0);
+            assert!(d.min(360.0 - d) < 5.0, "high contrast keeps your hue");
+        }
+        // phase: a_wallpaper_gives_its_hue_and_a_grey_one_none
+        {
+            let orange: Vec<u8> = [0xE0, 0x80, 0x30, 0xFF].repeat(64);
+            let hue = workspace_hue(&orange).expect("an orange wallpaper has a hue");
+            let want = Oklch::from_color(Color::from_rgb8(0xE0, 0x80, 0x30)).h;
+            assert!((hue - want).abs() < 6.0, "{hue} vs {want}");
+            let grey: Vec<u8> = [0x80, 0x80, 0x80, 0xFF].repeat(64);
+            assert_eq!(workspace_hue(&grey), None);
+            assert_eq!(workspace_hue(&[]), None);
+        }
+        // phase: light_without_a_workspace_is_pure_neutral_in_every_region
+        {
+            let light = Theme::light();
+            for region in [
+                crate::surface::Region::Content,
+                crate::surface::Region::Sidebar,
+                crate::surface::Region::Inspector,
+            ] {
+                let ground = light.region(region);
+                assert!(
+                    ground.r() == ground.g() && ground.g() == ground.b(),
+                    "{region:?} has no cast: {:?}",
+                    [ground.r(), ground.g(), ground.b()]
+                );
+            }
+            let base = light.tokens.colors.surfaces.base;
+            assert!(base.r() == base.g() && base.g() == base.b());
         }
     }
 
@@ -1393,84 +1018,43 @@ mod tests {
         // Case `text_scale_multiplies_every_type_size`.
         {
             let base = Theme::dark();
-            let base_sm = base.tokens.typography.scale.sm;
-            let base_base = base.tokens.typography.scale.base;
-            let base_x4l = base.tokens.typography.scale.x4l;
-            let base_font = base.tokens.font_size_base;
-
             let scaled = Theme::dark().with_text_scale(1.5);
             assert_eq!(scaled.text_scale, 1.5);
-            assert!((scaled.tokens.typography.scale.sm - base_sm * 1.5).abs() < 1e-4);
-            assert!((scaled.tokens.typography.scale.base - base_base * 1.5).abs() < 1e-4);
-            assert!((scaled.tokens.typography.scale.x4l - base_x4l * 1.5).abs() < 1e-4);
-            assert!((scaled.tokens.font_size_base - base_font * 1.5).abs() < 1e-4);
-        }
-
-        // Case `text_scale_of_one_is_identity`.
-        {
-            let base = Theme::dark();
-            let same = Theme::dark().with_text_scale(1.0);
-            assert_eq!(same.text_scale, 1.0);
-            assert_eq!(
-                same.tokens.typography.scale.base,
-                base.tokens.typography.scale.base
-            );
+            for role in crate::tokens::TextRole::ALL {
+                assert!((scaled.text(role).size - base.text(role).size * 1.5).abs() < 1e-4);
+            }
         }
 
         // Case `text_scale_is_clamped_to_a_sane_range`.
         {
-            let tiny = Theme::dark().with_text_scale(0.0);
-            assert!(tiny.text_scale >= 0.5);
-            let huge = Theme::dark().with_text_scale(100.0);
-            assert!(huge.text_scale <= 4.0);
+            assert!(Theme::dark().with_text_scale(0.0).text_scale >= 0.5);
+            assert!(Theme::dark().with_text_scale(100.0).text_scale <= 4.0);
         }
 
         // Case `ui_scale_multiplies_spacing_radii_and_type_together`.
         {
             let base = Theme::dark();
             let bs = base.tokens.spacing.s3;
-            let br = base.tokens.radii.md;
-            let bt = base.tokens.typography.scale.base;
-            let bfull = base.tokens.radii.full;
+            let r = base.tokens.radii.clone();
+            let bt = base.text(crate::tokens::TextRole::Body).size;
 
             let scaled = Theme::dark().with_ui_scale(1.5);
             assert_eq!(scaled.ui_scale, 1.5);
-            assert!(
-                (scaled.tokens.spacing.s3 - bs * 1.5).abs() < 1e-4,
-                "spacing grows"
-            );
-            assert!(
-                (scaled.tokens.radii.md - br * 1.5).abs() < 1e-4,
-                "radii grow"
-            );
-            assert!(
-                (scaled.tokens.typography.scale.base - bt * 1.5).abs() < 1e-4,
-                "type grows"
-            );
-            assert_eq!(
-                scaled.tokens.radii.full, bfull,
-                "radii.full is a sentinel, not scaled"
-            );
-            assert!(
-                (scaled.padding_standard - bs * 1.5).abs() < 1e-4,
-                "padding shortcut tracks spacing"
-            );
-            assert!(
-                (scaled.radius_standard - f64::from(br) * 1.5).abs() < 1e-4,
-                "radius shortcut tracks radii"
-            );
-        }
-
-        // Case `ui_scale_of_one_is_identity`.
-        {
-            let base = Theme::dark();
-            let same = Theme::dark().with_ui_scale(1.0);
-            assert_eq!(same.ui_scale, 1.0);
-            assert_eq!(same.tokens.spacing.s3, base.tokens.spacing.s3);
-            assert_eq!(
-                same.tokens.typography.scale.base,
-                base.tokens.typography.scale.base
-            );
+            assert!((scaled.tokens.spacing.s3 - bs * 1.5).abs() < 1e-4);
+            let s = &scaled.tokens.radii;
+            for (name, got, want) in [
+                ("tile", s.tile, r.tile),
+                ("panel", s.panel, r.panel),
+                ("control", s.control, r.control),
+                ("item", s.item, r.item),
+                ("detail", s.detail, r.detail),
+            ] {
+                assert!((got - want * 1.5).abs() < 1e-4, "{name} grows");
+            }
+            assert_eq!(s.full, r.full, "radii.full is a sentinel, not scaled");
+            assert!((scaled.text(crate::tokens::TextRole::Body).size - bt * 1.5).abs() < 1e-4);
+            assert!((scaled.padding_standard - bs * 1.5).abs() < 1e-4);
+            assert!((scaled.radius_standard - f64::from(r.control) * 1.5).abs() < 1e-4);
         }
 
         // Case `ui_scale_is_clamped_to_a_sane_range`.
@@ -1481,51 +1065,24 @@ mod tests {
 
         // Case `ui_scale_and_text_scale_compose_on_type`.
         {
-            // A heading ends up at base × ui × text; spacing only picks up ui.
             let base = Theme::dark();
-            let base_type = base.tokens.typography.scale.base;
+            let base_type = base.text(crate::tokens::TextRole::Body).size;
             let base_gap = base.tokens.spacing.s3;
-
             let composed = Theme::dark().with_ui_scale(1.25).with_text_scale(1.2);
-            assert_eq!(composed.ui_scale, 1.25);
-            assert_eq!(composed.text_scale, 1.2);
             assert!(
-                (composed.tokens.typography.scale.base - base_type * 1.25 * 1.2).abs() < 1e-3,
-                "type = base × ui × text",
+                (composed.text(crate::tokens::TextRole::Body).size - base_type * 1.25 * 1.2).abs()
+                    < 1e-3
             );
-            assert!(
-                (composed.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-3,
-                "spacing only picks up the UI factor, not text",
-            );
+            assert!((composed.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-3);
         }
 
-        // Case `responsive_scale_is_ui_scale_times_text_growth_and_never_shrinks`:
-        // HIG §9.6: the one factor the responsive shells apply to an authored,
-        // text-sized breakpoint or width — `ui_scale × text_scale.max(1.0)`.
+        // Case `responsive_scale_is_ui_scale_times_text_growth_and_never_shrinks`.
         {
             assert_eq!(Theme::dark().responsive_scale(), 1.0);
-            assert_eq!(Theme::dark().text_growth(), 1.0);
             assert_eq!(Theme::dark().with_text_scale(2.0).responsive_scale(), 2.0);
-            assert_eq!(
-                Theme::dark().with_text_scale(0.75).responsive_scale(),
-                1.0,
-                "smaller text never shrinks a pane below its authored geometry"
-            );
+            assert_eq!(Theme::dark().with_text_scale(0.75).responsive_scale(), 1.0);
             assert_eq!(Theme::dark().with_ui_scale(1.5).responsive_scale(), 1.5);
-            assert!(
-                (Theme::dark()
-                    .with_ui_scale(1.5)
-                    .with_text_scale(2.0)
-                    .responsive_scale()
-                    - 3.0)
-                    .abs()
-                    < 1e-9,
-                "ui and text growth compose"
-            );
-            assert!(
-                (Theme::dark().with_ui_scale(0.5).responsive_scale() - 0.5).abs() < 1e-9,
-                "ui_scale is a density knob and does go below 1"
-            );
+            assert!((Theme::dark().with_ui_scale(0.5).responsive_scale() - 0.5).abs() < 1e-9);
         }
     }
 
@@ -1535,7 +1092,6 @@ mod tests {
         {
             assert!(!Theme::dark().reduce_motion, "default is motion on");
             assert!(Theme::dark().with_reduce_motion(true).reduce_motion);
-            assert!(!Theme::dark().with_reduce_motion(false).reduce_motion);
         }
 
         // Case `configured_theme_honours_the_host_reduce_motion_input`.
@@ -1544,211 +1100,118 @@ mod tests {
             assert!(!Theme::configured_from_text("", false).reduce_motion);
         }
 
-        // Case `with_a11y_picks_high_contrast_track_and_folds_in_scale_and_motion`.
+        // Case `with_a11y_picks_the_high_contrast_of_the_theme_s_polarity`.
         {
-            use crate::a11y::{A11ySettings, contrast_ratio};
+            use crate::a11y::A11ySettings;
             let settings = A11ySettings {
                 high_contrast: true,
                 reduce_motion: true,
                 screen_reader: false,
             };
             let theme = Theme::dark().with_a11y(&settings, 2.0, 1.0);
-            assert_eq!(theme.name, "High Contrast");
-            assert!(contrast_ratio(theme.text_primary, theme.bg_app) >= 7.0);
+            assert_eq!(theme.name, "High contrast");
+            assert!(
+                contrast_ratio(theme.text_primary, theme.tokens.colors.surfaces.content) >= 7.0
+            );
             assert!(theme.reduce_motion);
             assert_eq!(theme.text_scale, 2.0);
-            let base_sm = Theme::high_contrast().tokens.typography.scale.sm;
-            assert!((theme.tokens.typography.scale.sm - base_sm * 2.0).abs() < 1e-4);
+            let light = Theme::light().with_a11y(&settings, 1.0, 1.0);
+            assert_eq!(light.name, "High contrast light");
+            assert!(light.colors_are_forced());
+            assert!(contrast_ratio(light.text_dim, light.tokens.colors.surfaces.content) >= 7.0);
         }
 
         // Case `with_a11y_all_off_keeps_base_colours`.
         {
-            use crate::a11y::A11ySettings;
-            let off = A11ySettings::default();
-            let theme = Theme::dark().with_a11y(&off, 1.0, 1.0);
-            assert_eq!(theme.name, "Dark", "no high contrast → keep the base theme");
+            let off = crate::a11y::A11ySettings::default();
+            let theme = Theme::light().with_a11y(&off, 1.0, 1.0);
+            assert_eq!(theme.name, "Light");
             assert!(!theme.reduce_motion);
-            assert_eq!(theme.text_scale, 1.0);
-            assert_eq!(theme.ui_scale, 1.0);
         }
     }
 
     #[test]
-    fn custom_theme_materializes_exactly_and_rescales_within_band() {
-        // Case `settings_json_materializes_the_exact_custom_theme`.
+    fn a_document_sets_every_role_it_names() {
+        // Case `settings_json_materializes_a_custom_theme`.
         {
-            let spec = CustomThemeSpec {
-                schema_version: CUSTOM_THEME_SCHEMA_VERSION,
-                id: "quiet-ocean".into(),
-                name: "Quiet Ocean".into(),
-                dark_base: true,
-                accent: [12, 120, 220],
-                accent_hover: [8, 96, 190],
-                surface_base: [9, 18, 30],
-                surface_raised: [18, 32, 48],
-                text_primary: [238, 244, 250],
-                text_dim: [170, 184, 199],
-                border: [48, 68, 88],
-                success: [50, 190, 110],
-                warning: [230, 170, 50],
-                danger: [225, 75, 80],
-                info: [70, 165, 230],
-                radius_px: 13.0,
-                spacing_px: 17.0,
-                font: "Inter".into(),
-            };
+            let doc = quiet_ocean(1.25);
             let json = serde_json::json!({
                 "appearance": {
-                    "theme": "custom:quiet-ocean",
-                    "custom_theme": spec,
+                    "mode": "dark",
+                    "dark_theme": "custom:quiet-ocean",
+                    "custom_themes": [doc],
                 }
             });
             let theme = Theme::from_settings_json(&json.to_string()).unwrap();
-            assert_eq!(theme.name, "Quiet Ocean");
-            assert_eq!(rgb(theme.accent_primary), [12, 120, 220]);
-            assert_eq!(theme.tokens.radii.md, 13.0);
-            assert_eq!(theme.tokens.spacing.s3, 17.0);
+            assert_eq!(theme.name, "Quiet ocean");
+            assert_eq!(theme.document.palette.hue, Some(220.0));
+            assert!(theme.document.palette.dark);
+            assert!((theme.tokens.spacing.s3 - 15.0).abs() < 1e-4);
             assert_eq!(theme.tokens.typography.sans_family, "Inter");
+            assert_eq!(theme.tokens.radii, crate::tokens::Radii::default());
+            assert!(crate::tokens::contrast::audit(&theme.tokens.colors).is_empty());
         }
 
-        // Case `custom_theme_spacing_rescales_the_whole_scale_proportionally`:
-        // A custom theme's `spacing_px` is the `s3` step; every other step
-        // follows in the stock 1:2:3:4:6:8:12:16 proportion, so the scale is a
-        // scale and not three rewritten fields with the rest left at 12 px
-        // defaults.
+        // Case `density_rescales_the_whole_scale_and_clamps`.
         {
-            let theme = Theme::from_custom_spec(&quiet_ocean(8.0, 17.0)).unwrap();
+            let theme = Theme::from_document(&quiet_ocean(1.25)).unwrap();
             let s = theme.tokens.spacing;
-            let unit = 17.0 / 3.0;
-            for (name, value, steps) in [
-                ("s0", s.s0, 0.0),
-                ("s1", s.s1, 1.0),
-                ("s2", s.s2, 2.0),
-                ("s3", s.s3, 3.0),
-                ("s4", s.s4, 4.0),
-                ("s6", s.s6, 6.0),
-                ("s8", s.s8, 8.0),
-                ("s12", s.s12, 12.0),
-                ("s16", s.s16, 16.0),
-            ] {
-                assert!(
-                    (value - unit * steps).abs() < 1e-3,
-                    "{name} = {value}, expected {} (17 px is the s3 step)",
-                    unit * steps
-                );
+            for (value, steps) in [(s.s1, 1.0), (s.s4, 4.0), (s.s16, 16.0)] {
+                assert!((value - 4.0 * 1.25 * steps).abs() < 1e-3);
             }
-            assert_eq!(theme.padding_standard, 17.0);
-            assert_eq!(theme.gap_standard, 17.0);
-            assert_eq!(
-                theme.tokens.metrics,
-                crate::tokens::Metrics::BASE,
-                "a spacing preference never shrinks a pointer target or panel width"
-            );
+            assert_eq!(theme.tokens.metrics, crate::tokens::Metrics::BASE);
+            let dense = Theme::from_document(&quiet_ocean(0.5)).unwrap();
+            assert!((dense.tokens.spacing.s3 - 12.0 * 0.75).abs() < 1e-4);
+            assert!(Theme::from_document(&quiet_ocean(0.1)).is_none());
         }
 
-        // Case `custom_theme_at_stock_values_reproduces_the_stock_scales`:
-        // The stock values reproduce the stock scales exactly — a custom theme
-        // that only recolours must not quietly round every corner differently.
+        // Case `shape_type_motion_and_material_reach_their_tokens`.
         {
+            let mut doc = quiet_ocean(1.0);
+            doc.shape.window_radius = 28.0;
+            doc.type_.base_size = 16.0;
+            doc.motion.character = 0.0;
+            doc.material = ThemeMaterial {
+                blur: 40.0,
+                tint_opacity: 0.9,
+            };
+            doc.emphasis = Emphasis::Tinted { hue: 150.0 };
+            let theme = Theme::from_document(&doc).unwrap();
             let stock = Theme::dark();
-            let theme = Theme::from_custom_spec(&quiet_ocean(
-                stock.tokens.radii.md,
-                stock.tokens.spacing.s3,
-            ))
-            .unwrap();
-            assert_eq!(theme.tokens.spacing, stock.tokens.spacing);
-            assert_eq!(theme.tokens.radii.sm, stock.tokens.radii.sm);
-            assert_eq!(theme.tokens.radii.md, stock.tokens.radii.md);
-            assert_eq!(theme.tokens.radii.lg, stock.tokens.radii.lg);
-            assert_eq!(
-                theme.tokens.radii.xl, stock.tokens.radii.xl,
-                "the window card's xl corner is the stock 24, not 8 × 2.4 = 19.2"
-            );
-            assert_eq!(theme.tokens.radii.full, stock.tokens.radii.full);
-        }
-
-        // Case `custom_theme_spacing_is_built_inside_the_usable_band`:
-        // The schema still admits 2..=64 px (a file written by an older build
-        // opens), but the scale is built inside the usable band: 2 px would put
-        // `s1` under a pixel and 64 px `s6` at 128.
-        {
-            let too_dense = quiet_ocean(8.0, 2.0);
-            let too_loose = quiet_ocean(8.0, 64.0);
+            assert!((theme.tokens.radii.tile - 28.0).abs() < 1e-4);
+            assert!((theme.tokens.radii.control - 16.0).abs() < 1e-4);
             assert!(
-                too_dense.validate().is_ok(),
-                "the schema contract is unchanged"
+                (theme.tokens.typography.size(crate::tokens::TextRole::Body) - 16.0).abs() < 1e-4
             );
-            assert!(too_loose.validate().is_ok());
-            let dense = Theme::from_custom_spec(&too_dense).unwrap();
-            let loose = Theme::from_custom_spec(&too_loose).unwrap();
-            assert_eq!(dense.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MIN);
             assert_eq!(
-                dense.tokens.spacing.s1,
-                CustomThemeSpec::SPACING_PX_MIN / 3.0
+                theme.tokens.motion.springs.snappy.stiffness,
+                stock.tokens.motion.springs.subtle.stiffness
             );
-            assert_eq!(loose.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MAX);
-            assert_eq!(loose.padding_standard, CustomThemeSpec::SPACING_PX_MAX);
-            let inside = Theme::from_custom_spec(&quiet_ocean(8.0, 17.0)).unwrap();
-            assert_eq!(
-                inside.tokens.spacing.s3, 17.0,
-                "a value inside the band is untouched"
-            );
-            assert!(
-                Theme::from_custom_spec(&quiet_ocean(8.0, 1.0)).is_none(),
-                "below the schema minimum is still rejected, not clamped"
-            );
+            assert!((theme.tokens.colors.surfaces.material_blur_px - 40.0).abs() < 1e-4);
+            assert_eq!(theme.tokens.colors.surfaces.material.a(), 230);
+            let fill = Oklch::from_color(theme.tokens.colors.intent.inverted);
+            assert!((fill.h - 150.0).abs() < 6.0 && fill.c > 0.08);
         }
 
-        // Case `custom_theme_radius_rescales_the_whole_scale_proportionally`:
-        // `radius_px` is the `md` step; the others follow 1:2:3:6.
+        // Case `a_document_of_another_schema_or_a_missing_id_applies_nothing`.
         {
-            let theme = Theme::from_custom_spec(&quiet_ocean(13.0, 12.0)).unwrap();
-            let r = theme.tokens.radii;
-            assert!((r.sm - 6.5).abs() < 1e-4);
-            assert_eq!(r.md, 13.0);
-            assert!((r.lg - 19.5).abs() < 1e-4);
-            assert!((r.xl - 39.0).abs() < 1e-4);
-            assert_eq!(
-                r.full,
-                Radii::default().full,
-                "full stays the pill sentinel"
-            );
-        }
-
-        // Case `custom_theme_id_mismatch_is_rejected`.
-        {
-            let json = r#"{"appearance":{"theme":"custom:wanted","custom_theme":{"schema_version":1,"id":"other","name":"Other","dark_base":true,"accent":[1,2,3],"accent_hover":[1,2,3],"surface_base":[1,2,3],"surface_raised":[1,2,3],"text_primary":[1,2,3],"text_dim":[1,2,3],"border":[1,2,3],"success":[1,2,3],"warning":[1,2,3],"danger":[1,2,3],"info":[1,2,3],"radius_px":8.0,"spacing_px":8.0,"font":"Inter"}}}"#;
-            assert!(Theme::from_settings_json(json).is_none());
-        }
-    }
-
-    fn quiet_ocean(radius_px: f32, spacing_px: f32) -> CustomThemeSpec {
-        CustomThemeSpec {
-            schema_version: CUSTOM_THEME_SCHEMA_VERSION,
-            id: "quiet-ocean".into(),
-            name: "Quiet Ocean".into(),
-            dark_base: true,
-            accent: [12, 120, 220],
-            accent_hover: [8, 96, 190],
-            surface_base: [9, 18, 30],
-            surface_raised: [18, 32, 48],
-            text_primary: [238, 244, 250],
-            text_dim: [170, 184, 199],
-            border: [48, 68, 88],
-            success: [50, 190, 110],
-            warning: [230, 170, 50],
-            danger: [225, 75, 80],
-            info: [70, 165, 230],
-            radius_px,
-            spacing_px,
-            font: "Inter".into(),
+            let mut old = quiet_ocean(1.0);
+            old.schema_version = 4;
+            assert!(Theme::from_document(&old).is_none());
+            let json = serde_json::json!({
+                "appearance": { "dark_theme": "custom:wanted", "custom_themes": [quiet_ocean(1.0)] }
+            });
+            assert!(Theme::from_settings_json(&json.to_string()).is_none());
+            let legacy =
+                r#"{"appearance":{"theme":"custom:x","custom_theme":{"schema_version":4}}}"#;
+            assert!(Theme::from_settings_json(legacy).is_none());
         }
     }
 
     #[test]
-    fn the_automatic_theme_is_light_by_day_and_dark_by_night() {
+    fn the_automatic_mode_is_light_by_day_and_dark_by_night() {
         use settings_store::day_schedule::LocalMoment;
-        let json = r#"{"appearance":{"theme":"Automatic","schedule":"custom","sunrise":"07:00","sunset":"19:00"}}"#;
+        let json = r#"{"appearance":{"mode":"automatic","dark_theme":"dark-soft","schedule":"custom","sunrise":"07:00","sunset":"19:00"}}"#;
         let at = |minute_of_day| LocalMoment {
             day_of_year: 100,
             minute_of_day,
@@ -1764,7 +1227,7 @@ mod tests {
             Theme::from_settings_json_at(json, at(22 * 60))
                 .unwrap()
                 .name,
-            Theme::dark().name
+            "Dark soft"
         );
     }
 }
@@ -1781,7 +1244,7 @@ mod configured_theme {
             let settings = dir.path().join("settings.json");
             std::fs::write(
                 &settings,
-                r#"{"version":1,"appearance":{"theme":"high-contrast"}}"#,
+                r#"{"version":1,"appearance":{"dark_theme":"high-contrast"}}"#,
             )
             .expect("write settings");
 
@@ -1794,22 +1257,35 @@ mod configured_theme {
             // The accessibility switch, whatever theme is chosen beside it.
             std::fs::write(
                 &settings,
-                r#"{"appearance":{"theme":"Light","high_contrast":true}}"#,
+                r#"{"appearance":{"mode":"light","high_contrast":true}}"#,
             )
             .expect("write settings");
             assert_eq!(
                 Theme::configured_from(Some(&settings)).name,
-                Theme::high_contrast().name,
+                "High contrast light",
                 "appearance.high_contrast must reach the shell's chrome",
             );
             std::fs::write(
                 &settings,
-                r#"{"appearance":{"theme":"Light","high_contrast":false}}"#,
+                r#"{"appearance":{"mode":"light","high_contrast":false}}"#,
             )
             .expect("write settings");
             assert_eq!(
                 Theme::configured_from(Some(&settings)).name,
                 Theme::light().name
+            );
+        }
+
+        // Case `the_configured_theme_does_not_read_the_identity`: the
+        // person's colour reaches a window through its host
+        // (`Theme::in_window`), never through the theme.
+        {
+            let dir = tempfile::tempdir().expect("temp config dir");
+            let settings = dir.path().join("settings.json");
+            std::fs::write(&settings, r#"{"identity":{"colour":"teal"}}"#).expect("write");
+            assert_eq!(
+                Theme::configured_from(Some(&settings)).tokens.colors.you,
+                Theme::dark().tokens.colors.you
             );
         }
 

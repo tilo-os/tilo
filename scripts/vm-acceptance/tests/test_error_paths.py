@@ -27,7 +27,15 @@ class ErrorPaths(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.out = Path(self.tmp.name)
-        self.ctx = SimpleNamespace(out=self.out, facts={}, config={}, vm=Mock())
+        self.ctx = SimpleNamespace(out=self.out, facts={}, config={}, vm=Mock(),
+                                   state=Mock(return_value={"chrome": {}}), shot=Mock(),
+                                   write=Mock(), record=Mock())
+        self.ctx.vm.slot = "acceptance"
+        self.ctx.vm.requested_restarts = 0
+        self.ctx.vm.root_exec.return_value = "NRestarts=0\n"
+        self.addCleanup(patch.stopall)
+        patch.object(core, "terminal_shells", return_value=set()).start()
+        patch.object(core, "wait_new_terminal_shell", return_value=0).start()
 
     def run_check(self, func):
         chk = next(c for c in core.REGISTRY if c.func is func)
@@ -181,29 +189,70 @@ class ErrorPaths(unittest.TestCase):
         memory.assert_not_called()
 
     def test_partial_workload_fact_does_not_bypass_launches(self):
-        self.ctx.facts["apps_open_for_memory"] = [resources.MEMORY_APPS[0]]
+        self.ctx.facts["apps_open_for_memory"] = [resources.FOUR_APPS[0]]
         self.ctx.reset = Mock()
         self.ctx.open_app = Mock(side_effect=core.CheckFailed("launch failed"))
-        result = self.run_check(resources.mem)
+        with patch.object(resources.time, "sleep"):
+            result = self.run_check(resources.mem)
         self.assertEqual(result.status, "fail")
         self.assertIn("launch failed", result.detail)
         self.ctx.reset.assert_called_once()
 
+    def test_closed_app_cannot_be_measured_as_a_complete_workload(self):
+        self.ctx.reset = Mock()
+        self.ctx.open_app = Mock(side_effect=[({"id": i}, {}) for i in range(4)])
+        self.ctx.vm.exec.return_value = "app exited\n"
+        with (patch.object(resources.time, "sleep"),
+              patch.object(core, "group_by_id", side_effect=[None, {"id": 1}, {"id": 2}, {"id": 3}]),
+              patch.object(resources, "memory") as memory):
+            result = self.run_check(resources.mem)
+        self.assertEqual(result.status, "fail")
+        self.assertTrue(result.unobservable)
+        self.assertIn("closed on its own", result.detail)
+        self.assertEqual(self.ctx.facts["apps_closed_after_open"], [resources.FOUR_APPS[0]])
+        memory.assert_not_called()
+        self.ctx.write.assert_called_once()
+
+    def test_custom_workload_keeps_the_current_opener_api(self):
+        self.ctx.reset = Mock()
+        self.ctx.open_app = Mock(return_value=({"id": 1}, {}))
+        apps = ("so.tilo.notes",)
+        with (patch.object(resources.time, "sleep"),
+              patch.object(core, "group_by_id", return_value={"id": 1})):
+            opened = resources._open_several(self.ctx, apps, "R09")
+        self.assertEqual(opened, list(apps))
+        self.ctx.open_app.assert_called_once_with(apps[0])
+
     def configure_memory(self):
         self.ctx.write = Mock()
-        self.ctx.config["budgets"] = {"shell_pss_mb": 700, "process_pss_mb": 300, "session_pss_mb": 2500}
-        return {"procs": [{"comm": "shell", "pss_mb": 20}], "pss_available": True,
-                "pss_mb_total": 20, "rss_mb_total": 30, "anon_rss_mb_total": 10, "guest_mem_mb": {}}
+        self.ctx.config["budgets"] = {"shell_anon_mb": 700, "process_anon_mb": 300,
+                                      "session_memory_mb": 2500, "app_memory_mb": 300, "app_anon_mb": 200}
+        return {"procs": [{"comm": "shell", "anon_rss_mb": 10}],
+                "shell": {"pid": 1, "anon_rss_mb": 10}, "session_memory_mb": 30,
+                "apps": {app: {"pids": [i + 2], "shared_with": {}, "memory_mb": 5, "anon_mb": 2}
+                         for i, app in enumerate(resources.FOUR_APPS)}, "guest_mem_mb": {}}
 
     def test_complete_memory_workload_can_pass(self):
         self.ctx.reset = Mock()
-        self.ctx.open_app = Mock()
+        self.ctx.open_app = Mock(side_effect=[({"id": i}, {}) for i in range(4)])
         sample = self.configure_memory()
-        with patch.object(resources.time, "sleep"), patch.object(resources, "memory", return_value=sample):
+        after = {"guest": {"used_mib": 30, **{f"{k}_mib": 1 for k in
+                  ("anon", "shmem", "kernel", "reserve", "untracked")}},
+                 "vm_only_mib": 0, "buckets": {}, "unattributed_mib": 0, "processes": []}
+        with (patch.object(resources.time, "sleep"),
+              patch.object(resources, "memory", return_value=sample) as memory,
+              patch.object(core, "group_by_id", return_value={"id": 1}),
+              patch.object(core, "shell_memory", return_value={"shm_by_name": {}}),
+              patch.object(resources, "_footprint_after_close", return_value=after),
+              patch.object(resources, "write_footprint"),
+              patch.object(resources, "shell_memory_map", return_value={}),
+              patch.object(resources, "record_shell_parts"),
+              patch.object(resources, "record_disk", return_value={})):
             result = self.run_check(resources.mem)
+        memory.assert_called_once_with(self.ctx, list(resources.FOUR_APPS))
         self.assertEqual(result.status, "pass", result.detail)
         self.assertEqual(self.ctx.open_app.call_count, 4)
-        self.assertEqual(self.ctx.facts["apps_open_for_memory"], list(resources.MEMORY_APPS))
+        self.assertEqual(self.ctx.facts["apps_open_for_memory"], list(resources.FOUR_APPS))
 
 
 if __name__ == "__main__":

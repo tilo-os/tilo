@@ -5,42 +5,42 @@
 //! real [`ui::widget::VideoPlayer`] laid out by the app; everything here is the
 //! chrome around it.
 //!
+//! Tiles are media: an empty viewfinder is the media letterbox, and chrome
+//! over a tile (a name, a status) stands on the floating material. Controls
+//! are the toolkit's buttons and chips.
+//!
 //! Screen-share honesty: the featured tile shows a peer's real decoded screen
 //! frame when one has arrived (`remote_screens`) and an honest "connecting"
-//! placeholder — a drawn monitor, never a fabricated picture — until then.
+//! placeholder — never a fabricated picture — until then.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::peniko::{BlendMode, Fill};
 
+use ui::floating_surface::{Material, paint_material};
+use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, SegmentedFace, SegmentedStyle, ToggleGroup, Widget};
+use ui::tokens::TextRole;
+use ui::tokens::colors::PresenceHue;
+use ui::widget::{
+    Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ChipStyle, ControlSize, SegmentedFace,
+    SegmentedStyle, ToggleGroup, Tone, Widget,
+};
 
 use crate::app::{ChatApp, Hit};
-use crate::geometry::line_top;
-use crate::model::{self, Presence, VoiceMember};
-use crate::paint::{fill_circle, fill_rect, fill_round, label, stroke_circle, stroke_round, text};
-use crate::render_chat::draw_avatar;
+use crate::model::{self, VoiceMember};
+use crate::paint::{elide, line_in, line_of, push_clip, text, width_of};
 
 /// One person to render in the call, derived from the shared CRDT voice
 /// membership (not hardcoded). The host (this peer) is listed first.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent presentation facets; only native service inventory supplies current remote streams"
-)]
 struct Participant {
     user: String,
-    talking: bool,
     muted: bool,
     audio_only: bool,
     sharing: bool,
-}
-
-fn huddle_lower_chrome_for_reveal(reveal: f32) -> f64 {
-    116.0 + 40.0 * f64::from(reveal.clamp(0.0, 1.0))
 }
 
 /// How the expanded call overlay tiles the surface. A plain call packs every
@@ -57,15 +57,6 @@ pub(crate) enum CallStage {
 /// `(label, active, danger, enabled, hit, rect)`.
 type OverlayButton = (String, bool, bool, bool, Hit, Rect);
 
-/// Label size of an expanded-overlay control button (renderer-relative).
-const CALL_CTL_TEXT: f32 = 13.0;
-/// Authored 1× height of a control button.
-const CALL_CTL_MIN_H: f64 = 32.0;
-/// Title / subtitle sizes of the expanded overlay's header.
-const CALL_TITLE_TEXT: f32 = 20.0;
-const CALL_SUBTITLE_TEXT: f32 = 12.0;
-/// Gap between the controls bar's bottom edge and the window's bottom edge.
-const CALL_BAR_BOTTOM_INSET: f64 = 18.0;
 /// Catalogue keys of every label the controls bar can show, both halves of
 /// each toggle pair included, so the measurement covers a label before the
 /// toggle that reveals it.
@@ -86,79 +77,117 @@ const CALL_CONTROL_KEYS: [&str; 7] = [
 /// the host `VideoPlayer` tile from it and the pointer path hit-tests against
 /// it — so the measurement happens once per paint, in the `&mut self` pass
 /// that precedes drawing, and is cached here. Before the first paint the
-/// authored 1× rules stand in (`Default`), which is also what the geometry
-/// tests exercise.
+/// theme's unmeasured values stand in (`Default`), which is also what the
+/// geometry tests exercise.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CallOverlayMetrics {
-    /// `(label, width)` for every control the bar may show, the width being
-    /// the label's measured advance plus a pad each side.
+    /// `(label, width)` for every control the bar may show: the button's own
+    /// measured width with its icon.
     pub button_w: Vec<(String, f64)>,
-    /// Height of a control button: its measured line box plus a pad each
-    /// side, never shorter than the 1× button.
+    /// Height of a control button.
     pub button_h: f64,
     /// Gap between buttons and between wrapped rows (`s2`).
     pub gap: f64,
-    /// Inner padding of the controls bar (`s3`).
+    /// Inner padding of the controls bar (`s2`).
     pub inner_pad: f64,
     /// Side inset the wrapped rows must fit inside (`s6`).
     pub side_pad: f64,
-    /// Measured line boxes of the header's title and subtitle.
+    /// Gap between the bar and the window's bottom edge (`s4`).
+    pub bottom_pad: f64,
+    /// Measured line box of the header's title.
     pub title_h: f64,
-    pub subtitle_h: f64,
-    /// Top inset of the title (`s6`) and the gaps under the title (`s1`) and
-    /// under the subtitle (`s2`).
+    /// Space above (`s6`) and below (`s4`) the title.
     pub header_pad_top: f64,
-    pub header_gap: f64,
     pub header_pad_bottom: f64,
-}
-
-impl Default for CallOverlayMetrics {
-    fn default() -> Self {
-        Self {
-            button_w: Vec::new(),
-            button_h: CALL_CTL_MIN_H,
-            gap: 8.0,
-            inner_pad: 12.0,
-            side_pad: 24.0,
-            // 1× line boxes of a 20 px and a 12 px line (size × 1.25).
-            title_h: 25.0,
-            subtitle_h: 15.0,
-            header_pad_top: 24.0,
-            header_gap: 4.0,
-            header_pad_bottom: 8.0,
-        }
-    }
+    /// What an unmeasured label's button adds to the label: its icon, the
+    /// gap after it and the side padding.
+    pub button_chrome_w: f64,
+    /// The size of a control label, for estimating an unmeasured one.
+    pub label_size: f64,
+    /// Gap between participant tiles (`s3`).
+    pub tile_gap: f64,
+    /// The shortest the screen-share filmstrip gets: one tile's disc,
+    /// caption and name plate with the air between them.
+    pub strip_min_h: f64,
 }
 
 impl CallOverlayMetrics {
+    /// The overlay's sizes in `theme` before anything is measured: the
+    /// spacing steps, the control height and the title's line box.
+    pub(crate) fn of(theme: &Theme) -> Self {
+        let sp = &theme.tokens.spacing;
+        let metrics = &theme.tokens.metrics;
+        Self {
+            button_w: Vec::new(),
+            button_h: ButtonFace::height(ControlSize::Regular, theme),
+            gap: f64::from(sp.s2),
+            inner_pad: f64::from(sp.s2),
+            side_pad: f64::from(sp.s6),
+            bottom_pad: f64::from(sp.s4),
+            title_h: f64::from(theme.text(TextRole::Title).line_height_px()),
+            header_pad_top: f64::from(sp.s6),
+            header_pad_bottom: f64::from(sp.s4),
+            button_chrome_w: f64::from(metrics.icon_md)
+                + f64::from(metrics.icon_label_gap)
+                + 2.0 * f64::from(sp.s3),
+            label_size: f64::from(theme.text(TextRole::Label).size),
+            tile_gap: f64::from(sp.s3),
+            strip_min_h: ui::widget::AvatarSize::Regular.side(theme)
+                + f64::from(theme.text(TextRole::Caption).line_height_px())
+                + plate_height(theme)
+                + 4.0 * f64::from(sp.s2),
+        }
+    }
+
     /// Width of the control labelled `label`: its measured width when this
-    /// frame measured it, else the fixed-length estimate the 1× layout used
-    /// (so the geometry tests, which never paint, still resolve).
+    /// frame measured it, else an estimate from the label's length (so the
+    /// geometry tests, which never paint, still resolve).
     fn button_width(&self, label: &str) -> f64 {
         self.button_w
             .iter()
             .find(|(l, _)| l.as_str() == label)
-            .map_or_else(|| overlay_button_width(label), |(_, w)| *w)
+            .map_or_else(|| self.estimated_button_width(label), |(_, w)| *w)
     }
 
-    /// Height of the title + subtitle block above the tile band.
+    /// A measurement-free width for a control: about half an em per
+    /// character of the label, plus the button's icon and padding.
+    fn estimated_button_width(&self, label: &str) -> f64 {
+        label.chars().count() as f64 * self.label_size / 2.0 + self.button_chrome_w
+    }
+
+    /// Height of the title block above the tile band.
     pub(crate) fn header_h(&self) -> f64 {
-        self.header_pad_top
-            + self.title_h
-            + self.header_gap
-            + self.subtitle_h
-            + self.header_pad_bottom
+        self.header_pad_top + self.title_h + self.header_pad_bottom
+    }
+}
+
+impl Default for CallOverlayMetrics {
+    /// The dark theme's sizes at the reference text size, before the first
+    /// paint.
+    fn default() -> Self {
+        Self::of(&Theme::dark())
+    }
+}
+
+/// The icon a call control shows beside its label.
+fn control_icon(hit: &Hit, muted: bool) -> Icon {
+    match hit {
+        Hit::CallMute if muted => Icon::MicOff,
+        Hit::CallMute => Icon::Mic,
+        Hit::CallExpand => Icon::Minimize2,
+        Hit::CallLeave => Icon::PhoneOff,
+        _ => Icon::MoreHorizontal,
     }
 }
 
 impl ChatApp {
-    /// Measure the expanded overlay's controls and header with the styles
+    /// Measure the expanded overlay's controls and header with the faces
     /// they paint with. Called from the `&mut self` paint pass right before
     /// the overlay is drawn, so this frame's layout and hit rects use this
     /// frame's text scale.
     pub(crate) fn measure_call_overlay(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         // The labels and line boxes only change with the text scale or the
-        // catalogue; skip the seven lookups and measures otherwise.
+        // catalogue; skip the lookups and measures otherwise.
         let key = (
             tr.text_scale().to_bits(),
             theme.text_scale.to_bits(),
@@ -168,9 +197,6 @@ impl ChatApp {
             return;
         }
         self.call_overlay_metrics_key = Some(key);
-        let sp = &theme.tokens.spacing;
-        let (_, lh) = tr.measure("Ag", CALL_CTL_TEXT, None);
-        let button_h = (f64::from(lh) + 2.0 * f64::from(sp.s2)).max(CALL_CTL_MIN_H);
         // Every label the bar can show — both halves of each toggle pair —
         // is measured, so a Mute → Unmute flip between paints resolves to a
         // measured width and the hit rects never fall back to the estimate.
@@ -178,23 +204,16 @@ impl ChatApp {
             .iter()
             .map(|key| {
                 let label = crate::i18n::t(key);
-                let (w, _) = tr.measure(&label, CALL_CTL_TEXT, None);
-                (label, f64::from(w) + 2.0 * f64::from(sp.s3))
+                let w = ButtonFace::new(Rect::ZERO, &label)
+                    .icon(Icon::Mic)
+                    .intrinsic_width(tr, theme);
+                (label, w)
             })
             .collect();
-        let (_, title_h) = tr.measure_weighted("Ag", CALL_TITLE_TEXT, None, TextWeight::Bold);
-        let (_, subtitle_h) = tr.measure("Ag", CALL_SUBTITLE_TEXT, None);
         let measured = CallOverlayMetrics {
             button_w,
-            button_h,
-            gap: f64::from(sp.s2),
-            inner_pad: f64::from(sp.s3),
-            side_pad: f64::from(sp.s6),
-            title_h: f64::from(title_h),
-            subtitle_h: f64::from(subtitle_h),
-            header_pad_top: f64::from(sp.s6),
-            header_gap: f64::from(sp.s1),
-            header_pad_bottom: f64::from(sp.s2),
+            title_h: line_of(tr, &theme.text(TextRole::Title)),
+            ..CallOverlayMetrics::of(theme)
         };
         if self.call_overlay_metrics != measured {
             self.call_overlay_metrics = measured;
@@ -213,7 +232,6 @@ impl ChatApp {
         // Host = this peer.
         out.push(Participant {
             user: self.me.id.clone(),
-            talking: false,
             muted: self.call.muted,
             audio_only: self.call.audio_only,
             sharing: self.call.sharing,
@@ -224,7 +242,6 @@ impl ChatApp {
             }
             out.push(Participant {
                 user: m.user.clone(),
-                talking: false,
                 muted: m.muted,
                 audio_only: m.audio_only,
                 sharing: m.sharing,
@@ -243,25 +260,87 @@ impl ChatApp {
     /// Sample the participant reveal once per frame. Every geometry consumer
     /// subsequently reads the cached value, avoiding tiny wall-clock skew
     /// between the soft body, its controls, hit regions and native bounds.
-    pub(crate) fn reconcile_huddle_motion(&mut self, theme: &Theme) {
+    pub(crate) fn reconcile_huddle_motion(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         if !self.call.active {
             self.call_chrome_motion.reset();
+            self.huddle_chip_rows = 0;
             return;
         }
-        let participant_count = self.call_participants().len();
-        let open = self.participants_should_show(participant_count);
+        // The participant strip opens only when there is someone beside you
+        // to show in it.
+        let parts = self.call_participants();
+        let open = parts.len() > 1 && self.participants_should_show(parts.len());
         self.call_chrome_motion.reconcile(open, theme);
         if !self.call.expanded {
-            let lower_chrome = self.huddle_lower_chrome();
+            // The chips wrap inside the video's width; the window grows by
+            // as many rows as they take.
+            let widths: Vec<f64> = parts
+                .iter()
+                .skip(1)
+                .map(|p| {
+                    let name = self.user_name(&p.user);
+                    ChipFace::intrinsic_width(&name, Self::chip_lead(p), false, tr, theme)
+                })
+                .collect();
+            self.huddle_chip_rows = if widths.is_empty() {
+                0
+            } else {
+                let room = self.huddle_video().width();
+                pack_rows(&widths, self.chrome.call_gap, room).len()
+            };
             self.call
                 .placement
-                .set_attached_chrome([12.0, 40.0, 12.0, lower_chrome]);
+                .set_attached_chrome(self.huddle_attached_chrome());
+        }
+    }
+
+    /// The call window's frame around its video, `[left, top, right,
+    /// bottom]`: the title bar above, the inset beside, and the connection
+    /// line, the participant chips (as they reveal) and the controls below.
+    fn huddle_frame(&self) -> [f64; 4] {
+        let c = &self.chrome;
+        let reveal = f64::from(self.call_chrome_motion.sampled.clamp(0.0, 1.0));
+        let chips = self.huddle_chip_rows as f64 * (c.call_chip_h + c.call_gap);
+        let bottom = c.call_gap
+            + c.call_status_h
+            + reveal * chips
+            + c.call_gap
+            + c.call_controls_h
+            + c.call_inset;
+        [c.call_inset, c.call_title_h, c.call_inset, bottom]
+    }
+
+    /// What the attached call window keeps clear around its video: its own
+    /// frame, and the window's header row above it, so the window never
+    /// rests over the header's controls.
+    pub(crate) fn huddle_attached_chrome(&self) -> [f64; 4] {
+        let [left, top, right, bottom] = self.huddle_frame();
+        [left, self.chrome.header_h + top, right, bottom]
+    }
+
+    /// A participant chip's lead: a muted microphone while they are muted.
+    fn chip_lead(p: &Participant) -> ChipLead {
+        if p.muted {
+            ChipLead::Glyph(Icon::MicOff)
+        } else {
+            ChipLead::None
         }
     }
 
     /// The floating overlay's home rect (video) for the current drag offset.
     fn huddle_video(&self) -> Rect {
         self.call_video_rect()
+    }
+
+    /// The tile radius: a window-tile corner on the full stage, a control
+    /// corner inside the small huddle panel.
+    fn tile_radius(&self, theme: &Theme) -> f64 {
+        let radii = &theme.tokens.radii;
+        if self.call.expanded {
+            f64::from(radii.tile)
+        } else {
+            f64::from(radii.control)
+        }
     }
 
     /// Paint an honest "camera off" placeholder over the host tile when the
@@ -280,60 +359,73 @@ impl ChatApp {
         if self.video.latest_frame().is_some() {
             return; // a real capture is feeding the surface
         }
-        let c = &theme.tokens.colors;
         let rect = self.call_video_rect();
-        let radius = if self.call.expanded { 14.0 } else { 10.0 };
-        fill_round(scene, tf, rect, radius, c.neutral[2]);
-        let (initials, cidx) = self
-            .user(&self.me.id)
-            .map_or_else(|| ("Y".into(), 0), |u| (u.initials.clone(), u.color_idx));
-        // The disc's bounds follow the text scale: the shared avatar sizes
-        // its monogram through the renderer (which applies that scale), so a
-        // 1× clamp would leave 200% initials spilling past the disc.
-        let ts = f64::from(theme.text_scale).max(1.0);
-        let r = (rect.height() * 0.20).clamp(22.0 * ts, 52.0 * ts);
-        let cx = rect.center().x;
-        // Disc + caption are one block centred in the band above the name
-        // plate (the same rule the member tiles follow), so the caption never
-        // runs into the plate.
-        let s = "Camera off";
-        let (sw, sh) = tr.measure(s, 12.0, None);
-        let s2 = f64::from(theme.tokens.spacing.s2);
-        let (cy, caption_y) = avatar_caption_block(rect, r, f64::from(sh), plate_height(theme), s2);
-        draw_avatar(
+        self.paint_viewfinder(
             PaintCtx::new(scene, tf, tr, theme),
-            Point::new(cx, cy),
-            r,
-            &initials,
-            cidx,
-            None,
-        );
-        label(
-            scene,
-            tr,
-            tf,
-            s,
-            12.0,
-            c.text_dim,
-            cx - f64::from(sw) / 2.0,
-            caption_y,
+            rect,
+            &self.me.id.clone(),
+            "Camera off",
         );
     }
 
+    /// An empty viewfinder: the letterbox, the person's avatar and what the
+    /// tile honestly shows ("Camera off", "No video") under it, one block
+    /// centred in the band above the name plate.
+    fn paint_viewfinder(&self, paint: PaintCtx<'_>, rect: Rect, user: &str, caption: &str) {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let media = &theme.tokens.colors.media;
+        let radius = self.tile_radius(theme);
+        scene.fill(
+            Fill::NonZero,
+            tf,
+            media.letterbox,
+            None,
+            &RoundedRect::from_rect(rect, radius),
+        );
+        let style = theme.text(TextRole::Caption);
+        let caption_h = line_of(tr, &style);
+        let s2 = f64::from(theme.tokens.spacing.s2);
+        // The disc follows the tile, from a regular avatar up to three.
+        let regular = ui::widget::AvatarSize::Regular.side(theme);
+        let sides = AvatarSides {
+            wanted: (rect.height() * 0.4).clamp(regular, 3.0 * regular),
+            least: ui::widget::AvatarSize::Small.side(theme),
+        };
+        let Some(block) = viewfinder_block(rect, sides, caption_h, plate_height(theme), s2) else {
+            // Too short for even a small disc: the name plate names them.
+            return;
+        };
+        let cx = rect.center().x;
+        let mut ctx = PaintCtx::new(scene, tf, tr, theme);
+        self.paint_avatar(
+            &mut ctx,
+            Rect::from_center_size(Point::new(cx, block.disc_cy), (block.side, block.side)),
+            user,
+        );
+        if let Some(caption_y) = block.caption_y {
+            let w = width_of(ctx.text, caption, &style);
+            text(
+                &mut ctx,
+                caption,
+                &style,
+                media.ink_dim,
+                Point::new(cx - w / 2.0, caption_y),
+                None,
+            );
+        }
+    }
+
+    /// The call window: its video inside its frame. It grows continuously
+    /// with the participant reveal rather than stepping between two heights.
     pub(crate) fn huddle_panel(&self) -> Rect {
         let v = self.huddle_video();
-        // Panel grows continuously with the participant reveal rather than
-        // stepping between two native-window heights.
-        let extra = self.huddle_lower_chrome() - 96.0;
-        Rect::new(v.x0 - 12.0, v.y0 - 40.0, v.x1 + 12.0, v.y1 + 96.0 + extra)
-    }
-
-    pub(crate) fn huddle_attached_lower_chrome(&self) -> f64 {
-        self.huddle_lower_chrome()
-    }
-
-    fn huddle_lower_chrome(&self) -> f64 {
-        huddle_lower_chrome_for_reveal(self.call_chrome_motion.sampled)
+        let [left, top, right, bottom] = self.huddle_frame();
+        Rect::new(v.x0 - left, v.y0 - top, v.x1 + right, v.y1 + bottom)
     }
 
     // --------------------------------------------------------- huddle (PiP)
@@ -345,65 +437,46 @@ impl ChatApp {
         theme: &Theme,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let c = &theme.tokens.colors;
         let panel = self.huddle_panel();
-        // The shadow is the panel's own shape and comes from the elevation
-        // ladder (HIG §9.3): `e1` dies out about 6 px past the outline, inside
-        // the 8 px transparent native-window gutter, so desktop adoption never
-        // clips it. The solid 6 px silhouette it replaces read as a thick grey
-        // ring on the light preset. Body and border share one organic
-        // silhouette so their corner radii cannot drift apart.
-        ui::surface::shadow(
-            scene,
-            tf,
-            panel,
-            f64::from(theme.tokens.radii.xl),
-            &theme.tokens.elevation.e1,
-        );
-        // A floating Panel: the derived panel border (HIG §9.5).
-        let body = ui::surface::soft_outline(panel);
-        scene.fill(Fill::NonZero, tf, c.neutral[1], None, &body);
-        scene.stroke(
-            &Stroke::new(1.0),
-            tf,
-            ui::chrome::panel_border(theme),
-            None,
-            &body,
-        );
+        let local = theme.on_ground(ui::chrome::panel_ground(theme));
+        // A floating Panel: its shadow, material and edge.
+        ui::widget::floating_surface::paint(scene, tf, panel, theme);
 
-        // Title bar doubles as the DRAG HANDLE — grab it to move the overlay.
-        let title_bar = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 30.0);
+        // The title bar doubles as the drag handle.
+        let title_bar = Rect::new(
+            panel.x0,
+            panel.y0,
+            panel.x1,
+            panel.y0 + self.chrome.call_title_h,
+        );
         let name = self
             .channel(&self.call.channel)
             .map_or_else(|| "Call".into(), |c| c.name.clone());
-        ui::surface::floating_drag_grip(scene, tf, panel, c.text_dim);
-        label(
-            scene,
-            tr,
-            tf,
+        ui::surface::floating_drag_grip(scene, tf, panel, local.text_dim);
+        let sp = &theme.tokens.spacing;
+        let n = self.call_participants().len();
+        let count = format!("{n} in call");
+        let count_style = local.text(TextRole::Caption).numeric();
+        let count_w = width_of(tr, &count, &count_style);
+        let inset = f64::from(sp.s4);
+        let mut ctx = PaintCtx::new(scene, tf, tr, &local);
+        line_in(
+            &mut ctx,
+            &count,
+            &count_style,
+            local.text_dim,
+            title_bar.x1 - inset - count_w,
+            title_bar,
+            count_w + 1.0,
+        );
+        line_in(
+            &mut ctx,
             &name,
-            13.0,
-            c.text_primary,
-            panel.x0 + 16.0,
-            panel.y0 + 10.0,
-        );
-        fill_circle(
-            scene,
-            tf,
-            Point::new(panel.x1 - 58.0, panel.y0 + 17.0),
-            3.5,
-            c.semantic.success,
-        );
-        let n = self.voice_in(&self.call.channel).len().max(1);
-        label(
-            scene,
-            tr,
-            tf,
-            &format!("{n}"),
-            11.5,
-            c.text_dim,
-            panel.x1 - 48.0,
-            panel.y0 + 10.0,
+            &local.text(TextRole::Label).strong(),
+            local.text_primary,
+            title_bar.x0 + inset,
+            title_bar,
+            title_bar.width() - 3.0 * inset - count_w,
         );
         ChatApp::push_hit(hits, title_bar, Hit::CallDragHandle);
     }
@@ -416,78 +489,68 @@ impl ChatApp {
         theme: &Theme,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let c = &theme.tokens.colors;
         let panel = self.huddle_panel();
+        let local = theme.on_ground(ui::chrome::panel_ground(theme));
         let v = self.huddle_video();
-        // Active-speaker ring around the host tile when this peer is talking.
-        let host_talking = false;
-        if host_talking {
-            stroke_round(scene, tf, v, 10.0, c.semantic.success, 2.5);
-        } else {
-            stroke_round(
-                scene,
-                tf,
-                v,
-                10.0,
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
-                1.0,
-            );
-        }
-        Self::name_plate(scene, tf, tr, theme, v, "You", self.call.muted);
+        let you = self.user_name(&self.me.id);
+        Self::name_plate(scene, tf, tr, theme, v, &you, self.call.muted);
         if let Some(error) = &self.media_error {
-            label(
-                scene,
-                tr,
-                tf,
+            let style = theme.text(TextRole::Caption);
+            let band = Rect::new(v.x0, v.y0, v.x1, v.y0 + 2.0 * line_of(tr, &style));
+            let inset = f64::from(theme.tokens.spacing.s2);
+            line_in(
+                &mut PaintCtx::new(scene, tf, tr, theme),
                 error,
-                10.0,
-                c.semantic.danger,
-                v.x0 + 10.0,
-                v.y0 + 12.0,
+                &style,
+                theme.tokens.colors.media.ink,
+                v.x0 + inset,
+                band,
+                v.width() - 2.0 * inset,
             );
         }
 
         let parts = self.call_participants();
         let others = parts.len().saturating_sub(1);
-        let strip_y = v.y1 + 10.0;
-        self.draw_huddle_strip_header(
-            PaintCtx::new(scene, tf, tr, theme),
-            panel,
-            strip_y,
-            &parts,
-            hits,
+        let c = &self.chrome;
+        let status = Rect::new(
+            panel.x0 + c.call_inset,
+            v.y1 + c.call_gap,
+            panel.x1 - c.call_inset,
+            v.y1 + c.call_gap + c.call_status_h,
         );
+        self.draw_huddle_strip_header(PaintCtx::new(scene, tf, tr, &local), status, &parts, hits);
 
-        // Adaptive participant chips: shown when expanded, wrapping to the
-        // panel width so the strip auto-adapts to the headcount.
+        // Participant chips, shown when expanded and wrapping to the panel
+        // width so the strip adapts to the headcount.
         let reveal = self.call_chrome_motion.sampled.clamp(0.0, 1.0);
-        if reveal > 0.001 && others > 0 {
+        if reveal > 0.0 && others > 0 {
             // Fade and progressively reveal the chip strip inside the same
             // animated panel bounds. Chips never pop out before the surface
             // has made room for them, and collapse cannot paint through the
             // rising controls row.
+            let controls_top = panel.y1 - c.call_inset - c.call_controls_h;
             let clip = Rect::new(
-                panel.x0 + 8.0,
-                strip_y + 20.0,
-                panel.x1 - 8.0,
-                (panel.y1 - 48.0).max(strip_y + 20.0),
+                panel.x0,
+                status.y1,
+                panel.x1,
+                (controls_top - c.call_gap).max(status.y1),
             );
             let alpha = reveal * reveal * (3.0 - 2.0 * reveal);
             scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, tf, &clip);
-            Self::draw_huddle_chips(PaintCtx::new(scene, tf, tr, theme), panel, strip_y, &parts);
+            self.draw_huddle_chips(PaintCtx::new(scene, tf, tr, &local), status, &parts);
             scene.pop_layer();
         }
 
-        self.draw_huddle_controls(scene, tf, tr, theme, panel, hits);
+        self.draw_huddle_controls(scene, tf, tr, &local, panel, hits);
     }
 
-    /// Participant strip header: headcount + media-routing label, and the
-    /// expand/collapse toggle's hit region.
+    /// The connection line under the video: how the call is connected and,
+    /// once someone else is in it, the toggle that shows or hides their
+    /// chips.
     fn draw_huddle_strip_header(
         &self,
         paint: PaintCtx<'_>,
-        panel: Rect,
-        strip_y: f64,
+        band: Rect,
         parts: &[Participant],
         hits: &mut Vec<(Rect, Hit)>,
     ) {
@@ -497,104 +560,91 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
-        let c = &theme.tokens.colors;
-        let toggle = Rect::new(panel.x1 - 84.0, strip_y, panel.x1 - 14.0, strip_y + 20.0);
-        let caret = if self.participants_should_show(parts.len()) {
-            "▾"
-        } else {
-            "▸"
-        };
-        // Verified publication inventory is a stream list, not a person or listener roster.
-        label(
-            scene,
-            tr,
-            tf,
-            &format!(
-                "{caret} {} audio streams · {}",
-                self.native_voice.snapshot.publishers.len()
-                    + usize::from(self.native_voice.snapshot.publication.is_some()),
-                match self.native_voice.snapshot.state {
-                    ui::native_media::State::Live => "Connected",
-                    ui::native_media::State::Reconnecting => "Reconnecting",
-                    ui::native_media::State::Preparing | ui::native_media::State::Joining =>
-                        "Joining",
-                    _ => "Unavailable",
-                }
-            ),
-            11.0,
-            c.text_dim,
-            panel.x0 + 14.0,
-            strip_y + 3.0,
+        let mut x = band.x0;
+        let others = parts.len() > 1;
+        if others {
+            let icon_side = f64::from(theme.tokens.metrics.icon_sm);
+            let chevron = if self.participants_should_show(parts.len()) {
+                Icon::ChevronDown
+            } else {
+                Icon::ChevronRight
+            };
+            chevron.draw(
+                scene,
+                tf,
+                Rect::new(
+                    x,
+                    band.center().y - icon_side / 2.0,
+                    x + icon_side,
+                    band.center().y + icon_side / 2.0,
+                ),
+                theme.text_dim,
+            );
+            x += icon_side + f64::from(theme.tokens.metrics.icon_label_gap);
+        }
+        let status = crate::i18n::t(match self.native_voice.snapshot.state {
+            ui::native_media::State::Live => "chat-call-connected",
+            ui::native_media::State::Reconnecting => "chat-call-reconnecting",
+            ui::native_media::State::Preparing | ui::native_media::State::Joining => {
+                "chat-call-joining"
+            }
+            _ => "chat-call-voice-unavailable",
+        });
+        line_in(
+            &mut PaintCtx::new(scene, tf, tr, theme),
+            &status,
+            &theme.text(TextRole::Caption),
+            theme.text_dim,
+            x,
+            band,
+            band.x1 - x,
         );
-        let _ = toggle;
-        let toggle_hit = Rect::new(
-            panel.x0 + 12.0,
-            strip_y - 2.0,
-            panel.x1 - 12.0,
-            strip_y + 20.0,
-        );
-        ChatApp::push_hit(hits, toggle_hit, Hit::CallParticipantsToggle);
+        if others {
+            ChatApp::push_hit(hits, band, Hit::CallParticipantsToggle);
+        }
     }
 
-    /// Adaptive participant chips beneath the strip header — one per
-    /// non-host member, wrapping to the panel width.
-    fn draw_huddle_chips(paint: PaintCtx<'_>, panel: Rect, strip_y: f64, parts: &[Participant]) {
+    /// One chip per person beside the host, in their presence colour, with
+    /// a muted microphone when they are muted; wrapping to the panel width
+    /// in rows under the connection line.
+    fn draw_huddle_chips(&self, paint: PaintCtx<'_>, status: Rect, parts: &[Participant]) {
         let PaintCtx {
             scene,
             transform: tf,
             text: tr,
             theme,
         } = paint;
-        let c = &theme.tokens.colors;
-        let chips_y = strip_y + 26.0;
-        let radius = 15.0;
-        let step = 2.0 * radius + 12.0;
-        let per_row = ((panel.width() - 28.0) / step).floor().max(1.0) as usize;
-        for (idx, p) in parts.iter().skip(1).enumerate() {
-            {
-                let col = idx % per_row;
-                let row = idx / per_row;
-                let cc = Point::new(
-                    panel.x0 + 14.0 + radius + col as f64 * step,
-                    chips_y + radius + row as f64 * step,
-                );
-                // Speaking ring on whoever is talking.
-                if p.talking {
-                    stroke_circle(scene, tf, cc, radius + 3.0, c.semantic.success, 2.0);
-                }
-                draw_avatar(
-                    PaintCtx::new(scene, tf, tr, theme),
-                    cc,
-                    radius,
-                    "♫",
-                    0,
-                    None,
-                );
-                if p.muted {
-                    fill_circle(
-                        scene,
-                        tf,
-                        Point::new(cc.x + radius * 0.72, cc.y + radius * 0.72),
-                        6.5,
-                        c.semantic.danger,
-                    );
-                } else if p.audio_only {
-                    fill_circle(
-                        scene,
-                        tf,
-                        Point::new(cc.x + radius * 0.72, cc.y + radius * 0.72),
-                        6.5,
-                        c.neutral[3],
-                    );
-                }
+        let gap = self.chrome.call_gap;
+        let h = self.chrome.call_chip_h;
+        let (x0, x1) = (status.x0, status.x1);
+        let mut x = x0;
+        let mut y = status.y1 + gap;
+        for p in parts.iter().skip(1) {
+            let name = self.user_name(&p.user);
+            let lead = Self::chip_lead(p);
+            let w = ChipFace::intrinsic_width(&name, lead, false, tr, theme).min(x1 - x0);
+            if x + w > x1 && x > x0 {
+                x = x0;
+                y += h + gap;
             }
+            ChipFace::new(Rect::new(x, y, x + w, y + h), &name)
+                .lead(lead)
+                .style(ChipStyle::Tinted(self.presence_tone(&p.user)))
+                .paint(scene, tf, tr, theme);
+            x += w + gap;
         }
+    }
+
+    /// The tone that marks `id` as a person: the hue of their own colour.
+    fn presence_tone(&self, id: &str) -> Tone {
+        PresenceHue::nearest(self.identity_colour(id))
+            .map_or_else(|| Tone::of_identity(id), Tone::Presence)
     }
 
     /// Controls row, evenly distributed across the panel so it never
     /// overflows a small (narrow-window) huddle. On a cramped panel the
-    /// buttons drop to icons and Expand is trimmed (the header "In call"
-    /// button also expands the call), so the row always fits.
+    /// buttons drop to icons and Expand is trimmed (the header's call button
+    /// also opens the call), so the row always fits.
     fn draw_huddle_controls(
         &self,
         scene: &mut Scene,
@@ -604,35 +654,68 @@ impl ChatApp {
         panel: Rect,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let cy = panel.y1 - 34.0;
-        let pad = 12.0;
+        let bh = self.chrome.call_controls_h;
+        let pad = self.chrome.call_inset;
+        let cy = panel.y1 - pad - bh;
         // Sibling controls sit an `s2` apart, like the expanded bar's.
         let gap = f64::from(theme.tokens.spacing.s2);
         let muted = self.call.muted;
-        let mut ctrls: Vec<(&str, &str, bool, bool, Hit)> = vec![
+        let mut ctrls: Vec<(&str, Icon, ButtonRole, Hit)> = vec![
             (
                 if muted { "Unmute" } else { "Mute" },
-                if muted { "🔇" } else { "🎤" },
-                muted,
-                false,
+                if muted { Icon::MicOff } else { Icon::Mic },
+                ButtonRole::Secondary,
                 Hit::CallMute,
             ),
-            ("Expand", "⤢", false, false, Hit::CallExpand),
-            ("Leave", "✕", false, true, Hit::CallLeave),
+            (
+                "Expand",
+                Icon::Maximize2,
+                ButtonRole::Secondary,
+                Hit::CallExpand,
+            ),
+            (
+                "Leave",
+                Icon::PhoneOff,
+                ButtonRole::Destructive,
+                Hit::CallLeave,
+            ),
         ];
-        if panel.width() < 300.0 {
-            ctrls.remove(1); // trim Expand on a cramped panel
+        let share = |n: usize| {
+            let n = n as f64;
+            ((panel.width() - 2.0 * pad - (n - 1.0) * gap) / n).max(0.0)
+        };
+        // Too cramped for even three icons: trim Expand (the header's call
+        // button also opens the call).
+        if share(ctrls.len()) < bh {
+            ctrls.remove(1);
         }
-        let n = ctrls.len() as f64;
-        let cw = ((panel.width() - 2.0 * pad - (n - 1.0) * gap) / n).max(24.0);
-        let use_text = cw >= 58.0;
+        let cw = share(ctrls.len());
+        let fits = ctrls.iter().all(|(label, icon, ..)| {
+            ButtonFace::new(Rect::ZERO, label)
+                .icon(*icon)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(tr, theme)
+                <= cw
+        });
         let mut x = panel.x0 + pad;
-        for (txt, icon, on, danger, hit) in ctrls {
-            let r = Rect::new(x, cy, x + cw, cy + 28.0);
+        for (label, icon, role, hit) in ctrls {
+            let r = Rect::new(x, cy, x + cw, cy + bh);
             let hovered = self.call_control_is_hovered(&hit);
-            let face =
-                Self::ctl_face(r, if use_text { txt } else { icon }, on, danger).hovered(hovered);
-            Button::paint(scene, tf, tr, theme, &face);
+            let face = if fits {
+                ButtonFace::new(r, label).icon(icon)
+            } else {
+                ButtonFace::icon_only(r, icon, label)
+            };
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &face
+                    .role(role)
+                    .control_size(ControlSize::Small)
+                    .hovered(hovered),
+            );
             ChatApp::push_hit(hits, r, hit);
             x = r.x1 + gap;
         }
@@ -646,77 +729,36 @@ impl ChatApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let c = &theme.tokens.colors;
-        // Opaque backdrop so the expanded call reads as its own focused
-        // surface (the app base, darkened by the overlay tint) rather than a
-        // thin scrim with the conversation showing through behind the tiles.
-        fill_rect(scene, tf, self.rect, c.surfaces.base);
-        fill_rect(scene, tf, self.rect, c.surfaces.overlay);
+        // The expanded call is its own page over the whole window, so the
+        // conversation does not show through between the tiles.
+        ui::surface::region(scene, tf, self.rect, ui::surface::Region::Content, theme);
 
-        // title + participant count, stacked from the measured line boxes so
-        // the subtitle sits under the title at every text scale.
         let m = &self.call_overlay_metrics;
         let title_y = self.rect.y0 + m.header_pad_top;
-        let subtitle_y = title_y + m.title_h + m.header_gap;
         let title = self
             .channel(&self.call.channel)
             .map_or_else(|| "Call".into(), |c| c.name.clone());
-        let (tw, _) = tr.measure_weighted(&title, CALL_TITLE_TEXT, None, TextWeight::Bold);
+        let style = theme.text(TextRole::Title);
+        let max_w = self.rect.width() - 2.0 * m.side_pad;
+        let shown = elide(tr, &title, &style, max_w);
+        let tw = width_of(tr, &shown, &style);
         text(
             &mut PaintCtx::new(scene, tf, tr, theme),
-            &title,
-            &TextStyle::new(CALL_TITLE_TEXT).with_weight(TextWeight::Bold),
-            c.text_primary,
-            Point::new(self.rect.center().x - f64::from(tw) / 2.0, title_y),
+            &shown,
+            &style,
+            theme.text_primary,
+            Point::new(self.rect.center().x - tw / 2.0, title_y),
             None,
         );
+
         let parts = self.call_participants();
         let sharer = self.screen_sharer();
-        // Subtitle carries the headcount and, when someone is presenting, whose
-        // screen is on the stage — surfaced the instant the shared voice
-        // membership records a share, before any frame arrives.
-        let sub = match &sharer {
-            Some(id) => {
-                let who = if *id == self.me.id {
-                    "You are".to_string()
-                } else {
-                    format!("{} is", self.user_name(id))
-                };
-                format!("{} in the call · {who} sharing a screen", parts.len())
-            }
-            None => format!("{} in the call", parts.len()),
-        };
-        let (sw, _) = tr.measure(&sub, CALL_SUBTITLE_TEXT, None);
-        label(
-            scene,
-            tr,
-            tf,
-            &sub,
-            CALL_SUBTITLE_TEXT,
-            c.text_dim,
-            self.rect.center().x - f64::from(sw) / 2.0,
-            subtitle_y,
-        );
-
-        // The host active-speaker treatment is shared by both layouts: a bright
-        // ring while transmitting, a hairline otherwise.
-        let (ring_col, ring_w) = if self.call.muted {
-            (
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 51),
-                1.5,
-            )
-        } else {
-            (c.semantic.success, 2.5)
-        };
         match self.overlay_stage() {
             // No share: host + remotes share one responsive grid that fills the
             // whole band between the header and the controls bar — the host is
             // simply the first cell. The VideoPlayer surface is drawn by the app
             // on top of the host cell.
             CallStage::Grid(tiles) => {
-                if let Some(&host) = tiles.first() {
-                    stroke_round(scene, tf, host, 14.0, ring_col, ring_w);
-                }
                 for (p, rect) in parts.iter().skip(1).zip(tiles.iter().skip(1)) {
                     self.draw_member_tile(scene, tf, tr, theme, *rect, p);
                 }
@@ -728,9 +770,6 @@ impl ChatApp {
                 if let Some(sharer) = &sharer {
                     self.draw_screen_tile(scene, tf, tr, theme, screen, sharer);
                 }
-                if let Some(&host) = strip.first() {
-                    stroke_round(scene, tf, host, 12.0, ring_col, ring_w);
-                }
                 for (p, rect) in parts.iter().skip(1).zip(strip.iter().skip(1)) {
                     self.draw_member_tile(scene, tf, tr, theme, *rect, p);
                 }
@@ -739,9 +778,9 @@ impl ChatApp {
     }
 
     /// The featured presentation tile: a peer's real decoded screen frame when
-    /// one has arrived, and an honest "connecting" placeholder — a drawn monitor
-    /// with the sharer's name, never a fabricated picture — until then. A live
-    /// pill marks the tile as the active share.
+    /// one has arrived, and an honest placeholder — the screen icon with the
+    /// sharer's name, never a fabricated picture — until then. A live chip
+    /// marks whose screen is on the stage.
     fn draw_screen_tile(
         &self,
         scene: &mut Scene,
@@ -751,152 +790,91 @@ impl ChatApp {
         rect: Rect,
         sharer: &str,
     ) {
-        let c = &theme.tokens.colors;
-        let name = self
-            .user(sharer)
-            .map_or_else(|| sharer.to_string(), |u| u.name.clone());
+        let media = &theme.tokens.colors.media;
+        let name = self.user_name(sharer);
         let is_me = sharer == self.me.id;
-        let radius = 16.0;
-
-        // A real decoded screen frame from the sharer takes over the tile. This
-        // slot only ever holds a genuinely decoded frame (the native voice path
-        // carries no video today, so it stays empty); otherwise we fall
-        // through to the drawn placeholder.
-        if let Some(img) = self.remote_screens.get(sharer) {
-            fill_round(scene, tf, rect, radius, Color::from_rgba8(0, 0, 0, 255));
-            ui::image_store::paint_image_cover(scene, tf, rect, img, radius);
-            Self::screen_live_pill(scene, tf, tr, theme, rect, &name, is_me);
-            stroke_round(scene, tf, rect, radius, c.accent[5], 2.0);
-            return;
-        }
-
-        // Honest placeholder — no fabricated screen pixels. A deep neutral tile
-        // with a soft accent-tinted inner panel for depth, a crisply drawn
-        // monitor glyph, and truthful status text.
-        fill_round(scene, tf, rect, radius, c.neutral[1]);
-        let margin = (rect.width().min(rect.height()) * 0.14).min(90.0);
-        let inner = rect.inflate(-margin, -margin);
-        fill_round(scene, tf, inner, radius, c.lift(0.35));
-        stroke_round(
-            scene,
+        let radius = self.tile_radius(theme);
+        scene.fill(
+            Fill::NonZero,
             tf,
-            inner,
-            radius,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            1.0,
-        );
-
-        // Drawn monitor icon, centred a touch above the middle.
-        let gw = (rect.height() * 0.20).clamp(44.0, 120.0);
-        let gh = gw * 0.62;
-        let gcx = rect.center().x;
-        let gcy = rect.center().y - gh * 0.5;
-        let screen_r = Rect::new(
-            gcx - gw / 2.0,
-            gcy - gh / 2.0,
-            gcx + gw / 2.0,
-            gcy + gh / 2.0,
-        );
-        fill_round(scene, tf, screen_r, 8.0, c.neutral[3]);
-        stroke_round(scene, tf, screen_r, 8.0, c.accent[5], 2.0);
-        // Stand: a small neck + base bar beneath the screen.
-        let neck = Rect::new(
-            gcx - gw * 0.06,
-            screen_r.y1,
-            gcx + gw * 0.06,
-            screen_r.y1 + gh * 0.16,
-        );
-        fill_round(scene, tf, neck, 2.0, c.neutral[3]);
-        let base = Rect::new(
-            gcx - gw * 0.22,
-            neck.y1,
-            gcx + gw * 0.22,
-            neck.y1 + gh * 0.09,
-        );
-        fill_round(scene, tf, base, 3.0, c.neutral[3]);
-
-        // Status text below the glyph.
-        let head = if is_me {
-            "You're sharing your screen".to_string()
-        } else {
-            format!("{name} is sharing a screen")
-        };
-        let (hw, _) = tr.measure(&head, 15.0, None);
-        text(
-            &mut PaintCtx::new(scene, tf, tr, theme),
-            &head,
-            &TextStyle::new(15.0).with_weight(TextWeight::Bold),
-            c.text_primary,
-            Point::new(gcx - f64::from(hw) / 2.0, base.y1 + 18.0),
+            media.letterbox,
             None,
+            &RoundedRect::from_rect(rect, radius),
         );
-        // Honest status: the local sharer is the source; a remote tile is
-        // waiting on the first decoded frame (this branch only runs with no
-        // frame present, so it never claims to be showing video it lacks).
-        let sub = if is_me {
-            "Everyone in the call sees your screen"
+        // A real decoded screen frame from the sharer takes over the tile.
+        // This slot only ever holds a genuinely decoded frame (the native
+        // voice path carries no video today, so it stays empty).
+        if let Some(img) = self.remote_screens.get(sharer) {
+            ui::image_store::paint_image_cover(scene, tf, rect, img, radius);
         } else {
-            "Connecting to the shared screen…"
-        };
-        let (subw, _) = tr.measure(sub, 12.0, None);
-        label(
-            scene,
-            tr,
-            tf,
-            sub,
-            12.0,
-            c.text_dim,
-            gcx - f64::from(subw) / 2.0,
-            base.y1 + 40.0,
-        );
-
-        Self::screen_live_pill(scene, tf, tr, theme, rect, &name, is_me);
-        stroke_round(scene, tf, rect, radius, c.accent[5], 2.0);
-    }
-
-    /// A small "● Live · <name>" pill in the top-left of the featured screen
-    /// tile, marking which peer's screen is on the stage.
-    fn screen_live_pill(
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        name: &str,
-        is_me: bool,
-    ) {
-        let c = &theme.tokens.colors;
+            let icon_side = 3.0 * f64::from(theme.tokens.metrics.icon_lg);
+            let head_style = theme.text(TextRole::Heading);
+            let sub_style = theme.text(TextRole::Body);
+            let gap = f64::from(theme.tokens.spacing.s3);
+            let block = icon_side + gap + line_of(tr, &head_style) + line_of(tr, &sub_style);
+            let top = rect.center().y - block / 2.0;
+            Icon::Monitor.draw(
+                scene,
+                tf,
+                Rect::new(
+                    rect.center().x - icon_side / 2.0,
+                    top,
+                    rect.center().x + icon_side / 2.0,
+                    top + icon_side,
+                ),
+                media.ink_dim,
+            );
+            let head = if is_me {
+                "You're sharing your screen".to_string()
+            } else {
+                format!("{name} is sharing their screen")
+            };
+            // Honest status: the local sharer is the source; a remote tile
+            // waits on the first decoded frame (this branch only runs with no
+            // frame, so it never claims to show video it lacks).
+            let sub = if is_me {
+                "Everyone in the call sees your screen"
+            } else {
+                "Waiting for the first frame"
+            };
+            let mut ctx = PaintCtx::new(scene, tf, tr, theme);
+            let mut y = top + icon_side + gap;
+            for (s, style, ink) in [
+                (head.as_str(), &head_style, media.ink),
+                (sub, &sub_style, media.ink_dim),
+            ] {
+                let shown = elide(ctx.text, s, style, rect.width() - 2.0 * gap);
+                let w = width_of(ctx.text, &shown, style);
+                let (_, h) = text(
+                    &mut ctx,
+                    &shown,
+                    style,
+                    ink,
+                    Point::new(rect.center().x - w / 2.0, y),
+                    None,
+                );
+                y += f64::from(h);
+            }
+        }
         let who = if is_me {
             "Your screen".to_string()
         } else {
             format!("{name}'s screen")
         };
-        let txt = format!("Live · {who}");
-        let (lw, _) = tr.measure(&txt, 11.5, None);
-        let pill = Rect::new(
-            rect.x0 + 12.0,
-            rect.y0 + 12.0,
-            rect.x0 + 12.0 + f64::from(lw) + 34.0,
-            rect.y0 + 12.0 + 24.0,
-        );
-        fill_round(scene, tf, pill, 12.0, Color::from_rgba8(0, 0, 0, 150));
-        fill_circle(
-            scene,
-            tf,
-            Point::new(pill.x0 + 14.0, pill.center().y),
-            4.0,
-            c.semantic.danger,
-        );
-        label(
-            scene,
-            tr,
-            tf,
-            &txt,
-            11.5,
-            Color::WHITE,
-            pill.x0 + 24.0,
-            pill.center().y - 8.0,
-        );
+        let h = ChipFace::height(theme);
+        let w = ChipFace::intrinsic_width(&who, ChipLead::None, false, tr, theme);
+        let inset = f64::from(theme.tokens.spacing.s3);
+        ChipFace::new(
+            Rect::new(
+                rect.x0 + inset,
+                rect.y0 + inset,
+                rect.x0 + inset + w,
+                rect.y0 + inset + h,
+            ),
+            &who,
+        )
+        .style(ChipStyle::Live)
+        .paint(scene, tf, tr, theme);
     }
 
     pub(crate) fn draw_call_overlay_fg(
@@ -907,30 +885,30 @@ impl ChatApp {
         theme: &Theme,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let c = &theme.tokens.colors;
         let host = self.overlay_host_rect();
-        Self::name_plate(scene, tf, tr, theme, host, "You (host)", self.call.muted);
+        let you = self.user_name(&self.me.id);
+        Self::name_plate(scene, tf, tr, theme, host, &you, self.call.muted);
 
         // Controls bar: auto-sized to its buttons and wrapped onto extra rows
         // when the window is too narrow to hold them all in one line, so it
-        // never runs off either edge.
+        // never runs off either edge. It floats over the stage.
         let (bar, buttons) = self.overlay_controls_layout();
-        // A floating Panel: the derived panel border, crisp on the outermost
-        // pixel row (HIG §9.5).
-        fill_round(scene, tf, bar, 16.0, c.neutral[1]);
-        scene.stroke(
-            &Stroke::new(1.0),
-            tf,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(bar, 16.0),
-        );
-        for (label_txt, on, danger, enabled, hit, r) in buttons {
+        let radius = f64::from(theme.tokens.radii.panel).min(bar.height() / 2.0);
+        ui::surface::shadow(scene, tf, bar, radius, &theme.tokens.elevation.floating);
+        ui::surface::panel(scene, tf, bar, radius, theme);
+        let local = theme.on_ground(ui::chrome::panel_ground(theme));
+        for (label_txt, _on, danger, enabled, hit, r) in buttons {
             let hovered = self.call_control_is_hovered(&hit);
-            let face = Self::ctl_face(r, &label_txt, on, danger)
+            let face = ButtonFace::new(r, &label_txt)
+                .icon(control_icon(&hit, self.call.muted))
+                .role(if danger {
+                    ButtonRole::Destructive
+                } else {
+                    ButtonRole::Secondary
+                })
                 .hovered(hovered)
                 .disabled(!enabled);
-            Button::paint(scene, tf, tr, theme, &face);
+            Button::paint(scene, tf, tr, &local, &face);
             if enabled {
                 ChatApp::push_hit(hits, r, hit);
             }
@@ -938,20 +916,20 @@ impl ChatApp {
     }
 
     /// The band the expanded call fills with participant tiles: everything
-    /// between the title/subtitle header and the controls bar, inset from the
-    /// window edges. Deterministic (no text measurement) so the tile grid, the
-    /// host [`VideoPlayer`](ui::widget::VideoPlayer) node built in
-    /// `build_layout`, and `call_video_rect` all resolve to exactly the same
-    /// geometry on a single frame.
+    /// between the title and the controls bar, inset from the window edges.
+    /// Deterministic (no text measurement) so the tile grid, the host
+    /// [`VideoPlayer`](ui::widget::VideoPlayer) node built in `build_layout`,
+    /// and `call_video_rect` all resolve to exactly the same geometry on a
+    /// single frame.
     pub(crate) fn overlay_content_region(&self) -> Rect {
         let r = self.rect;
-        let inset = (r.width() * 0.05).clamp(16.0, 40.0);
-        // Below the measured title + subtitle header (the 1× rule before the
-        // first paint), so a scaled header pushes the tiles down instead of
-        // painting over the top row.
-        let top = r.y0 + self.call_overlay_metrics.header_h();
+        let m = &self.call_overlay_metrics;
+        let inset = m.side_pad;
+        // Below the measured title (the 1× rule before the first paint), so a
+        // scaled title pushes the tiles down instead of painting over them.
+        let top = r.y0 + m.header_h();
         let (bar, _) = self.overlay_controls_layout();
-        let bottom = (bar.y0 - 14.0).max(top + 1.0);
+        let bottom = (bar.y0 - m.bottom_pad).max(top + 1.0);
         Rect::new(r.x0 + inset, top, r.x1 - inset, bottom)
     }
 
@@ -961,7 +939,11 @@ impl ChatApp {
     /// a single tile spanning the full region.
     pub(crate) fn overlay_tiles(&self) -> Vec<Rect> {
         let n = self.call_participants().len().max(1);
-        grid_rects(self.overlay_content_region(), n)
+        grid_rects(
+            self.overlay_content_region(),
+            n,
+            self.call_overlay_metrics.tile_gap,
+        )
     }
 
     /// The user id of whoever is sharing their screen into the current call, if
@@ -987,20 +969,21 @@ impl ChatApp {
         let region = self.overlay_content_region();
         let n = self.call_participants().len().max(1);
         if self.screen_sharer().is_some() {
-            let gap = 14.0;
-            // The screen dominates; participants ride a strip beneath it whose
-            // height eases up a little with the headcount but stays a minority
-            // of the surface. Clamped so a short window still leaves a usable
-            // strip and a tall one doesn't over-grow it.
+            let m = &self.call_overlay_metrics;
+            let gap = m.tile_gap;
+            // The screen dominates; participants ride a strip beneath it that
+            // stays a minority of the surface. Clamped so a short window still
+            // leaves a strip that holds a participant's disc, caption and name
+            // plate, and a tall one doesn't over-grow it.
             let strip_h = (region.height() * 0.24)
-                .clamp(88.0, 190.0)
+                .clamp(m.strip_min_h, 2.0 * m.strip_min_h)
                 .min(region.height() * 0.4);
             let screen_bottom = (region.y1 - strip_h - gap).max(region.y0 + 1.0);
             let screen = Rect::new(region.x0, region.y0, region.x1, screen_bottom);
             let strip_region = Rect::new(region.x0, screen.y1 + gap, region.x1, region.y1);
             CallStage::Share {
                 screen,
-                strip: filmstrip_rects(strip_region, n),
+                strip: filmstrip_rects(strip_region, n, gap),
             }
         } else {
             CallStage::Grid(self.overlay_tiles())
@@ -1045,64 +1028,33 @@ impl ChatApp {
     }
 
     /// Lay out the expanded-overlay control buttons, wrapping onto extra rows
-    /// to fit the current window width. Returns the bar background rect and
-    /// each button's `(label, active, danger, enabled, hit, rect)`. Shared by the
-    /// background pass (which bounds the tile region above the bar), the
-    /// foreground pass (which draws it), and the layout pass (which sizes the
-    /// tile band) — so all three agree without a `TextRenderer`: the button
-    /// widths and height come from [`CallOverlayMetrics`], measured by the
-    /// paint pass that precedes them (the 1× rules before the first paint),
-    /// which keeps the whole call layout resolvable on a single headless frame
-    /// while the labels still fit their buttons at every text scale.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one deterministic layout pass must keep wrapped call controls, their hit targets and the returned bar bounds identical"
-    )]
+    /// to fit the current window width. Returns the bar rect and each button's
+    /// `(label, active, danger, enabled, hit, rect)`. Shared by the background
+    /// pass (which bounds the tile region above the bar), the foreground pass
+    /// (which draws it), and the layout pass (which sizes the tile band) — so
+    /// all three agree without a `TextRenderer`: the button widths and height
+    /// come from [`CallOverlayMetrics`], measured by the paint pass that
+    /// precedes them (the 1× rules before the first paint).
     pub(crate) fn overlay_controls_layout(&self) -> (Rect, Vec<OverlayButton>) {
         let specs = self.overlay_control_specs();
         let m = &self.call_overlay_metrics;
         let gap = m.gap;
-        let row_gap = m.gap;
         let bh = m.button_h;
-        let side_pad = m.side_pad;
         let inner_pad = m.inner_pad;
-        let max_row_w = (self.rect.width() - 2.0 * side_pad).max(120.0);
+        let max_row_w = (self.rect.width() - 2.0 * m.side_pad).max(bh);
         let widths: Vec<f64> = specs.iter().map(|s| m.button_width(&s.0)).collect();
-
-        // Greedy pack into rows that each fit `max_row_w`. `rows` always holds
-        // at least one (possibly empty) row, so `last`/`last_mut` never miss —
-        // still routed through `let...else` rather than `unwrap` in case that
-        // invariant is ever broken by a future edit.
-        let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
-        let mut cur = 0.0;
-        for (i, w) in widths.iter().enumerate() {
-            let Some(last) = rows.last() else { break };
-            let extra = if last.is_empty() { 0.0 } else { gap } + w;
-            if !last.is_empty() && cur + extra > max_row_w {
-                rows.push(Vec::new());
-                cur = 0.0;
-            }
-            let Some(last) = rows.last() else { break };
-            let extra = if last.is_empty() { 0.0 } else { gap } + w;
-            let Some(last_mut) = rows.last_mut() else {
-                break;
-            };
-            last_mut.push(i);
-            cur += extra;
-        }
+        let rows = pack_rows(&widths, gap, max_row_w);
 
         let n_rows = rows.len() as f64;
-        let bar_h = n_rows * bh + (n_rows - 1.0) * row_gap + 2.0 * inner_pad;
-        let widest = rows
-            .iter()
-            .map(|row| {
-                row.iter().filter_map(|&i| widths.get(i)).sum::<f64>()
-                    + row.len().saturating_sub(1) as f64 * gap
-            })
-            .fold(0.0_f64, f64::max);
+        let bar_h = n_rows * bh + (n_rows - 1.0) * gap + 2.0 * inner_pad;
+        let row_width = |row: &Vec<usize>| {
+            row.iter().filter_map(|&i| widths.get(i)).sum::<f64>()
+                + row.len().saturating_sub(1) as f64 * gap
+        };
+        let widest = rows.iter().map(row_width).fold(0.0_f64, f64::max);
 
         let cx = self.rect.center().x;
-        let bar_bottom = self.rect.y1 - CALL_BAR_BOTTOM_INSET;
+        let bar_bottom = self.rect.y1 - m.bottom_pad;
         let bar_top = bar_bottom - bar_h;
         let bar = Rect::new(
             cx - widest / 2.0 - inner_pad,
@@ -1114,9 +1066,7 @@ impl ChatApp {
         let mut out: Vec<OverlayButton> = Vec::with_capacity(specs.len());
         let mut ry = bar_top + inner_pad;
         for row in &rows {
-            let rw = row.iter().filter_map(|&i| widths.get(i)).sum::<f64>()
-                + row.len().saturating_sub(1) as f64 * gap;
-            let mut x = cx - rw / 2.0;
+            let mut x = cx - row_width(row) / 2.0;
             for &i in row {
                 let (Some(&w), Some(spec)) = (widths.get(i), specs.get(i)) else {
                     continue;
@@ -1126,16 +1076,16 @@ impl ChatApp {
                 out.push((label_txt.clone(), *on, *danger, *enabled, hit.clone(), r));
                 x += w + gap;
             }
-            ry += bh + row_gap;
+            ry += bh + gap;
         }
         (bar, out)
     }
 
     /// Draw one remote participant's tile in the expanded grid. There is no
     /// camera capture wired to remote peers in this environment, so a tile
-    /// never fabricates a video frame: it shows the participant's avatar on a
-    /// neutral surface — the same honest treatment the host tile gets — plus
-    /// their real camera state. A speaking ring highlights the active speaker.
+    /// never fabricates a video frame: it shows the participant's avatar in
+    /// an empty viewfinder — the same honest treatment the host tile gets —
+    /// plus their real camera state.
     fn draw_member_tile(
         &self,
         scene: &mut Scene,
@@ -1145,133 +1095,48 @@ impl ChatApp {
         rect: Rect,
         p: &Participant,
     ) {
-        let c = &theme.tokens.colors;
-        if self
+        let name = self.user_name(&p.user);
+        let is_stream = self
             .native_voice
             .snapshot
             .publishers
             .iter()
-            .any(|namespace| namespace == &p.user)
-        {
-            fill_round(scene, tf, rect, 14.0, c.neutral[2]);
-            let caption = "Audio stream";
-            let (width, height) = tr.measure(caption, 11.5, None);
-            label(
-                scene,
-                tr,
-                tf,
-                caption,
-                11.5,
-                c.text_dim,
-                rect.center().x - f64::from(width) / 2.0,
-                rect.center().y - f64::from(height) / 2.0,
-            );
-            Self::name_plate(scene, tf, tr, theme, rect, &self.user_name(&p.user), false);
-            stroke_round(scene, tf, rect, 14.0, c.neutral[3], 1.0);
-            return;
+            .any(|namespace| namespace == &p.user);
+        // A real decoded camera/screen frame from this peer takes over the
+        // tile. This only ever holds a genuinely decoded frame — never a
+        // fabricated picture (the native voice path carries no video today).
+        if !is_stream && let Some(img) = self.remote_frames.get(&p.user) {
+            ui::image_store::paint_image_cover(scene, tf, rect, img, self.tile_radius(theme));
+        } else {
+            let caption = if is_stream {
+                "Audio stream"
+            } else {
+                member_tile_caption(p)
+            };
+            self.paint_viewfinder(PaintCtx::new(scene, tf, tr, theme), rect, &p.user, caption);
         }
-        let u = self.user(&p.user);
-        fill_round(scene, tf, rect, 14.0, c.neutral[2]);
-        // A real decoded camera/screen frame from this peer takes over the tile.
-        // This only ever holds a genuinely decoded frame — never a fabricated
-        // picture (the native voice path carries no video today, so it stays
-        // empty); otherwise we fall through to the avatar placeholder.
-        if let Some(img) = self.remote_frames.get(&p.user) {
-            ui::image_store::paint_image_cover(scene, tf, rect, img, 14.0);
-            if p.talking {
-                stroke_round(scene, tf, rect, 14.0, c.semantic.success, 2.5);
-            }
-            let name = u.map(|u| u.name.clone()).unwrap_or_default();
-            Self::name_plate(scene, tf, tr, theme, rect, &name, p.muted);
-            if p.sharing {
-                Self::presenter_badge(scene, tf, theme, rect);
-            }
-            stroke_round(
-                scene,
-                tf,
-                rect,
-                14.0,
-                ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-                1.0,
-            );
-            return;
-        }
-        if let Some(u) = u {
-            // Disc bounds follow the text scale (see `draw_host_camera_off`).
-            let ts = f64::from(theme.text_scale).max(1.0);
-            let radius = (rect.height() * 0.22).clamp(16.0 * ts, 46.0 * ts);
-            let cx = rect.center().x;
-            // Honest state under the avatar — the same treatment the host tile
-            // gets. There is no remote camera capture in this environment, so
-            // the tile never fabricates a picture: an audio-only peer reads
-            // "Camera off"; a camera-enabled peer whose frame doesn't reach
-            // this peer reads "No video". It never claims to show video it
-            // doesn't have. Disc + caption are one block centred in the band
-            // above the name plate, so the caption never touches the plate.
-            let s = member_tile_caption(p);
-            let (sw, sh) = tr.measure(s, 11.5, None);
-            let s2 = f64::from(theme.tokens.spacing.s2);
-            let (cy, caption_y) =
-                avatar_caption_block(rect, radius, f64::from(sh), plate_height(theme), s2);
-            draw_avatar(
-                PaintCtx::new(scene, tf, tr, theme),
-                Point::new(cx, cy),
-                radius,
-                &u.initials,
-                u.color_idx,
-                None,
-            );
-            label(
-                scene,
-                tr,
-                tf,
-                s,
-                11.5,
-                c.text_dim,
-                cx - f64::from(sw) / 2.0,
-                caption_y,
-            );
-        }
-        if p.talking {
-            stroke_round(scene, tf, rect, 14.0, c.semantic.success, 2.5);
-        }
-        let name = u.map(|u| u.name.clone()).unwrap_or_default();
         Self::name_plate(scene, tf, tr, theme, rect, &name, p.muted);
         if p.sharing {
-            Self::presenter_badge(scene, tf, theme, rect);
+            let side = ChipFace::height(theme);
+            let inset = f64::from(theme.tokens.spacing.s2);
+            ChipFace::new(
+                Rect::new(
+                    rect.x1 - inset - side,
+                    rect.y0 + inset,
+                    rect.x1 - inset,
+                    rect.y0 + inset + side,
+                ),
+                "",
+            )
+            .lead(ChipLead::Glyph(Icon::Monitor))
+            .style(ChipStyle::Live)
+            .paint(scene, tf, tr, theme);
         }
-        stroke_round(
-            scene,
-            tf,
-            rect,
-            14.0,
-            ui::tokens::colors::Colors::hairline_on(c.surfaces.raised, 26),
-            1.0,
-        );
     }
 
-    /// A small monitor badge in a participant tile's top-right marking them as
-    /// the one presenting, so the filmstrip communicates who is on the stage.
-    fn presenter_badge(scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect) {
-        let c = &theme.tokens.colors;
-        let s = 12.0;
-        let cx = rect.x1 - 8.0 - s / 2.0;
-        let cy = rect.y0 + 8.0 + s / 2.0;
-        let chip = Rect::new(
-            cx - s / 2.0 - 4.0,
-            cy - s / 2.0 - 4.0,
-            cx + s / 2.0 + 4.0,
-            cy + s / 2.0 + 4.0,
-        );
-        fill_round(scene, tf, chip, 6.0, c.accent[5]);
-        // A tiny drawn monitor: screen rect + base bar.
-        let screen = Rect::new(cx - s / 2.0, cy - s / 2.0, cx + s / 2.0, cy + s / 2.0 - 3.0);
-        stroke_round(scene, tf, screen, 2.0, Color::WHITE, 1.4);
-        let base = Rect::new(cx - 3.0, screen.y1 + 0.5, cx + 3.0, screen.y1 + 2.0);
-        fill_round(scene, tf, base, 1.0, Color::WHITE);
-    }
-
-    /// Bottom-left name plate over a tile: name + mic state.
+    /// The name plate at a tile's bottom-leading corner: the person's name
+    /// and, while muted, a muted microphone, on the floating material over
+    /// the media.
     fn name_plate(
         scene: &mut Scene,
         tf: Affine,
@@ -1281,83 +1146,53 @@ impl ChatApp {
         name: &str,
         muted: bool,
     ) {
-        let c = &theme.tokens.colors;
         let sp = &theme.tokens.spacing;
-        let mic = if muted { "🔇" } else { "🎤" };
-        let label_txt = format!("{mic}  {name}");
-        // The plate is its measured label plus a pad each side (never shorter
-        // than the 1× plate), inset `s2` from the tile's corner, so a scaled
-        // name stays inside its plate instead of running past it. Its height
-        // is `plate_height`, the same rule the avatar block reserves for it.
-        let (lw, lh) = tr.measure(&label_txt, 12.0, None);
-        let pad_x = f64::from(sp.s2) + 2.0;
+        let local = theme.on_ground(ui::chrome::panel_ground(theme));
+        let style = local.text(TextRole::Label);
         let plate_h = plate_height(theme);
-        debug_assert!(plate_h >= f64::from(lh), "plate reserve holds its label");
         let inset = f64::from(sp.s2);
+        let pad_x = f64::from(sp.s2);
+        let icon_side = f64::from(theme.tokens.metrics.icon_sm);
+        let icon_w = if muted {
+            icon_side + f64::from(sp.s1)
+        } else {
+            0.0
+        };
+        let max_name = (tile.width() - 2.0 * inset - 2.0 * pad_x - icon_w).max(0.0);
+        let shown = elide(tr, name, &style, max_name);
+        let name_w = width_of(tr, &shown, &style);
         let plate = Rect::new(
             tile.x0 + inset,
             tile.y1 - inset - plate_h,
-            tile.x0 + inset + f64::from(lw) + 2.0 * pad_x,
+            tile.x0 + inset + 2.0 * pad_x + icon_w + name_w,
             tile.y1 - inset,
         );
-        // The plate is a 59 % black scrim over the tile; its ink is measured
-        // against what that scrim composites to (over the light preset's
-        // pale tile it is a mid grey, where danger red fell to ~2:1), and
-        // pushed until it clears text contrast (`legible_on`).
-        let scrim = Color::from_rgba8(0, 0, 0, 150);
-        fill_round(scene, tf, plate, 8.0, scrim);
-        // The scrim's own colour at full alpha, composited over the tile by
-        // the scrim's alpha: the ground the label actually lands on.
-        let scrim_ink = Color::new([
-            scrim.components[0],
-            scrim.components[1],
-            scrim.components[2],
-            1.0,
-        ]);
-        let plate_ground =
-            crate::paint::blend_toward(c.neutral[2], scrim_ink, f64::from(scrim.components[3]));
-        let tone = if muted {
-            c.semantic.danger
-        } else {
-            c.text_primary
-        };
-        let col = crate::paint::legible_on(
-            tone,
-            plate_ground,
-            ui::tokens::colors::ON_FILL_MIN_CONTRAST,
-            c.text_primary,
-        );
-        label(
-            scene,
-            tr,
-            tf,
-            &label_txt,
-            12.0,
-            col,
-            plate.x0 + pad_x,
-            line_top(plate.center().y, f64::from(lh)),
-        );
-    }
-
-    /// The face of a pill control button. `on` = active/highlighted,
-    /// `danger` = red; callers add the hover and disabled states.
-    fn ctl_face(rect: Rect, label_txt: &str, on: bool, danger: bool) -> ButtonFace<'_> {
-        // The shared button face (HIG §8): Neutral at rest, the accent
-        // Primary while "on", DangerOutline for the destructive control and
-        // the toolkit's disabled face when it cannot be used — one painter
-        // for fill, rest edge, ink and the label centred on its measured
-        // line, instead of a local copy of each state.
-        let face = ButtonFace::new(rect, label_txt)
-            .text_size(CALL_CTL_TEXT)
-            .weight(TextWeight::Regular)
-            .radius(9.0);
-        if danger {
-            face.danger_outline()
-        } else if on {
-            face.primary()
-        } else {
-            face
+        let shape = RoundedRect::from_rect(plate, plate_h / 2.0);
+        paint_material(scene, tf, &shape, Material::Floating, theme);
+        let mut x = plate.x0 + pad_x;
+        if muted {
+            Icon::MicOff.draw(
+                scene,
+                tf,
+                Rect::new(
+                    x,
+                    plate.center().y - icon_side / 2.0,
+                    x + icon_side,
+                    plate.center().y + icon_side / 2.0,
+                ),
+                local.text_dim,
+            );
+            x += icon_w;
         }
+        line_in(
+            &mut PaintCtx::new(scene, tf, tr, &local),
+            &shown,
+            &style,
+            local.text_primary,
+            x,
+            plate,
+            name_w + 1.0,
+        );
     }
 
     fn call_control_is_hovered(&self, hit: &Hit) -> bool {
@@ -1367,12 +1202,12 @@ impl ChatApp {
     }
 
     // -------------------------------------------------------- emoji picker
-    /// The picker popover: a search field, a tab per Unicode group, and a
-    /// scrolling grid showing either the search results or recently used
-    /// emoji followed by the selected group.
+    /// The picker popover: a filter field, a tab per Unicode group, and a
+    /// scrolling grid showing either the matches or recently used emoji
+    /// followed by the selected group.
     #[allow(
         clippy::too_many_lines,
-        reason = "one linear layout-then-paint pass: panel, search, tabs, clipped grid"
+        reason = "one linear layout-then-paint pass: panel, filter, tabs, clipped grid"
     )]
     pub(crate) fn draw_emoji_picker(
         &mut self,
@@ -1383,81 +1218,82 @@ impl ChatApp {
         presence: &PresenceCtx,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let c = &theme.tokens.colors;
         let catalogue = crate::i18n::emoji_catalogue();
-        // full-window dismiss scrim (lowest priority)
+        // Full-window dismiss target (lowest priority).
         ChatApp::push_hit(hits, self.rect, Hit::Dismiss);
-
-        let w = 336.0;
+        let sp = &theme.tokens.spacing;
+        let local = theme.on_ground(ui::chrome::panel_ground(theme));
+        let pad = f64::from(sp.s3);
+        let w = f64::from(theme.tokens.metrics.panel_width_utility);
         let cols = 8usize;
-        let cell = (w - 24.0) / cols as f64;
-        let grid_rows = 7.0;
-        let h = 36.0 + 34.0 + 8.0 + 32.0 + 8.0 + grid_rows * cell + 8.0;
+        let cell = (w - 2.0 * pad) / cols as f64;
+        let grid_rows = 6.0;
+        let title_h = ui::chrome::nav_row_height(theme);
+        let field_h = ButtonFace::height(ControlSize::Regular, theme);
+        let tabs_h = SegmentedFace::height(ControlSize::Regular, theme);
+        let h = pad + title_h + field_h + pad + tabs_h + pad + grid_rows * cell + pad;
+        let margin = f64::from(sp.s2);
         let x0 = self.emoji_anchor.x.clamp(
-            self.rect.x0 + 8.0,
-            (self.rect.x1 - w - 8.0).max(self.rect.x0 + 8.0),
+            self.rect.x0 + margin,
+            (self.rect.x1 - w - margin).max(self.rect.x0 + margin),
         );
         let y0 = self.emoji_anchor.y.clamp(
-            self.rect.y0 + 8.0,
-            (self.rect.y1 - h - 8.0).max(self.rect.y0 + 8.0),
+            self.rect.y0 + margin,
+            (self.rect.y1 - h - margin).max(self.rect.y0 + margin),
         );
         let panel = Rect::new(x0, y0, x0 + w, y0 + h);
-        // The shadow is the panel's own shape, from the elevation ladder (HIG
-        // §9.3); a floating Panel carries the derived border, crisp on the
-        // outermost pixel row (HIG §9.5).
-        ui::surface::shadow(scene, tf, panel, 14.0, &theme.tokens.elevation.e2);
-        fill_round(scene, tf, panel, 14.0, c.neutral[1]);
-        scene.stroke(
-            &Stroke::new(1.0),
-            tf,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(panel, 14.0),
-        );
+        let radius = f64::from(theme.tokens.radii.panel);
+        ui::surface::shadow(scene, tf, panel, radius, &theme.tokens.elevation.floating);
+        ui::surface::panel(scene, tf, panel, radius, theme);
 
         let title = if self.emoji_target.is_some() {
             crate::i18n::t("chat-emoji-add-reaction")
         } else {
             crate::i18n::t("chat-emoji-title")
         };
-        label(
-            scene,
-            tr,
-            tf,
+        let title_band = Rect::new(panel.x0, panel.y0 + pad, panel.x1, panel.y0 + pad + title_h);
+        line_in(
+            &mut PaintCtx::new(scene, tf, tr, &local),
             &title,
-            13.0,
-            c.text_primary,
-            panel.x0 + 14.0,
-            panel.y0 + 12.0,
+            &local.text(TextRole::Subheading),
+            local.text_primary,
+            panel.x0 + pad,
+            title_band,
+            w - 2.0 * pad,
         );
 
-        // Search: the shared field, placed by hand like the composers.
+        // The filter: the shared field, placed by hand like the composers.
         let search = Rect::new(
-            panel.x0 + 12.0,
-            panel.y0 + 36.0,
-            panel.x1 - 12.0,
-            panel.y0 + 70.0,
+            panel.x0 + pad,
+            title_band.y1,
+            panel.x1 - pad,
+            title_band.y1 + field_h,
         );
         self.emoji_search.apply_layout_external(search);
-        self.emoji_search.draw(scene, tf, tr, theme, presence);
+        self.emoji_search.draw(scene, tf, tr, &local, presence);
         ChatApp::push_hit(hits, search, Hit::FocusEmojiSearch);
         // The rest of the panel keeps the query focused instead of dismissing;
         // the field's own rect above stays its accessible bounds.
         ChatApp::push_hit(hits, panel, Hit::FocusEmojiSearch);
         let query = self.emoji_search.value().trim().to_owned();
 
-        // Group tabs, painted by the shared segmented face.
+        // Group tabs.
         let groups = catalogue.groups();
         self.emoji_group = self.emoji_group.min(groups.len().saturating_sub(1));
-        let tabs_y = search.y1 + 8.0;
-        let tab_w = (w - 24.0) / groups.len().max(1) as f64;
-        let tab_rects: Vec<Rect> = (0..groups.len())
-            .map(|i| {
-                let x = panel.x0 + 12.0 + i as f64 * tab_w;
-                Rect::new(x, tabs_y, x + tab_w, tabs_y + 32.0)
-            })
-            .collect();
+        let tabs_y = search.y1 + pad;
         let icons: Vec<&str> = groups.iter().map(emoji::Group::icon).collect();
+        let segments: Vec<ui::widget::Segment> = icons
+            .iter()
+            .map(|icon| ui::widget::Segment::new(*icon))
+            .collect();
+        let tab_rects = SegmentedFace::partition_segments(
+            Rect::new(panel.x0 + pad, tabs_y, panel.x1 - pad, tabs_y + tabs_h),
+            &segments,
+            SegmentedStyle::Tabs,
+            ControlSize::Regular,
+            tr,
+            &local,
+        );
         let selected = if query.is_empty() {
             self.emoji_group
         } else {
@@ -1467,22 +1303,19 @@ impl ChatApp {
             scene,
             tf,
             tr,
-            theme,
-            &SegmentedFace::new(&tab_rects, &icons, selected)
-                .style(SegmentedStyle::Underline)
-                .text_size(16.0)
-                .weight(TextWeight::Regular),
+            &local,
+            &SegmentedFace::new(&tab_rects, &icons, selected).style(SegmentedStyle::Tabs),
         );
         for (i, r) in tab_rects.iter().enumerate() {
             ChatApp::push_hit(hits, *r, Hit::EmojiGroup(i));
         }
 
-        // The scrolling grid: search results, or recents + the group.
+        // The scrolling grid: matches, or recents + the group.
         let grid = Rect::new(
-            panel.x0 + 12.0,
-            tabs_y + 40.0,
-            panel.x1 - 12.0,
-            panel.y1 - 8.0,
+            panel.x0 + pad,
+            tabs_y + tabs_h + pad,
+            panel.x1 - pad,
+            panel.y1 - pad,
         );
         self.emoji_grid = grid;
         let mut sections: Vec<(String, Vec<&str>)> = Vec::new();
@@ -1519,39 +1352,49 @@ impl ChatApp {
             };
             sections.push((heading, found));
         }
+        let heading_style = local.text(TextRole::Caption);
+        let heading_h = line_of(tr, &heading_style) + f64::from(sp.s1);
         let content_h: f64 = sections
             .iter()
-            .map(|(_, set)| 16.0 + set.len().div_ceil(cols) as f64 * cell + 6.0)
+            .map(|(_, set)| heading_h + set.len().div_ceil(cols) as f64 * cell + f64::from(sp.s2))
             .sum();
         self.emoji_scroll = self.emoji_scroll.min((content_h - grid.height()).max(0.0));
 
-        crate::paint::push_clip(scene, tf, grid);
+        push_clip(scene, tf, grid);
         let mut y = grid.y0 - self.emoji_scroll;
         for (heading, set) in &sections {
-            label(scene, tr, tf, heading, 10.5, c.text_dim, grid.x0 + 2.0, y);
-            y += 16.0;
-            Self::emoji_grid(
-                PaintCtx::new(scene, tf, tr, theme),
+            text(
+                &mut PaintCtx::new(scene, tf, tr, &local),
+                heading,
+                &heading_style,
+                local.text_dim,
+                Point::new(grid.x0, y),
+                None,
+            );
+            y += heading_h;
+            self.emoji_grid(
+                PaintCtx::new(scene, tf, tr, &local),
                 set,
                 grid,
                 &mut y,
-                cols,
-                cell,
+                (cols, cell),
                 hits,
             );
+            y += f64::from(sp.s2);
         }
         scene.pop_layer();
     }
 
     /// One section's cells from `*y` down, advancing `*y` past them. Only
-    /// cells inside `clip` receive a hit target.
+    /// cells inside `clip` receive a hit target; the cell under the pointer
+    /// lifts.
     fn emoji_grid(
+        &self,
         paint: PaintCtx<'_>,
         set: &[&str],
         clip: Rect,
         y: &mut f64,
-        cols: usize,
-        cell: f64,
+        (cols, cell): (usize, f64),
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let PaintCtx {
@@ -1560,22 +1403,32 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
-        let c = &theme.tokens.colors;
+        // Emoji are content: set at the size of a title line.
+        let style = theme.text(TextRole::Title);
+        let ground = theme.tokens.colors.surfaces.content;
         for (i, e) in set.iter().enumerate() {
             let col = i % cols;
             let row = i / cols;
             let cx = clip.x0 + col as f64 * cell;
             let cyy = *y + row as f64 * cell;
-            let cellr = Rect::new(cx, cyy, cx + cell - 4.0, cyy + cell - 4.0);
+            let cellr = Rect::new(cx, cyy, cx + cell, cyy + cell);
             if cellr.y1 < clip.y0 || cellr.y0 > clip.y1 {
                 continue;
             }
-            let (ew, eh) = tr.measure(e, 19.0, None);
+            ui::chrome::paint_row_selection(
+                scene,
+                tf,
+                cellr,
+                ui::chrome::SelectionState::new(false, cellr.contains(self.last_mouse), false),
+                ground,
+                theme,
+            );
+            let (ew, eh) = tr.measure_style(e, None, &style);
             text(
                 &mut PaintCtx::new(scene, tf, tr, theme),
                 e,
-                &TextStyle::new(19.0),
-                c.text_primary,
+                &style,
+                theme.text_primary,
                 Point::new(
                     cellr.center().x - f64::from(ew) / 2.0,
                     cellr.center().y - f64::from(eh) / 2.0,
@@ -1588,14 +1441,11 @@ impl ChatApp {
             }
         }
         let rows = set.len().div_ceil(cols);
-        *y += rows as f64 * cell + 6.0;
+        *y += rows as f64 * cell;
     }
 
     // ------------------------------------------------------ history popover
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the popover is one linear measure-layout-paint pass whose row measurements and cursor positions must remain visibly adjacent"
-    )]
+    /// Every version of an edited message, newest first.
     pub(crate) fn draw_history_popover(
         &self,
         scene: &mut Scene,
@@ -1604,7 +1454,6 @@ impl ChatApp {
         theme: &Theme,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
-        let c = &theme.tokens.colors;
         ChatApp::push_hit(hits, self.rect, Hit::Dismiss);
         let Some(mid) = self.history_open.clone() else {
             return;
@@ -1612,141 +1461,180 @@ impl ChatApp {
         let Some(m) = self.message(&mid).cloned() else {
             return;
         };
-
-        let w = 380.0;
-        let tw = (w - 28.0) as f32;
-        // measure — each row's rendered body height is carried alongside its
-        // text so the draw loop never has to re-index back into a parallel
-        // heights vector.
+        let sp = &theme.tokens.spacing;
+        let local = theme.on_ground(ui::chrome::panel_ground(theme));
+        let pad = f64::from(sp.s4);
+        let w = f64::from(theme.tokens.metrics.panel_width_list);
+        let tw = (w - 2.0 * pad) as f32;
+        let head_style = local.text(TextRole::Caption).numeric();
+        let body_style = local.text(TextRole::Body);
+        let head_h = line_of(tr, &head_style);
         let mut entries: Vec<(String, String)> =
-            vec![(format!("Now · {}", model::clock(m.ts)), m.text.clone())];
+            vec![(format!("Current, {}", clock_label(m.ts)), m.text.clone())];
         for rec in m.history.iter().rev() {
             entries.push((
-                format!("Edited · {}", model::clock(rec.ts)),
+                format!("Earlier, {}", clock_label(rec.ts)),
                 rec.text.clone(),
             ));
         }
-        let mut total = 44.0;
+        let title_h = ui::chrome::nav_row_height(theme);
+        let gap = f64::from(sp.s3);
         let rows: Vec<(String, String, f64)> = entries
             .into_iter()
             .map(|(head, body)| {
-                let bh = f64::from(tr.measure(&body, 13.0, Some(tw)).1) + 22.0 + 14.0;
-                total += bh;
-                (head, body, bh)
+                let bh = f64::from(tr.measure_style(&body, Some(tw), &body_style).1);
+                (head, body, head_h + bh)
             })
             .collect();
-        let mut x0 = self.history_anchor.x;
-        let mut y0 = self.history_anchor.y;
-        x0 = x0.clamp(self.rect.x0 + 8.0, self.rect.x1 - w - 8.0);
-        y0 = y0.clamp(
-            self.rect.y0 + 8.0,
-            (self.rect.y1 - total - 8.0).max(self.rect.y0 + 8.0),
+        let total = pad + title_h + rows.iter().map(|(_, _, h)| h + gap).sum::<f64>() + pad - gap;
+        let margin = f64::from(sp.s2);
+        let x0 = self.history_anchor.x.clamp(
+            self.rect.x0 + margin,
+            (self.rect.x1 - w - margin).max(self.rect.x0 + margin),
+        );
+        let y0 = self.history_anchor.y.clamp(
+            self.rect.y0 + margin,
+            (self.rect.y1 - total - margin).max(self.rect.y0 + margin),
         );
         let panel = Rect::new(x0, y0, x0 + w, y0 + total);
-        // The shadow is the panel's own shape, from the elevation ladder (HIG
-        // §9.3); the solid 5 px silhouette it replaces was a grey ring on the
-        // light preset.
-        ui::surface::shadow(scene, tf, panel, 14.0, &theme.tokens.elevation.e2);
-        // A floating Panel: the derived panel border, crisp on the outermost
-        // pixel row (HIG §9.5).
-        fill_round(scene, tf, panel, 14.0, c.neutral[1]);
-        scene.stroke(
-            &Stroke::new(1.0),
-            tf,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(panel, 14.0),
-        );
-        label(
-            scene,
-            tr,
-            tf,
+        let radius = f64::from(theme.tokens.radii.panel);
+        ui::surface::shadow(scene, tf, panel, radius, &theme.tokens.elevation.floating);
+        ui::surface::panel(scene, tf, panel, radius, theme);
+        let mut ctx = PaintCtx::new(scene, tf, tr, &local);
+        let title_band = Rect::new(panel.x0, panel.y0 + pad, panel.x1, panel.y0 + pad + title_h);
+        line_in(
+            &mut ctx,
             "Edit history",
-            13.0,
-            c.text_primary,
-            panel.x0 + 14.0,
-            panel.y0 + 12.0,
+            &local.text(TextRole::Subheading),
+            local.text_primary,
+            panel.x0 + pad,
+            title_band,
+            w - 2.0 * pad,
         );
-
-        let mut y = panel.y0 + 38.0;
+        let mut y = title_band.y1;
+        let ground = local.tokens.colors.surfaces.content;
         let row_count = rows.len();
-        for (i, (head, body, bh)) in rows.iter().enumerate() {
-            let accent = i == 0;
-            label(
-                scene,
-                tr,
-                tf,
-                head,
-                11.0,
-                if accent { c.accent[6] } else { c.text_dim },
-                panel.x0 + 14.0,
-                y,
-            );
-            y += 18.0;
+        for (i, (head, body, h)) in rows.iter().enumerate() {
             text(
-                &mut PaintCtx::new(scene, tf, tr, theme),
+                &mut ctx,
+                head,
+                &head_style,
+                local.text_dim,
+                Point::new(panel.x0 + pad, y),
+                None,
+            );
+            text(
+                &mut ctx,
                 body,
-                &TextStyle::new(13.0),
-                if accent { c.text_primary } else { c.text_dim },
-                Point::new(panel.x0 + 14.0, y),
+                &body_style,
+                if i == 0 {
+                    local.text_primary
+                } else {
+                    local.text_dim
+                },
+                Point::new(panel.x0 + pad, y + head_h),
                 Some(tw),
             );
-            y += bh - 22.0 - 14.0 + 8.0;
+            y += h + gap;
             if i + 1 < row_count {
                 ui::surface::separator(
-                    scene,
+                    ctx.scene,
                     tf,
                     panel.x0,
                     panel.x1,
-                    y,
-                    f64::from(theme.tokens.spacing.s3),
-                    c.neutral[1],
+                    y - gap / 2.0,
+                    pad,
+                    ground,
                 );
             }
-            y += 6.0;
         }
-        let _ = Presence::Online;
     }
+}
+
+/// The local time of `ts` as `HH:MM`.
+fn clock_label(ts: i64) -> String {
+    model::clock(ts + i64::from(ui::clock::local_now().offset().local_minus_utc()))
+}
+
+/// Greedy-pack buttons `widths` wide into rows that each fit `max_row_w`.
+/// Always at least one (possibly empty) row.
+fn pack_rows(widths: &[f64], gap: f64, max_row_w: f64) -> Vec<Vec<usize>> {
+    let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut cur = 0.0;
+    for (i, w) in widths.iter().enumerate() {
+        let full = rows.last().is_some_and(|last| !last.is_empty());
+        let extra = if full { gap } else { 0.0 } + w;
+        if full && cur + extra > max_row_w {
+            rows.push(vec![i]);
+            cur = *w;
+        } else if let Some(last) = rows.last_mut() {
+            last.push(i);
+            cur += extra;
+        }
+    }
+    rows
+}
+
+/// Height of a tile's name plate: one label line inside the selector
+/// height, so the avatar block above it always clears it.
+fn plate_height(theme: &Theme) -> f64 {
+    ChipFace::height(theme)
+}
+
+/// How large a viewfinder's avatar disc may be: the side the tile asks for,
+/// and the smallest it may shrink to before it is left out.
+#[derive(Clone, Copy, Debug)]
+struct AvatarSides {
+    wanted: f64,
+    least: f64,
+}
+
+/// Where a viewfinder's avatar disc and caption land.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ViewfinderBlock {
+    disc_cy: f64,
+    side: f64,
+    /// The caption's top, or `None` when the tile has no room for it.
+    caption_y: Option<f64>,
+}
+
+/// Lay out a viewfinder's disc and caption as one block, `gap` apart and
+/// centred in the band between the tile's top inset and the name plate's
+/// reserve (`plate_h` plus its `gap` inset plus `gap` of air above it). A
+/// short tile shrinks the disc first, then drops the caption, then the disc,
+/// so nothing ever touches the plate.
+fn viewfinder_block(
+    tile: Rect,
+    sides: AvatarSides,
+    caption_h: f64,
+    plate_h: f64,
+    gap: f64,
+) -> Option<ViewfinderBlock> {
+    let band_top = tile.y0 + gap;
+    let band_bottom = tile.y1 - gap - plate_h - gap;
+    let room = band_bottom - band_top;
+    let with_caption = (room - gap - caption_h).min(sides.wanted);
+    let (side, caption) = if with_caption >= sides.least {
+        (with_caption, true)
+    } else if room >= sides.least {
+        (room.min(sides.wanted), false)
+    } else {
+        return None;
+    };
+    let block_h = side + if caption { gap + caption_h } else { 0.0 };
+    let top = band_top + (room - block_h) / 2.0;
+    Some(ViewfinderBlock {
+        disc_cy: top + side / 2.0,
+        side,
+        caption_y: caption.then_some(top + side + gap),
+    })
 }
 
 /// The honest one-line caption shown under a remote participant's avatar in
 /// the expanded call grid. There is no remote camera capture wired up in this
 /// environment, so a tile must never imply a live feed: an audio-only peer
 /// reads "Camera off"; a camera-enabled peer whose frame doesn't reach us
-/// reads "No video". Both are literally true, and both mirror the host tile's
-/// honest placeholder — the tile shows an avatar, never a fabricated picture.
-/// Height of a tile's bottom-left name plate: the 12 px label's line box
-/// (`text_metrics::line_height_px`, exactly what `measure` reports for one
-/// line) plus `s1` above and below, never shorter than the 1× plate. One
-/// rule for the plate painter and for the avatar block that must clear it.
-fn plate_height(theme: &Theme) -> f64 {
-    (ui::text_metrics::line_height_px(12.0, theme.text_scale)
-        + 2.0 * f64::from(theme.tokens.spacing.s1))
-    .max(22.0)
-}
-
-/// Where a tile's avatar disc and its caption land: `(disc_cy, caption_y)`.
-/// The disc (radius `radius`) and the `caption_h`-tall caption are one
-/// block, `gap` apart, centred in the band between the tile's top inset and
-/// the name plate's reserve (`plate_h` plus its `gap` inset plus `gap` of
-/// air above it). The caption used to hang a fixed 8 px under a disc pinned
-/// near the tile's centre, which on a filmstrip tile put its baseline on
-/// the plate's top edge (HIG §7: nothing touches). When the band is too
-/// short for the block, the block reads from the band's top.
-fn avatar_caption_block(
-    tile: Rect,
-    radius: f64,
-    caption_h: f64,
-    plate_h: f64,
-    gap: f64,
-) -> (f64, f64) {
-    let band_top = tile.y0 + gap;
-    let band_bottom = tile.y1 - gap - plate_h - gap;
-    let block_h = 2.0 * radius + gap + caption_h;
-    let top = (band_top + (band_bottom - band_top - block_h) / 2.0).max(band_top);
-    (top + radius, top + 2.0 * radius + gap)
-}
-
+/// reads "No video".
 fn member_tile_caption(p: &Participant) -> &'static str {
     if p.audio_only {
         "Camera off"
@@ -1755,25 +1643,15 @@ fn member_tile_caption(p: &Participant) -> &'static str {
     }
 }
 
-/// A measurement-free width for an expanded-overlay control button: the fixed
-/// label length at the 13px control font plus horizontal padding. Deterministic
-/// so the controls bar (and the tile band bounded above it) lays out
-/// identically without a [`TextRenderer`], while the label still renders
-/// centred within the button via the real measured width at draw time.
-fn overlay_button_width(label: &str) -> f64 {
-    label.chars().count() as f64 * 8.0 + 26.0
-}
-
 /// Lay `n` participant tiles into a single centred row filling `region`'s
 /// height — the presentation-stage filmstrip beneath the featured screen. Each
 /// tile is landscape-ish (capped at an equal share of the row width) and every
 /// returned rect stays inside `region`, so the strip never spills past the
 /// window at any headcount.
-fn filmstrip_rects(region: Rect, n: usize) -> Vec<Rect> {
+fn filmstrip_rects(region: Rect, n: usize, gap: f64) -> Vec<Rect> {
     if n == 0 || region.width() <= 1.0 || region.height() <= 1.0 {
         return vec![];
     }
-    let gap = 12.0;
     let h = region.height();
     // An equal share of the row is the ceiling; prefer a landscape tile but
     // never wider than that share, so the row always fits.
@@ -1793,11 +1671,10 @@ fn filmstrip_rects(region: Rect, n: usize) -> Vec<Rect> {
 /// the largest, most camera-shaped uniform tiles. Every returned rect is
 /// contained within `region`, so the grid can never spill past the window at
 /// any width or headcount. A partly-filled last row is centred.
-fn grid_rects(region: Rect, n: usize) -> Vec<Rect> {
+fn grid_rects(region: Rect, n: usize, gap: f64) -> Vec<Rect> {
     if n == 0 || region.width() <= 1.0 || region.height() <= 1.0 {
         return vec![];
     }
-    let gap = (region.width().min(region.height()) * 0.05).clamp(6.0, 16.0);
 
     // Try every column count and keep the one that maximises usable tile size,
     // lightly penalising extreme aspect ratios so tiles stay landscape-ish.
@@ -1852,22 +1729,26 @@ fn grid_rects(region: Rect, n: usize) -> Vec<Rect> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CALL_CTL_MIN_H, CallOverlayMetrics, Participant, avatar_caption_block, filmstrip_rects,
-        grid_rects, huddle_lower_chrome_for_reveal, member_tile_caption, overlay_button_width,
+        AvatarSides, CallOverlayMetrics, Participant, filmstrip_rects, grid_rects,
+        member_tile_caption, pack_rows, viewfinder_block,
     };
     use vello::kurbo::Rect;
 
     #[test]
     fn overlay_metrics_size_header_buttons_and_lower_chrome() {
-        // Phase: overlay_metrics_fall_back_to_the_authored_rules_before_the_first_paint.
+        // Phase: overlay_metrics_fall_back_to_the_theme_before_the_first_paint.
         {
             let m = CallOverlayMetrics::default();
-            // The 1× header: `s6` + a 20 px line + `s1` + a 12 px line + `s2`.
-            assert!((m.header_h() - 76.0).abs() < 1e-6);
-            assert_eq!(m.button_h, CALL_CTL_MIN_H);
-            // An unmeasured label keeps the fixed-length estimate the 1× layout
-            // used, so the geometry tests (which never paint) still resolve.
-            assert_eq!(m.button_width("Mute"), overlay_button_width("Mute"));
+            // The header: `s6` + a Title line + `s4`.
+            assert!(
+                (m.header_h() - (m.header_pad_top + m.title_h + m.header_pad_bottom)).abs() < 1e-6
+            );
+            assert!(m.title_h > 0.0 && m.button_h > 0.0);
+            // An unmeasured label is estimated from its length, so the
+            // geometry tests (which never paint) still resolve, and a longer
+            // label is estimated wider.
+            assert!(m.button_width("Unmute") > m.button_width("Mute"));
+            assert!(m.button_width("Mute") > m.button_chrome_w);
         }
         // Phase: measured_button_widths_replace_the_estimate_label_by_label.
         {
@@ -1879,63 +1760,87 @@ mod tests {
             assert_eq!(m.button_width("Leave"), 80.5);
             // A label that toggled since the measurement (Mute → Unmute) falls
             // back rather than borrowing another label's width.
-            assert_eq!(m.button_width("Unmute"), overlay_button_width("Unmute"));
+            assert_eq!(
+                m.button_width("Unmute"),
+                CallOverlayMetrics::default().button_width("Unmute")
+            );
         }
-        // Phase: a_scaled_header_pushes_the_tile_band_down_by_its_extra_lines.
+        // Phase: a_scaled_title_pushes_the_tile_band_down_by_its_extra_height.
         {
-            // Title and subtitle boxes doubled (25 → 50, 15 → 30): the band the
-            // tiles start under grows by exactly the 40 px the lines gained.
+            let base = CallOverlayMetrics::default();
             let m = CallOverlayMetrics {
-                title_h: 50.0,
-                subtitle_h: 30.0,
+                title_h: base.title_h * 2.0,
                 ..CallOverlayMetrics::default()
             };
-            let grew = m.header_h() - CallOverlayMetrics::default().header_h();
-            assert!((grew - 40.0).abs() < 1e-9, "grew {grew}");
+            let grew = m.header_h() - base.header_h();
+            assert!((grew - base.title_h).abs() < 1e-9, "grew {grew}");
         }
-        // Phase: participant_reveal_morphs_the_complete_lower_chrome_monotonically.
+        // Phase: controls_pack_into_rows_that_fit.
         {
-            let samples = [0.0, 0.25, 0.5, 0.75, 1.0].map(huddle_lower_chrome_for_reveal);
-            assert_eq!(samples[0], 116.0);
-            assert_eq!(samples[2], 136.0);
-            assert_eq!(samples[4], 156.0);
-            assert!(samples.windows(2).all(|pair| pair[0] < pair[1]));
+            assert_eq!(
+                pack_rows(&[50.0, 50.0, 50.0], 10.0, 200.0),
+                vec![vec![0, 1, 2]]
+            );
+            assert_eq!(
+                pack_rows(&[80.0, 80.0, 80.0], 10.0, 200.0),
+                vec![vec![0, 1], vec![2]]
+            );
+            assert_eq!(pack_rows(&[], 10.0, 200.0), vec![Vec::<usize>::new()]);
         }
     }
 
     #[test]
     fn member_tile_centres_an_honest_caption_clear_of_the_name_plate() {
-        // Phase: avatar_caption_block_clears_the_name_plate_by_the_token_gap.
-        // The presentation-stage filmstrip must lay every participant in a single
-        // centred row that stays inside its region, at any headcount — the
-        // invariant the screen-share stage leans on so the strip never spills.
+        // Phase: the_block_centres_clear_of_the_name_plate_by_the_token_gap.
         {
-            // A 1× filmstrip tile: 232×152, the disc radius the member tile
-            // derives from that height, a 14.4 px caption and a 23 px plate. The
+            // A filmstrip tile, a disc that fits, a caption and a plate. The
             // caption's bottom stays a full `s2` above the plate's reserve.
             let tile = Rect::new(0.0, 0.0, 232.0, 152.0);
-            let (radius, caption_h, plate_h, gap) = (33.44, 14.4, 23.0, 8.0);
-            let (cy, caption_y) = avatar_caption_block(tile, radius, caption_h, plate_h, gap);
+            let sides = AvatarSides {
+                wanted: 60.0,
+                least: 24.0,
+            };
+            let (caption_h, plate_h, gap) = (16.0, 28.0, 8.0);
+            let block = viewfinder_block(tile, sides, caption_h, plate_h, gap).unwrap();
+            assert_eq!(block.side, 60.0);
+            let caption_y = block.caption_y.unwrap();
             let plate_top = tile.y1 - gap - plate_h;
-            assert!(
-                caption_y + caption_h <= plate_top - gap + 1e-9,
-                "caption bottom {} vs plate top {plate_top}",
-                caption_y + caption_h
-            );
-            assert!(cy - radius >= tile.y0 + gap, "disc inside the band");
-            // Centred: equal air above the disc and below the caption, inside the band.
-            let above = (cy - radius) - (tile.y0 + gap);
+            assert!(caption_y + caption_h <= plate_top - gap + 1e-9);
+            assert!(block.disc_cy - block.side / 2.0 >= tile.y0 + gap);
+            // Centred: equal air above the disc and below the caption.
+            let above = (block.disc_cy - block.side / 2.0) - (tile.y0 + gap);
             let below = (plate_top - gap) - (caption_y + caption_h);
             assert!((above - below).abs() < 1e-9, "above {above} below {below}");
         }
-        // Phase: a_short_tile_reads_the_block_from_the_band_top.
+        // Phase: a_short_tile_shrinks_the_disc_then_drops_the_caption_then_the_disc.
         {
-            // Too short for the block: it starts at the band's top instead of
-            // poking above the tile.
+            let sides = AvatarSides {
+                wanted: 60.0,
+                least: 24.0,
+            };
+            let (caption_h, plate_h, gap) = (16.0, 28.0, 8.0);
+            let fits_all = |tile: Rect, block: super::ViewfinderBlock| {
+                let plate_top = tile.y1 - gap - plate_h;
+                let bottom = block
+                    .caption_y
+                    .map_or(block.disc_cy + block.side / 2.0, |y| y + caption_h);
+                block.disc_cy - block.side / 2.0 >= tile.y0 + gap - 1e-9
+                    && bottom <= plate_top - gap + 1e-9
+            };
+            // Room for a smaller disc and the caption.
+            let tile = Rect::new(0.0, 0.0, 200.0, 100.0);
+            let block = viewfinder_block(tile, sides, caption_h, plate_h, gap).unwrap();
+            assert!(block.side < sides.wanted && block.side >= sides.least);
+            assert!(block.caption_y.is_some());
+            assert!(fits_all(tile, block));
+            // Room for a disc only.
             let tile = Rect::new(0.0, 0.0, 200.0, 80.0);
-            let (cy, caption_y) = avatar_caption_block(tile, 33.44, 14.4, 23.0, 8.0);
-            assert!((cy - 33.44 - 8.0).abs() < 1e-9);
-            assert!(caption_y > cy);
+            let block = viewfinder_block(tile, sides, caption_h, plate_h, gap).unwrap();
+            assert!(block.caption_y.is_none());
+            assert!(fits_all(tile, block));
+            // No room for a disc: the plate alone names them.
+            let tile = Rect::new(0.0, 0.0, 200.0, 60.0);
+            assert!(viewfinder_block(tile, sides, caption_h, plate_h, gap).is_none());
         }
         // Phase: remote_tile_caption_is_honest_never_a_fabricated_feed.
         // Defect regression: remote tiles must be honest — never present a
@@ -1961,7 +1866,7 @@ mod tests {
             for &(w, h) in &[(1200.0_f64, 180.0_f64), (700.0, 150.0), (500.0, 120.0)] {
                 let region = Rect::new(40.0, 600.0, 40.0 + w, 600.0 + h);
                 for n in 1..=8 {
-                    let tiles = filmstrip_rects(region, n);
+                    let tiles = filmstrip_rects(region, n, 12.0);
                     assert_eq!(tiles.len(), n, "n={n}: wrong tile count");
                     for t in &tiles {
                         assert!(
@@ -1987,14 +1892,13 @@ mod tests {
         }
         // Phase: filmstrip_is_empty_for_no_participants.
         {
-            assert!(filmstrip_rects(Rect::new(0.0, 0.0, 400.0, 120.0), 0).is_empty());
+            assert!(filmstrip_rects(Rect::new(0.0, 0.0, 400.0, 120.0), 0, 12.0).is_empty());
         }
     }
 
     fn participant(audio_only: bool) -> Participant {
         Participant {
             user: "u_x".into(),
-            talking: false,
             muted: false,
             audio_only,
             sharing: false,
@@ -2013,7 +1917,7 @@ mod tests {
                 // what the overlay now hands the packer (host + remotes together).
                 let region = Rect::new(0.05 * w, 72.0, w - 0.05 * w, h - 128.0);
                 for n in 1..=9 {
-                    let rects = grid_rects(region, n);
+                    let rects = grid_rects(region, n, 12.0);
                     assert_eq!(rects.len(), n, "n={n} produced the wrong tile count");
                     for r in &rects {
                         assert!(
@@ -2042,7 +1946,7 @@ mod tests {
         }
         // Phase: grid_is_empty_for_no_remotes.
         {
-            assert!(grid_rects(Rect::new(0.0, 0.0, 400.0, 300.0), 0).is_empty());
+            assert!(grid_rects(Rect::new(0.0, 0.0, 400.0, 300.0), 0, 12.0).is_empty());
         }
         // Phase: grid_fills_the_region_leaving_no_void.
         // The narrow-width void regression: with the host as the first cell of a
@@ -2057,7 +1961,8 @@ mod tests {
                 let region = Rect::new(0.05 * w, 72.0, w - 0.05 * w, h - 128.0);
                 // A host + three remotes: the demo huddle, the exact case that
                 // exposed the void.
-                let tiles = grid_rects(region, 4);
+                let gap = 12.0;
+                let tiles = grid_rects(region, 4, gap);
                 let bbox =
                     tiles
                         .iter()
@@ -2071,7 +1976,6 @@ mod tests {
                         });
                 // One inter-tile gap is the largest legitimate slack (a centred row
                 // or column can sit a gap in from an edge).
-                let gap = (region.width().min(region.height()) * 0.05).clamp(6.0, 16.0);
                 let slack = gap + 1.0;
                 assert!(
                     bbox.x0 - region.x0 <= slack && region.x1 - bbox.x1 <= slack,

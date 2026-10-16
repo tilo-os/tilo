@@ -1,0 +1,5 @@
+*
+!bin/
+!assets/
+!bots/
+!verify-no-cisco-openh264.sh

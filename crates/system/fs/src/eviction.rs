@@ -10,7 +10,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use collab_types::{FileRecordId, FileVersionId};
+use fs_protocol::{FileRecordId, FileVersionId};
 use futures_util::stream::{self, StreamExt, TryStreamExt};
 use iroh_blobs::Hash;
 use serde::{Deserialize, Serialize};
@@ -18,11 +18,13 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::availability::{
-    AvailabilityPolicy, AvailabilityRegistry, EvictionBlocker, EvictionDecision,
-    EvictionRequirements, RecordAvailability, RecordKind, Residency,
+    AvailabilityRegistry, EvictionBlocker, EvictionDecision, EvictionRequirements,
+    RecordAvailability, RecordKind, pinned_in_snapshot,
 };
 use crate::clock::unix_now_ms;
 use crate::{FileHistoryStore, Hydrator};
+use fs_protocol::{AvailabilityPolicy, Residency};
+use tilo_lock::MutexRecover as _;
 
 /// Bound catalog I/O so opening Settings does not serialize one backend
 /// status query per chunk across a large workspace.
@@ -68,16 +70,12 @@ impl EvictionCoordinator {
     ) -> anyhow::Result<EvictionPlan> {
         let records = self
             .registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .records()
             .cloned()
             .collect::<Vec<_>>();
         let catalog = self.catalog_for_targets(&records, &[record_id]).await?;
-        let registry = self
-            .registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let registry = self.registry.lock_recover();
         if registry.records().cloned().collect::<Vec<_>>() != records {
             anyhow::bail!("availability changed during eviction planning");
         }
@@ -99,16 +97,12 @@ impl EvictionCoordinator {
     ) -> anyhow::Result<HashMap<FileRecordId, Option<EvictionPlan>>> {
         let records = self
             .registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .records()
             .cloned()
             .collect::<Vec<_>>();
         let catalog = self.catalog_for_targets(&records, targets).await?;
-        let registry = self
-            .registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let registry = self.registry.lock_recover();
         if registry.records().cloned().collect::<Vec<_>>() != records {
             anyhow::bail!("availability changed during eviction planning");
         }
@@ -212,8 +206,7 @@ impl EvictionCoordinator {
     {
         let records = self
             .registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .records()
             .cloned()
             .collect::<Vec<_>>();
@@ -236,7 +229,7 @@ impl EvictionCoordinator {
                 .ok_or_else(|| {
                     anyhow::anyhow!("version history changed during eviction planning")
                 })?;
-            if version.content_hash != Some(collab_types::ContentHash(*expected_hash.as_bytes())) {
+            if version.content_hash != Some(fs_protocol::ContentHash(*expected_hash.as_bytes())) {
                 anyhow::bail!("workspace changed since preview");
             }
         }
@@ -244,9 +237,7 @@ impl EvictionCoordinator {
         let registry = Arc::clone(&self.registry);
         let queue = Arc::clone(&self.queue);
         tokio::task::spawn_blocking(move || {
-            let registry_guard = registry
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let registry_guard = registry.lock_recover();
             if registry_guard.records().cloned().collect::<Vec<_>>() != records {
                 anyhow::bail!("availability changed during eviction planning");
             }
@@ -292,10 +283,7 @@ impl EvictionCoordinator {
         let EvictionRequestState::Completed { observed_at_ms } = observation.state else {
             return Ok(false);
         };
-        let mut registry = self
-            .registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut registry = self.registry.lock_recover();
         if request.record_id != record_id
             || registry.get(record_id).is_none_or(|record| {
                 record.current_version != Some(request.version_id)
@@ -346,7 +334,7 @@ impl EvictionCoordinator {
             }
             let protects_current = targets.contains(&record.record_id)
                 || record.residency != Residency::NotResident
-                || captured_effective_pinned(records, record.record_id);
+                || pinned_in_snapshot(records, record.record_id);
             if protects_current && let Some(version) = record.current_version {
                 keys.push((record.record_id, version));
             }
@@ -394,25 +382,6 @@ impl EvictionCoordinator {
             .await?;
         Ok(EvictionCatalog::with_empty_versions(payloads, empty)?)
     }
-}
-
-fn captured_effective_pinned(records: &[RecordAvailability], record_id: FileRecordId) -> bool {
-    let mut current = Some(record_id);
-    let mut remaining = records.len().saturating_add(1);
-    while let Some(record_id) = current {
-        if remaining == 0 {
-            return true;
-        }
-        remaining = remaining.saturating_sub(1);
-        let Some(record) = records.iter().find(|record| record.record_id == record_id) else {
-            return true;
-        };
-        if record.policy == AvailabilityPolicy::Pinned {
-            return true;
-        }
-        current = record.parent;
-    }
-    false
 }
 
 fn plan_for_mode(
@@ -921,7 +890,7 @@ impl EvictionQueue {
             requests: self.requests.values().cloned().collect(),
         };
         let bytes = serde_json::to_vec_pretty(&document)?;
-        atomic_file::write_creating_parent(&self.path, &bytes)?;
+        tilo_files::native::atomic::write_creating_parent(&self.path, &bytes)?;
         Ok(())
     }
 }
@@ -1412,8 +1381,9 @@ fn sum_bytes(extents: &[BlobExtent]) -> u64 {
 mod tests {
     use super::*;
     use crate::availability::{RecordAvailability, ReplicaObservation};
-    use collab_types::{ContentHash, Ed25519PublicKey, FileActor};
+    use collab_types::Ed25519PublicKey;
     use ed25519_dalek::SigningKey;
+    use fs_protocol::{ContentHash, FileActor};
     use getrandom::{SysRng, rand_core::UnwrapErr};
     use tempfile::TempDir;
 
@@ -1457,8 +1427,8 @@ mod tests {
         };
         let request = crate::replica_ack::ReplicaAckRequestV1::new(
             uuid::Uuid::new_v4(),
-            collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+            fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id: id,
                 version_id: version,
                 content_hash: Some(ContentHash([6; 32])),
@@ -1653,10 +1623,10 @@ mod tests {
             let missing = FileRecordId::new();
             let mut child = RecordAvailability::new(child_id, RecordKind::File);
             child.parent = Some(missing);
-            assert!(captured_effective_pinned(&[child.clone()], child_id));
+            assert!(pinned_in_snapshot(&[child.clone()], child_id));
 
             child.parent = Some(child_id);
-            assert!(captured_effective_pinned(&[child], child_id));
+            assert!(pinned_in_snapshot(&[child], child_id));
         }
         // Phase `batch_safe_plans_match_single_plans_for_shared_and_partial_payloads`.
         {

@@ -28,11 +28,15 @@ path = "src/main.rs"
 # in-band blobs and the .tapp's PackageId.
 
 [dependencies]
+tilo-files = { path = "../../platform/tilo-files" }
 tilo-app-package = { path = "../tilo-app-package" }
 app-registry = { path = "../app-registry" }
 # Signed `/entries` rows for `tilo-app-package entry`; `rand` for `keygen`.
 registry-types = { path = "../registry-types" }
 registry-client = { path = "../registry-client" }
+# `bot-entry` reads a Shortcut and encodes it canonically.
+tilo-automation = { path = "../../collab/automation" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 getrandom.workspace = true
 
 anyhow.workspace = true
@@ -45,7 +49,7 @@ serde_json.workspace = true
 # The other subcommands stay synchronous; publish drives a runtime inline.
 tokio = { workspace = true, features = ["macros", "signal"] }
 tilo-rt.workspace = true
-# `pack-web` stages the module and assets as a payload directory.
+# `pack-desktop` stages the executable as a payload directory.
 tempfile.workspace = true
 workspace-hack = { version = "0.1" }
 

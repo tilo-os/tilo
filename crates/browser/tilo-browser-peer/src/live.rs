@@ -73,7 +73,7 @@ impl LiveState {
 
     /// [`Self::new`] at the current wall-clock time.
     pub fn starting_now() -> Self {
-        Self::new(crate::clock::now_ms())
+        Self::new(tilo_clock::unix_now_ms())
     }
 
     /// A member joined or left the room's live plane.
@@ -96,6 +96,11 @@ impl LiveState {
     /// Returns what changed, or `None` for a stale or undecodable frame.
     pub fn receive(&mut self, from: [u8; 32], frame: &[u8], now_ms: u64) -> Option<LiveChange> {
         let frame = LiveFrame::decode(frame).ok()?;
+        // Semantic work requires a separately authenticated consumer. It must
+        // never create a pointer member or refresh a pointer's idle lifetime.
+        if matches!(frame, LiveFrame::Ops(OpsFrame::Semantic { .. })) {
+            return None;
+        }
         self.members.insert(from);
         let member = self.remote.entry(from).or_insert_with(|| RemoteMember {
             publisher: from,
@@ -135,6 +140,7 @@ impl LiveState {
                 member.previews.remove(&record);
                 Some(LiveChange::Preview(from, record))
             }
+            LiveFrame::Ops(OpsFrame::Semantic { .. }) => None,
         }
     }
 
@@ -182,6 +188,7 @@ impl LiveState {
         update: impl FnOnce(&mut PresenceFrame),
     ) -> Result<Vec<u8>, LiveWireError> {
         let mut presence = self.local_presence.clone().unwrap_or(PresenceFrame {
+            place: None,
             seq: 0,
             sent_at_ms: 0,
             focus: None,
@@ -218,16 +225,6 @@ impl LiveState {
         })
         .encode()
     }
-
-    /// Encode the end of this device's previews for `record`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the record violates the wire bounds.
-    pub fn end_preview(&mut self, record: LiveRecord) -> Result<Vec<u8>, LiveWireError> {
-        self.preview_seq.remove(&record);
-        LiveFrame::Ops(OpsFrame::End { record }).encode()
-    }
 }
 
 #[cfg(test)]
@@ -240,6 +237,37 @@ mod tests {
             app: "so.tilo.notes".into(),
             record: "r".into(),
         }
+    }
+
+    #[test]
+    fn semantic_events_cannot_create_or_refresh_pointer_presence() {
+        let from = [4; 32];
+        let semantic = LiveFrame::Ops(OpsFrame::Semantic {
+            record: record(),
+            event: tilo_relay_protocol::live::SemanticFrame {
+                version: 1,
+                seq: 1,
+                sent_at_ms: 1,
+                execution: "11111111-1111-4111-8111-111111111111".parse().unwrap(),
+                peer: 7,
+                interaction_json: "{}".into(),
+            },
+        })
+        .encode()
+        .unwrap();
+        let mut receiver = LiveState::default();
+        assert_eq!(receiver.receive(from, &semantic, 1), None);
+        assert_eq!(receiver.members().count(), 0);
+        assert!(receiver.remote(1).is_empty());
+        let pointer = LiveState::default()
+            .publish_presence(1, |presence| {
+                presence.focus = Some(record());
+                presence.pointer = Some([10.0, 20.0]);
+            })
+            .unwrap();
+        receiver.receive(from, &pointer, 1);
+        receiver.receive(from, &semantic, STALE_AFTER_MS);
+        assert!(receiver.remote(STALE_AFTER_MS + 1)[0].stale);
     }
 
     #[test]

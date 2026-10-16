@@ -80,7 +80,7 @@ without root.
 
 ## The `cli` SDK
 
-CLI apps typically depend on the `cli` sibling of `runtime`, which layers
+CLI apps typically depend on the `cli` crate, which layers
 CLI-specific ergonomics on top:
 
 ```rust
@@ -98,8 +98,8 @@ fn main() -> std::process::ExitCode {
 Public API:
 
 ```rust
-pub use runtime::NotAvailable;
-pub use runtime::is_tilo_native;
+pub use runtime_portal::NotAvailable;
+pub use runtime_portal::is_tilo_native;
 pub use output::{OutputBuilder, output};
 pub use workspace::{
     /* WorkspaceHandle, is_workspace_available, workspace_root, resolve_workspace_path */
@@ -126,9 +126,9 @@ instead of panicking.
    `/run/tilo/app/.local/share`, so the fallback lands in the directory
    the app was given.
 
-The two paths are deliberately unrelated to `runtime::fs` so the CLI keeps
+The two paths are deliberately unrelated to `runtime_fs` so the CLI keeps
 working when the FUSE is offline. If your app needs the CRDT-backed
-workspace, wire `runtime::fs::try_connect()` explicitly; if it only needs
+workspace, wire `runtime_fs::try_connect()` explicitly; if it only needs
 a place to put its own state, use `resolve_workspace_path`.
 
 ## Walkthrough: notes-cli
@@ -185,8 +185,8 @@ installed: so.tilo.notes-cli 0.1.0
 run with:  tilo-install run so.tilo.notes-cli
 
 $ ls -la /tmp/tilo-install-demo-data/tilo-apps/bin/
--rwxr-xr-x. 1 ada ada 886728  4. Jul 16:45 notes
--rw-r--r--. 1 ada ada    158  4. Jul 16:45 notes.tilo-shim
+-rwxr-xr-x. 1 you you 886728  4. Jul 16:45 notes
+-rw-r--r--. 1 you you    158  4. Jul 16:45 notes.tilo-shim
 
 $ export PATH="/tmp/tilo-install-demo-data/tilo-apps/bin:$PATH"
 

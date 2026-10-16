@@ -13,9 +13,9 @@ from ..core import CheckFailed, Unobservable, check, expect
 AREA = "ui"
 
 THEMES = {
-    "light": {"theme": "light", "high_contrast": False},
-    "dark": {"theme": "dark", "high_contrast": False},
-    "high-contrast": {"theme": "dark", "high_contrast": True},
+    "light": ("appearance.theme.light",),
+    "dark": ("appearance.theme.dark",),
+    "high-contrast": ("appearance.theme.dark", "appearance.high-contrast"),
 }
 
 # Chrome only: window contents scroll out of view by design.
@@ -24,12 +24,9 @@ CONTAINER = re.compile(r"(Host|Container|Layer|Root)(\[\d+\])?$")
 
 
 def set_theme(ctx, name: str) -> None:
-    """Persist a theme the way Settings > Appearance does (settings.json)."""
-    raw = ctx.vm.exec('cat "$HOME/.config/tilo/settings.json" 2>/dev/null || echo "{}"')
-    body = "\n".join(l for l in raw.splitlines() if not l.startswith("receipt:"))
-    doc = json.loads(body or "{}")
-    doc.setdefault("appearance", {}).update(THEMES[name])
-    ctx.vm.write_home_file(".config/tilo/settings.json", json.dumps(doc, indent=2).encode())
+    """Select the theme through shell actions, which persist it and repaint chrome."""
+    for action in THEMES[name]:
+        ctx.vm.invoke("actions", action)
     time.sleep(2.5)
 
 
@@ -103,6 +100,19 @@ def _surface_pass(ctx, res, label):
     return findings
 
 
+def theme_contrast_problems(lum: dict) -> list[str]:
+    """Light Quick Settings must read clearly lighter than dark ones. A pass that
+    measured neither cannot say whether the theme reached the chrome."""
+    missing = [t for t in ("light", "dark") if lum.get(t) is None]
+    if missing:
+        return [f"quick settings luminance not measured in {' and '.join(missing)}: "
+                "cannot tell whether the theme change reached the chrome"]
+    if lum["light"] <= lum["dark"] + 0.15:
+        return [f"light and dark quick settings look alike (luminance {lum['light']} vs {lum['dark']}): "
+                "the theme change did not reach the chrome"]
+    return []
+
+
 def _matrix(ctx, res, locale):
     ctx.reset()
     try:
@@ -128,9 +138,7 @@ def _matrix(ctx, res, locale):
     lum = {t: per_theme[t]["quick-settings"].get("centre_pixels", {}).get("mean")
            for t in THEMES if "centre_pixels" in per_theme[t].get("quick-settings", {})}
     res.metrics["quick_settings_centre_luminance"] = lum
-    if lum.get("light") is not None and lum.get("dark") is not None and lum["light"] <= lum["dark"] + 0.15:
-        problems.append(f"light and dark quick settings look alike (luminance {lum['light']} vs {lum['dark']}): "
-                        "the theme change did not reach the chrome")
+    problems += theme_contrast_problems(lum)
     ctx.write(f"U-{locale}-layout.json", json.dumps(per_theme, indent=1, default=str))
     res.metrics["surfaces"] = {t: {s: {k: (len(v) if isinstance(v, list) else v)
                                        for k, v in lp.items() if k != "centre_pixels"}

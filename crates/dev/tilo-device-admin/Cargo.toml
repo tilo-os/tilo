@@ -1,0 +1,46 @@
+[package]
+autotests = false
+name = "tilo-device-admin"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The device-admin route: tilo-vmd's request protocol between a person's devices over the peer network"
+
+[lib]
+name = "tilo_device_admin"
+
+[[bin]]
+name = "tilo-device-admin"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+blake3.workspace = true
+clap.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+# The peer network: hole-punched QUIC with relay fallback.
+iroh.workspace = true
+# `relay`: a relay of the owner's own (or a test harness's) to use instead of
+# the public ones.
+iroh-relay = { version = "1.0.3", features = ["server"] }
+postcard = { workspace = true, features = ["alloc"] }
+serde.workspace = true
+serde_json.workspace = true
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "process", "rt-multi-thread", "signal", "sync", "time"] }
+workspace-hack = { version = "0.1" }
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

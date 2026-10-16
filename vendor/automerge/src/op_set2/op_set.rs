@@ -33,6 +33,7 @@ mod index;
 mod insert;
 mod mark_index;
 mod marks;
+mod op_id_index;
 mod op_iter;
 mod op_query;
 mod top_op;
@@ -62,6 +63,8 @@ pub(crate) struct OpSet {
     pub(crate) obj_info: ObjIndex,
     cols: Columns,
     pub(crate) text_encoding: TextEncoding,
+    // TILO(op-id-index)
+    id_index: op_id_index::OpIdIndex,
 }
 
 impl OpSet {
@@ -82,6 +85,7 @@ impl OpSet {
             cols: Columns::default(),
             obj_info: ObjIndex::default(),
             text_encoding: encoding,
+            id_index: Default::default(),
         }
     }
 
@@ -240,6 +244,9 @@ impl OpSet {
     pub(crate) fn splice<O: OpLike>(&mut self, pos: usize, ops: &[O]) -> usize {
         let added = self.cols.splice(pos, ops, self.text_encoding);
         self.splice_objects(ops);
+        // TILO(op-id-index): the ops `Columns::splice` stored.
+        let stored = ops.iter().filter(|o| O::action(o) != Action::Delete);
+        self.id_index.inserted(pos, stored.map(|o| o.id()));
         added
     }
 
@@ -248,6 +255,7 @@ impl OpSet {
             self.undo_succ(&op.undo);
         }
         self.cols.remove_ops(op.pos, &[op]);
+        self.id_index.clear(); // TILO(op-id-index)
         if op.obj_info().is_some() {
             self.obj_info.remove(op.id());
         }
@@ -828,10 +836,49 @@ impl OpSet {
     }
 
     fn get_op_id_pos(&self, id: OpId) -> Option<usize> {
+        // TILO(op-id-index): a position the index gives is used once the id
+        // there is checked; anything else searches the column, as before.
+        let found = match self.id_index.find(id) {
+            Some(None) => None,
+            Some(Some(pos)) if self.op_id_at(pos) == Some(id) => Some(pos),
+            _ => {
+                self.id_index.searched(self.cols.id_ctr.slab_count());
+                return self.scan_op_id_pos(id);
+            }
+        };
+        #[cfg(any(test, feature = "slow_path_assertions"))]
+        assert_eq!(found, self.scan_op_id_pos(id), "op id index for {id:?}");
+        found
+    }
+
+    fn scan_op_id_pos(&self, id: OpId) -> Option<usize> {
         self.cols
             .id_ctr
             .find_by_value(id.counter() as u32)
             .find(|&pos| self.cols.id_actor.get(pos) == Some(id.actoridx()))
+    }
+
+    // TILO(op-id-index)
+    fn op_id_at(&self, pos: usize) -> Option<OpId> {
+        let ctr = self.cols.id_ctr.get(pos)?;
+        let actor = self.cols.id_actor.get(pos)?;
+        Some(OpId::new(u64::from(ctr), actor.0 as usize))
+    }
+
+    /// TILO(op-id-index): index where each op is, if the document's ids
+    /// are scattered enough that searching for them is slow, so that the
+    /// lookups of an apply need not search.
+    pub(crate) fn index_op_ids(&mut self) {
+        let len = self.len();
+        let slabs = self.cols.id_ctr.slab_count();
+        if !self.id_index.wants_counters(len, slabs) {
+            return;
+        }
+        let mut index = std::mem::take(&mut self.id_index);
+        if index.decide(len, slabs, self.cols.id_ctr.iter()) {
+            index.build(len, self.id_iter_range(&(0..len)));
+        }
+        self.id_index = index;
     }
 
     pub(crate) fn seek_list_opid(
@@ -858,6 +905,11 @@ impl OpSet {
     ) -> Option<FoundOpId<'_>> {
         let obj_range = self.scope_to_obj(obj);
         let pos = self.get_op_id_pos(id)?;
+        // A cursor can name a valid operation in a different sequence. Treat
+        // that as an invalid cursor, just as the scoped slow lookup does.
+        if !obj_range.contains(&pos) {
+            return None;
+        }
         let op = self.get(pos)?;
         let visible;
         let index;
@@ -892,7 +944,13 @@ impl OpSet {
             }
             index += ops.width(seq_type, self.text_encoding);
         }
-        None
+        // An element deleted after every visible one: it sits at the end,
+        // where the fast path finds it.
+        Some(FoundOpId {
+            op,
+            index,
+            visible: false,
+        })
     }
 
     pub(crate) fn action_iter_range(&self, range: &Range<usize>) -> ActionIter<'_> {
@@ -1179,6 +1237,7 @@ impl OpSet {
             cols: Columns::default(),
             obj_info: ObjIndex::default(),
             text_encoding,
+            id_index: Default::default(),
         }
     }
 
@@ -1203,6 +1262,7 @@ impl OpSet {
             cols,
             obj_info: ObjIndex::default(),
             text_encoding: TextEncoding::platform_default(),
+            id_index: Default::default(),
         }
     }
 
@@ -1219,6 +1279,7 @@ impl OpSet {
             cols,
             obj_info: ObjIndex::default(),
             text_encoding,
+            id_index: Default::default(),
         };
 
         Ok(op_set)
@@ -1253,6 +1314,100 @@ impl OpSet {
     pub(crate) fn prop_range(&self, obj: &ObjId, prop: &str) -> Range<usize> {
         let range = self.scope_to_obj(obj);
         self.cols.key_str.scope_to_value(Some(prop), range)
+    }
+
+    // TILO(map-apply-skip): lookups a map apply uses to jump over ops it
+    // cannot change (vendor/automerge/TILO-PATCH.md).
+
+    /// The ops of map key `prop` within `range`, which must lie in one map
+    /// object; an empty range at the key's place if it has none there.
+    pub(crate) fn key_range(&self, prop: &str, range: Range<usize>) -> Range<usize> {
+        self.cols.key_str.scope_to_value(Some(prop), range)
+    }
+
+    /// The map key and id of the op at `pos`: `None` past the end, and a
+    /// `None` key for an op keyed by a sequence element.
+    pub(crate) fn key_and_id_at(&self, pos: usize) -> Option<(Option<&str>, OpId)> {
+        let id = self
+            .id_iter_range(&(pos..pos + 1))
+            .maybe_try_next()
+            .ok()??;
+        Some((self.cols.key_str.get(pos)?, id))
+    }
+
+    /// The first visible op in `range`.
+    pub(crate) fn next_visible(&self, range: Range<usize>) -> Option<usize> {
+        self.cols
+            .index
+            .visible
+            .iter_range(range)
+            .scan_to_value(true)
+    }
+
+    /// Where the op `id` is, if it is in the document.
+    pub(crate) fn op_id_pos(&self, id: OpId) -> Option<usize> {
+        self.get_op_id_pos(id)
+    }
+
+    // TILO(seq-apply-skip): lookups a list or text apply uses to jump over
+    // elements it cannot change (vendor/automerge/TILO-PATCH.md).
+
+    /// Where the sequence element holding the op at `pos` starts (its
+    /// insert op), if that lies in `range` with `pos`.
+    pub(crate) fn element_start(&self, pos: usize, range: Range<usize>) -> Option<usize> {
+        if !range.contains(&pos) {
+            return None;
+        }
+        let inserts = self.cols.insert.get_total(pos);
+        if inserts == 0 {
+            return None;
+        }
+        let start = self.cols.insert.get_index_for_total(inserts);
+        (range.start <= start && start <= pos).then_some(start)
+    }
+
+    // TILO(peer-change-check): what checking an incoming change needs to know
+    // of an op it names (vendor/automerge/TILO-PATCH.md).
+
+    /// The object of the op `id`, the map key or sequence element it is in,
+    /// and whether it inserts that element, if the document holds it.
+    pub(crate) fn op_place(&self, id: OpId) -> Option<(ObjId, KeyRef<'_>, bool)> {
+        let pos = self.get_op_id_pos(id)?;
+        let range = pos..pos + 1;
+        let obj = ObjIdIter::new_range(
+            self.cols.obj_actor.iter_range(range.clone()),
+            self.cols.obj_ctr.iter_range(range.clone()),
+        )
+        .next()?;
+        let insert = InsertIter::new(self.cols.insert.values().iter_range(range.clone())).next()?;
+        if insert {
+            return Some((obj, KeyRef::Seq(types::ElemId(id)), true));
+        }
+        let key = KeyIter::new(
+            self.cols.key_str.iter_range(range.clone()),
+            self.cols.key_actor.iter_range(range.clone()),
+            self.cols.key_ctr.iter_range(range),
+        )
+        .next()?;
+        Some((obj, key, false))
+    }
+
+    /// The visible width of the sequence elements in `range`, as the
+    /// sequence's patches count it: one per element of a list, the width of
+    /// the element's text in a text.
+    pub(crate) fn visible_width(&self, range: Range<usize>, seq_type: SequenceType) -> usize {
+        match seq_type {
+            SequenceType::List => self.cols.index.top.sum_range(range),
+            SequenceType::Text => self.cols.index.text.sum_range(range) as usize,
+        }
+    }
+
+    /// The first mark op in `range`.
+    pub(crate) fn next_mark(&self, range: Range<usize>) -> Option<usize> {
+        self.cols
+            .action
+            .iter_range(range)
+            .scan_to_value(Action::Mark)
     }
 
     pub(crate) fn iter_obj<'a>(&'a self, obj: &ObjId) -> OpIter<'a> {
@@ -1390,6 +1545,7 @@ impl OpSet {
     }
 
     pub(crate) fn rewrite_with_new_actor(&mut self, idx: usize) {
+        self.id_index.clear(); // TILO(op-id-index)
         self.cols.rewrite_with_new_actor(idx);
         self.cols.index.mark.rewrite_with_new_actor(idx);
         self.obj_info = ObjIndex(
@@ -1403,6 +1559,7 @@ impl OpSet {
 
     pub(crate) fn remove_actor(&mut self, idx: usize) {
         self.actors.remove(idx);
+        self.id_index.clear(); // TILO(op-id-index)
         self.cols.rewrite_without_actor(idx);
         self.obj_info = ObjIndex(
             self.obj_info

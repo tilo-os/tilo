@@ -2,9 +2,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 #![allow(
@@ -22,11 +19,11 @@ use tilo_delivery_protocol::workspace_join::{
 };
 use tilo_peer_state::GovernedAccess;
 use tilo_peer_state::join::{InviteGrant, MemberRole};
-use tilo_peer_state::retained_proof::RetentionAuthority;
 use tilo_relay::{
     CheckpointPrefixRecovery, Envelope, Relay, RelayClient, RelayConfig, ReplicationIntent,
     WorkspaceBinding,
 };
+use tilo_relay_protocol::retention::RetentionAuthority;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint};

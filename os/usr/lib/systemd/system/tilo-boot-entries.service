@@ -2,8 +2,9 @@
 Description=Maintain the boot counters and the repair-mode boot entry
 Documentation=file:///usr/share/doc/tilo/recovery.md
 # The ESP has to be mounted, and on the sealed layout it is an autofs mount that
-# only appears when something touches it.
-RequiresMountsFor=/boot
+# only appears when something touches it. On an installed system /boot is a
+# separate partition and the ESP is at /boot/efi (tilo-esp-generator).
+RequiresMountsFor=/boot /boot/efi
 After=local-fs.target
 # Repair mode must not rewrite the ESP it may be about to be used to repair.
 ConditionKernelCommandLine=!tilo.mode=repair

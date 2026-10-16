@@ -8,10 +8,11 @@
 //! drift apart — so it is one primitive.
 //!
 //! It is **not** a general-purpose text input: no selection, no clipboard, no
-//! caret movement. Those belong to the shared CRDT-backed editor core
-//! (`tilo_ui::widget::block_editor` and friends), which is far too much machinery for
-//! a label a user types once. What this does have is the behaviour a name field
-//! must not get wrong:
+//! caret movement — those belong to [`TextInput`](crate::widget::TextInput),
+//! which is far too much machinery for a label a user types once. Its typing,
+//! grapheme-wise Backspace and IME composition still go through the shared
+//! [`EditCore`], so it erases and composes exactly like every other field.
+//! What this does have is the behaviour a name field must not get wrong:
 //!
 //! * It keeps the **tail** visible when the text outruns the box, because what
 //!   the user is typing is at the end.
@@ -30,18 +31,13 @@ use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::richtext::RichTextLayout;
-use crate::text_render::{FontChoice, TextRenderer, TextStyle};
+use crate::text_edit::{Edit, EditCore};
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 
-/// Composes `base` with a translation for text placement. Affine
-/// composition is floating-point matrix multiply — it cannot overflow or
-/// panic the way integer arithmetic can.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine `*` composes floating-point transform matrices, not integer arithmetic"
-)]
-fn translated(base: Affine, dx: f64, dy: f64) -> Affine {
-    base * Affine::translate((dx, dy))
+/// A name is one line: control characters never enter it.
+fn name_char(character: char) -> bool {
+    !character.is_control()
 }
 
 /// What a key did to the field.
@@ -63,9 +59,9 @@ pub enum NameFieldOutcome {
 pub struct NameField {
     buffer: String,
     placeholder: String,
-    /// Display-only IME composition, appended at this end-only field's caret.
-    preedit: String,
-    preedit_cursor: Option<(usize, usize)>,
+    /// Caret and display-only IME composition. The caret stays at the end of
+    /// the buffer: this field types and erases at its tail only.
+    core: EditCore,
     /// `draw` is intentionally `&self` because both history surfaces paint
     /// through immutable row helpers. Interior mutability retains the shaped
     /// paragraph and publishes exact candidate-window geometry.
@@ -95,8 +91,7 @@ impl Clone for NameField {
         Self {
             buffer: self.buffer.clone(),
             placeholder: self.placeholder.clone(),
-            preedit: self.preedit.clone(),
-            preedit_cursor: self.preedit_cursor,
+            core: self.core.clone(),
             visual: RefCell::new(NameFieldVisual::default()),
         }
     }
@@ -107,7 +102,7 @@ impl std::fmt::Debug for NameField {
         f.debug_struct("NameField")
             .field("buffer", &self.buffer)
             .field("placeholder", &self.placeholder)
-            .field("preedit", &self.preedit)
+            .field("preedit", &self.core.preedit())
             .finish_non_exhaustive()
     }
 }
@@ -116,11 +111,13 @@ impl NameField {
     /// A field seeded with `text` — the current name when renaming, empty when
     /// naming something for the first time.
     pub fn new(text: impl Into<String>) -> Self {
+        let buffer = text.into();
+        let mut core = EditCore::at(buffer.len());
+        core.set_filter(Some(name_char));
         Self {
-            buffer: text.into(),
+            buffer,
             placeholder: "Name this version\u{2026}".to_string(),
-            preedit: String::new(),
-            preedit_cursor: None,
+            core,
             visual: RefCell::new(NameFieldVisual::default()),
         }
     }
@@ -139,12 +136,25 @@ impl NameField {
 
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.buffer = text.into();
-        self.preedit.clear();
-        self.preedit_cursor = None;
+        self.core.clear_preedit();
+        self.core.set_caret(self.buffer.len());
+    }
+
+    /// Apply a core edit to the buffer, keeping the caret at its end.
+    fn apply(&mut self, edit: &Edit) {
+        edit.apply(&mut self.buffer);
+        self.core.set_caret(self.buffer.len());
     }
 
     /// Exact shaped caret rectangle from the most recent draw, suitable for
     /// positioning the platform IME candidate window.
+    /// Private equality for a deferred input into this shared name control.
+    pub fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        (!self.core.has_preedit()).then(|| {
+            crate::ime::edit_fingerprint(&self.buffer, self.core.anchor(), self.core.caret(), key)
+        })
+    }
+
     pub fn ime_cursor_rect(&self) -> Option<Rect> {
         self.visual.borrow().caret
     }
@@ -157,26 +167,16 @@ impl NameField {
         modifiers: &winit::event::Modifiers,
     ) -> NameFieldOutcome {
         if let WindowEvent::Ime(ime) = event {
-            return match ime {
-                Ime::Preedit(text, cursor) => {
-                    self.preedit.clone_from(text);
-                    self.preedit_cursor = *cursor;
-                    NameFieldOutcome::Edited
-                }
+            match ime {
+                Ime::Preedit(text, cursor) => self.core.set_preedit(text, *cursor),
                 Ime::Commit(text) => {
-                    self.preedit.clear();
-                    self.preedit_cursor = None;
-                    self.buffer
-                        .extend(text.chars().filter(|ch| !ch.is_control()));
-                    NameFieldOutcome::Edited
+                    let edit = self.core.commit(text);
+                    self.apply(&edit);
                 }
-                Ime::Disabled => {
-                    self.preedit.clear();
-                    self.preedit_cursor = None;
-                    NameFieldOutcome::Edited
-                }
-                Ime::Enabled => NameFieldOutcome::Edited,
-            };
+                Ime::Disabled => self.core.clear_preedit(),
+                Ime::Enabled => {}
+            }
+            return NameFieldOutcome::Edited;
         }
         let WindowEvent::KeyboardInput {
             event:
@@ -197,23 +197,20 @@ impl NameField {
             Key::Named(NamedKey::Enter) => NameFieldOutcome::Commit(self.buffer.trim().to_string()),
             Key::Named(NamedKey::Escape) => NameFieldOutcome::Cancel,
             Key::Named(NamedKey::Backspace) => {
-                let end = self.buffer.len();
-                self.buffer
-                    .truncate(crate::text_selection::prev_char_boundary(&self.buffer, end));
+                let edit = self.core.delete_backward(&self.buffer, false);
+                self.apply(&edit);
                 NameFieldOutcome::Edited
             }
             Key::Named(NamedKey::Space) => {
-                self.buffer.push(' ');
+                let edit = self.core.insert(" ");
+                self.apply(&edit);
                 NameFieldOutcome::Edited
             }
             Key::Character(c) => {
-                let text: String = c.chars().filter(|ch| !ch.is_control()).collect();
-                if text.is_empty() {
-                    // A control-only keystroke is not a character; treat it as
-                    // ours anyway so it cannot reach a host's typeahead.
-                    return NameFieldOutcome::Edited;
-                }
-                self.buffer.push_str(&text);
+                // A control-only keystroke admits nothing; it is still ours
+                // so it cannot reach a host's typeahead.
+                let edit = self.core.insert(c);
+                self.apply(&edit);
                 NameFieldOutcome::Edited
             }
             // Everything else is still consumed: while a name field is up, the
@@ -222,8 +219,8 @@ impl NameField {
         }
     }
 
-    /// Paint the field into `rect` at `size`, with a caret at the end of the
-    /// text.
+    /// Paint the field into `rect` in `style` (a resolved role), with a caret
+    /// at the end of the text.
     pub fn draw(
         &self,
         scene: &mut Scene,
@@ -231,25 +228,25 @@ impl NameField {
         tr: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        size: f32,
+        style: &TextStyle,
     ) {
         if rect.width() < 24.0 || rect.height() < 12.0 {
             return;
         }
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.detail));
         Self::draw_chrome(scene, transform, colors, &shape);
 
-        let shows_placeholder = self.buffer.is_empty() && self.preedit.is_empty();
+        let shows_placeholder = self.buffer.is_empty() && !self.core.has_preedit();
         let (display, color) = if shows_placeholder {
             (self.placeholder.clone(), colors.text_dim)
         } else {
             (
-                format!("{}{}", self.buffer, self.preedit),
+                self.core.display_text(&self.buffer).into_owned(),
                 colors.text_primary,
             )
         };
-        self.reshape_if_stale(tr, &display, size);
+        self.reshape_if_stale(tr, &display, style);
 
         let mut visual = self.visual.borrow_mut();
         // Just-populated above (or already current) — but degrade to
@@ -259,15 +256,10 @@ impl NameField {
             return;
         };
 
-        let preedit_at = self
-            .preedit_cursor
-            .map_or(self.preedit.len(), |(_, end)| end)
-            .min(self.preedit.len());
-        let preedit_at = self.preedit.floor_char_boundary(preedit_at);
         let caret_byte = if shows_placeholder {
             0
         } else {
-            self.buffer.len().saturating_add(preedit_at)
+            self.core.display_caret(&self.buffer)
         };
         let (caret_local_x, caret_top, caret_height) = layout.caret_geometry(caret_byte);
         let viewport_width = (rect.width() - 14.0).max(1.0);
@@ -296,7 +288,7 @@ impl NameField {
         tr.draw_rich(
             scene,
             layout,
-            translated(transform, origin.x, origin.y),
+            transform.pre_translate((origin.x, origin.y).into()),
             color,
         );
         visual.caret = Some(caret);
@@ -328,18 +320,19 @@ impl NameField {
     }
 
     /// Re-shapes `display` into `self.visual` if the cached layout is
-    /// missing or stale (text, size, buffer length or preedit cursor
+    /// missing or stale (text, style, buffer length or preedit cursor
     /// changed since the last shape).
-    fn reshape_if_stale(&self, tr: &mut TextRenderer, display: &str, size: f32) {
-        let style = TextStyle::new(size).with_family(FontChoice::SansSerif);
+    fn reshape_if_stale(&self, tr: &mut TextRenderer, display: &str, style: &TextStyle) {
         let signature = {
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
             let mut hash = DefaultHasher::new();
             display.hash(&mut hash);
-            size.to_bits().hash(&mut hash);
+            style.size.to_bits().hash(&mut hash);
+            style.weight.hash(&mut hash);
+            style.family.hash(&mut hash);
             self.buffer.len().hash(&mut hash);
-            self.preedit_cursor.hash(&mut hash);
+            self.core.preedit_cursor().hash(&mut hash);
             hash.finish()
         };
         let mut visual = self.visual.borrow_mut();
@@ -352,13 +345,13 @@ impl NameField {
             let mut layout = RichTextLayout::shape_plain_browser(
                 &mut tr.font_system,
                 display,
-                &style,
+                style,
                 None,
                 browser_emoji,
             );
             tr.note_browser_rich_layout(&layout);
-            if !self.preedit.is_empty() {
-                layout.add_underline(self.buffer.len()..display.len());
+            if let Some(range) = self.core.preedit_display_range(&self.buffer) {
+                layout.add_underline(range);
             }
             visual.layout = Some(layout);
             visual.signature = signature;
@@ -376,7 +369,7 @@ impl NameField {
         scene.stroke(
             &Stroke::new(1.5),
             transform,
-            colors.accent[4],
+            colors.intent.inverted_hover,
             None,
             &Line::new(
                 Point::new(caret.x0, caret.y0),
@@ -386,8 +379,8 @@ impl NameField {
     }
 }
 
-/// Shorten `s` until it fits `budget` pixels at `size`, appending an ellipsis
-/// when anything was dropped.
+/// Shorten `s` until it fits `budget` pixels in `style`, appending an
+/// ellipsis when anything was dropped.
 ///
 /// Binary chop on the char index; `measure` is cheap and the common case (a short
 /// label in a wide slot) exits on the first measurement. Returns an empty string
@@ -396,15 +389,15 @@ impl NameField {
 ///
 /// Shared by every history surface: a version name that ellipsises one way in the
 /// activity pane and another on the version strip reads as two different names.
-pub fn fit(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
+pub fn fit(tr: &mut TextRenderer, s: &str, style: &TextStyle, budget: f64) -> String {
     const ELLIPSIS: &str = "\u{2026}";
     if budget <= 0.0 {
         return String::new();
     }
-    if f64::from(tr.measure(s, size, None).0) <= budget {
+    if f64::from(tr.measure_style(s, None, style).0) <= budget {
         return s.to_string();
     }
-    let ell_w = f64::from(tr.measure(ELLIPSIS, size, None).0);
+    let ell_w = f64::from(tr.measure_style(ELLIPSIS, None, style).0);
     if ell_w > budget {
         return String::new();
     }
@@ -418,7 +411,7 @@ pub fn fit(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
         // than relying on the invariant holding at every call site.
         let mid = lo.saturating_add(hi.saturating_sub(lo).div_ceil(2));
         let candidate: String = s.chars().take(mid).collect();
-        if f64::from(tr.measure(&candidate, size, None).0) <= inner {
+        if f64::from(tr.measure_style(&candidate, None, style).0) <= inner {
             lo = mid;
         } else {
             // `mid >= lo + 1 >= 1` whenever `lo < hi`, so this never
@@ -432,41 +425,6 @@ pub fn fit(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
     }
     let mut out: String = s.chars().take(lo).collect();
     out.push_str(ELLIPSIS);
-    out
-}
-
-/// Keep the **tail** of `s`. What a person is typing is at the end, so a field
-/// that has run out of room drops the beginning, not the caret.
-pub fn fit_tail(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
-    const ELLIPSIS: &str = "\u{2026}";
-    if budget <= 0.0 {
-        return String::new();
-    }
-    if f64::from(tr.measure(s, size, None).0) <= budget {
-        return s.to_string();
-    }
-    let ell_w = f64::from(tr.measure(ELLIPSIS, size, None).0);
-    if ell_w > budget {
-        return String::new();
-    }
-    let inner = budget - ell_w;
-    let chars: Vec<char> = s.chars().collect();
-    let mut take = 0usize;
-    while take < chars.len() {
-        // `take < chars.len()` (loop guard), so `take + 1 <= chars.len()`
-        // and this can't saturate in practice; written defensively so it
-        // degrades to "keep everything" instead of panicking if that
-        // invariant is ever wrong.
-        let start = chars.len().saturating_sub(take.saturating_add(1));
-        let candidate: String = chars.get(start..).unwrap_or(&[]).iter().collect();
-        if f64::from(tr.measure(&candidate, size, None).0) > inner {
-            break;
-        }
-        take = take.saturating_add(1);
-    }
-    let mut out = ELLIPSIS.to_string();
-    let start = chars.len().saturating_sub(take);
-    out.extend(chars.get(start..).unwrap_or(&[]).iter());
     out
 }
 
@@ -484,28 +442,16 @@ mod tests {
             &mut renderer,
             &Theme::dark(),
             rect,
-            14.0,
+            &Theme::dark().text(crate::tokens::TextRole::Body),
         );
     }
 
     fn key(k: Key) -> WindowEvent {
-        // SAFETY: every pub field of `KeyEvent` tolerates the all-zero bit
-        // pattern; `logical_key` is overwritten and `text`'s niche-optimised
-        // `None` is all-zero. winit 0.30 keeps `KeyEventExtra` crate-private.
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = k;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            k,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
     fn ch(c: char) -> WindowEvent {
@@ -626,8 +572,57 @@ mod tests {
                 &Modifiers::default(),
             );
             assert_eq!(field.text(), "ab漢字");
-            assert!(field.preedit.is_empty());
+            assert!(!field.core.has_preedit());
         }
+    }
+
+    #[test]
+    fn typing_composing_and_erasing_clusters_leaves_the_exact_name() {
+        let m = Modifiers::default();
+        let typed = |s: &str| key(Key::Character(s.into()));
+        let backspace = key(Key::Named(NamedKey::Backspace));
+        let mut field = NameField::new("");
+        // A decomposed "é" arrives as two keystrokes; emoji and a flag as one.
+        for s in ["e", "\u{301}", "👍🏽", "🇩🇪"] {
+            assert_eq!(field.handle_event(&typed(s), &m), NameFieldOutcome::Edited);
+        }
+        assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪");
+        // A tab is consumed but never enters a one-line name.
+        assert_eq!(
+            field.handle_event(&typed("\t"), &m),
+            NameFieldOutcome::Edited
+        );
+        assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪");
+
+        // The composition shows after the text and stays out of the value; a
+        // filtered control character never reaches it either.
+        field.handle_event(
+            &WindowEvent::Ime(Ime::Preedit("か\n".into(), Some((3, 3)))),
+            &m,
+        );
+        assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪");
+        assert_eq!(field.core.preedit(), "か");
+        assert_eq!(field.core.display_text(field.text()), "e\u{301}👍🏽🇩🇪か");
+        field.handle_event(&WindowEvent::Ime(Ime::Commit("火".into())), &m);
+        assert_eq!(field.text(), "e\u{301}👍🏽🇩🇪火");
+        assert!(!field.core.has_preedit());
+
+        // Backspace erases one whole cluster per press.
+        for want in ["e\u{301}👍🏽🇩🇪", "e\u{301}👍🏽", "e\u{301}", ""] {
+            field.handle_event(&backspace, &m);
+            assert_eq!(field.text(), want);
+        }
+        field.handle_event(&backspace, &m);
+        assert_eq!(field.text(), "", "Backspace on an empty name is harmless");
+
+        // A rename seeds the caret at the end of the existing name.
+        field.set_text("Draft 👍🏽");
+        field.handle_event(&backspace, &m);
+        field.handle_event(&typed("2"), &m);
+        assert_eq!(
+            field.handle_event(&key(Key::Named(NamedKey::Enter)), &m),
+            NameFieldOutcome::Commit("Draft 2".to_owned())
+        );
     }
 
     #[test]
@@ -649,43 +644,23 @@ mod tests {
             );
             assert!(rect.contains(rtl_caret.center()));
         }
-
-        // Case `a_long_name_keeps_the_end_visible`.
-        {
-            let mut tr = TextRenderer::new();
-            let long = "a very long version name that will not fit in the box";
-            let shown = fit_tail(&mut tr, long, 13.0, 80.0);
-            assert!(shown.starts_with('\u{2026}'), "got {shown:?}");
-            assert!(
-                long.ends_with(shown.trim_start_matches('\u{2026}')),
-                "the tail is what is kept: {shown:?}"
-            );
-            assert!(shown.chars().count() < long.chars().count());
-        }
-
-        // Case `a_box_squeezed_to_nothing_draws_nothing_rather_than_overflowing`.
-        {
-            let mut tr = TextRenderer::new();
-            assert_eq!(fit_tail(&mut tr, "anything", 13.0, 0.0), "");
-            assert_eq!(fit_tail(&mut tr, "anything", 13.0, -5.0), "");
-        }
     }
 
     #[test]
     fn unchanged_browser_name_reshapes_after_font_generation_changes() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+        let root = crate::font_catalog::checkout_root();
         let fonts = crate::font_catalog::FontCatalog::product("", "en-US")
             .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let field = NameField::new("مَرْحَبًا");
-        field.reshape_if_stale(&mut renderer, field.text(), 14.0);
+        field.reshape_if_stale(&mut renderer, field.text(), &TextStyle::new(14.0));
         assert_eq!(
             renderer.take_browser_font_demands(),
             ["NotoSansArabic[wght].ttf"]
         );
         renderer.browser_font_failed();
-        field.reshape_if_stale(&mut renderer, field.text(), 14.0);
+        field.reshape_if_stale(&mut renderer, field.text(), &TextStyle::new(14.0));
         assert_eq!(
             renderer.take_browser_font_demands(),
             ["NotoSansArabic[wght].ttf"]
@@ -696,7 +671,7 @@ mod tests {
                 std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
             )
             .unwrap();
-        field.reshape_if_stale(&mut renderer, field.text(), 14.0);
+        field.reshape_if_stale(&mut renderer, field.text(), &TextStyle::new(14.0));
         assert!(
             field
                 .visual

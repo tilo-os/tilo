@@ -32,6 +32,11 @@ pub enum NetMsg {
         query: String,
         results: Result<Vec<Place>, String>,
     },
+    /// Geocoding for a query the platform search is waiting on.
+    PaletteSearch {
+        query: String,
+        results: Result<Vec<Place>, String>,
+    },
     /// Geocoding for one of the Directions endpoints (From / To). `origin` is
     /// `true` for the "From" field, `false` for "To".
     EndpointSearch {
@@ -702,10 +707,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn text_parsers_extract_clocks_regions_steps_and_place_labels() {
         // Phase `hhmm_extracts_clock`.
         {

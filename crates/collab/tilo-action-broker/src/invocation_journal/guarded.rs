@@ -1,6 +1,6 @@
 //! Inert private storage only. Nothing here constructs live disclosure authority.
 use super::{
-    Deserialize, DurableInvocation, File, InvocationId, InvocationJournal, InvocationKey,
+    Deserialize, DurableInvocation, InvocationId, InvocationJournal, InvocationKey,
     InvocationUpdate, Read, Serialize,
 };
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
@@ -166,8 +166,8 @@ fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Requirement>
 // Capture only update-level and public typed output/error duplicate fields.
 // Arbitrary JSON values retain serde_json's existing map semantics. The first
 // pass has already bounded guarded update bytes before this owned capture.
-struct RawUpdate {
-    value: serde_json::Value,
+pub(super) struct RawUpdate {
+    pub(super) value: serde_json::Value,
     duplicate: Vec<String>,
     error_duplicate: Vec<String>,
     output_duplicate: Vec<String>,
@@ -299,7 +299,7 @@ impl<'de> Deserialize<'de> for RawUpdate {
     }
 }
 impl RawUpdate {
-    fn check_duplicates(&self, guarded: bool) -> Result<(), String> {
+    pub(super) fn check_duplicates(&self, guarded: bool) -> Result<(), String> {
         let state = self.value.get("state").and_then(serde_json::Value::as_str);
         let fields: &[&str] = match state {
             Some("accepted") => &["state", "invocation"],
@@ -349,6 +349,19 @@ struct Row {
     cancellation_requested: bool,
     #[serde(default, deserialize_with = "present")]
     guarded_read: Option<Requirement>,
+    #[serde(default, deserialize_with = "prepared_present")]
+    prepared_effect: Option<super::PreparedEffect>,
+    #[serde(default, deserialize_with = "digest_present")]
+    request_digest: Option<Digest>,
+}
+// Like the other optional members, absent only through #[serde(default)].
+fn digest_present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Digest>, D::Error> {
+    Digest::deserialize(d).map(Some)
+}
+fn prepared_present<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<super::PreparedEffect>, D::Error> {
+    super::PreparedEffect::deserialize(d).map(Some)
 }
 impl<'de> Deserialize<'de> for DurableInvocation {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
@@ -432,11 +445,13 @@ impl<'de> Deserialize<'de> for DurableInvocation {
         Ok(Self {
             key: row.key,
             intent: row.intent,
+            request_digest: row.request_digest,
             wire_id: row.wire_id,
             update,
             uncertain: row.uncertain,
             cancellation_requested: row.cancellation_requested,
             guarded,
+            prepared_effect: row.prepared_effect,
         })
     }
 }
@@ -444,7 +459,10 @@ impl Serialize for DurableInvocation {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         let mut row = s.serialize_struct(
             "DurableInvocation",
-            if self.guarded.is_some() { 7 } else { 6 },
+            6_usize
+                .saturating_add(usize::from(self.guarded.is_some()))
+                .saturating_add(usize::from(self.prepared_effect.is_some()))
+                .saturating_add(usize::from(self.request_digest.is_some())),
         )?;
         row.serialize_field("key", &self.key)?;
         row.serialize_field("intent", &self.intent)?;
@@ -458,6 +476,12 @@ impl Serialize for DurableInvocation {
         row.serialize_field("cancellation_requested", &self.cancellation_requested)?;
         if let Some(guarded) = &self.guarded {
             row.serialize_field("guarded_read", &guarded.requirement)?;
+        }
+        if let Some(prepared) = &self.prepared_effect {
+            row.serialize_field("prepared_effect", prepared)?;
+        }
+        if let Some(digest) = &self.request_digest {
+            row.serialize_field("request_digest", digest)?;
         }
         row.end()
     }
@@ -510,6 +534,8 @@ impl<'de> Deserialize<'de> for Field {
                     "code" => 1024,
                     "message" => 2048,
                     "retryable" => 4096,
+                    "prepared_effect" => 8192,
+                    "record" => 16384,
                     _ => 0,
                 }))
             }
@@ -552,6 +578,7 @@ impl<'de> Visitor<'de> for Probe {
         let mut update_seen = false;
         let mut update_bytes = 0;
         let mut requirement_bytes = 0;
+        let mut prepared_seen = false;
         let malformed = false;
         while let Some(Field(field)) = map.next_key()? {
             let start = self.position.get();
@@ -560,6 +587,13 @@ impl<'de> Visitor<'de> for Probe {
                     map.next_value_seed(Seed {
                         position: self.position.clone(),
                         kind: 1,
+                    })?;
+                }
+                // An appended entry carries one row, bounded like a snapshot's.
+                (0, 16384) => {
+                    map.next_value_seed(Seed {
+                        position: self.position.clone(),
+                        kind: 2,
                     })?;
                 }
                 (2, 2) => {
@@ -578,6 +612,16 @@ impl<'de> Visitor<'de> for Probe {
                     map.next_value::<IgnoredAny>()?;
                     update_bytes = self.position.get().saturating_sub(start);
                 }
+                (2, 8192) => {
+                    if prepared_seen {
+                        return Err(A::Error::duplicate_field("prepared_effect"));
+                    }
+                    prepared_seen = true;
+                    map.next_value::<IgnoredAny>()?;
+                    if self.position.get().saturating_sub(start) > 512 * 1024 {
+                        return Err(A::Error::custom("prepared effect exceeds encoded bound"));
+                    }
+                }
                 _ => {
                     map.next_value::<IgnoredAny>()?;
                 }
@@ -594,7 +638,8 @@ impl<'de> Visitor<'de> for Probe {
         Ok(malformed)
     }
 }
-pub(super) fn preflight(reader: &mut File) -> Result<(), String> {
+/// Checks one encoded snapshot, or one appended entry, before owned decoding.
+pub(super) fn preflight(reader: &mut impl Read) -> Result<(), String> {
     let position = Rc::new(Cell::new(0));
     let reader = Count {
         reader: BufReader::new(reader.take(InvocationJournal::MAX_BYTES)),

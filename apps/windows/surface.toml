@@ -1,0 +1,10 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "windows.manager"
+label = "Windows manager"
+version = 1
+fields = [
+  { path = "routes", type = "Map<Route>" },
+]
+

@@ -3,14 +3,22 @@ use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use tilo_automerge::ApplyIncoming as _;
 
 fn fixture(texts: &[&str]) -> AutoCommit {
-    let mut source = qdoc::Document::new();
+    let mut doc = AutoCommit::new();
+    let c = crate::model::init(&mut doc).unwrap();
+    let mut ids = tilo_doc::IdGen::new("fixture".into());
+    let mut dm = tilo_doc::DocMut {
+        doc: &mut doc,
+        c: &c,
+        ids: &mut ids,
+    };
     let mut previous = None;
     for text in texts {
-        let id = source.insert_block(previous.as_deref(), "paragraph");
-        source.splice_text(&id, 0, 0, text);
+        let id = dm.insert_block(previous.as_deref(), "paragraph");
+        dm.splice_text(&id, 0, 0, text);
         previous = Some(id);
     }
-    AutoCommit::load(&source.save()).unwrap()
+    doc.commit();
+    AutoCommit::load(&doc.save()).unwrap()
 }
 fn limits(items: usize) -> Limits {
     Limits {
@@ -21,10 +29,10 @@ fn limits(items: usize) -> Limits {
 }
 
 #[test]
-fn semantic_read_pages_requested_capacity_in_literal_qdoc_order() {
+fn semantic_read_pages_requested_capacity_in_literal_tilo_doc_order() {
     let mut doc = fixture(&["third", "first", "second"]);
-    let c = qdoc::model::open(&doc, &ROOT).unwrap();
-    let ids = qdoc::model::blocks_in_order(&doc, &c);
+    let c = crate::model::open(&doc).unwrap();
+    let ids = tilo_doc::model::blocks_in_order(&doc, &c);
     for (id, key) in ids.iter().zip([vec![2], vec![1], vec![1, 0]]) {
         let (_, block) = doc.get(&c.blocks, id.as_str()).unwrap().unwrap();
         doc.put(&block, "order", key).unwrap();
@@ -148,7 +156,7 @@ fn semantic_read_full_requested_capacity_and_noncanonical_cursor() {
 #[test]
 fn semantic_read_refuses_to_emit_an_unusable_oversized_cursor() {
     let mut doc = fixture(&[]);
-    let blocks = qdoc::model::open(&doc, &ROOT).unwrap().blocks;
+    let blocks = crate::model::open(&doc).unwrap().blocks;
     let id = "\"".repeat(256);
     let block = doc
         .put_object(&blocks, id, automerge::ObjType::Map)
@@ -167,73 +175,25 @@ fn semantic_read_refuses_to_emit_an_unusable_oversized_cursor() {
 }
 
 #[test]
-fn semantic_read_uses_exact_bound_root_and_refuses_cross_root_cursor() {
-    let mut doc = AutoCommit::new();
-    let left = doc
-        .put_object(ROOT, "left", automerge::ObjType::Map)
-        .unwrap();
-    let right = doc
-        .put_object(ROOT, "right", automerge::ObjType::Map)
-        .unwrap();
-    for (root, words) in [
-        (&left, ["left one", "left two"]),
-        (&right, ["right one", "right two"]),
-    ] {
-        let c = qdoc::model::init(&mut doc, root);
-        let mut ids = qdoc::IdGen::new("same-block-ids".into());
-        let mut dm = qdoc::DocMut {
-            doc: &mut doc,
-            c: &c,
-            ids: &mut ids,
-        };
-        let mut previous = None;
-        for word in words {
-            let id = dm.insert_block(previous.as_deref(), "paragraph");
-            dm.splice_text(&id, 0, 0, word);
-            previous = Some(id);
-        }
-    }
-    doc.commit();
-    let heads = doc.base_heads();
-    let page = read_text_at(&doc, &doc.base_heads(), &left, None, limits(1)).unwrap();
-    assert_eq!(page.segments[0].text, "left one");
-    assert_eq!(
-        read_text_at(
-            &doc,
-            &doc.base_heads(),
-            &right,
-            page.next.as_ref(),
-            limits(1)
-        )
-        .unwrap_err(),
-        ReadError::InvalidCursor
-    );
-    assert_eq!(
-        read_text_at(&doc, &doc.base_heads(), &right, None, limits(2))
-            .unwrap()
-            .segments[1]
-            .text,
-        "right two"
-    );
-    assert_eq!(doc.base_heads(), heads);
-}
-
-#[test]
 fn semantic_read_uses_borrowed_owner_heads_without_cloning_legacy_isolation() {
     let mut doc = fixture(&["hello"]);
     let heads = doc.base_heads();
     doc.isolate_at(&vec![heads[0]; 20_000]);
     let (basis, largest) = allocation::largest(|| {
-        qdoc::semantic_read::begin(&doc, &heads, limits(1), 64).map(|(basis, _)| basis)
+        tilo_doc::semantic_read::source::Source::new(&doc, &heads)
+            .begin(limits(1), 64)
+            .map(|(basis, _)| basis)
     });
     assert_eq!(basis.unwrap().heads, [heads[0].to_string()]);
     assert!(largest < 4096, "legacy head vector cloned: {largest}");
     assert!(matches!(
-        qdoc::semantic_read::begin(&doc, &vec![heads[0]; 65], limits(1), 64),
+        tilo_doc::semantic_read::source::Source::new(&doc, &vec![heads[0]; 65])
+            .begin(limits(1), 64),
         Err(ReadError::Limit)
     ));
     assert!(matches!(
-        qdoc::semantic_read::begin(&doc, &[heads[0], heads[0]], limits(1), 64),
+        tilo_doc::semantic_read::source::Source::new(&doc, &[heads[0], heads[0]])
+            .begin(limits(1), 64),
         Err(ReadError::Malformed)
     ));
 }
@@ -246,8 +206,8 @@ fn semantic_read_marked_text_keeps_only_text_and_real_embedded_atoms_across_page
     };
     let plain = "0123456789".repeat(1000);
     let mut doc = fixture(&[&plain]);
-    let containers = qdoc::model::open(&doc, &ROOT).unwrap();
-    let block = qdoc::model::blocks_in_order(&doc, &containers)[0].clone();
+    let containers = crate::model::open(&doc).unwrap();
+    let block = tilo_doc::model::blocks_in_order(&doc, &containers)[0].clone();
     let block = doc.get(&containers.blocks, block).unwrap().unwrap().1;
     let text = doc.get(&block, "text").unwrap().unwrap().1;
     doc.split_block(&text, 17).unwrap();
@@ -301,7 +261,7 @@ fn semantic_read_marked_text_keeps_only_text_and_real_embedded_atoms_across_page
 #[test]
 fn semantic_read_skips_invalid_block_rows_with_oversized_keys() {
     let mut doc = fixture(&["kept"]);
-    let blocks = qdoc::model::open(&doc, &ROOT).unwrap().blocks;
+    let blocks = crate::model::open(&doc).unwrap().blocks;
     doc.put(&blocks, "x".repeat(1024), "invalid scalar row")
         .unwrap();
     doc.put_object(&blocks, "y".repeat(1024), automerge::ObjType::Map)

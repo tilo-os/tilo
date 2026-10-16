@@ -216,3 +216,42 @@ fn an_exclusive_holder_records_its_pid_for_diagnostics() {
     guard.record_owner().unwrap();
     assert_eq!(owner_pid(&path), Some(std::process::id()));
 }
+
+#[test]
+fn inherited_file_transfer_preserves_parent_ownership_without_leaking_descriptor() {
+    let (_directory, path) = fresh_lock_path();
+    let parent = FileLock::exclusive(open_lock_file(&path).unwrap()).unwrap();
+    let inherited = FileLock::try_exclusive(parent.file().try_clone().unwrap()).unwrap();
+    let file = inherited.into_file_preserving_lock();
+    assert!(busy(FileLock::try_exclusive(
+        open_lock_file(&path).unwrap()
+    )));
+    drop(file);
+    assert!(busy(FileLock::try_exclusive(
+        open_lock_file(&path).unwrap()
+    )));
+    drop(parent);
+    assert!(FileLock::try_exclusive(open_lock_file(&path).unwrap()).is_ok());
+}
+
+#[test]
+fn open_current_follows_a_replaced_name() {
+    let (_directory, path) = fresh_lock_path();
+    // An exclusive holder retires the lock file while a peer waits on it.
+    let retiring = FileLock::open_current(&path, LockMode::Exclusive).unwrap();
+    let waiter = {
+        let path = path.clone();
+        std::thread::spawn(move || FileLock::open_current(&path, LockMode::Shared).unwrap())
+    };
+    // Long enough for the waiter to have opened the old file and blocked.
+    std::thread::sleep(Duration::from_millis(100));
+    std::fs::remove_file(&path).unwrap();
+    drop(retiring);
+    let shared = waiter.join().unwrap();
+    // The waiter holds the file now at the name, not the removed one, so a
+    // later exclusive taker contends with it.
+    assert!(path.exists());
+    assert!(busy(FileLock::try_open_current(&path, LockMode::Exclusive)));
+    drop(shared);
+    assert!(FileLock::try_open_current(&path, LockMode::Exclusive).is_ok());
+}

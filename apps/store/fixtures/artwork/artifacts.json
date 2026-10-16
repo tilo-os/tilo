@@ -1,0 +1,149 @@
+{
+  "schema": 1,
+  "assets": [
+    {
+      "file": "chess-preview-1.png",
+      "sha256": "47b5d0224b4419e815dbf24803824906d47429d724007c52fe3cb5e8328e3e30",
+      "bytes": 16077,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/47b5d0224b4419e815dbf24803824906d47429d724007c52fe3cb5e8328e3e30/chess-preview-1.png"
+    },
+    {
+      "file": "chess-preview-2.png",
+      "sha256": "667f1753ef0b0db26bbf6aa5cd96df4cddfd3adbd6a3f99fc6ab979b2b76e1e9",
+      "bytes": 20287,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/667f1753ef0b0db26bbf6aa5cd96df4cddfd3adbd6a3f99fc6ab979b2b76e1e9/chess-preview-2.png"
+    },
+    {
+      "file": "chess-preview-3.png",
+      "sha256": "4fc07bf9f89a0ce1b778c1b333585a80beef73a8cc32d4b8e8141dfd0959e4ea",
+      "bytes": 24725,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/4fc07bf9f89a0ce1b778c1b333585a80beef73a8cc32d4b8e8141dfd0959e4ea/chess-preview-3.png"
+    },
+    {
+      "file": "chess.png",
+      "sha256": "26f1aa5fe1d4e42548f3049c170b116fc1402cf3ae22919999528ddfdd0d2e50",
+      "bytes": 10741,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/26f1aa5fe1d4e42548f3049c170b116fc1402cf3ae22919999528ddfdd0d2e50/chess.png"
+    },
+    {
+      "file": "files-preview-1.png",
+      "sha256": "c07cecdce35748e7624330fd44521b8844243e6357946a9aa8e195c0dea59bf7",
+      "bytes": 16041,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/c07cecdce35748e7624330fd44521b8844243e6357946a9aa8e195c0dea59bf7/files-preview-1.png"
+    },
+    {
+      "file": "files-preview-2.png",
+      "sha256": "5a52fc4d13a0c3143d9573387f97b98dbd1b1bb05834591177f6dd594326850c",
+      "bytes": 19951,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/5a52fc4d13a0c3143d9573387f97b98dbd1b1bb05834591177f6dd594326850c/files-preview-2.png"
+    },
+    {
+      "file": "files-preview-3.png",
+      "sha256": "c84821c2d6ea06ada82d7f984ab7aa6facec2b76299de543b216b33685a5ccd9",
+      "bytes": 24438,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/c84821c2d6ea06ada82d7f984ab7aa6facec2b76299de543b216b33685a5ccd9/files-preview-3.png"
+    },
+    {
+      "file": "files.png",
+      "sha256": "3f8d6599730742c1fb5d20dd2736e4d01e2e07e8f9fd86aa7335aea2932d4a4d",
+      "bytes": 6727,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/3f8d6599730742c1fb5d20dd2736e4d01e2e07e8f9fd86aa7335aea2932d4a4d/files.png"
+    },
+    {
+      "file": "inkscape-preview-1.png",
+      "sha256": "c458b6bb2ed49b2b70581ca6e265b9f1c717b1422a0aaf184e4cfbd850a84940",
+      "bytes": 16020,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/c458b6bb2ed49b2b70581ca6e265b9f1c717b1422a0aaf184e4cfbd850a84940/inkscape-preview-1.png"
+    },
+    {
+      "file": "inkscape-preview-2.png",
+      "sha256": "b953d5e4aee7b45f3484dd90acd275cafeb38468ffdc500bf75cb89debcbb8d8",
+      "bytes": 20012,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/b953d5e4aee7b45f3484dd90acd275cafeb38468ffdc500bf75cb89debcbb8d8/inkscape-preview-2.png"
+    },
+    {
+      "file": "inkscape-preview-3.png",
+      "sha256": "b93007983081432bd2d8ab86c074020f20867fd56cf0d3fde49ba241605553d0",
+      "bytes": 24410,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/b93007983081432bd2d8ab86c074020f20867fd56cf0d3fde49ba241605553d0/inkscape-preview-3.png"
+    },
+    {
+      "file": "inkscape.png",
+      "sha256": "9d660b61184136fd49653aa718599caec3fc9e2c2609b417c2ada6f1ae6be702",
+      "bytes": 11803,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/9d660b61184136fd49653aa718599caec3fc9e2c2609b417c2ada6f1ae6be702/inkscape.png"
+    },
+    {
+      "file": "notes-preview-1.png",
+      "sha256": "a7fae8f8fb6319bccdf706cf15c550569e8e0cf7842ac032b46a4babbdb2e478",
+      "bytes": 15876,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/a7fae8f8fb6319bccdf706cf15c550569e8e0cf7842ac032b46a4babbdb2e478/notes-preview-1.png"
+    },
+    {
+      "file": "notes-preview-2.png",
+      "sha256": "eb17ac314d1335c5252ba5f92b8a2257bb2ce7c74c73f958392d62263e30bc44",
+      "bytes": 19841,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/eb17ac314d1335c5252ba5f92b8a2257bb2ce7c74c73f958392d62263e30bc44/notes-preview-2.png"
+    },
+    {
+      "file": "notes-preview-3.png",
+      "sha256": "a950dd47acaffce1cc95fce6a6f688aa872c0b32a0b878f7769ed18a3cf07536",
+      "bytes": 23919,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/a950dd47acaffce1cc95fce6a6f688aa872c0b32a0b878f7769ed18a3cf07536/notes-preview-3.png"
+    },
+    {
+      "file": "notes.png",
+      "sha256": "7a6ef8bd3d8d38287db8d3772b607738600654f1d808795fb586f8d93acd0e52",
+      "bytes": 6906,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/7a6ef8bd3d8d38287db8d3772b607738600654f1d808795fb586f8d93acd0e52/notes.png"
+    },
+    {
+      "file": "terminal-preview-1.png",
+      "sha256": "bc3f49769601a891d29785c61d9b2a20f073fd46eb5bcde7060790ed71f5e7bb",
+      "bytes": 16098,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/bc3f49769601a891d29785c61d9b2a20f073fd46eb5bcde7060790ed71f5e7bb/terminal-preview-1.png"
+    },
+    {
+      "file": "terminal-preview-2.png",
+      "sha256": "9570a93c76782b45c2876c497901397a3799674e8417001b652e5dd2d2802548",
+      "bytes": 20239,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/9570a93c76782b45c2876c497901397a3799674e8417001b652e5dd2d2802548/terminal-preview-2.png"
+    },
+    {
+      "file": "terminal-preview-3.png",
+      "sha256": "b4bd930e02ffb7193524d648cf7628f75441e8e8ea071e0d2c3bd663af923a14",
+      "bytes": 24640,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/b4bd930e02ffb7193524d648cf7628f75441e8e8ea071e0d2c3bd663af923a14/terminal-preview-3.png"
+    },
+    {
+      "file": "terminal.png",
+      "sha256": "8969680784368d13924f43d3c3ff89e4efdbf953d1775a113de8506c2241a4c6",
+      "bytes": 9336,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/8969680784368d13924f43d3c3ff89e4efdbf953d1775a113de8506c2241a4c6/terminal.png"
+    },
+    {
+      "file": "vlc-preview-1.png",
+      "sha256": "6bf098bae4f7fc6294afa8f6cb20060404a2613f7ef387d526230899df30239e",
+      "bytes": 15848,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/6bf098bae4f7fc6294afa8f6cb20060404a2613f7ef387d526230899df30239e/vlc-preview-1.png"
+    },
+    {
+      "file": "vlc-preview-2.png",
+      "sha256": "a0b04c7a70dfe1c8d073ab1cb679c877ef0931de2b14e9b65d321dd7571987a9",
+      "bytes": 20003,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/a0b04c7a70dfe1c8d073ab1cb679c877ef0931de2b14e9b65d321dd7571987a9/vlc-preview-2.png"
+    },
+    {
+      "file": "vlc-preview-3.png",
+      "sha256": "07b1e3b49c5847021800865b6fc9d03831eecb1afef6f843042bb25c6d2f882c",
+      "bytes": 23860,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/07b1e3b49c5847021800865b6fc9d03831eecb1afef6f843042bb25c6d2f882c/vlc-preview-3.png"
+    },
+    {
+      "file": "vlc.png",
+      "sha256": "f4ef27ac767e53a2a16af202ab5f4cef9733f583ef62e951c34b53cedf997362",
+      "bytes": 11113,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/f4ef27ac767e53a2a16af202ab5f4cef9733f583ef62e951c34b53cedf997362/vlc.png"
+    }
+  ]
+}

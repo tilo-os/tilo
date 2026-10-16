@@ -55,7 +55,8 @@ fn download(
     unix::download(release, cache, cancel, origin)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 fn download_for_test(
     release: &DesktopRelease,
     cache: &Path,
@@ -99,8 +100,7 @@ mod unix {
             .open(path)
             .map_err(io_error)?;
         let metadata = file.metadata().map_err(io_error)?;
-        // SAFETY: geteuid has no preconditions and does not mutate process state.
-        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o777 != 0o700 {
+        if metadata.uid() != tilo_process::effective_uid() || metadata.mode() & 0o777 != 0o700 {
             return Err(
                 "The Desktop package cache must be owned by this user with mode 0700.".into(),
             );
@@ -119,7 +119,7 @@ mod unix {
             || metadata.len() != release.byte_size
             || metadata.mode() & 0o777 != 0o600
             || metadata.nlink() != 1
-            || metadata.uid() != unsafe { libc::geteuid() }
+            || metadata.uid() != tilo_process::effective_uid()
         {
             return Err(
                 "The cached Desktop package has invalid type, permissions, or size.".into(),
@@ -390,7 +390,8 @@ mod unix {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use crate::setup::desktop_catalog::{DesktopRelease, PackageFormat};

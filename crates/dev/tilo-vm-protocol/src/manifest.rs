@@ -66,11 +66,19 @@ pub struct ComponentInfo {
     pub scope: Scope,
     #[serde(default)]
     pub units: Vec<String>,
+    /// User units whose `ExecStart` runs these files. A slot's session
+    /// restarts its whole user manager; the owner's login on a laptop keeps
+    /// it and restarts only these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_units: Vec<String>,
     /// Takes effect at the next boot (`dev_swap = "reboot"`, the kernel):
     /// the daemon installs it as the VM's next boot entry and the client
     /// reboots the VM.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reboot: bool,
+    /// Opt-in phase CPU recording for a stand-in slot's shell generation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub frame_cpu_trace: bool,
 }
 
 impl ComponentInfo {
@@ -79,7 +87,9 @@ impl ComponentInfo {
         Self {
             scope,
             units,
+            user_units: Vec::new(),
             reboot: false,
+            frame_cpu_trace: false,
         }
     }
 }
@@ -97,8 +107,10 @@ pub struct Component {
     /// VM, relative to the repository root.
     pub dev_build: Option<String>,
     pub info: ComponentInfo,
-    pub user_units: Vec<String>,
     pub packages: Vec<String>,
+    /// Only the manifest's installed binary targets, rather than every binary
+    /// in each package (which can include heavyweight diagnostic tools).
+    pub bins: Vec<String>,
     /// Package-qualified cargo features (`pkg/feature`).
     pub features: Vec<String>,
     /// Features only dev builds enable, normally package-qualified. A bare
@@ -161,13 +173,30 @@ impl Component {
 
     /// `cargo` arguments (after the program name) that build this
     /// component for a dev layer. Both builders run exactly these.
+    ///
+    /// A `release` layer links the way dev images link their own release
+    /// binaries (`TILO_RUST_LTO=off` in os/Containerfile): no LTO, sixteen
+    /// codegen units. The workspace profile's fat LTO with one unit
+    /// re-optimises the whole program on every change, which made a warm
+    /// shell build take over fifteen minutes. Passed as `--config` rather
+    /// than environment so a cargo drop-in that builds elsewhere sees it.
     pub fn cargo_args(&self, extra: &[String]) -> Vec<String> {
         let mut args: Vec<String> = ["build", "--locked", "--profile", &self.profile]
             .map(str::to_owned)
             .to_vec();
+        if self.profile == "release" {
+            for setting in RELEASE_LAYER_LINKING {
+                args.push("--config".into());
+                args.push(setting.into());
+            }
+        }
         for package in &self.packages {
             args.push("-p".into());
             args.push(package.clone());
+        }
+        for bin in &self.bins {
+            args.push("--bin".into());
+            args.push(bin.clone());
         }
         let features = self.build_features(extra);
         if !features.is_empty() {
@@ -187,6 +216,12 @@ impl Component {
         .to_vec()
     }
 }
+
+/// Cargo settings a `release` layer builds with; see [`Component::cargo_args`].
+pub const RELEASE_LAYER_LINKING: [&str; 2] = [
+    r#"profile.release.lto="off""#,
+    "profile.release.codegen-units=16",
+];
 
 /// The manifest installer, relative to the repository root.
 pub const INSTALLER: &str = "os/scripts/install-components.py";
@@ -302,11 +337,13 @@ fn component(name: &str, entry: &toml::Table) -> Component {
                 .as_deref()
                 .map_or(Scope::Session, Scope::parse),
             units: strings(entry, "units"),
+            user_units: strings(entry, "user_units"),
             reboot: boot && text("dev_swap").as_deref() == Some("reboot") && dev_build.is_some(),
+            frame_cpu_trace: false,
         },
         dev_build,
-        user_units: strings(entry, "user_units"),
         packages: strings(entry, "packages"),
+        bins: strings(entry, "bins"),
         features: strings(entry, "features"),
         dev_features: strings(entry, "dev_features"),
         profile: text("profile").unwrap_or_else(|| "release".into()),
@@ -344,6 +381,53 @@ fn strings(entry: &toml::Table, key: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn old_component_metadata_defaults_cpu_recording_off() {
+        let info: ComponentInfo =
+            serde_json::from_str(r#"{"scope":"session","units":[]}"#).unwrap();
+        assert!(!info.frame_cpu_trace);
+        let mut traced = info.clone();
+        traced.frame_cpu_trace = true;
+        assert_ne!(info, traced);
+        let decoded: ComponentInfo =
+            serde_json::from_str(&serde_json::to_string(&traced).unwrap()).unwrap();
+        assert!(decoded.frame_cpu_trace);
+    }
+
+    #[test]
+    fn shell_swap_selects_only_the_installed_binary() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../os/components.toml");
+        let manifest = Manifest::load(&path).unwrap().unwrap();
+        let shell = manifest
+            .get("shell")
+            .unwrap()
+            .clone()
+            .with_profile(Some("dev"));
+        assert_eq!(shell.bins, ["shell"]);
+        assert_eq!(
+            shell.cargo_args(&[]),
+            [
+                "build",
+                "--locked",
+                "--profile",
+                "dev",
+                "-p",
+                "shell",
+                "--bin",
+                "shell",
+                "--features",
+                "dev-overrides"
+            ]
+        );
+        let manifest = Manifest::parse(
+            "[[component]]\nname = \"pair\"\npackages = [\"a\", \"b\"]\nbins = [\"a-cli\", \"b-cli\"]\n",
+        ).unwrap();
+        assert_eq!(
+            manifest.get("pair").unwrap().cargo_args(&[]).join(" "),
+            "build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p a -p b --bin a-cli --bin b-cli"
+        );
+    }
+
     /// The component array form parses; reboot travels only when set; a profile override changes the build
     /// and its output dir; cargo and installer arguments; unknown scope is session; the repository manifest
     /// parses; a missing file is none.
@@ -370,7 +454,7 @@ mod tests {
                 name = "browser"
                 scope = "session"
                 packages = ["browser"]
-                features = ["browser/wpe"]
+                features = ["browser/thin"]
                 [[component]]
                 name = "apps+runtime"
                 scope = "session"
@@ -397,10 +481,10 @@ mod tests {
             let fs = m.get("fs").unwrap();
             assert_eq!(fs.info.scope, Scope::Vm);
             assert_eq!(fs.info.units, ["fs.service", "tilo-fs-replica.service"]);
-            assert_eq!(fs.user_units, ["tilo-fs-recipient.service"]);
+            assert_eq!(fs.info.user_units, ["tilo-fs-recipient.service"]);
             assert!(!fs.boot);
             assert_eq!(fs.profile, "release");
-            assert_eq!(m.get("browser").unwrap().features, ["browser/wpe"]);
+            assert_eq!(m.get("browser").unwrap().features, ["browser/thin"]);
             assert_eq!(fs.paths, ["/usr/bin/fs"]);
             assert_eq!(m.get("apps+runtime").unwrap().profile, "thin-app");
             assert!(m.get("apps+runtime").unwrap().image_assembled);
@@ -457,13 +541,13 @@ mod tests {
         // Phase: cargo_and_installer_arguments.
         {
             let m = Manifest::parse(
-                "[[component]]\nname = \"browser\"\npackages = [\"browser\", \"helper\"]\nfeatures = [\"browser/wpe\"]\ndev_features = [\"browser/dev-overrides\"]\n",
+                "[[component]]\nname = \"browser\"\npackages = [\"browser\", \"helper\"]\nfeatures = [\"browser/thin\"]\ndev_features = [\"browser/dev-overrides\"]\n",
             )
             .unwrap();
             let browser = m.get("browser").unwrap();
             let extra = dev_override_features(
                 &serde_json::json!({"packages": [
-                    {"name": "browser", "features": {"wpe": [], "dev-overrides": []}},
+                    {"name": "browser", "features": {"thin": [], "dev-overrides": []}},
                     {"name": "helper", "features": {"dev-overrides": []}},
                 ]}),
                 &browser.packages,
@@ -471,7 +555,7 @@ mod tests {
             assert_eq!(extra, ["browser/dev-overrides", "helper/dev-overrides"]);
             assert_eq!(
                 browser.cargo_args(&extra).join(" "),
-                "build --locked --profile release -p browser -p helper --features browser/wpe,browser/dev-overrides,helper/dev-overrides"
+                "build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p browser -p helper --features browser/thin,browser/dev-overrides,helper/dev-overrides"
             );
             assert_eq!(
                 browser
@@ -496,7 +580,7 @@ mod tests {
             );
             assert_eq!(
                 shell.cargo_args(&extra).join(" "),
-                "build --locked --profile release -p shell --features dev-overrides,shell/dev-overrides"
+                "build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p shell --features dev-overrides,shell/dev-overrides"
             );
         }
 

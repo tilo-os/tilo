@@ -21,8 +21,9 @@
 //! ## Product lifecycle
 //!
 //! The shipped build enables `grayjay-sync`.  The app derives its long-lived
-//! Noise identity from the desktop secret portal, persists only public peer
-//! routes and revocation tombstones, requires explicit fingerprint approval,
+//! Noise identity from a seed in its secret store, keeps only public peer
+//! routes and revocation tombstones, as a setting of this device, requires
+//! explicit fingerprint approval,
 //! and runs bounded background sync.  Builds without that feature retain a
 //! hermetic unavailable seam for tests and constrained downstream packages.
 //!
@@ -42,12 +43,9 @@ mod lifecycle;
 pub mod transport;
 
 #[cfg(feature = "grayjay-sync")]
-pub use transport::{DeviceKey, GrayjaySession, GrayjaySyncTransport};
-
-#[cfg(feature = "grayjay-sync")]
 pub use lifecycle::state_from_model as lifecycle_state;
 #[cfg(feature = "grayjay-sync")]
-pub use lifecycle::{DeviceSync, PeerRecord, SyncStatus, SyncView, merge_remote_state};
+pub use lifecycle::{DeviceSync, PairedDevices, PeerRecord, SyncStatus, SyncView};
 
 #[cfg(not(feature = "grayjay-sync"))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -177,7 +175,7 @@ pub const fn capability() -> SyncCapability {
     #[cfg(feature = "grayjay-sync")]
     return SyncCapability {
         available: true,
-        summary: "Encrypted Grayjay sync is available when the desktop secret broker is unlocked.",
+        summary: "Encrypted Grayjay sync is available when the desktop's secret store is unlocked.",
     };
     #[cfg(not(feature = "grayjay-sync"))]
     SyncCapability {
@@ -196,7 +194,7 @@ pub struct PeerDescriptor {
 
 /// The clean seam between Tube's state and *whatever* moves it to/from a
 /// Grayjay peer. A real implementation speaks Noise over TCP 12315 (or via the
-/// relay); the [`StubTransport`] does nothing. The app holds a
+/// relay). The app holds a
 /// `Box<dyn SyncTransport>` so the rest of Tube never depends on `snow`,
 /// sockets, or the Grayjay wire format.
 ///
@@ -204,14 +202,6 @@ pub struct PeerDescriptor {
 /// fully contained behind this trait, which is what lets it stay gated/stubbed
 /// in the default build.
 pub trait SyncTransport: Send {
-    fn name(&self) -> &str;
-
-    /// Whether a real low-level transport backs this seam. This is deliberately
-    /// distinct from [`capability`], which describes product readiness.
-    fn is_available(&self) -> bool {
-        false
-    }
-
     /// Begin pairing with a peer (e.g. by scanning its QR / entering a code).
     /// Returns the peer's stable [`PeerId`] on success.
     ///
@@ -256,67 +246,9 @@ pub trait SyncTransport: Send {
     }
 }
 
-/// Hermetic unavailable transport used by non-`grayjay-sync` builds and unit
-/// tests.  The shipped default feature set constructs [`DeviceSync`] with the
-/// live Noise transport instead.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct StubTransport;
-
-impl SyncTransport for StubTransport {
-    fn name(&self) -> &'static str {
-        "unavailable (Grayjay sync omitted from this build)"
-    }
-
-    fn pair(&mut self, _pairing_blob: &str) -> SyncResult<PeerId> {
-        Err(SyncError::Unavailable(
-            "this build does not include Grayjay device sync".into(),
-        ))
-    }
-
-    fn push(&mut self, _peer: &PeerId, _state: &SyncState) -> SyncResult<()> {
-        Err(SyncError::Unavailable(
-            "this build does not include Grayjay device sync".into(),
-        ))
-    }
-
-    fn pull(&mut self, _peer: &PeerId) -> SyncResult<SyncState> {
-        Err(SyncError::Unavailable(
-            "this build does not include Grayjay device sync".into(),
-        ))
-    }
-}
-
-/// Hermetic trait default for callers that explicitly request no live backend.
-/// Production startup does not call this function.
-pub fn default_transport() -> Box<dyn SyncTransport> {
-    Box::new(StubTransport)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_sync_transport_is_the_explicit_stub() {
-        // Case `stub_reports_the_explicitly_omitted_capability`.
-        {
-            let mut t = StubTransport;
-            assert!(!t.is_available());
-            let unavailable =
-                || SyncError::Unavailable("this build does not include Grayjay device sync".into());
-            assert_eq!(t.pair("blob"), Err(unavailable()));
-            assert_eq!(
-                t.push(&PeerId("k".into()), &SyncState::default()),
-                Err(unavailable())
-            );
-            assert_eq!(t.pull(&PeerId("k".into())), Err(unavailable()));
-        }
-        // Case `default_transport_is_the_stub`.
-        {
-            let t = default_transport();
-            assert!(!t.is_available());
-        }
-    }
 
     #[test]
     fn subscription_urls_converge_without_accepting_other_sites() {

@@ -47,9 +47,10 @@ Type=simple
 # plain FUSE passthrough. Without it every open/read/write short-circuits
 # to "allowed" and the capability model stops at the compositor — a path
 # the permissions UI shows as revoked stays readable through
-# /var/workspace. The list is re-read while the mount is up (see
-# --acl-reload-secs), so a grant or a revocation takes effect without a
-# remount; /var/workspace is mounted once at boot and never again during
+# /var/workspace. The list is re-read while the mount is up, on every
+# change the kernel reports for it (inotify), and polled every
+# --acl-reload-secs only if it cannot be watched, so a grant or a
+# revocation takes effect without a remount; /var/workspace is mounted once at boot and never again during
 # a session, which is why reading it only at mount time was equivalent to
 # not reading it at all.
 #
@@ -84,17 +85,25 @@ ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/
     --storage-sock /run/tilo/fs-storage.sock --blob-sock /run/tilo/fs-blobs.sock \
     --acl /var/lib/tilo/fs-capabilities.json --principal person:local \
     $TILO_FS_DATA_PLANE_ARGS
-# `fusermount -u` is preferable to plain `umount` because it doesn't
-# need CAP_SYS_ADMIN. `-z` makes the unmount lazy so a hung client
-# can't block shutdown.
-ExecStop=/usr/bin/fusermount3 -u -z /var/workspace
+# No ExecStop=: the daemon ends its own mount. systemd's SIGTERM takes the
+# daemon's stop path, which unmounts and then makes the final namespace save.
+# On the FUSE data plane the mount is held by fusermount3's auto_unmount
+# helper, which blocks every signal and lazily detaches /var/workspace (what
+# `fusermount3 -u -z` did) as soon as the daemon releases the session or
+# exits, so a hung client cannot block the stop. An `ExecStop=` naming
+# fusermount3 cannot run at all: systemd checks the executable while its exec
+# child is still init_t, which may not execute fusermount_exec_t, so every
+# stop ended in 203/EXEC. Do not grant init_t that instead.
+#
 # On a machine with a dedicated store volume at /var/lib/tilo/store
 # (`--store`) the daemon serves the Tier 1 data plane instead: the
 # room's native tree is bind-mounted at /var/workspace and fanotify fills
 # placeholders on first access. Placeholders read as holes once the daemon's
 # fanotify group is gone, so the bind must never outlive the process. The
-# daemon detaches it on a clean stop; this covers a crash or SIGKILL, and is
-# a no-op for the FUSE data plane (already unmounted above).
+# daemon detaches it on a clean stop. This lazy umount is the backstop for
+# both planes when the daemon could not: a crash, or the SIGKILL after
+# TimeoutStopSec= (which also kills fusermount3's helper). It is a no-op
+# after a clean stop. umount is mount_exec_t, which init_t may execute.
 ExecStopPost=-/usr/bin/umount --lazy /var/workspace
 Restart=always
 RestartSec=5
@@ -102,10 +111,11 @@ RestartSec=5
 # namespacing directives such as ProtectSystem=/PrivateDevices= are unsafe here:
 # they would produce a healthy-looking mount visible only to this service.
 # Constrain the process without creating a private mount namespace instead.
+# That rules out PrivateIPC= too: it mounts a fresh /dev/mqueue, so it needs a
+# mount namespace, and the FUSE mount then never reaches the host.
 UMask=0077
 LimitCORE=0
 NoNewPrivileges=yes
-PrivateIPC=yes
 KeyringMode=private
 # CAP_SYS_ADMIN: the FUSE mount, or on Tier 1 the fanotify filesystem mark,
 # pre-content group, Btrfs snapshots and the bind mount. CAP_DAC_READ_SEARCH:
@@ -132,5 +142,10 @@ RestrictSUIDSGID=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service @mount
 SystemCallFilter=fanotify_init fanotify_mark name_to_handle_at open_by_handle_at
+# The qdoc conflict merge decodes peer versions only in Automerge workers
+# (tilo-automerge-isolate): re-executions of this binary that confine
+# themselves with Landlock and a seccomp allow-list before reading any input.
+# A worker that cannot confine itself never starts, and the merge is refused.
+SystemCallFilter=seccomp landlock_create_ruleset landlock_add_rule landlock_restrict_self
 SystemCallFilter=~@clock @cpu-emulation @debug @module @obsolete @raw-io @reboot @swap
 SystemCallErrorNumber=EPERM

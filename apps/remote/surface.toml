@@ -1,0 +1,46 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "remote.connection-list"
+label = "Remote connections"
+version = 1
+fields = [
+  { path = "connections", type = "Collection<Connection>", stored = "collection" },
+  { path = "connections.*.name", type = "String", label = true },
+  { path = "connections.*.host", type = "Atom" },
+  { path = "connections.*.port", type = "u16" },
+  { path = "connections.*.user", type = "Atom" },
+  { path = "connections.*.kind", type = "ConnectionKind" },
+  { path = "connections.*.auth", type = "AuthMethod" },
+  { path = "connections.*.last_used_ms", type = "Option<i64>", readonly = true },
+  { path = "connections.*.group", type = "Atom" },
+  { path = "connections.*.favorite", type = "bool" },
+]
+
+[[resources.verbs]]
+id = "add-connection"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "host", required = true, schema = { type = "string" } },
+  { name = "kind", required = true, schema = { oneOf = [{ type = "string", const = "ssh" }, { type = "string", const = "vnc" }, { type = "string", const = "rdp" }, { type = "string", const = "tilo" }] } },
+  { name = "port", required = false, schema = { type = ["integer", "null"], maximum = 65535, minimum = 0 } },
+  { name = "user", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "delete-connection"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "connection", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "mark-used"
+kind = "undoable"
+params = [
+  { name = "connection", required = true, schema = { type = "string" } },
+  { name = "at_ms", required = true, schema = { type = "integer" } },
+]
+

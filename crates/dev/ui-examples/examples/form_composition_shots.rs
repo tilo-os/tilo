@@ -4,9 +4,11 @@ use std::path::PathBuf;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::TextRole;
+use tilo_ui::widget::ButtonRole;
 use tilo_ui::widget::{
-    Actions, Button, Checkbox, Column, Container, Density, Element, Field, Form, FormPage,
-    FormSection, LabelPlacement, Row, Scrollable, Text, TextInput,
+    Actions, Button, Checkbox, Column, Container, Density, Dropdown, Element, Field, Form,
+    FormPage, FormSection, LabelPlacement, Page, Property, PropertyList, Row, Scrollable, Section,
+    Text, TextInput, Toggle,
 };
 
 const NAME: &str = "Full name";
@@ -29,8 +31,8 @@ fn email_input() -> TextInput {
     input
 }
 fn actions() -> Actions {
-    Actions::new(Button::new("save", "Save account changes", None).primary())
-        .secondary(Button::new("cancel", "Cancel", None))
+    Actions::new(Button::new("save", "Save account changes").role(ButtonRole::Primary))
+        .secondary(Button::new("cancel", "Cancel"))
 }
 // Automatic authoring: content, grouping and order; no layout pixels or breakpoints.
 fn account() -> Form {
@@ -192,16 +194,72 @@ fn primitive(width: u32, scale: f32) -> Element {
         Container::new()
             .with_no_padding()
             .filling()
-            .with_fill(shot_theme().bg_app)
             .with_child(scroll),
     )
 }
+/// A page of sections: a summary at its head, facts and a settings group,
+/// with its commit pinned under it.
+fn page() -> Element {
+    Box::new(
+        Page::new()
+            .head(Box::new(
+                Text::new("Your account is synced on 3 devices.").with_role(TextRole::Body),
+            ))
+            .section(Box::new(Section::titled(
+                "Details",
+                vec![Box::new(PropertyList::new(vec![
+                    Property::new("Name", "Alex Morgan"),
+                    Property::new("Email", "alex@example.org"),
+                    Property::new("Member since", "March 2024"),
+                ]))],
+            )))
+            .section(Box::new(settings_form()))
+            .with_pinned_actions(actions()),
+    )
+}
+
+/// Settings rows: switches and a chooser on the trailing edge, help under
+/// the label, a read-only value and a row of buttons.
+fn settings_form() -> Form {
+    Form::new()
+        .section(
+            FormSection::new("Sync")
+                .grouped()
+                .field(
+                    Field::new("Sync over mobile data", Toggle::new("mobile", "mobile"))
+                        .with_help("Large files wait for Wi-Fi."),
+                )
+                .field(Field::new(
+                    "Keep history",
+                    Dropdown::new(vec!["30 days".into(), "A year".into()], "history"),
+                ))
+                .field(Field::custom(
+                    "Storage used",
+                    Box::new(Text::new("2.4 GB of 15 GB").numeric()),
+                ))
+                .control_row(Box::new(
+                    Row::new()
+                        .push(Box::new(Button::new("export", "Export data")))
+                        .push(Box::new(
+                            Button::new("delete", "Delete account").role(ButtonRole::Destructive),
+                        )),
+                )),
+        )
+        .section(FormSection::untitled().field(Field::new(
+            "Device name shown to collaborators",
+            TextInput::local().with_id("device"),
+        )))
+}
+
 /// `TILO_SHOTS_THEME=<preset>` (`light`, `high-contrast`, any `Theme::named`)
 /// renders every capture on that preset; PNGs are composited on the theme's
 /// own `bg_app`.
+/// A second argument names the preset too, for runners that do not forward
+/// the environment.
 fn shot_theme() -> Theme {
-    std::env::var("TILO_SHOTS_THEME")
-        .ok()
+    std::env::args()
+        .nth(2)
+        .or_else(|| std::env::var("TILO_SHOTS_THEME").ok())
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark)
 }
@@ -217,10 +275,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("large-text", (1080, 1100), 2.0),
         ("narrow-large-text", (340, 900), 2.0),
     ] {
-        for mode in ["automatic", "guided", "primitive"] {
+        for mode in ["automatic", "guided", "primitive", "page", "settings"] {
             let root = match mode {
                 "guided" => guided(),
                 "primitive" => primitive(viewport.0, scale),
+                "page" => page(),
+                "settings" => {
+                    Box::new(FormPage::untitled(settings_form()).with_pinned_actions(actions()))
+                }
                 _ => automatic(),
             };
             let mut harness = FrameHarness::new_with_theme(
@@ -230,7 +292,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 shot_theme().with_text_scale(scale),
             );
             let stem = format!("{mode}-{name}");
-            harness.render_window_png(&output.join(format!("{stem}.png")));
+            harness.render_png(&output.join(format!("{stem}.png")));
             std::fs::write(
                 output.join(format!("{stem}.json")),
                 harness.inspection_json()?,
@@ -238,7 +300,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if name == "narrow-large-text" {
                 harness.click_at(5.0, 5.0);
                 harness.scroll(0.0, -10000.0);
-                harness.render_window_png(&output.join(format!("{stem}-end.png")));
+                harness.render_png(&output.join(format!("{stem}-end.png")));
                 std::fs::write(
                     output.join(format!("{stem}-end.json")),
                     harness.inspection_json()?,
@@ -253,7 +315,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         shot_theme(),
     );
     resized.resize((340, 800))?;
-    resized.render_window_png(&output.join("automatic-resized-narrow.png"));
+    resized.render_png(&output.join("automatic-resized-narrow.png"));
     std::fs::write(
         output.join("automatic-resized-narrow.json"),
         resized.inspection_json()?,

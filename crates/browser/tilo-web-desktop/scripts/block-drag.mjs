@@ -28,7 +28,7 @@ async function chrome() {
   const browser = await launch();
   const tab = await browser.tab();
   await tab.send('Emulation.setDeviceMetricsOverride', {...VIEWPORT, deviceScaleFactor: 1, mobile: false});
-  await tab.navigate(`${server.url}/index.html`);
+  await tab.navigate(`${server.url}/`);
   let buttons = 0;
   const mouse = (type, x, y) => tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'left', buttons, clickCount: 1});
   return {
@@ -56,7 +56,7 @@ async function playwrightWebkit() {
   const page = context.pages()[0] ?? await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(`EXC ${error.message}`));
-  await page.goto(`${server.url}/index.html`);
+  await page.goto(`${server.url}/`);
   return {
     evaluate: expression => page.evaluate(expression),
     errors: () => errors,

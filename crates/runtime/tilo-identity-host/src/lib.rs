@@ -4,26 +4,33 @@
 //! [`broker`] to sign for them, and it answers only for the identity the
 //! [`registry`] selected for their workspace, only while this device holds a
 //! valid, enrolled, non-revoked certificate ([`device_fleet`],
-//! [`certificates`]). [`provisioning`] creates that chain, and [`custody`]
-//! selects the certificate this device presents to the hosts of each room.
+//! [`certificates`]). [`enrollment`] is the one place a token admits another
+//! device. [`provisioning`] creates that chain, [`custody`]
+//! selects the certificate this device presents to the hosts of each room,
+//! and [`join_proof`] keeps the signed proof it presents there.
 //!
 //! Hosts supply their committed workspaces and channel service through
 //! [`broker::WorkspaceMembership`] and [`broker::ChannelKeySource`].
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
+#[cfg(unix)]
 pub mod broker;
+#[cfg(unix)]
 pub mod certificates;
+#[cfg(unix)]
 pub mod custody;
+#[cfg(unix)]
 pub mod device_fleet;
+#[cfg(unix)]
+pub mod enrollment;
+#[cfg(unix)]
+pub mod join_proof;
+pub mod policy_change;
+#[cfg(unix)]
 pub mod provisioning;
+#[cfg(unix)]
 pub mod registry;
+
+#[cfg(not(unix))]
+mod unsupported_host;
+#[cfg(not(unix))]
+pub use unsupported_host::{device_fleet, provisioning, registry};

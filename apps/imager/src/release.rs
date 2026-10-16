@@ -11,7 +11,6 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -157,7 +156,6 @@ pub enum DownloadEvent {
     Downloading { received: u64, total: u64 },
     Verifying,
     Expanding { written: u64, total: u64 },
-    Finished(Result<Source, String>),
 }
 
 /// Cancellation narrows the authority of this process-local network job. The
@@ -173,11 +171,6 @@ impl DownloadControl {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
-}
-
-pub struct DownloadJob {
-    pub events: Receiver<DownloadEvent>,
-    pub control: DownloadControl,
 }
 
 /// A selection obtained only from this build's embedded catalog. Authentication
@@ -717,11 +710,9 @@ fn download_archive_observed(
     Err("The Tilo installer server did not honor a safe download restart.".into())
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the authenticated download, expansion, and atomic cache publication form one fail-closed transaction"
-)]
-fn verified_image_observed(
+/// Download, verify and expand `release`, telling `notify` how far it is.
+/// Blocks; run it off the UI thread. `control` stops it between chunks.
+pub fn verified_image_observed(
     release: &TiloRelease,
     control: &DownloadControl,
     notify: &mut impl FnMut(DownloadEvent),
@@ -838,26 +829,6 @@ fn source_for(release: &TiloRelease, image: &Path) -> Result<Source, String> {
     source.identity = crate::model::SourceIdentity::from_file(&file)
         .map_err(|error| format!("Could not identify the verified installer: {error}"))?;
     Ok(source)
-}
-
-/// Download and verify without blocking the UI thread.
-pub fn spawn_download(release: TiloRelease) -> DownloadJob {
-    let (tx, rx) = mpsc::channel();
-    let control = DownloadControl::default();
-    let worker_control = control.clone();
-    std::thread::Builder::new()
-        .name("tilo-release-download".into())
-        .spawn(move || {
-            let result = verified_image_observed(&release, &worker_control, &mut |event| {
-                let _ = tx.send(event);
-            });
-            let _ = tx.send(DownloadEvent::Finished(result));
-        })
-        .ok();
-    DownloadJob {
-        events: rx,
-        control,
-    }
 }
 
 /// Zstandard frames back to back, decoded as `zstd --decompress` reads them.
@@ -985,10 +956,6 @@ mod tests {
 
     /// Architecture-matched media selection.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn media_selection_matches_the_native_host_architecture_only() {
         // Phase `development_catalog_is_well_formed`.
         {
@@ -1216,10 +1183,6 @@ mod tests {
 
     /// Digest validation, verified source identity and redirect checks.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn release_sources_keep_strict_digests_identity_and_trusted_redirects() {
         // Phase `digest_validation_is_strict`.
         {
@@ -1279,10 +1242,6 @@ mod tests {
 
     /// Range resume, restart and oversized partials.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn release_download_resumes_only_valid_ranges() {
         // Phase `interrupted_download_keeps_bytes_and_resumes_with_a_valid_range`.
         {
@@ -1399,10 +1358,6 @@ mod tests {
 
     /// Transient failures, progress reporting and cancellation.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn release_download_failures_and_cancellation_keep_the_partial() {
         // Phase `transient_http_failure_does_not_destroy_a_partial_archive`.
         {
@@ -1510,10 +1465,6 @@ mod internal_catalog_tests {
     }
     /// Legacy media, internal purpose, unknown fields and published packages.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn internal_catalog_entries_parse_strictly_and_separately_from_media() {
         // Phase `legacy_media_still_parses`.
         {
@@ -1610,10 +1561,6 @@ mod internal_catalog_tests {
     }
     /// Internal entry binding, selection mismatches and strict profiles.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn internal_entries_bind_manifest_bytes_release_and_architecture() {
         // Phase `internal_entries_remain_separate_and_bind_exact_manifest_bytes`.
         {

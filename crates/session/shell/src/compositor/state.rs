@@ -13,17 +13,406 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug, Clone, Copy)]
 enum ForeignCommitCapture {
     NoBuffer,
+    Failed,
     Removed,
-    Shm,
+    Shm(u64),
     Dmabuf(u64),
 }
 
 #[derive(Default)]
 struct ForeignCommitCaptures(Mutex<VecDeque<ForeignCommitCapture>>);
 
-use smithay::backend::allocator::Fourcc;
+/// Set once the surface queued an SHM capture, which may have left a base in
+/// the frame store for its next commit's damage. A commit the capture does
+/// not see clears that base only while this is set, so the many surfaces
+/// never captured do not take the frame store's lock on every commit.
+#[derive(Default)]
+struct ShmCaptureBase(std::sync::atomic::AtomicBool);
+
+/// Record that the surface queued an SHM capture.
+fn mark_shm_capture_base(states: &wl_compositor::SurfaceData) {
+    states
+        .data_map
+        .insert_if_missing_threadsafe(ShmCaptureBase::default);
+    if let Some(base) = states.data_map.get::<ShmCaptureBase>() {
+        base.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A commit the capture never sees still changes the surface: a later SHM
+/// commit's damage is relative to it, not to the last one captured.
+fn forget_uncaptured_shm_base(surface: &WlSurface, surface_id: u64) {
+    let had_base = wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<ShmCaptureBase>()
+            .is_some_and(|base| base.0.swap(false, std::sync::atomic::Ordering::Relaxed))
+    });
+    if had_base {
+        crate::compositor::foreign::store().reset_shm_base(surface_id);
+    }
+}
+
+/// After any captured commit but an SHM buffer (or a commit that changes
+/// nothing), the next SHM commit's damage is not relative to the frame the
+/// SHM capture built: it copies whole.
+fn settle_shm_base(surface_id: u64, association: &ForeignCommitCapture) {
+    if !matches!(
+        association,
+        ForeignCommitCapture::Shm(_) | ForeignCommitCapture::NoBuffer
+    ) {
+        crate::compositor::foreign::store().reset_shm_base(surface_id);
+    }
+}
+
+/// Buffer damage as the frame store records it.
+fn buffer_damage(rects: &[BufferRect]) -> Vec<vello::kurbo::Rect> {
+    rects
+        .iter()
+        .map(|rect| {
+            vello::kurbo::Rect::from_origin_size(
+                (f64::from(rect.loc.x), f64::from(rect.loc.y)),
+                (f64::from(rect.size.w), f64::from(rect.size.h)),
+            )
+        })
+        .collect()
+}
+
+/// Buffer damage as the whole pixels an SHM capture copies, clipped to the
+/// buffer's non-negative quadrant.
+fn shm_regions(rects: &[BufferRect]) -> Vec<crate::compositor::surface_readback::ShmRegion> {
+    rects
+        .iter()
+        .filter_map(|rect| {
+            let x = rect.loc.x.max(0);
+            let y = rect.loc.y.max(0);
+            let right = rect.loc.x.saturating_add(rect.size.w);
+            let bottom = rect.loc.y.saturating_add(rect.size.h);
+            Some(crate::compositor::surface_readback::ShmRegion {
+                x: usize::try_from(x).ok()?,
+                y: usize::try_from(y).ok()?,
+                width: usize::try_from(right.saturating_sub(x)).ok()?,
+                height: usize::try_from(bottom.saturating_sub(y)).ok()?,
+            })
+        })
+        .collect()
+}
+
+type BufferRect = smithay::utils::Rectangle<i32, smithay::utils::Buffer>;
+
+/// A pending viewport (`wp_viewport`) and the buffer it crops or scales, for converting
+/// surface-local damage to buffer pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ViewportMap {
+    /// The source rectangle, in surface-local units (buffer pixels over the buffer scale).
+    src: Option<Rectangle<f64, Logical>>,
+    /// The destination size, in surface-local units.
+    dst: Option<Size<i32, Logical>>,
+    /// The attached buffer's size in pixels.
+    buffer: (i32, i32),
+}
+
+/// The commit's damage in buffer pixels. Buffer-coordinate rectangles
+/// (`wl_surface.damage_buffer`) are taken as they are. Surface-coordinate
+/// ones (`wl_surface.damage`) cover `buffer_scale` buffer pixels per
+/// surface pixel, or, under a viewport (`viewport`, set by every
+/// fractional-scale client), are mapped through its source crop and
+/// destination scale and rounded outwards. With a transformed or offset
+/// buffer, or no damage, the whole buffer is damaged rather than guessing
+/// the conversion.
+fn pending_buffer_rects(
+    attrs: &wl_compositor::SurfaceAttributes,
+    viewport: Option<ViewportMap>,
+) -> Option<Vec<BufferRect>> {
+    if attrs.buffer_transform
+        != smithay::reexports::wayland_server::protocol::wl_output::Transform::Normal
+        || attrs
+            .buffer_delta
+            .is_some_and(|delta| delta.x != 0 || delta.y != 0)
+        || attrs.damage.is_empty()
+        || attrs.damage.len() > 128
+    {
+        return None;
+    }
+    attrs
+        .damage
+        .iter()
+        .map(|damage| {
+            let rect = match damage {
+                wl_compositor::Damage::Buffer(rect) => *rect,
+                wl_compositor::Damage::Surface(rect) => match viewport {
+                    None => surface_rect_in_buffer(*rect, attrs.buffer_scale)?,
+                    Some(viewport) => viewport_rect_in_buffer(*rect, attrs.buffer_scale, viewport)?,
+                },
+            };
+            (rect.size.w > 0 && rect.size.h > 0).then_some(rect)
+        })
+        .collect()
+}
+
+/// The pending viewport of `states` with the size of the buffer it applies to; `None` when no
+/// viewport is set or the buffer's size is unknown (surface damage is then the whole buffer).
+fn pending_viewport(
+    states: &wl_compositor::SurfaceData,
+    buffer: (i32, i32),
+) -> Option<ViewportMap> {
+    let mut viewport = states
+        .cached_state
+        .get::<smithay::wayland::viewporter::ViewportCachedState>();
+    let pending = viewport.pending();
+    let map = (pending.src.is_some() || pending.dst.is_some()).then_some(ViewportMap {
+        src: pending.src,
+        dst: pending.dst,
+        buffer,
+    });
+    drop(viewport);
+    map
+}
+
+/// A surface-local rectangle in buffer pixels under `viewport`, rounded outwards and clipped to
+/// the buffer. `None` when the viewport is degenerate or the rectangle misses the buffer
+/// entirely (the caller then damages the whole buffer rather than nothing).
+fn viewport_rect_in_buffer(
+    rect: Rectangle<i32, Logical>,
+    scale: i32,
+    viewport: ViewportMap,
+) -> Option<BufferRect> {
+    if scale < 1 || viewport.buffer.0 <= 0 || viewport.buffer.1 <= 0 {
+        return None;
+    }
+    let scale = f64::from(scale);
+    let (buffer_w, buffer_h) = (f64::from(viewport.buffer.0), f64::from(viewport.buffer.1));
+    let src = viewport.src.unwrap_or_else(|| {
+        Rectangle::new(
+            (0.0, 0.0).into(),
+            (buffer_w / scale, buffer_h / scale).into(),
+        )
+    });
+    let (dst_w, dst_h) = viewport.dst.map_or((src.size.w, src.size.h), |dst| {
+        (f64::from(dst.w), f64::from(dst.h))
+    });
+    if !(dst_w > 0.0 && dst_h > 0.0 && src.size.w > 0.0 && src.size.h > 0.0) {
+        return None;
+    }
+    let (sx, sy) = (src.size.w / dst_w, src.size.h / dst_h);
+    let x0 = (src.loc.x + f64::from(rect.loc.x) * sx) * scale;
+    let y0 = (src.loc.y + f64::from(rect.loc.y) * sy) * scale;
+    let x1 = (src.loc.x + (f64::from(rect.loc.x) + f64::from(rect.size.w)) * sx) * scale;
+    let y1 = (src.loc.y + (f64::from(rect.loc.y) + f64::from(rect.size.h)) * sy) * scale;
+    let (x0, y0) = (
+        x0.floor().clamp(0.0, buffer_w),
+        y0.floor().clamp(0.0, buffer_h),
+    );
+    let (x1, y1) = (
+        x1.ceil().clamp(0.0, buffer_w),
+        y1.ceil().clamp(0.0, buffer_h),
+    );
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "clamped to the buffer, whose size is an i32, and rounded to whole pixels"
+    )]
+    Some(BufferRect::new(
+        (x0 as i32, y0 as i32).into(),
+        ((x1 - x0) as i32, (y1 - y0) as i32).into(),
+    ))
+}
+
+/// A surface-local rectangle in the pixels of an untransformed buffer drawn
+/// at `scale` buffer pixels per surface pixel. Clients damage "everything"
+/// as `i32::MAX`-sized rectangles, so the scaling saturates.
+fn surface_rect_in_buffer(
+    rect: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+    scale: i32,
+) -> Option<BufferRect> {
+    if scale < 1 {
+        return None;
+    }
+    let scaled = |value: i32| value.saturating_mul(scale);
+    Some(BufferRect::new(
+        (scaled(rect.loc.x), scaled(rect.loc.y)).into(),
+        (scaled(rect.size.w), scaled(rect.size.h)).into(),
+    ))
+}
+
+#[cfg(test)]
+mod commit_damage_tests {
+    use super::{BufferRect, pending_buffer_rects, wl_compositor};
+    use smithay::utils::{Logical, Rectangle};
+
+    fn commit(damage: Vec<wl_compositor::Damage>, scale: i32) -> wl_compositor::SurfaceAttributes {
+        let mut attrs = wl_compositor::SurfaceAttributes::default();
+        attrs.damage = damage;
+        attrs.buffer_scale = scale;
+        attrs
+    }
+
+    fn surface(x: i32, y: i32, w: i32, h: i32) -> wl_compositor::Damage {
+        wl_compositor::Damage::Surface(Rectangle::<i32, Logical>::new((x, y).into(), (w, h).into()))
+    }
+
+    fn buffer(x: i32, y: i32, w: i32, h: i32) -> BufferRect {
+        BufferRect::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn surface_damage_covers_its_buffer_pixels_at_the_buffer_scale() {
+        let attrs = commit(
+            vec![
+                surface(10, 20, 30, 4),
+                wl_compositor::Damage::Buffer(buffer(1, 2, 3, 4)),
+            ],
+            2,
+        );
+        assert_eq!(
+            pending_buffer_rects(&attrs, None),
+            Some(vec![buffer(20, 40, 60, 8), buffer(1, 2, 3, 4)])
+        );
+    }
+
+    fn viewport(
+        src: Option<Rectangle<f64, Logical>>,
+        dst: Option<(i32, i32)>,
+        buffer: (i32, i32),
+    ) -> super::ViewportMap {
+        super::ViewportMap {
+            src,
+            dst: dst.map(Into::into),
+            buffer,
+        }
+    }
+
+    #[test]
+    fn surface_damage_under_a_viewport_maps_to_buffer_pixels_rounding_outwards() {
+        // A fractional-scale client: a 1472x920 logical surface drawn from a 2944x1840 buffer
+        // (scale 1 in the protocol sense, destination set by wp_viewport).
+        let full = Some(viewport(None, Some((1472, 920)), (2944, 1840)));
+        let attrs = commit(vec![surface(10, 20, 30, 4)], 1);
+        assert_eq!(
+            pending_buffer_rects(&attrs, full),
+            Some(vec![buffer(20, 40, 60, 8)])
+        );
+        // 1.5x: 1962x1226 buffer for a 1308x817 surface. 10.3..40.3 -> floor/ceil.
+        let fractional = Some(viewport(None, Some((1308, 817)), (1962, 1226)));
+        let attrs = commit(vec![surface(7, 3, 21, 9)], 1);
+        let [rect] = pending_buffer_rects(&attrs, fractional)
+            .expect("converted")
+            .try_into()
+            .expect("one rect");
+        assert!(rect.loc.x <= 10 && rect.loc.y <= 4);
+        assert!(rect.loc.x + rect.size.w >= 42 && rect.loc.y + rect.size.h >= 18);
+        assert!(rect.size.w <= 33 && rect.size.h <= 16, "{rect:?} is tight");
+        // A source crop offsets the damage into the buffer.
+        let crop = Some(viewport(
+            Some(Rectangle::new((100.0, 50.0).into(), (200.0, 100.0).into())),
+            Some((200, 100)),
+            (1000, 1000),
+        ));
+        let attrs = commit(vec![surface(10, 10, 20, 20)], 1);
+        assert_eq!(
+            pending_buffer_rects(&attrs, crop),
+            Some(vec![buffer(110, 60, 20, 20)])
+        );
+        // Everything, in surface pixels, clips to the buffer.
+        let attrs = commit(vec![surface(0, 0, i32::MAX, i32::MAX)], 1);
+        assert_eq!(
+            pending_buffer_rects(&attrs, full),
+            Some(vec![buffer(0, 0, 2944, 1840)])
+        );
+        // A degenerate viewport or damage off the buffer damages the whole buffer.
+        let attrs = commit(vec![surface(10, 20, 30, 4)], 1);
+        assert_eq!(
+            pending_buffer_rects(&attrs, Some(viewport(None, Some((0, 0)), (100, 100)))),
+            None
+        );
+        let attrs = commit(vec![surface(5000, 5000, 4, 4)], 1);
+        assert_eq!(pending_buffer_rects(&attrs, full), None);
+        // Buffer damage needs no conversion, viewport or not.
+        let attrs = commit(vec![wl_compositor::Damage::Buffer(buffer(1, 2, 3, 4))], 1);
+        assert_eq!(
+            pending_buffer_rects(&attrs, full),
+            Some(vec![buffer(1, 2, 3, 4)])
+        );
+    }
+
+    #[test]
+    fn damaging_everything_in_surface_pixels_saturates() {
+        let attrs = commit(vec![surface(0, 0, i32::MAX, i32::MAX)], 2);
+        assert_eq!(
+            pending_buffer_rects(&attrs, None),
+            Some(vec![buffer(0, 0, i32::MAX, i32::MAX)])
+        );
+    }
+}
+
+/// What a commit says about its surface's opacity: the opaque region the
+/// commit applies and how its buffer maps onto the surface.
+struct DeclaredOpacity {
+    region: Option<wl_compositor::RegionAttributes>,
+    scale: i32,
+    transform: smithay::reexports::wayland_server::protocol::wl_output::Transform,
+}
+
+impl DeclaredOpacity {
+    fn of(attrs: &wl_compositor::SurfaceAttributes) -> Self {
+        Self {
+            region: attrs.opaque_region.clone(),
+            scale: attrs.buffer_scale,
+            transform: attrs.buffer_transform,
+        }
+    }
+
+    /// `dmabuf` as the commit attaches it to the surface `states` describe:
+    /// with the surface's colour description, and opaque when the region
+    /// covers the surface it gives under the pending viewport.
+    fn commit(
+        &self,
+        states: &wl_compositor::SurfaceData,
+        dmabuf: Dmabuf,
+    ) -> crate::compositor::foreign::DmabufCommit {
+        let colorimetry = states
+            .data_map
+            .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
+            .and_then(
+                crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry,
+            )
+            .map(|(colorimetry, _)| colorimetry);
+        let viewport = *states
+            .cached_state
+            .get::<smithay::wayland::viewporter::ViewportCachedState>()
+            .pending();
+        let opaque = self.covers((dmabuf.width(), dmabuf.height()), &viewport);
+        crate::compositor::foreign::DmabufCommit {
+            buffer: dmabuf,
+            colorimetry,
+            opaque,
+        }
+    }
+
+    /// The opaque region covers the whole surface a `buffer` of this size
+    /// gives: the buffer's alpha is padding
+    /// ([`crate::compositor::opaque_region`]).
+    fn covers(
+        &self,
+        buffer: (u32, u32),
+        viewport: &smithay::wayland::viewporter::ViewportCachedState,
+    ) -> bool {
+        crate::compositor::opaque_region::covers(
+            self.region.as_ref(),
+            crate::compositor::opaque_region::surface_extent(
+                buffer,
+                self.scale,
+                self.transform,
+                viewport,
+            ),
+        )
+    }
+}
+
 use smithay::backend::allocator::dmabuf::Dmabuf;
-use smithay::backend::allocator::{Buffer, Format, Modifier};
+use smithay::backend::allocator::{Buffer, Format};
 use smithay::desktop::{
     PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, find_popup_root_surface,
 };
@@ -38,7 +427,7 @@ use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle};
-use smithay::utils::{Logical, Rectangle, Serial};
+use smithay::utils::{Logical, Rectangle, Serial, Size};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     self as wl_compositor, CompositorClientState, CompositorHandler, CompositorState,
@@ -59,7 +448,8 @@ use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::wayland::input_method::{
-    InputMethodHandler, InputMethodManagerState, PopupSurface as InputMethodPopupSurface,
+    InputMethodHandler, InputMethodManagerState, InputMethodSeat,
+    PopupSurface as InputMethodPopupSurface,
 };
 use smithay::wayland::text_input::{TextInputManagerState, TextInputSeat};
 use smithay::wayland::session_lock::{
@@ -67,9 +457,14 @@ use smithay::wayland::session_lock::{
 };
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::wayland::shell::xdg::decoration::{XdgDecorationHandler, XdgDecorationState};
+use smithay::reexports::wayland_protocols_misc::server_decoration::server::{
+    org_kde_kwin_server_decoration::{Mode as KdeMode, OrgKdeKwinServerDecoration},
+    org_kde_kwin_server_decoration_manager::Mode as KdeDefaultMode,
+};
+use smithay::wayland::shell::kde::decoration::{KdeDecorationHandler, KdeDecorationState};
 use smithay::wayland::shell::xdg::dialog::{XdgDialogHandler, XdgDialogState};
 use smithay::wayland::shell::xdg::{
-    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
+    PopupSurface, PositionerState, ShellClient, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
@@ -81,12 +476,12 @@ use smithay::wayland::xdg_activation::{
 };
 use smithay::{
     delegate_compositor, delegate_content_type, delegate_cursor_shape, delegate_data_control,
-    delegate_data_device, delegate_dmabuf, delegate_ext_data_control, delegate_fractional_scale,
-    delegate_idle_inhibit, delegate_input_method_manager, delegate_keyboard_shortcuts_inhibit,
+    delegate_dmabuf, delegate_ext_data_control, delegate_fractional_scale,
+    delegate_idle_inhibit, delegate_keyboard_shortcuts_inhibit,
     delegate_output, delegate_pointer_constraints, delegate_pointer_gestures,
-    delegate_primary_selection, delegate_relative_pointer,
-    delegate_seat, delegate_session_lock, delegate_shm,
-    delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
+    delegate_relative_pointer,
+    delegate_session_lock, delegate_shm,
+    delegate_kde_decoration, delegate_viewporter, delegate_xdg_decoration,
     delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
 };
 
@@ -105,6 +500,7 @@ use crate::wayland::color_management::ColorManagerState;
 use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
 use smithay::backend::input::KeyState;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use tilo_lock::MutexRecover as _;
 use vello::kurbo::Rect;
 
 /// Stable identity from `apps/osk/tilo-app.toml`. It is necessary but never
@@ -167,31 +563,17 @@ pub(crate) struct OutputPresentationSurface {
 
 pub(crate) use crate::shell::floating::*;
 
-/// Read the persisted `HiDPI` display scale from the shared settings store.
+/// The persisted `HiDPI` display scale in a settings document.
 ///
-/// The Settings app writes `~/.config/tilo/settings.json` with a
-/// `"display"` object carrying a `"scale"` number (1.0=100%, …); the
-/// compositor reads the same file via `settings_store`, resolving the same
-/// XDG rule the apps use. Any read/parse failure or out-of-range value falls back to `1.0`.
-fn load_display_scale() -> f64 {
-    let Some(path) = settings_store::settings_path() else {
-        return 1.0;
-    };
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return 1.0;
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return 1.0;
-    };
-    match json
-        .get("display")
-        .and_then(|d| d.get("scale"))
-        .and_then(serde_json::Value::as_f64)
-    {
-        // Clamp to the Settings control's range (100%-200%, with margin) so an out-of-band value can't wedge the UI.
-        Some(scale) if (0.5..=3.0).contains(&scale) => scale,
-        _ => 1.0,
-    }
+/// The Settings app writes a `"display"` object carrying a `"scale"` number
+/// (1.0=100%, …); the compositor follows the same document through its live
+/// settings snapshot. An absent or out-of-range value falls back to `1.0`.
+pub fn display_scale_from(document: &serde_json::Map<String, serde_json::Value>) -> f64 {
+    document
+        .get(settings_store::hardware::DISPLAY_SECTION)
+        .and_then(serde_json::Value::as_object)
+        .and_then(settings_store::display_scale::user_scale)
+        .unwrap_or(1.0)
 }
 
 /// Bridges the `ext_session_lock_v1` protocol handler (running inside the
@@ -244,6 +626,76 @@ pub(crate) struct TrackedPopup {
     parent: SurfaceId,
     geometry: Rectangle<i32, Logical>,
     grabbed: bool,
+}
+
+/// Everything the capture protection of transient surfaces is derived
+/// from, as of the last [`State::sync_capture_protection`] pass. Compared
+/// field by field on each wakeup without allocating, taking the tree lock
+/// or the store's protection lock; any difference re-derives, so a newly
+/// mapped popup, a reparented one, a secret field gaining focus, an app
+/// asking for protection or a renamed tab is never missed.
+#[derive(Default, PartialEq)]
+pub(crate) struct CaptureProtectionInputs {
+    /// The focused text field declares its content secret.
+    secret_field: bool,
+    osk: Option<SurfaceId>,
+    /// The workspace tree's write generation and the store's protection
+    /// epoch: which app each tiled surface belongs to, and which apps and
+    /// surfaces are protected.
+    versions: (u64, u64),
+    input_method_popups: Vec<(SurfaceId, Option<SurfaceId>)>,
+    popups: Vec<(SurfaceId, bool, SurfaceId)>,
+    /// Floating toplevels and their apps.
+    floating: Vec<(SurfaceId, String)>,
+}
+
+impl CaptureProtectionInputs {
+    fn capture(state: &State, secret_field: bool, versions: (u64, u64)) -> Self {
+        Self {
+            secret_field,
+            osk: state.osk_surface,
+            versions,
+            input_method_popups: state.capture_protection_input_method_popups().collect(),
+            popups: state.capture_protection_popups().collect(),
+            floating: state
+                .floating_toplevels
+                .iter()
+                .map(|toplevel| (toplevel.surface_id, toplevel.app_id.clone()))
+                .collect(),
+        }
+    }
+
+    fn matches(&self, state: &State, secret_field: bool, versions: (u64, u64)) -> bool {
+        self.secret_field == secret_field
+            && self.osk == state.osk_surface
+            && self.versions == versions
+            && self
+                .input_method_popups
+                .iter()
+                .copied()
+                .eq(state.capture_protection_input_method_popups())
+            && self
+                .popups
+                .iter()
+                .copied()
+                .eq(state.capture_protection_popups())
+            && self
+                .floating
+                .iter()
+                .map(|(surface, app_id)| (*surface, app_id.as_str()))
+                .eq(state
+                    .floating_toplevels
+                    .iter()
+                    .map(|toplevel| (toplevel.surface_id, toplevel.app_id.as_str())))
+    }
+}
+
+/// [`State::sync_capture_protection`]'s memory between wakeups.
+#[derive(Default)]
+pub(crate) struct CaptureProtectionSync {
+    last: Option<CaptureProtectionInputs>,
+    #[cfg(test)]
+    passes: usize,
 }
 
 #[derive(Clone)]
@@ -418,6 +870,46 @@ mod personal_fabric_input_holder_tests {
 /// session.
 pub(crate) const CLOSING_FRAME_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum InputMethodPreeditState {
+    #[default]
+    Inactive,
+    Pending {
+        previous: bool,
+        next: bool,
+    },
+    Active,
+}
+
+impl InputMethodPreeditState {
+    fn stage(&mut self, next: bool) {
+        let previous = match *self {
+            Self::Active => true,
+            Self::Inactive => false,
+            Self::Pending { previous, .. } => previous,
+        };
+        *self = Self::Pending { previous, next };
+    }
+
+    fn finish(&mut self, accepted: bool) {
+        if let Self::Pending { previous, next } = *self {
+            *self = if if accepted { next } else { previous } {
+                Self::Active
+            } else {
+                Self::Inactive
+            };
+        }
+    }
+}
+
+impl InputMethodPreeditState {
+    pub(crate) fn is_active(self) -> bool {
+        // Staged requests cannot end an already accepted composition before
+        // their Commit passes the real client, serial and active-field gates.
+        matches!(self, Self::Active | Self::Pending { previous: true, .. })
+    }
+}
+
 pub struct State {
     /// Calloop loop handle — for registering input devices, session signals, libinput sources, etc.
     pub loop_handle: LoopHandle<'static, Self>,
@@ -425,6 +917,15 @@ pub struct State {
     pub display_handle: DisplayHandle,
     /// `wl_compositor` + `wl_subcompositor` global state.
     pub compositor_state: CompositorState,
+    pub presentation_state: smithay::wayland::presentation::PresentationState,
+    /// Original timestamp of the currently dispatched trusted physical key.
+    pub physical_key_input_time_ns: Option<u64>,
+    /// Key presses and releases the seat forwarded to a client, ever. The loop
+    /// tells keys only a client took, which change no shell pixels, from keys
+    /// the shell kept by how far this moves while it dispatches them.
+    pub client_keys_delivered: u64,
+    pub presentation_feedback: crate::compositor::presentation::PresentationFeedback,
+
     /// `xdg_wm_base` global state — toplevels and popups.
     pub xdg_shell_state: XdgShellState,
     /// `xdg_activation_v1` token store. Client-minted tokens enter it only
@@ -450,6 +951,10 @@ pub struct State {
     /// to negotiate with and falls back to drawing its own title bar — a
     /// second frame inside the first, subtracting from the client's configured size.
     pub xdg_decoration_state: XdgDecorationState,
+    /// `org_kde_kwin_server_decoration_manager` global state — the older
+    /// KDE spelling of the same question, still what Qt5 and some GTK and
+    /// Wine builds ask. Answered `Server`, always, like `xdg_decoration_state`.
+    pub kde_decoration_state: KdeDecorationState,
     /// `wl_shm` global state — software buffer support; always advertises ARGB8888 + XRGB8888, no extra formats yet.
     pub shm_state: ShmState,
     /// `zwp_linux_dmabuf_v1` global state — enables clients to attach
@@ -467,10 +972,18 @@ pub struct State {
     /// whose dma-bufs the compositor can actually read. Not advertising is
     /// the honest answer there: Mesa falls back to its `wl_shm` software path instead of offering dmabufs it would have to reject.
     pub dmabuf_global: Option<DmabufGlobal>,
+    /// The feedback each surface gets from [`Self::dmabuf_global`]: the
+    /// default, or a scanout tranche for the fullscreen client a display
+    /// could scan out ([`Self::update_scanout_feedback`]). `None` whenever
+    /// the global is.
+    pub scanout_feedback: Option<crate::compositor::scanout_feedback::ScanoutFeedback>,
     /// The render node handed to clients as
     /// `zwp_linux_dmabuf_feedback_v1.main_device`, or the reason none was —
     /// kept so the boot log, state dump and integration tests read the *decision* rather than re-deriving it.
     pub dmabuf_device: Result<RenderNode, ProbeError>,
+    /// The [`crate::shell::gpu_frames::sampleable_formats`] version the
+    /// advertised dmabuf feedback was built from.
+    dmabuf_probe_version: u64,
     /// `wl_seat` collection.
     pub seat_state: SeatState<Self>,
     /// Public `text-input-v3`: ordinary clients may describe only their own
@@ -488,6 +1001,8 @@ pub struct State {
     /// Owns the four selection globals plus the compositor's clipboard
     /// mirror, letting in-process chrome paste without a Wayland round trip. See [`crate::compositor::selection`] for why the data-control globals are gated to privileged clients.
     pub selection: SelectionState,
+    /// Legacy windows remote viewers closed, for the compositor to close.
+    remote_closes: Vec<SurfaceId>,
     /// `wl_output` + xdg-output manager; concrete outputs are added separately.
     pub output_manager_state: OutputManagerState,
     /// Persisted workspace tree; foreign-client toplevels adopt into it as [`crate::shell::state::TileContent::Foreign`] tabs.
@@ -525,6 +1040,10 @@ pub struct State {
     /// retaining this short bounded history lets us reject fabricated and
     /// stale serials instead of treating the opaque integer as authority.
     pub activation_serials: VecDeque<(Serial, u64, std::time::Instant)>,
+    /// Wayland clients (by connection index) the person has sent input to.
+    /// A window of one of these may have been closed from inside the app;
+    /// a window of any other that goes away unasked was lost.
+    pub(crate) clients_given_input: std::collections::HashSet<u32>,
     /// Wall-clock anchor for input timestamps; pointer events ship `time: u32` in milliseconds since this instant.
     pub start_time: std::time::Instant,
     /// Per-peer virtual-seat attribution. Click focus scopes which shared
@@ -546,11 +1065,36 @@ pub struct State {
     /// stall waiting on the next damage pass. Held as `Arc` since
     /// [`crate::collab::flatpak_share::SharedFlatpakSession`]'s `encode_next_frame` takes `&self`.
     pub active_sessions: HashMap<SurfaceId, Arc<SharedFlatpakSession>>,
+    /// Apps that can stream their window's page as a display list, by app
+    /// id (`shell-ui`'s `PaintCapable`). Their windows reach web members as
+    /// paint streams instead of video.
+    pub paint_apps: HashMap<String, PaintApp>,
     /// Non-blocking bridge from surface commits into the collaboration
-    /// transport. Installed by the native compositor when peer sync is on;
+    /// transport, given the topic of the room the window's tab is in when
+    /// known. Installed by the native compositor when peer sync is on;
     /// absent in isolated tests and offline sessions.
-    legacy_stream_publisher:
-        Option<Arc<dyn Fn(crate::network::NeighbourMsg) -> bool + Send + Sync>>,
+    legacy_stream_publisher: Option<LegacyStreamPublisher>,
+    /// The workspace topic each streamed window's traffic goes to: its tab's
+    /// room, which need not be the workspace this device shows.
+    legacy_stream_routes: HashMap<SurfaceId, u64>,
+    /// Shared windows whose stream could not start, with the viewers' codec
+    /// generation and window size it failed for, and when. Retried when
+    /// either changes, or after [`LEGACY_SHARE_RETRY`], not on every pump.
+    legacy_share_failures: HashMap<SurfaceId, LegacyShareFailure>,
+    /// Windows streamed to the person's own other devices, by viewer: those
+    /// devices are the person, so their focus moves this seat's keyboard.
+    personal_stream_viewers: std::collections::HashSet<(MsgPeerId, SurfaceId)>,
+    /// A streamed window the person focused from another device. It holds
+    /// this seat's keyboard until they use this device's own input again.
+    personal_keyboard_focus: Option<SurfaceId>,
+    /// Workspace hosts controlling this headless session's streamed windows.
+    headless_host_viewers: std::collections::HashSet<(MsgPeerId, SurfaceId)>,
+    headless_keyboard_focus: Option<(MsgPeerId, SurfaceId)>,
+    /// Another device of the person last moved this seat's pointer, to a
+    /// window it shows. That moves no cursor here: the host's cursor stays
+    /// where its own input left it and keeps its own image, and its next
+    /// input takes the pointer back.
+    personal_pointer_hold: bool,
     /// The themed placeholder colour a protected window is streamed as —
     /// see [`crate::shell::capture_protection`]. Kept current by the frame
     /// loop, which owns the theme.
@@ -575,8 +1119,8 @@ pub struct State {
     /// icon for its tab; see [`crate::compositor::toplevel_icon`].
     pub toplevel_icon_manager: crate::compositor::toplevel_icon::ToplevelIconManager,
     /// Current display scale factor (`HiDPI`), sent to clients as the
-    /// preferred `wp_fractional_scale`. Read once at session start from the
-    /// shared settings store (`display.scale`), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
+    /// preferred `wp_fractional_scale`. Follows the shared settings
+    /// (`display.scale`, see [`display_scale_from`]), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
     pub scale: f64,
     /// Every output as `(position, size, scale)` in the logical desktop,
     /// mirrored from the backend.
@@ -627,6 +1171,11 @@ pub struct State {
     /// reload that only moves the active source switches groups instead of
     /// recompiling and re-sending the keymap to every client.
     applied_keyboard: crate::compositor::backend::drm::input_config::KeyboardSettings,
+    /// Whether clients' own key repeat is off because a remote participant
+    /// types: a release crossing the network late must not let a client
+    /// repeat the key meanwhile. The sender repeats a held key instead, and
+    /// local keyboard input turns client repeat back on.
+    remote_typing: bool,
     /// Combined output size in physical pixels, mirrored from the backend
     /// (`(0, 0)` until the first output is known). Used as the size in a
     /// fullscreen `xdg_toplevel` configure; `(0, 0)` leaves the size unspecified so the client keeps its own.
@@ -656,6 +1205,13 @@ pub struct State {
     /// only as [`crate::compositor::pointer_lock`] allows.
     pub pointer_constraints_state: PointerConstraintsState,
     pub pointer_lock: crate::compositor::pointer_lock::PointerLock,
+    /// Where the seat's pointer is, kept here as well as in the seat. Smithay
+    /// holds the pointer's lock while it delivers a motion, and that delivery
+    /// calls [`SeatHandler::cursor_image`] when the focus leaves a client;
+    /// asking the seat for its location from there would wait on that same
+    /// lock forever. Written by [`State::move_seat_pointer`] before every
+    /// motion.
+    pointer_at: (f64, f64),
     /// `zwp_tablet_manager_v2`: pens with pressure and tilt.
     pub tablet_manager_state: TabletManagerState,
     pub tablet_clients: crate::compositor::tablet::TabletClients,
@@ -673,6 +1229,12 @@ pub struct State {
     /// XDG popups are separate surfaces, not tabs.  They are captured and
     /// composed above their parent through this registry.
     pub(crate) popups: Vec<TrackedPopup>,
+    /// Dialog toplevels with no window to sit on: centred over a scrim, above
+    /// the desktop, never a tab. See [`State::show_as_system_modal`].
+    pub(crate) system_modals: Vec<SurfaceId>,
+    /// Answers to `xdg_wm_base.ping`, per client: how a screenshot after
+    /// input learns the clients in it finished answering the input.
+    pub shell_pongs: crate::compositor::client_settle::Pongs,
     pub(crate) popup_manager: PopupManager,
     /// Input-method candidate surfaces are similarly transient.  They stay
     /// outside the app tree so a candidate list can never become a tab.
@@ -689,22 +1251,109 @@ pub struct State {
     /// Every text input's declared content type, for telling a secret
     /// field from an ordinary one.
     pub(crate) text_fields: crate::compositor::text_commit::TextFields,
+    pub(crate) private_text_input: crate::compositor::private_text_input::PrivateTextInput,
     /// Text the shell is committing into the focused field.
     pub(crate) text_commit: crate::compositor::text_commit::TextCommit,
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
     /// tree and positioned by [`crate::compositor::frame::FrameBuilder`].
     pub osk_surface: Option<u64>,
+    /// Text commits the on-screen keyboard has made into focused fields this
+    /// session: what a person typed on it, counted but never kept.
+    pub osk_commits: u64,
+    /// Whether the trusted composing input method has a live, uncommitted
+    /// preedit. This is content-free protocol state used only to keep an
+    /// exact same-owner floating handoff from deactivating the composer.
+    pub(crate) input_method_preedit: InputMethodPreeditState,
+    /// Client holding the seat's single admitted input-method-v2 resource.
+    /// A second resource retires the connection instead of being allowed to
+    /// mutate protocol observations after Smithay marked it unavailable.
+    pub(crate) input_method_resource_client: Option<ClientId>,
+    /// Serial Smithay has most recently sent to the admitted input method.
+    /// This mirrors only content-free protocol ordering; mismatches fail
+    /// closed by retaining the last committed preedit state.
+    pub(crate) input_method_serial: u32,
+    /// Whether one of the shell's own text fields holds the seat's
+    /// text-input focus (see `compositor::shell_text_input`).
+    pub(crate) shell_field_active: bool,
+    /// Editing keys a virtual keyboard sent while a shell field was served,
+    /// as chrome events, until the loop delivers them.
+    pub(crate) shell_field_keys: Vec<winit::event::WindowEvent>,
+    /// Each virtual keyboard's current keymap, to read its keys as keysyms.
+    pub(crate) virtual_keymaps: std::collections::HashMap<
+        smithay::reexports::wayland_server::backend::ObjectId,
+        smithay::input::keyboard::xkb::Keymap,
+    >,
     /// Toplevels the compositor has asked to close, each with the moment its
     /// frame callbacks stop going unthrottled. See
     /// [`Self::ask_toplevel_to_close`].
     closing_toplevels: HashMap<u64, std::time::Instant>,
+    /// Toplevels adopted as a tab but not yet shown, each with the focus
+    /// the adoption took. Withdrawing such a tab (the toplevel became a
+    /// sheet, a floating or presentation surface, or went away unseen)
+    /// gives that focus back, so an app opening a dialog never moves the
+    /// person's focus or pans the strip. Dropped at the first mapped frame.
+    provisional_focus: HashMap<SurfaceId, tab_binding::FocusBefore>,
     /// One-time capabilities issued through the authenticated shell-ui
     /// service. A public Wayland client is promoted only when its app-id
     /// carries an exact token from this set.
     pub(crate) pending_floating_toplevels: Vec<PendingFloatingToplevel>,
     /// Live app-owned secondary surfaces, outside the normal workspace tree.
     pub(crate) floating_toplevels: Vec<FloatingToplevel>,
+    pub(crate) native_agent_markers: HashMap<u64, super::native::NativeAgentMarkerSource>,
     pub(crate) floating_toplevel_events: Vec<FloatingToplevelEvent>,
+    floating_focus_handoffs: HashMap<(u64, String), floating_focus::SourceFocus>,
+    /// What transient surfaces' capture protection was last derived from.
+    capture_protection_sync: CaptureProtectionSync,
+}
+
+/// `surface`'s topmost ancestor through subsurface parents: the surface
+/// itself unless it is a subsurface. A subsurface is drawn as part of that
+/// surface, so it renders at that surface's scale.
+fn subsurface_tree_root(surface: &WlSurface) -> WlSurface {
+    foreign_root(surface).unwrap_or_else(|| surface.clone())
+}
+
+/// How the buffer `states` last committed lies on its surface: the buffer
+/// scale and the `wp_viewport` rectangles.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the cached-state guard owns the viewport the result is read from"
+)]
+pub(crate) fn committed_surface_scale(
+    states: &wl_compositor::SurfaceData,
+) -> crate::compositor::foreign::SurfaceScale {
+    let buffer_scale = states
+        .cached_state
+        .get::<wl_compositor::SurfaceAttributes>()
+        .current()
+        .buffer_scale;
+    let mut viewport = states
+        .cached_state
+        .get::<smithay::wayland::viewporter::ViewportCachedState>();
+    let viewport = viewport.current();
+    crate::compositor::foreign::SurfaceScale {
+        buffer_scale,
+        source: viewport
+            .src
+            .map(|source| (source.loc.x, source.loc.y, source.size.w, source.size.h)),
+        destination: viewport.dst.map(|size| (size.w, size.h)),
+    }
+}
+
+/// Tell `surface` and every subsurface under it to render at `scale`.
+fn prefer_scale_for_tree(surface: &WlSurface, scale: f64) {
+    use smithay::wayland::compositor::{TraversalAction, with_surface_tree_downward};
+    with_surface_tree_downward(
+        surface,
+        (),
+        |_, _, ()| TraversalAction::DoChildren(()),
+        |_, states, ()| {
+            fractional_scale::with_fractional_scale(states, |fs| {
+                fs.set_preferred_scale(scale);
+            });
+        },
+        |_, _, ()| true,
+    );
 }
 
 pub(crate) fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
@@ -723,6 +1372,17 @@ pub(crate) fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
 }
 
 impl State {
+    pub(crate) fn surface_launch_custody(
+        &self,
+        surface_id: u64,
+    ) -> Option<crate::shell::launcher::VerifiedLaunchCustody> {
+        self.client_input
+            .surface(surface_id)?
+            .client()?
+            .get_data::<ClientState>()?
+            .launch_custody
+    }
+
     pub(crate) fn authorize_floating_toplevel(&mut self, pending: PendingFloatingToplevel) {
         self.pending_floating_toplevels.retain(|candidate| {
             candidate.connection != pending.connection || candidate.public_id != pending.public_id
@@ -744,12 +1404,14 @@ impl State {
         let pending = self.pending_floating_toplevels.remove(index);
         self.client_input.promote_to_overlay(surface_id);
         let surface = FloatingToplevel {
+            owner: pending.owner,
             surface_id,
             token: pending.token,
             connection: pending.connection,
             public_id: pending.public_id,
             app_id: pending.app_id,
             content_rect: pending.content_rect,
+            input_rect: pending.input_rect,
             rect: pending.rect,
             transfer_frame: pending.transfer_frame,
             transfer_source: pending.transfer_source,
@@ -758,6 +1420,101 @@ impl State {
         };
         self.floating_toplevels.push(surface);
         true
+    }
+
+    pub(crate) fn floating_owner_for_surface(
+        &self,
+        surface_id: u64,
+    ) -> Result<Arc<FloatingToplevelOwner>, &'static str> {
+        let client = self
+            .surface_handles
+            .get(&surface_id)
+            .and_then(WlSurface::client)
+            .ok_or("floating source has no current Wayland connection")?;
+        let (_, room) = authenticated_toplevel_identity(client.get_data::<ClientState>(), None)?;
+        Ok(Arc::new(FloatingToplevelOwner {
+            client: client.id(),
+            room,
+        }))
+    }
+
+    /// The authenticated identity and launched package a new toplevel's
+    /// client stands for, resolved from the app id it announced so far (a
+    /// floating capability's owner, when it names one).
+    fn toplevel_identity_and_package(
+        &self,
+        surface_id: u64,
+        surface: &ToplevelSurface,
+    ) -> (ToplevelIdentity, Option<String>) {
+        let announced_app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
+        });
+        if let Some(client) = surface.wl_surface().client() {
+            let client_state = client.get_data::<ClientState>();
+            (
+                self.resolve_toplevel_identity(surface_id, Some(&client), announced_app_id),
+                launched_package(client_state),
+            )
+        } else {
+            (
+                self.resolve_toplevel_identity(surface_id, None, announced_app_id),
+                None,
+            )
+        }
+    }
+
+    fn resolve_toplevel_identity(
+        &self,
+        surface_id: u64,
+        client: Option<&smithay::reexports::wayland_server::Client>,
+        announced: Option<String>,
+    ) -> Result<(Option<String>, Option<crate::shell::state::RoomId>), &'static str> {
+        let owner = announced
+            .as_deref()
+            .and_then(floating_capability_token)
+            .and_then(|token| {
+                self.pending_floating_toplevels
+                    .iter()
+                    .find(|pending| pending.token == token)
+                    .map(|pending| (pending.owner.as_deref(), pending.app_id.as_str()))
+                    .or_else(|| {
+                        self.floating_toplevels
+                            .iter()
+                            .find(|surface| {
+                                surface.token == token && surface.surface_id == surface_id
+                            })
+                            .map(|surface| (surface.owner.as_deref(), surface.app_id.as_str()))
+                    })
+            });
+        authenticated_floating_toplevel_identity(client, announced, owner)
+    }
+
+    pub(crate) fn validate_floating_resume_owner(
+        &self,
+        connection: u64,
+        public_id: &str,
+        owner: Option<&FloatingToplevelOwner>,
+    ) -> Result<(), &'static str> {
+        let previous = self
+            .pending_floating_toplevels
+            .iter()
+            .find(|pending| pending.connection == connection && pending.public_id == public_id)
+            .map(|pending| pending.owner.as_deref())
+            .or_else(|| {
+                self.floating_toplevels
+                    .iter()
+                    .find(|surface| {
+                        surface.connection == connection && surface.public_id == public_id
+                    })
+                    .map(|surface| surface.owner.as_deref())
+            });
+        if owner.is_none() || previous.is_some_and(|previous| previous != owner) {
+            return Err("floating capability cannot change its source owner");
+        }
+        Ok(())
     }
 
     fn mark_floating_toplevel_presented(&mut self, surface_id: u64) {
@@ -774,7 +1531,7 @@ impl State {
         surface.presented = true;
         if !surface.suspended {
             self.floating_toplevel_events
-                .push(FloatingToplevelEvent::Mapped(surface.clone()));
+                .push(FloatingToplevelEvent::Mapped(Box::new(surface.clone())));
         }
     }
 
@@ -784,15 +1541,27 @@ impl State {
         public_id: &str,
         rect: vello::kurbo::Rect,
         content_rect: vello::kurbo::Rect,
+        input_rect: Option<vello::kurbo::Rect>,
     ) -> bool {
+        if ui::floating_surface::protocol_input_rect(
+            rect,
+            input_rect.map(ui::floating_surface::protocol_rect_array),
+        )
+        .is_err()
+        {
+            return false;
+        }
         if let Some(surface) = self
             .floating_toplevels
             .iter_mut()
             .find(|surface| surface.connection == connection && surface.public_id == public_id)
         {
-            let changed = surface.rect != rect || surface.content_rect != content_rect;
+            let changed = surface.rect != rect
+                || surface.content_rect != content_rect
+                || surface.input_rect != input_rect;
             surface.rect = rect;
             surface.content_rect = content_rect;
+            surface.input_rect = input_rect;
             return changed;
         }
         if let Some(pending) = self
@@ -800,12 +1569,48 @@ impl State {
             .iter_mut()
             .find(|pending| pending.connection == connection && pending.public_id == public_id)
         {
-            let changed = pending.rect != rect || pending.content_rect != content_rect;
+            let changed = pending.rect != rect
+                || pending.content_rect != content_rect
+                || pending.input_rect != input_rect;
             pending.rect = rect;
             pending.content_rect = content_rect;
+            pending.input_rect = input_rect;
             return changed;
         }
         false
+    }
+
+    /// Suspend carries geometry, not a new input declaration. Preserve and
+    /// translate the last authenticated constraint rather than widening it.
+    pub(crate) fn update_retained_floating_geometry(
+        &mut self,
+        connection: u64,
+        public_id: &str,
+        rect: vello::kurbo::Rect,
+        content_rect: vello::kurbo::Rect,
+    ) -> bool {
+        let previous = self
+            .floating_toplevels
+            .iter()
+            .find(|surface| surface.connection == connection && surface.public_id == public_id)
+            .map(|surface| (surface.content_rect, surface.input_rect))
+            .or_else(|| {
+                self.pending_floating_toplevels
+                    .iter()
+                    .find(|surface| {
+                        surface.connection == connection && surface.public_id == public_id
+                    })
+                    .map(|surface| (surface.content_rect, surface.input_rect))
+            });
+        let Some((previous_content, input_rect)) = previous else {
+            return false;
+        };
+        let input_rect = ui::floating_surface::translate_input_rect(
+            input_rect,
+            previous_content.origin(),
+            content_rect.origin(),
+        );
+        self.update_floating_toplevel_rect(connection, public_id, rect, content_rect, input_rect)
     }
 
     /// Hide one app-owned surface without invalidating its capability or
@@ -817,6 +1622,7 @@ impl State {
         public_id: &str,
         return_frame: Option<FloatingTransferFrame>,
     ) -> bool {
+        self.arm_floating_return_focus(connection, public_id);
         if let Some(frame) = return_frame
             && let Some(surface) = self
                 .floating_toplevels
@@ -844,12 +1650,14 @@ impl State {
         connection: u64,
         public_id: &str,
     ) -> bool {
-        complete_floating_return_entries(
+        let focus_ready = self.floating_return_presented(connection, public_id);
+        let changed = complete_floating_return_entries(
             &mut self.pending_floating_toplevels,
             &mut self.floating_toplevels,
             connection,
             public_id,
-        )
+        );
+        changed || focus_ready
     }
 
     /// Release the source-frame gate only after the app's primary render
@@ -892,7 +1700,41 @@ impl State {
         )
     }
 
+    /// Distinguish a fresh request from a refused retained capability. Callers
+    /// must not mint replacement authority after incompatible retained geometry.
+    pub(crate) fn resume_floating_request(
+        &mut self,
+        connection: u64,
+        public_id: &str,
+        geometry: (vello::kurbo::Rect, vello::kurbo::Rect),
+        transfer_frame: Option<FloatingTransferFrame>,
+        transfer_source: Option<FloatingTransferSource>,
+    ) -> Result<Option<String>, &'static str> {
+        let retained =
+            self.floating_toplevels
+                .iter()
+                .any(|surface| surface.connection == connection && surface.public_id == public_id)
+                || self.pending_floating_toplevels.iter().any(|surface| {
+                    surface.connection == connection && surface.public_id == public_id
+                });
+        let resumed = self.resume_floating_toplevel(
+            connection,
+            public_id,
+            geometry.0,
+            geometry.1,
+            transfer_frame,
+            transfer_source,
+        );
+        if retained && resumed.is_none() {
+            Err("floating resume rejected incompatible input geometry")
+        } else {
+            Ok(resumed)
+        }
+    }
+
     pub(crate) fn dismiss_floating_toplevel(&mut self, connection: u64, public_id: &str) -> bool {
+        self.floating_focus_handoffs
+            .remove(&(connection, public_id.to_owned()));
         dismiss_floating_entries(
             &mut self.pending_floating_toplevels,
             &mut self.floating_toplevels,
@@ -902,6 +1744,8 @@ impl State {
     }
 
     pub(crate) fn dismiss_floating_connection(&mut self, connection: u64) -> bool {
+        self.floating_focus_handoffs
+            .retain(|(owner, _), _| *owner != connection);
         let pending_before = self.pending_floating_toplevels.len();
         let live_before = self.floating_toplevels.len();
         self.pending_floating_toplevels
@@ -923,9 +1767,35 @@ impl State {
     /// block on its last frame, and so never finish closing.
     pub(crate) fn ask_toplevel_to_close(&mut self, toplevel: &ToplevelSurface) {
         let id = surface_id(toplevel.wl_surface());
+        eprintln!(
+            "window-close-requested: surface={id} launch={}",
+            crate::shell::launcher::launch_key_for_surface(id)
+                .as_deref()
+                .unwrap_or("-")
+        );
         let now = std::time::Instant::now();
         let until = now.checked_add(CLOSING_FRAME_GRACE).unwrap_or(now);
         self.closing_toplevels.insert(id, until);
+        if let Some(pid) = toplevel
+            .wl_surface()
+            .client()
+            .and_then(|client| client.get_data::<ClientState>().and_then(|state| state.pid))
+            && !self
+                .xdg_shell_state
+                .toplevel_surfaces()
+                .iter()
+                .any(|other| {
+                    other.wl_surface() != toplevel.wl_surface()
+                        && !self
+                            .closing_toplevels
+                            .contains_key(&crate::compositor::state::surface_id(other.wl_surface()))
+                        && other.wl_surface().client().and_then(|client| {
+                            client.get_data::<ClientState>().and_then(|state| state.pid)
+                        }) == Some(pid)
+                })
+        {
+            crate::shell::launcher::note_native_writer_retiring(pid);
+        }
         toplevel.send_close();
         self.release_frame_callbacks(toplevel.wl_surface());
     }
@@ -961,13 +1831,11 @@ impl State {
         fired
     }
 
-    /// The user or the shell closed the window showing `surface_id`: its tab
-    /// goes, and the client and every sheet over it are asked to close.
+    /// Ask the client showing `surface_id` to close. Its tab remains available
+    /// for a deferred save decision until actual destruction removes it.
     pub fn close_surface_on_request(&mut self, surface_id: u64) {
-        let _ = {
-            let mut tree = self.workspace_tree.write();
-            tab_binding::close_tab_for_destroyed_surface_and_persist(&mut tree, surface_id)
-        };
+        // xdg close is a request, not admission. Destruction owns durable
+        // removal so a client's save/refusal decision stays visible.
         if let Some(toplevel) = self
             .xdg_shell_state
             .toplevel_surfaces()
@@ -989,6 +1857,77 @@ impl State {
     /// Whether the focused client has committed an enabled text-input-v3
     /// session. This is the compositor's source of truth for OSK visibility;
     /// Wayland xdg-toplevels have no client-side visibility request.
+    /// Re-send `leave` and `enter` to the focused client's text inputs.
+    ///
+    /// Smithay activates the input method only when a field enables its text
+    /// input. The on-screen keyboard binds its input method shortly before
+    /// its surface appears; a field that was already enabled by then (the
+    /// tap that focused it is often the touch that started the keyboard)
+    /// would otherwise never reach it. A client re-enables an IME-allowed
+    /// field on `enter`, which activates the keyboard that is now there.
+    pub fn reannounce_text_input_focus(&self) {
+        let text_input = self.seat.text_input();
+        if text_input.focus().is_some() {
+            text_input.leave();
+            text_input.enter();
+        }
+    }
+
+    /// Content-free focus metadata read from the live Wayland seat for the
+    /// existing state-dump door. Never includes titles, text or held keys.
+    pub fn seat_focus_json(&self) -> serde_json::Value {
+        let describe = |surface: WlSurface| {
+            let id = surface_id(&surface);
+            let root = crate::compositor::foreign::store().sheet_root(id);
+            let owner = self.client_input.surface(root).unwrap_or(&surface);
+            let app_id = owner
+                .client()
+                .and_then(|client| {
+                    client
+                        .get_data::<ClientState>()
+                        .and_then(|data| data.package_id.clone())
+                })
+                .or_else(|| {
+                    wl_compositor::with_states(owner, |states| {
+                        states
+                            .data_map
+                            .get::<XdgToplevelSurfaceData>()
+                            .and_then(|data| data.lock().ok()?.app_id.clone())
+                    })
+                });
+            let role = if self.osk_surface == Some(id) {
+                "on_screen_keyboard"
+            } else if trusted_osk_connection(&surface) {
+                "pending_on_screen_keyboard"
+            } else if crate::compositor::foreign::store().is_sheet(id) {
+                "dialog_sheet"
+            } else if self.client_input.is_known(id) {
+                "toplevel"
+            } else {
+                "other"
+            };
+            serde_json::json!({"surface": id, "root_surface": root, "app_id": app_id, "role": role})
+        };
+        let keyboard = self.seat.get_keyboard();
+        let pointer = self.seat.get_pointer();
+        let (grab_kind, grab_surface, buttons_down) = self.client_input.pointer_custody();
+        serde_json::json!({
+            "keyboard": keyboard.as_ref().and_then(smithay::input::keyboard::KeyboardHandle::current_focus).map(describe),
+            "routed_keyboard_surface": self.client_input.keyboard_focus(),
+            "pointer_observable": pointer.is_some(),
+            "pointer": pointer.as_ref().and_then(smithay::input::pointer::PointerHandle::current_focus).map(describe),
+            "routed_pointer_surface": self.client_input.pointer_focus(),
+            "pointer_grab": pointer.as_ref().map(|_| serde_json::json!({"kind": grab_kind, "surface": grab_surface})),
+            "pointer_buttons_down": pointer.as_ref().map(|_| buttons_down),
+            "text_input": self.seat.text_input().focus().map(describe),
+            "text_input_active": self.text_input_active(),
+            "input_method_connected": self.input_method_resource_client.is_some(),
+            "input_method_keyboard_grabbed": self.seat.input_method().keyboard_grabbed(),
+            "input_method_preedit_active": self.input_method_preedit.is_active(),
+            "on_screen_keyboard_surface": self.osk_surface,
+        })
+    }
+
     pub fn text_input_active(&self) -> bool {
         let mut active = false;
         self.seat
@@ -1020,17 +1959,25 @@ impl State {
         workspace_tree: WorkspaceTreeHandle,
     ) -> Self {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
+        let presentation_state = smithay::wayland::presentation::PresentationState::new::<Self>(
+            &display_handle,
+            u32::try_from(libc::CLOCK_MONOTONIC).unwrap_or(1),
+        );
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
         let xdg_dialog_state = XdgDialogState::new::<Self>(&display_handle);
         // Advertised to every client, unfiltered: hiding this global just makes a toolkit decorate itself.
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&display_handle);
+        // Default `Server`: a client that never states a preference is decorated by the compositor.
+        let kde_decoration_state =
+            KdeDecorationState::new::<Self>(&display_handle, KdeDefaultMode::Server);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let mut seat_state = SeatState::new();
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
 
         let mut dmabuf_state = DmabufState::new();
-        let (dmabuf_device, dmabuf_global) = Self::init_dmabuf(&display_handle, &mut dmabuf_state);
+        let (dmabuf_device, dmabuf_global, scanout_feedback) =
+            Self::init_dmabuf(&display_handle, &mut dmabuf_state);
 
         // Register a real seat with a pointer device for `apply_remote_input` to inject into; name matches the wayland.rs sibling for consistency.
         let mut seat = seat_state.new_wl_seat(&display_handle, "tilo-desktop");
@@ -1046,6 +1993,7 @@ impl State {
         // dedicated socket acceptor, and only the kind that currently owns
         // the seat (see `compositor::input_method`) sees them at all.
         let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
+        crate::compositor::private_text_input::PrivateTextInput::register(&display_handle);
         let seat_input_method = crate::compositor::input_method::SeatInputMethod::default();
         let input_method_manager_state =
             InputMethodManagerState::new::<Self, _>(&display_handle, {
@@ -1067,8 +2015,6 @@ impl State {
         let idle_inhibit_manager = IdleInhibitManagerState::new::<Self>(&display_handle);
         let toplevel_icon_manager = crate::compositor::toplevel_icon::manager(&display_handle);
         let (session_lock_state, output_management) = Self::privileged_globals(&display_handle);
-        // Read the persisted display scale from the shared settings store so the compositor advertises what the Settings app wrote.
-        let scale = load_display_scale();
         // Advertise touchpad gestures for a bare-TTY session with no host compositor; constructed before the struct literal moves `display_handle`.
         let pointer_gestures_state = PointerGesturesState::new::<Self>(&display_handle);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
@@ -1087,21 +2033,29 @@ impl State {
             loop_handle,
             display_handle,
             compositor_state,
+            presentation_state,
+            physical_key_input_time_ns: None,
+            client_keys_delivered: 0,
+            presentation_feedback: crate::compositor::presentation::PresentationFeedback::default(),
             xdg_shell_state,
             xdg_activation_state,
             xdg_dialog_state,
             host_launch_activations: HashMap::new(),
             host_launch_surface_labels: HashMap::new(),
             xdg_decoration_state,
+            kde_decoration_state,
             shm_state,
             dmabuf_state,
             dmabuf_global,
+            scanout_feedback,
             dmabuf_device,
+            dmabuf_probe_version: 0,
             seat_state,
             text_input_manager_state,
             input_method_manager_state,
             virtual_keyboard_manager_state,
             selection,
+            remote_closes: Vec::new(),
             output_manager_state,
             workspace_tree,
             share_registry: ShareRegistry::new(),
@@ -1114,12 +2068,21 @@ impl State {
             seat,
             serial_counter: 0,
             activation_serials: VecDeque::new(),
+            clients_given_input: std::collections::HashSet::new(),
             start_time: std::time::Instant::now(),
             remote_seats: RemoteSeats::new(),
             personal_fabric_input: PersonalFabricInputHolders::default(),
             surface_handles: HashMap::new(),
             active_sessions: HashMap::new(),
+            paint_apps: HashMap::new(),
             legacy_stream_publisher: None,
+            legacy_stream_routes: HashMap::new(),
+            legacy_share_failures: HashMap::new(),
+            personal_stream_viewers: std::collections::HashSet::new(),
+            personal_keyboard_focus: None,
+            headless_host_viewers: std::collections::HashSet::new(),
+            headless_keyboard_focus: None,
+            personal_pointer_hold: false,
             capture_placeholder_fill: crate::shell::capture_protection::placeholder_fill_rgba8(
                 &ui::theme::Theme::default(),
             ),
@@ -1129,7 +2092,9 @@ impl State {
             idle_inhibit_manager,
             idle_inhibitors: crate::compositor::idle_inhibit::IdleInhibitors::default(),
             toplevel_icon_manager,
-            scale,
+            // The session sets the persisted scale from its live settings
+            // ([`display_scale_from`]); a bare `State` advertises 100%.
+            scale: 1.0,
             output_layout: Vec::new(),
             output_sizes: HashMap::new(),
             output_rects: HashMap::new(),
@@ -1144,6 +2109,7 @@ impl State {
             output_presentation_sequences: HashMap::new(),
             fullscreen_target: None,
             applied_keyboard,
+            remote_typing: false,
             output_size: (0, 0),
             session_lock_state,
             session_lock: SessionLockHooks::default(),
@@ -1154,6 +2120,7 @@ impl State {
             relative_pointer_state,
             pointer_constraints_state,
             pointer_lock: crate::compositor::pointer_lock::PointerLock::default(),
+            pointer_at: (0.0, 0.0),
             tablet_manager_state,
             tablet_clients: crate::compositor::tablet::TabletClients::default(),
             keyboard_shortcuts_inhibit_state,
@@ -1161,17 +2128,31 @@ impl State {
             content_type_state,
             client_input: crate::compositor::client_input::ClientInput::default(),
             popups: Vec::new(),
+            system_modals: Vec::new(),
+            shell_pongs: crate::compositor::client_settle::Pongs::default(),
             popup_manager: PopupManager::default(),
             input_method_popups: Vec::new(),
             seat_input_method,
             trusted_input_method_clients: Vec::new(),
             text_fields: crate::compositor::text_commit::TextFields::default(),
+            private_text_input: crate::compositor::private_text_input::PrivateTextInput::default(),
             text_commit: crate::compositor::text_commit::TextCommit::default(),
             osk_surface: None,
+            osk_commits: 0,
+            input_method_preedit: InputMethodPreeditState::Inactive,
+            input_method_resource_client: None,
+            input_method_serial: 0,
+            shell_field_active: false,
+            shell_field_keys: Vec::new(),
+            virtual_keymaps: std::collections::HashMap::new(),
             closing_toplevels: HashMap::new(),
+            provisional_focus: HashMap::new(),
             pending_floating_toplevels: Vec::new(),
+            floating_focus_handoffs: HashMap::new(),
             floating_toplevels: Vec::new(),
+            native_agent_markers: HashMap::new(),
             floating_toplevel_events: Vec::new(),
+            capture_protection_sync: CaptureProtectionSync::default(),
         };
         state.activate_keyboard_source(initial_keyboard_index);
         state
@@ -1196,7 +2177,11 @@ impl State {
     fn init_dmabuf(
         display_handle: &DisplayHandle,
         dmabuf_state: &mut DmabufState,
-    ) -> (Result<RenderNode, ProbeError>, Option<DmabufGlobal>) {
+    ) -> (
+        Result<RenderNode, ProbeError>,
+        Option<DmabufGlobal>,
+        Option<crate::compositor::scanout_feedback::ScanoutFeedback>,
+    ) {
         // `zwp_linux_dmabuf_v1`. Two things have to be right for a GPU client:
         //
         // 1. **A main device.** Mesa dropped `wl_drm`, so
@@ -1207,69 +2192,61 @@ impl State {
         //    CPU-maps the plane fd — correct only for single-plane RGBA under `Modifier::Linear`, so that's what goes on the wire.
         //    10-bit RGB, half float and P010 are converted there too, so
         //    HDR clients (PQ swapchains, 10-bit video) can hand them over.
-        let dmabuf_formats: Vec<Format> = [
-            Fourcc::Argb8888,
-            Fourcc::Xrgb8888,
-            Fourcc::Abgr8888,
-            Fourcc::Xbgr8888,
-            Fourcc::Abgr2101010,
-            Fourcc::Xbgr2101010,
-            Fourcc::Argb2101010,
-            Fourcc::Xrgb2101010,
-            Fourcc::Abgr16161616f,
-            Fourcc::Xbgr16161616f,
-            Fourcc::P010,
-        ]
-        .into_iter()
-        .map(|code| Format {
-            code,
-            modifier: Modifier::Linear,
-        })
-        .collect();
+        let dmabuf_formats: Vec<Format> = crate::shell::foreign::importable_formats();
         let dmabuf_device = crate::compositor::render_node::probe();
-        let dmabuf_global =
-            match &dmabuf_device {
-                Ok(node) => {
-                    match DmabufFeedbackBuilder::new(node.dev, dmabuf_formats.clone()).build() {
-                        Ok(feedback) => {
-                            // Publish the decision for the import side: buffers clients hand us were allocated on this GPU, so it must read them back.
-                            crate::compositor::render_node::set_advertised(node.path.clone());
-                            tracing::info!(
-                                target: "shell::compositor::dmabuf",
-                                device = %node.path.display(),
-                                driver = node.driver.as_deref().unwrap_or("<unknown>"),
-                                dev = node.dev,
-                                formats = dmabuf_formats.len(),
-                                "advertising zwp_linux_dmabuf_v1 with feedback"
-                            );
-                            Some(dmabuf_state.create_global_with_default_feedback::<Self>(
-                                display_handle,
-                                &feedback,
-                            ))
-                        }
-                        Err(e) => {
-                            // The format table lives in a sealed memfd; failing to create it means no correct feedback — the broken state this block avoids.
-                            tracing::error!(
-                                target: "shell::compositor::dmabuf",
-                                error = %e,
-                                "could not build dmabuf feedback; not advertising dmabuf — \
-                                 GPU clients will fall back to wl_shm"
-                            );
-                            None
-                        }
+        let mut scanout_feedback = None;
+        let dmabuf_global = match &dmabuf_device {
+            Ok(node) => {
+                match DmabufFeedbackBuilder::new(node.dev, dmabuf_formats.clone()).build() {
+                    Ok(feedback) => {
+                        // Publish the decision for the import side: buffers clients hand us were allocated on this GPU, so it must read them back.
+                        crate::compositor::render_node::set_advertised(node.path.clone());
+                        crate::compositor::gpu_health::record_dmabuf(Ok(&node.path));
+                        tracing::info!(
+                            target: "shell::compositor::dmabuf",
+                            device = %node.path.display(),
+                            driver = node.driver.as_deref().unwrap_or("<unknown>"),
+                            dev = node.dev,
+                            formats = dmabuf_formats.len(),
+                            "advertising zwp_linux_dmabuf_v1 with feedback"
+                        );
+                        let global = dmabuf_state
+                            .create_global_with_default_feedback::<Self>(display_handle, &feedback);
+                        scanout_feedback =
+                            Some(crate::compositor::scanout_feedback::ScanoutFeedback::new(
+                                node.dev,
+                                dmabuf_formats,
+                                feedback,
+                            ));
+                        Some(global)
+                    }
+                    Err(e) => {
+                        crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
+                        // The format table lives in a sealed memfd; failing to create it means no correct feedback — the broken state this block avoids.
+                        tracing::error!(
+                            target: "shell::compositor::dmabuf",
+                            error = %e,
+                            "could not build dmabuf feedback; not advertising dmabuf — \
+                             GPU clients will fall back to wl_shm"
+                        );
+                        None
                     }
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        target: "shell::compositor::dmabuf",
-                        reason = %e,
-                        "not advertising zwp_linux_dmabuf_v1 — GPU clients will render \
-                         through wl_shm (software) instead"
-                    );
-                    None
+            }
+            Err(e) => {
+                if !matches!(e, ProbeError::NoRenderNodes | ProbeError::NoRenderer(_)) {
+                    crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
                 }
-            };
-        (dmabuf_device, dmabuf_global)
+                tracing::warn!(
+                    target: "shell::compositor::dmabuf",
+                    reason = %e,
+                    "not advertising zwp_linux_dmabuf_v1 — GPU clients will render \
+                     through wl_shm (software) instead"
+                );
+                None
+            }
+        };
+        (dmabuf_device, dmabuf_global, scanout_feedback)
     }
 
     /// Add a keyboard device to `seat` from the persisted XKB settings,
@@ -1293,6 +2270,7 @@ impl State {
         let repeat_rate_hz = i32::try_from(repeat_rate).unwrap_or(i32::MAX);
         match seat.add_keyboard(
             XkbConfig {
+                model: &keyboard_settings.model,
                 layout: &keyboard_settings.layouts,
                 variant: &keyboard_settings.variants,
                 options: keyboard_settings.options.clone(),
@@ -1340,10 +2318,18 @@ impl State {
     /// working keymap in place.
     pub fn reload_keyboard_settings(&mut self) {
         let settings = crate::compositor::backend::drm::input_config::KeyboardSettings::load();
+        self.apply_keyboard_settings(settings);
+    }
+
+    pub(crate) fn apply_keyboard_settings(
+        &mut self,
+        settings: crate::compositor::backend::drm::input_config::KeyboardSettings,
+    ) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
-        let same_keymap = self.applied_keyboard.layouts == settings.layouts
+        let same_keymap = self.applied_keyboard.model == settings.model
+            && self.applied_keyboard.layouts == settings.layouts
             && self.applied_keyboard.variants == settings.variants
             && self.applied_keyboard.options == settings.options;
         let compiled = if same_keymap {
@@ -1353,6 +2339,7 @@ impl State {
             keyboard.set_xkb_config(
                 self,
                 XkbConfig {
+                    model: &settings.model,
                     layout: &settings.layouts,
                     variant: &settings.variants,
                     options: settings.options.clone(),
@@ -1370,20 +2357,50 @@ impl State {
                 let active = settings.active_index;
                 self.applied_keyboard = settings;
                 self.activate_keyboard_source(active);
-                let (delay, rate) =
-                    crate::compositor::backend::drm::input_config::InputSettings::load()
-                        .key_repeat_params();
-                // Neither side of a repeat rate/delay can realistically reach i32::MAX; clamp rather than let a pathological config value wrap.
-                keyboard.change_repeat_info(
-                    i32::try_from(rate).unwrap_or(i32::MAX),
-                    i32::try_from(delay.as_millis()).unwrap_or(i32::MAX),
-                );
+                let (rate, delay) = Self::local_key_repeat();
+                keyboard.change_repeat_info(if self.remote_typing { 0 } else { rate }, delay);
             }
             Err(error) => tracing::warn!(
                 sources = ?settings.source_ids,
                 %error,
                 "Wayland seat: requested XKB keymap did not compile; preserving the working keymap"
             ),
+        }
+    }
+
+    /// The configured client key repeat as `wl_keyboard.repeat_info` takes
+    /// it: rate in Hz, delay in milliseconds.
+    fn local_key_repeat() -> (i32, i32) {
+        let (delay, rate) = crate::compositor::backend::drm::input_config::InputSettings::load()
+            .key_repeat_params();
+        // Neither side of a repeat rate/delay can realistically reach i32::MAX; clamp rather than let a pathological config value wrap.
+        (
+            i32::try_from(rate).unwrap_or(i32::MAX),
+            i32::try_from(delay.as_millis()).unwrap_or(i32::MAX),
+        )
+    }
+
+    /// Clients stop repeating keys on their own: a remote participant's
+    /// key is held exactly as long as the sender says, and repeats only
+    /// as the sender repeats it.
+    fn begin_remote_typing(&mut self) {
+        if std::mem::replace(&mut self.remote_typing, true) {
+            return;
+        }
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.change_repeat_info(0, Self::local_key_repeat().1);
+        }
+    }
+
+    /// The person at this machine types again: clients repeat held keys
+    /// with the configured rate and delay.
+    pub fn end_remote_typing(&mut self) {
+        if !std::mem::take(&mut self.remote_typing) {
+            return;
+        }
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            let (rate, delay) = Self::local_key_repeat();
+            keyboard.change_repeat_info(rate, delay);
         }
     }
 
@@ -1654,7 +2671,7 @@ impl State {
                 .map(|(id, _)| *id)
         };
         let pointer = self.seat.get_pointer().and_then(|pointer| {
-            let location = pointer.current_location();
+            let location = crate::compositor::seat_lock::pointer_location(&pointer);
             output_at((location.x, location.y).into())
         });
         let focus = self
@@ -1687,6 +2704,38 @@ impl State {
         )
     }
 
+    /// The scale of the output under the pointer, which a client's cursor
+    /// surface is drawn at.
+    ///
+    /// Read from [`Self::pointer_at`], never from the seat: this runs inside
+    /// smithay's pointer motion, which holds the seat pointer's lock.
+    fn pointer_output_scale(&self) -> f64 {
+        self.scale_for_origin(self.pointer_at)
+    }
+
+    /// Move the seat's pointer to `location` over `focus`, which delivers
+    /// the enter, motion or leave to clients. The one way the seat pointer
+    /// is moved, so [`Self::pointer_at`] is current whatever that delivery
+    /// asks of the compositor.
+    pub(crate) fn move_seat_pointer(
+        &mut self,
+        pointer: &smithay::input::pointer::PointerHandle<Self>,
+        focus: Option<(WlSurface, smithay::utils::Point<f64, Logical>)>,
+        location: (f64, f64),
+        (serial, time): (Serial, u32),
+    ) {
+        self.pointer_at = location;
+        pointer.motion(
+            self,
+            focus,
+            &MotionEvent {
+                location: location.into(),
+                serial,
+                time,
+            },
+        );
+    }
+
     /// The preferred scale for one client surface: its output's scale, or the session-wide value if not yet placed.
     pub fn surface_scale(&self, surface_id: u64) -> f64 {
         self.surface_scales
@@ -1710,14 +2759,27 @@ impl State {
             let Some(surface) = self.client_input.surface(*surface_id).cloned() else {
                 continue;
             };
-            wl_compositor::with_states(&surface, |states| {
-                fractional_scale::with_fractional_scale(states, |fs| {
-                    fs.set_preferred_scale(scale);
-                });
-            });
+            // Its subsurfaces are drawn with it, so they render at its scale.
+            prefer_scale_for_tree(&surface, scale);
+            // Configure the window again after its new scale. A client that
+            // sizes its buffer when it handles a configure — Xwayland through
+            // xwayland-satellite sizes the X window to the tile times the
+            // scale it last heard — otherwise keeps the size it computed for
+            // the output it left: a window moved back from a 1.25x monitor
+            // stayed 1.25 times too large for its 1x tile. The tile's own
+            // configure is sent when it moves, often before this scale.
+            if let Some(toplevel) = self
+                .xdg_shell_state
+                .toplevel_surfaces()
+                .iter()
+                .find(|toplevel| toplevel.wl_surface() == &surface)
+                && toplevel.is_initial_configure_sent()
+            {
+                toplevel.send_configure();
+            }
         }
         // Surfaces no longer placed lose their cached scale, so a re-placed one is recomputed, not resurrected at its last value.
-        let live: Vec<u64> = placements.iter().map(|(id, _)| *id).collect();
+        let live: HashSet<u64> = placements.iter().map(|(id, _)| *id).collect();
         self.surface_scales.retain(|id, _| live.contains(id));
     }
 
@@ -1729,19 +2791,32 @@ impl State {
 
     /// Whether shared window `surface` must reach its viewers as the
     /// placeholder instead of its pixels.
+    ///
+    /// The app behind a tiled surface comes from the input router's cache of
+    /// the tree, without the tree lock. Until the loop folds a tree write
+    /// into that cache, the tree itself is read, so a renamed or newly
+    /// adopted tab is never judged by a stale app id.
     pub fn is_surface_capture_protected(&self, surface: SurfaceId) -> bool {
-        let app_id = {
-            let tree = self.workspace_tree.read();
-            tab_binding::app_id_for_surface(&tree, surface).map(str::to_owned)
-        }
-        .or_else(|| {
+        let floating = || {
             self.floating_toplevels
                 .iter()
                 .find(|toplevel| toplevel.surface_id == surface)
-                .map(|toplevel| toplevel.app_id.clone())
-        });
-        crate::compositor::foreign::store()
-            .is_capture_protected(surface, app_id.as_deref().unwrap_or_default())
+                .map(|toplevel| toplevel.app_id.as_str())
+        };
+        let store = crate::compositor::foreign::store();
+        if self
+            .client_input
+            .app_ids_current(self.workspace_tree.generation())
+        {
+            let app_id = self.client_input.app_id(surface).or_else(floating);
+            return store.is_capture_protected(surface, app_id.unwrap_or_default());
+        }
+        let tiled = {
+            let tree = self.workspace_tree.read();
+            tab_binding::app_id_for_surface(&tree, surface).map(str::to_owned)
+        };
+        let app_id = tiled.as_deref().or_else(floating);
+        store.is_capture_protected(surface, app_id.unwrap_or_default())
     }
 
     /// A share session's next frame: the window's pixels, or the themed
@@ -1764,26 +2839,260 @@ impl State {
     }
 
     /// Install the non-blocking network bridge used by live legacy streams.
-    pub fn set_legacy_stream_publisher(
-        &mut self,
-        publisher: Arc<dyn Fn(crate::network::NeighbourMsg) -> bool + Send + Sync>,
-    ) {
+    pub fn set_legacy_stream_publisher(&mut self, publisher: LegacyStreamPublisher) {
         self.legacy_stream_publisher = Some(publisher);
+    }
+
+    /// Send one message of `surface`'s stream on its room's topic: to its
+    /// viewers alone when they are all the person's own devices.
+    fn publish_legacy(&self, surface: SurfaceId, message: crate::network::NeighbourMsg) -> bool {
+        let Some(publish) = self.legacy_stream_publisher.as_ref() else {
+            return false;
+        };
+        let viewers = self
+            .active_sessions
+            .get(&surface)
+            .map(|session| session.viewer_ids())
+            .unwrap_or_default();
+        let personal = viewers
+            .iter()
+            .all(|peer| self.personal_stream_viewers.contains(&(*peer, surface)));
+        publish(
+            LegacyStreamRoute {
+                topic: self.legacy_stream_routes.get(&surface).copied(),
+                only: (personal && !viewers.is_empty()).then_some(viewers),
+            },
+            message,
+        )
+    }
+
+    /// Point each streamed window's traffic at its tab's room topic. Routes
+    /// of windows no longer streamed are kept until their session is gone,
+    /// so the end of a stream reaches the room its start went to.
+    pub fn route_legacy_streams(&mut self, routes: impl IntoIterator<Item = (SurfaceId, u64)>) {
+        let sessions = &self.active_sessions;
+        self.legacy_stream_routes
+            .retain(|surface, _| sessions.contains_key(surface));
+        self.legacy_stream_routes.extend(routes);
+    }
+
+    /// Encode and send each streamed window's held-back frame that is due
+    /// now. Returns how many went out.
+    pub fn flush_share_sessions(&mut self) -> usize {
+        let now = std::time::Instant::now();
+        let mut sent = 0_usize;
+        let sessions = self.active_sessions.values().cloned().collect::<Vec<_>>();
+        for session in sessions {
+            if session.staged_due().is_some_and(|due| due <= now)
+                && let Some(frame) = session.encode_next_frame(now)
+            {
+                let _ = self.publish_legacy(session.surface_id, frame.into_neighbour_msg());
+                sent = sent.saturating_add(1);
+            }
+        }
+        sent
+    }
+
+    /// When the earliest held-back frame of a streamed window is due.
+    pub fn legacy_stream_deadline(&self) -> Option<std::time::Instant> {
+        self.active_sessions
+            .values()
+            .filter_map(|session| session.staged_due())
+            .min()
+    }
+
+    /// Which viewers of which windows are the person's own other devices.
+    pub fn set_personal_stream_viewers(
+        &mut self,
+        viewers: std::collections::HashSet<(MsgPeerId, SurfaceId)>,
+    ) {
+        self.personal_stream_viewers = viewers;
+        if let Some(focus) = self.personal_keyboard_focus
+            && !self.streams_to_own_device(focus)
+        {
+            self.personal_keyboard_focus = None;
+        }
+    }
+
+    fn streams_to_own_device(&self, surface: SurfaceId) -> bool {
+        self.personal_stream_viewers
+            .iter()
+            .any(|(_, streamed)| *streamed == surface)
+    }
+
+    /// Only headless sessions populate this from the active room's trusted
+    /// workspace hosts. Ordinary desktop shares keep the local focus policy.
+    pub fn set_headless_host_viewers(
+        &mut self,
+        viewers: std::collections::HashSet<(MsgPeerId, SurfaceId)>,
+    ) {
+        self.headless_host_viewers = viewers;
+        if self
+            .headless_keyboard_focus
+            .is_some_and(|focus| !self.headless_host_viewers.contains(&focus))
+        {
+            self.headless_keyboard_focus = None;
+        }
+    }
+
+    pub(crate) fn headless_keyboard_focus(&self) -> Option<SurfaceId> {
+        self.headless_keyboard_focus.and_then(|(peer, surface)| {
+            (self.headless_host_viewers.contains(&(peer, surface))
+                && self.client_input.surface(surface).is_some())
+            .then_some(surface)
+        })
+    }
+
+    /// Called only after the share, visibility, host overrides and event
+    /// budget accepted a focus packet. The trusted workspace host chooses
+    /// which window its headless session types into; regular shares do not.
+    fn apply_headless_host_focus(
+        &mut self,
+        peer: MsgPeerId,
+        surface: SurfaceId,
+        event: &InputEvent,
+    ) {
+        let InputEvent::KeyboardFocus { focused, .. } = event else {
+            return;
+        };
+        if !focused {
+            if self.headless_keyboard_focus == Some((peer, surface)) {
+                self.headless_keyboard_focus = None;
+            }
+            return;
+        }
+        if !self.headless_host_viewers.contains(&(peer, surface)) {
+            if self.personal_stream_viewers.contains(&(peer, surface)) {
+                self.headless_keyboard_focus = None;
+            }
+            return;
+        }
+        self.personal_keyboard_focus = None;
+        self.headless_keyboard_focus = Some((peer, surface));
+        if !self.remote_input_firewall.view().chrome_captures_input() {
+            self.set_activated_toplevel(Some(surface));
+            self.set_client_keyboard_focus(Some(surface));
+            // A key can follow focus in the same packet, before the next
+            // frame publishes its view. Preserve all other firewall gates.
+            self.remote_input_firewall.set_keyboard_focus(Some(surface));
+        }
+    }
+
+    /// The streamed window the person last focused from another device,
+    /// which takes this seat's keyboard ahead of the local tiles.
+    pub(crate) fn personal_keyboard_focus(&self) -> Option<SurfaceId> {
+        self.personal_keyboard_focus
+            .filter(|surface| self.client_input.surface(*surface).is_some())
+    }
+
+    /// The person is using this device's own keyboard or pointer again.
+    pub(crate) fn release_personal_keyboard_focus(&mut self) {
+        self.personal_keyboard_focus = None;
+        self.headless_keyboard_focus = None;
+    }
+
+    /// Whether another device of the person holds this seat's pointer, and
+    /// end that hold: local input is about to take it back.
+    pub(crate) fn take_personal_pointer_hold(&mut self) -> bool {
+        std::mem::take(&mut self.personal_pointer_hold)
+    }
+
+    /// Where input from the person's other devices lands on a streamed
+    /// window no tile here shows: a rect the size they show it at, beyond
+    /// every output, so nothing local covers it and the local pointer never
+    /// reaches it. `shown` are the tiles already on screen.
+    pub(crate) fn offscreen_stream_tiles(
+        &self,
+        shown: &[(SurfaceId, vello::kurbo::Rect)],
+    ) -> Vec<(SurfaceId, vello::kurbo::Rect)> {
+        /// Far beyond any output arrangement, in logical pixels.
+        const ORIGIN_X: f64 = 1_048_576.0;
+        let mut surfaces = self
+            .personal_stream_viewers
+            .iter()
+            .map(|(_, surface)| *surface)
+            .filter(|surface| {
+                !shown.iter().any(|(id, _)| id == surface)
+                    && self.client_input.surface(*surface).is_some()
+            })
+            .collect::<Vec<_>>();
+        surfaces.sort_unstable();
+        surfaces.dedup();
+        let mut x = ORIGIN_X;
+        surfaces
+            .into_iter()
+            .filter_map(|surface| {
+                let (width, height) = crate::compositor::foreign::store().remote_extent(surface)?;
+                let rect = vello::kurbo::Rect::new(
+                    x,
+                    0.0,
+                    x + f64::from(width.max(1)),
+                    f64::from(height.max(1)),
+                );
+                x = rect.x1 + 64.0;
+                Some((surface, rect))
+            })
+            .collect()
+    }
+
+    /// A stream carries the window at its buffer's size; the tile placing
+    /// it here may be laid out at another (a scaled output, or a size other
+    /// devices asked for). Move a viewer's pointer from the stream's pixels
+    /// to the tile's.
+    fn stream_point_to_tile(&self, surface: SurfaceId, event: InputEvent) -> InputEvent {
+        let InputEvent::PointerMotion { x, y } = event else {
+            return event;
+        };
+        let Some((width, height)) = self
+            .active_sessions
+            .get(&surface)
+            .map(|session| session.encoded_dimensions())
+            .filter(|(width, height)| *width > 0 && *height > 0)
+        else {
+            return event;
+        };
+        let Some(rect) = self.remote_input_firewall.view().rect(surface) else {
+            return event;
+        };
+        InputEvent::PointerMotion {
+            x: x * rect.width() / f64::from(width),
+            y: y * rect.height() / f64::from(height),
+        }
     }
 
     /// Register a share session so [`CompositorHandler::commit`] pumps
     /// `encode_next_frame` on every commit; replaces any prior session and
     /// announces the new stream before its first frame.
     pub fn register_share_session(&mut self, session: Arc<SharedFlatpakSession>) {
+        let replaced = self.active_sessions.remove(&session.surface_id);
+        self.install_share_session(session, replaced);
+    }
+
+    /// Put `session` in place of the window's `replaced` one. The window
+    /// stays shared, so its new start alone announces the change (receivers
+    /// rebuild on it): an end first would have them drop the window, and
+    /// the input they send it, until the start arrives. Only viewers the
+    /// new session no longer has lose their focus on it.
+    fn install_share_session(
+        &mut self,
+        session: Arc<SharedFlatpakSession>,
+        replaced: Option<Arc<SharedFlatpakSession>>,
+    ) {
         let surface = session.surface_id;
-        if self.active_sessions.contains_key(&surface) {
-            self.unregister_share_session(surface);
-        }
-        if let Some(publish) = &self.legacy_stream_publisher {
-            let _ = publish(session.stream_start_msg());
+        if self.legacy_stream_publisher.is_some() {
+            let _ = self.publish_legacy(surface, session.stream_start_msg());
         }
         self.sync_share_authority(&session);
+        let viewers = session.viewer_ids();
         self.active_sessions.insert(surface, session);
+        let left = replaced
+            .map(|old| old.viewer_ids())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|peer| !viewers.contains(peer));
+        for peer in left {
+            self.release_remote_focus_for_surface(peer, surface);
+        }
     }
 
     /// Mirror the stream session's actual viewer permissions into the
@@ -1817,11 +3126,15 @@ impl State {
 
     /// Deregister a share session by surface id (no-op if unregistered) — called on share end or surface destroy.
     pub fn unregister_share_session(&mut self, surface: SurfaceId) {
+        // The end goes the way the stream went, so it is sent while the
+        // session still names its viewers.
+        if let Some(session) = self.active_sessions.get(&surface).cloned()
+            && self.legacy_stream_publisher.is_some()
+        {
+            let _ = self.publish_legacy(surface, session.stream_end_msg());
+        }
         if let Some(session) = self.active_sessions.remove(&surface) {
             let viewers = session.viewer_ids();
-            if let Some(publish) = &self.legacy_stream_publisher {
-                let _ = publish(session.stream_end_msg());
-            }
             for peer in viewers {
                 self.share_registry.remove(peer, surface);
                 self.release_remote_focus_for_surface(peer, surface);
@@ -1833,6 +3146,9 @@ impl State {
     /// key or stale caret focus. Reference counting ensures releases still
     /// held by another collaborator are suppressed.
     fn release_remote_focus_for_surface(&mut self, peer: MsgPeerId, surface: SurfaceId) {
+        if self.headless_keyboard_focus == Some((peer, surface)) {
+            self.headless_keyboard_focus = None;
+        }
         let (owns_focus, owns_pointer) =
             self.remote_seats.seat(peer).map_or((false, false), |seat| {
                 (
@@ -1918,6 +3234,29 @@ impl State {
         }
     }
 
+    /// Grant (or revoke) each of `peers` workspace control of `surface`, on
+    /// the stream's route, when legacy streams are published at all.
+    fn publish_share_grants<'a>(
+        &self,
+        surface: SurfaceId,
+        peers: impl IntoIterator<Item = &'a MsgPeerId>,
+        granted: bool,
+    ) {
+        if self.legacy_stream_publisher.is_none() {
+            return;
+        }
+        let state = if granted { "granted" } else { "revoked" };
+        for peer in peers {
+            let _ = self.publish_legacy(
+                surface,
+                crate::network::NeighbourMsg::PermissionGrant {
+                    peer: *peer,
+                    capability: format!("workspace-control:{surface}:{state}"),
+                },
+            );
+        }
+    }
+
     /// Bring a running share up to date with its current viewer set: grant
     /// and revoke workspace control, renegotiate the codec and announce the
     /// stream again when a viewer joined or the codec switched.
@@ -1938,28 +3277,14 @@ impl State {
             .copied()
             .filter(|peer| session.viewer_share(*peer).is_none())
             .collect::<Vec<_>>();
-        if let Some(publish) = &self.legacy_stream_publisher {
-            for peer in &removed {
-                let _ = publish(crate::network::NeighbourMsg::PermissionGrant {
-                    peer: *peer,
-                    capability: format!("workspace-control:{surface}:revoked"),
-                });
-            }
-            for peer in &added {
-                let _ = publish(crate::network::NeighbourMsg::PermissionGrant {
-                    peer: *peer,
-                    capability: format!("workspace-control:{surface}:granted"),
-                });
-            }
-        }
+        self.publish_share_grants(surface, &removed, false);
+        self.publish_share_grants(surface, &added, true);
         // A viewer joining or leaving (or re-advertising) can change which
         // codec everyone decodes; a switch is announced like a new stream so
         // receivers rebuild.
         let switched = session.renegotiate(receivers);
-        if (switched || !added.is_empty())
-            && let Some(publish) = &self.legacy_stream_publisher
-        {
-            let _ = publish(session.stream_start_msg());
+        if (switched || !added.is_empty()) && self.legacy_stream_publisher.is_some() {
+            let _ = self.publish_legacy(surface, session.stream_start_msg());
         }
         session.sync_viewers(recipients);
         self.sync_share_authority(session);
@@ -1972,14 +3297,16 @@ impl State {
         }
     }
 
-    /// Reconcile encoder lifetimes and viewer permissions with the active
-    /// workspace's replicated `shared_surfaces` map. A newly shared static
-    /// window is seeded from the compositor's already captured foreign frame,
-    /// so it does not have to damage itself again before the first packet.
+    /// Reconcile encoder lifetimes and viewer permissions with the windows
+    /// that have viewers: shares in the active workspace's replicated
+    /// `shared_surfaces` map, and windows the person's other devices show. A
+    /// newly shared static window is seeded from the compositor's already
+    /// captured foreign frame, so it does not have to damage itself again
+    /// before the first packet.
     pub fn reconcile_legacy_share_sessions(
         &mut self,
         host_peer: MsgPeerId,
-        desired: &HashMap<SurfaceId, (String, std::collections::HashSet<MsgPeerId>)>,
+        desired: &HashMap<SurfaceId, LegacyShare>,
         config: &crate::config::FlatpakShareConfig,
     ) {
         let stale = self
@@ -1991,8 +3318,18 @@ impl State {
         for surface in stale {
             self.unregister_share_session(surface);
         }
+        self.legacy_share_failures
+            .retain(|surface, _| desired.contains_key(surface));
 
-        for (&surface, (app_id, recipients)) in desired {
+        for (&surface, share) in desired {
+            let LegacyShare {
+                app_id,
+                tab,
+                viewers: recipients,
+                decode_limits,
+                paint,
+            } = share;
+            let paint = *paint && self.paint_apps.contains_key(app_id);
             let recipients = recipients
                 .iter()
                 .copied()
@@ -2006,14 +3343,12 @@ impl State {
             else {
                 continue;
             };
-            // What each viewer advertised it can decode; a viewer that never
-            // advertised is treated as H.264-only.
-            let receivers = recipients
-                .iter()
-                .map(|peer| crate::network::media_caps::capabilities(*peer))
-                .collect::<Vec<_>>();
+            let receivers = share_receivers(&recipients, decode_limits);
             let reusable = self.active_sessions.get(&surface).is_some_and(|session| {
-                session.app_id == *app_id && session.dimensions() == (width, height)
+                session.app_id == *app_id
+                    && session.tab() == *tab
+                    && session.dimensions() == (width, height)
+                    && session.is_paint() == paint
             });
             if reusable {
                 if let Some(session) = self.active_sessions.get(&surface).cloned() {
@@ -2021,32 +3356,171 @@ impl State {
                 }
                 continue;
             }
-
-            self.unregister_share_session(surface);
-            let Ok(session) = SharedFlatpakSession::start_with_metrics(
-                host_peer, app_id, surface, width, height, config, &receivers, None,
-            ) else {
-                tracing::warn!(
-                    surface,
-                    app_id,
-                    width,
-                    height,
-                    "legacy share encoder failed to start"
-                );
+            // A stream that could not start for these viewers at this size
+            // waits for them (or the size) to change, not every pump.
+            if self
+                .legacy_share_failures
+                .get(&surface)
+                .is_some_and(|failure| failure.holds(&receivers, (width, height)))
+            {
                 continue;
-            };
-            let session = Arc::new(session);
-            session.sync_viewers(&recipients);
-            if let Some(publish) = &self.legacy_stream_publisher {
-                for peer in &recipients {
-                    let _ = publish(crate::network::NeighbourMsg::PermissionGrant {
-                        peer: *peer,
-                        capability: format!("workspace-control:{surface}:granted"),
-                    });
-                }
             }
-            self.register_share_session(Arc::clone(&session));
-            self.seed_share_frame(&session, surface);
+
+            // The window is still shared: its stream is replaced, not ended,
+            // unless the new one cannot start.
+            let replaced = self.active_sessions.remove(&surface);
+            let started = if paint {
+                SharedFlatpakSession::start_paint(host_peer, app_id, surface, width, height, config)
+            } else {
+                SharedFlatpakSession::start_with_metrics(
+                    host_peer, app_id, surface, width, height, config, &receivers, None,
+                )
+            };
+            let session = match started {
+                Ok(session) => session,
+                Err(error) => {
+                    log_share_failure(surface, app_id, (width, height), &error, &receivers);
+                    self.legacy_share_failures.insert(
+                        surface,
+                        LegacyShareFailure {
+                            receivers,
+                            size: (width, height),
+                            at: std::time::Instant::now(),
+                        },
+                    );
+                    if let Some(replaced) = replaced {
+                        self.active_sessions.insert(surface, replaced);
+                        self.unregister_share_session(surface);
+                    }
+                    continue;
+                }
+            };
+            self.legacy_share_failures.remove(&surface);
+            let session = Arc::new(session.with_tab(*tab));
+            session.sync_viewers(&recipients);
+            self.publish_share_grants(surface, &recipients, true);
+            self.install_share_session(Arc::clone(&session), replaced);
+            if paint {
+                self.seed_paint_share(&session, surface);
+            } else {
+                self.seed_share_frame(&session, surface);
+            }
+        }
+    }
+
+    /// Start a new paint share from the app's current group (its latest
+    /// whole frame and what followed), and ask the app for a fresh one.
+    fn seed_paint_share(&mut self, session: &SharedFlatpakSession, surface: SurfaceId) {
+        let Some(app) = self.paint_apps.get_mut(&session.app_id) else {
+            return;
+        };
+        app.keyframe_wanted = true;
+        let group = app.group.clone();
+        if self.legacy_stream_publisher.is_some() {
+            for payload in group {
+                let _ = self.publish_legacy(surface, session.paint_message(payload));
+            }
+        }
+    }
+
+    /// An app announced it can stream its page (`shell-ui` `PaintCapable`).
+    pub fn note_paint_app(&mut self, app_id: &str, connection: u64) {
+        self.paint_apps
+            .entry(app_id.to_owned())
+            .or_insert_with(|| PaintApp::new(connection))
+            .connection = connection;
+    }
+
+    /// The app's `shell-ui` connection closed: its windows go back to video.
+    pub fn drop_paint_connection(&mut self, connection: u64) {
+        self.paint_apps
+            .retain(|_, app| app.connection != connection);
+    }
+
+    /// One frame of an app's page stream: kept for viewers that start later
+    /// and sent to every paint share of the app's windows.
+    pub fn receive_paint_frame(&mut self, app_id: &str, frame: PaintFrame) {
+        let PaintFrame {
+            payload,
+            page,
+            scale,
+        } = frame;
+        let Some(app) = self.paint_apps.get_mut(app_id) else {
+            return;
+        };
+        app.page = page;
+        app.scale = scale;
+        if ui::webview::paint::stream::wire::Payload::is_key(&payload) {
+            app.group.clear();
+            app.group_bytes = 0;
+        }
+        app.group_bytes = app.group_bytes.saturating_add(payload.len());
+        let keep = app.group_bytes <= MAX_PAINT_GROUP_BYTES;
+        if !keep {
+            // Too long to replay: start the next viewer from a new frame.
+            app.group.clear();
+            app.group_bytes = 0;
+            app.keyframe_wanted = true;
+        }
+        if self.legacy_stream_publisher.is_some() {
+            let sessions = self
+                .active_sessions
+                .values()
+                .filter(|session| session.is_paint() && session.app_id == app_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            for session in sessions {
+                let _ =
+                    self.publish_legacy(session.surface_id, session.paint_message(payload.clone()));
+            }
+        }
+        if keep && let Some(app) = self.paint_apps.get_mut(app_id) {
+            app.group.push(payload);
+        }
+    }
+
+    /// What to tell each paint app: `(connection, true)` to start streaming
+    /// from a whole frame, `(connection, false)` to stop. Watching follows
+    /// the paint shares of the app's windows.
+    pub fn paint_watch_changes(&mut self) -> Vec<(u64, bool)> {
+        let watched = self
+            .active_sessions
+            .values()
+            .filter(|session| session.is_paint())
+            .map(|session| session.app_id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut changes = Vec::new();
+        for (app_id, app) in &mut self.paint_apps {
+            let now = watched.contains(app_id);
+            if now && (app.keyframe_wanted || !app.watched) {
+                changes.push((app.connection, true));
+            } else if !now && app.watched {
+                changes.push((app.connection, false));
+            }
+            app.watched = now;
+            app.keyframe_wanted = false;
+        }
+        changes
+    }
+
+    /// Input from a paint share's viewer is in page (CSS) pixels; the
+    /// window's surface-local input is logical, with the page at `page`.
+    fn paint_point_to_surface(&self, surface: SurfaceId, event: InputEvent) -> InputEvent {
+        let InputEvent::PointerMotion { x, y } = event else {
+            return event;
+        };
+        let Some(app) = self
+            .active_sessions
+            .get(&surface)
+            .filter(|session| session.is_paint())
+            .and_then(|session| self.paint_apps.get(&session.app_id))
+        else {
+            return event;
+        };
+        let [left, top, width, height] = app.page;
+        InputEvent::PointerMotion {
+            x: left + x.clamp(0.0, width.max(0.0)),
+            y: top + y.clamp(0.0, height.max(0.0)),
         }
     }
 
@@ -2061,9 +3535,9 @@ impl State {
         }) {
             session.deposit_captured_rgba(rgba);
             if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
-                && let Some(publish) = &self.legacy_stream_publisher
+                && self.legacy_stream_publisher.is_some()
             {
-                let _ = publish(frame.into_neighbour_msg());
+                let _ = self.publish_legacy(surface, frame.into_neighbour_msg());
             }
         }
     }
@@ -2090,24 +3564,11 @@ impl State {
             else {
                 return Some(None);
             };
-            let buffer_scale = states
-                .cached_state
-                .get::<wl_compositor::SurfaceAttributes>()
-                .current()
-                .buffer_scale;
-            let logical_size = states
-                .cached_state
-                .get::<smithay::wayland::viewporter::ViewportCachedState>()
-                .current()
-                .dst
-                .map(|size| (size.w, size.h));
             Some(Some(crate::compositor::foreign::WindowGeometry {
                 x: declared.loc.x,
                 y: declared.loc.y,
                 width: declared.size.w,
                 height: declared.size.h,
-                logical_size,
-                buffer_scale,
             }))
         });
         // Only toplevels: an entry made for any other surface would never be forgotten.
@@ -2116,7 +3577,7 @@ impl State {
         }
     }
 
-    fn capture_foreign_surface(surface: &WlSurface, surface_id: u64) {
+    fn capture_foreign_surface(surface: &WlSurface, surface_id: u64) -> ForeignCommitCapture {
         use crate::compositor::foreign::{CaptureOutcome, store};
         wl_compositor::with_states(surface, |states| {
             // SurfaceAttributes.current().buffer is intentionally aggregated
@@ -2127,20 +3588,17 @@ impl State {
             let association = states
                 .data_map
                 .get::<ForeignCommitCaptures>()
-                .and_then(|commits| {
-                    commits
-                        .0
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .pop_front()
-                })
+                .and_then(|commits| commits.0.lock_recover().pop_front())
                 .unwrap_or(ForeignCommitCapture::NoBuffer);
-            if matches!(association, ForeignCommitCapture::NoBuffer) {
-                return;
+            if matches!(
+                association,
+                ForeignCommitCapture::NoBuffer | ForeignCommitCapture::Failed
+            ) {
+                return association;
             }
             if matches!(association, ForeignCommitCapture::Removed) {
                 store().clear_frame(surface_id);
-                return;
+                return association;
             }
             let mut attrs = states
                 .cached_state
@@ -2151,8 +3609,18 @@ impl State {
                         ForeignCommitCapture::Dmabuf(token) => {
                             store().capture_commit_associated(surface_id, buffer, Some(token))
                         }
-                        ForeignCommitCapture::Shm => CaptureOutcome::Queued,
-                        ForeignCommitCapture::NoBuffer | ForeignCommitCapture::Removed => return,
+                        ForeignCommitCapture::Shm(generation) => {
+                            if store().note_shm_committed(surface_id, generation) {
+                                CaptureOutcome::Queued
+                            } else {
+                                CaptureOutcome::Failed("SHM commit generation is not queued".into())
+                            }
+                        }
+                        ForeignCommitCapture::NoBuffer
+                        | ForeignCommitCapture::Failed
+                        | ForeignCommitCapture::Removed => {
+                            return association;
+                        }
                     };
                     if let CaptureOutcome::Failed(reason) = outcome {
                         tracing::warn!(
@@ -2171,7 +3639,9 @@ impl State {
                     // Damage-only commit — keep the staged frame.
                 }
             }
-        });
+            drop(attrs);
+            association
+        })
     }
 
     /// The exact `commit` capture gate, kept named so output-owned surfaces
@@ -2216,9 +3686,9 @@ impl State {
             };
             session.deposit_captured_rgba(rgba);
             if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
-                && let Some(publish) = &self.legacy_stream_publisher
+                && self.legacy_stream_publisher.is_some()
             {
-                let _ = publish(frame.into_neighbour_msg());
+                let _ = self.publish_legacy(surface_id, frame.into_neighbour_msg());
             }
             return true;
         }
@@ -2229,8 +3699,8 @@ impl State {
             session.deposit_captured_dmabuf(dmabuf);
             let emitted = session.encode_next_frame(std::time::Instant::now());
             if let Some(frame) = emitted {
-                if let Some(publish) = &self.legacy_stream_publisher {
-                    let _ = publish(frame.into_neighbour_msg());
+                if self.legacy_stream_publisher.is_some() {
+                    let _ = self.publish_legacy(surface_id, frame.into_neighbour_msg());
                 }
                 // Encoder actually consumed the DMABUF. Only *now* do we bump
                 // the tracker's `dmabuf_direct_count` — the metric reflects
@@ -2245,11 +3715,20 @@ impl State {
         let Some(frame) = self.surface_tracker.peek_latest(surface_id) else {
             return false;
         };
-        session.deposit_captured_rgba(frame.rgba);
+        // The stream carries the window as its tab shows it, at the size its
+        // first frame (the tab's snapshot) set: without the shadow and resize
+        // border a client-side-decorating toolkit draws around it.
+        let rgba = crate::compositor::foreign::store().crop_to_window(
+            surface_id,
+            frame.rgba,
+            frame.width,
+            frame.height,
+        );
+        session.deposit_captured_rgba(rgba);
         if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
-            && let Some(publish) = &self.legacy_stream_publisher
+            && self.legacy_stream_publisher.is_some()
         {
-            let _ = publish(frame.into_neighbour_msg());
+            let _ = self.publish_legacy(surface_id, frame.into_neighbour_msg());
         }
         true
     }
@@ -2316,6 +3795,28 @@ impl State {
         if previously_controlled && !still_controls {
             self.release_remote_focus_for_surface(peer, surface);
         }
+        let event = self.paint_point_to_surface(surface, event);
+        let event = if self.personal_stream_viewers.contains(&(peer, surface)) {
+            if matches!(
+                event,
+                InputEvent::PointerMotion { .. }
+                    | InputEvent::PointerButton { .. }
+                    | InputEvent::PointerAxis { .. }
+                    | InputEvent::PointerEnter { .. }
+            ) {
+                self.personal_pointer_hold = true;
+            }
+            if let InputEvent::KeyboardFocus { focused, .. } = event {
+                if focused {
+                    self.personal_keyboard_focus = Some(surface);
+                } else if self.personal_keyboard_focus == Some(surface) {
+                    self.personal_keyboard_focus = None;
+                }
+            }
+            self.stream_point_to_tile(surface, event)
+        } else {
+            event
+        };
         match self.review_remote_input(peer, surface, event) {
             Ok(()) => true,
             Err(denial) => {
@@ -2399,6 +3900,7 @@ impl State {
         };
 
         // Can't pass `self` twice (`&ShareRegistry` and `&mut RemoteInputSink`), so the routing decision is inlined above and the sink call made directly on ourselves.
+        self.apply_headless_host_focus(peer, surface, &injectable);
         RemoteInputSink::apply(self, peer, surface, injectable);
         Ok(())
     }
@@ -2430,6 +3932,24 @@ impl State {
     /// this survive a restart of the input path — a latch alone would be
     /// undone by anything that rebuilt the firewall. Returns the number of shares that lost write access, so the caller can tell the user what happened.
     pub fn engage_remote_input_kill_switch(&mut self) -> usize {
+        self.end_all_remote_input().revoked
+    }
+
+    /// How many remote participants (shares, seats, streams, device-control
+    /// controllers) are live right now. The kill switch only has something
+    /// to report when this is non-zero.
+    pub fn live_remote_input_participants(&self) -> usize {
+        self.share_registry
+            .len()
+            .saturating_add(self.remote_seats.len())
+            .saturating_add(self.active_sessions.len())
+            .saturating_add(self.personal_fabric_input.controllers().len())
+    }
+
+    /// The kill switch proper; reports what it ended so callers can decide
+    /// whether there is anything worth telling the person.
+    pub fn end_all_remote_input(&mut self) -> RemoteInputEnded {
+        let live = self.live_remote_input_participants();
         self.remote_input_firewall.engage_kill_switch();
         let revoked = self.share_registry.revoke_all_input();
 
@@ -2453,7 +3973,7 @@ impl State {
             personal_controllers,
             "remote-input kill switch engaged; shares and streams terminated"
         );
-        revoked
+        RemoteInputEnded { revoked, live }
     }
 
     /// Inject a single `org.freedesktop.impl.portal.RemoteDesktop`
@@ -2653,15 +4173,7 @@ impl State {
         let Some(pointer) = self.seat.get_pointer() else {
             return false;
         };
-        pointer.motion(
-            self,
-            None,
-            &MotionEvent {
-                location: (x, y).into(),
-                serial,
-                time,
-            },
-        );
+        self.move_seat_pointer(&pointer, None, (x, y), (serial, time));
         pointer.frame(self);
         true
     }
@@ -2676,16 +4188,8 @@ impl State {
         let Some(pointer) = self.seat.get_pointer() else {
             return false;
         };
-        let loc = pointer.current_location();
-        pointer.motion(
-            self,
-            None,
-            &MotionEvent {
-                location: (loc.x + dx, loc.y + dy).into(),
-                serial,
-                time,
-            },
-        );
+        let loc = crate::compositor::seat_lock::pointer_location(&pointer);
+        self.move_seat_pointer(&pointer, None, (loc.x + dx, loc.y + dy), (serial, time));
         // Also surface the raw delta for clients consuming `wp_relative_pointer` (games, pointer-locked apps).
         pointer.relative_motion(
             self,
@@ -2768,9 +4272,9 @@ impl State {
         true
     }
 
-    /// Deliver a raw keycode press/release to the seat keyboard. Shared by
-    /// the `RemoteDesktop` keycode + keysym paths; passed straight through to
-    /// smithay's `KeyboardHandle::input`, the same convention `network::wayland::WaylandServer::handle_input` and [`Self::apply_remote_input`]'s `Key` arm use.
+    /// Deliver a Linux evdev keycode press/release to the seat keyboard. Shared by
+    /// the `RemoteDesktop` and personal-fabric paths. Convert to Smithay's XKB
+    /// keycode convention by adding eight, as the other remote input paths do.
     fn inject_seat_key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
@@ -2780,10 +4284,14 @@ impl State {
         } else {
             KeyState::Released
         };
-        let _: Option<()> =
-            keyboard.input(self, keycode.into(), key_state, serial, time, |_, _, _| {
-                smithay::input::keyboard::FilterResult::<()>::Forward
-            });
+        let _: Option<()> = keyboard.input(
+            self,
+            keycode.saturating_add(8).into(),
+            key_state,
+            serial,
+            time,
+            |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
+        );
         true
     }
 
@@ -2802,7 +4310,9 @@ impl State {
             for raw in 8u32..=255 {
                 let kc: Keycode = raw.into();
                 if xkb.raw_syms_for_key_in_layout(kc, layout).contains(&target) {
-                    return Some(raw);
+                    // This helper returns evdev, like the keycode portal and
+                    // personal-fabric paths. Injection applies the XKB offset.
+                    return Some(raw.saturating_sub(8));
                 }
             }
             None
@@ -2861,19 +4371,11 @@ impl RemoteInputSink for State {
                             .and_then(|wl_surface| {
                                 self.remote_input_firewall.view().rect(surface).map(|rect| {
                                     let origin = crate::compositor::foreign::store()
-                                        .surface_origin(surface, rect);
+                                        .surface_origin(surface, rect, (x, y));
                                     (wl_surface, origin.into())
                                 })
                             });
-                    pointer.motion(
-                        self,
-                        focus,
-                        &MotionEvent {
-                            location: (x, y).into(),
-                            serial,
-                            time,
-                        },
-                    );
+                    self.move_seat_pointer(&pointer, focus, (x, y), (serial, time));
                     if let Some(pointer) = self.seat.get_pointer() {
                         pointer.frame(self);
                     }
@@ -2885,33 +4387,7 @@ impl RemoteInputSink for State {
                 // moved the shared seat since this peer's last motion, so
                 // restore this peer's accepted focus/location before its
                 // coordinate-less button edge is delivered.
-                if let Some((x, y)) = self.remote_input_firewall.peer_cursor_global(peer, surface)
-                    && let Some(pointer) = self.seat.get_pointer()
-                {
-                    let focus =
-                        self.surface_handles
-                            .get(&surface)
-                            .cloned()
-                            .and_then(|wl_surface| {
-                                self.remote_input_firewall.view().rect(surface).map(|rect| {
-                                    let origin = crate::compositor::foreign::store()
-                                        .surface_origin(surface, rect);
-                                    (wl_surface, origin.into())
-                                })
-                            });
-                    pointer.motion(
-                        self,
-                        focus,
-                        &MotionEvent {
-                            location: (x, y).into(),
-                            serial,
-                            time,
-                        },
-                    );
-                    if let Some(pointer) = self.seat.get_pointer() {
-                        pointer.frame(self);
-                    }
-                }
+                self.restore_remote_pointer(peer, surface, serial, time);
                 if self.remote_seats.button_transition(peer, button, pressed)
                     && let Some(pointer) = self.seat.get_pointer()
                 {
@@ -2935,12 +4411,14 @@ impl RemoteInputSink for State {
                 }
             }
             InputEvent::PointerEnter { surface: target } => {
-                // Preserve compatibility with pre-KeyboardFocus viewers,
-                // which used PointerEnter as their focus handshake. New
-                // viewers send an explicit click-derived transition too.
+                // Old viewers use hover as their focus handshake. Once a
+                // viewer uses KeyboardFocus, incidental hover during strip
+                // movement must only change pointer attribution.
                 let seat = self.remote_seats.seat_mut(peer);
                 let _ = seat.pointer_enter(target);
-                let _ = seat.enter(target);
+                if !seat.explicit_keyboard_focus {
+                    let _ = seat.enter(target);
+                }
             }
             InputEvent::PointerLeave { surface: _ } => {
                 // Leaving ends pointer attribution only. In particular, do
@@ -2955,12 +4433,44 @@ impl RemoteInputSink for State {
                 surface: target,
                 focused,
             } => {
+                self.remote_seats.seat_mut(peer).explicit_keyboard_focus = true;
                 if focused {
+                    if self
+                        .remote_seats
+                        .seat(peer)
+                        .is_some_and(|seat| seat.focused_surface != Some(target))
+                    {
+                        self.release_remote_inputs_for_peer(peer);
+                    }
                     let _ = self.remote_seats.seat_mut(peer).enter(target);
                     return;
                 }
-                let _ = self.remote_seats.seat_mut(peer).leave();
-                self.release_remote_inputs_for_peer(peer);
+                // Streams have independent transport queues. A previous
+                // window's blur may arrive after this peer focused another
+                // window; it must not retire that newer focus or its keys.
+                if self
+                    .remote_seats
+                    .seat(peer)
+                    .is_some_and(|seat| seat.focused_surface == Some(target))
+                {
+                    let _ = self.remote_seats.seat_mut(peer).leave();
+                    self.release_remote_inputs_for_peer(peer);
+                }
+            }
+            InputEvent::PointerAxis { dx, dy } => {
+                self.restore_remote_pointer(peer, surface, serial, time);
+                let _ = self.remote_pointer_axis(dx, dy, time);
+            }
+            InputEvent::ClipboardText { text } => {
+                let _ = crate::compositor::selection::set_mirror_text(
+                    &self.selection_store(),
+                    crate::compositor::selection::Target::Clipboard,
+                    &text,
+                );
+            }
+            InputEvent::Close => self.remote_closes.push(surface),
+            InputEvent::Text { text } => {
+                self.request_remote_text_commit(text, std::time::Instant::now());
             }
             InputEvent::Key {
                 keysym,
@@ -2973,33 +4483,252 @@ impl RemoteInputSink for State {
                 //
                 // Modifier state is *not* force-set: smithay's
                 // `key_input` maintains it from the keycode stream, so peers send Shift-press → A-press → A-release → Shift-release; the wire `modifiers` bitfield is diagnostics only.
-                if self.remote_seats.key_transition(peer, keysym, pressed)
-                    && let Some(keyboard) = self.seat.get_keyboard()
-                {
-                    let key_state = if pressed {
-                        KeyState::Pressed
+                //
+                // A press of a key the peer already holds is the sender's
+                // auto-repeat: the client sees one more stroke of it. Clients
+                // never repeat a remote key themselves, so a release that
+                // arrives late cannot leave one typing the key meanwhile.
+                let repeat = pressed && self.remote_seats.repeats(peer, keysym);
+                if pressed {
+                    self.begin_remote_typing();
+                }
+                let strokes: &[KeyState] = if repeat {
+                    &[KeyState::Released, KeyState::Pressed]
+                } else if self.remote_seats.key_transition(peer, keysym, pressed) {
+                    if pressed {
+                        &[KeyState::Pressed]
                     } else {
-                        KeyState::Released
-                    };
-                    // The compatibility wire's historical field name is
-                    // `keysym`, but the value is an evdev keycode. Smithay's
-                    // keyboard API consumes XKB keycodes (evdev + 8), exactly
-                    // like the local-client path.
-                    let _: Option<()> = keyboard.input(
-                        self,
-                        keysym.saturating_add(8).into(),
-                        key_state,
-                        serial,
-                        time,
-                        |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
-                    );
+                        &[KeyState::Released]
+                    }
+                } else {
+                    &[]
+                };
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    for key_state in strokes {
+                        // The compatibility wire's historical field name is
+                        // `keysym`, but the value is an evdev keycode. Smithay's
+                        // keyboard API consumes XKB keycodes (evdev + 8), exactly
+                        // like the local-client path.
+                        let _: Option<()> = keyboard.input(
+                            self,
+                            keysym.saturating_add(8).into(),
+                            *key_state,
+                            serial,
+                            time,
+                            |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
+                        );
+                    }
                 }
             }
         }
     }
 }
 
+/// Where one message of a legacy window's stream goes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LegacyStreamRoute {
+    /// The workspace topic of the room the window's tab is in; the active
+    /// workspace's when unknown.
+    pub topic: Option<u64>,
+    /// When every viewer of the window is one of the person's own devices:
+    /// exactly those, so the rest of the room receives nothing of it.
+    pub only: Option<Vec<MsgPeerId>>,
+}
+
+/// Sends one message of a legacy window's stream along its route.
+pub type LegacyStreamPublisher =
+    Arc<dyn Fn(LegacyStreamRoute, crate::network::NeighbourMsg) -> bool + Send + Sync>;
+
+/// One legacy window to stream: its app, the workspace tab holding it (`0`
+/// when the stream names none), and the peers watching it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LegacyShare {
+    pub app_id: String,
+    pub tab: u64,
+    pub viewers: std::collections::HashSet<MsgPeerId>,
+    /// Every viewer is a host bridging the window to web members, which
+    /// draw a page streamed as a display list: an app that can stream its
+    /// page ([`PaintApp`]) is shared that way rather than as video.
+    pub paint: bool,
+    /// The largest picture each viewer's hardware decoders take, by codec,
+    /// where the viewer said: the stream is encoded no larger.
+    pub decode_limits:
+        HashMap<MsgPeerId, std::collections::BTreeMap<media::StreamCodec, (u32, u32)>>,
+}
+
+/// A shared window whose stream could not start is tried again this often
+/// while nothing it depends on changed (this device's encoders can, when the
+/// codec pack is turned on).
+const LEGACY_SHARE_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What a shared window's stream last failed to start for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LegacyShareFailure {
+    /// What its viewers decoded then.
+    receivers: Vec<media::realtime::CodecCapabilities>,
+    size: (u32, u32),
+    at: std::time::Instant,
+}
+
+impl LegacyShareFailure {
+    /// Whether starting again now could only fail the same way: the same
+    /// viewers' decoders (in any order) at the same size, not long ago.
+    fn holds(&self, receivers: &[media::realtime::CodecCapabilities], size: (u32, u32)) -> bool {
+        self.size == size
+            && self.at.elapsed() < LEGACY_SHARE_RETRY
+            && self.receivers.len() == receivers.len()
+            && receivers.iter().all(|caps| self.receivers.contains(caps))
+            && self.receivers.iter().all(|caps| receivers.contains(caps))
+    }
+}
+
+/// What each of `recipients` advertised it can decode, a viewer that never
+/// advertised being treated as H.264-only, with the hardware limits its share
+/// named.
+fn share_receivers(
+    recipients: &std::collections::HashSet<MsgPeerId>,
+    decode_limits: &HashMap<MsgPeerId, std::collections::BTreeMap<media::StreamCodec, (u32, u32)>>,
+) -> Vec<media::realtime::CodecCapabilities> {
+    recipients
+        .iter()
+        .map(|peer| {
+            let mut caps = crate::network::media_caps::capabilities(*peer);
+            if let Some(limits) = decode_limits.get(peer) {
+                caps.hardware_decode.extend(limits.keys().copied());
+                caps.hardware_decode_max.clone_from(limits);
+            }
+            caps
+        })
+        .collect()
+}
+
+/// Say why a shared window's stream could not start. When the viewers'
+/// decoders and this device's encoders share no codec, name both, so a
+/// person (or a host operator) sees why the window reaches nobody.
+fn log_share_failure(
+    surface: SurfaceId,
+    app_id: &str,
+    (width, height): (u32, u32),
+    error: &crate::collab::flatpak_share::ShareError,
+    receivers: &[media::realtime::CodecCapabilities],
+) {
+    use media::realtime::CodecCapabilities;
+    if !matches!(
+        error,
+        crate::collab::flatpak_share::ShareError::EncoderUnavailable { .. }
+    ) {
+        tracing::warn!(surface, app_id, width, height, %error, "legacy share encoder failed to start");
+        return;
+    }
+    let decode = receivers
+        .iter()
+        .map(|caps| {
+            let mut labels = CodecCapabilities::labels(&caps.software_decode);
+            labels.extend(CodecCapabilities::labels(&caps.hardware_decode));
+            labels.sort();
+            labels.dedup();
+            labels.join("+")
+        })
+        .collect::<Vec<_>>();
+    let local = media::realtime::local_capabilities();
+    let mut encode = CodecCapabilities::labels(&local.software_encode);
+    encode.extend(CodecCapabilities::labels(&local.hardware_encode));
+    tracing::warn!(
+        surface,
+        app_id,
+        viewers_decode = ?decode,
+        this_device_encodes = ?encode,
+        "a shared window has no codec every viewer decodes and this device encodes; it streams \
+         once a viewer advertises one (a browser member's page says it decodes VP9) or this \
+         device gains an encoder"
+    );
+}
+
+/// Most bytes of an app's page stream kept for viewers that start later.
+const MAX_PAINT_GROUP_BYTES: usize = 8 * 1024 * 1024;
+
+/// An app that streams its window's page as a display list.
+#[derive(Debug)]
+pub struct PaintApp {
+    /// Its `shell-ui` connection, which the stream arrives on.
+    pub connection: u64,
+    /// Where the page sits in the window (logical x, y, w, h), as the app
+    /// last said; viewer input is offset by it.
+    pub page: [f64; 4],
+    /// The window's buffer scale, for a viewer that maps buffer pixels.
+    pub scale: f64,
+    /// The latest whole frame and what followed it.
+    group: Vec<Vec<u8>>,
+    group_bytes: usize,
+    /// What the app was last told: whether anyone watches.
+    watched: bool,
+    /// A new share started: ask for a whole frame.
+    keyframe_wanted: bool,
+}
+
+impl PaintApp {
+    fn new(connection: u64) -> Self {
+        Self {
+            connection,
+            page: [0.0; 4],
+            scale: 1.0,
+            group: Vec::new(),
+            group_bytes: 0,
+            watched: false,
+            keyframe_wanted: false,
+        }
+    }
+}
+
+/// One frame an app sent of its page stream.
+pub struct PaintFrame {
+    pub payload: Vec<u8>,
+    pub page: [f64; 4],
+    pub scale: f64,
+}
+
 impl State {
+    /// Put the shared pointer back where `peer`'s last accepted motion over
+    /// `surface` left it: a legacy client sees one `wl_pointer`, while the
+    /// firewall keeps one cursor per participant, and another peer may have
+    /// moved the seat since. Coordinate-less edges (a button, the wheel)
+    /// land there.
+    fn restore_remote_pointer(
+        &mut self,
+        peer: MsgPeerId,
+        surface: SurfaceId,
+        serial: Serial,
+        time: u32,
+    ) {
+        let Some((x, y)) = self.remote_input_firewall.peer_cursor_global(peer, surface) else {
+            return;
+        };
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let focus = self
+            .surface_handles
+            .get(&surface)
+            .cloned()
+            .and_then(|wl_surface| {
+                self.remote_input_firewall.view().rect(surface).map(|rect| {
+                    let origin =
+                        crate::compositor::foreign::store().surface_origin(surface, rect, (x, y));
+                    (wl_surface, origin.into())
+                })
+            });
+        self.move_seat_pointer(&pointer, focus, (x, y), (serial, time));
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.frame(self);
+        }
+    }
+
+    /// The legacy windows remote viewers closed since the last call; the
+    /// compositor closes their tabs as a person's close does.
+    pub fn take_remote_closes(&mut self) -> Vec<SurfaceId> {
+        std::mem::take(&mut self.remote_closes)
+    }
+
     fn refresh_foreign_subsurface_tree(&self, root: &WlSurface) {
         use smithay::wayland::compositor::{TraversalAction, with_surface_tree_upward};
 
@@ -3041,6 +4770,90 @@ impl State {
         crate::compositor::foreign::store().set_children(root_id, children);
     }
 
+    fn capture_committed_foreign_pixels(&mut self, surface: &WlSurface, surface_id: u64) {
+        let foreign_root = foreign_root(surface);
+        let captured = self.should_capture_foreign_surface(surface_id) || foreign_root.is_some();
+        self.note_presentation_commit(surface, surface_id, captured);
+        if captured {
+            // Where its pixels go depends on their density, root or subsurface.
+            let scale = wl_compositor::with_states(surface, committed_surface_scale);
+            crate::compositor::foreign::store().note_surface_scale(surface_id, scale);
+        }
+        // A subsurface's position is the parent's state, applied with the
+        // parent's commit, so the root re-reads its tree as well.
+        self.refresh_foreign_subsurface_tree(&foreign_root.unwrap_or_else(|| surface.clone()));
+        if !self.is_floating_toplevel(surface_id) {
+            Self::note_foreign_window_geometry(surface, surface_id);
+        }
+        let floating_has_new_buffer = self.is_floating_toplevel(surface_id)
+            && wl_compositor::with_states(surface, |states| {
+                let mut attrs = states
+                    .cached_state
+                    .get::<wl_compositor::SurfaceAttributes>();
+                matches!(
+                    &attrs.current().buffer,
+                    Some(wl_compositor::BufferAssignment::NewBuffer(_))
+                )
+            });
+        if floating_has_new_buffer {
+            self.mark_floating_toplevel_presented(surface_id);
+        }
+    }
+
+    fn note_presentation_commit(&mut self, surface: &WlSurface, surface_id: u64, capture: bool) {
+        let association = if capture {
+            Self::capture_foreign_surface(surface, surface_id)
+        } else {
+            ForeignCommitCapture::Removed
+        };
+        let pixels = match association {
+            ForeignCommitCapture::Shm(generation) => Some(
+                crate::compositor::presentation::PixelCommit::Shm(generation),
+            ),
+            ForeignCommitCapture::Dmabuf(token) => Some(
+                crate::compositor::foreign::store()
+                    .capture_seq_for_token(surface_id, token)
+                    .map_or(
+                        crate::compositor::presentation::PixelCommit::Unavailable,
+                        crate::compositor::presentation::PixelCommit::Captured,
+                    ),
+            ),
+            ForeignCommitCapture::Removed | ForeignCommitCapture::Failed => {
+                Some(crate::compositor::presentation::PixelCommit::Unavailable)
+            }
+            ForeignCommitCapture::NoBuffer => None,
+        };
+        self.presentation_feedback
+            .committed(surface, surface_id, pixels);
+    }
+
+    /// Tell the fullscreen client what the display can scan out, after each
+    /// frame is built: `offer` is the frame's scanout candidate with the
+    /// plane of the output it covers ([`crate::compositor::scanout_feedback::offer`]).
+    /// The fullscreen surface gets a scanout tranche while it is that
+    /// candidate and its buffer is opaque; on the frame it stops being
+    /// either — covered by chrome or a popup, translucent, out of
+    /// fullscreen — it gets the default feedback back. Without a dmabuf
+    /// global, or without a plane, every surface keeps the default.
+    pub fn update_scanout_feedback(
+        &mut self,
+        offer: Option<crate::compositor::scanout_feedback::ScanoutOffer>,
+    ) {
+        let Some(feedback) = self.scanout_feedback.as_mut() else {
+            return;
+        };
+        let offered = offer.and_then(|offer| {
+            let target = self
+                .fullscreen_target
+                .as_ref()
+                .filter(|target| target.surface_id == offer.surface)?;
+            let surface = target.surface.wl_surface();
+            crate::compositor::scanout_feedback::ScanoutOpacity::of(surface)
+                .then(|| (surface.clone(), offer.plane))
+        });
+        feedback.offer(offered.as_ref().map(|(surface, plane)| (surface, plane)));
+    }
+
     fn prepare_pending_foreign_capture(&self, surface: &WlSurface) {
         let surface_id = crate::compositor::state::surface_id(surface);
         // `new_toplevel` registers the protocol surface before adopting it
@@ -3058,9 +4871,10 @@ impl State {
             || self.is_output_presentation_surface(surface_id)
             || self.is_transient_surface(surface_id);
         if !captured_here {
+            forget_uncaptured_shm_base(surface, surface_id);
             return;
         }
-        let (association, blocker) = wl_compositor::with_states(surface, |states| {
+        let (association, capture) = wl_compositor::with_states(surface, |states| {
             let mut attrs = states
                 .cached_state
                 .get::<wl_compositor::SurfaceAttributes>();
@@ -3069,65 +4883,204 @@ impl State {
                 Some(wl_compositor::BufferAssignment::Removed) => {
                     return (ForeignCommitCapture::Removed, None);
                 }
-                None => return (ForeignCommitCapture::NoBuffer, None),
+                None => {
+                    // Damage without a freshly captured buffer can refer to
+                    // mutated pixels in an existing buffer. Do not certify the
+                    // older cached image as this commit's new content.
+                    let association = if attrs.pending().damage.is_empty() {
+                        ForeignCommitCapture::NoBuffer
+                    } else {
+                        ForeignCommitCapture::Failed
+                    };
+                    return (association, None);
+                }
             };
+            let size = smithay::backend::renderer::buffer_dimensions(&buffer)
+                .map_or((0, 0), |size| (size.w, size.h));
+            let rects = pending_buffer_rects(attrs.pending(), pending_viewport(states, size));
+            let declared = DeclaredOpacity::of(attrs.pending());
             drop(attrs);
+            let damage = rects.as_deref().map(buffer_damage);
+            let regions = rects.as_deref().map(shm_regions);
             let Some(client) = surface.client() else {
-                return (ForeignCommitCapture::NoBuffer, None);
+                return (ForeignCommitCapture::Failed, None);
             };
-            if let Ok(dmabuf) = smithay::wayland::dmabuf::get_dmabuf(&buffer).cloned() {
-                let colorimetry = states
-                    .data_map
-                    .get::<crate::wayland::color_management::ColorManagementSurfaceData>()
-                    .and_then(crate::wayland::color_management::ColorManagementSurfaceData::current_colorimetry)
-                    .map(|(colorimetry, _)| colorimetry);
-                if let Some((token, barrier)) = crate::compositor::foreign::store()
-                    .prepare_dmabuf_capture(surface_id, client, dmabuf, colorimetry)
+            let commit = smithay::wayland::dmabuf::get_dmabuf(&buffer)
+                .ok()
+                .map(|dmabuf| declared.commit(states, dmabuf.clone()));
+            crate::compositor::scanout_feedback::ScanoutOpacity::record(states, commit.as_ref());
+            if let Some(commit) = commit {
+                if let Some(capture) = crate::compositor::foreign::store()
+                    .prepare_dmabuf_capture_with_damage(surface_id, client, commit, damage)
                 {
                     // `with_states` holds Smithay's PrivateSurfaceData mutex.
                     // `add_blocker` takes that same non-reentrant mutex, so it
                     // must happen after this callback returns. Doing it here
                     // self-deadlocked the compositor on the first GPU-backed
                     // app commit (most visibly Chat).
-                    return (ForeignCommitCapture::Dmabuf(token), Some(barrier));
+                    return (ForeignCommitCapture::Dmabuf(capture.token), Some(capture));
                 }
-                return (ForeignCommitCapture::NoBuffer, None);
+                return (ForeignCommitCapture::Failed, None);
             }
-            match crate::compositor::surface_readback::copy_shm_frame(&buffer) {
-                Ok(frame) => {
-                    if crate::compositor::foreign::store().prepare_shm_capture(surface_id, frame) {
-                        (ForeignCommitCapture::Shm, None)
-                    } else {
-                        (ForeignCommitCapture::NoBuffer, None)
-                    }
-                }
-                Err(error) => {
-                    crate::compositor::foreign::store().note_failure(surface_id, error.to_string());
-                    (ForeignCommitCapture::NoBuffer, None)
-                }
+            match crate::compositor::foreign::store().capture_shm_commit(
+                surface_id,
+                &buffer,
+                damage,
+                regions.as_deref(),
+            ) {
+                Some(generation) => (ForeignCommitCapture::Shm(generation), None),
+                None => (ForeignCommitCapture::Failed, None),
             }
         });
-        if let Some(blocker) = blocker {
-            wl_compositor::add_blocker(surface, blocker);
+        settle_shm_base(surface_id, &association);
+        if let Some(capture) = capture {
+            wl_compositor::add_blocker(surface, capture.barrier);
+            if let Some(fence) = capture.fence {
+                self.watch_dmabuf_fence(fence, surface_id, capture.token);
+            }
+        }
+        if matches!(
+            association,
+            ForeignCommitCapture::Shm(_) | ForeignCommitCapture::Dmabuf(_)
+        ) {
+            // A typed key's answer: the window it went to drew again. Outside
+            // `with_states`, whose surface mutex `foreign_root` takes too.
+            let root = foreign_root(surface).map_or(surface_id, |root| {
+                crate::compositor::state::surface_id(&root)
+            });
+            let unanswered = crate::compositor::key_latency::tracker()
+                .surface_committed(root, std::time::Instant::now());
+            for app in unanswered {
+                eprintln!("KEY-LATENCY app={app} unanswered=1");
+            }
         }
         wl_compositor::with_states(surface, |states| {
             states
                 .data_map
                 .insert_if_missing_threadsafe(ForeignCommitCaptures::default);
             if let Some(commits) = states.data_map.get::<ForeignCommitCaptures>() {
-                commits
-                    .0
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push_back(association);
+                commits.0.lock_recover().push_back(association);
+            }
+            if matches!(association, ForeignCommitCapture::Shm(_)) {
+                mark_shm_capture_base(states);
             }
         });
     }
+
+    /// Take hold of the buffer the commit just applied on `surface` when the
+    /// frame it published is drawn from that buffer itself. Left in the
+    /// surface state, Smithay would give it back the moment the next commit
+    /// applies, while a queued frame can still draw it; held here, it goes
+    /// back once the last frame that drew it finished
+    /// ([`crate::shell::gpu_frames`]). Runs last in the commit handler, after
+    /// everything that reads the applied buffer.
+    fn hold_drawn_buffer(surface: &WlSurface, surface_id: u64) {
+        let store = crate::compositor::foreign::store();
+        let Some(frame) = store.take_unheld_frame(surface_id) else {
+            return;
+        };
+        let buffer = wl_compositor::with_states(surface, |states| {
+            take_new_buffer(
+                &mut states
+                    .cached_state
+                    .get::<wl_compositor::SurfaceAttributes>()
+                    .current()
+                    .buffer,
+            )
+        });
+        if let Some(buffer) = buffer {
+            crate::compositor::foreign::hold_buffer(buffer, &frame);
+        } else {
+            // Never draw from a buffer the client may reuse.
+            tracing::warn!(
+                target: "shell::compositor::foreign",
+                surface_id,
+                "a client frame's buffer was not current when its commit applied; not drawing it"
+            );
+            store.withdraw_unheld_frame(surface_id, &frame);
+        }
+    }
+
+    /// Start the capture of commit `token` on `surface_id` when its buffer's
+    /// implicit fence signals. The loop watches the fence, so no thread waits
+    /// on a client's GPU and a slow client holds up only its own commits.
+    fn watch_dmabuf_fence(
+        &self,
+        fence: smithay::backend::allocator::dmabuf::DmabufSource,
+        surface_id: u64,
+        token: u64,
+    ) {
+        let watched = self.loop_handle.insert_source(fence, move |(), _, _| {
+            crate::compositor::foreign::dmabuf_fence_signalled(surface_id, token);
+            Ok(())
+        });
+        if let Err(error) = watched {
+            tracing::warn!(
+                target: "shell::compositor::foreign",
+                surface_id,
+                error = %error.error,
+                "could not watch a client buffer's fence; capturing it on the worker"
+            );
+            crate::compositor::foreign::dmabuf_fence_unwatched(surface_id, token);
+        }
+    }
+
+    /// Tell clients the tiled and compressed layouts the presenting GPU was
+    /// confirmed to sample, once its device exists. The first feedback is
+    /// built before any renderer has opened a device, so it lists only the
+    /// linear layouts; when the probe's answer changes, the default feedback
+    /// is rebuilt and sent to every client that asked for it, so ordinary
+    /// clients allocate layouts the GPU draws without a copy.
+    #[cfg(target_os = "linux")]
+    fn refresh_dmabuf_feedback(&mut self) {
+        let (version, probed) = crate::shell::gpu_frames::sampleable_formats();
+        if version == self.dmabuf_probe_version {
+            return;
+        }
+        let (Ok(node), Some(global), Some(scanout)) = (
+            &self.dmabuf_device,
+            &self.dmabuf_global,
+            self.scanout_feedback.as_mut(),
+        ) else {
+            self.dmabuf_probe_version = version;
+            return;
+        };
+        let importable = crate::shell::foreign::importable_formats();
+        match crate::compositor::scanout_feedback::default_feedback(node.dev, &importable, &probed)
+        {
+            Ok((feedback, formats)) => {
+                tracing::info!(
+                    target: "shell::compositor::dmabuf",
+                    formats = formats.len(),
+                    probed = probed.len(),
+                    "updating zwp_linux_dmabuf_v1 feedback with the layouts the GPU samples"
+                );
+                self.dmabuf_state.set_default_feedback(global, &feedback);
+                scanout.replace_default(formats, feedback);
+                self.dmabuf_probe_version = version;
+            }
+            Err(error) => {
+                // Keep the feedback clients already have; try again on the
+                // next probe change.
+                tracing::warn!(
+                    target: "shell::compositor::dmabuf",
+                    %error,
+                    "could not rebuild dmabuf feedback; keeping the linear layouts"
+                );
+                self.dmabuf_probe_version = version;
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn refresh_dmabuf_feedback(&mut self) {}
 
     /// Re-evaluate transactions whose off-thread buffer capture completed.
     /// Called by the compositor loop on its owning thread; worker threads only
     /// flip barriers and enqueue owning client handles.
     pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) -> bool {
+        crate::compositor::foreign::give_back_released_buffers();
+        self.refresh_dmabuf_feedback();
         let completed = crate::compositor::foreign::drain_completed_dmabuf_captures();
         let changed =
             crate::compositor::foreign::take_published_shm_frames() | !completed.is_empty();
@@ -3176,6 +5129,10 @@ pub struct ClientState {
     /// Durable workspace room from the same host-owned launch record. A client
     /// cannot select or change this through Wayland protocol state.
     pub workspace_id: Option<String>,
+    /// Exact supervised launch which owns this Wayland connection. Combined
+    /// with `workspace_id` and `package_id`, this distinguishes independent
+    /// processes of the same app without trusting a client-provided token.
+    pub(crate) launch_custody: Option<crate::shell::launcher::VerifiedLaunchCustody>,
     /// Whether package/app-id equality is part of this connection's sandbox
     /// boundary. Unconfined host launches keep their desktop compatibility ids.
     pub enforce_package_id: bool,
@@ -3187,6 +5144,17 @@ pub struct ClientState {
     /// Used to recognise xwayland-satellite after its last toplevel dies
     /// while leftover X clients (Wine) still hold the X socket.
     pub pid: Option<u32>,
+    /// Kernel process lifetime observed when this connection was admitted.
+    /// A reused PID can never authorize a mapped-file diagnostic.
+    pub pid_start_time: Option<u64>,
+    /// Set when the connection is a legacy VM's Wayland forwarder: every app
+    /// id it announces becomes `legacy.<guest>.<app id>`. Claiming this only
+    /// lowers what a window is trusted with, so it needs no proof.
+    pub legacy_guest: Option<legacy_agent_protocol::GuestOs>,
+    /// Whether the client asked the seat for a `wl_touch`. A touch sequence
+    /// sent to a surface of a client without one reaches nothing, so such a
+    /// client gets the pointer events touch is emulated as instead.
+    pub touch_bound: std::sync::atomic::AtomicBool,
 }
 
 /// Hand-written, not derived, so every construction path gets its own [`ClientState::index`] — a derived `Default` would hand every client index 0.
@@ -3201,16 +5169,29 @@ impl Default for ClientState {
             input_method: None,
             package_id: None,
             workspace_id: None,
+            launch_custody: None,
             enforce_package_id: false,
             executable: None,
             pid: None,
+            pid_start_time: None,
+            legacy_guest: None,
+            touch_bound: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
-    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+    fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
+        tracing::debug!(
+            ?client_id,
+            connection = self.index,
+            pid = self.pid,
+            privileged = self.privileged,
+            ?reason,
+            "Wayland client disconnected"
+        );
+    }
 }
 
 impl ClientState {
@@ -3221,15 +5202,26 @@ impl ClientState {
 
     /// Per-client state for an ordinary app whose process ancestry was
     /// authenticated at the public socket boundary.
+    #[cfg(test)]
     pub(crate) fn attributed_arc(
         identity: crate::shell::launcher::VerifiedLaunchIdentity,
+        pid: u32,
+    ) -> Arc<Self> {
+        Self::attributed_with_custody_arc(identity, None, pid)
+    }
+
+    pub(crate) fn attributed_with_custody_arc(
+        identity: crate::shell::launcher::VerifiedLaunchIdentity,
+        launch_custody: Option<crate::shell::launcher::VerifiedLaunchCustody>,
         pid: u32,
     ) -> Arc<Self> {
         Arc::new(Self {
             package_id: Some(identity.package_id),
             workspace_id: identity.workspace_id,
+            launch_custody,
             enforce_package_id: identity.confined,
             pid: Some(pid),
+            pid_start_time: crate::shell::launcher::proc_stat(pid).map(|(_, start)| start),
             ..Self::default()
         })
     }
@@ -3288,6 +5280,12 @@ pub(crate) fn is_privileged_client(client: &Client) -> bool {
 /// registry, frame tracker — keys off one flat `SurfaceId`, avoiding a
 /// second client's window overwriting the first's. The id is the client's
 /// connection index in the high 32 bits, protocol id in the low 32 — both stable, so it can be recomputed rather than remembered, staying a plain `u64` for the peer-sync wire protocol.
+/// The connection index a [`surface_id`] was minted under.
+#[must_use]
+pub fn client_index_of(surface_id: u64) -> u32 {
+    u32::try_from(surface_id >> 32).unwrap_or(u32::MAX)
+}
+
 pub fn surface_id(surface: &WlSurface) -> u64 {
     let protocol_id = u64::from(surface.id().protocol_id());
     if let Some(client) = surface.client() {
@@ -3325,6 +5323,67 @@ fn remember_surface_id(surface: &WlSurface) -> u64 {
     id
 }
 
+/// The Tilo package a toplevel's client was launched as, when the launcher
+/// started it confined as that package: the identity comes from the
+/// authenticated launch record, never from the app id the client announces.
+/// Every other client (a host app, an X11 client, a legacy guest, anything
+/// started outside the launcher) has none, and its windows are legacy.
+fn launched_package(client: Option<&ClientState>) -> Option<String> {
+    let client = client?;
+    if client.legacy_guest.is_some() || !client.enforce_package_id {
+        return None;
+    }
+    client.package_id.clone()
+}
+
+/// What a toplevel's client authenticates as: its app id and attributed room.
+type ToplevelIdentity = Result<(Option<String>, Option<crate::shell::state::RoomId>), &'static str>;
+
+/// App ids of prompts that belong to the session, not to a window: they are
+/// shown as a sheet over the focused window and never tiled into a strip.
+const SYSTEM_PROMPT_APP_IDS: &[&str] = &[
+    "gcr-prompter",
+    "gcr-ssh-askpass",
+    "org.gnome.keyring.SystemPrompter",
+    "org.gnome.keyring.PrivatePrompter",
+    "polkit-gnome-authentication-agent-1",
+    "org.kde.polkit-kde-authentication-agent-1",
+    "lxqt-policykit-agent",
+    "org.freedesktop.impl.portal.desktop.gtk",
+];
+
+fn authenticated_floating_toplevel_identity(
+    client: Option<&smithay::reexports::wayland_server::Client>,
+    announced: Option<String>,
+    owner: Option<(Option<&FloatingToplevelOwner>, &str)>,
+) -> Result<(Option<String>, Option<crate::shell::state::RoomId>), &'static str> {
+    let state = client.and_then(|client| client.get_data::<ClientState>());
+    if let Some((owner, app_id)) = owner {
+        let owner = owner.ok_or("floating capability has no source owner")?;
+        let client = client.ok_or("floating capability has no requesting client")?;
+        if client.id() != owner.client {
+            return Err("floating capability belongs to another Wayland connection");
+        }
+        let (canonical, room) = authenticated_toplevel_identity(state, None)?;
+        if room != owner.room
+            || state.is_some_and(|state| {
+                state.enforce_package_id && canonical.as_deref() != Some(app_id)
+            })
+        {
+            return Err("floating capability owner identity changed");
+        }
+        return Ok((announced, room));
+    }
+    authenticated_toplevel_identity(state, announced)
+}
+
+#[cfg(test)]
+#[path = "floating_identity_tests.rs"]
+mod floating_identity_tests;
+
+#[path = "floating_focus.rs"]
+mod floating_focus;
+
 fn authenticated_toplevel_identity(
     client: Option<&ClientState>,
     announced_app_id: Option<String>,
@@ -3332,6 +5391,15 @@ fn authenticated_toplevel_identity(
     let Some(client) = client else {
         return Ok((announced_app_id, None));
     };
+    if let Some(guest) = client.legacy_guest {
+        return Ok((
+            Some(legacy_agent_protocol::window::host_app_id(
+                guest,
+                announced_app_id.as_deref(),
+            )),
+            None,
+        ));
+    }
     let Some(package_id) = client.package_id.as_deref() else {
         return Ok((announced_app_id, None));
     };
@@ -3350,6 +5418,20 @@ fn authenticated_toplevel_identity(
         return Err("Wayland app id does not match the authenticated package");
     }
     Ok((Some(package_id.to_string()), Some(room)))
+}
+
+/// Take the buffer out of `slot` when it holds a newly attached one, leaving
+/// any other assignment in place.
+fn take_new_buffer(
+    slot: &mut Option<wl_compositor::BufferAssignment>,
+) -> Option<smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer> {
+    match slot.take() {
+        Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => Some(buffer),
+        other => {
+            *slot = other;
+            None
+        }
+    }
 }
 
 // Handler trait impls.
@@ -3383,6 +5465,15 @@ impl CompositorHandler for State {
         });
     }
 
+    fn new_subsurface(&mut self, surface: &WlSurface, parent: &WlSurface) {
+        // Rendered as part of its root, at the root's scale — told now rather
+        // than after a first frame at the wrong one.
+        let scale = self.surface_scale(crate::compositor::state::surface_id(
+            &subsurface_tree_root(parent),
+        ));
+        prefer_scale_for_tree(surface, scale);
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         // HiDPI: push this surface's preferred `wp_fractional_scale` — the
         // scale of the *output it is on*, not one session-wide number,
@@ -3392,15 +5483,21 @@ impl CompositorHandler for State {
         // index. Using the bare Wayland object id worked only for the first
         // client and made a second client's surface fall back to the
         // session-wide scale after moving between monitors.
+        //
+        // A subsurface is never placed itself: it is drawn as part of its
+        // root, so it takes the root's scale. The session-wide fallback would
+        // have a browser render its page at 1x inside a 2x window.
         let surface_id = crate::compositor::state::surface_id(surface);
-        let scale = self.surface_scale(surface_id);
+        let scale = self.surface_scale(crate::compositor::state::surface_id(
+            &subsurface_tree_root(surface),
+        ));
         wl_compositor::with_states(surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);
             });
         });
-        let session_scale = self.scale;
-        self.client_cursor.surface_committed(surface, session_scale);
+        let cursor_scale = self.pointer_output_scale();
+        self.client_cursor.surface_committed(surface, cursor_scale);
         self.release_closing_frame_callbacks(surface, surface_id);
         if crate::compositor::toplevel_icon::sync(surface, surface_id) {
             tab_binding::note_tab_artwork_changed(&mut self.workspace_tree.write());
@@ -3416,30 +5513,15 @@ impl CompositorHandler for State {
                 || self.active_sessions.contains_key(&surface_id)
         };
         // Foreign-surface compositing: an adopted toplevel's buffer is captured every commit for `ForeignSurfaceWidget` to paint — independent of the share path above.
-        let foreign_root = foreign_root(surface);
-        if self.should_capture_foreign_surface(surface_id) || foreign_root.is_some() {
-            Self::capture_foreign_surface(surface, surface_id);
-        }
-        if let Some(root) = foreign_root {
-            self.refresh_foreign_subsurface_tree(&root);
-        }
-        if !self.is_floating_toplevel(surface_id) {
-            Self::note_foreign_window_geometry(surface, surface_id);
-        }
-        let floating_has_new_buffer = self.is_floating_toplevel(surface_id)
-            && wl_compositor::with_states(surface, |states| {
-                let mut attrs = states
-                    .cached_state
-                    .get::<wl_compositor::SurfaceAttributes>();
-                matches!(
-                    &attrs.current().buffer,
-                    Some(wl_compositor::BufferAssignment::NewBuffer(_))
-                )
-            });
-        if floating_has_new_buffer {
-            self.mark_floating_toplevel_presented(surface_id);
+        self.capture_committed_foreign_pixels(surface, surface_id);
+        if self.provisional_focus.contains_key(&surface_id)
+            && crate::compositor::foreign::store().is_mapped(surface_id)
+        {
+            // Shown: from here on it is a window like any other.
+            self.provisional_focus.remove(&surface_id);
         }
         if !is_shared {
+            Self::hold_drawn_buffer(surface, surface_id);
             return;
         }
         // Pull the most recent buffer assignment: `NewBuffer(b)` is freshly-attached; `Removed` means detach — drop the tracker slot.
@@ -3514,6 +5596,7 @@ impl CompositorHandler for State {
         // encoder the same tick — without this the encoder waits for the
         // render loop's next damage sweep, a full-frame stall. Delegated to `tick_share_session_for_surface` to keep the pump logic testable without a real `WlSurface`.
         let _ = self.tick_share_session_for_surface(surface_id);
+        Self::hold_drawn_buffer(surface, surface_id);
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
@@ -3521,6 +5604,8 @@ impl CompositorHandler for State {
         let root = foreign_root(surface);
         self.drop_transients_for_surface(id);
         self.surface_handles.remove(&id);
+        self.retire_floating_focus_source(id);
+        self.presentation_feedback.destroyed(id);
         self.surface_tracker.forget(id);
         self.unregister_share_session(id);
         crate::compositor::foreign::store().forget(id);
@@ -3558,7 +5643,7 @@ impl DmabufHandler for State {
         // tile showing an error string with no protocol-level signal. So
         // the gate is exactly the importer's own precondition —
         // single-plane, linear (or implicit), RGBA-family — shared with `foreign::import_dmabuf_rgba` so the two can't drift.
-        if let Err(err) = crate::compositor::foreign::validate_importable(&dmabuf) {
+        if let Err(err) = crate::compositor::foreign::validate_composable(&dmabuf) {
             tracing::warn!(
                 target: "shell::compositor::dmabuf",
                 width = dmabuf.width(),
@@ -3590,6 +5675,18 @@ impl DmabufHandler for State {
             "dmabuf imported and accepted"
         );
     }
+
+    fn new_surface_feedback(
+        &mut self,
+        surface: &WlSurface,
+        _global: &DmabufGlobal,
+    ) -> Option<smithay::wayland::dmabuf::DmabufFeedback> {
+        // A surface offered a plane before it asked for feedback gets the
+        // scanout tranche with its first batch.
+        self.scanout_feedback
+            .as_ref()
+            .and_then(|feedback| feedback.for_new_surface(surface))
+    }
 }
 
 impl ShmHandler for State {
@@ -3603,18 +5700,65 @@ impl ShmHandler for State {
 /// id; the exact id prevents another helper on the private connection from
 /// accidentally being promoted.
 fn trusted_osk_identity(surface: &WlSurface, app_id: Option<&str>) -> bool {
-    osk_identity_is_trusted(
-        app_id,
-        surface
-            .client()
-            .and_then(|client| {
-                client
-                    .get_data::<ClientState>()
-                    .map(|data| data.input_method)
+    osk_identity_is_trusted(app_id, trusted_osk_connection(surface))
+}
+
+struct SurfaceAdoptionId(uuid::Uuid);
+
+pub(crate) fn surface_adoption_id(surface: &WlSurface) -> Option<uuid::Uuid> {
+    surface.data::<smithay::wayland::compositor::SurfaceUserData>()?;
+    wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<SurfaceAdoptionId>()
+            .map(|identity| identity.0)
+    })
+}
+
+fn ensure_surface_adoption_id(surface: &WlSurface) -> Option<uuid::Uuid> {
+    surface.data::<smithay::wayland::compositor::SurfaceUserData>()?;
+    wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .insert_if_missing(|| SurfaceAdoptionId(uuid::Uuid::new_v4()));
+    });
+    surface_adoption_id(surface)
+}
+
+fn observe_toplevel_startup(surface: &ToplevelSurface) {
+    if let Some(client) = surface.wl_surface().client()
+        && let Some(state) = client.get_data::<ClientState>()
+        && let Some(pid) = state.pid
+    {
+        let adoption = state
+            .package_id
+            .as_ref()
+            .zip(state.workspace_id.as_ref())
+            .filter(|_| {
+                state.enforce_package_id
+                    && !state.privileged
+                    && state.pid_start_time.is_some_and(|expected| {
+                        crate::shell::launcher::proc_stat(pid)
+                            .is_some_and(|(_, start)| start == expected)
+                    })
             })
-            .flatten()
-            == Some(crate::compositor::input_method::TrustedInputMethod::OnScreenKeyboard),
-    )
+            .and_then(|(package, room)| {
+                Some(tilo_action_broker::services::LaunchAdoption {
+                    adoption_id: ensure_surface_adoption_id(surface.wl_surface())?,
+                    surface_id: surface_id(surface.wl_surface()),
+                    package_id: package.clone(),
+                    room: room.clone(),
+                })
+            });
+        crate::shell::launcher::record_startup_window(pid, adoption);
+    }
+}
+
+fn trusted_osk_connection(surface: &WlSurface) -> bool {
+    surface
+        .client()
+        .and_then(|client| trusted_input_method(&client))
+        == Some(crate::compositor::input_method::TrustedInputMethod::OnScreenKeyboard)
 }
 
 fn osk_identity_is_trusted(app_id: Option<&str>, socket_authorized: bool) -> bool {
@@ -3744,7 +5888,6 @@ impl State {
         });
         #[allow(
             clippy::cast_possible_truncation,
-            clippy::cast_possible_wrap,
             reason = "output geometry is bounded by the i32 Wayland logical coordinate space"
         )]
         Rectangle::new(
@@ -3768,7 +5911,6 @@ impl State {
             .map(|rect| {
                 #[allow(
                     clippy::cast_possible_truncation,
-                    clippy::cast_possible_wrap,
                     reason = "Wayland logical coordinates are i32 by protocol"
                 )]
                 (rect.x0.round() as i32, rect.y0.round() as i32)
@@ -3807,44 +5949,102 @@ impl State {
     /// protected while the focused field declares its content secret (a
     /// password, a PIN or hidden text), and an input method's popup also
     /// while the window it serves is protected.
-    pub fn sync_capture_protection(&self) {
+    ///
+    /// Re-derived only when something it depends on changed since the last
+    /// pass (see [`CaptureProtectionInputs`]); otherwise a wakeup takes
+    /// neither the tree lock nor the store's protection lock.
+    pub fn sync_capture_protection(&mut self) {
         let secret_field = self.active_field_content_type().is_sensitive();
         let store = crate::compositor::foreign::store();
-        if let Some(keyboard) = self.osk_surface {
-            store.set_surface_capture_protected(keyboard, secret_field);
-        }
-        for popup in self
-            .input_method_popups
-            .iter()
-            .filter(|popup| popup.alive())
+        // Loaded before anything they guard is read: a change racing this
+        // pass advances them again and is folded in on the next wakeup.
+        let versions = (
+            self.workspace_tree.generation(),
+            store.capture_protection_epoch(),
+        );
+        if self
+            .capture_protection_sync
+            .last
+            .as_ref()
+            .is_some_and(|last| last.matches(self, secret_field, versions))
         {
-            let parent_protected = popup.get_parent().is_some_and(|parent| {
-                self.is_surface_capture_protected(surface_id(&parent.surface))
-            });
-            store.set_surface_capture_protected(
-                surface_id(popup.wl_surface()),
-                secret_field || parent_protected,
-            );
+            return;
         }
+        #[cfg(test)]
+        {
+            self.capture_protection_sync.passes =
+                self.capture_protection_sync.passes.saturating_add(1);
+        }
+        let mut protected = Vec::new();
+        if let Some(keyboard) = self.osk_surface {
+            protected.push((keyboard, secret_field));
+        }
+        for (popup, parent) in self.capture_protection_input_method_popups() {
+            let parent_protected =
+                parent.is_some_and(|parent| self.is_surface_capture_protected(parent));
+            protected.push((popup, secret_field || parent_protected));
+        }
+        // Nested popups chain to their toplevel through every tracked popup,
+        // live or not; a malformed graph is bounded exactly as
+        // `popup_parent_rect` bounds it.
+        let parents: HashMap<SurfaceId, SurfaceId> = self
+            .popups
+            .iter()
+            .map(|popup| (surface_id(popup.surface.wl_surface()), popup.parent))
+            .collect();
         for popup in self.popups.iter().filter(|popup| popup.surface.alive()) {
             let mut root = popup.parent;
-            // Nested popups chain to their toplevel; a malformed graph is
-            // bounded exactly as `popup_parent_rect` bounds it.
             for _ in 0..16 {
-                match self
-                    .popups
-                    .iter()
-                    .find(|candidate| surface_id(candidate.surface.wl_surface()) == root)
-                {
-                    Some(parent) => root = parent.parent,
+                match parents.get(&root) {
+                    Some(parent) => root = *parent,
                     None => break,
                 }
             }
-            store.set_surface_capture_protected(
+            protected.push((
                 surface_id(popup.surface.wl_surface()),
                 self.is_surface_capture_protected(root),
-            );
+            ));
         }
+        store.set_surfaces_capture_protected(&protected);
+        self.capture_protection_sync.last = Some(CaptureProtectionInputs::capture(
+            self,
+            secret_field,
+            versions,
+        ));
+    }
+
+    /// Live input-method popups and the surface each one serves.
+    fn capture_protection_input_method_popups(
+        &self,
+    ) -> impl Iterator<Item = (SurfaceId, Option<SurfaceId>)> + '_ {
+        self.input_method_popups
+            .iter()
+            .filter(|popup| popup.alive())
+            .map(|popup| {
+                (
+                    surface_id(popup.wl_surface()),
+                    popup.get_parent().map(|parent| surface_id(&parent.surface)),
+                )
+            })
+    }
+
+    /// Every tracked xdg popup: its surface, whether it is alive, and its
+    /// parent.
+    fn capture_protection_popups(&self) -> impl Iterator<Item = (SurfaceId, bool, SurfaceId)> + '_ {
+        self.popups.iter().map(|popup| {
+            (
+                surface_id(popup.surface.wl_surface()),
+                popup.surface.alive(),
+                popup.parent,
+            )
+        })
+    }
+
+    /// Passes [`Self::sync_capture_protection`] has made that re-derived
+    /// protection rather than finding nothing changed.
+    #[cfg(test)]
+    pub(crate) const fn capture_protection_passes(&self) -> usize {
+        self.capture_protection_sync.passes
     }
 
     #[doc(hidden)]
@@ -3881,6 +6081,13 @@ impl State {
         &mut self,
         owner: Option<crate::compositor::input_method::TrustedInputMethod>,
     ) {
+        if self.seat_input_method.get() != owner {
+            self.cancel_active_dictation();
+            self.input_method_preedit = InputMethodPreeditState::Inactive;
+            self.input_method_resource_client = None;
+            self.input_method_serial = 0;
+            self.text_fields.protocol_focus_left();
+        }
         self.seat_input_method.set(owner);
         let handle = self.display_handle.clone();
         self.trusted_input_method_clients.retain(|(id, kind)| {
@@ -3930,10 +6137,17 @@ impl State {
         self.input_method_popup_surfaces()
     }
 
-    pub(crate) fn is_transient_surface(&self, id: SurfaceId) -> bool {
-        self.popups
-            .iter()
-            .any(|popup| surface_id(popup.surface.wl_surface()) == id)
+    /// The xdg popups mapped over a window, in the order they opened.
+    pub fn xdg_popups(&self) -> impl Iterator<Item = &PopupSurface> + '_ {
+        self.popups.iter().map(|popup| &popup.surface)
+    }
+
+    pub fn is_transient_surface(&self, id: SurfaceId) -> bool {
+        self.system_modals.contains(&id)
+            || self
+                .popups
+                .iter()
+                .any(|popup| surface_id(popup.surface.wl_surface()) == id)
             || self
                 .input_method_popups
                 .iter()
@@ -3967,6 +6181,7 @@ impl State {
             .retain(|popup| !removed.contains(&surface_id(popup.wl_surface())));
         for id in removed {
             self.client_input.unregister_transient(id);
+            self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
             crate::compositor::foreign::store().forget(id);
         }
     }
@@ -4126,10 +6341,6 @@ impl XdgActivationHandler for State {
         }
     }
 
-    #[allow(
-        clippy::collapsible_if,
-        reason = "The nested host-launch branch keeps the one-shot activation token's relocation decision visually separate from its post-relocation label mutation."
-    )]
     fn request_activation(
         &mut self,
         token: XdgActivationToken,
@@ -4210,6 +6421,9 @@ impl XdgDialogHandler for State {
     fn modal_changed(&mut self, toplevel: ToplevelSurface, is_modal: bool) {
         let surface_id = surface_id(toplevel.wl_surface());
         crate::compositor::foreign::store().set_sheet_modal(surface_id, is_modal);
+        if is_modal {
+            self.sync_toplevel_parent(&toplevel);
+        }
     }
 }
 
@@ -4225,7 +6439,7 @@ impl State {
 
     /// Bring `surface`'s place in the desktop in line with its xdg parent:
     /// a sheet on the parent's tile while it has one, a tab otherwise.
-    fn sync_toplevel_parent(&mut self, surface: &ToplevelSurface) {
+    pub(crate) fn sync_toplevel_parent(&mut self, surface: &ToplevelSurface) {
         let id = surface_id(surface.wl_surface());
         if self.osk_surface == Some(id)
             || self.is_floating_toplevel(id)
@@ -4239,6 +6453,19 @@ impl State {
             .parent()
             .map(|parent| surface_id(&parent))
             .filter(|parent| self.can_host_sheet(*parent));
+        // A dialog without a usable parent (a system prompt, a modal or
+        // fixed-size window that names none) is still a dialog: it sits on
+        // the window the person is working in, or over the desktop, and
+        // never takes a place in the strip.
+        let implicit = parent.is_none() && self.is_dialog_toplevel(surface);
+        if implicit && (was_sheet || self.system_modals.contains(&id)) {
+            return;
+        }
+        let parent = parent.or_else(|| implicit.then(|| self.system_prompt_host(id)).flatten());
+        if implicit && parent.is_none() {
+            self.show_as_system_modal(surface);
+            return;
+        }
         let Some(parent) = parent else {
             if was_sheet {
                 store.detach_sheet(id);
@@ -4262,11 +6489,8 @@ impl State {
         }
         // Adopted as a tab when it was created (the parent arrives after
         // `get_toplevel`); a dialog is part of its parent's window, so that
-        // provisional tab goes.
-        let _ = {
-            let mut tree = self.workspace_tree.write();
-            tab_binding::close_tab_for_destroyed_surface(&mut tree, id)
-        };
+        // provisional tab goes, and the focus it took goes back.
+        self.withdraw_provisional_tab(id);
         self.client_input.promote_to_overlay(id);
         let root = store.sheet_root(id);
         // Unlike a tab, the parent's tile does not size a sheet: the dialog
@@ -4292,6 +6516,153 @@ impl State {
         );
     }
 
+    /// Whether `surface` is a dialog rather than an app window, judged from
+    /// what the client says about it and never from its name alone:
+    /// an xdg parent (also what xwayland-satellite sends for X11
+    /// `WM_TRANSIENT_FOR` and dialog windows), the `xdg_dialog_v1` modal
+    /// hint, or a fixed small size (`min == max`) before its first
+    /// configure. A host-process toplevel announcing one of
+    /// [`SYSTEM_PROMPT_APP_IDS`] counts too, as an extra signal.
+    fn is_dialog_toplevel(&self, surface: &ToplevelSurface) -> bool {
+        if surface.parent().is_some() {
+            return true;
+        }
+        let (app_id, modal) = wl_compositor::with_states(surface.wl_surface(), |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| {
+                    data.lock()
+                        .ok()
+                        .map(|data| (data.app_id.clone(), data.modal))
+                })
+                .unwrap_or((None, false))
+        });
+        if modal {
+            return true;
+        }
+        if !surface.is_initial_configure_sent() && self.has_dialog_sized_limits(surface) {
+            return true;
+        }
+        let host_process = surface
+            .wl_surface()
+            .client()
+            .and_then(|client| {
+                client
+                    .get_data::<ClientState>()
+                    .map(|state| state.package_id.is_none() && state.legacy_guest.is_none())
+            })
+            .unwrap_or(true);
+        host_process
+            && app_id
+                .as_deref()
+                .is_some_and(|app_id| SYSTEM_PROMPT_APP_IDS.contains(&app_id))
+    }
+
+    /// The client fixed its size (`min == max`, both set) to something that
+    /// fits well inside the output: a dialog's shape, not a document's.
+    fn has_dialog_sized_limits(&self, surface: &ToplevelSurface) -> bool {
+        let (min, max) = wl_compositor::with_states(surface.wl_surface(), |states| {
+            let mut cached = states
+                .cached_state
+                .get::<smithay::wayland::shell::xdg::SurfaceCachedState>();
+            let limits = {
+                let current = cached.current();
+                (current.min_size, current.max_size)
+            };
+            drop(cached);
+            limits
+        });
+        let (out_w, out_h) = self.output_size;
+        min == max
+            && min.w > 0
+            && min.h > 0
+            && i64::from(min.w).saturating_mul(3) <= i64::from(out_w).saturating_mul(2)
+            && i64::from(min.h).saturating_mul(3) <= i64::from(out_h).saturating_mul(2)
+    }
+
+    /// Whether a system-modal prompt is up.
+    pub fn has_system_modal(&self) -> bool {
+        !self.system_modals.is_empty()
+    }
+
+    pub fn top_system_modal(&self) -> Option<SurfaceId> {
+        self.system_modals.last().copied()
+    }
+
+    /// Re-evaluate `surface` once it is known to be a toplevel that may be a
+    /// dialog, before its opening configure (see `flush_configures`).
+    pub(crate) fn classify_opening_dialog(&mut self, surface: &ToplevelSurface) {
+        if !surface.is_initial_configure_sent() {
+            self.sync_toplevel_parent(surface);
+        }
+    }
+
+    pub fn is_system_modal(&self, id: SurfaceId) -> bool {
+        self.system_modals.contains(&id)
+    }
+
+    /// Withdraw `id`'s provisional tab, if it has one, handing back the
+    /// focus its adoption took (see [`tab_binding::FocusBefore`]).
+    fn withdraw_provisional_tab(&mut self, id: SurfaceId) {
+        let before = self.provisional_focus.remove(&id).unwrap_or_default();
+        let mut tree = self.workspace_tree.write();
+        let _ = tab_binding::withdraw_provisional_tab(&mut tree, id, &before);
+    }
+
+    /// Show a dialog that has no window to sit on as a system-modal
+    /// overlay: centred on the output over a scrim, owning the keyboard,
+    /// not a tab, and nothing in the strip moves.
+    fn show_as_system_modal(&mut self, surface: &ToplevelSurface) {
+        let id = surface_id(surface.wl_surface());
+        self.withdraw_provisional_tab(id);
+        self.client_input.promote_to_overlay(id);
+        let (out_w, out_h) = self.output_size;
+        surface.with_pending_state(|pending| {
+            pending.size = None;
+            pending.bounds = (out_w > 0 && out_h > 0).then(|| (out_w, out_h).into());
+        });
+        self.system_modals.push(id);
+        tracing::info!(
+            target: "shell::compositor::foreign",
+            surface_id = id,
+            "showing a parentless dialog as a system-modal overlay"
+        );
+    }
+
+    /// The system-modal prompts and where they sit: centred on the output.
+    pub fn system_modal_surfaces(&self) -> Vec<(SurfaceId, Rect)> {
+        let (out_w, out_h) = (
+            f64::from(self.output_size.0.max(0)),
+            f64::from(self.output_size.1.max(0)),
+        );
+        self.system_modals
+            .iter()
+            .filter_map(|&id| {
+                let (w, h) = crate::compositor::foreign::store().frame_size(id)?;
+                let (w, h) = (f64::from(w), f64::from(h));
+                let x = ((out_w - w) / 2.0).max(0.0).floor();
+                let y = ((out_h - h) / 2.0).max(0.0).floor();
+                Some((id, Rect::new(x, y, x + w, y + h)))
+            })
+            .collect()
+    }
+
+    /// The window a system prompt is shown over: what has the keyboard, else
+    /// the focused tab, so the prompt appears where the person is looking
+    /// and nothing scrolls.
+    fn system_prompt_host(&self, prompt: SurfaceId) -> Option<SurfaceId> {
+        let focused = self.client_input.keyboard_focus();
+        let active = {
+            let tree = self.workspace_tree.read();
+            crate::shell::input_policy::active_foreign_surface(&tree)
+        };
+        focused
+            .into_iter()
+            .chain(active)
+            .find(|candidate| *candidate != prompt && self.can_host_sheet(*candidate))
+    }
+
     /// A sheet whose parent went away is a window in its own right, per
     /// xdg-shell; adopt it as a tab in the active workspace.
     fn adopt_former_sheet(&self, surface: &ToplevelSurface) {
@@ -4303,24 +6674,27 @@ impl State {
                 .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
         });
         let client = surface.wl_surface().client();
-        let identity = authenticated_toplevel_identity(
-            client
-                .as_ref()
-                .and_then(|client| client.get_data::<ClientState>()),
-            announced,
-        );
+        let client_state = client
+            .as_ref()
+            .and_then(|client| client.get_data::<ClientState>());
+        let package = launched_package(client_state);
+        let identity = authenticated_toplevel_identity(client_state, announced);
         let Ok((app_id, room)) = identity else {
             surface.send_close();
             return;
         };
         let adopted = {
             let mut tree = self.workspace_tree.write();
-            if let Some(room) = room {
-                tab_binding::adopt_toplevel_in_room(&mut tree, id, app_id, room).is_some()
+            let tab = if let Some(room) = room {
+                tab_binding::adopt_toplevel_in_room(&mut tree, id, app_id, room)
             } else {
-                tab_binding::adopt_toplevel(&mut tree, id, app_id);
-                true
+                Some(tab_binding::adopt_toplevel(&mut tree, id, app_id))
+            };
+            if let (Some(tab), Some(package)) = (tab, package) {
+                tree.remember_package_launch(tab, package);
             }
+            drop(tree);
+            tab.is_some()
         };
         if !adopted {
             surface.send_close();
@@ -4415,6 +6789,14 @@ impl XdgShellHandler for State {
         &mut self.xdg_shell_state
     }
 
+    fn client_pong(&mut self, client: ShellClient) {
+        self.shell_pongs.note(client);
+    }
+
+    fn client_destroyed(&mut self, client: ShellClient) {
+        self.shell_pongs.forget(&client);
+    }
+
     /// A client has created an `xdg_toplevel`. Adopt it into the active
     /// workspace's tab tree, and **do not configure it yet**.
     ///
@@ -4429,6 +6811,7 @@ impl XdgShellHandler for State {
     ///
     /// `app_id` may be unset here; falls back to `anon-<id>`, rewritten by [`Self::app_id_changed`].
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        crate::compositor::foreign::note_client_pump();
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let authenticated_launch_key = surface.wl_surface().client().and_then(|client| {
             client
@@ -4438,17 +6821,7 @@ impl XdgShellHandler for State {
         if let Some(launch_key) = authenticated_launch_key.as_deref() {
             crate::shell::launcher::attribute_surface_launch(surface_id, launch_key);
         }
-        let announced_app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
-            states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()
-                .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
-        });
-        let identity = if let Some(client) = surface.wl_surface().client() {
-            authenticated_toplevel_identity(client.get_data::<ClientState>(), announced_app_id)
-        } else {
-            authenticated_toplevel_identity(None, announced_app_id)
-        };
+        let (identity, package) = self.toplevel_identity_and_package(surface_id, &surface);
         let Ok((app_id, attributed_room)) = identity else {
             tracing::warn!(
                 surface_id,
@@ -4457,6 +6830,14 @@ impl XdgShellHandler for State {
             surface.send_close();
             return;
         };
+        // The window's app is a launch resolving; the tick's focus decision settles its tier.
+        if let Some(pid) = surface
+            .wl_surface()
+            .client()
+            .and_then(|client| client.get_data::<ClientState>().and_then(|state| state.pid))
+        {
+            ::launcher::priority::notify_window(pid);
+        }
         // Register the toplevel with the input router for local key/pointer delivery once focused; the chrome-side tab splices in next tick.
         self.client_input.register_toplevel(
             surface_id,
@@ -4477,21 +6858,42 @@ impl XdgShellHandler for State {
         if trusted_osk_identity(surface.wl_surface(), app_id.as_deref()) {
             self.client_input.promote_to_overlay(surface_id);
             self.osk_surface = Some(surface_id);
+            self.reannounce_text_input_focus();
+        } else if app_id.is_none() && trusted_osk_connection(surface.wl_surface()) {
+            // get_toplevel precedes set_app_id. The immutable private-socket
+            // role already rules out an ordinary window, so never adopt a
+            // temporary tab or move the person's focus. Overlay authority
+            // still waits for the exact OSK app-id.
+            self.client_input.promote_to_overlay(surface_id);
         } else if !floating && !presentation {
             if let Some(room) = attributed_room {
                 let adopted = {
                     let mut tree = self.workspace_tree.write();
-                    tab_binding::adopt_toplevel_in_room(&mut tree, surface_id, app_id, room)
+                    self.provisional_focus
+                        .insert(surface_id, tab_binding::FocusBefore::of(&tree));
+                    let tab =
+                        tab_binding::adopt_toplevel_in_room(&mut tree, surface_id, app_id, room);
+                    if let (Some(tab), Some(package)) = (tab, package) {
+                        tree.remember_package_launch(tab, package);
+                    }
+                    tab
                 };
                 if adopted.is_none() {
+                    self.provisional_focus.remove(&surface_id);
                     tracing::warn!(surface_id, %room, "rejected Wayland toplevel for a stale workspace");
                     self.client_input.unregister_toplevel(surface_id);
+                    self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
                     surface.send_close();
                     return;
                 }
             } else {
                 let mut tree = self.workspace_tree.write();
-                tab_binding::adopt_toplevel(&mut tree, surface_id, app_id);
+                self.provisional_focus
+                    .insert(surface_id, tab_binding::FocusBefore::of(&tree));
+                let tab = tab_binding::adopt_toplevel(&mut tree, surface_id, app_id);
+                if let Some(package) = package {
+                    tree.remember_package_launch(tab, package);
+                }
             }
         }
 
@@ -4505,16 +6907,50 @@ impl XdgShellHandler for State {
             "accepted Wayland toplevel"
         );
 
+        // A dialog that names its role up front never stays a tab.
+        self.sync_toplevel_parent(&surface);
+
         // Start the clock the deferred opening configure is bounded against — adoption is when the wait becomes worth giving up on.
         crate::compositor::foreign::store().note_adopted(surface_id);
+        observe_toplevel_startup(&surface);
+        if let Some(app_id) = app_id_log.as_deref() {
+            crate::shell::launcher::record_host_window_open(surface_id, app_id);
+        }
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        crate::compositor::foreign::note_client_pump();
         // Remove the matching `Foreign` tab so the chrome stops advertising a destroyed surface.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
-        crate::shell::launcher::forget_surface_launch(surface_id);
-        self.closing_toplevels.remove(&surface_id);
+        let launch = crate::shell::launcher::launch_key_for_surface(surface_id);
+        let asked_to_close = self.closing_toplevels.remove(&surface_id).is_some();
+        eprintln!(
+            "window-destroyed: surface={surface_id} launch={} asked_to_close={asked_to_close}",
+            launch.as_deref().unwrap_or("-")
+        );
+        let person_reached_it = self
+            .clients_given_input
+            .contains(&client_index_of(surface_id));
+        if let Some(pid) = surface
+            .wl_surface()
+            .client()
+            .and_then(|client| client.get_data::<ClientState>().and_then(|state| state.pid))
+            && !self
+                .xdg_shell_state
+                .toplevel_surfaces()
+                .iter()
+                .any(|other| {
+                    other.wl_surface() != surface.wl_surface()
+                        && other.wl_surface().client().and_then(|client| {
+                            client.get_data::<ClientState>().and_then(|state| state.pid)
+                        }) == Some(pid)
+                })
+        {
+            crate::shell::launcher::note_native_writer_retiring(pid);
+        }
+        crate::shell::launcher::note_surface_gone(surface_id, asked_to_close || person_reached_it);
         self.release_sheets_of_destroyed(surface_id);
+        self.system_modals.retain(|id| *id != surface_id);
         crate::compositor::toplevel_icon::forget(surface_id);
         if self.osk_surface == Some(surface_id) {
             self.osk_surface = None;
@@ -4533,6 +6969,8 @@ impl XdgShellHandler for State {
             .position(|candidate| candidate.surface_id == surface_id)
         {
             let surface = self.floating_toplevels.remove(index);
+            self.floating_focus_handoffs
+                .remove(&(surface.connection, surface.public_id.clone()));
             self.floating_toplevel_events
                 .push(FloatingToplevelEvent::Destroyed {
                     connection: surface.connection,
@@ -4555,10 +6993,16 @@ impl XdgShellHandler for State {
         {
             self.fullscreen_target = None;
         }
-        let _ = {
+        if let Some(before) = self.provisional_focus.remove(&surface_id) {
+            // Gone before it ever showed a frame: nobody saw it to focus.
             let mut tree = self.workspace_tree.write();
-            tab_binding::close_tab_for_destroyed_surface_and_persist(&mut tree, surface_id)
-        };
+            if tab_binding::withdraw_provisional_tab(&mut tree, surface_id, &before) {
+                tree.queue_save();
+            }
+        } else {
+            let mut tree = self.workspace_tree.write();
+            let _ = tab_binding::close_tab_for_destroyed_surface_and_persist(&mut tree, surface_id);
+        }
         self.host_launch_surface_labels.remove(&surface_id);
         // Drop the tracker's per-surface buffer slot. The commit path's
         // `BufferAssignment::Removed` branch already forgets the slot on
@@ -4569,9 +7013,11 @@ impl XdgShellHandler for State {
         crate::compositor::foreign::store().forget(surface_id);
         // Drop the input router's handle so no event can target a dead surface, and queue the chrome-side tab reap for next tick.
         self.client_input.unregister_toplevel(surface_id);
+        self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        crate::compositor::foreign::note_client_pump();
         // Clients call `set_app_id` *after* `get_toplevel` fires
         // `new_toplevel`, so the tab was adopted with a synthetic
         // `anon-<surface_id>` placeholder. Re-read the now-populated app-id and rewrite the tab in-place so the chrome (and the integration test) see the populated one.
@@ -4583,35 +7029,36 @@ impl XdgShellHandler for State {
                 .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
         });
         let identity = if let Some(client) = surface.wl_surface().client() {
-            authenticated_toplevel_identity(client.get_data::<ClientState>(), new_app_id)
+            self.resolve_toplevel_identity(surface_id, Some(&client), new_app_id)
         } else {
-            authenticated_toplevel_identity(None, new_app_id)
+            self.resolve_toplevel_identity(surface_id, None, new_app_id)
         };
         let Ok((Some(app_id), _)) = identity else {
             tracing::warn!(surface_id, "ignored unauthenticated Wayland app-id change");
             return;
         };
+        if trusted_osk_connection(surface.wl_surface()) && app_id != OSK_APP_ID {
+            // A pending private keyboard cannot become an ordinary app by
+            // announcing a different identity after get_toplevel.
+            surface.send_close();
+            return;
+        }
         {
             if trusted_osk_identity(surface.wl_surface(), Some(&app_id)) {
                 // `set_app_id` normally arrives after `new_toplevel`; undo the
                 // temporary anonymous adoption before either tree can expose a
                 // keyboard as an ordinary app window.
-                let _ = {
-                    let mut tree = self.workspace_tree.write();
-                    tab_binding::close_tab_for_destroyed_surface(&mut tree, surface_id)
-                };
+                self.withdraw_provisional_tab(surface_id);
                 self.client_input.promote_to_overlay(surface_id);
                 self.osk_surface = Some(surface_id);
+                self.reannounce_text_input_focus();
                 return;
             }
             if self.promote_floating_toplevel(surface_id, &app_id) {
                 // `new_toplevel` may have inserted an anonymous placeholder
                 // before the app-id arrived. Remove it before the next tree
                 // mirror can expose a one-frame phantom tab.
-                let _ = {
-                    let mut tree = self.workspace_tree.write();
-                    tab_binding::close_tab_for_destroyed_surface(&mut tree, surface_id)
-                };
+                self.withdraw_provisional_tab(surface_id);
                 return;
             }
             if is_output_presentation_app_id(&app_id)
@@ -4623,10 +7070,7 @@ impl XdgShellHandler for State {
                 };
                 // The provisional anonymous tab must never share the
                 // presenter's workspace with the clean audience surface.
-                let _ = {
-                    let mut tree = self.workspace_tree.write();
-                    tab_binding::close_tab_for_destroyed_surface(&mut tree, surface_id)
-                };
+                self.withdraw_provisional_tab(surface_id);
                 // `set_fullscreen` is permitted to arrive before
                 // `set_app_id`; undo that provisional group promotion now
                 // that the toplevel has become output-scoped.
@@ -4636,6 +7080,9 @@ impl XdgShellHandler for State {
                 }
                 return;
             }
+            // A system prompt announces itself here (GTK sets the id after
+            // `get_toplevel`): turn the provisional tab into a sheet.
+            self.sync_toplevel_parent(&surface);
             if crate::compositor::foreign::store().is_sheet(surface_id) {
                 // A sheet has no tab to rename; the id is read again should it ever become one.
                 return;
@@ -4653,9 +7100,7 @@ impl XdgShellHandler for State {
                     host_launch_title,
                 )
             };
-            crate::shell::launcher::note_launch_presented(&crate::shell::persist::durable_app_id(
-                surface_id, &app_id,
-            ));
+            crate::shell::launcher::record_host_window_open(surface_id, &app_id);
             // Mirror the rename onto the chrome-side tab the input router mounted (or its still-pending adoption).
             self.client_input.note_app_id(surface_id, app_id);
         }
@@ -4665,10 +7110,12 @@ impl XdgShellHandler for State {
     /// that window, shown as a sheet on its tile; losing the parent makes
     /// it an ordinary tab again.
     fn parent_changed(&mut self, surface: ToplevelSurface) {
+        crate::compositor::foreign::note_client_pump();
         self.sync_toplevel_parent(&surface);
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
+        crate::compositor::foreign::note_client_pump();
         let surface_id = surface_id(surface.wl_surface());
         let title = wl_compositor::with_states(surface.wl_surface(), |states| {
             states
@@ -4683,6 +7130,7 @@ impl XdgShellHandler for State {
     }
 
     fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+        crate::compositor::foreign::note_client_pump();
         let Some(parent_surface) = surface.get_parent_surface() else {
             // Smithay will report the protocol violation at commit time; send
             // the required initial configure so a malformed client cannot
@@ -4753,6 +7201,7 @@ impl XdgShellHandler for State {
         positioner: PositionerState,
         token: u32,
     ) {
+        crate::compositor::foreign::note_client_pump();
         let Some(parent) = self
             .popups
             .iter()
@@ -4783,6 +7232,7 @@ impl XdgShellHandler for State {
     /// an absent or stale hint falls back to the combined-session configure
     /// until the native placement path can choose a viable display.
     fn fullscreen_request(&mut self, surface: ToplevelSurface, wl_output: Option<WlOutput>) {
+        crate::compositor::foreign::note_client_pump();
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let requested = requested_output_id(wl_output.as_ref())
             .filter(|output| self.output_sizes.contains_key(output));
@@ -4850,6 +7300,7 @@ impl XdgShellHandler for State {
     /// compositor exit flowed back through the UI. Clear the transient
     /// promotion (the native loop restores exact prior tiling) and send a configure clearing `Fullscreen` + the imposed size.
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        crate::compositor::foreign::note_client_pump();
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         if self.is_output_presentation_surface(surface_id) {
             let _ = self.remove_output_presentation_surface(surface_id);
@@ -4905,11 +7356,13 @@ impl XdgDecorationHandler for State {
     /// compositor can state a mode. Stating it here matters: this configure
     /// reaches the client before its first buffer, so the size it renders is the one the compositor asked for.
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        crate::compositor::foreign::note_client_pump();
         Self::decorate(&toplevel);
     }
 
     /// The client has stated a preference; answered with the same mode as always, including `ClientSide` — the request this exists to refuse.
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
+        crate::compositor::foreign::note_client_pump();
         tracing::debug!(
             target: "shell::compositor::decoration",
             surface_id = crate::compositor::state::surface_id(toplevel.wl_surface()),
@@ -4922,6 +7375,28 @@ impl XdgDecorationHandler for State {
     /// The client has withdrawn its preference and left the choice to the compositor — it was never anywhere else.
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
         Self::decorate(&toplevel);
+    }
+}
+
+/// `org_kde_kwin_server_decoration`: the same policy as [`XdgDecorationHandler`]
+/// for clients that only speak the KDE protocol. The window's chrome is the
+/// tab, so the mode is `Server` whatever the client requests.
+impl KdeDecorationHandler for State {
+    fn kde_decoration_state(&self) -> &KdeDecorationState {
+        &self.kde_decoration_state
+    }
+
+    fn new_decoration(&mut self, _surface: &WlSurface, decoration: &OrgKdeKwinServerDecoration) {
+        decoration.mode(KdeMode::Server);
+    }
+
+    fn request_mode(
+        &mut self,
+        _surface: &WlSurface,
+        decoration: &OrgKdeKwinServerDecoration,
+        _mode: smithay::reexports::wayland_server::WEnum<KdeMode>,
+    ) {
+        decoration.mode(KdeMode::Server);
     }
 }
 
@@ -4955,14 +7430,23 @@ impl SeatHandler for State {
         &mut self.seat_state
     }
 
-    fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&WlSurface>) {}
+    fn focus_changed(&mut self, _seat: &Seat<Self>, _focused: Option<&WlSurface>) {
+        let _scope = crate::compositor::seat_lock::Callback::enter();
+        self.cancel_active_dictation();
+    }
 
     fn cursor_image(
         &mut self,
         _seat: &Seat<Self>,
         image: smithay::input::pointer::CursorImageStatus,
     ) {
-        let scale = self.scale;
+        let _scope = crate::compositor::seat_lock::Callback::enter();
+        // A window another device of the person points at shapes that
+        // device's cursor, not this one's.
+        if self.personal_pointer_hold {
+            return;
+        }
+        let scale = self.pointer_output_scale();
         self.client_cursor.set(image, scale);
     }
 }
@@ -4973,6 +7457,7 @@ impl TabletSeatHandler for State {}
 
 impl InputMethodHandler for State {
     fn new_popup(&mut self, surface: InputMethodPopupSurface) {
+        crate::compositor::foreign::note_client_pump();
         let id = surface_id(surface.wl_surface());
         self.client_input
             .register_transient(id, surface.wl_surface().clone());
@@ -4986,6 +7471,7 @@ impl InputMethodHandler for State {
         self.input_method_popups
             .retain(|popup| popup.wl_surface() != surface.wl_surface());
         self.client_input.unregister_transient(id);
+        self.cancel_floating_focus_on_transition(self.client_input.keyboard_focus());
         crate::compositor::foreign::store().forget(id);
     }
 
@@ -5015,7 +7501,6 @@ impl InputMethodHandler for State {
             });
         #[allow(
             clippy::cast_possible_truncation,
-            clippy::cast_possible_wrap,
             reason = "Wayland parent geometry is represented as i32 logical coordinates"
         )]
         Rectangle::new(
@@ -5040,7 +7525,10 @@ impl FractionalScaleHandler for State {
         // same connection-qualified key as `commit` and `update_surface_scales`
         // so a second client cannot inherit the first client's cached output
         // scale when both happen to allocate the same wl_surface id.
-        let scale = self.surface_scale(crate::compositor::state::surface_id(&surface));
+        // A subsurface takes its root's scale; see `commit`.
+        let scale = self.surface_scale(crate::compositor::state::surface_id(
+            &subsurface_tree_root(&surface),
+        ));
         wl_compositor::with_states(&surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);
@@ -5057,13 +7545,310 @@ delegate_xdg_shell!(State);
 delegate_xdg_dialog!(State);
 // `zxdg_decoration_manager_v1`: how a client is told the compositor draws chrome, rather than left to guess. See `XdgDecorationHandler` above.
 delegate_xdg_decoration!(State);
+delegate_kde_decoration!(State);
 delegate_shm!(State);
 delegate_dmabuf!(State);
-delegate_seat!(State);
+// `wl_seat` is Smithay's, with one observation added: whether each client
+// asked for a `wl_touch` (see `ClientState::touch_bound`). The rest of the
+// seat (pointer, keyboard, touch objects) is delegated unchanged.
+smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
+    WlSeat: smithay::wayland::seat::SeatGlobalData<State>
+] => SeatState<State>);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_server::protocol::wl_pointer::WlPointer: smithay::wayland::seat::PointerUserData<State>
+] => SeatState<State>);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_server::protocol::wl_keyboard::WlKeyboard: smithay::wayland::seat::KeyboardUserData<State>
+] => SeatState<State>);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_server::protocol::wl_touch::WlTouch: smithay::wayland::seat::TouchUserData<State>
+] => SeatState<State>);
+
+impl
+    smithay::reexports::wayland_server::Dispatch<
+        WlSeat,
+        smithay::wayland::seat::SeatUserData<State>,
+    > for State
+{
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &WlSeat,
+        request: smithay::reexports::wayland_server::protocol::wl_seat::Request,
+        data: &smithay::wayland::seat::SeatUserData<State>,
+        dhandle: &DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        if matches!(
+            request,
+            smithay::reexports::wayland_server::protocol::wl_seat::Request::GetTouch { .. }
+        ) && let Some(client_state) = client.get_data::<ClientState>()
+        {
+            client_state
+                .touch_bound
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        <SeatState<State> as smithay::reexports::wayland_server::Dispatch<
+            WlSeat,
+            smithay::wayland::seat::SeatUserData<State>,
+            State,
+        >>::request(state, client, resource, request, data, dhandle, data_init);
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &WlSeat,
+        data: &smithay::wayland::seat::SeatUserData<State>,
+    ) {
+        <SeatState<State> as smithay::reexports::wayland_server::Dispatch<
+            WlSeat,
+            smithay::wayland::seat::SeatUserData<State>,
+            State,
+        >>::destroyed(state, client, resource, data);
+    }
+}
 // Text input is dispatched in `compositor::text_commit`, which follows each
 // field's declared content type before handing the request to Smithay.
-delegate_input_method_manager!(State);
-delegate_virtual_keyboard_manager!(State);
+// The input-method manager is Smithay's. `zwp_input_method_v2` is too, with
+// the on-screen keyboard's commits counted on the way (`State::osk_commits`).
+smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2:
+    smithay::wayland::input_method::InputMethodManagerGlobalData
+] => InputMethodManagerState);
+impl
+    smithay::reexports::wayland_server::Dispatch<
+        smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+        (),
+    > for State
+{
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+        request: smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::Request,
+        data: &(),
+        dhandle: &DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        let get_input_method = matches!(
+            request,
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::Request::GetInputMethod { .. }
+        );
+        let duplicate = get_input_method && state.input_method_resource_client.is_some();
+        if get_input_method && !duplicate {
+            state.input_method_resource_client = Some(client.id());
+            state.input_method_serial = 0;
+            state.input_method_preedit = InputMethodPreeditState::Inactive;
+            state.text_fields.protocol_focus_left();
+        }
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+            (),
+            State,
+        >>::request(state, client, resource, request, data, dhandle, data_init);
+        if duplicate {
+            state.input_method_resource_client = None;
+            state.input_method_serial = 0;
+            state.input_method_preedit = InputMethodPreeditState::Inactive;
+            state.text_fields.protocol_focus_left();
+            state.display_handle.backend_handle().kill_client(
+                client.id(),
+                DisconnectReason::ConnectionClosed,
+            );
+        }
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+        data: &(),
+    ) {
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2,
+            (),
+            State,
+        >>::destroyed(state, client, resource, data);
+    }
+}
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2:
+    smithay::wayland::input_method::InputMethodKeyboardUserData<State>
+] => InputMethodManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2:
+    smithay::wayland::input_method::InputMethodPopupSurfaceUserData
+] => InputMethodManagerState);
+
+impl
+    smithay::reexports::wayland_server::Dispatch<
+        smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+        smithay::wayland::input_method::InputMethodUserData<State>,
+    > for State
+{
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+        request: smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::Request,
+        data: &smithay::wayland::input_method::InputMethodUserData<State>,
+        dhandle: &DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        use smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::Request;
+        match &request {
+            Request::SetPreeditString { text, .. } => {
+                state.input_method_preedit.stage(!text.is_empty());
+            }
+            Request::CommitString { .. } => {
+                state.input_method_preedit.stage(false);
+            }
+            Request::Commit { serial } => {
+                let mut has_active_text_input = false;
+                state
+                    .seat
+                    .text_input()
+                    .with_active_text_input(|_, _| has_active_text_input = true);
+                let accepted = state.input_method_resource_client.as_ref() == Some(&client.id())
+                    && *serial == state.input_method_serial
+                    && has_active_text_input;
+                state.input_method_preedit.finish(accepted);
+            }
+            _ => {}
+        }
+        if matches!(request, Request::CommitString { .. })
+            && client.get_data::<ClientState>().is_some_and(|data| {
+                data.input_method
+                    == Some(crate::compositor::input_method::TrustedInputMethod::OnScreenKeyboard)
+            })
+        {
+            state.osk_commits = state.osk_commits.saturating_add(1);
+        }
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+            smithay::wayland::input_method::InputMethodUserData<State>,
+            State,
+        >>::request(state, client, resource, request, data, dhandle, data_init);
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+        data: &smithay::wayland::input_method::InputMethodUserData<State>,
+    ) {
+        if state.input_method_resource_client.as_ref() == Some(&client) {
+            state.input_method_resource_client = None;
+            state.input_method_serial = 0;
+            state.input_method_preedit = InputMethodPreeditState::Inactive;
+            state.text_fields.protocol_focus_left();
+        }
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+            smithay::wayland::input_method::InputMethodUserData<State>,
+            State,
+        >>::destroyed(state, client, resource, data);
+    }
+}
+// The virtual-keyboard manager is Smithay's. `zwp_virtual_keyboard_v1` is
+// too, but while one of the shell's own fields is served (see
+// `compositor::shell_text_input`) its keys also reach the chrome, which holds
+// no `wl_keyboard` Smithay could send them to.
+smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1:
+    smithay::wayland::virtual_keyboard::VirtualKeyboardManagerGlobalData
+] => VirtualKeyboardManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1: ()
+] => VirtualKeyboardManagerState);
+
+impl
+    smithay::reexports::wayland_server::Dispatch<
+        smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+        smithay::wayland::virtual_keyboard::VirtualKeyboardUserData<State>,
+    > for State
+{
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+        request: smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::Request,
+        data: &smithay::wayland::virtual_keyboard::VirtualKeyboardUserData<State>,
+        dhandle: &DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        use smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::Request;
+        match &request {
+            Request::Keymap { fd, size, .. } => {
+                if let Some(keymap) = read_virtual_keymap(fd, *size) {
+                    state.virtual_keymaps.insert(resource.id(), keymap);
+                }
+            }
+            Request::Key { key, state: key_state, .. } if state.shell_field_active => {
+                if let Some(event) = state
+                    .virtual_keymaps
+                    .get(&resource.id())
+                    .and_then(|keymap| {
+                        let keysym = smithay::input::keyboard::xkb::State::new(keymap)
+                            .key_get_one_sym(smithay::input::keyboard::Keycode::new(
+                                key.saturating_add(8),
+                            ));
+                        crate::compositor::shell_text_input::translate_key(
+                            keysym.raw(),
+                            *key_state == 1,
+                        )
+                    })
+                {
+                    state.shell_field_keys.push(event);
+                }
+            }
+            _ => {}
+        }
+        <VirtualKeyboardManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+            smithay::wayland::virtual_keyboard::VirtualKeyboardUserData<State>,
+            State,
+        >>::request(state, client, resource, request, data, dhandle, data_init);
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+        data: &smithay::wayland::virtual_keyboard::VirtualKeyboardUserData<State>,
+    ) {
+        state.virtual_keymaps.remove(&resource.id());
+        <VirtualKeyboardManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+            smithay::wayland::virtual_keyboard::VirtualKeyboardUserData<State>,
+            State,
+        >>::destroyed(state, client, resource, data);
+    }
+}
+
+/// Compile the XKB text keymap a virtual keyboard uploaded, read without
+/// moving the descriptor Smithay reads after us.
+fn read_virtual_keymap(
+    fd: &std::os::fd::OwnedFd,
+    size: u32,
+) -> Option<smithay::input::keyboard::xkb::Keymap> {
+    use smithay::input::keyboard::xkb;
+    use std::os::unix::fs::FileExt as _;
+    // A keymap is text of a few kilobytes; refuse anything absurd.
+    let size = usize::try_from(size).ok().filter(|size| *size <= 1 << 20)?;
+    let file = std::fs::File::from(fd.try_clone().ok()?);
+    let mut bytes = vec![0_u8; size];
+    file.read_exact_at(&mut bytes, 0).ok()?;
+    let text = String::from_utf8(bytes).ok()?;
+    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    xkb::Keymap::new_from_string(
+        &context,
+        text.trim_end_matches('\0').to_owned(),
+        xkb::KEYMAP_FORMAT_TEXT_V1,
+        xkb::KEYMAP_COMPILE_NO_FLAGS,
+    )
+}
 delegate_pointer_gestures!(State);
 delegate_cursor_shape!(State);
 delegate_relative_pointer!(State);
@@ -5103,8 +7888,7 @@ impl IdleInhibitHandler for State {
 }
 
 // Selection: clipboard, primary selection, drag-and-drop. Handler impls live in `compositor::selection`; only dispatch wiring belongs here.
-delegate_data_device!(State);
-delegate_primary_selection!(State);
+// `wl_data_device` and `zwp_primary_selection_device_v1` are wrapped in `compositor::selection` so a refused `set_selection` is logged.
 delegate_data_control!(State);
 delegate_ext_data_control!(State);
 
@@ -5395,6 +8179,39 @@ mod osk_identity_tests {
     use super::*;
 
     #[test]
+    fn only_a_confined_package_launch_names_a_windows_package() {
+        let room = crate::shell::state::RoomId::new();
+        let launched = |confined| {
+            ClientState::attributed_arc(
+                crate::shell::launcher::VerifiedLaunchIdentity {
+                    package_id: "so.tilo.files".into(),
+                    workspace_id: Some(room.to_string()),
+                    confined,
+                },
+                42,
+            )
+        };
+        assert_eq!(
+            launched_package(Some(&launched(true))).as_deref(),
+            Some("so.tilo.files")
+        );
+        // A host app the launcher started unconfined keeps its desktop id
+        // and is a legacy window, whatever the id says.
+        assert_eq!(launched_package(Some(&launched(false))), None);
+        // A client nobody launched, announcing a Tilo package's id.
+        assert_eq!(launched_package(Some(&ClientState::default())), None);
+        assert_eq!(launched_package(None), None);
+        let guest = ClientState {
+            package_id: Some("so.tilo.files".into()),
+            workspace_id: Some(room.to_string()),
+            enforce_package_id: true,
+            legacy_guest: Some(legacy_agent_protocol::GuestOs::Windows),
+            ..ClientState::default()
+        };
+        assert_eq!(launched_package(Some(&guest)), None);
+    }
+
+    #[test]
     fn osk_and_floating_identity_trust_only_exact_credentials() {
         // Phase `only_private_socket_plus_exact_app_id_is_trusted`.
         assert!(osk_identity_is_trusted(Some(OSK_APP_ID), true));
@@ -5450,6 +8267,19 @@ mod osk_identity_tests {
                     Some("org.example.HostApp".into())
                 ),
                 Ok((Some("org.example.HostApp".into()), None))
+            );
+            let legacy = ClientState {
+                legacy_guest: Some(legacy_agent_protocol::GuestOs::Linux),
+                ..ClientState::default()
+            };
+            assert_eq!(
+                authenticated_toplevel_identity(Some(&legacy), Some("org.gnome.Calculator".into())),
+                Ok((Some("legacy.linux.org.gnome.Calculator".into()), None)),
+                "a legacy VM's window is named after its guest"
+            );
+            assert_eq!(
+                authenticated_toplevel_identity(Some(&legacy), None),
+                Ok((Some("legacy.linux.window".into()), None))
             );
             let room = crate::shell::state::RoomId::new();
             let host = ClientState::attributed_arc(
@@ -5523,6 +8353,78 @@ mod osk_identity_tests {
 )]
 mod tick_hook_tests {
     use super::*;
+
+    #[test]
+    fn a_paint_app_streams_its_page_to_web_viewers_instead_of_video() {
+        let mut state = make_state();
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&sent);
+        state.set_legacy_stream_publisher(Arc::new(move |_, message| {
+            sink.lock().unwrap().push(message);
+            true
+        }));
+        state.note_paint_app("so.tilo.browser", 5);
+        // As reconciliation starts it for a host bridging to web members.
+        let session = Arc::new(
+            SharedFlatpakSession::start_paint(1, "so.tilo.browser", 42, 800, 600, &cfg())
+                .expect("start"),
+        );
+        session.sync_viewers(&[9].into_iter().collect());
+        state.register_share_session(Arc::clone(&session));
+        assert_eq!(
+            state.paint_watch_changes(),
+            vec![(5, true)],
+            "the app is asked for a page"
+        );
+        assert!(state.paint_watch_changes().is_empty(), "and asked once");
+
+        state.receive_paint_frame(
+            "so.tilo.browser",
+            PaintFrame {
+                payload: vec![0, 7],
+                page: [10.0, 20.0, 780.0, 560.0],
+                scale: 2.0,
+            },
+        );
+        let messages = sent.lock().unwrap().clone();
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            crate::network::NeighbourMsg::SurfaceStreamStart { codec, surface: 42, .. }
+                if codec == "tilo-paint"
+        )));
+        assert!(
+            messages.iter().any(|m| matches!(
+                m,
+                crate::network::NeighbourMsg::SurfaceFrame { surface: 42, encoded_h264, .. }
+                    if encoded_h264 == &vec![0, 7]
+            )),
+            "the app's frame goes out as it came: {messages:?}"
+        );
+        // Input in page pixels lands where the page sits in the window.
+        assert_eq!(
+            state.paint_point_to_surface(42, InputEvent::PointerMotion { x: 5.0, y: 5.0 }),
+            InputEvent::PointerMotion { x: 15.0, y: 25.0 }
+        );
+        // An app that is not streaming ignores its frames' origin.
+        state.receive_paint_frame(
+            "org.example.Other",
+            PaintFrame {
+                payload: vec![0],
+                page: [0.0; 4],
+                scale: 1.0,
+            },
+        );
+        assert_eq!(sent.lock().unwrap().len(), messages.len());
+
+        state.unregister_share_session(42);
+        assert_eq!(
+            state.paint_watch_changes(),
+            vec![(5, false)],
+            "nobody watches any more"
+        );
+        state.drop_paint_connection(5);
+        assert!(state.paint_apps.is_empty());
+    }
     use crate::collab::flatpak_share::SharedFlatpakSession;
     use crate::config::{EncoderChoice, FlatpakShareConfig};
     use crate::network::protocol::{PeerId, SurfaceId};
@@ -5966,6 +8868,224 @@ mod tick_hook_tests {
         }
     }
 
+    /// A shared window that resizes gets a new encoder, but stays shared:
+    /// receivers learn it from the new start alone, and its viewer keeps
+    /// driving it. An end first had a host bridging the window to web
+    /// members forget it, and refuse their input, until the start came.
+    #[test]
+    fn a_resized_shared_window_is_restarted_without_ending_its_stream() {
+        const HOST: PeerId = 0xAAAA;
+        const VIEWER: PeerId = 0xBBBB;
+        const SURFACE: SurfaceId = 0x7e57_0000_0091;
+        let mut state = make_state();
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&sent);
+        state.set_legacy_stream_publisher(Arc::new(move |_, message| {
+            sink.lock().unwrap().push(message);
+            true
+        }));
+        let frames = crate::compositor::foreign::store();
+        frames.publish_rgba(SURFACE, &[0x80; 32 * 32 * 4], 32, 32);
+        let desired = HashMap::from([(
+            SURFACE,
+            LegacyShare {
+                app_id: "app".into(),
+                viewers: [VIEWER].into_iter().collect(),
+                ..LegacyShare::default()
+            },
+        )]);
+        state.reconcile_legacy_share_sessions(HOST, &desired, &cfg());
+        let _ = state.remote_seats.seat_mut(VIEWER).enter(SURFACE);
+        sent.lock().unwrap().clear();
+
+        frames.publish_rgba(SURFACE, &[0x80; 48 * 32 * 4], 48, 32);
+        state.reconcile_legacy_share_sessions(HOST, &desired, &cfg());
+        let messages = std::mem::take(&mut *sent.lock().unwrap());
+        assert!(
+            !messages
+                .iter()
+                .any(|m| matches!(m, crate::network::NeighbourMsg::SurfaceStreamEnd { .. })),
+            "the window is still shared: {messages:?}"
+        );
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            crate::network::NeighbourMsg::SurfaceStreamStart {
+                surface: SURFACE,
+                width: 48,
+                ..
+            }
+        )));
+        assert_eq!(
+            state
+                .remote_seats
+                .seat(VIEWER)
+                .and_then(|seat| seat.focused_surface),
+            Some(SURFACE),
+            "its viewer keeps its focus"
+        );
+
+        state.reconcile_legacy_share_sessions(HOST, &HashMap::new(), &cfg());
+        assert!(
+            sent.lock().unwrap().iter().any(|m| matches!(
+                m,
+                crate::network::NeighbourMsg::SurfaceStreamEnd {
+                    surface: SURFACE,
+                    ..
+                }
+            )),
+            "a window no longer shared ends its stream"
+        );
+        frames.forget(SURFACE);
+    }
+
+    /// A shared window no viewer's decoders fit (the viewer takes no codec
+    /// this device encodes) does not stream, and is not tried again on every
+    /// pump; once the viewer advertises a codec it takes, the stream starts.
+    #[test]
+    fn a_share_no_viewer_can_decode_waits_for_a_codec_and_then_streams() {
+        const HOST: PeerId = 0xAAAA;
+        const VIEWER: PeerId = 0x5eed_1017;
+        const SURFACE: SurfaceId = 0x7e57_0000_1017;
+        let mut state = make_state();
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&sent);
+        state.set_legacy_stream_publisher(Arc::new(move |_, message| {
+            sink.lock().unwrap().push(message);
+            true
+        }));
+        let frames = crate::compositor::foreign::store();
+        frames.publish_rgba(SURFACE, &[0x80; 32 * 32 * 4], 32, 32);
+        crate::network::media_caps::record(VIEWER, &[], &["hevc-main10".into()], &[], &[]);
+        let desired = HashMap::from([(
+            SURFACE,
+            LegacyShare {
+                app_id: "app".into(),
+                viewers: [VIEWER].into_iter().collect(),
+                ..LegacyShare::default()
+            },
+        )]);
+        let started = |sent: &std::sync::Mutex<Vec<crate::network::NeighbourMsg>>| {
+            sent.lock().unwrap().iter().any(|m| {
+                matches!(
+                    m,
+                    crate::network::NeighbourMsg::SurfaceStreamStart {
+                        surface: SURFACE,
+                        ..
+                    }
+                )
+            })
+        };
+        state.reconcile_legacy_share_sessions(HOST, &desired, &cfg());
+        assert!(!started(&sent), "nothing the viewer decodes can be sent");
+        assert!(!state.active_sessions.contains_key(&SURFACE));
+        let failed = state.legacy_share_failures.get(&SURFACE).cloned();
+        assert!(failed.is_some(), "the failure is remembered");
+        state.reconcile_legacy_share_sessions(HOST, &desired, &cfg());
+        assert_eq!(
+            state.legacy_share_failures.get(&SURFACE),
+            failed.as_ref(),
+            "the next pump does not try again for the same viewers"
+        );
+
+        crate::network::media_caps::record(
+            VIEWER,
+            &[],
+            &["hevc-main10".into(), "h264".into()],
+            &[],
+            &[],
+        );
+        state.reconcile_legacy_share_sessions(HOST, &desired, &cfg());
+        assert!(started(&sent), "a codec the viewer takes starts the stream");
+        assert!(!state.legacy_share_failures.contains_key(&SURFACE));
+
+        state.reconcile_legacy_share_sessions(HOST, &HashMap::new(), &cfg());
+        crate::network::media_caps::forget(VIEWER);
+        frames.forget(SURFACE);
+    }
+
+    #[test]
+    fn delayed_blur_of_previous_stream_preserves_current_remote_focus() {
+        use crate::network::input_firewall::ShellView;
+        use crate::network::streaming::StreamingShare;
+        use vello::kurbo::Rect;
+
+        const PEER: PeerId = 9;
+        const OLD: SurfaceId = 81;
+        const CURRENT: SurfaceId = 82;
+        const SHIFT: u32 = 42;
+        let mut state = make_state();
+        for surface in [OLD, CURRENT] {
+            state
+                .share_registry
+                .insert(PEER, surface, StreamingShare::new());
+        }
+        state.remote_input_firewall.publish_view(ShellView::new(
+            vec![
+                (OLD, Rect::new(0.0, 0.0, 400.0, 600.0)),
+                (CURRENT, Rect::new(400.0, 0.0, 800.0, 600.0)),
+            ],
+            Some(CURRENT),
+            false,
+            false,
+        ));
+        for surface in [OLD, CURRENT] {
+            assert!(state.apply_remote_input(
+                PEER,
+                surface,
+                InputEvent::KeyboardFocus {
+                    surface,
+                    focused: true
+                }
+            ));
+        }
+        assert!(state.apply_remote_input(
+            PEER,
+            CURRENT,
+            InputEvent::Key {
+                keysym: SHIFT,
+                pressed: true,
+                modifiers: 0
+            }
+        ));
+        assert!(state.apply_remote_input(
+            PEER,
+            OLD,
+            InputEvent::KeyboardFocus {
+                surface: OLD,
+                focused: false
+            }
+        ));
+        assert_eq!(
+            state.remote_seats.seat(PEER).unwrap().focused_surface,
+            Some(CURRENT),
+            "the previous stream's late blur cannot cancel the newly focused stream"
+        );
+        assert_eq!(
+            state.remote_seats.key_holder_count(SHIFT),
+            1,
+            "the previous stream's blur cannot release a key held on the current stream"
+        );
+        assert!(state.apply_remote_input(
+            PEER,
+            CURRENT,
+            InputEvent::Key {
+                keysym: 30,
+                pressed: true,
+                modifiers: 0
+            }
+        ));
+        assert!(state.apply_remote_input(
+            PEER,
+            CURRENT,
+            InputEvent::KeyboardFocus {
+                surface: CURRENT,
+                focused: false
+            }
+        ));
+        assert_eq!(state.remote_seats.seat(PEER).unwrap().focused_surface, None);
+        assert_eq!(state.remote_seats.key_holder_count(SHIFT), 0);
+    }
+
     #[test]
     fn stream_viewers_are_disclosed_for_their_whole_lifecycle() {
         // Phase `quiet_viewer_is_disclosed_for_the_entire_stream_lifecycle`.
@@ -6272,6 +9392,37 @@ mod keycap_layout_tests {
     }
 
     #[test]
+    fn model_only_reload_preserves_the_declared_physical_model() {
+        let temp = tempfile::tempdir().expect("temp");
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("XDG_CONFIG_HOME", temp.path());
+        let settings = settings_store::settings_path().expect("settings path");
+        std::fs::create_dir_all(settings.parent().expect("config dir")).expect("config dir");
+        write_input(&settings, "us");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("wayland display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        for model in ["jp106", "kr106", "pc104", "pc105"] {
+            settings_store::update_section(
+                "input",
+                serde_json::json!({"keyboard_model": model})
+                    .as_object()
+                    .expect("input section")
+                    .clone(),
+            )
+            .expect("persist model");
+            state.reload_keyboard_settings();
+            assert_eq!(state.applied_keyboard.model, model);
+            assert_eq!(state.applied_keyboard.layouts, "us,de");
+            assert_eq!(state.applied_keyboard.active_index, 0);
+        }
+        // The installed PC models have distinct geometry. Their evdev keymap
+        // bytes may be identical, so Smithay correctly suppresses duplicate
+        // keymap FDs. Geometry is tested against native compiled model data
+        // in Settings; actual symbol/mask ownership has its own Winit wire test.
+    }
+
+    #[test]
     fn key_names_follow_every_layout_switch_live() {
         let temp = tempfile::tempdir().expect("temp");
         let mut env = tilo_test_env::ScopedEnv::new();
@@ -6305,4 +9456,136 @@ mod keycap_layout_tests {
         // The stored chord never changed.
         assert_eq!(power.display(), "Ctrl+Alt+Delete");
     }
+}
+
+/// The compositor loop re-derives state from the workspace tree and the
+/// surface registries only after something it depends on changed.
+#[cfg(test)]
+mod loop_gating_tests {
+    use super::*;
+    use smithay::reexports::calloop::EventLoop;
+    use smithay::reexports::wayland_server::Display;
+
+    fn make_state() -> State {
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        State::new(event_loop.handle(), display.handle())
+    }
+
+    #[test]
+    fn update_surface_scales_drops_unplaced_surfaces() {
+        let mut state = make_state();
+        state.update_surface_scales(&[(1, (0.0, 0.0)), (2, (10.0, 10.0)), (2, (10.0, 10.0))]);
+        let mut placed = state.surface_scales.keys().copied().collect::<Vec<_>>();
+        placed.sort_unstable();
+        assert_eq!(placed, vec![1, 2]);
+        state.update_surface_scales(&[(2, (10.0, 10.0))]);
+        assert_eq!(
+            state.surface_scales.keys().copied().collect::<Vec<_>>(),
+            vec![2],
+            "a surface no longer placed loses its cached scale"
+        );
+        state.update_surface_scales(&[]);
+        assert!(state.surface_scales.is_empty());
+    }
+
+    #[test]
+    fn a_wakeup_without_a_tree_write_walks_nothing() {
+        const SURFACE: u64 = 0x0188_0001;
+        const APP: &str = "org.example.LoopGating";
+        let mut state = make_state();
+        let tree = state.workspace_tree.clone();
+        state.client_input.refresh_from_tree(&tree);
+        let walks = state.client_input.tree_walks();
+        assert_eq!(walks, 1, "the first wakeup derives everything once");
+        for _ in 0..100 {
+            assert!(!state.client_input.refresh_from_tree(&tree));
+        }
+        assert_eq!(
+            state.client_input.tree_walks(),
+            walks,
+            "wakeups with no tree write and no surface change walk nothing"
+        );
+
+        crate::shell::tab_binding::adopt_toplevel_at(
+            &mut tree.write(),
+            SURFACE,
+            Some(APP.into()),
+            crate::shell::tab_binding::Placement::NewGroup,
+        );
+        assert!(
+            !state.client_input.app_ids_current(tree.generation()),
+            "a tree written since the last wakeup is not answered from the cache"
+        );
+        state.client_input.refresh_from_tree(&tree);
+        assert_eq!(state.client_input.tree_walks(), walks.saturating_add(1));
+        assert!(state.client_input.app_ids_current(tree.generation()));
+        assert_eq!(state.client_input.app_id(SURFACE), Some(APP));
+        for _ in 0..100 {
+            state.client_input.refresh_from_tree(&tree);
+        }
+        assert_eq!(state.client_input.tree_walks(), walks.saturating_add(1));
+    }
+
+    #[test]
+    fn capture_protection_is_rederived_only_after_an_input_changed() {
+        const KEYBOARD: u64 = 0x0188_0002;
+        const CONNECTION: u64 = 0x0188_0C02;
+        const APP: &str = "org.example.LoopGatingProtected";
+        let store = crate::compositor::foreign::store();
+        let mut state = make_state();
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 1);
+        for _ in 0..100 {
+            state.sync_capture_protection();
+        }
+        assert_eq!(
+            state.capture_protection_passes(),
+            1,
+            "wakeups that change nothing take neither the tree nor the protection lock"
+        );
+
+        drop(state.workspace_tree.write());
+        state.sync_capture_protection();
+        assert_eq!(
+            state.capture_protection_passes(),
+            2,
+            "a tree write may have renamed a protected window's tab"
+        );
+
+        state.osk_surface = Some(KEYBOARD);
+        state.sync_capture_protection();
+        assert_eq!(
+            state.capture_protection_passes(),
+            3,
+            "a new keyboard surface"
+        );
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 3);
+
+        store.request_app_capture_protection(CONNECTION, APP, true);
+        state.sync_capture_protection();
+        assert_eq!(
+            state.capture_protection_passes(),
+            4,
+            "an app asked for protection"
+        );
+        store.release_capture_protection(CONNECTION);
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 5, "and gave it up");
+        state.sync_capture_protection();
+        assert_eq!(state.capture_protection_passes(), 5);
+        store.forget(KEYBOARD);
+    }
+}
+
+smithay::delegate_presentation!(State);
+
+/// What the remote-input kill switch actually ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemoteInputEnded {
+    /// Shares that lost write access.
+    pub revoked: usize,
+    /// Participants (shares, seats, streams, controllers) that were live.
+    pub live: usize,
 }

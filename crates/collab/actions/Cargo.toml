@@ -18,16 +18,25 @@ path = "src/lib.rs"
 # `winit`, or rendering dependencies.
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 hex.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true
 chrono = { workspace = true, features = ["std"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-regex = "1"
-uuid = { version = "1.23.1", features = ["v4", "serde", "js"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = { version = "1.0", features = ["raw_value"] }
+# JSON Schema patterns are ECMA-262, whose `\d`, `\w` and `\b` are ASCII as
+# here; the full `regex` engine would sit in the browser start module.
+regex-lite.workspace = true
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
 thiserror.workspace = true
+blake3.workspace = true
+# Appearance names are compared and stored NFC-normalized.
+unicode-normalization = "0.1.25"
+# An avatar is checked by its sniffed image type.
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 
 [dev-dependencies]
 postcard = { workspace = true, features = ["alloc"] }
@@ -35,3 +44,11 @@ tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true
+
+# A browser page draws invocation ids from `crypto.getRandomValues`; a
+# `tilo_no_js` build has no page and takes getrandom's configured backend.
+[target.'cfg(all(target_family = "wasm", target_os = "unknown", not(tilo_no_js)))'.dependencies]
+uuid = { version = "1.23.1", features = ["js"] }
+
+[target.'cfg(all(target_family = "wasm", target_os = "unknown", tilo_no_js))'.dependencies]
+uuid = { version = "1.23.1", features = ["rng-getrandom"] }

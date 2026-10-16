@@ -1,0 +1,66 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "tube.library"
+label = "Tube"
+version = 1
+fields = [
+  { path = "likes", type = "Set<String>" },
+  { path = "queue", type = "Set<String>" },
+  { path = "subscriptions", type = "Set<String>" },
+  { path = "comment_likes", type = "Set<String>" },
+  { path = "replies", type = "Collection<Reply>", stored = "collection" },
+  { path = "replies.*.comment", type = "String", readonly = true },
+  { path = "replies.*.text", type = "String", label = true, readonly = true },
+]
+
+[[resources.verbs]]
+id = "reply-to-comment"
+kind = "undoable"
+params = [
+  { name = "comment", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "retract"
+kind = "undoable"
+params = [
+  { name = "reply", required = true, schema = { type = "string" } },
+]
+
+[[resources]]
+kind = "tube.watch-history"
+label = "Watch history"
+version = 1
+person = true
+fields = [
+  { path = "watched", type = "BTreeMap<String, u64>" },
+]
+
+[[resources.verbs]]
+id = "record"
+kind = "undoable"
+params = [
+  { name = "video", required = true, schema = { type = "string" } },
+  { name = "at_ms", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "import"
+kind = "undoable"
+params = [
+  { name = "watched", required = true, schema = { type = "array", items = { type = "array", maxItems = 2, minItems = 2 } } },
+]
+
+[[resources.verbs]]
+id = "forget"
+kind = "undoable"
+params = [
+  { name = "video", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "clear"
+kind = "undoable"
+

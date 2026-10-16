@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The SDK rich-text editor: the toolkit's block editor bound to qdoc's rich-text resource through the app framework"
+description = "The SDK rich-text editor: the toolkit's block editor bound to tilo-doc's rich-text resource through the app framework"
 
 [dependencies]
 # The framework the editor takes part in (surfaces, dispatcher, live state)
@@ -12,8 +12,8 @@ description = "The SDK rich-text editor: the toolkit's block editor bound to qdo
 ui = { package = "tilo-app", path = "../tilo-app", default-features = false }
 # The document model and its action vocabulary: every edit is a
 # `RichTextAction`, the one path editors, agents and scripts share.
-qdoc = { path = "../../doc/qdoc" }
-qdoc-rich-text = { path = "../../doc/qdoc-rich-text" }
+tilo-doc = { path = "../../doc/tilo-doc" }
+tilo-document = { path = "../../doc/tilo-document" }
 tracing.workspace = true
 # The owning resource's action a field edit travels in is serialized for replay.
 serde.workspace = true

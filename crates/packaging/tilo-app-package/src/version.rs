@@ -14,8 +14,7 @@ pub enum ReleaseChannel {
 
 impl ReleaseChannel {
     pub fn accepts(self, version: &str) -> bool {
-        self == Self::Development
-            || semver::Version::parse(version).map_or(true, |v| v.pre.is_empty())
+        self == Self::Development || !registry_types::version::is_prerelease(version)
     }
 }
 

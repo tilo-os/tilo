@@ -20,6 +20,14 @@ CANARY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CANARY)
 
 
+def workflow_job(workflow, name):
+    matches = list(re.finditer(rf"^  {re.escape(name)}:\n(.*?)(?=^  [\w-]+:|\Z)",
+                               workflow, re.M | re.S))
+    if len(matches) != 1:
+        raise AssertionError(f"expected exactly one workflow job {name}")
+    return matches[0].group(1)
+
+
 def step_script(workflow, name):
     step = workflow.split(f'- name: {name}\n', 1)[1]
     if step.split('        run: ', 1)[1].splitlines()[0] != '|':
@@ -60,6 +68,81 @@ def action_inputs(block):
 
 
 class BuilderCandidates(unittest.TestCase):
+    def test_windows_recipe_preserves_tooling_without_the_crypto_cli(self):
+        builder = (ROOT / 'os/Containerfile.builder').read_text()
+        block = builder.split('ARG JSIGN_VERSION=', 1)[1].split('\nRUN ', 1)[1].split('\n\n', 1)[0]
+        script = '\n'.join(line for line in block.splitlines()
+                           if not line.lstrip().startswith('--mount='))
+        # Run the actual shell recipe without downloading assets or modifying the
+        # host. Only the generated jsign wrapper is written, inside the fixture.
+        script = script.replace('/usr/local/bin/jsign', './jsign')
+        stubs = r'''
+record() { builtin printf '%s\n' "$*" >> calls; [[ $1 != "$FAIL_AT" ]]; }
+uname() { builtin printf '%s\n' "$ARCH"; }
+dnf() {
+  record dnf "$@" || return 1
+  if [[ $1 == install ]]; then builtin printf '%s\n' "$@" > packages; fi
+}
+awk() { builtin printf '%064d\n' 1; }
+sha256sum() { command cat >> checksums; record sha256sum "$@"; }
+tar() { record tar "$@"; }
+bash() { record bash "$@"; }
+wine() { record wine "$@"; }
+wineserver() { record wineserver "$@"; }
+cp() { record cp "$@"; }
+rm() { record rm "$@"; }
+install() { record install "$@"; }
+chmod() { record chmod "$@"; }
+jsign() { record jsign "$@"; }
+# Neither removed crypto tool may be reintroduced by the recipe.
+osslsigncode() { record osslsigncode "$@"; return 1; }
+openssl() { record openssl "$@"; return 1; }
+test() {
+  if [[ $1 == -f && $2 == /opt/inno-setup/ISCC.exe ]]; then
+    record inno-present
+  else
+    builtin test "$@"
+  fi
+}
+'''
+        for arch, failure in [('aarch64', 'none')] + [
+            ('x86_64', failure) for failure in
+            ('none', 'dnf', 'sha256sum', 'bash', 'wine', 'wineserver', 'cp',
+             'inno-present', 'install', 'chmod', 'jsign')
+        ]:
+            with self.subTest(arch=arch, failure=failure), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory)
+                result = subprocess.run(
+                    ['bash', '-e', '-c', stubs + script], cwd=work,
+                    env={**os.environ, 'ARCH': arch, 'FAIL_AT': failure,
+                         'INNO_SETUP_VERSION': '6.7.3', 'JSIGN_VERSION': '7.6'},
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode == 0, failure == 'none', result.stderr)
+                if arch == 'aarch64':
+                    self.assertEqual(list(work.iterdir()), [])
+                elif failure == 'none':
+                    self.assertEqual((work / 'packages').read_text().splitlines(), [
+                        'install', '-y', '--setopt=install_weak_deps=False',
+                        'wine-core', 'wine-common', 'wine-cms', 'java-25-openjdk-headless',
+                        'python3-pyyaml', 'python3-jsonschema',
+                    ])
+                    calls = (work / 'calls').read_text().splitlines()
+                    self.assertEqual(calls.count('sha256sum --check --strict'), 2)
+                    self.assertEqual((work / 'checksums').read_text().splitlines(), [
+                        f'{1:064d}  /tilo-assets/innosetup-6.7.3.exe',
+                        f'{1:064d}  /tilo-assets/jsign-7.6.jar',
+                    ])
+                    self.assertIn('bash /tmp/wine-prefix.sh', calls)
+                    self.assertIn('wineserver -w', calls)
+                    self.assertIn('cp -r /tmp/inno-prefix/drive_c/inno-setup /opt/inno-setup', calls)
+                    self.assertIn('inno-present', calls)
+                    self.assertIn('jsign --help', calls)
+                    self.assertFalse(any(call.split()[0] in ('openssl', 'osslsigncode')
+                                         for call in calls), calls)
+                    self.assertEqual((work / 'jsign').read_text(),
+                                     '#!/bin/sh\nexec java -jar /usr/local/share/jsign/jsign.jar "$@"\n')
+
     def test_registry_write_ordering(self):
         with self.subTest(phase="native_registry_writers_are_serialized"):
             build_job = BUILD.split('\n  build:\n', 1)[1].split('\n  images:\n', 1)[0]
@@ -170,15 +253,20 @@ class BuilderCandidates(unittest.TestCase):
             self.assertIn('runner: runner-arm64', BUILD)
             self.assertIn('name: builder-index-${{ github.sha }}', BUILD)
             # Native acceptance consumers must honor the resolved builder override.
-            # Selection only reads Cargo metadata and uses the qualified lean image.
-            security_job = CHECK.split('  security:\n', 1)[1].split('\n  native-dependencies:\n', 1)[0]
-            select_job = CHECK.split('  select:\n', 1)[1].split('\n  security:\n', 1)[0]
-            self.assertIn('image: ${{ needs.builder.outputs.image }}', security_job)
+            # Compile-free selection/security use the qualified lean image.
+            # Extract actual jobs: a removed following-name delimiter must not
+            # let a security assertion accidentally observe a native job.
+            security_job = workflow_job(CHECK, 'security')
+            select_job = workflow_job(CHECK, 'select')
             self.assertRegex(select_job, r'image: registry\.tilo\.so/tilo/ci-fast@sha256:[0-9a-f]{64}\n')
             qualified_image = next(line.strip() for line in
                                    (ROOT / '.forgejo/workflows/lint.yml').read_text().splitlines()
                                    if line.strip().startswith('image: '))
             self.assertIn(qualified_image, select_job)
+            self.assertIn(qualified_image, security_job)
+            self.assertNotIn('needs.builder.outputs.image', security_job)
+            self.assertIn('runs-on: runner-quality', security_job)
+            self.assertIn('run: bash tools/run-security-boundary-invariants.sh', security_job)
             self.assertIn('runs-on: runner-quality', select_job)
             self.assertIn('run: ./scripts/check-workspace-complete.sh', select_job)
             self.assertIn('run: python3 tools/policy/check_repository_layout.py', select_job)
@@ -188,15 +276,13 @@ class BuilderCandidates(unittest.TestCase):
             self.assertNotRegex(select_job, r'(?m)^    needs:')
             self.assertNotIn('needs.', select_job)
             self.assertIn("if: needs.select.outputs.security_required == 'true'", security_job)
-            self.assertIn('needs: [builder, select]', security_job)
+            self.assertIn('needs: [select]', security_job)
             self.assertNotIn('needs.builder.outputs.image', select_job)
-            shard_jobs = {}
-            for name, following in (('test', 'check'), ('check', 'clippy'), ('clippy', 'pins')):
-                self.assertEqual(CHECK.count(f'\n  {name}:\n'), 1)
-                shard_jobs[name] = CHECK.split(f'\n  {name}:\n', 1)[1].split(f'\n  {following}:\n', 1)[0]
+            shard_jobs = {name: workflow_job(CHECK, name)
+                          for name in ('test', 'check', 'clippy', 'android', 'wasm')}
             for name, job in shard_jobs.items():
                 with self.subTest(job=name):
-                    self.assertIn('    needs: [builder, select]', job)
+                    self.assertIn('    needs: [builder, select, security]', job)
                     self.assertIn('image: ${{ needs.builder.outputs.image }}', job)
                     self.assertIn('      - name: Checkout exact change', job)
                     self.assertIn('          fetch-depth: 1', job)

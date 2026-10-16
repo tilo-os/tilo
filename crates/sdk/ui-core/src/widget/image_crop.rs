@@ -1,6 +1,6 @@
 //! Shared direct-manipulation crop editor for scanner, Photos, and image tools.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -313,7 +313,7 @@ impl ImageCropEditor {
         scene.stroke(
             &Stroke::new(2.0),
             transform,
-            theme.accent_primary,
+            theme.tokens.colors.intent.inverted,
             None,
             &crop,
         );
@@ -333,7 +333,7 @@ impl ImageCropEditor {
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
-                theme.accent_primary,
+                theme.tokens.colors.intent.inverted,
                 None,
                 &handle,
             );
@@ -348,26 +348,16 @@ impl Widget for ImageCropEditor {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
-            },
+        let style = Style {
+            size: Size::from_percent(1.0, 1.0),
             flex_grow: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.image.apply_layout(taffy, node, origin);
     }
 
@@ -425,7 +415,7 @@ impl Widget for ImageCropEditor {
         &mut self,
         target: &str,
         action: &Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action {
@@ -512,14 +502,14 @@ mod tests {
             assert!(editor.perform_semantic_action(
                 "crop.left",
                 &Action::SetValue("40%".into()),
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert_eq!(state.get().left, 0.4);
             assert!(editor.perform_semantic_action(
                 "crop.right",
                 &Action::Decrement,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert!(state.get().right < 1.0);

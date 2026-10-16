@@ -17,21 +17,24 @@
 //! field is focused; on an incidental rebuild (a status line appearing)
 //! focus is preserved by ordinal so the caret never vanishes mid-edit.
 //!
-//! State lives in the CRDT (toolkit convention):
-//!   * `installer.username` — `Text`
-//!   * `installer.hostname` — `Text` (seeded `tilo`)
-//!   * `installer.timezone` — `Text` (seeded `UTC`)
-//!   * `installer.next` / `back` / `begin` — `bool` rising-edge flags
-//!   * `installer.reboot` / `poweroff` — `bool` rising-edge flags (Finish)
-//!   * `installer.disk.<i>` — `bool` disk-row selection rising edge
-//!   * `installer.fs.<i>`   — `bool` filesystem-segment selection rising edge
+//! The installer keeps nothing in its document. It runs once, on one
+//! machine, as a privileged process whose secrets must never reach CRDT
+//! history, and nothing else reads or syncs its state. Every choice of the
+//! install (disk, method, filesystem, security key, codecs, recovery
+//! promises) is wizard state written only by [`InstallerApp::apply`], the
+//! typed operation every door ends in. The typed and picked fields
+//! (username, full name, hostname, locale, time zone, keyboard layout, the
+//! destructive confirmation) are view state: each `TextInput` or `Dropdown`
+//! edits a [`ui::LocalState`] the wizard reads when it validates and
+//! installs, and the same operations set them for every other caller.
 //!
-//! A drained rising edge does not act by itself: it invokes the action the
-//! installer publishes for that control (see the `surface` module), through the same
-//! door the console and the host use, so a control can never do something
-//! its published action would refuse.
+//! A control does not act by itself either: it names the action the
+//! installer publishes for it (see the `surface` module) and queues one
+//! [`crate::control::Press`]; the wizard runs it through the same door the
+//! console and the host use, so a control can never do something its
+//! published action would refuse.
 //!
-//! The install runs on a **worker thread**: on the `begin` rising edge the
+//! The install runs on a **worker thread**: on `begin` the
 //! app spawns [`crate::install::run_install`] and streams each output line
 //! back through the winit `EventLoopProxy` as a `ui::UserEvent::External`,
 //! folded into the status log by [`InstallerApp::on_external_event`] — so
@@ -42,10 +45,11 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use ui::doc::{read_bool, read_text};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId};
+use serde_json::Value;
 use taffy::style_helpers::{length, percent};
 use taffy::{
     AlignItems, Dimension, Display, FlexDirection, JustifyContent, NodeId, Size, Style, TaffyTree,
@@ -66,8 +70,13 @@ use ui::theme::Theme;
 use ui::tokens::typography::TextRole;
 use ui::widget::{Dropdown, Row, Scrollable, Spacer, Spinner, Text, TextInput, Widget};
 
+use install_profile_model::{
+    FILESYSTEMS, valid_full_name, valid_hostname, valid_locale, valid_timezone_name, valid_username,
+};
+
 use crate::action_button::ActionButton;
 use crate::backend::{InstallBackend, SystemBackend};
+use crate::control::{Control, Press, Presses};
 use crate::disk_row::DiskRow;
 use crate::disks::{
     Disk, DiskPartition, EFI_SYSTEM_GUID, GuidedAlongsidePlan, LINUX_FILESYSTEM_GUID,
@@ -89,80 +98,21 @@ mod surface_tests;
 
 pub use console::{CONSOLE_WAKE, redact_recovery_material};
 
-const USERNAME_PATH: &str = "installer.username";
-const FULL_NAME_PATH: &str = "installer.full_name";
-const HOSTNAME_PATH: &str = "installer.hostname";
-const LOCALE_PATH: &str = "installer.locale";
-const TIMEZONE_PATH: &str = "installer.timezone";
-/// CRDT path holding the selected keyboard layout's *display name*.
-const KEYMAP_PATH: &str = "installer.keymap";
-/// Peer-local typed confirmation for the exact object that will be formatted:
-/// the whole disk for Erase, or the prepared root partition for Alongside.
-const ERASE_CONFIRM_PATH: &str = "installer.erase_confirmation";
-const NEXT_PATH: &str = "installer.next";
-const BACK_PATH: &str = "installer.back";
-const BEGIN_PATH: &str = "installer.begin";
-const REBOOT_PATH: &str = "installer.reboot";
-const POWEROFF_PATH: &str = "installer.poweroff";
-/// Rising-edge action that copies the one-time recovery key. The key itself
-/// never enters the CRDT; only this non-secret intent flag does.
-const RECOVERY_COPY_PATH: &str = "installer.recovery_copy";
-/// Post-generation acknowledgement. Unlike the Review-step promise, this can
-/// be raised only after the actual key exists and gates terminal power actions.
-const RECOVERY_SAVED_PATH: &str = "installer.recovery_saved";
-const NETWORK_REFRESH_PATH: &str = "installer.network.refresh";
-const NETWORK_CONNECT_PATH: &str = "installer.network.connect";
-const DISK_REFRESH_PATH: &str = "installer.disk.refresh";
-/// Staged (USB-free) installs only: leave the installer and restart into the
-/// retained OS. Firmware already consumed the one-shot `BootNext`.
-const RETURN_TO_HOST_PATH: &str = "installer.return_to_host";
-fn network_path(i: usize) -> String {
-    format!("installer.network.{i}")
-}
-/// Per-disk selection flag path: `installer.disk.<index>`.
-fn disk_path(i: usize) -> String {
-    format!("installer.disk.{i}")
-}
-fn guided_extent_path(i: usize) -> String {
-    format!("installer.guided_extent.{i}")
-}
-fn install_method_path(i: usize) -> String {
-    format!("installer.install_method.{i}")
-}
-/// Per-filesystem selection flag path: `installer.fs.<index>`.
-fn fs_path(i: usize) -> String {
-    format!("installer.fs.{i}")
-}
-/// Per-FIDO2-choice selection flag path: `installer.fido2.<index>`
-/// (index 0 = off, 1 = on). Mirrors the encryption segmented selector.
-fn fido2_path(i: usize) -> String {
-    format!("installer.fido2.{i}")
-}
-/// Per-choice selection flag path for the media codecs opt-in:
-/// `installer.codecs.<index>` (index 0 = not now, 1 = install).
-fn codecs_path(i: usize) -> String {
-    format!("installer.codecs.{i}")
-}
-/// Rising-edge flag toggling the "I've saved my recovery key" acknowledgement.
-const RECOVERY_ACK_PATH: &str = "installer.recovery_ack";
-
 /// Labels for the FIDO2 segmented selector, in display order. Index 0 (off)
 /// is the default; index 1 enrolls a hardware security key as an extra
 /// unlock factor. Only shown when encryption is on.
 pub const FIDO2_LABELS: [&str; 2] = ["No security key", "Enroll security key"];
 
-/// Labels for the media codecs opt-in, in display order. Index 0 (not now) is
-/// the default: the owner must choose to download third-party codecs.
-pub const CODECS_LABELS: [&str; 2] = ["Not now", "Install media codecs"];
+/// The heading of the media codecs opt-in.
+pub const CODECS_TITLE: &str = "Play more video and audio formats";
 
-/// What installing media codecs does and where they come from, shown under
-/// the choice. The installer only records the choice; the installed system
-/// downloads the packages directly from their publishers.
-pub const CODECS_DESCRIPTION: &str = "Enables hardware video on AMD and Intel graphics and \
-H.264/HEVC playback and encoding for videos, screen sharing and calls. After the first start, this \
-computer downloads them directly from RPM Fusion and Cisco (OpenH264) under their own licences, as \
-soon as it is online; Tilo does not host or distribute them. You can install or remove them later \
-in Settings, Updates.";
+/// What the Media step says once Install was pressed, above its Undo.
+pub const CODECS_CHOSEN: &str = "Chosen: installed once the new system is online";
+
+/// The one short line under the title. The installer only records the
+/// choice; the installed system downloads the formats once it is online.
+pub const CODECS_DESCRIPTION: &str = "Downloaded to this computer from the formats' publishers once \
+it is online. You can turn it off in Settings.";
 
 /// Default hostname seeded into the CRDT (and the installed system).
 const DEFAULT_HOSTNAME: &str = "tilo";
@@ -172,7 +122,6 @@ const DEFAULT_TIMEZONE: &str = "UTC";
 const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
 
 /// Filesystem choices, in display order. Index 0 is the default.
-pub const FILESYSTEMS: [&str; 3] = ["btrfs", "ext4", "xfs"];
 const OMITTED_INITRAMFS_DRIVERS: &str = "/usr/lib/tilo/initramfs-omitted-drivers.txt";
 
 fn filesystem_support_from_manifest(manifest: &str) -> Result<[bool; FILESYSTEMS.len()], String> {
@@ -191,9 +140,9 @@ fn filesystem_support_from_manifest(manifest: &str) -> Result<[bool; FILESYSTEMS
             };
             *flag = false;
         } else {
-            // The Lenovo image also omits unrelated GPU drivers to keep its UKI
-            // within the verified-boot size limit. Those entries do not change
-            // which filesystem the installer can offer.
+            // Every image also omits the large-firmware GPU drivers to keep its
+            // UKI small. Those entries do not change which filesystem the
+            // installer can offer.
             if !matches!(line, "amdgpu" | "nouveau" | "xe") {
                 return Err("The image has an invalid initramfs driver manifest".into());
             }
@@ -407,8 +356,6 @@ const CARD_GAP: f32 = 12.0;
 /// Breathing room around the card on compact displays. The card itself can
 /// narrow to the remaining width rather than extending beyond the viewport.
 const VIEWPORT_PADDING: f32 = 16.0;
-/// Reserved lane for the always-visible compact-view scrollbar.
-const SCROLLBAR_GUTTER: f32 = 14.0;
 /// Height of the install status log box.
 const STATUS_LOG_HEIGHT: f32 = 200.0;
 
@@ -420,14 +367,17 @@ pub enum Step {
     Disk,
     Account,
     Options,
+    /// The optional media formats: one Install button, nothing chosen in
+    /// advance.
+    Media,
     Review,
     Install,
 }
 
 /// Captions for the step-progress breadcrumb, index-aligned with
 /// [`step_index`].
-pub const STEP_LABELS: [&str; 7] = [
-    "Keyboard", "Network", "Disk", "Account", "Options", "Review", "Install",
+pub const STEP_LABELS: [&str; 8] = [
+    "Keyboard", "Network", "Disk", "Account", "Options", "Media", "Review", "Install",
 ];
 
 /// Position of `step` in the breadcrumb (0-based). Keyboard is first so the
@@ -439,8 +389,9 @@ pub fn step_index(step: Step) -> usize {
         Step::Disk => 2,
         Step::Account => 3,
         Step::Options => 4,
-        Step::Review => 5,
-        Step::Install => 6,
+        Step::Media => 5,
+        Step::Review => 6,
+        Step::Install => 7,
     }
 }
 
@@ -463,7 +414,8 @@ pub fn next_step(step: Step) -> Option<Step> {
         Step::Network => Some(Step::Disk),
         Step::Disk => Some(Step::Account),
         Step::Account => Some(Step::Options),
-        Step::Options => Some(Step::Review),
+        Step::Options => Some(Step::Media),
+        Step::Media => Some(Step::Review),
         Step::Review => Some(Step::Install),
         Step::Install => None,
     }
@@ -476,81 +428,12 @@ pub fn prev_step(step: Step) -> Option<Step> {
         Step::Disk => Some(Step::Network),
         Step::Account => Some(Step::Disk),
         Step::Options => Some(Step::Account),
-        Step::Review => Some(Step::Options),
+        Step::Media => Some(Step::Options),
+        Step::Review => Some(Step::Media),
         // Keyboard is the first step; Back out of Install is handled
         // specially (only on failure) by the app — see `go_back`.
         Step::Keyboard | Step::Install => None,
     }
-}
-
-/// Whether `h` is a usable hostname (letters/digits/hyphens, no leading
-/// or trailing hyphen, ≤ 63 chars).
-pub fn valid_hostname(h: &str) -> bool {
-    let h = h.trim();
-    !h.is_empty()
-        && h.len() <= 63
-        && h.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-        && !h.starts_with('-')
-        && !h.ends_with('-')
-}
-
-/// Whether `username` is portable across the Linux `useradd`
-/// implementations supported by the Tilo installer.
-pub fn valid_username(username: &str) -> bool {
-    let bytes = username.as_bytes();
-    !bytes.is_empty()
-        && bytes.len() <= 32
-        && bytes
-            .first()
-            .is_some_and(|c| matches!(c, b'a'..=b'z' | b'_'))
-        && bytes
-            .iter()
-            .skip(1)
-            .all(|c| matches!(c, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
-        && !matches!(
-            username,
-            "root"
-                | "bin"
-                | "daemon"
-                | "adm"
-                | "lp"
-                | "sync"
-                | "shutdown"
-                | "halt"
-                | "mail"
-                | "operator"
-                | "games"
-                | "ftp"
-                | "nobody"
-                | "dbus"
-                | "polkitd"
-                | "sshd"
-                | "chrony"
-                | "tss"
-                | "greetd"
-                | "tilo"
-        )
-}
-
-pub fn valid_full_name(full_name: &str) -> bool {
-    full_name.chars().count() <= 100
-        && !full_name
-            .chars()
-            .any(|c| c.is_control() || matches!(c, ':' | '\n' | '\r'))
-}
-
-pub fn valid_locale(locale: &str) -> bool {
-    crate::locales::contains(locale)
-}
-
-pub fn valid_timezone_name(timezone: &str) -> bool {
-    !timezone.is_empty()
-        && timezone.len() <= 128
-        && !timezone.starts_with('/')
-        && !timezone.contains("..")
-        && timezone
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'/' | b'+' | b'-'))
 }
 
 /// Guard for advancing out of `step`. `Ok(())` means it's valid to move
@@ -594,10 +477,10 @@ pub fn validate_step(
                 Err("Enter a valid hostname (letters, digits, hyphens)".to_string())
             }
         }
-        // A layout is always selected (seeded to the default) and
-        // Review/Install have nothing left to validate, so these steps
-        // never block forward progress.
-        Step::Network | Step::Keyboard | Step::Review | Step::Install => Ok(()),
+        // A layout is always selected (seeded to the default), the media
+        // formats are optional, and Review/Install have nothing left to
+        // validate, so these steps never block forward progress.
+        Step::Network | Step::Keyboard | Step::Media | Step::Review | Step::Install => Ok(()),
     }
 }
 
@@ -712,8 +595,6 @@ impl Card {
 }
 
 impl Widget for Card {
-    ui::provides!(dyn ui::undo::UndoPoints);
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -743,56 +624,36 @@ impl Widget for Card {
         // `new_with_children` only errors for a child `NodeId` from a
         // different tree, which never happens here since every id in
         // `child_nodes` was just built in this same tree by the calls above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just built in this same tree"
-        )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    align_items: Some(AlignItems::Stretch),
-                    gap: Size {
-                        width: length(0.0_f32),
-                        height: length(CARD_GAP),
-                    },
-                    padding: taffy::Rect {
-                        left: length(CARD_PADDING),
-                        right: length(CARD_PADDING),
-                        top: length(CARD_PADDING),
-                        bottom: length(CARD_PADDING),
-                    },
-                    size: Size {
-                        width: percent(1.0_f32),
-                        height: Dimension::auto(),
-                    },
-                    max_size: Size {
-                        width: length(CARD_WIDTH),
-                        height: Dimension::auto(),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-                &child_nodes,
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: Some(AlignItems::Stretch),
+            gap: Size {
+                width: length(0.0_f32),
+                height: length(CARD_GAP),
+            },
+            padding: taffy::Rect {
+                left: length(CARD_PADDING),
+                right: length(CARD_PADDING),
+                top: length(CARD_PADDING),
+                bottom: length(CARD_PADDING),
+            },
+            size: Size {
+                width: percent(1.0_f32),
+                height: Dimension::auto(),
+            },
+            max_size: Size {
+                width: length(CARD_WIDTH),
+                height: Dimension::auto(),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        taffy.widget_node(style, &child_nodes, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `layout` only errors for a `NodeId` from a different tree, which
-        // never happens here since `node` is always the id this same widget
-        // received from its own `build_layout` call.
-        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
-        let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let card_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(child_nodes) = taffy.children(node) {
             for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
@@ -821,7 +682,13 @@ impl Widget for Card {
         presence: &PresenceCtx,
     ) {
         let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
-        scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &shape);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &shape,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -835,22 +702,8 @@ impl Widget for Card {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) else {
-            return;
-        };
-        if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
-            if let Some(&cnode) = child_nodes.get(idx)
-                && let Some(child) = self.children.get_mut(idx)
-            {
-                child.handle_event(event, &mut ctx.reborrow(ctx.path, cnode));
-            }
-            return;
-        }
-        for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
-            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-            if *ctx.handled {
-                break;
-            }
+        if let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) {
+            ui::widget::route_to_children(&mut self.children, &child_nodes, event, ctx);
         }
     }
 
@@ -892,19 +745,6 @@ impl Widget for Card {
     }
 }
 
-impl ui::undo::UndoPoints for Card {
-    fn needs_commit(&self) -> bool {
-        self.children
-            .iter()
-            .any(|c| ui::undo::needs_commit(c.as_ref()))
-    }
-    fn on_commit(&mut self) {
-        for child in &mut self.children {
-            ui::undo::on_commit(child.as_mut());
-        }
-    }
-}
-
 // ===================================================================
 // ViewportStage — centres short cards, then lets the spacers collapse before
 // a tall card overflows into the surrounding Scrollable. This keeps the
@@ -927,8 +767,6 @@ impl ViewportStage {
 }
 
 impl Widget for ViewportStage {
-    ui::provides!(dyn ui::undo::UndoPoints);
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -940,53 +778,37 @@ impl Widget for ViewportStage {
             .iter_mut()
             .map(|child| child.build_layout(taffy, theme, node_map))
             .collect();
-        #[allow(
-            clippy::unwrap_used,
-            reason = "every child node was just created in this same tree"
-        )]
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    align_items: Some(AlignItems::Center),
-                    padding: taffy::Rect {
-                        left: length(VIEWPORT_PADDING),
-                        right: length(VIEWPORT_PADDING),
-                        top: length(VIEWPORT_PADDING),
-                        bottom: length(VIEWPORT_PADDING),
-                    },
-                    size: Size {
-                        width: percent(1.0_f32),
-                        // The scrollable measures this node for its scroll
-                        // extent. A fixed viewport height hid the overflowing
-                        // Review controls from the scrollbar.
-                        height: Dimension::auto(),
-                    },
-                    min_size: Size {
-                        width: Dimension::auto(),
-                        // Short steps still fill the viewport so the two
-                        // flexible spacers can centre the card.
-                        height: percent(1.0_f32),
-                    },
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-                &child_nodes,
-            )
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            align_items: Some(AlignItems::Center),
+            padding: taffy::Rect {
+                left: length(VIEWPORT_PADDING),
+                right: length(VIEWPORT_PADDING),
+                top: length(VIEWPORT_PADDING),
+                bottom: length(VIEWPORT_PADDING),
+            },
+            size: Size {
+                width: percent(1.0_f32),
+                // The scrollable measures this node for its scroll
+                // extent. A fixed viewport height hid the overflowing
+                // Review controls from the scrollbar.
+                height: Dimension::auto(),
+            },
+            min_size: Size {
+                width: Dimension::auto(),
+                // Short steps still fill the viewport so the two
+                // flexible spacers can centre the card.
+                height: percent(1.0_f32),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        taffy.widget_node(style, &child_nodes, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let own_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(child_nodes) = taffy.children(node) {
             for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
@@ -1017,26 +839,8 @@ impl Widget for ViewportStage {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) else {
-            return;
-        };
-        if let Some(index) = self
-            .children
-            .iter()
-            .position(|child| child.wants_pointer_capture())
-        {
-            if let (Some(child), Some(&child_node)) =
-                (self.children.get_mut(index), child_nodes.get(index))
-            {
-                child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-            }
-            return;
-        }
-        for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
-            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
-            if *ctx.handled {
-                break;
-            }
+        if let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) {
+            ui::widget::route_to_children(&mut self.children, &child_nodes, event, ctx);
         }
     }
 
@@ -1077,19 +881,6 @@ impl Widget for ViewportStage {
     }
 }
 
-impl ui::undo::UndoPoints for ViewportStage {
-    fn needs_commit(&self) -> bool {
-        self.children
-            .iter()
-            .any(|child| ui::undo::needs_commit(child.as_ref()))
-    }
-    fn on_commit(&mut self) {
-        for child in &mut self.children {
-            ui::undo::on_commit(child.as_mut());
-        }
-    }
-}
-
 // ===================================================================
 // InstallerApp
 // ===================================================================
@@ -1101,7 +892,7 @@ pub type ProxySlot = Arc<Mutex<Option<EventLoopProxy<UserEvent>>>>;
 
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is an independent wizard-state flag (encryption/FIDO2 opt-in, TPM presence, shot/bootstrap/dirty/focus one-shots), not a combinatorial state machine"
+    reason = "each bool is an independent wizard-state flag (encryption/FIDO2 opt-in, TPM presence, shot/dirty/focus one-shots), not a combinatorial state machine"
 )]
 pub struct InstallerApp {
     network: InstallerNetwork,
@@ -1155,10 +946,10 @@ pub struct InstallerApp {
     /// Explicit confirmation made after the concrete recovery key was shown.
     /// Copying to the live clipboard alone is not evidence of an off-device copy.
     recovery_key_saved: bool,
-    /// Cached account/system fields (mirror their CRDT Text objects) for
-    /// the Review display + backend argv.
-    username: String,
-    full_name: String,
+    /// Typed account/system fields, edited in place by their `TextInput`s
+    /// and read for validation, the Review display and the backend argv.
+    username: ui::LocalState<String>,
+    full_name: ui::LocalState<String>,
     // Secrets deliberately bypass Automerge: deleting CRDT text leaves the
     // old characters in document history. These buffers are local to the
     // privileged installer process and are zeroized when consumed.
@@ -1168,29 +959,35 @@ pub struct InstallerApp {
     /// is also the startup secret, preserving the graphical wizard behavior.
     disk_password: Arc<Mutex<String>>,
     wifi_password: Arc<Mutex<String>>,
-    hostname: String,
-    locale: String,
-    timezone: String,
-    /// Selected keyboard-layout *display name* (mirrors the
-    /// `installer.keymap` CRDT Text). Resolved to xkb layout/variant via
-    /// [`crate::layouts`] when building the install command.
-    keymap: String,
-    erase_confirmation: String,
+    hostname: ui::LocalState<String>,
+    locale: ui::LocalState<String>,
+    timezone: ui::LocalState<String>,
+    /// Selected keyboard-layout *display name*. Resolved to xkb
+    /// layout/variant via [`crate::layouts`] when building the install
+    /// command.
+    keymap: ui::LocalState<String>,
+    /// Typed confirmation for the exact object that will be formatted: the
+    /// whole disk for Erase, or the prepared root partition for Alongside.
+    erase_confirmation: ui::LocalState<String>,
+    /// The confirmation as of the last sync, so a user edit is told apart
+    /// from the wizard's own resets.
+    erase_confirmation_seen: String,
     /// Time-zone choices shown by the Options-step [`Dropdown`], sourced
     /// from the system at runtime (see [`crate::timezones::list_timezones`]).
     timezones: Vec<String>,
     /// Headless-shot only: build the Options-step time-zone dropdown in
-    /// its open state so `--shots --step options-open` captures the popup.
+    /// its open state so `--shots --scenario options-open` captures the popup.
     tz_open_for_shot: bool,
     /// Transient validation / error line under the controls.
     status: String,
-    bootstrap_done: bool,
+    /// Presses the composed controls queued, run by [`Self::run_presses`].
+    presses: Presses,
     dirty_structure: bool,
     /// One-shot: raised on a step transition so the App re-focuses the new
     /// step's first field. Drained via [`Widget::take_focus_reset`].
     focus_reset: bool,
     rect: Rect,
-    composed: Option<Box<dyn Widget>>,
+    composed: ui::widget::Composed,
     /// Set once the install worker thread has been spawned, so a stray
     /// extra `begin` can't launch a second install.
     install_launched: bool,
@@ -1267,7 +1064,7 @@ impl InstallerApp {
     /// Imager's setup choices. Nothing is confirmed; Review still shows every
     /// choice and requires the typed confirmation.
     fn apply_internal_handoff(&mut self, handoff: crate::internal_handoff::Handoff) {
-        let profile = handoff.media_profile();
+        let profile = crate::internal_handoff::media_profile(&handoff);
         self.internal_handoff = Some(handoff);
         if !self.bind_internal_handoff() {
             self.internal_handoff = None;
@@ -1320,7 +1117,7 @@ impl InstallerApp {
         self.internal_handoff
             .as_ref()
             .filter(|_| self.disks.iter().any(Disk::hosts_staged_installer))
-            .map(crate::internal_handoff::Handoff::host)
+            .map(|handoff| handoff.host_os)
     }
 
     fn selected_disk_hosts_installer(&self) -> bool {
@@ -1357,25 +1154,26 @@ impl InstallerApp {
             recovery_key: None,
             recovery_key_copied: false,
             recovery_key_saved: false,
-            username: String::new(),
-            full_name: String::new(),
+            username: ui::LocalState::new(String::new()),
+            full_name: ui::LocalState::new(String::new()),
             password: Arc::new(Mutex::new(String::new())),
             password_confirmation: Arc::new(Mutex::new(String::new())),
             disk_password: Arc::new(Mutex::new(String::new())),
             wifi_password: Arc::new(Mutex::new(String::new())),
-            hostname: DEFAULT_HOSTNAME.to_string(),
-            locale: "en_US.UTF-8".to_string(),
-            timezone: DEFAULT_TIMEZONE.to_string(),
-            keymap: DEFAULT_KEYMAP_NAME.to_string(),
-            erase_confirmation: String::new(),
+            hostname: ui::LocalState::new(DEFAULT_HOSTNAME.to_string()),
+            locale: ui::LocalState::new("en_US.UTF-8".to_string()),
+            timezone: ui::LocalState::new(DEFAULT_TIMEZONE.to_string()),
+            keymap: ui::LocalState::new(DEFAULT_KEYMAP_NAME.to_string()),
+            erase_confirmation: ui::LocalState::new(String::new()),
+            erase_confirmation_seen: String::new(),
             timezones: default_timezones(),
             tz_open_for_shot: false,
             status: String::new(),
-            bootstrap_done: false,
+            presses: Presses::default(),
             dirty_structure: false,
             focus_reset: false,
             rect: Rect::ZERO,
-            composed: None,
+            composed: ui::widget::Composed::default(),
             install_launched: false,
             storage_preflight_request: None,
             storage_preflight_passed: false,
@@ -1421,22 +1219,22 @@ impl InstallerApp {
             filesystem: profile.filesystem.is_some().into(),
         };
         if let Some(value) = profile.hostname {
-            self.hostname = value;
+            self.hostname.set(value);
         }
         if let Some(value) = profile.username {
-            self.username = value;
+            self.username.set(value);
         }
         if let Some(value) = profile.full_name {
-            self.full_name = value;
+            self.full_name.set(value);
         }
         if let Some(value) = profile.locale {
-            self.locale = value;
+            self.locale.set(value);
         }
         if let Some(value) = keyboard_display {
-            self.keymap = value;
+            self.keymap.set(value);
         }
         if let Some(value) = profile.timezone {
-            self.timezone = value;
+            self.timezone.set(value);
         }
         if let Some(value) = profile.filesystem {
             self.selected_fs = FILESYSTEMS
@@ -1517,14 +1315,14 @@ impl InstallerApp {
     pub fn for_shot(step: Step) -> Self {
         let mut app = Self::with_disks(sample_disks());
         app.step = step;
-        app.username = "ada".to_string();
-        app.full_name = "ada Example".to_string();
+        app.username.set("ada".to_string());
+        app.full_name.set("ada Example".to_string());
         app.password = Arc::new(Mutex::new("correct horse battery staple".to_string()));
         app.password_confirmation =
             Arc::new(Mutex::new("correct horse battery staple".to_string()));
-        app.hostname = DEFAULT_HOSTNAME.to_string();
-        app.timezone = DEFAULT_TIMEZONE.to_string();
-        app.keymap = DEFAULT_KEYMAP_NAME.to_string();
+        app.hostname.set(DEFAULT_HOSTNAME.to_string());
+        app.timezone.set(DEFAULT_TIMEZONE.to_string());
+        app.keymap.set(DEFAULT_KEYMAP_NAME.to_string());
         if !matches!(step, Step::Network | Step::Keyboard | Step::Disk) {
             app.selected_disk = Some(0);
         }
@@ -1537,7 +1335,7 @@ impl InstallerApp {
     }
 
     /// Mutate a `for_shot(Step::Options)` app so its time-zone dropdown
-    /// renders open — used by `--shots --step options-open` to capture the
+    /// renders open — used by `--shots --scenario options-open` to capture the
     /// overlay popup state.
     pub fn shot_open_timezone(&mut self) {
         self.step = Step::Options;
@@ -1562,6 +1360,12 @@ impl InstallerApp {
         self.step = Step::Options;
     }
 
+    /// Pose the Media step after its Install button was pressed.
+    pub fn shot_codecs_chosen(&mut self) {
+        self.step = Step::Media;
+        self.codecs = true;
+    }
+
     /// Pose the Disk screen with the preserving dual-boot choice selected.
     pub fn shot_alongside(&mut self) {
         self.step = Step::Disk;
@@ -1577,12 +1381,11 @@ impl InstallerApp {
     }
 
     /// Seed a non-default keyboard layout (by display name) for a
-    /// `--shots --step keyboard` render, so the visual preview clearly
-    /// shows remapped keys. The value is seeded into the CRDT on the first
-    /// `sync` via `Self::bootstrap_crdt`.
+    /// `--shots --scenario keyboard` render, so the visual preview clearly
+    /// shows remapped keys.
     pub fn shot_keymap(&mut self, display_name: &str) {
         self.step = Step::Keyboard;
-        self.keymap = display_name.to_string();
+        self.keymap.set(display_name.to_string());
     }
 
     /// Mutate a `for_shot(Install)` app into the success/Finish screen.
@@ -1690,7 +1493,22 @@ impl InstallerApp {
     /// Resolve the selected layout's display name to its dataset entry,
     /// falling back to the default (English / US) if it doesn't match.
     fn layout(&self) -> &'static layouts::Layout {
-        layouts::by_display_name(self.keymap.trim()).unwrap_or_else(layouts::default_layout)
+        layouts::by_display_name(self.keymap().trim()).unwrap_or_else(layouts::default_layout)
+    }
+
+    /// The chosen keyboard layout's display name.
+    fn keymap(&self) -> String {
+        local_text(&self.keymap)
+    }
+
+    /// The chosen locale.
+    fn locale(&self) -> String {
+        local_text(&self.locale)
+    }
+
+    /// The chosen time zone.
+    fn timezone(&self) -> String {
+        local_text(&self.timezone)
     }
 
     fn verified_boot_state(&self) -> VerifiedBootState {
@@ -1744,7 +1562,7 @@ impl InstallerApp {
 
     fn destructive_confirmation_ready(&self) -> bool {
         self.destructive_confirmation_target()
-            .is_some_and(|device| self.erase_confirmation.trim() == device)
+            .is_some_and(|device| self.erase_confirmation.with(|typed| typed.trim() == device))
     }
 
     /// Human-readable summary of the encryption factors for the Review step.
@@ -1827,10 +1645,10 @@ impl InstallerApp {
                 Vec::new()
             },
             filesystem: self.filesystem().to_string(),
-            hostname: self.hostname.trim().to_string(),
-            full_name: self.full_name.trim().to_string(),
-            locale: self.locale.trim().to_string(),
-            timezone: self.timezone.trim().to_string(),
+            hostname: local_text(&self.hostname).trim().to_string(),
+            full_name: local_text(&self.full_name).trim().to_string(),
+            locale: self.locale().trim().to_string(),
+            timezone: self.timezone().trim().to_string(),
             keymap: layout.xkb_layout.to_string(),
             keyvariant: layout.variant_or_empty().to_string(),
             pin: self.startup_secret(),
@@ -1856,113 +1674,19 @@ impl InstallerApp {
         self.viewport_offset.set((0.0, 0.0));
     }
 
-    fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
-        if state.get(root, USERNAME_PATH).ok().flatten().is_none()
-            && let Ok(obj) = state.put_object(root, USERNAME_PATH, ObjType::Text)
-            && !self.username.is_empty()
-        {
-            let _ = state.splice_text(&obj, 0, 0, &self.username);
-        }
-        if state.get(root, FULL_NAME_PATH).ok().flatten().is_none()
-            && let Ok(obj) = state.put_object(root, FULL_NAME_PATH, ObjType::Text)
-            && !self.full_name.is_empty()
-        {
-            let _ = state.splice_text(&obj, 0, 0, &self.full_name);
-        }
-        // Hostname / timezone seed with sensible defaults so the fields
-        // aren't blank (and validation passes out of the box).
-        if state.get(root, HOSTNAME_PATH).ok().flatten().is_none()
-            && let Ok(obj) = state.put_object(root, HOSTNAME_PATH, ObjType::Text)
-        {
-            let _ = state.splice_text(&obj, 0, 0, DEFAULT_HOSTNAME);
-        }
-        if state.get(root, TIMEZONE_PATH).ok().flatten().is_none()
-            && let Ok(obj) = state.put_object(root, TIMEZONE_PATH, ObjType::Text)
-        {
-            let _ = state.splice_text(&obj, 0, 0, DEFAULT_TIMEZONE);
-        }
-        if state.get(root, LOCALE_PATH).ok().flatten().is_none()
-            && let Ok(obj) = state.put_object(root, LOCALE_PATH, ObjType::Text)
-        {
-            let _ = state.splice_text(&obj, 0, 0, &self.locale);
-        }
-        // Keyboard layout seeds with the current selection (default or a
-        // shot-injected one), so the picker + preview aren't blank.
-        if state.get(root, KEYMAP_PATH).ok().flatten().is_none()
-            && let Ok(obj) = state.put_object(root, KEYMAP_PATH, ObjType::Text)
-        {
-            let _ = state.splice_text(&obj, 0, 0, &self.keymap);
-        }
-        if state.get(root, ERASE_CONFIRM_PATH).ok().flatten().is_none() {
-            let _ = state.put_object(root, ERASE_CONFIRM_PATH, ObjType::Text);
-        }
-        // The TPM2 PIN is a Text object so the masked TextInput can splice
-        // into it like every other field; it starts empty (no PIN).
-        for path in [
-            NEXT_PATH,
-            BACK_PATH,
-            BEGIN_PATH,
-            REBOOT_PATH,
-            POWEROFF_PATH,
-            RECOVERY_COPY_PATH,
-            RECOVERY_SAVED_PATH,
-            RECOVERY_ACK_PATH,
-            NETWORK_REFRESH_PATH,
-            NETWORK_CONNECT_PATH,
-            DISK_REFRESH_PATH,
-        ] {
-            if state.get(root, path).ok().flatten().is_none() {
-                let _ = state.put(root, path, false);
-            }
-        }
-        for i in 0..self.disks.len() {
-            let p = disk_path(i);
-            if state.get(root, p.as_str()).ok().flatten().is_none() {
-                let _ = state.put(root, p.as_str(), false);
-            }
-        }
-
-        for i in 0..INSTALL_METHOD_LABELS.len() {
-            let p = install_method_path(i);
-            if state.get(root, p.as_str()).ok().flatten().is_none() {
-                let _ = state.put(root, p.as_str(), false);
-            }
-        }
-        for i in 0..self.network.snapshot.networks.len() {
-            let p = network_path(i);
-            if state.get(root, p.as_str()).ok().flatten().is_none() {
-                let _ = state.put(root, p.as_str(), false);
-            }
-        }
-        for i in 0..FILESYSTEMS.len() {
-            let p = fs_path(i);
-            if state.get(root, p.as_str()).ok().flatten().is_none() {
-                let _ = state.put(root, p.as_str(), false);
-            }
-        }
-        for i in 0..FIDO2_LABELS.len() {
-            let p = fido2_path(i);
-            if state.get(root, p.as_str()).ok().flatten().is_none() {
-                let _ = state.put(root, p.as_str(), false);
-            }
-        }
-        for i in 0..CODECS_LABELS.len() {
-            let p = codecs_path(i);
-            if state.get(root, p.as_str()).ok().flatten().is_none() {
-                let _ = state.put(root, p.as_str(), false);
-            }
-        }
+    /// Reset the typed confirmation. A reset is the wizard's own change,
+    /// not a user edit, so the next sync leaves the status line alone.
+    fn clear_erase_confirmation(&mut self) {
+        self.set_erase_confirmation(String::new());
     }
 
-    fn clear_text(state: &mut AutoCommit, root: &ObjId, path: &str) {
-        if let Ok(Some((Value::Object(ObjType::Text), object))) = state.get(root, path) {
-            let delete = isize::try_from(state.length(&object)).unwrap_or(isize::MAX);
-            let _ = state.splice_text(&object, 0, delete, "");
-        }
+    fn set_erase_confirmation(&mut self, value: String) {
+        self.erase_confirmation.set(value.clone());
+        self.erase_confirmation_seen = value;
     }
 
     fn validate_current_step_details(&self) -> Result<(), String> {
-        if self.step == Step::Account && !valid_full_name(self.full_name.trim()) {
+        if self.step == Step::Account && !valid_full_name(local_text(&self.full_name).trim()) {
             return Err(
                 "Use at most 100 characters for the name, without colons or control characters"
                     .into(),
@@ -1990,14 +1714,12 @@ impl InstallerApp {
             if !self.filesystem_policy_ready() {
                 return Err(self.filesystem_policy_message());
             }
-            if !valid_locale(self.locale.trim()) {
+            if !valid_locale(self.locale().trim()) {
                 return Err("Choose a supported language and locale from the list".into());
             }
-            if !valid_timezone_name(self.timezone.trim())
-                || !self
-                    .timezones
-                    .iter()
-                    .any(|zone| zone == self.timezone.trim())
+            let timezone = self.timezone();
+            if !valid_timezone_name(timezone.trim())
+                || !self.timezones.iter().any(|zone| zone == timezone.trim())
             {
                 return Err("Choose a valid time zone from the list".into());
             }
@@ -2055,8 +1777,8 @@ impl InstallerApp {
         match validate_step(
             self.step,
             self.selected_disk,
-            &self.username,
-            &self.hostname,
+            &local_text(&self.username),
+            &local_text(&self.hostname),
         ) {
             Ok(()) => {
                 if let Err(message) = self.validate_current_step_details() {
@@ -2076,15 +1798,18 @@ impl InstallerApp {
                             completion.timezone = FieldCompletion::Complete;
                             completion.filesystem = FieldCompletion::Complete;
                         }
-                        Step::Network | Step::Disk | Step::Review | Step::Install => {}
+                        Step::Network | Step::Disk | Step::Media | Step::Review | Step::Install => {
+                        }
                     }
                 }
+                // A profile that answered every option skips that page, but
+                // never the media formats: only the person opts in to them.
                 let destination = if self.step == Step::Account
                     && self
                         .profile_completion
                         .is_some_and(ProfileCompletion::options_complete)
                 {
-                    Some(Step::Review)
+                    Some(Step::Media)
                 } else {
                     next_step(self.step)
                 };
@@ -2153,7 +1878,7 @@ impl InstallerApp {
                 self.step = Step::Disk;
                 self.selected_disk = None;
                 self.selected_guided_extent = None;
-                self.erase_confirmation.clear();
+                self.clear_erase_confirmation();
                 self.guided_efi_partuuid = uuid::Uuid::new_v4().to_string();
                 self.guided_boot_partuuid = uuid::Uuid::new_v4().to_string();
                 self.guided_root_partuuid = uuid::Uuid::new_v4().to_string();
@@ -2189,7 +1914,7 @@ impl InstallerApp {
         clippy::too_many_lines,
         reason = "installer preflight and worker launch are one ordered operation"
     )]
-    fn begin_install(&mut self, state: &AutoCommit, root: &ObjId) {
+    fn begin_install(&mut self) {
         if self.install_launched {
             return;
         }
@@ -2232,7 +1957,7 @@ impl InstallerApp {
             self.set_status(message);
             return;
         }
-        let user = read_text(state, root, USERNAME_PATH).unwrap_or_default();
+        let user = local_text(&self.username);
         let password = secret_copy(&self.password);
         let confirmation = secret_copy(&self.password_confirmation);
         if let Err(message) = validate_passwords(&password, &confirmation) {
@@ -2358,6 +2083,62 @@ impl InstallerApp {
         }
     }
 
+    /// A control running `action` on `resource` with `args`.
+    fn control(&self, resource: &str, action: &str, args: Value) -> Control {
+        self.presses.control(Press::new(resource, action, args))
+    }
+
+    fn next_control(&self) -> Control {
+        self.control(op::SESSION, "next", Value::Null)
+    }
+
+    fn back_control(&self) -> Control {
+        self.control(op::SESSION, "back", Value::Null)
+    }
+
+    /// A navigation row for `step`: `Back` (secondary) — shown only when the
+    /// step has a predecessor, so the first step has no dangling Back — plus
+    /// the forward action (`forward_label`, primary, running `forward`,
+    /// optionally disabled). A real `ui::Row` so its buttons stay in the
+    /// focusable order (widget tree mirrors taffy).
+    fn nav_row(
+        &self,
+        step: Step,
+        forward: Control,
+        forward_label: &str,
+        forward_disabled: bool,
+    ) -> Box<dyn Widget> {
+        let mut row = Row::new();
+        if prev_step(step).is_some() {
+            row = row.push(Box::new(ActionButton::new("Back", self.back_control())));
+        }
+        row = row.push(Box::new(
+            ActionButton::new(forward_label, forward)
+                .primary()
+                .disabled(forward_disabled),
+        ));
+        Box::new(row)
+    }
+
+    /// The Finish-screen action row: Reboot (primary) + Power off (secondary).
+    fn finish_row(&self, disabled: bool) -> Box<dyn Widget> {
+        Box::new(
+            Row::new()
+                .push(Box::new(
+                    ActionButton::new("Reboot now", self.control(op::POWER, "reboot", Value::Null))
+                        .primary()
+                        .disabled(disabled),
+                ))
+                .push(Box::new(
+                    ActionButton::new(
+                        "Power off",
+                        self.control(op::POWER, "power-off", Value::Null),
+                    )
+                    .disabled(disabled),
+                )),
+        )
+    }
+
     /// Build the composed card subtree for the current step.
     fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
         let mut children: Vec<Box<dyn Widget>> = vec![Box::new(StepIndicator::new(
@@ -2368,14 +2149,16 @@ impl InstallerApp {
             step_index(self.step),
         ))];
 
+        let mut actions: Vec<Box<dyn Widget>> = Vec::new();
         match self.step {
-            Step::Network => self.compose_network_step(theme, &mut children),
-            Step::Disk => self.compose_disk_step(theme, &mut children),
-            Step::Account => self.compose_account_step(theme, &mut children),
-            Step::Keyboard => Self::compose_keyboard_step(theme, &mut children),
-            Step::Options => self.compose_options_step(theme, &mut children),
-            Step::Review => self.compose_review_step(theme, &mut children),
-            Step::Install => self.compose_install_step(theme, &mut children),
+            Step::Network => self.compose_network_step(theme, &mut children, &mut actions),
+            Step::Disk => self.compose_disk_step(theme, &mut children, &mut actions),
+            Step::Account => self.compose_account_step(theme, &mut children, &mut actions),
+            Step::Keyboard => self.compose_keyboard_step(theme, &mut children, &mut actions),
+            Step::Options => self.compose_options_step(theme, &mut children, &mut actions),
+            Step::Media => self.compose_media_step(theme, &mut children, &mut actions),
+            Step::Review => self.compose_review_step(theme, &mut children, &mut actions),
+            Step::Install => self.compose_install_step(theme, &mut children, &mut actions),
         }
 
         // A staged install has no medium to pull: offer the way back to the
@@ -2386,53 +2169,76 @@ impl InstallerApp {
                 InstallState::Running | InstallState::Done
             )
         {
-            children.push(Box::new(
+            actions.push(Box::new(
                 ActionButton::new(
                     &format!("Return to {}", host.display_name()),
-                    RETURN_TO_HOST_PATH,
+                    self.control(op::SESSION, "return-to-host", Value::Null),
                 )
                 .with_test_id("return_to_host"),
             ));
         }
 
-        // A transient validation/error line under every step's controls.
+        // Validation stays alongside the actions, outside the content viewport.
         if !self.status.is_empty() {
-            children.push(Box::new(
+            actions.push(Box::new(
                 Text::new(&self.status)
-                    .with_size(theme.tokens.typography.scale.sm)
+                    .with_id("installer.validation")
+                    .with_role(TextRole::Caption)
                     .with_color(theme.tokens.colors.semantic.danger)
                     .with_live(Politeness::Assertive),
             ));
         }
 
         let card: Box<dyn Widget> = Box::new(Card::new(children));
-        Box::new(
-            Scrollable::new_vertical()
-                .fill_parent_height()
-                .with_content_gutter(SCROLLBAR_GUTTER)
-                .with_persisted_offset(Rc::clone(&self.viewport_offset))
-                .always_visible()
-                .with_child(Box::new(ViewportStage::new(card))),
-        )
+        let scroll = Scrollable::new_vertical()
+            .fill_parent_height()
+            .with_focus_reveal()
+            .with_persisted_offset(Rc::clone(&self.viewport_offset))
+            .always_visible()
+            .with_child(Box::new(ViewportStage::new(card)));
+        let mut page = ui::widget::Column::new()
+            .with_no_padding()
+            .with_gap(0.0)
+            .push(Box::new(scroll));
+        if !actions.is_empty() {
+            let mut footer = ui::widget::Column::new()
+                .with_id("installer.actions")
+                .with_intrinsic_height()
+                .with_gap(theme.tokens.spacing.s2);
+            for action in actions {
+                footer = footer.push(action);
+            }
+            page = page.push(Box::new(
+                ui::widget::Container::new()
+                    .with_no_padding()
+                    .with_centered_max_width(theme.tokens.metrics.readable_width)
+                    .with_child(Box::new(footer)),
+            ));
+        }
+        Box::new(page)
     }
 
-    fn compose_network_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_network_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
         let dim = theme.text_dim;
-        let xl = theme.tokens.typography.scale.xl;
-        let base = theme.tokens.typography.scale.base;
-        let sm = theme.tokens.typography.scale.sm;
 
-        children.push(Box::new(Text::new("Connect to a network").with_size(xl)));
+        children.push(Box::new(
+            Text::new("Connect to a network").with_role(TextRole::Title),
+        ));
         children.push(Box::new(
             Text::new(
                 "Optional — Tilo installs from this medium and does not require internet access.",
             )
-            .with_size(sm)
+            .with_role(TextRole::Caption)
             .with_color(dim),
         ));
         children.push(Box::new(
             Text::new(&self.network.notice)
-                .with_size(base)
+                .with_role(TextRole::Body)
                 .with_color(theme.text_primary),
         ));
 
@@ -2441,9 +2247,13 @@ impl InstallerApp {
                 NetworkPhase::Connecting(ssid) => format!("Connecting to {ssid}…"),
                 _ => "Checking networks…".to_string(),
             };
-            children.push(Box::new(Row::new().push(Box::new(Spinner::new())).push(
-                Box::new(Text::new(&operation).with_size(sm).with_color(dim)),
-            )));
+            children.push(Box::new(
+                Row::new().push(Box::new(Spinner::new())).push(Box::new(
+                    Text::new(&operation)
+                        .with_role(TextRole::Caption)
+                        .with_color(dim),
+                )),
+            ));
         }
 
         self.compose_network_choices(theme, children);
@@ -2452,7 +2262,9 @@ impl InstallerApp {
             && !selected.connected
         {
             if selected.secure {
-                children.push(Box::new(Text::new("Wi-Fi password").with_size(base)));
+                children.push(Box::new(
+                    Text::new("Wi-Fi password").with_role(TextRole::Body),
+                ));
                 children.push(Box::new(
                     TextInput::new(Vec::new())
                         .with_id("installer.wifi_password")
@@ -2461,7 +2273,7 @@ impl InstallerApp {
                 ));
             }
             children.push(Box::new(
-                ActionButton::new("Connect", NETWORK_CONNECT_PATH)
+                ActionButton::new("Connect", self.control(op::NETWORK, "connect", Value::Null))
                     .primary()
                     .disabled(self.network.is_busy()),
             ));
@@ -2470,12 +2282,12 @@ impl InstallerApp {
         if let Some(uri) = self.network.snapshot.portal_uri.as_deref() {
             children.push(Box::new(
                 Text::new(&format!("Network sign-in address: {uri}"))
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(theme.text_primary),
             ));
             children.push(Box::new(
                 Text::new("For safety, the privileged live installer does not open portal web content. Continue offline, then open this address after first boot.")
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
         } else if let Some(error) = self.network.snapshot.portal_error.as_deref() {
@@ -2483,19 +2295,22 @@ impl InstallerApp {
                 Text::new(&format!(
                     "A sign-in page was detected but cannot be opened: {error}"
                 ))
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
             ));
         }
 
         children.push(Box::new(
             Text::new("Wi-Fi connections made here are saved for first boot. You can also continue without one.")
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
         children.push(Box::new(
-            ActionButton::new("Refresh networks", NETWORK_REFRESH_PATH)
-                .disabled(self.network.is_busy()),
+            ActionButton::new(
+                "Refresh networks",
+                self.control(op::NETWORK, "refresh", Value::Null),
+            )
+            .disabled(self.network.is_busy()),
         ));
         let continue_label =
             if self.network.snapshot.connectivity == os_actions::ConnectivityState::Full {
@@ -2503,18 +2318,17 @@ impl InstallerApp {
             } else {
                 "Continue offline"
             };
-        children.push(nav_row(Step::Network, NEXT_PATH, continue_label, false));
+        actions.push(self.nav_row(Step::Network, self.next_control(), continue_label, false));
     }
 
     /// Add the Wi-Fi error or the currently visible network choices.
     fn compose_network_choices(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
-        let sm = theme.tokens.typography.scale.sm;
 
         if let Some(error) = self.network.snapshot.wifi_error.as_deref() {
             children.push(Box::new(
                 Text::new(&format!("Wi-Fi controls unavailable: {error}"))
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
         } else {
@@ -2534,36 +2348,51 @@ impl InstallerApp {
                     network.signal
                 );
                 children.push(Box::new(
-                    ActionButton::new(&label, &network_path(i))
-                        .with_test_id(&format!("wifi_network_{i}"))
-                        .disabled(self.network.is_busy()),
+                    ActionButton::new(
+                        &label,
+                        self.control(
+                            op::NETWORK,
+                            "select",
+                            serde_json::json!({ "ssid": network.ssid }),
+                        ),
+                    )
+                    .with_test_id(&format!("wifi_network_{i}"))
+                    .disabled(self.network.is_busy()),
                 ));
             }
         }
     }
 
-    fn compose_disk_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_disk_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
         let danger = theme.tokens.colors.semantic.danger;
-        let xl = theme.tokens.typography.scale.xl;
-        let base = theme.tokens.typography.scale.base;
-        let sm = theme.tokens.typography.scale.sm;
 
-        children.push(Box::new(Text::new("Install Tilo").with_size(xl)));
+        children.push(Box::new(
+            Text::new("Install Tilo").with_role(TextRole::Title),
+        ));
         self.compose_install_method(theme, children);
         children.push(Box::new(
-            ActionButton::new("Refresh disks", DISK_REFRESH_PATH).with_test_id("disk_refresh"),
+            ActionButton::new(
+                "Refresh disks",
+                self.control(op::STORAGE, "refresh", Value::Null),
+            )
+            .with_test_id("disk_refresh"),
         ));
         if self.disks.is_empty() {
             children.push(Box::new(
-                Text::new("No disks found — is this running on real hardware?")
-                    .with_size(base)
+                Text::new(&crate::i18n::t("installer-storage-no-drives"))
+                    .with_role(TextRole::Body)
                     .with_color(danger),
             ));
         } else {
             for (i, disk) in self.disks.iter().enumerate() {
                 children.push(Box::new(DiskRow::new(
                     disk.clone(),
-                    &disk_path(i),
+                    self.control(&op::disk_resource(&disk.name), "select", Value::Null),
                     self.selected_disk == Some(i),
                 )));
             }
@@ -2580,7 +2409,7 @@ impl InstallerApp {
         if read_only {
             children.push(Box::new(
                 Text::new("This disk is hardware or policy write-protected.")
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(danger),
             ));
         }
@@ -2591,7 +2420,9 @@ impl InstallerApp {
         {
             let message = self.alongside_unavailable_message(&guided_plans);
             children.push(Box::new(
-                Text::new(&message).with_size(sm).with_color(danger),
+                Text::new(&message)
+                    .with_role(TextRole::Caption)
+                    .with_color(danger),
             ));
         } else if self.install_method == InstallMethod::Alongside
             && self.uses_guided_alongside()
@@ -2603,13 +2434,13 @@ impl InstallerApp {
                     plan.free_size_bytes / (1024 * 1024 * 1024),
                     plan.root_size_bytes / (1024 * 1024 * 1024)
                 ))
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(theme.status_success),
             ));
         }
-        children.push(nav_row(
+        actions.push(self.nav_row(
             Step::Disk,
-            NEXT_PATH,
+            self.next_control(),
             "Next",
             self.selected_disk.is_none() || unavailable,
         ));
@@ -2620,7 +2451,6 @@ impl InstallerApp {
     fn compose_install_method(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
         let dim = theme.text_dim;
         let danger = theme.tokens.colors.semantic.danger;
-        let sm = theme.tokens.typography.scale.sm;
         if let Some(host) = self
             .internal_host()
             .filter(|_| self.selected_disk_hosts_installer())
@@ -2631,7 +2461,7 @@ impl InstallerApp {
                     host.display_name(),
                     host.display_name()
                 ))
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
             ));
         } else {
@@ -2641,26 +2471,35 @@ impl InstallerApp {
                         .iter()
                         .map(|s| (*s).to_string())
                         .collect(),
-                    (0..INSTALL_METHOD_LABELS.len())
-                        .map(install_method_path)
+                    ["erase", "alongside"]
+                        .iter()
+                        .map(|method| {
+                            self.control(
+                                op::STORAGE,
+                                "set-method",
+                                serde_json::json!({ "method": method }),
+                            )
+                        })
                         .collect(),
                     usize::from(self.install_method == InstallMethod::Alongside),
                 )
                 .with_test_id("install_method"),
             ));
         }
-        let guidance = if self.install_method == InstallMethod::Erase {
-            "Erase disk deletes every partition and operating system on the selected disk."
+        let guidance = crate::i18n::t(if self.install_method == InstallMethod::Erase {
+            "installer-storage-erase-warning"
         } else {
-            "Alongside preserves existing partitions. Tilo can use one unallocated GPT extent (35 GiB+) or prepared Tilo partitions. It never shrinks, moves, or deletes an existing partition."
-        };
-        children.push(Box::new(Text::new(guidance).with_size(sm).with_color(
-            if self.install_method == InstallMethod::Erase {
-                danger
-            } else {
-                dim
-            },
-        )));
+            "installer-storage-keep-guidance"
+        });
+        children.push(Box::new(
+            Text::new(&guidance)
+                .with_role(TextRole::Caption)
+                .with_color(if self.install_method == InstallMethod::Erase {
+                    danger
+                } else {
+                    dim
+                }),
+        ));
     }
 
     fn windows_alongside_preparation(&self, theme: &Theme) -> Option<Box<dyn Widget>> {
@@ -2671,7 +2510,7 @@ impl InstallerApp {
         .then(|| {
             Box::new(
                 Text::new(WINDOWS_ALONGSIDE_PREPARATION)
-                    .with_size(theme.tokens.typography.scale.sm)
+                    .with_role(TextRole::Caption)
                     .with_color(theme.tokens.colors.semantic.warning),
             ) as Box<dyn Widget>
         })
@@ -2700,8 +2539,7 @@ impl InstallerApp {
         plans: &[GuidedAlongsidePlan],
     ) {
         children.push(Box::new(
-            Text::new("Choose the exact unallocated region for Tilo")
-                .with_size(theme.tokens.typography.scale.base),
+            Text::new("Choose the exact unallocated region for Tilo").with_role(TextRole::Body),
         ));
         for (index, plan) in plans.iter().enumerate() {
             let start_gib = plan.free_start_bytes / (1024 * 1024 * 1024);
@@ -2712,22 +2550,27 @@ impl InstallerApp {
                 format!("Use {size_gib} GiB free at {start_gib} GiB")
             };
             children.push(Box::new(
-                ActionButton::new(&label, &guided_extent_path(index))
-                    .with_test_id(&format!("guided_extent_{index}")),
+                ActionButton::new(
+                    &label,
+                    self.control(&op::region_resource(index), "select", Value::Null),
+                )
+                .with_test_id(&format!("guided_extent_{index}")),
             ));
         }
         children.push(Box::new(
             Text::new("The location is measured from the start of the selected disk. Existing partitions between free regions remain untouched.")
-                .with_size(theme.tokens.typography.scale.sm)
+                .with_role(TextRole::Caption)
                 .with_color(theme.text_dim),
         ));
     }
 
-    fn compose_account_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_account_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
         let dim = theme.text_dim;
-        let xl = theme.tokens.typography.scale.xl;
-        let base = theme.tokens.typography.scale.base;
-        let sm = theme.tokens.typography.scale.sm;
 
         let completion = self.profile_completion.unwrap_or_default();
         let identity_complete = self
@@ -2739,27 +2582,36 @@ impl InstallerApp {
             } else {
                 "Create your account"
             })
-            .with_size(xl),
+            .with_role(TextRole::Title),
         ));
-        if self.profile_completion.is_none() || !completion.username.is_complete() {
-            children.push(Box::new(Text::new("Username").with_size(base)));
+        if self.profile_completion.is_none() || !completion.full_name.is_complete() {
             children.push(Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("installer.username")
-                    .with_on_change_path(USERNAME_PATH),
+                Text::new(&crate::i18n::t("installer-account-name")).with_role(TextRole::Body),
             ));
             children.push(Box::new(
-                Text::new("Used to sign in and for your home directory.")
-                    .with_size(sm)
+                TextInput::from_state(&self.full_name)
+                    .with_id("installer.full_name")
+                    .with_accessible_name(crate::i18n::t("installer-account-name")),
+            ));
+            children.push(Box::new(
+                Text::new(&crate::i18n::t("installer-account-name-note"))
+                    .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
         }
-        if self.profile_completion.is_none() || !completion.full_name.is_complete() {
-            children.push(Box::new(Text::new("Full name (optional)").with_size(base)));
+        if self.profile_completion.is_none() || !completion.username.is_complete() {
             children.push(Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("installer.full_name")
-                    .with_on_change_path(FULL_NAME_PATH),
+                Text::new(&crate::i18n::t("installer-account-username")).with_role(TextRole::Body),
+            ));
+            children.push(Box::new(
+                TextInput::from_state(&self.username)
+                    .with_id("installer.username")
+                    .with_accessible_name(crate::i18n::t("installer-account-username")),
+            ));
+            children.push(Box::new(
+                Text::new(&crate::i18n::t("installer-account-username-note"))
+                    .with_role(TextRole::Caption)
+                    .with_color(dim),
             ));
         }
         let tpm_pin = matches!(
@@ -2767,194 +2619,318 @@ impl InstallerApp {
             VerifiedBootState::TargetVerified
         );
         children.push(Box::new(
-            Text::new(if tpm_pin {
-                "TPM-protected startup PIN"
+            Text::new(&crate::i18n::t(if tpm_pin {
+                "installer-account-pin"
             } else {
-                "Startup and unlock passphrase"
-            })
-            .with_size(base),
+                "installer-account-password"
+            }))
+            .with_role(TextRole::Body),
         ));
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password")
+                .with_accessible_name(crate::i18n::t(if tpm_pin {
+                    "installer-account-pin"
+                } else {
+                    "installer-account-password"
+                }))
                 .with_external_buffer(Arc::clone(&self.password))
                 .with_secret(true),
         ));
         children.push(Box::new(
-            Text::new(if tpm_pin {
-                "Use at least 6 digits. The TPM rate-limits guesses; keep the recovery key for hardware changes."
+            Text::new(&crate::i18n::t(if tpm_pin {
+                "installer-account-pin-note"
             } else {
-                "Choose at least 15 characters, ideally several unrelated words. It decrypts the disk at startup and unlocks your session later."
-            })
-            .with_size(sm)
+                "installer-account-password-note"
+            }))
+            .with_role(TextRole::Caption)
             .with_color(dim),
         ));
         children.push(Box::new(
-            Text::new(if tpm_pin {
-                "Confirm TPM-protected startup PIN"
+            Text::new(&crate::i18n::t(if tpm_pin {
+                "installer-account-pin-confirm"
             } else {
-                "Confirm startup and unlock passphrase"
-            })
-            .with_size(base),
+                "installer-account-password-confirm"
+            }))
+            .with_role(TextRole::Body),
         ));
         children.push(Box::new(
             TextInput::new(Vec::new())
                 .with_id("installer.password_confirm")
+                .with_accessible_name(crate::i18n::t(if tpm_pin {
+                    "installer-account-pin-confirm"
+                } else {
+                    "installer-account-password-confirm"
+                }))
                 .with_external_buffer(Arc::clone(&self.password_confirmation))
                 .with_secret(true),
         ));
-        children.push(nav_row(Step::Account, NEXT_PATH, "Next", false));
+        actions.push(self.nav_row(Step::Account, self.next_control(), "Next", false));
     }
 
-    fn compose_keyboard_step(theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_keyboard_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
         let dim = theme.text_dim;
-        let xl = theme.tokens.typography.scale.xl;
-        let sm = theme.tokens.typography.scale.sm;
 
-        children.push(Box::new(Text::new("Keyboard layout").with_size(xl)));
         children.push(Box::new(
-            Text::new("Pick the layout that matches your keyboard. The preview below shows exactly what each key will type.")
-                .with_size(sm)
+            Text::new(&crate::i18n::t("installer-welcome-title")).with_role(TextRole::Title),
+        ));
+        children.push(Box::new(
+            Text::new(&crate::i18n::t("installer-welcome-note")).with_role(TextRole::Body),
+        ));
+        children.push(Box::new(
+            Text::new("Keyboard layout").with_role(TextRole::Body),
+        ));
+        children.push(Box::new(
+            Text::new(&crate::i18n::t("installer-keyboard-note"))
+                .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
         children.push(Box::new(
-            Dropdown::new(layouts::display_names(), KEYMAP_PATH)
+            Dropdown::from_state(layouts::display_names(), &self.keymap)
                 .with_id("installer.keymap")
                 .with_placeholder("Select a keyboard layout"),
         ));
-        children.push(Box::new(KeyboardView::new(KEYMAP_PATH)));
+        children.push(Box::new(KeyboardView::new(&self.keymap)));
+        actions.push(self.nav_row(Step::Keyboard, self.next_control(), "Next", false));
         children.push(Box::new(
             Text::new("Need files from this computer, or removing an alongside Tilo install? Press Ctrl+Alt+F2 for recovery tools; Ctrl+Alt+F1 returns here.")
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
-        children.push(nav_row(Step::Keyboard, NEXT_PATH, "Next", false));
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one linear list of the Options step's choices, each with its explanation"
-    )]
-    fn compose_options_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_options_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
         let dim = theme.text_dim;
-        let xl = theme.tokens.typography.scale.xl;
-        let base = theme.tokens.typography.scale.base;
-        let sm = theme.tokens.typography.scale.sm;
         let completion = self.profile_completion.unwrap_or_default();
 
-        children.push(Box::new(Text::new("Installation options").with_size(xl)));
+        children.push(Box::new(
+            Text::new("Installation options").with_role(TextRole::Title),
+        ));
 
         if self.profile_completion.is_none() || !completion.filesystem.is_complete() {
             self.compose_filesystem_choice(theme, children);
         }
 
-        children.push(Box::new(Text::new("Disk encryption").with_size(base)));
+        children.push(Box::new(
+            Text::new("Disk encryption").with_role(TextRole::Body),
+        ));
         children.push(Box::new(
             Text::new("Always on · LUKS2")
-                .with_size(base)
+                .with_role(TextRole::Body)
                 .with_color(theme.status_success),
         ));
         children.push(Box::new(
             Text::new(encrypt_description(self.verified_boot_state()))
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
 
-        children.push(Box::new(Text::new("Security key").with_size(base)));
+        children.push(Box::new(
+            Text::new("Security key").with_role(TextRole::Body),
+        ));
         children.push(Box::new(
             SegChoice::new(
                 FIDO2_LABELS
                     .iter()
                     .map(std::string::ToString::to_string)
                     .collect(),
-                (0..FIDO2_LABELS.len()).map(fido2_path).collect(),
+                (0..FIDO2_LABELS.len())
+                    .map(|i| {
+                        self.control(
+                            op::OPTIONS,
+                            "set-security-key",
+                            serde_json::json!({ "enabled": i == 1 }),
+                        )
+                    })
+                    .collect(),
                 usize::from(self.fido2),
             )
             .with_test_id("fido2_choice"),
         ));
         children.push(Box::new(
             Text::new("Optionally enroll a FIDO2 security key (e.g. a YubiKey) as another way to unlock. Plug it in before installing.")
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
 
         if self.profile_completion.is_none() || !completion.hostname.is_complete() {
-            children.push(Box::new(Text::new("Hostname").with_size(base)));
+            children.push(Box::new(Text::new("Hostname").with_role(TextRole::Body)));
             children.push(Box::new(
-                TextInput::new(Vec::new())
-                    .with_id("installer.hostname")
-                    .with_on_change_path(HOSTNAME_PATH),
+                TextInput::from_state(&self.hostname).with_id("installer.hostname"),
             ));
             children.push(Box::new(
                 Text::new("The name your computer uses on the network.")
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
         }
 
         if self.profile_completion.is_none() || !completion.locale.is_complete() {
-            children.push(Box::new(Text::new("Language & locale").with_size(base)));
             children.push(Box::new(
-                Dropdown::new(crate::locales::list(), LOCALE_PATH)
-                    .with_id("installer.locale")
-                    .with_accessible_name("Language & locale")
-                    .with_placeholder("Choose a language and locale"),
+                Text::new("Language & locale").with_role(TextRole::Body),
+            ));
+            children.push(Box::new(
+                Dropdown::from_state(
+                    install_profile_model::locales()
+                        .map(str::to_owned)
+                        .collect(),
+                    &self.locale,
+                )
+                .with_id("installer.locale")
+                .with_accessible_name("Language & locale")
+                .with_placeholder("Choose a language and locale"),
             ));
             children.push(Box::new(
                 Text::new("This controls language, formatting, and regional conventions after installation.")
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
         }
 
         if self.profile_completion.is_none() || !completion.timezone.is_complete() {
-            children.push(Box::new(Text::new("Time zone").with_size(base)));
+            children.push(Box::new(Text::new("Time zone").with_role(TextRole::Body)));
             children.push(Box::new(
-                Dropdown::new(self.timezones.clone(), TIMEZONE_PATH)
+                Dropdown::from_state(self.timezones.clone(), &self.timezone)
                     .with_id("installer.timezone")
                     .with_placeholder("Select a time zone")
                     .open_if(self.tz_open_for_shot),
             ));
             children.push(Box::new(
                 Text::new("Pick from the list — start typing to filter (IANA name, e.g. Europe/Amsterdam or UTC).")
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
         }
 
-        children.push(Box::new(Text::new("Media codecs").with_size(base)));
-        children.push(Box::new(
-            SegChoice::new(
-                CODECS_LABELS
-                    .iter()
-                    .map(std::string::ToString::to_string)
-                    .collect(),
-                (0..CODECS_LABELS.len()).map(codecs_path).collect(),
-                usize::from(self.codecs),
-            )
-            .with_test_id("codecs_choice"),
-        ));
-        children.push(Box::new(
-            Text::new(CODECS_DESCRIPTION).with_size(sm).with_color(dim),
-        ));
-
-        children.push(nav_row(
+        actions.push(self.nav_row(
             Step::Options,
-            NEXT_PATH,
+            self.next_control(),
             "Next",
             !self.filesystem_policy_ready(),
         ));
     }
 
+    /// The Media step: a centred title and one line over a single large
+    /// Install button, with a quiet way past it. Nothing is chosen until
+    /// Install is pressed; afterwards the step says so and offers Undo until
+    /// the install begins.
+    fn compose_media_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
+        let dim = theme.text_dim;
+        children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s6)));
+        children.push(centered_media_control(Box::new(
+            ui::widget::IconWidget::new(ui::icons::Icon::Film)
+                .sized(ui::widget::IconSize::Large)
+                .accent(),
+        )));
+        children.push(Box::new(
+            Text::new(&crate::i18n::t("installer-media-title"))
+                .with_role(TextRole::LargeTitle)
+                .with_align(ui::ParagraphAlign::Center),
+        ));
+        children.push(Box::new(
+            Text::new(&crate::i18n::t("installer-media-note"))
+                .with_role(TextRole::Caption)
+                .with_color(dim)
+                .with_align(ui::ParagraphAlign::Center),
+        ));
+        // Media selection and its return/continue routes share the pinned region.
+        let children = actions;
+        if self.codecs {
+            children.push(centered_media_control(Box::new(
+                Row::new()
+                    .with_padding(0.0, 0.0)
+                    .no_wrap()
+                    .with_gap(theme.tokens.spacing.s2)
+                    .push(Box::new(
+                        ui::widget::IconWidget::new(ui::icons::Icon::Check)
+                            .with_color(theme.status_success),
+                    ))
+                    .push(Box::new(
+                        Text::new(&crate::i18n::t("installer-media-chosen"))
+                            .with_role(TextRole::Body)
+                            .with_color(theme.status_success)
+                            .with_id("codecs_chosen"),
+                    )),
+            )));
+            children.push(centered_media_control(Box::new(
+                ActionButton::new(
+                    &crate::i18n::t("installer-media-undo"),
+                    self.control(
+                        op::MEDIA,
+                        "set-media-codecs",
+                        serde_json::json!({"enabled":false}),
+                    ),
+                )
+                .quiet()
+                .with_width(theme.tokens.spacing.s16 * 2.0 + theme.tokens.spacing.s8)
+                .with_test_id("codecs_undo"),
+            )));
+            children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s6)));
+            children.push(self.nav_row(
+                Step::Media,
+                self.next_control(),
+                &crate::i18n::t("installer-media-next"),
+                false,
+            ));
+        } else {
+            children.push(centered_media_control(Box::new(
+                ActionButton::new(
+                    &crate::i18n::t("installer-media-install"),
+                    self.control(
+                        op::MEDIA,
+                        "set-media-codecs",
+                        serde_json::json!({"enabled":true}),
+                    ),
+                )
+                .primary()
+                .large()
+                .with_width(theme.tokens.spacing.s16 * 4.0 + theme.tokens.spacing.s12)
+                .with_test_id("codecs_install"),
+            )));
+            children.push(centered_media_control(Box::new(
+                ActionButton::new(&crate::i18n::t("installer-media-skip"), self.next_control())
+                    .quiet()
+                    .with_width(theme.tokens.spacing.s16 * 2.0 + theme.tokens.spacing.s8)
+                    .with_test_id("codecs_skip"),
+            )));
+            children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s6)));
+            children.push(Box::new(
+                Row::new()
+                    .with_padding(0.0, 0.0)
+                    .push(Box::new(
+                        ActionButton::new(
+                            &crate::i18n::t("installer-media-back"),
+                            self.back_control(),
+                        )
+                        .with_width(theme.tokens.spacing.s16 * 2.0 + theme.tokens.spacing.s3),
+                    ))
+                    .push(Box::new(Spacer::new())),
+            ));
+        }
+    }
+
     fn compose_filesystem_choice(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
-        let base = theme.tokens.typography.scale.base;
-        let sm = theme.tokens.typography.scale.sm;
-        children.push(Box::new(Text::new("Filesystem").with_size(base)));
+        children.push(Box::new(Text::new("Filesystem").with_role(TextRole::Body)));
         let choices = self.available_filesystem_indices();
         if choices.is_empty() {
             children.push(Box::new(
                 Text::new(&self.filesystem_policy_message())
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(theme.tokens.colors.semantic.danger),
             ));
             return;
@@ -2968,12 +2944,22 @@ impl InstallerApp {
                 .iter()
                 .filter_map(|index| FILESYSTEMS.get(*index).map(|name| (*name).to_string()))
                 .collect(),
-            choices.iter().map(|index| fs_path(*index)).collect(),
+            choices
+                .iter()
+                .filter_map(|index| FILESYSTEMS.get(*index))
+                .map(|filesystem| {
+                    self.control(
+                        op::OPTIONS,
+                        "set-filesystem",
+                        serde_json::json!({ "filesystem": filesystem }),
+                    )
+                })
+                .collect(),
             selected,
         )));
         children.push(Box::new(
             Text::new(fs_description(self.selected_fs))
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(theme.text_dim),
         ));
     }
@@ -2999,14 +2985,13 @@ impl InstallerApp {
         };
         children.push(Box::new(
             Text::new(&format!("Type {expected} to confirm the {operation}"))
-                .with_size(theme.tokens.typography.scale.sm)
+                .with_role(TextRole::Caption)
                 .with_color(theme.text_dim),
         ));
         children.push(Box::new(
-            TextInput::new(Vec::new())
+            TextInput::from_state(&self.erase_confirmation)
                 .with_id("installer.erase_confirmation")
-                .with_placeholder(expected)
-                .with_on_change_path(ERASE_CONFIRM_PATH),
+                .with_placeholder(expected),
         ));
     }
 
@@ -3014,14 +2999,18 @@ impl InstallerApp {
         clippy::too_many_lines,
         reason = "the review is one linear visual composition and splitting it would obscure its exact destructive-plan ordering"
     )]
-    fn compose_review_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_review_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
         let dim = theme.text_dim;
         let danger = theme.tokens.colors.semantic.danger;
-        let xl = theme.tokens.typography.scale.xl;
-        let base = theme.tokens.typography.scale.base;
-        let sm = theme.tokens.typography.scale.sm;
 
-        children.push(Box::new(Text::new("Review your choices").with_size(xl)));
+        children.push(Box::new(
+            Text::new("Review your choices").with_role(TextRole::Title),
+        ));
 
         let dev = self
             .selected_dev()
@@ -3112,21 +3101,30 @@ impl InstallerApp {
         }
         children.push(summary_row(theme, "Filesystem", self.filesystem()));
         children.push(summary_row(theme, "Encryption", &self.encryption_summary()));
-        children.push(summary_row(theme, "Hostname", self.hostname.trim()));
-        children.push(summary_row(theme, "Time zone", self.timezone.trim()));
-        children.push(summary_row(theme, "Keyboard layout", self.keymap.trim()));
         children.push(summary_row(
             theme,
-            "Media codecs",
+            "Hostname",
+            local_text(&self.hostname).trim(),
+        ));
+        children.push(summary_row(theme, "Time zone", self.timezone().trim()));
+        children.push(summary_row(theme, "Keyboard layout", self.keymap().trim()));
+        children.push(summary_row(
+            theme,
+            "More video and audio formats",
             if self.codecs {
-                "Download from RPM Fusion and Cisco once the new system is online"
+                "Install once the new system is online"
             } else {
-                "Not installed (available later in Settings, Updates)"
+                "Not now (available later in Settings, Updates)"
             },
         ));
-        children.push(summary_row(theme, "Username", self.username.trim()));
-        if !self.full_name.trim().is_empty() {
-            children.push(summary_row(theme, "Name", self.full_name.trim()));
+        children.push(summary_row(
+            theme,
+            "Username",
+            local_text(&self.username).trim(),
+        ));
+        let full_name = local_text(&self.full_name);
+        if !full_name.trim().is_empty() {
+            children.push(summary_row(theme, "Name", full_name.trim()));
         }
         children.push(summary_row(
             theme,
@@ -3135,14 +3133,14 @@ impl InstallerApp {
         ));
         children.push(Box::new(
             Text::new("This install uses the Tilo image on this medium; it does not download an update. Future system updates come from the signature-required Tilo repository and are checked automatically after first boot whenever the computer is online.")
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
 
         if let Some(percent) = (self.power_probe)() {
             children.push(Box::new(
                 Text::new(&connect_power_message(percent))
-                    .with_size(base)
+                    .with_role(TextRole::Body)
                     .with_color(theme.tokens.colors.semantic.warning),
             ));
         }
@@ -3153,7 +3151,9 @@ impl InstallerApp {
             format!("This will ERASE {dev} and all data on it.")
         };
         children.push(Box::new(
-            Text::new(&impact).with_size(base).with_color(danger),
+            Text::new(&impact)
+                .with_role(TextRole::Body)
+                .with_color(danger),
         ));
         self.compose_destructive_confirmation(theme, children, &dev);
 
@@ -3163,7 +3163,7 @@ impl InstallerApp {
         // data with no warning.
         children.push(Box::new(
             Text::new("A recovery key will be shown during install — it is your only backup if the TPM is reset or fails. Save it somewhere safe.")
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
         let ack_label = if self.recovery_ack {
@@ -3172,9 +3172,16 @@ impl InstallerApp {
             "[ ] I will save my recovery key"
         };
         children.push(Box::new(
-            ActionButton::new(ack_label, RECOVERY_ACK_PATH)
-                .with_test_id("recovery_ack")
-                .checkbox(self.recovery_ack),
+            ActionButton::new(
+                ack_label,
+                self.control(
+                    op::REVIEW,
+                    "set-recovery-promise",
+                    serde_json::json!({ "acknowledged": !self.recovery_ack }),
+                ),
+            )
+            .with_test_id("recovery_ack")
+            .checkbox(self.recovery_ack),
         ));
 
         // Begin is gated on the recovery-key acknowledgement when
@@ -3182,26 +3189,29 @@ impl InstallerApp {
         let begin_disabled = !self.encryption_ready()
             || !self.destructive_confirmation_ready()
             || !self.filesystem_policy_ready();
-        children.push(nav_row(
+        actions.push(self.nav_row(
             Step::Review,
-            BEGIN_PATH,
+            self.control(op::REVIEW, "begin", Value::Null),
             "Begin Install",
             begin_disabled,
         ));
     }
 
-    fn compose_install_step(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
+    fn compose_install_step(
+        &self,
+        theme: &Theme,
+        children: &mut Vec<Box<dyn Widget>>,
+        actions: &mut Vec<Box<dyn Widget>>,
+    ) {
         let dim = theme.text_dim;
         let danger = theme.tokens.colors.semantic.danger;
-        let xl = theme.tokens.typography.scale.xl;
-        let sm = theme.tokens.typography.scale.sm;
         let friendly_status = friendly_install_status(&self.status_lines);
 
         match self.install_state {
             InstallState::Done => {
                 children.push(Box::new(
                     Text::new("Tilo is installed")
-                        .with_size(xl)
+                        .with_role(TextRole::Title)
                         .with_color(theme.status_success)
                         .with_role(TextRole::Title)
                         .with_live(Politeness::Polite),
@@ -3214,7 +3224,9 @@ impl InstallerApp {
                     None => "Installation complete. Remove the installer medium, then reboot. Signed system updates will be checked automatically after first boot when online; no update was downloaded during this install.".to_string(),
                 };
                 children.push(Box::new(
-                    Text::new(&completion).with_size(sm).with_color(dim),
+                    Text::new(&completion)
+                        .with_role(TextRole::Caption)
+                        .with_color(dim),
                 ));
                 if self.install_method == InstallMethod::Alongside {
                     children.push(Box::new(
@@ -3223,7 +3235,7 @@ impl InstallerApp {
                         } else {
                             "The Tilo boot menu includes each unambiguous Windows or Linux loader found on the shared EFI partition; firmware choices remain available too."
                         })
-                        .with_size(sm)
+                        .with_role(TextRole::Caption)
                         .with_color(dim),
                     ));
                 }
@@ -3232,44 +3244,51 @@ impl InstallerApp {
                 if !self.status.is_empty() {
                     children.push(Box::new(
                         Text::new(&self.status)
-                            .with_size(sm)
+                            .with_role(TextRole::Caption)
                             .with_color(theme.tokens.colors.semantic.warning)
                             .with_live(Politeness::Assertive),
                     ));
                 }
-                children.push(finish_row(!self.recovery_key_saved));
+                actions.push(self.finish_row(!self.recovery_key_saved));
             }
             InstallState::Failed => {
                 children.push(Box::new(
                     Text::new("Installation failed")
-                        .with_size(xl)
+                        .with_role(TextRole::Title)
                         .with_color(danger)
                         .with_role(TextRole::Title)
                         .with_live(Politeness::Assertive),
                 ));
                 children.push(Box::new(
                     Text::new("The installer stopped before it could confirm a bootable system. The destination may already contain a partial encrypted installation. Tilo will not treat on-disk names, labels, or metadata as permission to erase it. Save the recovery key below if one was generated, then review storage or use Ctrl+Alt+F2 for recovery tools.")
-                        .with_size(sm)
+                        .with_role(TextRole::Caption)
                         .with_color(dim),
                 ));
-                children.push(Box::new(Text::new("Details").with_size(sm).with_color(dim)));
+                children.push(Box::new(
+                    Text::new("Details")
+                        .with_role(TextRole::Caption)
+                        .with_color(dim),
+                ));
                 self.compose_recovery_key(theme, children);
                 children.push(Box::new(StatusLog::new(
                     self.status_lines.clone(),
                     STATUS_LOG_HEIGHT,
                 )));
-                children.push(Box::new(ActionButton::new("Review storage", BACK_PATH)));
+                actions.push(Box::new(ActionButton::new(
+                    "Review storage",
+                    self.back_control(),
+                )));
             }
             _ => {
                 children.push(Box::new(
                     Text::new("Installing Tilo…")
-                        .with_size(xl)
+                        .with_role(TextRole::Title)
                         .with_role(TextRole::Title),
                 ));
                 children.push(Box::new(
                     Row::new().push(Box::new(Spinner::new())).push(Box::new(
                         Text::new("Working — this can take a few minutes. Don't power off.")
-                            .with_size(sm)
+                            .with_role(TextRole::Caption)
                             .with_color(dim),
                     )),
                 ));
@@ -3283,13 +3302,12 @@ impl InstallerApp {
         let Some(key) = &self.recovery_key else {
             return;
         };
-        let sm = theme.tokens.typography.scale.sm;
         children.push(Box::new(
             Text::new("Recovery key — save this somewhere off-device")
-                .with_size(sm)
+                .with_role(TextRole::Caption)
                 .with_color(theme.status_success),
         ));
-        children.push(Box::new(Text::new(key).with_size(sm)));
+        children.push(Box::new(Text::new(key).with_role(TextRole::Caption)));
         children.push(Box::new(
             ActionButton::new(
                 if self.recovery_key_copied {
@@ -3297,7 +3315,7 @@ impl InstallerApp {
                 } else {
                     "Copy recovery key"
                 },
-                RECOVERY_COPY_PATH,
+                self.control(op::RECOVERY, "copy", Value::Null),
             )
             .with_test_id("recovery_key_copy"),
         ));
@@ -3307,7 +3325,7 @@ impl InstallerApp {
             } else {
                 "Copy it into a password manager or an encrypted note on another drive. The installer clears its clipboard copy when you reboot or power off."
             })
-            .with_size(sm)
+            .with_role(TextRole::Caption)
             .with_color(if self.recovery_key_copied {
                 theme.status_success
             } else {
@@ -3321,34 +3339,18 @@ impl InstallerApp {
             "[ ] I saved this key off this computer"
         };
         children.push(Box::new(
-            ActionButton::new(saved_label, RECOVERY_SAVED_PATH)
-                .with_test_id("recovery_key_saved")
-                .checkbox(self.recovery_key_saved),
+            ActionButton::new(
+                saved_label,
+                self.control(
+                    op::RECOVERY,
+                    "confirm-saved",
+                    serde_json::json!({ "saved": !self.recovery_key_saved }),
+                ),
+            )
+            .with_test_id("recovery_key_saved")
+            .checkbox(self.recovery_key_saved),
         ));
     }
-}
-
-/// A navigation row for `step`: `Back` (secondary) — shown only when the
-/// step has a predecessor, so the first step has no dangling Back — plus the
-/// forward action (`forward_label`, primary, firing `forward_path`, optionally
-/// disabled). A real `ui::Row` so its buttons stay in the focusable order
-/// (widget tree mirrors taffy).
-fn nav_row(
-    step: Step,
-    forward_path: &str,
-    forward_label: &str,
-    forward_disabled: bool,
-) -> Box<dyn Widget> {
-    let mut row = Row::new();
-    if prev_step(step).is_some() {
-        row = row.push(Box::new(ActionButton::new("Back", BACK_PATH)));
-    }
-    row = row.push(Box::new(
-        ActionButton::new(forward_label, forward_path)
-            .primary()
-            .disabled(forward_disabled),
-    ));
-    Box::new(row)
 }
 
 fn secret_copy(buffer: &Arc<Mutex<String>>) -> Zeroizing<String> {
@@ -3373,33 +3375,31 @@ fn take_secret(buffer: &Arc<Mutex<String>>) -> Zeroizing<String> {
     Zeroizing::new(value)
 }
 
-/// The Finish-screen action row: Reboot (primary) + Power off (secondary).
-fn finish_row(disabled: bool) -> Box<dyn Widget> {
+fn local_text(state: &ui::LocalState<String>) -> String {
+    state.with(Clone::clone)
+}
+
+fn centered_media_control(widget: Box<dyn Widget>) -> Box<dyn Widget> {
     Box::new(
         Row::new()
-            .push(Box::new(
-                ActionButton::new("Reboot now", REBOOT_PATH)
-                    .primary()
-                    .disabled(disabled),
-            ))
-            .push(Box::new(
-                ActionButton::new("Power off", POWEROFF_PATH).disabled(disabled),
-            )),
+            .with_padding(0.0, 0.0)
+            .no_wrap()
+            .push(Box::new(Spacer::new()))
+            .push(widget)
+            .push(Box::new(Spacer::new())),
     )
 }
 
 /// One `label: value` review line (label dim, value primary).
 fn summary_row(theme: &Theme, label: &str, value: &str) -> Box<dyn Widget> {
-    let sm = theme.tokens.typography.scale.sm;
-    let base = theme.tokens.typography.scale.base;
     Box::new(
         Row::new()
             .push(Box::new(
                 Text::new(&format!("{label}:"))
-                    .with_size(sm)
+                    .with_role(TextRole::Caption)
                     .with_color(theme.text_dim),
             ))
-            .push(Box::new(Text::new(value).with_size(base))),
+            .push(Box::new(Text::new(value).with_role(TextRole::Body))),
     )
 }
 
@@ -3602,32 +3602,15 @@ fn friendly_install_status(lines: &[String]) -> Vec<String> {
 }
 
 impl InstallerApp {
-    /// Cache the editable text fields for display / backend argv.
-    fn sync_cached_fields(&mut self, state: &AutoCommit, root: &ObjId) {
-        if let Some(u) = read_text(state, root, USERNAME_PATH) {
-            self.username = u;
-        }
-        if let Some(name) = read_text(state, root, FULL_NAME_PATH) {
-            self.full_name = name;
-        }
-        if let Some(h) = read_text(state, root, HOSTNAME_PATH) {
-            self.hostname = h;
-        }
-        if let Some(t) = read_text(state, root, TIMEZONE_PATH) {
-            self.timezone = t;
-        }
-        if let Some(locale) = read_text(state, root, LOCALE_PATH) {
-            self.locale = locale;
-        }
-        if let Some(k) = read_text(state, root, KEYMAP_PATH) {
-            self.keymap = k;
-        }
-        if let Some(confirmation) = read_text(state, root, ERASE_CONFIRM_PATH)
-            && self.erase_confirmation != confirmation
-        {
-            let was_ready = self.destructive_confirmation_ready();
+    /// React to an edit of the typed confirmation.
+    fn notice_confirmation_edit(&mut self) {
+        let confirmation = local_text(&self.erase_confirmation);
+        if self.erase_confirmation_seen != confirmation {
+            let was_ready = self
+                .destructive_confirmation_target()
+                .is_some_and(|device| self.erase_confirmation_seen.trim() == device);
             let had_status = !self.status.is_empty();
-            self.erase_confirmation = confirmation;
+            self.erase_confirmation_seen = confirmation;
             self.status.clear();
             // TextInput already owns the edited text. Rebuilding its widget
             // on every keystroke discards the live caret/focus state; only
@@ -3644,36 +3627,6 @@ impl InstallerApp {
             .and_then(|slot| slot.lock().ok().and_then(|guard| guard.clone()))
     }
 
-    fn ensure_network_paths(&self, state: &mut AutoCommit, root: &ObjId) {
-        for i in 0..self.network.snapshot.networks.len() {
-            let path = network_path(i);
-            if state.get(root, path.as_str()).ok().flatten().is_none() {
-                let _ = state.put(root, path.as_str(), false);
-            }
-        }
-    }
-
-    fn ensure_disk_paths(&self, state: &mut AutoCommit, root: &ObjId) {
-        for i in 0..self.disks.len() {
-            let path = disk_path(i);
-            if state.get(root, path.as_str()).ok().flatten().is_none() {
-                let _ = state.put(root, path.as_str(), false);
-            }
-        }
-        let extent_count = self
-            .disks
-            .iter()
-            .map(|disk| disk.guided_alongside_plans().len())
-            .max()
-            .unwrap_or(0);
-        for i in 0..extent_count {
-            let path = guided_extent_path(i);
-            if state.get(root, path.as_str()).ok().flatten().is_none() {
-                let _ = state.put(root, path.as_str(), false);
-            }
-        }
-    }
-
     fn refresh_disks_with(&mut self, disks: Vec<Disk>) {
         self.disks = disks;
         self.selected_disk = None;
@@ -3681,7 +3634,7 @@ impl InstallerApp {
         self.guided_efi_partuuid = uuid::Uuid::new_v4().to_string();
         self.guided_boot_partuuid = uuid::Uuid::new_v4().to_string();
         self.guided_root_partuuid = uuid::Uuid::new_v4().to_string();
-        self.erase_confirmation.clear();
+        self.clear_erase_confirmation();
         self.storage_preflight_request = None;
         self.storage_preflight_passed = false;
         if self.internal_handoff.is_some() && !self.bind_internal_handoff() {
@@ -3696,230 +3649,6 @@ impl InstallerApp {
         };
         self.dirty_structure = true;
         self.focus_reset = true;
-    }
-
-    /// Drain one rising-edge control flag.
-    fn take_flag(state: &mut AutoCommit, root: &ObjId, path: &str) -> bool {
-        if read_bool(state, root, path).unwrap_or(false) {
-            let _ = state.put(root, path, false);
-            true
-        } else {
-            false
-        }
-    }
-
-    fn sync_network_rising_edges(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let proxy = self.event_proxy();
-        if self.network.ensure_initial_scan(proxy) {
-            self.dirty_structure = true;
-        }
-        self.ensure_network_paths(state, root);
-
-        for i in 0..self.network.snapshot.networks.len() {
-            if Self::take_flag(state, root, network_path(i).as_str())
-                && let Some(ssid) = self
-                    .network
-                    .snapshot
-                    .networks
-                    .get(i)
-                    .map(|network| network.ssid.clone())
-            {
-                self.invoke_control(
-                    state,
-                    root,
-                    op::NETWORK,
-                    "select",
-                    args(serde_json::json!({ "ssid": ssid })),
-                    None,
-                );
-            }
-        }
-
-        if Self::take_flag(state, root, NETWORK_REFRESH_PATH) {
-            self.invoke_control(state, root, op::NETWORK, "refresh", args_none(), None);
-        }
-
-        if Self::take_flag(state, root, NETWORK_CONNECT_PATH) {
-            let password = take_secret(&self.wifi_password);
-            let mut connect = serde_json::Map::new();
-            if !password.is_empty() {
-                connect.insert(
-                    "password".into(),
-                    serde_json::Value::String(password.to_string()),
-                );
-            }
-            self.invoke_control(state, root, op::NETWORK, "connect", connect, None);
-        }
-    }
-
-    /// Disk / method / region / filesystem / FIDO2 selector rising edges.
-    /// Each control raises a per-option flag; draining it invokes the same
-    /// published action an external caller would.
-    fn sync_selection_rising_edges(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        self.ensure_disk_paths(state, root);
-        if Self::take_flag(state, root, DISK_REFRESH_PATH) {
-            for i in 0..self.disks.len() {
-                let _ = state.put(root, disk_path(i).as_str(), false);
-            }
-            for i in 0..self
-                .disks
-                .iter()
-                .map(|disk| disk.guided_alongside_plans().len())
-                .max()
-                .unwrap_or(0)
-            {
-                let _ = state.put(root, guided_extent_path(i).as_str(), false);
-            }
-            self.invoke_control(state, root, op::STORAGE, "refresh", args_none(), None);
-            return;
-        }
-
-        for i in 0..self.disks.len() {
-            if Self::take_flag(state, root, disk_path(i).as_str())
-                && let Some(device) = self.disks.get(i).map(|disk| disk.name.clone())
-            {
-                self.invoke_control(
-                    state,
-                    root,
-                    &op::disk_resource(&device),
-                    "select",
-                    args_none(),
-                    None,
-                );
-            }
-        }
-
-        for i in 0..INSTALL_METHOD_LABELS.len() {
-            if Self::take_flag(state, root, install_method_path(i).as_str()) {
-                let method = if i == 1 { "alongside" } else { "erase" };
-                self.invoke_control(
-                    state,
-                    root,
-                    op::STORAGE,
-                    "set-method",
-                    args(serde_json::json!({ "method": method })),
-                    None,
-                );
-            }
-        }
-
-        for i in 0..self.guided_alongside_plans().len() {
-            if Self::take_flag(state, root, guided_extent_path(i).as_str()) {
-                self.invoke_control(
-                    state,
-                    root,
-                    &op::region_resource(i),
-                    "select",
-                    args_none(),
-                    None,
-                );
-            }
-        }
-
-        for (i, filesystem) in FILESYSTEMS.iter().enumerate() {
-            if Self::take_flag(state, root, fs_path(i).as_str()) {
-                self.invoke_control(
-                    state,
-                    root,
-                    op::OPTIONS,
-                    "set-filesystem",
-                    args(serde_json::json!({ "filesystem": filesystem })),
-                    None,
-                );
-            }
-        }
-
-        for i in 0..FIDO2_LABELS.len() {
-            if Self::take_flag(state, root, fido2_path(i).as_str()) {
-                self.invoke_control(
-                    state,
-                    root,
-                    op::OPTIONS,
-                    "set-security-key",
-                    args(serde_json::json!({ "enabled": i == 1 })),
-                    None,
-                );
-            }
-        }
-
-        for i in 0..CODECS_LABELS.len() {
-            if Self::take_flag(state, root, codecs_path(i).as_str()) {
-                self.invoke_control(
-                    state,
-                    root,
-                    op::OPTIONS,
-                    "set-media-codecs",
-                    args(serde_json::json!({ "enabled": i == 1 })),
-                    None,
-                );
-            }
-        }
-    }
-
-    /// Recovery-key, wizard-navigation (Back/Next/Begin) and Finish-screen
-    /// (Reboot/Power-off) rising edges, each through its published action.
-    fn sync_navigation_rising_edges(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if Self::take_flag(state, root, RECOVERY_ACK_PATH) {
-            let acknowledged = !self.recovery_ack;
-            self.invoke_control(
-                state,
-                root,
-                op::REVIEW,
-                "set-recovery-promise",
-                args(serde_json::json!({ "acknowledged": acknowledged })),
-                None,
-            );
-        }
-
-        if Self::take_flag(state, root, RECOVERY_COPY_PATH) && self.recovery_key.is_some() {
-            self.invoke_control(state, root, op::RECOVERY, "copy", args_none(), None);
-        }
-
-        if Self::take_flag(state, root, RECOVERY_SAVED_PATH) && self.recovery_key.is_some() {
-            let saved = !self.recovery_key_saved;
-            self.invoke_control(
-                state,
-                root,
-                op::RECOVERY,
-                "confirm-saved",
-                args(serde_json::json!({ "saved": saved })),
-                None,
-            );
-        }
-
-        if Self::take_flag(state, root, BACK_PATH) {
-            self.invoke_control(state, root, op::SESSION, "back", args_none(), None);
-        }
-
-        if Self::take_flag(state, root, NEXT_PATH) {
-            self.invoke_control(state, root, op::SESSION, "next", args_none(), None);
-        }
-
-        // Begin is only a control on the Review step; elsewhere the flag is
-        // consumed without effect, exactly as before.
-        if Self::take_flag(state, root, BEGIN_PATH) && self.step == Step::Review {
-            let typed = self.erase_confirmation.clone();
-            self.invoke_control(state, root, op::REVIEW, "begin", args_none(), Some(&typed));
-        }
-
-        if Self::take_flag(state, root, RETURN_TO_HOST_PATH) && self.internal_host().is_some() {
-            self.invoke_control(
-                state,
-                root,
-                op::SESSION,
-                "return-to-host",
-                args_none(),
-                None,
-            );
-        }
-
-        let finished = self.step == Step::Install && self.install_state == InstallState::Done;
-        if Self::take_flag(state, root, REBOOT_PATH) && finished {
-            self.invoke_control(state, root, op::POWER, "reboot", args_none(), None);
-        }
-        if Self::take_flag(state, root, POWEROFF_PATH) && finished {
-            self.invoke_control(state, root, op::POWER, "power-off", args_none(), None);
-        }
     }
 
     /// One backend output line: a terminal sentinel, the recovery-key
@@ -3942,40 +3671,44 @@ impl InstallerApp {
             self.dirty_structure = true;
         }
     }
-}
 
-fn args(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
-    match value {
-        serde_json::Value::Object(map) => map,
-        _ => serde_json::Map::new(),
+    /// Run every press the controls queued, in order.
+    fn run_presses(&mut self) {
+        while let Some(press) = self.presses.take() {
+            self.run_press(press);
+        }
+    }
+
+    /// Run one press through the action door. The Review field's typed text
+    /// is the phrase a destructive action asks for, and the Wi-Fi password is
+    /// taken from its secret buffer only now, so a queued press never holds
+    /// either.
+    fn run_press(&mut self, press: Press) {
+        let Press { address, mut args } = press;
+        if address.resource == op::NETWORK && address.action == "connect" {
+            let password = take_secret(&self.wifi_password);
+            if !password.is_empty() {
+                args.insert("password".into(), Value::String(password.to_string()));
+            }
+        }
+        let phrase = local_text(&self.erase_confirmation);
+        self.invoke_control(&address.resource, &address.action, args, Some(&phrase));
     }
 }
 
-fn args_none() -> serde_json::Map<String, serde_json::Value> {
-    serde_json::Map::new()
-}
-
 impl Widget for InstallerApp {
-    ui::provides!(
-        dyn ui::resources::PublishesResources,
-        dyn ui::undo::UndoPoints
-    );
+    ui::provides!(dyn ui::resources::PublishesResources);
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
-        if !self.bootstrap_done {
-            self.bootstrap_crdt(state, root);
-            self.bootstrap_done = true;
+    /// Reads nothing from and writes nothing to the document: the presses an
+    /// assistive activation queued since the last event run here, then the
+    /// view state is noticed and the composed controls sync.
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        self.run_presses();
+        self.notice_confirmation_edit();
+        if self.network.ensure_initial_scan(self.event_proxy()) {
+            self.dirty_structure = true;
         }
-
-        self.sync_cached_fields(state, root);
-        self.sync_network_rising_edges(state, root);
-        self.sync_selection_rising_edges(state, root);
-        self.sync_navigation_rising_edges(state, root);
-
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
 
     fn build_layout(
@@ -3984,51 +3717,28 @@ impl Widget for InstallerApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition(theme);
-        let card_node = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        let composition = self.build_composition(theme);
+        let card_node = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
 
         // `new_with_children` only errors for a child `NodeId` from a
         // different tree, which never happens here since `card_node` was
         // just built in this same tree by the call above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "card_node was just built in this same tree"
-        )]
-        let root = taffy
-            .new_with_children(
-                Style {
-                    display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
-                    justify_content: Some(JustifyContent::Center),
-                    align_items: Some(AlignItems::Center),
-                    size: Size {
-                        width: percent(1.0_f32),
-                        height: percent(1.0_f32),
-                    },
-                    ..Default::default()
-                },
-                &[card_node],
-            )
-            .unwrap();
-
-        node_map.insert(root, std::ptr::from_mut::<dyn Widget>(self));
-        root
+        let style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            justify_content: Some(JustifyContent::Center),
+            align_items: Some(AlignItems::Center),
+            size: Size::from_percent(1.0_f32, 1.0_f32),
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[card_node], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `layout` only errors for a `NodeId` from a different tree, which
-        // never happens here since `node` is always the id this same widget
-        // received from its own `build_layout` call.
-        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
-        let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-        if let Some(c) = &mut self.composed
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = taffy.children(node)
             && let Some(&card_node) = children.first()
         {
@@ -4044,8 +3754,14 @@ impl Widget for InstallerApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
-        if let Some(c) = &mut self.composed {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.content,
+            None,
+            &self.rect,
+        );
+        if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
     }
@@ -4057,17 +3773,18 @@ impl Widget for InstallerApp {
         // selects an option (and the Dropdown marks the event handled) —
         // without forwarding first we'd also raise `NEXT` and skip the
         // step out from under the user.
-        if let Some(c) = &mut self.composed
+        if let Some(c) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&card_node) = children.first()
         {
             c.handle_event(event, &mut ctx.reborrow(ctx.path, card_node));
         }
+        // A control the event used queued its press; run it now.
+        self.run_presses();
 
         // Enter advances only when no inner field consumed it: Begin on
-        // Review, Next on Disk/Account/Options. We mark the event handled
-        // so the App runs its post-event `sync` (which detects the rising
-        // edge).
+        // Review, Next on Disk/Account/Options — the same actions their
+        // buttons run.
         if !*ctx.handled
             && let WindowEvent::KeyboardInput {
                 event:
@@ -4085,7 +3802,7 @@ impl Widget for InstallerApp {
                     // when encrypting, the recovery-key acknowledgement is
                     // required before the install can start.
                     if self.encryption_ready() && self.destructive_confirmation_ready() {
-                        let _ = ctx.state.put(ctx.path, BEGIN_PATH, true);
+                        self.run_press(Press::new(op::REVIEW, "begin", Value::Null));
                     }
                     *ctx.handled = true;
                 }
@@ -4095,14 +3812,17 @@ impl Widget for InstallerApp {
                         .selected_network()
                         .is_some_and(|network| !network.connected)
                     {
-                        let _ = ctx.state.put(ctx.path, NETWORK_CONNECT_PATH, true);
+                        self.run_press(Press::new(op::NETWORK, "connect", Value::Null));
                     } else {
-                        let _ = ctx.state.put(ctx.path, NEXT_PATH, true);
+                        self.run_press(Press::new(op::SESSION, "next", Value::Null));
                     }
                     *ctx.handled = true;
                 }
-                Step::Disk | Step::Account | Step::Keyboard | Step::Options => {
-                    let _ = ctx.state.put(ctx.path, NEXT_PATH, true);
+                // On Media a focused Install button takes Enter itself (the
+                // same deliberate press as a click); otherwise Enter moves on
+                // without choosing anything.
+                Step::Disk | Step::Account | Step::Keyboard | Step::Options | Step::Media => {
+                    self.run_press(Press::new(op::SESSION, "next", Value::Null));
                     *ctx.handled = true;
                 }
                 Step::Install => {}
@@ -4110,13 +3830,16 @@ impl Widget for InstallerApp {
         }
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
+    fn on_external_event(
+        &mut self,
+        payload: &str,
+        _state: &mut ui::widget::Edits<'_>,
+        _root: &ModelPath,
+    ) {
         if payload == CONSOLE_WAKE {
-            self.serve_console(state, root);
+            self.serve_console();
         } else if payload == NETWORK_WAKE_EVENT {
             if self.network.drain_results() {
-                self.ensure_network_paths(state, root);
                 self.dirty_structure = true;
             }
         } else if let Some(result) = payload.strip_prefix(PREFLIGHT_OK_PREFIX) {
@@ -4157,19 +3880,23 @@ impl Widget for InstallerApp {
     /// here, after its own resolution, permission and confirmation checks.
     fn start_operation(
         &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        op: &ui::host_operation::ResourceOperation<'_>,
+        doc: &mut ui::widget::Edits<'_>,
         path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
         let Some(request) = op.unscoped().filter(|r| r.type_id == op::OPERATION_TYPE) else {
-            return ui::widget::start_in_children(self, op, doc, path);
+            return ui::host_operation::start_in_children(self, op, doc, path);
         };
+        // The operation changes wizard state only; the document is untouched.
         let encoded = tilo_actions::EncodedAction {
             type_id: request.type_id.to_owned(),
             payload: request.payload.to_vec(),
         };
-        self.apply_encoded(&encoded, doc, path)
-            .map(|output| Some(ui::widget::ResourceOperationStart::Completed(output)))
+        self.apply_encoded(&encoded).map(|output| {
+            Some(ui::host_operation::ResourceOperationStart::Completed(
+                output,
+            ))
+        })
     }
 
     fn take_focus_reset(&mut self) -> bool {
@@ -4177,35 +3904,24 @@ impl Widget for InstallerApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
+        self.composed.children()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        self.composed.children_mut()
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         let mine = self.dirty_structure;
         self.dirty_structure = false;
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
+        let child = self.composed.take_structure_dirty();
         mine || child
     }
 
     fn wants_pointer_capture(&self) -> bool {
         self.composed
-            .as_ref()
-            .is_some_and(|c| c.wants_pointer_capture())
+            .element()
+            .is_some_and(Widget::wants_pointer_capture)
     }
 
     fn name(&self) -> &'static str {
@@ -4214,19 +3930,6 @@ impl Widget for InstallerApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-}
-
-impl ui::undo::UndoPoints for InstallerApp {
-    fn needs_commit(&self) -> bool {
-        self.composed
-            .as_ref()
-            .is_some_and(|c| ui::undo::needs_commit(c.as_ref()))
-    }
-    fn on_commit(&mut self) {
-        if let Some(c) = &mut self.composed {
-            ui::undo::on_commit(c.as_mut());
-        }
     }
 }
 
@@ -4239,6 +3942,57 @@ impl ui::resources::PublishesResources for InstallerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ReadDoc;
+    use ui::widget::find_test_id;
+
+    fn find_test_id_mut<'a>(widget: &'a mut dyn Widget, id: &str) -> Option<&'a mut dyn Widget> {
+        if widget.test_id() == Some(id) {
+            return Some(widget);
+        }
+        widget
+            .children_mut()
+            .into_iter()
+            .find_map(|child| find_test_id_mut(child, id))
+    }
+
+    /// Use the composed control with test id `id` the way assistive
+    /// technology does, then let the app sync. Nothing reaches the document.
+    fn perform(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str, action: &ui::a11y::Action) {
+        let _ = build(app);
+        let composed = app.composed.element_mut().expect("composed step");
+        let control = find_test_id_mut(composed, id).unwrap_or_else(|| panic!("no control {id}"));
+        assert!(
+            control.perform_action(
+                action,
+                &[],
+                &mut ui::widget::Edits::lend(doc),
+                &automerge::ROOT
+            ),
+            "{id} refused {action:?}"
+        );
+        app.sync(doc, &automerge::ROOT);
+        assert_eq!(
+            doc.length(automerge::ROOT),
+            0,
+            "a control wrote the document"
+        );
+    }
+
+    pub(super) fn activate(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str) {
+        perform(app, doc, id, &ui::a11y::Action::Activate);
+    }
+
+    /// Run the press a control or the Enter key queues, then let the app
+    /// sync. Nothing reaches the document.
+    fn run(app: &mut InstallerApp, doc: &AutoCommit, resource: &str, action: &str, args: Value) {
+        app.run_press(Press::new(resource, action, args));
+        app.sync(doc, &automerge::ROOT);
+        assert_eq!(doc.length(automerge::ROOT), 0, "a press wrote the document");
+    }
+
+    fn next(app: &mut InstallerApp, doc: &AutoCommit) {
+        run(app, doc, op::SESSION, "next", Value::Null);
+    }
 
     fn sample() -> Vec<Disk> {
         sample_disks()
@@ -4319,11 +4073,7 @@ mod tests {
     }
 
     fn has_test_id(widget: &dyn Widget, id: &str) -> bool {
-        widget.test_id() == Some(id)
-            || widget
-                .children()
-                .into_iter()
-                .any(|child| has_test_id(child, id))
+        find_test_id(widget, id).is_some()
     }
 
     fn build(app: &mut InstallerApp) -> (TaffyTree<()>, NodeId) {
@@ -4335,17 +4085,22 @@ mod tests {
     }
 
     fn layout_at(app: &mut InstallerApp, width: f32, height: f32) {
-        let theme = Theme::dark();
+        layout_with_theme(app, width, height, &Theme::dark());
+    }
+
+    fn layout_with_theme(
+        app: &mut InstallerApp,
+        width: f32,
+        height: f32,
+        theme: &Theme,
+    ) -> HashMap<NodeId, *mut dyn Widget> {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let app_node = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let app_node = app.build_layout(&mut taffy, theme, &mut node_map);
         let viewport = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: length(width),
-                        height: length(height),
-                    },
+                    size: Size::from_lengths(width, height),
                     ..Default::default()
                 },
                 &[app_node],
@@ -4372,13 +4127,108 @@ mod tests {
             )
             .expect("compute compact installer layout");
         app.apply_layout(&taffy, app_node, Point::ORIGIN);
+        node_map
+    }
+
+    #[test]
+    fn welcome_and_account_explain_choices_in_person_first_order() {
+        let mut app = InstallerApp::with_disks(Vec::new());
+        layout_at(&mut app, 800.0, 600.0);
+        assert!(find_accessible(&app, &crate::i18n::t("installer-welcome-title")).is_some());
+        assert!(find_accessible(&app, &crate::i18n::t("installer-welcome-note")).is_some());
+        let next = find_test_id(&app, "Next").expect("first-page continuation");
+        assert!(next.get_rect().height() > 0.0);
+        assert!(next.get_rect().y0 >= 0.0);
+        assert!(
+            next.get_rect().y1 <= 600.0,
+            "continue must not begin below the fold"
+        );
+
+        app.step = Step::Account;
+        app.dirty_structure = true;
+        layout_at(&mut app, 800.0, 600.0);
+        let name = find_test_id(&app, "installer.full_name").expect("display name field");
+        let username = find_test_id(&app, "installer.username").expect("sign-in field");
+        assert!(name.get_rect().height() > 0.0);
+        assert!(username.get_rect().y0 >= name.get_rect().y1);
+        assert!(find_accessible(&app, &crate::i18n::t("installer-account-name-note")).is_some());
+        let next = find_test_id(&app, "Next").expect("account continuation");
+        assert!(
+            next.get_rect().y1 <= 600.0,
+            "continue must remain visible at normal text size"
+        );
+    }
+
+    #[test]
+    fn account_fields_have_localized_accessible_names_without_exposing_secrets() {
+        for pin in [false, true] {
+            let mut app = InstallerApp::with_disks(Vec::new());
+            app.step = Step::Account;
+            app.tpm2 = pin;
+            app.secure_boot = pin;
+            app.kernel_lockdown = pin;
+            app.target_verified_boot = pin;
+            *app.password.lock().unwrap() = "private-startup-secret".into();
+            *app.password_confirmation.lock().unwrap() = "private-startup-secret".into();
+            let _ = build(&mut app);
+            for (id, key, protected) in [
+                ("installer.full_name", "installer-account-name", false),
+                ("installer.username", "installer-account-username", false),
+                (
+                    "installer.password",
+                    if pin {
+                        "installer-account-pin"
+                    } else {
+                        "installer-account-password"
+                    },
+                    true,
+                ),
+                (
+                    "installer.password_confirm",
+                    if pin {
+                        "installer-account-pin-confirm"
+                    } else {
+                        "installer-account-password-confirm"
+                    },
+                    true,
+                ),
+            ] {
+                let access = find_test_id(&app, id).unwrap().accessibility().unwrap();
+                assert_eq!(
+                    access.name.as_deref(),
+                    Some(crate::i18n::t(key).as_str()),
+                    "{id}"
+                );
+                assert_eq!(access.state.protected, protected, "{id}");
+                if protected {
+                    assert!(access.value.is_none(), "a named secret must remain private");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn storage_explains_missing_drives_and_the_confirmation_boundary() {
+        let mut app = InstallerApp::with_disks(Vec::new());
+        app.step = Step::Disk;
+        let _ = build(&mut app);
+        assert!(find_accessible(&app, &crate::i18n::t("installer-storage-no-drives")).is_some());
+        assert!(
+            find_accessible(&app, &crate::i18n::t("installer-storage-erase-warning")).is_some()
+        );
+        app.install_method = InstallMethod::Alongside;
+        app.dirty_structure = true;
+        let _ = build(&mut app);
+        assert!(
+            find_accessible(&app, &crate::i18n::t("installer-storage-keep-guidance")).is_some()
+        );
     }
 
     // --- pure state-machine ---------------------------------------
 
     #[test]
     fn step_navigation_walks_forward_back_and_indexes_labels() {
-        assert_eq!(STEP_LABELS.len(), 7);
+        assert_eq!(STEP_LABELS.len(), 8);
         // (step, next, prev, index): forward stops at Install, back stops at
         // Keyboard (and Install has no way back), indices match the labels.
         let cases = [
@@ -4386,9 +4236,10 @@ mod tests {
             (Step::Network, Some(Step::Disk), Some(Step::Keyboard), 1),
             (Step::Disk, Some(Step::Account), Some(Step::Network), 2),
             (Step::Account, Some(Step::Options), Some(Step::Disk), 3),
-            (Step::Options, Some(Step::Review), Some(Step::Account), 4),
-            (Step::Review, Some(Step::Install), Some(Step::Options), 5),
-            (Step::Install, None, None, 6),
+            (Step::Options, Some(Step::Media), Some(Step::Account), 4),
+            (Step::Media, Some(Step::Review), Some(Step::Options), 5),
+            (Step::Review, Some(Step::Install), Some(Step::Media), 6),
+            (Step::Install, None, None, 7),
         ];
         for (step, next, prev, index) in cases {
             assert_eq!(next_step(step), next, "next_step case {step:?}");
@@ -4505,9 +4356,11 @@ mod tests {
         // Phase `secret_fields_never_enter_automerge_history`.
         {
             let mut app = InstallerApp::with_disks(sample());
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT);
             for path in [
+                "installer.username",
+                "installer.full_name",
                 "installer.password",
                 "installer.password_confirm",
                 "installer.wifi_password",
@@ -4523,34 +4376,31 @@ mod tests {
             app.step = Step::Account;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
             // Empty username → blocked.
-            let _ = doc.put(&root, NEXT_PATH, true);
-            app.sync(&mut doc, &root);
+            activate(&mut app, &mut doc, "Next");
             assert_eq!(app.step, Step::Account);
             assert_eq!(app.status, "Enter a username");
 
-            // Only the username enters the CRDT. Secrets use external buffers.
-            let (_, uobj) = doc.get(&root, USERNAME_PATH).unwrap().unwrap();
-            let _ = doc.splice_text(&uobj, 0, 0, "ada");
+            // Typed fields stay in view state; secrets use external buffers.
+            app.username.set("ada".to_string());
             *app.password.lock().unwrap() = "correct horse battery staple".to_string();
             *app.password_confirmation.lock().unwrap() = "correct horse battery staple".to_string();
-            let _ = doc.put(&root, NEXT_PATH, true);
-            app.sync(&mut doc, &root);
+            activate(&mut app, &mut doc, "Next");
             assert_eq!(app.step, Step::Options);
-            assert_eq!(app.username, "ada");
+            assert_eq!(local_text(&app.username), "ada");
         }
         // Phase `startup_secret_threads_into_install_options`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Options;
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
             *app.password.lock().unwrap() = "correct horse battery".to_string();
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(&*secret_copy(&app.password), "correct horse battery");
             assert_eq!(app.install_options().pin.as_str(), "correct horse battery");
         }
@@ -4564,16 +4414,15 @@ mod tests {
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Disk;
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(app.step, Step::Disk);
 
-            let _ = doc.put(&root, NEXT_PATH, true);
-            app.sync(&mut doc, &root);
+            // The Next button is disabled; Enter runs the same action.
+            next(&mut app, &doc);
             assert_eq!(app.step, Step::Disk, "must not advance without a disk");
             assert_eq!(app.status, "Select a disk to continue");
-            assert!(!read_bool(&doc, &root, NEXT_PATH).unwrap_or(false));
         }
         // Phase `selecting_disk_then_next_advances_to_account`.
         {
@@ -4581,17 +4430,14 @@ mod tests {
             app.step = Step::Disk;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
-            // Pick the second disk via its flag.
-            let _ = doc.put(&root, disk_path(1).as_str(), true);
-            app.sync(&mut doc, &root);
+            // Pick the second disk with its row.
+            activate(&mut app, &mut doc, "/dev/nvme0n1");
             assert_eq!(app.selected_disk, Some(1));
-            assert!(!read_bool(&doc, &root, disk_path(1).as_str()).unwrap_or(false));
 
             // Now Next advances and requests a focus reset for the new step.
-            let _ = doc.put(&root, NEXT_PATH, true);
-            app.sync(&mut doc, &root);
+            activate(&mut app, &mut doc, "Next");
             assert_eq!(app.step, Step::Account);
             assert!(app.take_focus_reset(), "step change requests focus reset");
         }
@@ -4611,19 +4457,18 @@ mod tests {
         }
         // Phase `begin_only_runs_install_from_review`.
         {
-            // On the Disk step, raising `begin` must NOT trigger an install
-            // (would shell out to a missing backend). It's simply consumed.
+            // On the Disk step, `begin` must NOT trigger an install (would
+            // shell out to a missing backend): the action is unavailable.
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Disk;
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
-            let _ = doc.put(&root, BEGIN_PATH, true);
-            app.sync(&mut doc, &root);
+            run(&mut app, &doc, op::REVIEW, "begin", Value::Null);
             assert_eq!(app.step, Step::Disk);
             assert_eq!(app.install_state, InstallState::Idle);
-            assert!(!read_bool(&doc, &root, BEGIN_PATH).unwrap_or(false));
+            assert!(!app.install_launched);
         }
         // Phase `confirm_shows_selected_device`.
         {
@@ -4653,24 +4498,21 @@ mod tests {
             let mut app = InstallerApp::with_disks(sample());
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            // Default seeds English (US) → xkb us, no variant.
-            assert_eq!(app.keymap, "English (US)");
+            app.sync(&doc, &root);
+            // Default is English (US) → xkb us, no variant.
+            assert_eq!(app.keymap(), "English (US)");
             let opts = app.install_options();
             assert_eq!(opts.keymap, "us");
             assert!(opts.keyvariant.is_empty());
 
-            // Select Dvorak through the dropdown's CRDT Text path.
-            let (_, kobj) = doc.get(&root, KEYMAP_PATH).unwrap().unwrap();
-            let cur = doc.text(&kobj).unwrap();
-            let _ = doc.splice_text(
-                &kobj,
-                0,
-                ui::num::isize_of_usize(cur.chars().count()),
-                "Dvorak",
+            // Select Dvorak with the layout dropdown.
+            perform(
+                &mut app,
+                &mut doc,
+                "installer.keymap",
+                &ui::a11y::Action::SetValue("Dvorak".into()),
             );
-            app.sync(&mut doc, &root);
-            assert_eq!(app.keymap, "Dvorak");
+            assert_eq!(app.keymap(), "Dvorak");
             let opts = app.install_options();
             assert_eq!(opts.keymap, "us", "Dvorak is an xkb us variant");
             assert_eq!(opts.keyvariant, "dvorak");
@@ -4679,39 +4521,48 @@ mod tests {
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Options;
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(app.selected_fs, 0);
             assert_eq!(app.filesystem(), "btrfs");
 
-            let _ = doc.put(&root, fs_path(2).as_str(), true);
-            app.sync(&mut doc, &root);
+            run(
+                &mut app,
+                &doc,
+                op::OPTIONS,
+                "set-filesystem",
+                serde_json::json!({ "filesystem": "xfs" }),
+            );
             assert_eq!(app.selected_fs, 2);
             assert_eq!(app.filesystem(), "xfs");
-            assert!(!read_bool(&doc, &root, fs_path(2).as_str()).unwrap_or(false));
         }
         // Phase `fido2_flag_threads_into_mandatory_encryption_options`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Options;
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
-            let _ = doc.put(&root, fido2_path(1).as_str(), true);
-            app.sync(&mut doc, &root);
+            run(
+                &mut app,
+                &doc,
+                op::OPTIONS,
+                "set-security-key",
+                serde_json::json!({ "enabled": true }),
+            );
             assert!(app.fido2);
             assert!(app.install_options().fido2);
         }
         // Phase `options_step_uses_seeded_hostname_and_timezone`.
         {
             let mut app = InstallerApp::with_disks(sample());
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            assert_eq!(app.hostname, "tilo");
-            assert_eq!(app.timezone, "UTC");
+            app.sync(&doc, &root);
+            assert_eq!(local_text(&app.hostname), "tilo");
+            assert_eq!(app.timezone(), "UTC");
             let opts = app.install_options();
             assert_eq!(opts.hostname, "tilo");
             assert_eq!(opts.timezone, "UTC");
@@ -4751,46 +4602,76 @@ mod tests {
     #[test]
     fn media_codecs_are_an_explicit_opt_in_that_threads_into_install_options() {
         let mut app = InstallerApp::with_disks(sample());
-        app.step = Step::Options;
-        let mut doc = AutoCommit::new();
+        app.step = Step::Media;
+        let doc = AutoCommit::new();
         let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
+        app.sync(&doc, &root);
         assert!(!app.codecs, "media codecs are not selected by default");
         assert!(!app.install_options().codecs);
-        let _ = doc.put(&root, codecs_path(1).as_str(), true);
-        app.sync(&mut doc, &root);
+        let codecs = |enabled: bool| serde_json::json!({ "enabled": enabled });
+        run(&mut app, &doc, op::MEDIA, "set-media-codecs", codecs(true));
         assert!(app.codecs);
         assert!(app.install_options().codecs);
-        let _ = doc.put(&root, codecs_path(0).as_str(), true);
-        app.sync(&mut doc, &root);
+        assert_eq!(
+            app.step,
+            Step::Media,
+            "Install records the choice and stays"
+        );
+        run(&mut app, &doc, op::MEDIA, "set-media-codecs", codecs(false));
         assert!(!app.codecs, "the choice can be withdrawn");
     }
 
     #[test]
-    fn options_step_explains_the_media_codecs_choice_and_review_repeats_it() {
-        let mut app = InstallerApp::for_shot(Step::Options);
+    fn the_media_step_is_one_install_button_and_review_repeats_it() {
+        let mut app = InstallerApp::for_shot(Step::Media);
         let _ = build(&mut app);
-        let composed = app.composed.as_deref().unwrap();
-        assert!(has_test_id(composed, "codecs_choice"));
-        for needle in [
-            "RPM Fusion",
-            "Cisco",
-            "AMD and Intel",
-            "screen sharing and calls",
-        ] {
-            assert!(CODECS_DESCRIPTION.contains(needle), "{needle}");
+        let composed = app.composed.element().unwrap();
+        assert!(has_test_id(composed, "codecs_install"));
+        assert!(has_test_id(composed, "codecs_skip"));
+        assert!(
+            !has_test_id(composed, "codecs_undo"),
+            "nothing is chosen yet"
+        );
+        for absent in ["RPM Fusion", "Cisco", "patent", "licence"] {
+            assert!(!CODECS_DESCRIPTION.contains(absent), "{absent}");
         }
+        assert!(
+            find_accessible(composed, CODECS_DESCRIPTION).is_some(),
+            "the rendered codec control must expose the formats source explanation"
+        );
+        let resources = app.publish();
+        let options = resources[0]
+            .children
+            .iter()
+            .find(|resource| resource.id.0 == op::MEDIA)
+            .expect("published media choice");
+        let install = options
+            .actions
+            .iter()
+            .find(|action| action.id == "set-media-codecs")
+            .expect("published codec choice");
+        assert_eq!(install.description.as_deref(), Some(CODECS_DESCRIPTION));
+        let mut options = InstallerApp::for_shot(Step::Options);
+        let _ = build(&mut options);
+        assert!(
+            find_accessible(options.composed.element().unwrap(), CODECS_TITLE).is_none(),
+            "Options no longer carries the formats"
+        );
+
         app.codecs = true;
+        app.dirty_structure = true;
+        let _ = build(&mut app);
+        let chosen = app.composed.element().unwrap();
+        assert!(has_test_id(chosen, "codecs_undo"));
+        assert!(!has_test_id(chosen, "codecs_install"));
+        assert!(find_accessible(chosen, CODECS_CHOSEN).is_some());
+
         app.step = Step::Review;
         app.dirty_structure = true;
         let _ = build(&mut app);
-        let review = app.composed.as_deref().unwrap();
+        let review = app.composed.element().unwrap();
         assert!(
-            find_accessible(
-                review,
-                "Download from RPM Fusion and Cisco once the new system is online"
-            )
-            .is_some(),
+            find_accessible(review, "Install once the new system is online").is_some(),
             "Review repeats the codecs choice"
         );
     }
@@ -4822,24 +4703,28 @@ mod tests {
             assert_eq!(app.available_filesystem_indices(), vec![0, 1]);
             app.set_filesystem_support(filesystem_support_from_manifest("ext4\nxfs\n"));
             app.step = Step::Options;
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            let _ = doc.put(&root, fs_path(1).as_str(), true);
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
+            run(
+                &mut app,
+                &doc,
+                op::OPTIONS,
+                "set-filesystem",
+                serde_json::json!({ "filesystem": "ext4" }),
+            );
             assert_eq!(
                 app.filesystem(),
                 "btrfs",
-                "hidden ext4 CRDT actions must be rejected"
+                "a hidden ext4 choice must be rejected"
             );
-            assert!(!read_bool(&doc, &root, fs_path(1).as_str()).unwrap_or(false));
 
             app.selected_fs = 1; // stale selection from a media profile or UI rebuild
             assert!(!app.filesystem_policy_ready());
             let mut review = InstallerApp::for_shot(Step::Review);
             review.set_filesystem_support(filesystem_support_from_manifest("ext4\nxfs\n"));
             review.selected_fs = 1;
-            review.begin_install(&doc, &root);
+            review.begin_install();
             assert!(!review.install_launched);
             assert_eq!(review.step, Step::Review);
         }
@@ -4880,12 +4765,11 @@ mod tests {
             app.step = Step::Review;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert!(!app.recovery_ack);
 
             // An unacknowledged recovery key must block every native install.
-            let _ = doc.put(&root, BEGIN_PATH, true);
-            app.sync(&mut doc, &root);
+            run(&mut app, &doc, op::REVIEW, "begin", Value::Null);
             assert_eq!(app.install_state, InstallState::Idle);
             assert_eq!(
                 app.step,
@@ -4894,14 +4778,16 @@ mod tests {
             );
 
             // Toggle the acknowledgement on.
-            let _ = doc.put(&root, RECOVERY_ACK_PATH, true);
-            app.sync(&mut doc, &root);
+            perform(
+                &mut app,
+                &mut doc,
+                "recovery_ack",
+                &ui::a11y::Action::ToggleCheck,
+            );
             assert!(app.recovery_ack, "ack flips on");
-            assert!(!read_bool(&doc, &root, RECOVERY_ACK_PATH).unwrap_or(false));
 
-            // Toggle off again (it's a checkbox-style flip).
-            let _ = doc.put(&root, RECOVERY_ACK_PATH, true);
-            app.sync(&mut doc, &root);
+            // Toggle off again (it's a checkbox).
+            activate(&mut app, &mut doc, "recovery_ack");
             assert!(!app.recovery_ack, "ack flips back off");
         }
         // Phase `review_begin_disabled_until_ack_when_encrypting`.
@@ -4916,11 +4802,7 @@ mod tests {
             app.kernel_lockdown = true;
             app.target_verified_boot = true;
             let _ = build(&mut app);
-            let card = find_named(&app, "InstallerCard").expect("review card");
-            let begin_disabled = card
-                .children()
-                .last()
-                .and_then(|nav| nav.children().last().map(|b| !b.is_focusable()));
+            let begin_disabled = find_test_id(&app, "Begin Install").map(|b| !b.is_focusable());
             assert_eq!(begin_disabled, Some(true), "Begin disabled until ack");
 
             // Acknowledgement alone is insufficient because the passphrase is mandatory.
@@ -4932,14 +4814,10 @@ mod tests {
             app2.kernel_lockdown = true;
             app2.target_verified_boot = true;
             app2.recovery_ack = true;
-            app2.erase_confirmation = "/dev/sda".to_string();
+            app2.erase_confirmation.set("/dev/sda".to_string());
             *app2.password.lock().unwrap() = "804927".to_string();
             let _ = build(&mut app2);
-            let card2 = find_named(&app2, "InstallerCard").expect("review card");
-            let begin_enabled = card2
-                .children()
-                .last()
-                .and_then(|nav| nav.children().last().map(|b| b.is_focusable()));
+            let begin_enabled = find_test_id(&app2, "Begin Install").map(Widget::is_focusable);
             assert_eq!(begin_enabled, Some(true), "Begin enabled once acknowledged");
         }
         // Phase `whole_disk_install_requires_exact_typed_device_confirmation`.
@@ -4954,59 +4832,51 @@ mod tests {
             app.recovery_ack = true;
             *app.password.lock().unwrap() = "804927".to_string();
             *app.password_confirmation.lock().unwrap() = "804927".to_string();
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
-            let _ = doc.put(&root, BEGIN_PATH, true);
-            app.sync(&mut doc, &root);
+            run(&mut app, &doc, op::REVIEW, "begin", Value::Null);
             assert_eq!(app.step, Step::Review);
             assert_eq!(app.install_state, InstallState::Idle);
             assert!(app.status.contains("Type /dev/sda exactly"));
 
-            let object = match doc.get(&root, ERASE_CONFIRM_PATH).unwrap() {
-                Some((Value::Object(ObjType::Text), object)) => object,
-                other => panic!("expected confirmation text object, got {other:?}"),
-            };
-            let _ = doc.splice_text(&object, 0, 0, "/dev/sda");
-            app.sync(&mut doc, &root);
+            app.erase_confirmation.set("/dev/sda".to_string());
+            app.sync(&doc, &root);
             assert!(app.destructive_confirmation_ready());
+            assert!(app.status.is_empty(), "typing clears the stale refusal");
             assert!(
                 app.take_structure_dirty(),
                 "typing the confirmation must rebuild the disabled Begin button"
             );
             let _ = build(&mut app);
-            let card = find_named(&app, "InstallerCard").expect("review card");
-            let begin_enabled = card
-                .children()
-                .last()
-                .and_then(|nav| nav.children().last().map(|button| button.is_focusable()));
+            let begin_enabled = find_test_id(&app, "Begin Install").map(Widget::is_focusable);
             assert_eq!(begin_enabled, Some(true));
+            let field = find_test_id(&app, "installer.erase_confirmation")
+                .and_then(Widget::accessibility)
+                .expect("confirmation field");
+            assert_eq!(field.value.as_deref(), Some("/dev/sda"));
         }
         // Phase `confirmation_keeps_live_input_until_begin_gate_changes`.
         {
             let mut app = InstallerApp::with_disks(sample());
             app.selected_disk = Some(0);
             app.step = Step::Review;
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             let _ = build(&mut app);
             assert!(!app.take_structure_dirty());
-            let object = match doc.get(&root, ERASE_CONFIRM_PATH).unwrap() {
-                Some((Value::Object(ObjType::Text), object)) => object,
-                other => panic!("expected confirmation text object, got {other:?}"),
-            };
             for (index, character) in "/dev/sd".chars().enumerate() {
-                let _ = doc.splice_text(&object, index, 0, &character.to_string());
-                app.sync(&mut doc, &root);
+                app.erase_confirmation.update(|typed| typed.push(character));
+                app.sync(&doc, &root);
                 assert!(
                     !app.take_structure_dirty(),
                     "partial input rebuilt at {index}"
                 );
             }
-            let _ = doc.splice_text(&object, 7, 0, "a");
-            app.sync(&mut doc, &root);
+            app.erase_confirmation.update(|typed| typed.push('a'));
+            app.sync(&doc, &root);
             assert!(
                 app.take_structure_dirty(),
                 "exact confirmation must enable Begin"
@@ -5024,9 +4894,10 @@ mod tests {
                 .expect("sample disk has one prepared alongside root");
 
             assert!(!app.destructive_confirmation_ready());
-            app.erase_confirmation = app.selected_dev().expect("selected disk");
+            app.erase_confirmation
+                .set(app.selected_dev().expect("selected disk"));
             assert!(!app.destructive_confirmation_ready());
-            app.erase_confirmation = root;
+            app.erase_confirmation.set(root);
             assert!(app.destructive_confirmation_ready());
         }
         // Phase `low_discharging_battery_is_visible_and_blocks_launch_before_secrets_move`.
@@ -5040,9 +4911,7 @@ mod tests {
                 "Review must explain why destructive work cannot start"
             );
 
-            let doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            app.begin_install(&doc, &root);
+            app.begin_install();
             assert_eq!(app.step, Step::Review);
             assert_eq!(app.install_state, InstallState::Idle);
             assert!(!app.install_launched);
@@ -5380,9 +5249,8 @@ mod tests {
 
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            let _ = doc.put(&root, guided_extent_path(1).as_str(), true);
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
+            activate(&mut app, &mut doc, "guided_extent_1");
             assert_eq!(app.guided_alongside_plan(), Some(plans[1].clone()));
             let options = app.install_options();
             assert_eq!(options.guided_free_start_bytes, plans[1].free_start_bytes);
@@ -5401,7 +5269,7 @@ mod tests {
             app.install_method = InstallMethod::Alongside;
             app.selected_disk = Some(0);
             app.selected_guided_extent = Some(1);
-            app.erase_confirmation = disk.name.clone();
+            app.erase_confirmation.set(disk.name.clone());
             let old_efi_uuid = app.guided_efi_partuuid.clone();
             let old_root_uuid = app.guided_root_partuuid.clone();
             assert!(app.guided_alongside_plan().is_some());
@@ -5409,7 +5277,7 @@ mod tests {
             app.refresh_disks_with(vec![disk]);
             assert_eq!(app.selected_disk, None);
             assert_eq!(app.selected_guided_extent, None);
-            assert!(app.erase_confirmation.is_empty());
+            assert!(local_text(&app.erase_confirmation).is_empty());
             assert_ne!(app.guided_efi_partuuid, old_efi_uuid);
             assert_ne!(app.guided_root_partuuid, old_root_uuid);
 
@@ -5464,7 +5332,7 @@ mod tests {
 
             assert!(!restarted.selected_disk_can_install_alongside());
             assert!(!restarted.uses_guided_alongside());
-            restarted.erase_confirmation = "/dev/nvme0n1".into();
+            restarted.erase_confirmation.set("/dev/nvme0n1".into());
             assert!(!restarted.destructive_confirmation_ready());
             restarted.go_next();
             assert_eq!(restarted.step, Step::Disk);
@@ -5485,7 +5353,7 @@ mod tests {
 
             app.on_external_event(
                 &format!("{PREFLIGHT_OK_PREFIX}stale:stale result"),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             );
             assert_eq!(app.step, Step::Disk);
@@ -5493,7 +5361,7 @@ mod tests {
 
             app.on_external_event(
                 &format!("{PREFLIGHT_FAIL_PREFIX}current:EFI has less than 1 GiB free"),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             );
             assert_eq!(app.step, Step::Disk);
@@ -5502,7 +5370,7 @@ mod tests {
             app.storage_preflight_request = Some("retry".into());
             app.on_external_event(
                 &format!("{PREFLIGHT_OK_PREFIX}retry:prepared storage check passed"),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             );
             assert_eq!(app.step, Step::Account);
@@ -5539,8 +5407,8 @@ mod tests {
             let mut app = staged_app();
             assert_eq!(app.selected_disk, Some(0));
             assert_eq!(app.install_method, InstallMethod::Alongside);
-            assert_eq!(app.username, "ada");
-            assert_eq!(app.hostname, "studio");
+            assert_eq!(local_text(&app.username), "ada");
+            assert_eq!(local_text(&app.hostname), "studio");
             assert!(
                 app.status
                     .starts_with("Tilo Imager prepared space for Tilo next to Windows.")
@@ -5561,11 +5429,16 @@ mod tests {
             assert!(opts.alongside_root.is_empty());
 
             // The running-installer disk can never be switched to Erase.
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            let _ = doc.put(&root, install_method_path(0).as_str(), true);
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
+            run(
+                &mut app,
+                &doc,
+                op::STORAGE,
+                "set-method",
+                serde_json::json!({ "method": "erase" }),
+            );
             assert_eq!(app.install_method, InstallMethod::Alongside);
 
             app.step = Step::Disk;
@@ -5628,31 +5501,32 @@ mod tests {
             app.step = Step::Review;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
-            let _ = doc.put(&root, BACK_PATH, true);
-            app.sync(&mut doc, &root);
+            activate(&mut app, &mut doc, "Back");
+            assert_eq!(app.step, Step::Media);
+
+            activate(&mut app, &mut doc, "Back");
             assert_eq!(app.step, Step::Options);
 
-            let _ = doc.put(&root, BACK_PATH, true);
-            app.sync(&mut doc, &root);
+            activate(&mut app, &mut doc, "Back");
             assert_eq!(app.step, Step::Account);
 
-            let _ = doc.put(&root, BACK_PATH, true);
-            app.sync(&mut doc, &root);
+            activate(&mut app, &mut doc, "Back");
             assert_eq!(app.step, Step::Disk);
 
-            let _ = doc.put(&root, BACK_PATH, true);
-            app.sync(&mut doc, &root);
+            activate(&mut app, &mut doc, "Back");
             assert_eq!(app.step, Step::Network);
 
-            let _ = doc.put(&root, BACK_PATH, true);
-            app.sync(&mut doc, &root);
+            activate(&mut app, &mut doc, "Back");
             assert_eq!(app.step, Step::Keyboard);
 
-            // Back from the first step (Keyboard) is a no-op.
-            let _ = doc.put(&root, BACK_PATH, true);
-            app.sync(&mut doc, &root);
+            // The first step (Keyboard) offers no Back; the action is a no-op.
+            assert!(!has_test_id(
+                app.build_composition(&Theme::dark()).as_ref(),
+                "Back"
+            ));
+            run(&mut app, &doc, op::SESSION, "back", Value::Null);
             assert_eq!(app.step, Step::Keyboard);
         }
         // Phase `failed_install_recovery_returns_to_unselected_storage_review`.
@@ -5666,10 +5540,9 @@ mod tests {
             app.install_launched = true;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
-            let _ = doc.put(&root, BACK_PATH, true);
-            app.sync(&mut doc, &root);
+            activate(&mut app, &mut doc, "Review storage");
             assert_eq!(app.step, Step::Disk);
             assert_eq!(app.selected_disk, None);
             assert_ne!(app.guided_efi_partuuid, old_efi_partuuid);
@@ -5690,13 +5563,21 @@ mod tests {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
 
-            app.on_external_event("==> step one", &mut doc, &root);
-            app.on_external_event("==> step two", &mut doc, &root);
+            app.on_external_event(
+                "==> step one",
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root,
+            );
+            app.on_external_event(
+                "==> step two",
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root,
+            );
             assert!(app.status_lines.iter().any(|l| l == "==> step one"));
             assert!(app.status_lines.iter().any(|l| l == "==> step two"));
             assert_eq!(app.install_state, InstallState::Running);
 
-            app.on_external_event(CTRL_DONE, &mut doc, &root);
+            app.on_external_event(CTRL_DONE, &mut ui::widget::Edits::lend(&mut doc), &root);
             assert_eq!(app.install_state, InstallState::Done);
             assert!(
                 app.take_focus_reset(),
@@ -5710,8 +5591,12 @@ mod tests {
             app.install_state = InstallState::Running;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.on_external_event("error: no space left on device", &mut doc, &root);
-            app.on_external_event(CTRL_FAIL, &mut doc, &root);
+            app.on_external_event(
+                "error: no space left on device",
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root,
+            );
+            app.on_external_event(CTRL_FAIL, &mut ui::widget::Edits::lend(&mut doc), &root);
             assert_eq!(app.install_state, InstallState::Failed);
             assert_eq!(
                 app.status_lines.last().map(String::as_str),
@@ -5767,7 +5652,11 @@ mod tests {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
 
-            app.on_external_event("::tilo-recovery-key::abcd-efgh-ijkl-mnop", &mut doc, &root);
+            app.on_external_event(
+                "::tilo-recovery-key::abcd-efgh-ijkl-mnop",
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root,
+            );
             assert_eq!(app.recovery_key.as_deref(), Some("abcd-efgh-ijkl-mnop"));
             assert!(
                 app.status_lines.is_empty(),
@@ -5781,7 +5670,7 @@ mod tests {
             app.install_state = InstallState::Running;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
             assert!(
                 !has_test_id(
@@ -5792,16 +5681,18 @@ mod tests {
             );
 
             let key = "abcd-efgh-ijkl-mnop";
-            app.on_external_event(&format!("{RECOVERY_KEY_PREFIX}{key}"), &mut doc, &root);
+            app.on_external_event(
+                &format!("{RECOVERY_KEY_PREFIX}{key}"),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root,
+            );
             assert!(has_test_id(
                 app.build_composition(&Theme::dark()).as_ref(),
                 "recovery_key_copy"
             ));
 
-            let _ = doc.put(&root, RECOVERY_COPY_PATH, true);
-            app.sync(&mut doc, &root);
+            activate(&mut app, &mut doc, "recovery_key_copy");
             assert!(app.recovery_key_copied);
-            assert!(!read_bool(&doc, &root, RECOVERY_COPY_PATH).unwrap_or(false));
             assert_eq!(ui::clipboard_paste().as_deref(), Some(key));
             assert!(
                 !String::from_utf8_lossy(&doc.save()).contains(key),
@@ -5810,7 +5701,7 @@ mod tests {
 
             app.on_external_event(
                 &format!("{RECOVERY_KEY_PREFIX}replacement-key"),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             );
             assert!(
@@ -5829,14 +5720,14 @@ mod tests {
             app.install_state = InstallState::Running;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
             app.on_external_event(
                 &format!("{RECOVERY_KEY_PREFIX}failure-safe-key"),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             );
-            app.on_external_event(CTRL_FAIL, &mut doc, &root);
+            app.on_external_event(CTRL_FAIL, &mut ui::widget::Edits::lend(&mut doc), &root);
             assert!(has_test_id(
                 app.build_composition(&Theme::dark()).as_ref(),
                 "recovery_key_copy"
@@ -5847,12 +5738,12 @@ mod tests {
             ));
 
             app.install_state = InstallState::Done;
-            let _ = doc.put(&root, REBOOT_PATH, true);
-            app.sync(&mut doc, &root);
+            // Reboot stays disabled until the key is confirmed saved; the
+            // action refuses the same way.
+            run(&mut app, &doc, op::POWER, "reboot", Value::Null);
             assert!(app.status.contains("Save the recovery key"));
 
-            let _ = doc.put(&root, RECOVERY_SAVED_PATH, true);
-            app.sync(&mut doc, &root);
+            activate(&mut app, &mut doc, "recovery_key_saved");
             assert!(app.recovery_key_saved);
             assert!(
                 !app.recovery_key_copied,
@@ -5985,9 +5876,18 @@ mod tests {
                 .iter()
                 .find(|child| child.test_id() == Some("recovery_ack"))
                 .expect("recovery-key acknowledgement");
-            let nav = controls.last().expect("review navigation");
+            let footer = find_test_id(&app, "installer.actions").expect("pinned review actions");
+            let nav = footer
+                .children()
+                .into_iter()
+                .next()
+                .expect("review navigation");
+            let scroll = find_named(&app, "Scrollable").expect("review content viewport");
+            // Full height is the toolkit's regular control height, the
+            // height every single-line field takes.
+            let full = ui::widget::ControlSize::Regular.height(&Theme::dark());
             assert!(
-                input.get_rect().height() >= 38.0,
+                input.get_rect().height() >= full - 0.5,
                 "confirmation input collapsed: {:?}",
                 input.get_rect()
             );
@@ -6005,14 +5905,145 @@ mod tests {
                 "acknowledgement overlaps confirmation input"
             );
             assert!(
-                nav.get_rect().y0 >= ack.get_rect().y1,
-                "navigation overlaps acknowledgement"
+                nav.get_rect().y0 >= scroll.get_rect().y1,
+                "navigation overlaps the scrolling confirmation region"
             );
             assert!(
-                card.get_rect().y1 >= nav.get_rect().y1,
-                "navigation escaped review card"
+                nav.get_rect().y1 <= 768.0,
+                "pinned navigation escaped the viewport"
             );
         }
+    }
+
+    #[test]
+    fn pinned_actions_fit_large_text_and_focus_reveals_only_step_content() {
+        for base in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            for scale in [1.0, 2.0] {
+                let theme = base.clone().with_text_scale(scale);
+                for step in [
+                    Step::Keyboard,
+                    Step::Network,
+                    Step::Disk,
+                    Step::Account,
+                    Step::Options,
+                    Step::Media,
+                    Step::Review,
+                    Step::Install,
+                ] {
+                    let mut app = InstallerApp::for_shot(step);
+                    if step == Step::Install {
+                        app.shot_finished();
+                        app.recovery_key_saved = true;
+                    }
+                    app.set_status("Check your choices before continuing.");
+                    layout_with_theme(&mut app, 800.0, 600.0, &theme);
+                    let footer = find_test_id(&app, "installer.actions").expect("pinned actions");
+                    let scroll = find_named(&app, "Scrollable").expect("content viewport");
+                    assert!(
+                        footer.get_rect().y0 >= scroll.get_rect().y1,
+                        "{step:?}/{scale}: actions overlap content"
+                    );
+                    assert!(
+                        footer.get_rect().y0 >= 0.0 && footer.get_rect().y1 <= 600.0,
+                        "{step:?}/{scale}: actions outside viewport: {:?}",
+                        footer.get_rect()
+                    );
+                    assert!(
+                        scroll.get_rect().height() > 0.0,
+                        "content viewport collapsed"
+                    );
+                    let status = find_accessible(&app, "Check your choices before continuing.")
+                        .expect("validation line");
+                    assert_eq!(status.live, Some(Politeness::Assertive));
+                    let validation =
+                        find_test_id(footer, "installer.validation").expect("pinned validation");
+                    assert!(
+                        validation.get_rect().height() > 0.0 && validation.get_rect().y1 <= 600.0
+                    );
+                    assert!(!has_test_id(scroll, "installer.actions"));
+                }
+
+                for variant in 0..3 {
+                    let mut app = staged_app();
+                    let action = match variant {
+                        0 => {
+                            app.step = Step::Account;
+                            "return_to_host"
+                        }
+                        1 => {
+                            app.shot_failed();
+                            "Review storage"
+                        }
+                        _ => {
+                            app.step = Step::Media;
+                            app.codecs = true;
+                            "Next"
+                        }
+                    };
+                    layout_with_theme(&mut app, 800.0, 600.0, &theme);
+                    let footer = find_test_id(&app, "installer.actions").expect("variant footer");
+                    let button = find_test_id(footer, action).expect("retained pinned action");
+                    assert!(
+                        button.get_rect().height() > 0.0 && button.get_rect().y1 <= 600.0,
+                        "{action}/{scale} escaped viewport: {:?}",
+                        button.get_rect()
+                    );
+                }
+
+                assert_account_focus_reveal(&theme);
+            }
+        }
+    }
+
+    fn assert_account_focus_reveal(theme: &Theme) {
+        let mut account = InstallerApp::for_shot(Step::Account);
+        let nodes = layout_with_theme(&mut account, 800.0, 600.0, theme);
+        let next = find_test_id(&account, "Next").expect("Next").get_rect();
+        let confirm =
+            find_test_id(&account, "installer.password_confirm").expect("password confirmation");
+        assert!(confirm.is_focusable());
+        let target = nodes
+            .values()
+            .copied()
+            .find(|&widget| {
+                // SAFETY: the production node map belongs to the still-live,
+                // unchanged app tree. No pointer survives the next rebuild.
+                unsafe { (*widget).test_id() == Some("installer.password_confirm") }
+            })
+            .expect("confirmation layout node");
+        assert!(
+            account.reveal_descendant(target),
+            "focus reveal must find the input"
+        );
+        let nodes = layout_with_theme(&mut account, 800.0, 600.0, theme);
+        let confirm = find_test_id(&account, "installer.password_confirm")
+            .unwrap()
+            .get_rect();
+        let viewport = find_named(&account, "Scrollable").unwrap().get_rect();
+        assert!(
+            confirm.y0 >= viewport.y0 && confirm.y1 <= viewport.y1,
+            "focused confirmation not revealed: {confirm:?} in {viewport:?}"
+        );
+        assert_eq!(
+            find_test_id(&account, "Next").unwrap().get_rect(),
+            next,
+            "revealing a field moved pinned navigation"
+        );
+        let offset = account.viewport_offset.get();
+        let next_target = nodes
+            .values()
+            .copied()
+            .find(|&widget| {
+                // SAFETY: the current production node map, as above.
+                unsafe { (*widget).test_id() == Some("Next") }
+            })
+            .expect("Next layout node");
+        assert!(account.reveal_descendant(next_target));
+        assert_eq!(
+            account.viewport_offset.get(),
+            offset,
+            "footer focus scrolled content"
+        );
     }
 
     /// Count focusable widgets anywhere in the subtree (the Account step's
@@ -6034,11 +6065,13 @@ mod tests {
             app.step = Step::Account;
             let (_taffy, _root) = build(&mut app);
 
-            // Username + optional full name + password + confirmation + Back + Next.
+            // Username + optional full name + password + confirmation, + Back
+            // + Next. A password's show/hide control is an inline accessory,
+            // not a Tab stop.
             assert_eq!(
                 count_focusable(&app),
                 6,
-                "4 inputs + 2 nav buttons must be focusable"
+                "4 inputs and 2 nav buttons must be focusable"
             );
         }
         // Phase `keyboard_step_has_dropdown_and_nav_and_a_preview`.
@@ -6072,8 +6105,8 @@ mod tests {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Disk;
             let _ = build(&mut app);
-            let card = find_named(&app, "InstallerCard").expect("disk card");
-            let next_disabled = card
+            let footer = find_test_id(&app, "installer.actions").expect("disk actions");
+            let next_disabled = footer
                 .children()
                 .last()
                 .and_then(|nav| nav.children().last().map(|b| !b.is_focusable()));
@@ -6083,8 +6116,8 @@ mod tests {
             app2.step = Step::Disk;
             app2.selected_disk = Some(0);
             let _ = build(&mut app2);
-            let card2 = find_named(&app2, "InstallerCard").expect("disk card");
-            let next_enabled = card2
+            let footer2 = find_test_id(&app2, "installer.actions").expect("disk actions");
+            let next_enabled = footer2
                 .children()
                 .last()
                 .and_then(|nav| nav.children().last().map(|b| b.is_focusable()));
@@ -6149,9 +6182,9 @@ mod tests {
             });
             app.tpm2 = false;
             assert_eq!(app.step, Step::Disk);
-            assert_eq!(app.hostname, "studio");
-            assert_eq!(app.username, "ada");
-            assert_eq!(app.keymap, "German (QWERTZ)");
+            assert_eq!(local_text(&app.hostname), "studio");
+            assert_eq!(local_text(&app.username), "ada");
+            assert_eq!(app.keymap(), "German (QWERTZ)");
             assert_eq!(app.filesystem(), "ext4");
 
             app.selected_disk = Some(0);
@@ -6163,12 +6196,17 @@ mod tests {
             *app.password.lock().unwrap() = "correct horse battery staple".into();
             *app.password_confirmation.lock().unwrap() = "correct horse battery staple".into();
             app.go_next();
-            assert_eq!(app.step, Step::Review, "configured Options is not repeated");
+            assert_eq!(
+                app.step,
+                Step::Media,
+                "configured Options is not repeated; the formats are still the owner's choice"
+            );
+            assert!(!app.codecs);
             app.go_back();
             assert_eq!(app.step, Step::Options);
             let _ = build(&mut app);
             assert!(
-                has_test_id(app.composed.as_deref().unwrap(), "fido2_choice"),
+                has_test_id(app.composed.element().unwrap(), "fido2_choice"),
                 "Review Back must keep on-device security choices reachable"
             );
             app.go_back();
@@ -6193,7 +6231,7 @@ mod tests {
             });
             app.tpm2 = false;
             assert_eq!(app.step, Step::Disk, "sound keyboard is retained");
-            assert_eq!(app.username, "ada");
+            assert_eq!(local_text(&app.username), "ada");
             assert_eq!(app.filesystem(), "ext4");
 
             app.selected_disk = Some(0);
@@ -6251,8 +6289,8 @@ mod tests {
                 repairs: vec![crate::media_profile::MediaProfileField::Keyboard],
             });
             assert_eq!(app.step, Step::Keyboard);
-            assert_eq!(app.hostname, "studio");
-            assert_eq!(app.username, "ada");
+            assert_eq!(local_text(&app.hostname), "studio");
+            assert_eq!(local_text(&app.username), "ada");
             assert!(app.status.contains("keyboard layout"));
         }
     }

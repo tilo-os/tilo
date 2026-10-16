@@ -17,26 +17,23 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-private-fs = { path = "../../crates/system/private-fs" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-actions = { path = "../../crates/collab/actions" }
 os-actions = { path = "../../crates/system/os-actions" }
 tilo-ocr = { path = "../../crates/media/ocr" }
-qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
+tilo-doc-pdf = { path = "../../crates/doc/tilo-doc-pdf" }
 image.workspace = true
 tilo-thumbnail = { path = "../../crates/media/thumbnail", features = ["pdf"] }
-automerge.workspace = true
-serde_json.workspace = true
 taffy.workspace = true
 vello.workspace = true
-winit.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [lints]
 workspace = true

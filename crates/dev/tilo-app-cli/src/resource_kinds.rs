@@ -1,7 +1,7 @@
-//! The resource kinds an app declares with `#[resource(kind = "...")]`, read
-//! from its sources so `tilo-app package` signs them into the manifest's
-//! `[resources]` table. The attribute takes only a string literal, so the
-//! sources name every kind a crate declares.
+//! The resource kinds an app declares with `#[resource(kind = "...")]` or
+//! a manual `Resource` implementation, read from its sources so `tilo-app
+//! package` signs them into the manifest's `[resources]` table. Both forms
+//! name their kinds with string literals.
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
@@ -21,9 +21,13 @@ use syn::visit_mut::VisitMut;
 /// read or parsed.
 pub fn declared_by_app(app_dir: &Path) -> Result<Vec<String>> {
     let metadata = crate::cargo_metadata(app_dir)?;
+    declared_with_metadata(app_dir, &metadata)
+}
+
+pub(crate) fn declared_with_metadata(app_dir: &Path, metadata: &Value) -> Result<Vec<String>> {
     let mut kinds = Kinds::default();
     visit_sources(&app_dir.join("src"), &mut kinds)?;
-    for dependency in local_dependencies(&metadata)? {
+    for dependency in local_dependencies(metadata)? {
         visit_sources(&dependency.join("src"), &mut kinds)?;
     }
     Ok(kinds.0.into_iter().collect())
@@ -107,7 +111,7 @@ fn visit_sources(dir: &Path, kinds: &mut Kinds) -> Result<()> {
         } else if path.extension().is_some_and(|extension| extension == "rs") {
             let source = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {}", path.display()))?;
-            if !source.contains("resource") {
+            if !source.contains("resource") && !source.contains("Resource") {
                 continue;
             }
             let mut file =
@@ -124,15 +128,46 @@ fn test_only(attributes: &[syn::Attribute]) -> bool {
     attributes.iter().any(|attribute| {
         attribute.path().is_ident("cfg")
             && attribute
-                .parse_args::<syn::Ident>()
-                .is_ok_and(|predicate| predicate == "test")
+                .parse_args::<syn::Meta>()
+                .is_ok_and(|predicate| requires_test(&predicate))
     })
+}
+
+/// A production build cannot satisfy `test`, or an `all` containing it.
+/// An `any` is test-only only when every arm requires `test`.
+fn requires_test(predicate: &syn::Meta) -> bool {
+    match predicate {
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::List(list) => {
+            let Ok(arms) = list.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            ) else {
+                return false;
+            };
+            if list.path.is_ident("all") {
+                arms.iter().any(requires_test)
+            } else if list.path.is_ident("any") && !arms.is_empty() {
+                arms.iter().all(requires_test)
+            } else {
+                false
+            }
+        }
+        syn::Meta::NameValue(_) => false,
+    }
 }
 
 #[derive(Default)]
 struct Kinds(BTreeSet<String>);
 
 impl VisitMut for Kinds {
+    /// A module file whose inner `cfg` compiles it only into the crate's
+    /// tests holds no packaged resource, whatever declares the module.
+    fn visit_file_mut(&mut self, file: &mut syn::File) {
+        if !test_only(&file.attrs) {
+            syn::visit_mut::visit_file_mut(self, file);
+        }
+    }
+
     fn visit_item_mod_mut(&mut self, module: &mut syn::ItemMod) {
         if !test_only(&module.attrs) {
             syn::visit_mut::visit_item_mod_mut(self, module);
@@ -141,6 +176,21 @@ impl VisitMut for Kinds {
 
     fn visit_item_impl_mut(&mut self, item: &mut syn::ItemImpl) {
         if !test_only(&item.attrs) {
+            if item.trait_.as_ref().is_some_and(|(_, path, _)| {
+                path.segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "Resource")
+            }) {
+                for member in &item.items {
+                    if let syn::ImplItem::Const(constant) = member
+                        && constant.ident == "KIND"
+                        && let syn::Expr::Lit(literal) = &constant.expr
+                        && let syn::Lit::Str(kind) = &literal.lit
+                    {
+                        self.0.insert(kind.value());
+                    }
+                }
+            }
             syn::visit_mut::visit_item_impl_mut(self, item);
         }
     }
@@ -171,6 +221,170 @@ impl VisitMut for Kinds {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+
+    #[test]
+    fn manual_resource_implementations_declare_kinds_without_attributes() {
+        let app = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(app.path().join("src")).unwrap();
+        std::fs::write(
+            app.path().join("src/lib.rs"),
+            r#"
+            impl Resource for Music { const KIND: &'static str = "music.library"; }
+            impl ui::tilo_resource::Resource for Book { const KIND: &'static str = "books.library"; }
+            impl Unrelated { const KIND: &'static str = "unrelated.kind"; }
+            #[cfg(test)]
+            impl Resource for Fixture { const KIND: &'static str = "test.fixture"; }
+            #[cfg(test)]
+            mod tests {
+                impl Resource for Page { const KIND: &'static str = "test.page"; }
+            }
+            #[cfg(test)]
+            #[cfg(not(target_arch = "wasm32"))]
+            mod native_tests {
+                impl Resource for Fixture { const KIND: &'static str = "test.native"; }
+            }
+            #[cfg(any(test, feature = "live"))]
+            impl Resource for Live { const KIND: &'static str = "live.library"; }
+            "#,
+        ).unwrap();
+        std::fs::write(
+            app.path().join("src/uppercase.rs"),
+            r#"impl Resource for Uppercase { const KIND: &'static str = "uppercase.library"; }"#,
+        )
+        .unwrap();
+        // A test module in a file of its own, as `mod shelf_tests;` declares it.
+        std::fs::write(
+            app.path().join("src/shelf_tests.rs"),
+            r#"
+            #![cfg(all(test, not(target_arch = "wasm32")))]
+            impl Resource for Shelf { const KIND: &'static str = "test.shelf"; }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            super::declared_in(app.path()).unwrap(),
+            [
+                "books.library",
+                "live.library",
+                "music.library",
+                "uppercase.library"
+            ]
+        );
+    }
+
+    /// The directories of the path crates `app_dir/Cargo.toml` lists as
+    /// normal dependencies, the SDK's own crates excepted.
+    fn direct_local_dependencies(app_dir: &Path) -> Vec<std::path::PathBuf> {
+        let manifest: toml::Table =
+            toml::from_str(&std::fs::read_to_string(app_dir.join("Cargo.toml")).unwrap()).unwrap();
+        let Some(dependencies) = manifest.get("dependencies").and_then(toml::Value::as_table)
+        else {
+            return Vec::new();
+        };
+        dependencies
+            .values()
+            .filter_map(|dependency| dependency.get("path")?.as_str())
+            .map(|path| app_dir.join(path).canonicalize().unwrap())
+            .filter(|dir| !dir.components().any(|part| part.as_os_str() == "sdk"))
+            .collect()
+    }
+
+    /// The image installs each app with the `[resources] kinds` of its
+    /// authored `tilo-app.toml`, and a governed room lets an app create only
+    /// records of a kind its signed manifest declares. A kind the app's code
+    /// holds but its manifest omits leaves the app unable to create its first
+    /// record there, so every kind declared in the app's sources, or in a
+    /// local crate it depends on directly such as a shared model, must be
+    /// listed. Kinds the SDK declares are the framework's, not the app's.
+    #[test]
+    fn every_app_manifest_declares_the_record_kinds_its_sources_hold() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap();
+        let mut apps: Vec<_> = std::fs::read_dir(root.join("apps"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|dir| dir.join("tilo-app.toml").is_file())
+            .collect();
+        apps.sort();
+        assert!(
+            apps.len() >= 40,
+            "expected the app fleet, found {}",
+            apps.len()
+        );
+        let mut dependency_kinds = std::collections::HashMap::new();
+        let mut missing = Vec::new();
+        for app in apps {
+            let manifest = tilo_app_package::Manifest::from_toml_str(
+                &std::fs::read_to_string(app.join("tilo-app.toml")).unwrap(),
+            )
+            .unwrap_or_else(|error| panic!("{}: {error}", app.display()));
+            let mut kinds = super::declared_in(&app).unwrap();
+            for dependency in direct_local_dependencies(&app) {
+                kinds.extend(
+                    dependency_kinds
+                        .entry(dependency.clone())
+                        .or_insert_with(|| super::declared_in(&dependency).unwrap())
+                        .iter()
+                        .cloned(),
+                );
+            }
+            for kind in kinds {
+                if !manifest.resources.kinds.contains(&kind) {
+                    missing.push(format!(
+                        "{}: {kind}",
+                        app.file_name().unwrap().to_string_lossy()
+                    ));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "kinds missing from `[resources] kinds` in apps/*/tilo-app.toml:\n{}",
+            missing.join("\n")
+        );
+    }
+
+    #[test]
+    fn music_production_resource_is_declared_for_packaging() {
+        let app = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/music");
+        assert_eq!(super::declared_in(&app).unwrap(), ["music.library"]);
+        let authored = tilo_app_package::Manifest::from_toml_str(
+            &std::fs::read_to_string(app.join("tilo-app.toml")).unwrap(),
+        )
+        .unwrap();
+        let desktop = tilo_app_package::desktop::desktop_manifest(
+            &authored,
+            "linux",
+            "x86_64",
+            "x86_64",
+            "bin/music",
+        )
+        .unwrap();
+        assert_eq!(desktop.resources.kinds, ["music.library"]);
+        // What the app carries is its own kind and every kind its local
+        // dependencies declare in production code, whatever they are now.
+        let metadata = crate::cargo_metadata(&app).unwrap();
+        let mut expected = std::collections::BTreeSet::from(["music.library".to_owned()]);
+        for dependency in super::local_dependencies(&metadata).unwrap() {
+            expected.extend(super::declared_in(&dependency).unwrap());
+        }
+        let declared = super::declared_by_app(&app).unwrap();
+        assert_eq!(
+            declared,
+            expected.into_iter().collect::<Vec<_>>(),
+            "the production dependency resources are included"
+        );
+        assert!(
+            declared.iter().any(|kind| kind == "tilo.text"),
+            "a framework record the app links is among them: {declared:?}"
+        );
+        assert!(
+            declared.iter().all(|kind| !kind.starts_with("test.")),
+            "SDK test fixtures are excluded: {declared:?}"
+        );
+    }
 
     #[test]
     fn kinds_are_read_from_every_resource_attribute_in_the_sources() {

@@ -32,22 +32,10 @@ impl CaptureTimeline {
     ///
     /// [`AudioError::InvalidFrame`] for a non-frame-aligned, regressing or overflowing timestamp.
     pub fn timestamp(&mut self, raw: u64, captured_at: Instant) -> Result<u64, AudioError> {
-        let epoch = *self.epoch.get_or_insert(captured_at);
         let (raw_base, media_base) = if let Some(source) = self.source {
             source
         } else {
-            let elapsed_frames =
-                u64::try_from(captured_at.saturating_duration_since(epoch).as_millis() / 20)
-                    .map_err(|_| AudioError::InvalidFrame)?;
-            let elapsed = elapsed_frames
-                .checked_mul(960)
-                .ok_or(AudioError::InvalidFrame)?;
-            let next = self
-                .last
-                .map(|last| last.checked_add(960).ok_or(AudioError::InvalidFrame))
-                .transpose()?
-                .unwrap_or(0);
-            let source = (raw, elapsed.max(next));
+            let source = (raw, self.minimum_timestamp(captured_at)?);
             self.source = Some(source);
             source
         };
@@ -63,6 +51,35 @@ impl CaptureTimeline {
         }
         self.last = Some(timestamp);
         Ok(timestamp)
+    }
+    /// Stamp a locally encoded complete 20ms frame on the wire sample clock.
+    /// Device PTS is independently checked for freshness by the caller; its
+    /// sub-frame jitter must not change the encoded frame's sample duration.
+    /// Capture gaps and restarts retain the original monotonic epoch.
+    ///
+    /// # Errors
+    ///
+    /// [`AudioError::InvalidFrame`] if the wire timestamp would overflow.
+    pub fn frame_timestamp(&mut self, captured_at: Instant) -> Result<u64, AudioError> {
+        let timestamp = self.minimum_timestamp(captured_at)?;
+        self.source = None;
+        self.last = Some(timestamp);
+        Ok(timestamp)
+    }
+    fn minimum_timestamp(&mut self, captured_at: Instant) -> Result<u64, AudioError> {
+        let epoch = *self.epoch.get_or_insert(captured_at);
+        let elapsed_frames =
+            u64::try_from(captured_at.saturating_duration_since(epoch).as_millis() / 20)
+                .map_err(|_| AudioError::InvalidFrame)?;
+        let elapsed = elapsed_frames
+            .checked_mul(960)
+            .ok_or(AudioError::InvalidFrame)?;
+        let next = self
+            .last
+            .map(|last| last.checked_add(960).ok_or(AudioError::InvalidFrame))
+            .transpose()?
+            .unwrap_or(0);
+        Ok(elapsed.max(next))
     }
 }
 
@@ -163,6 +180,15 @@ impl CaptureQueue {
             .filter(|f| now.saturating_duration_since(f.captured_at) < SEND_LIFETIME)
             .collect()
     }
+}
+
+/// Whether an encoded Opus packet carries anything. With DTX the encoder
+/// returns a packet of at most two bytes for a silent frame that needs no
+/// transmission (libopus `opus_encode`); the receiver's decoder fills the gap
+/// with comfort noise from the last update it got.
+#[must_use]
+pub fn needs_transmission(packet: &[u8]) -> bool {
+    packet.len() > 2
 }
 
 fn validate_frame(duration: u16, payload: &[u8]) -> Result<(), AudioError> {

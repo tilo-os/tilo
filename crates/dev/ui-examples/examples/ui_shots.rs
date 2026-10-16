@@ -11,6 +11,7 @@ registry::scenario_modules! {
     Shots;
     ctrl_k_palette, "ctrl_k_palette.rs", "unified Ctrl+K palette states";
     chart_gallery_shots, "chart_gallery_shots.rs", "responsive light and dark chart catalogue";
+    content_shots, "content_shots.rs", "content composites: rows, cards, media, stats, states";
     data_table, "data_table.rs", "virtualized data-table states";
     denied_state_shots, "denied_state_shots.rs", "permission-denied control states";
     fractional_scale_shots, "fractional_scale_shots.rs", "fractional-scale gallery renders";
@@ -20,16 +21,15 @@ registry::scenario_modules! {
     history_cases, "history_cases.rs", "history and collaboration cases";
     nav_shell_shots, "nav_shell_shots.rs", "navigation shell states";
     perf_hud_shot, "perf_hud_shot.rs", "frame profiler HUD";
-    rich_text_editor_shots, "rich_text_editor_shots.rs", "rich-text editor states";
     scrollbar_shots, "scrollbar_shots.rs", "scrollbar states";
     search_showcase, "search_showcase.rs", "search-field states and results";
     soft_shadow_shots, "soft_shadow_shots.rs", "soft-shadow rendering";
-    table_shots, "table_shots.rs", "table layouts and states";
+    table_shots, "table_shots.rs", "editable table insertion and deletion";
     text_shots, "text_shots.rs", "typography rendering";
     textinput_ext_shots, "textinput_ext_shots.rs", "extended text input states";
     undo_controls_shots, "undo_controls_shots.rs", "undo and redo availability states";
-    widget_showcase_snapshot, "widget_showcase_snapshot.rs", "showcase visual snapshot";
-    widget_snapshot, "widget_snapshot.rs", "individual widget snapshots";
+    widget_states, "widget_states_shots.rs", "every widget in its states, dark and light, with overlays over content";
+    window_chrome, "window_chrome_shots.rs", "modal, popover, status and over-media chrome, dark and light";
 }
 
 fn main() {

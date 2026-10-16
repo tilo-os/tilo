@@ -11,7 +11,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ui::{Fetcher, ImageStore};
-use vello::peniko::ImageData as PenikoImage;
 
 /// A `tilo_net` transport for the [`ImageStore`]: the request runs on the app
 /// runtime and the store's loader waits on it from its own worker. A
@@ -57,30 +56,11 @@ pub fn image_store() -> ImageStore {
 pub struct Imgs<'a>(pub Option<&'a ImageStore>);
 
 impl Imgs<'_> {
-    /// The hermetic no-store handle (offline / `--shots`).
-    pub fn none() -> Self {
-        Imgs(None)
-    }
-
-    /// The decoded image for `url`, or `None` while loading / failed / offline.
-    /// Kicks off an async load the first time a URL is seen.
-    pub fn get(&self, url: &str) -> Option<PenikoImage> {
-        match self.0 {
-            Some(store) if !url.is_empty() => store.get(url),
-            _ => None,
-        }
-    }
-
     /// An owned clone (an `Arc` bump) for a widget that resolves its own image
     /// lazily in `sync` rather than at build time: a freshly-decoded image
     /// then folds into the widget next frame without a whole-tree rebuild.
     /// `None` on the hermetic offline / `--shots` path.
     pub fn store_handle(&self) -> Option<ImageStore> {
         self.0.cloned()
-    }
-
-    /// In-flight image loads, so the app can keep redrawing until they settle.
-    pub fn pending(&self) -> usize {
-        self.0.map_or(0, ui::ImageStore::pending)
     }
 }

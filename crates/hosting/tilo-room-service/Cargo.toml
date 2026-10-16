@@ -7,20 +7,46 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-files = { path = "../../platform/tilo-files" }
 anyhow.workspace = true
 bytes.workspace = true
 futures = { workspace = true, features = ["std"] }
 hex.workspace = true
+# A throwaway room's owner key, from the operating system.
+getrandom.workspace = true
+# Keyed hashes of client addresses for join limits and cooldowns.
+hmac.workspace = true
+sha2.workspace = true
 http-body-util = "0.1.3"
 hyper = { version = "1.8.1", features = ["server", "http1"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 rand.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+# The owner key is compared in constant time.
+subtle = "2.6"
+# The operator protocol spoken with each room's `tilo-relay room` child.
+tilo-relay-protocol = { path = "../tilo-relay-protocol" }
+# The HTTPS identity loader and server config the relay's listener uses too.
+tilo-moq = { path = "../tilo-moq", features = ["tls"] }
+# The TLS client to a room's host trusts only its pinned certificate.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net" }
 tokio = { workspace = true, features = ["full"] }
 tokio-rustls.workspace = true
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# The persistent room's address hash key, kept beside the room's roots.
+tilo-secrets = { path = "../../platform/tilo-secrets" }
+# Guest links are written in the web link grammar, by its one formatter.
+tilo-reference = { path = "../../collab/reference" }
+# A visitor's name is checked as every host keeps one.
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

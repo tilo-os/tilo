@@ -1,9 +1,10 @@
 use std::collections::BTreeSet;
 use std::fs::{self, File};
-use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::io::{IoSlice, IoSliceMut, Read, Write};
+use std::mem::MaybeUninit;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -14,6 +15,10 @@ use std::time::Duration;
 
 use collab_types::caps::CapOverride;
 use compat_catalogue::{ApplicationQuery, Catalogue, VmFallback};
+use rustix::net::{
+    RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, SendAncillaryBuffer,
+    SendAncillaryMessage, SendFlags,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tilo_clock::try_unix_now;
@@ -34,8 +39,6 @@ const MANAGER_APP_ID: &str = "so.tilo.windows";
 const FRAMING: Framing = Framing::little_endian(1024 * 1024).reject_empty();
 const MAX_CLIENT_WORKERS: usize = 8;
 const CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(2);
-// An `i32` is exactly four bytes by definition; `SCM_RIGHTS` carries one raw fd.
-const SCM_RIGHTS_FD_BYTES: u32 = 4;
 const VM_INSTALL_CONFIRMATION_SECONDS: u64 = 5 * 60;
 
 struct PendingVmInstall {
@@ -361,8 +364,7 @@ impl LauncherAuthenticator {
         expected_parent_pid: u32,
         registry: Arc<dyn TrustedLauncherRegistry>,
     ) -> Self {
-        // SAFETY: `geteuid` has no preconditions and does not mutate memory.
-        let expected_uid = unsafe { libc::geteuid() };
+        let expected_uid = rustix::process::geteuid().as_raw();
         Self {
             expected_uid,
             expected_parent_pid,
@@ -423,6 +425,8 @@ fn peer_credentials(stream: &UnixStream) -> Result<PeerCredentials, SessionError
     };
     let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>())
         .map_err(|_| SessionError::UnauthenticatedPeer)?;
+    // Not rustix's `socket_peercred`: its `UCred` holds a non-zero `Pid`, and the
+    // kernel reports pid 0 for a peer outside this PID namespace.
     // SAFETY: both pointers name initialized writable storage of `length`
     // bytes and `stream` owns a valid Unix-domain socket descriptor.
     let result = unsafe {
@@ -498,14 +502,10 @@ where
         fs::create_dir_all(parent)?;
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
     }
-    if path.exists() {
-        if UnixStream::connect(&path).is_ok() {
-            return Err(SessionError::AlreadyRunning);
-        }
-        fs::remove_file(&path)?;
+    if UnixStream::connect(&path).is_ok() {
+        return Err(SessionError::AlreadyRunning);
     }
-    let listener = UnixListener::bind(&path)?;
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    let listener = tilo_files::native::private::bind_socket(&path)?;
     let stop = Arc::new(AtomicBool::new(false));
     let thread_stop = Arc::clone(&stop);
     let workers = Arc::new(Mutex::new(Vec::new()));
@@ -1326,7 +1326,7 @@ impl SessionClient {
         ) {
             return Err(SessionError::DescriptorInvalid);
         }
-        write_frame_with_fd(&mut self.stream, request, FRAMING, file.as_raw_fd())?;
+        write_frame_with_fd(&mut self.stream, request, FRAMING, file.as_fd())?;
         read_frame(&mut self.stream, FRAMING)
     }
 }
@@ -1345,58 +1345,32 @@ fn read_request_frame(
 
 fn recv_length_with_fd(stream: &UnixStream) -> Result<([u8; 4], Option<OwnedFd>), SessionError> {
     let mut length = [0_u8; 4];
-    let mut iov = libc::iovec {
-        iov_base: length.as_mut_ptr().cast(),
-        iov_len: length.len(),
-    };
-    let control_bytes = cmsg_space_for_fd();
-    let mut control = vec![0 as libc::c_long; control_words(control_bytes)];
-    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
-    message.msg_iov = std::ptr::addr_of_mut!(iov);
-    message.msg_iovlen = 1;
-    message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = control_bytes;
-    // SAFETY: every msghdr pointer names live writable storage, and the
-    // control allocation is aligned to `c_long`/cmsghdr requirements.
-    let received = unsafe {
-        libc::recvmsg(
-            stream.as_raw_fd(),
-            std::ptr::addr_of_mut!(message),
-            libc::MSG_WAITALL | libc::MSG_CMSG_CLOEXEC,
-        )
-    };
-    if received < 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    if received == 0 {
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+    let mut control = RecvAncillaryBuffer::new(&mut space);
+    let received = rustix::net::recvmsg(
+        stream,
+        &mut [IoSliceMut::new(&mut length)],
+        &mut control,
+        RecvFlags::WAITALL | RecvFlags::CMSG_CLOEXEC,
+    )
+    .map_err(std::io::Error::from)?;
+    if received.bytes == 0 {
         return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
     }
-    if usize::try_from(received).ok() != Some(length.len())
-        || message.msg_flags & libc::MSG_CTRUNC != 0
-    {
+    if received.bytes != length.len() || received.flags.contains(ReturnFlags::CTRUNC) {
         return Err(SessionError::DescriptorInvalid);
     }
 
+    // Accept at most one SCM_RIGHTS descriptor; anything else is closed.
     let mut descriptor = None;
-    // SAFETY: `message` was initialized by recvmsg and its control buffer
-    // remains alive. We accept exactly one integer SCM_RIGHTS item.
-    unsafe {
-        let mut header = libc::CMSG_FIRSTHDR(std::ptr::addr_of!(message));
-        while !header.is_null() {
-            let expected = libc::CMSG_LEN(SCM_RIGHTS_FD_BYTES) as usize;
-            if (*header).cmsg_level != libc::SOL_SOCKET
-                || (*header).cmsg_type != libc::SCM_RIGHTS
-                || (*header).cmsg_len != expected
-                || descriptor.is_some()
-            {
+    for message in control.drain() {
+        let RecvAncillaryMessage::ScmRights(fds) = message else {
+            return Err(SessionError::DescriptorInvalid);
+        };
+        for fd in fds {
+            if descriptor.replace(fd).is_some() {
                 return Err(SessionError::DescriptorInvalid);
             }
-            let raw = std::ptr::read_unaligned(libc::CMSG_DATA(header).cast::<i32>());
-            if raw < 0 {
-                return Err(SessionError::DescriptorInvalid);
-            }
-            descriptor = Some(OwnedFd::from_raw_fd(raw));
-            header = libc::CMSG_NXTHDR(std::ptr::addr_of!(message), header);
         }
     }
     Ok((length, descriptor))
@@ -1406,12 +1380,9 @@ fn write_frame_with_fd<T: Serialize>(
     stream: &mut UnixStream,
     value: &T,
     framing: Framing,
-    descriptor: i32,
+    descriptor: BorrowedFd<'_>,
 ) -> Result<(), SessionError> {
     let bytes = serde_json::to_vec(value)?;
-    if descriptor < 0 {
-        return Err(SessionError::FrameTooLarge);
-    }
     let length = framing.encode_prefix(bytes.len()).map_err(frame_error)?;
     send_length_with_fd(stream, length, descriptor)?;
     stream.write_all(&bytes)?;
@@ -1421,53 +1392,26 @@ fn write_frame_with_fd<T: Serialize>(
 
 fn send_length_with_fd(
     stream: &UnixStream,
-    mut length: [u8; 4],
-    descriptor: i32,
+    length: [u8; 4],
+    descriptor: BorrowedFd<'_>,
 ) -> Result<(), SessionError> {
-    let mut iov = libc::iovec {
-        iov_base: length.as_mut_ptr().cast(),
-        iov_len: length.len(),
-    };
-    let control_bytes = cmsg_space_for_fd();
-    let mut control = vec![0 as libc::c_long; control_words(control_bytes)];
-    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
-    message.msg_iov = std::ptr::addr_of_mut!(iov);
-    message.msg_iovlen = 1;
-    message.msg_control = control.as_mut_ptr().cast();
-    message.msg_controllen = control_bytes;
-    // SAFETY: the control allocation is suitably aligned and sized for one
-    // cmsghdr plus one descriptor, and all referenced values outlive sendmsg.
-    unsafe {
-        let header = libc::CMSG_FIRSTHDR(std::ptr::addr_of!(message));
-        if header.is_null() {
-            return Err(SessionError::DescriptorInvalid);
-        }
-        (*header).cmsg_level = libc::SOL_SOCKET;
-        (*header).cmsg_type = libc::SCM_RIGHTS;
-        (*header).cmsg_len = libc::CMSG_LEN(SCM_RIGHTS_FD_BYTES) as usize;
-        std::ptr::write_unaligned(libc::CMSG_DATA(header).cast::<i32>(), descriptor);
-        let sent = libc::sendmsg(
-            stream.as_raw_fd(),
-            std::ptr::addr_of!(message),
-            libc::MSG_NOSIGNAL,
-        );
-        if sent < 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        if usize::try_from(sent).ok() != Some(length.len()) {
-            return Err(SessionError::DescriptorInvalid);
-        }
+    let descriptors = [descriptor];
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+    let mut control = SendAncillaryBuffer::new(&mut space);
+    if !control.push(SendAncillaryMessage::ScmRights(&descriptors)) {
+        return Err(SessionError::DescriptorInvalid);
+    }
+    let sent = rustix::net::sendmsg(
+        stream,
+        &[IoSlice::new(&length)],
+        &mut control,
+        SendFlags::NOSIGNAL,
+    )
+    .map_err(std::io::Error::from)?;
+    if sent != length.len() {
+        return Err(SessionError::DescriptorInvalid);
     }
     Ok(())
-}
-
-fn cmsg_space_for_fd() -> usize {
-    // SAFETY: CMSG_SPACE is a pure size/alignment calculation.
-    unsafe { libc::CMSG_SPACE(SCM_RIGHTS_FD_BYTES) as usize }
-}
-
-fn control_words(bytes: usize) -> usize {
-    bytes.div_ceil(std::mem::size_of::<libc::c_long>())
 }
 
 fn read_frame<T: serde::de::DeserializeOwned>(
@@ -1658,7 +1602,7 @@ mod tests {
                 &mut writer,
                 &serde_json::json!({"k": 1}),
                 FRAMING,
-                selected.as_file().as_raw_fd(),
+                selected.as_file().as_fd(),
             )
             .unwrap();
             let mut sent = [0_u8; FRAME.len()];
@@ -1675,7 +1619,7 @@ mod tests {
             })
             .unwrap();
             let prefix = u32::try_from(body.len()).unwrap().to_le_bytes();
-            send_length_with_fd(&writer, prefix, selected.as_file().as_raw_fd()).unwrap();
+            send_length_with_fd(&writer, prefix, selected.as_file().as_fd()).unwrap();
             writer.write_all(&body).unwrap();
             let (request, descriptor) = read_request_frame(&mut reader, FRAMING).unwrap();
             assert!(
@@ -1713,7 +1657,7 @@ mod tests {
                     source_name: "favorite.exe".to_string(),
                 },
                 FRAMING,
-                selected.as_file().as_raw_fd(),
+                selected.as_file().as_fd(),
             )
             .unwrap();
 
@@ -1806,52 +1750,7 @@ mod tests {
         }
     }
 
-    fn thread_ids() -> std::collections::BTreeSet<String> {
-        std::fs::read_dir("/proc/self/task")
-            .expect("/proc/self/task")
-            .map(|entry| entry.expect("task").file_name().into_string().expect("tid"))
-            .collect()
-    }
-
-    fn context_switches(tid: &str) -> u64 {
-        std::fs::read_to_string(format!("/proc/self/task/{tid}/status"))
-            .expect("thread status")
-            .lines()
-            .filter(|line| line.contains("ctxt_switches"))
-            .filter_map(|line| line.split_whitespace().nth(1)?.parse::<u64>().ok())
-            .sum()
-    }
-
-    fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
-        let before = thread_ids();
-        let started = start();
-        let waiting = std::time::Instant::now();
-        loop {
-            let named = thread_ids()
-                .difference(&before)
-                .find(|tid| {
-                    std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
-                        .is_ok_and(|name| name.trim() == comm)
-                })
-                .cloned();
-            if let Some(tid) = named {
-                return (started, tid);
-            }
-            assert!(
-                waiting.elapsed() < Duration::from_secs(5),
-                "no new thread named {comm}"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    fn assert_stays_asleep(tid: &str, what: &str) {
-        std::thread::sleep(Duration::from_millis(50));
-        let settled = context_switches(tid);
-        std::thread::sleep(Duration::from_millis(400));
-        let woke = context_switches(tid).saturating_sub(settled);
-        assert_eq!(woke, 0, "idle {what} woke {woke} times in 400 ms");
-    }
+    use tilo_test_env::idle::{assert_stays_asleep, spawned_thread};
 
     struct IdleResources;
 

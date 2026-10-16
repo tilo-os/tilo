@@ -1,6 +1,90 @@
 use super::*;
 
 #[test]
+fn repeated_full_size_packets_keep_one_frame_but_events_still_wake() {
+    use std::sync::atomic::AtomicUsize;
+
+    let shared = Arc::new(Shared::default());
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let observed = wakes.clone();
+    *shared.waker.lock().unwrap() = Some(Arc::new(move || {
+        observed.fetch_add(1, Ordering::Relaxed);
+    }));
+    let routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
+    let frame = super::super::Frame {
+        trace_id: None,
+        rgba: Arc::new(vec![255; 868 * 772 * 4]),
+        width: 868,
+        height: 772,
+    };
+    let mut packet = Vec::new();
+    protocol::write_tab_frame(&mut packet, 1, &frame).unwrap();
+    let mut retained = None;
+    for _ in 0..40 {
+        let Some(protocol::Packet::TabFrame(tab, decoded)) =
+            protocol::read_packet(&mut std::io::Cursor::new(&packet)).unwrap()
+        else {
+            panic!("expected routed full-size frame");
+        };
+        deliver_frame(&routes, tab, decoded);
+        let pixels = shared.frames.lock().unwrap().as_ref().unwrap().rgba.clone();
+        if let Some(first) = &retained {
+            assert!(Arc::ptr_eq(first, &pixels));
+        } else {
+            retained = Some(pixels);
+        }
+    }
+    assert_eq!(wakes.load(Ordering::Relaxed), 1);
+    shared.event(WebViewEvent::TitleChanged("Updated title".into()));
+    assert_eq!(wakes.load(Ordering::Relaxed), 2);
+    assert!(matches!(
+        shared.events.lock().unwrap().front(),
+        Some(WebViewEvent::TitleChanged(title)) if title == "Updated title"
+    ));
+}
+
+#[test]
+fn unchanged_frames_do_not_wake_or_replace_the_painted_pixels() {
+    use std::sync::atomic::AtomicUsize;
+
+    let shared = Arc::new(Shared::default());
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let observed = wakes.clone();
+    *shared.waker.lock().unwrap() = Some(Arc::new(move || {
+        observed.fetch_add(1, Ordering::Relaxed);
+    }));
+    let routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
+    let pixels = Arc::new(vec![255; 8]);
+    let frame = |width, height, rgba, trace_id| super::super::Frame {
+        trace_id,
+        rgba,
+        width,
+        height,
+    };
+    deliver_frame(&routes, 1, frame(2, 1, pixels.clone(), Some(1)));
+    deliver_frame(&routes, 1, frame(2, 1, Arc::new(vec![255; 8]), Some(2)));
+    assert_eq!(wakes.load(Ordering::Relaxed), 1);
+    let retained = shared.frames.lock().unwrap().clone().unwrap();
+    assert!(Arc::ptr_eq(&retained.rgba, &pixels));
+    assert_eq!(retained.trace_id, Some(1));
+
+    let changed = Arc::new(vec![0, 255, 255, 255, 255, 255, 255, 255]);
+    deliver_frame(&routes, 1, frame(2, 1, changed.clone(), Some(3)));
+    assert_eq!(wakes.load(Ordering::Relaxed), 2);
+    assert!(Arc::ptr_eq(
+        &shared.frames.lock().unwrap().as_ref().unwrap().rgba,
+        &changed,
+    ));
+    deliver_frame(&routes, 1, frame(1, 2, changed, Some(4)));
+    assert_eq!(wakes.load(Ordering::Relaxed), 3);
+    let resized = shared.frames.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        (resized.width, resized.height, resized.trace_id),
+        (1, 2, Some(4))
+    );
+}
+
+#[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario, one labelled phase per merged case"
@@ -277,8 +361,6 @@ fn private_engines_own_and_remove_their_disposable_roots() {
     // phase: private_packaged_helper_discovery_failure_removes_root
     {
         let fixture = tempfile::tempdir().unwrap();
-        let isolated_executable = fixture.path().join("isolated/bin/browser-test");
-        std::fs::create_dir_all(isolated_executable.parent().unwrap()).unwrap();
         let root = private_root();
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -286,8 +368,8 @@ fn private_engines_own_and_remove_their_disposable_roots() {
                 "webview::chromium::tests::private_packaged_helper_discovery_failure_child",
                 "--ignored",
             ])
-            .env_remove("TILO_CHROMIUM_HOST")
-            .env("TILO_TEST_CHROMIUM_DISCOVERY_EXE", isolated_executable)
+            .env_remove(runtime::HOST_OVERRIDE_ENV)
+            .env(runtime::RUNTIME_DIR_ENV, fixture.path())
             .env("TILO_TEST_PRIVATE_ROOT", &root)
             .status()
             .unwrap();
@@ -308,7 +390,10 @@ fn private_engines_own_and_remove_their_disposable_roots() {
     }
     // phase: private_process_exit_waits_for_helper_and_root_cleanup
     {
-        let (_fixture, host) = helper_fixture("exec cat >/dev/null");
+        // Keep the protocol output open while stdin is consumed. Redirecting
+        // stdout alone sends EOF to the production frame reader, which can
+        // reap this supposedly-live helper before the child checks its root.
+        let (_fixture, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
         let root = private_root();
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -322,16 +407,6 @@ fn private_engines_own_and_remove_their_disposable_roots() {
             .unwrap();
         assert!(result.success());
         assert!(!root.exists(), "root must be absent when the child exits");
-    }
-    // phase: unavailable_private_engine_owns_its_disposable_root
-    {
-        let root = private_root();
-        let engine =
-            UnavailableEngine::new_with_private_root("Private backend unavailable".into(), &root)
-                .unwrap();
-        assert!(root.exists());
-        drop(engine);
-        assert!(!root.exists());
     }
 }
 
@@ -641,6 +716,17 @@ fn capability_history_and_download_payloads_round_trip_bounded() {
             Some(json!({"op":"download_retry","id":9}))
         );
         assert_eq!(
+            encode_command(WebViewCommand::StartDownload {
+                uri: "https://downloads.test/archive.zip".into(),
+            }),
+            Some(json!({"op":"download_start","url":"https://downloads.test/archive.zip"}))
+        );
+        for uri in ["file:///etc/passwd", "https://", "javascript:alert(1)"] {
+            assert!(!command_within_limits(&WebViewCommand::StartDownload {
+                uri: uri.into(),
+            }));
+        }
+        assert_eq!(
             encode_command(WebViewCommand::CancelAllDownloads),
             Some(json!({"op":"download_cancel_all"}))
         );
@@ -842,7 +928,9 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
         tilo_test_env::wait_until("the closed event to release the native reservation", || {
             !first.runtime.routes.lock().unwrap().contains_key(&32)
         });
-        assert!(first.create_tab().is_ok());
+        first
+            .create_tab()
+            .expect("capacity released after closed acknowledgment");
     }
     // phase: hiding_retains_last_frame_for_recomposed_tab_until_next_paint
     {
@@ -869,6 +957,8 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
             .iter()
             .map(|byte| format!("\\{:03o}", byte))
             .collect();
+        // Detach frees the route before Drop. Create the replacement while the
+        // owner Arc still lives so a Drop reservation cannot hide a leak.
         let (dir, host) = helper_fixture(&format!(
             "profile=${{1#--profile=}}\nwhile [ ! -f \"$profile/detach-ready\" ]; do sleep 0.01; done\nprintf '{encoded}'\nexec cat >/dev/null"
         ));
@@ -887,11 +977,17 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
             !routes.lock().unwrap().contains_key(&2),
             "route is retired before detach is observable"
         );
-        drop(detached);
+        // Capacity is released by the detach acknowledgment, while the owner
+        // Arc is still alive — Drop must not be what frees the visible slot.
         assert_eq!(routes.lock().unwrap().len(), 1);
-        assert!(
-            first.create_tab().is_ok(),
-            "detached transfer owner does not use a visible slot"
+        first
+            .create_tab()
+            .expect("detached transfer owner does not use a visible slot");
+        drop(detached);
+        assert_eq!(
+            routes.lock().unwrap().len(),
+            2,
+            "dropping a detached owner must not reserve capacity again"
         );
     }
     // phase: admitted_close_does_not_reinsert_capacity_when_endpoint_drops
@@ -917,9 +1013,12 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
             assert!(!tab.request_close());
             std::fs::write(profile.join(format!("ack-{id}")), b"ack").unwrap();
             tilo_test_env::wait_until("the native close acknowledgment", || {
-                !first.runtime.routes.lock().unwrap().contains_key(&id)
+                tab.drain_events().contains(&WebViewEvent::TabClosed)
             });
-            assert!(tab.drain_events().contains(&WebViewEvent::TabClosed));
+            assert!(
+                !first.runtime.routes.lock().unwrap().contains_key(&id),
+                "route is retired before close acknowledgment is observable"
+            );
             drop(tab);
             let count = first.runtime.routes.lock().unwrap().len();
             assert_eq!(
@@ -1155,11 +1254,7 @@ fn poisoned_tab_state_never_panics_or_poisons_routes() {
             take_supervisor_child(&slot)
         }));
         if result.is_err() {
-            if let Some(mut child) = slot
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .take()
-            {
+            if let Some(mut child) = slot.lock_recover().take() {
                 let _ = child.wait();
             }
         }
@@ -1196,13 +1291,14 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
             request: PageRequest::Fill {
                 element: "d2e7".into(),
                 text: "ada@example.test".into(),
+                secret: false,
             },
         };
         assert!(command_within_limits(&command));
         assert_eq!(
             encode_command(command),
             Some(
-                json!({"op":"page","request_id":4,"action":"fill","element":"d2e7","text":"ada@example.test"})
+                json!({"op":"page","request_id":4,"action":"fill","element":"d2e7","text":"ada@example.test","secret":false})
             )
         );
         for invalid in [
@@ -1243,6 +1339,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
                     url: "https://shop.test/cart".into(),
                     message: "Clicked".into(),
                     outline: None,
+                    data: None,
                     navigated: true,
                     loading: true,
                 }),
@@ -1271,6 +1368,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
             request_id: 8,
             request: PageRequest::Submit {
                 element: "not a ref".into(),
+                cross_origin: false,
             },
         });
         let answered = engine.drain_events().into_iter().any(|event| {
@@ -1282,4 +1380,1118 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
         });
         assert!(answered, "a refused page request must still be answered");
     }
+}
+
+/// A host that records its launches and every command it receives in the
+/// profile, and writes `packets` once the test creates `emit` there.
+#[cfg(unix)]
+fn shared_fixture(packets: &[u8]) -> (tempfile::TempDir, PathBuf) {
+    let encoded: String = packets
+        .iter()
+        .map(|byte| format!("\\{:03o}", byte))
+        .collect();
+    helper_fixture(&format!(
+        "profile=${{1#--profile=}}\n\
+         echo spawned >> \"$profile/spawns\"\n\
+         exec 3<&0\n\
+         cat <&3 > \"$profile/commands\" &\n\
+         reader=$!\n\
+         while [ ! -f \"$profile/emit\" ] && kill -0 $reader 2>/dev/null; do sleep 0.01; done\n\
+         if [ -f \"$profile/emit\" ]; then printf '{encoded}'; fi\n\
+         wait\n\
+         printf exited > \"$profile/exited\""
+    ))
+}
+
+#[cfg(unix)]
+fn host_spawns(profile: &Path) -> usize {
+    std::fs::read_to_string(profile.join("spawns"))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
+/// Wait until the hosts started for `profile` have all recorded their start,
+/// expecting `expected` of them. A spawned host records itself once it runs,
+/// which can be after the engine that started it has returned.
+#[cfg(unix)]
+fn assert_host_spawns(profile: &Path, expected: usize) {
+    tilo_test_env::wait_until(format!("{expected} host start(s)"), || {
+        let spawns = host_spawns(profile);
+        assert!(
+            spawns <= expected,
+            "{spawns} hosts started, expected {expected}"
+        );
+        spawns == expected
+    });
+}
+
+#[cfg(unix)]
+fn host_commands(profile: &Path) -> Vec<Value> {
+    let mut reader =
+        std::io::Cursor::new(std::fs::read(profile.join("commands")).unwrap_or_default());
+    let mut commands = Vec::new();
+    while let Ok(Some(protocol::Packet::Json(command))) = protocol::read_packet(&mut reader) {
+        commands.push(command);
+    }
+    commands
+}
+
+#[cfg(unix)]
+fn wait_for_command(profile: &Path, what: &str, matches: impl Fn(&Value) -> bool) {
+    tilo_test_env::wait_until(what, || host_commands(profile).iter().any(&matches));
+}
+
+#[cfg(unix)]
+fn disconnected(events: &[WebViewEvent]) -> bool {
+    events.iter().any(|event| {
+        matches!(event, WebViewEvent::LoadFailed { error, .. } if error == "Chromium engine disconnected")
+    })
+}
+
+#[test]
+#[cfg(unix)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
+fn engines_on_one_profile_share_one_host() {
+    let mut packets = Vec::new();
+    protocol::write_json(
+        &mut packets,
+        &json!({"event":"title","tab":2,"title":"Client page"}),
+    )
+    .unwrap();
+    protocol::write_tab_frame(
+        &mut packets,
+        2,
+        &super::super::Frame {
+            trace_id: None,
+            rgba: Arc::new(vec![1, 2, 3, 255]),
+            width: 1,
+            height: 1,
+        },
+    )
+    .unwrap();
+    protocol::write_json(
+        &mut packets,
+        &json!({"event":"title","tab":1,"title":"Owner page"}),
+    )
+    .unwrap();
+    protocol::write_json(
+        &mut packets,
+        &json!({"event":"download_runtime","admitted":1,"detached":0,"accepting":true,"error":""}),
+    )
+    .unwrap();
+    let (dir, host) = shared_fixture(&packets);
+    let profile = dir.path().join("profile");
+    let owner = ChromiumEngine::with_host(&host, &profile).unwrap();
+    let client = ChromiumEngine::with_host(&host, &profile).unwrap();
+    // phase: the_second_engine_joins_the_running_host
+    {
+        assert!(owner.runtime.link.is_none());
+        assert!(client.runtime.link.is_some());
+        assert_host_spawns(&profile, 1);
+        assert_eq!(
+            (owner.tab, client.tab),
+            (1, 2),
+            "a client's first endpoint is a new tab"
+        );
+    }
+    // phase: client_commands_reach_the_host_under_the_owner_allocated_tab
+    {
+        client.send(WebViewCommand::Navigate("https://client.test/".into()));
+        wait_for_command(&profile, "the client's tab to be created", |command| {
+            command["op"] == "create_tab" && command["tab"] == 2
+        });
+        wait_for_command(&profile, "the client's navigation", |command| {
+            command["op"] == "navigate"
+                && command["tab"] == 2
+                && command["url"] == "https://client.test/"
+        });
+    }
+    // phase: host_events_and_frames_reach_only_their_tabs_process
+    {
+        std::fs::write(profile.join("emit"), b"go").unwrap();
+        let client_title = WebViewEvent::TitleChanged("Client page".into());
+        let owner_title = WebViewEvent::TitleChanged("Owner page".into());
+        let mut client_events = Vec::new();
+        tilo_test_env::wait_until("the client's title and frame", || {
+            client_events.extend(client.drain_events());
+            client_events.contains(&client_title) && client.frames().lock().unwrap().is_some()
+        });
+        let rgba = client
+            .frames()
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .rgba
+            .clone();
+        assert_eq!(&*rgba, &[1, 2, 3, 255]);
+        let mut owner_events = Vec::new();
+        tilo_test_env::wait_until("the owner's title", || {
+            owner_events.extend(owner.drain_events());
+            owner_events.contains(&owner_title)
+        });
+        assert!(!owner_events.contains(&client_title));
+        assert!(!client_events.contains(&owner_title));
+        assert!(owner.frames().lock().unwrap().is_none());
+    }
+    // phase: download_events_reach_every_process
+    {
+        let runtime = |event: &WebViewEvent| {
+            matches!(
+                event,
+                WebViewEvent::DownloadRuntime {
+                    admitted: 1,
+                    accepting: true,
+                    ..
+                }
+            )
+        };
+        tilo_test_env::wait_until("the client's download runtime", || {
+            client.drain_download_events().iter().any(runtime)
+        });
+        tilo_test_env::wait_until("the owner's download runtime", || {
+            owner.drain_download_events().iter().any(runtime)
+        });
+    }
+    // phase: every_process_takes_tabs_from_the_one_counter
+    {
+        let _client_tab = client.create_tab().unwrap();
+        let _owner_tab = owner.create_tab().unwrap();
+        wait_for_command(&profile, "the client's second tab", |command| {
+            command["op"] == "create_tab" && command["tab"] == 3
+        });
+        wait_for_command(&profile, "the owner's second tab", |command| {
+            command["op"] == "create_tab" && command["tab"] == 4
+        });
+    }
+    // phase: a_client_cannot_address_another_processs_tab
+    {
+        client
+            .tx
+            .push(json!({"op":"navigate","tab":1,"url":"https://intruder.test/"}))
+            .unwrap();
+        client.tx.push(json!({"op":"shutdown","tab":2})).unwrap();
+        client.send(WebViewCommand::Navigate("https://barrier.test/".into()));
+        wait_for_command(
+            &profile,
+            "the navigation after the refused ones",
+            |command| command["url"] == "https://barrier.test/",
+        );
+        let commands = host_commands(&profile);
+        assert!(
+            !commands
+                .iter()
+                .any(|command| command["url"] == "https://intruder.test/")
+        );
+        assert!(!commands.iter().any(|command| command["op"] == "shutdown"));
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn the_tab_bound_spans_processes_and_a_lost_client_closes_its_tabs() {
+    let (dir, host) = shared_fixture(&[]);
+    let profile = dir.path().join("profile");
+    let owner = ChromiumEngine::with_host(&host, &profile).unwrap();
+    let client = ChromiumEngine::with_host(&host, &profile).unwrap();
+    let client_tabs: Vec<_> = (0..15).map(|_| client.create_tab().unwrap()).collect();
+    // phase: the_32_tab_bound_counts_every_process
+    {
+        let _owner_tabs: Vec<_> = (0..15).map(|_| owner.create_tab().unwrap()).collect();
+        let error = client.create_tab().err().unwrap();
+        assert!(error.contains("At most 32"), "{error}");
+        assert!(owner.create_tab().is_err());
+    }
+    // phase: a_lost_client_has_its_tabs_closed_by_the_owner
+    {
+        let remote: Vec<u32> = owner
+            .runtime
+            .routes
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, route)| {
+                route
+                    .upgrade()
+                    .is_some_and(|shared| shared.remote.is_some())
+            })
+            .map(|(tab, _)| *tab)
+            .collect();
+        assert_eq!(remote.len(), 16);
+        client.runtime.link.as_ref().unwrap().disconnect();
+        tilo_test_env::wait_until("the client to learn it is disconnected", || {
+            disconnected(&client.drain_events())
+        });
+        assert!(disconnected(&client_tabs[0].drain_events()));
+        tilo_test_env::wait_until("a close for every client tab", || {
+            let commands = host_commands(&profile);
+            remote.iter().all(|tab| {
+                commands
+                    .iter()
+                    .any(|command| command["op"] == "close_tab" && command["tab"] == *tab)
+            })
+        });
+        let routes = owner.runtime.routes.lock().unwrap();
+        assert!(
+            remote.iter().all(|tab| routes
+                .get(tab)
+                .is_some_and(|route| route.upgrade().is_none())),
+            "closing tabs keep their capacity until the host acknowledges"
+        );
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn owners_serve_until_idle_and_replace_dead_owners_sockets() {
+    let (dir, host) = shared_fixture(&[]);
+    let profile = dir.path().join("profile");
+    std::fs::create_dir_all(&profile).unwrap();
+    let socket = profile.canonicalize().unwrap().with_extension("sock");
+    // phase: a_dead_owners_socket_and_lock_are_taken_over
+    let owner = {
+        drop(std::os::unix::net::UnixListener::bind(&socket).unwrap());
+        std::fs::write(socket.with_extension("lock"), b"").unwrap();
+        let owner = ChromiumEngine::with_host(&host, &profile).unwrap();
+        assert!(owner.runtime.link.is_none());
+        assert_host_spawns(&profile, 1);
+        owner
+    };
+    // phase: the_owner_keeps_the_host_while_a_client_uses_it
+    {
+        let client = ChromiumEngine::with_host(&host, &profile).unwrap();
+        let server = owner.runtime.server.get().unwrap().clone();
+        let process = owner.runtime.process.clone();
+        drop(owner);
+        assert!(!process.stopping.load(Ordering::Acquire));
+        let served = Arc::new(AtomicBool::new(false));
+        let done = served.clone();
+        let serving = std::thread::spawn(move || {
+            server.serve_until_idle();
+            done.store(true, Ordering::Release);
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !served.load(Ordering::Acquire),
+            "a client is still connected"
+        );
+        client.send(WebViewCommand::Navigate("https://after-owner.test/".into()));
+        wait_for_command(&profile, "the client's navigation", |command| {
+            command["url"] == "https://after-owner.test/"
+        });
+        drop(client);
+        tilo_test_env::wait_until("serving to end with the last client", || {
+            served.load(Ordering::Acquire)
+        });
+        serving.join().unwrap();
+        assert!(
+            profile.join("exited").exists(),
+            "the idle host was shut down"
+        );
+        assert!(!socket.exists());
+    }
+    // phase: the_next_engine_starts_a_fresh_host
+    {
+        let next = ChromiumEngine::with_host(&host, &profile).unwrap();
+        assert!(next.runtime.link.is_none());
+        assert_host_spawns(&profile, 2);
+    }
+    // phase: a_socket_path_too_long_to_bind_is_an_error
+    {
+        let long = dir.path().join("x".repeat(120)).join("profile");
+        let error = ChromiumEngine::with_host(&host, &long).err().unwrap();
+        assert!(error.contains("too long"), "{error}");
+        assert_eq!(host_spawns(&long), 0);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn a_second_process_browses_through_the_first_processs_host() {
+    let (dir, host) = shared_fixture(&[]);
+    let profile = dir.path().join("profile");
+    std::fs::create_dir_all(&profile).unwrap();
+    let spawn_owner = || {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "webview::chromium::tests::shared_owner_child",
+                "--ignored",
+            ])
+            .env("TILO_TEST_SHARED_HOST", &host)
+            .env("TILO_TEST_SHARED_PROFILE", &profile)
+            .spawn()
+            .unwrap()
+    };
+    // phase: the_owner_process_outlives_its_clients
+    {
+        let mut owner = spawn_owner();
+        tilo_test_env::wait_until("the owner process", || profile.join("owner-ready").exists());
+        let client = ChromiumEngine::with_host(&host, &profile).unwrap();
+        assert!(client.runtime.link.is_some());
+        assert_host_spawns(&profile, 1);
+        std::fs::write(profile.join("release"), b"").unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            owner.try_wait().unwrap().is_none(),
+            "the owner waits for its clients"
+        );
+        assert!(!profile.join("served").exists());
+        client.send(WebViewCommand::Navigate(
+            "https://still-served.test/".into(),
+        ));
+        wait_for_command(&profile, "the client's navigation", |command| {
+            command["url"] == "https://still-served.test/" && command["tab"] == 2
+        });
+        drop(client);
+        let status =
+            tilo_test_env::wait_for("the owner process to exit", || owner.try_wait().unwrap());
+        assert!(status.success());
+        assert!(profile.join("served").exists());
+        assert!(
+            profile.join("exited").exists(),
+            "the host stopped with its owner"
+        );
+    }
+    // phase: a_dead_owner_fails_its_clients_and_the_next_engine_takes_over
+    {
+        for file in ["owner-ready", "release", "served", "exited"] {
+            let _ = std::fs::remove_file(profile.join(file));
+        }
+        let mut owner = spawn_owner();
+        tilo_test_env::wait_until("the owner process", || profile.join("owner-ready").exists());
+        let client = ChromiumEngine::with_host(&host, &profile).unwrap();
+        assert!(client.runtime.link.is_some());
+        owner.kill().unwrap();
+        owner.wait().unwrap();
+        tilo_test_env::wait_until("the client to learn its owner died", || {
+            disconnected(&client.drain_events())
+        });
+        tilo_test_env::wait_until("the dead owner's host to exit", || {
+            profile.join("exited").exists()
+        });
+        let next = ChromiumEngine::with_host(&host, &profile).unwrap();
+        assert!(next.runtime.link.is_none());
+        assert_host_spawns(&profile, 3);
+    }
+}
+
+#[test]
+#[ignore = "child entry point for the cross-process shared engine test"]
+#[cfg(unix)]
+fn shared_owner_child() {
+    let host = PathBuf::from(std::env::var_os("TILO_TEST_SHARED_HOST").unwrap());
+    let profile = PathBuf::from(std::env::var_os("TILO_TEST_SHARED_PROFILE").unwrap());
+    let owner = ChromiumEngine::with_host(&host, &profile).unwrap();
+    assert!(owner.runtime.link.is_none());
+    std::fs::write(profile.join("owner-ready"), b"").unwrap();
+    tilo_test_env::wait_until("the parent's release", || profile.join("release").exists());
+    drop(owner);
+    serve_shared_until_idle();
+    std::fs::write(profile.join("served"), b"").unwrap();
+}
+
+#[test]
+fn the_engine_host_does_not_inherit_the_app_loader_environment() {
+    let command = host_command(Path::new(
+        "/run/tilo-runtime/x/lib/chromium/tilo-chromium-host",
+    ));
+    for name in ["LD_LIBRARY_PATH", "LD_PRELOAD"] {
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == name && value.is_none()),
+            "the host must start without the app's {name}"
+        );
+    }
+}
+
+#[test]
+fn owned_navigation_protocol_preserves_identity_and_bounds() {
+    for (command, fields) in [
+        (
+            NavigationCommand::Navigate {
+                url: "about:blank".into(),
+            },
+            json!({"command":"navigate","url":"about:blank"}),
+        ),
+        (NavigationCommand::Back, json!({"command":"back"})),
+        (NavigationCommand::Forward, json!({"command":"forward"})),
+        (NavigationCommand::Reload, json!({"command":"reload"})),
+        (
+            NavigationCommand::HistoryEntry {
+                history_request_id: 8,
+                id: 2,
+            },
+            json!({"command":"history_entry","history_request_id":8,"id":2}),
+        ),
+    ] {
+        let command = WebViewCommand::ScopedNavigation {
+            request_id: 7,
+            command,
+        };
+        assert!(command_within_limits(&command));
+        let mut expected = fields;
+        expected["op"] = json!("scoped_navigation");
+        expected["request_id"] = json!(7);
+        assert_eq!(encode_command(command), Some(expected));
+    }
+    assert_eq!(
+        encode_command(WebViewCommand::CancelScopedNavigation { request_id: 7 }),
+        Some(json!({"op":"cancel_navigation","request_id":7}))
+    );
+    let valid = json!({"event":"navigation_outcome","request_id":7,"url":"https://redirect.test/"});
+    assert_eq!(
+        decode_event(&valid),
+        Some(WebViewEvent::NavigationOutcome {
+            request_id: 7,
+            uri: "https://redirect.test/".into(),
+            error: None
+        })
+    );
+    for (key, bad) in [
+        ("request_id", json!(0)),
+        ("request_id", json!(u32::MAX)),
+        ("request_id", json!(-1)),
+        ("request_id", json!("7")),
+        ("url", json!(false)),
+        ("url", json!("x".repeat(65537))),
+        ("error", json!(null)),
+        ("error", json!("")),
+        ("error", json!("x".repeat(4097))),
+    ] {
+        let mut invalid = valid.clone();
+        invalid[key] = bad;
+        assert!(validate_event(&invalid).is_err(), "{invalid}");
+        assert!(decode_event(&invalid).is_none(), "{invalid}");
+    }
+    for request_id in [0, u32::MAX] {
+        assert!(!command_within_limits(&WebViewCommand::ScopedNavigation {
+            request_id,
+            command: NavigationCommand::Back
+        }));
+        assert!(!command_within_limits(
+            &WebViewCommand::CancelScopedNavigation { request_id }
+        ));
+    }
+    for command in [
+        NavigationCommand::Navigate {
+            url: "x".repeat(8193),
+        },
+        NavigationCommand::Navigate { url: String::new() },
+        NavigationCommand::HistoryEntry {
+            history_request_id: 0,
+            id: 2,
+        },
+    ] {
+        assert!(!command_within_limits(&WebViewCommand::ScopedNavigation {
+            request_id: 1,
+            command
+        }));
+    }
+}
+
+#[test]
+fn owned_navigation_first_terminal_survives_unknown_duplicate_and_state_floods() {
+    let shared = Arc::new(Shared::default());
+    let routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
+    let downloads = Mutex::new(VecDeque::new());
+    let (ready, _receiver) = sync_channel(1);
+    for id in 1..=32 {
+        shared.admit_navigation(id, "requested".into()).unwrap();
+    }
+    // Real decoder/router: failure is first and a late success cannot overwrite it.
+    route_native_event(&json!({"event":"navigation_outcome","request_id":1,"url":"failed","error":"fixture failure"}), &routes, &downloads, &ready).unwrap();
+    for _ in 0..2000 {
+        route_native_event(
+            &json!({"event":"navigation_outcome","request_id":1,"url":"stale-success"}),
+            &routes,
+            &downloads,
+            &ready,
+        )
+        .unwrap();
+        route_native_event(
+            &json!({"event":"navigation_outcome","request_id":999,"url":"unowned"}),
+            &routes,
+            &downloads,
+            &ready,
+        )
+        .unwrap();
+    }
+    for id in 0..2000 {
+        shared.event(WebViewEvent::MediaElementUnavailable { request_id: id });
+    }
+    shared.event(WebViewEvent::LoadFinishedAt {
+        uri: "about:blank".into(),
+    });
+    for id in 2..=32 {
+        route_native_event(
+            &json!({"event":"navigation_outcome","request_id":id,"url":format!("page-{id}")}),
+            &routes,
+            &downloads,
+            &ready,
+        )
+        .unwrap();
+    }
+    let events = shared.events.lock().unwrap();
+    assert_eq!(events.len(), 512);
+    let outcomes: Vec<_> = events
+        .iter()
+        .filter(|event| matches!(event, WebViewEvent::NavigationOutcome { .. }))
+        .collect();
+    assert_eq!(outcomes.len(), 32);
+    assert!(
+        matches!(outcomes[0], WebViewEvent::NavigationOutcome { request_id: 1, error: Some(error), uri } if error == "fixture failure" && uri == "failed")
+    );
+    assert!(events.iter().any(
+        |event| matches!(event, WebViewEvent::LoadFinishedAt { uri } if uri == "about:blank")
+    ));
+    drop(events);
+    assert!(shared.admit_navigation(33, "blocked".into()).is_err());
+    shared.events.lock().unwrap().clear();
+    shared.admit_navigation(33, "fresh".into()).unwrap();
+    shared.cancel_navigation(33);
+    route_native_event(
+        &json!({"event":"navigation_outcome","request_id":33,"url":"cancelled"}),
+        &routes,
+        &downloads,
+        &ready,
+    )
+    .unwrap();
+    assert!(shared.events.lock().unwrap().is_empty());
+    assert!(shared.admit_navigation(33, "reused".into()).is_err());
+}
+
+#[test]
+#[cfg(unix)]
+fn owned_navigation_real_transport_ignores_bootstrap_and_keeps_redirect_owner() {
+    let mut packets = Vec::new();
+    for event in [
+        json!({"event":"uri","url":"about:blank"}),
+        json!({"event":"loaded","url":"about:blank","status":200}),
+        json!({"event":"uri","url":"https://redirect.test/final"}),
+        json!({"event":"navigation_outcome","request_id":1,"url":"https://redirect.test/final"}),
+        json!({"event":"navigation_outcome","request_id":1,"url":"about:blank","error":"stale duplicate"}),
+    ] {
+        protocol::write_json(&mut packets, &event).unwrap();
+    }
+    let (dir, host) = shared_fixture(&packets);
+    let profile = dir.path().join("profile");
+    let engine = ChromiumEngine::with_host(&host, &profile).unwrap();
+    engine
+        .navigate_owned(
+            1,
+            NavigationCommand::Navigate {
+                url: "https://requested.test/start".into(),
+            },
+        )
+        .unwrap();
+    assert!(
+        !engine
+            .drain_events()
+            .iter()
+            .any(|event| matches!(event, WebViewEvent::NavigationOutcome { .. }))
+    );
+    // The helper's input recorder and event emitter run independently.
+    // Observe the real command before permitting its canned terminal events.
+    wait_for_command(
+        &profile,
+        "owned navigation recorded on helper wire",
+        |command| command["op"] == "scoped_navigation" && command["request_id"] == 1,
+    );
+    std::fs::write(profile.join("emit"), "").unwrap();
+    let mut events = Vec::new();
+    tilo_test_env::wait_until("owned navigation outcome", || {
+        events.extend(engine.drain_events());
+        events
+            .iter()
+            .any(|event| matches!(event, WebViewEvent::NavigationOutcome { request_id: 1, .. }))
+    });
+    let outcomes: Vec<_> = events
+        .iter()
+        .filter(|event| matches!(event, WebViewEvent::NavigationOutcome { .. }))
+        .collect();
+    assert_eq!(outcomes.len(), 1);
+    assert!(
+        matches!(outcomes[0], WebViewEvent::NavigationOutcome { request_id: 1, uri, error: None } if uri == "https://redirect.test/final")
+    );
+    assert!(events.iter().any(
+        |event| matches!(event, WebViewEvent::LoadFinishedAt { uri } if uri == "about:blank")
+    ));
+    // Event output and the command reader run independently in the host
+    // fixture. Observe a complete command before opening its recording.
+    wait_for_command(&profile, "owned navigation command", |command| {
+        command["op"] == "scoped_navigation"
+    });
+    let mut commands = std::fs::File::open(profile.join("commands")).unwrap();
+    let mut navigation = None;
+    while let Some(protocol::Packet::Json(value)) = protocol::read_packet(&mut commands).unwrap() {
+        if value["op"] == "scoped_navigation" {
+            navigation = Some(value);
+            break;
+        }
+    }
+    assert_eq!(
+        navigation,
+        Some(
+            json!({"op":"scoped_navigation","tab":1,"command":"navigate","request_id":1,"url":"https://requested.test/start"})
+        )
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn owned_navigation_admission_queue_loss_and_renderer_death_are_observable() {
+    let (dir, host) = helper_fixture("exec 3>&1; exec cat >/dev/null");
+    let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
+    assert!(engine.navigate_owned(0, NavigationCommand::Back).is_err());
+    assert!(
+        engine
+            .navigate_owned(u32::MAX, NavigationCommand::Back)
+            .is_err()
+    );
+    assert!(
+        engine
+            .navigate_owned(
+                1,
+                NavigationCommand::Navigate {
+                    url: "x".repeat(8193)
+                }
+            )
+            .is_err()
+    );
+    assert!(engine.shared.navigations.lock().unwrap().pending.is_empty());
+    let (ready, _receiver) = sync_channel(1);
+    engine.navigate_owned(7, NavigationCommand::Reload).unwrap();
+    route_native_event(&json!({"event":"navigation_outcome","request_id":7,"url":"crashed","error":"renderer crashed"}), &engine.runtime.routes, &engine.runtime.download_events, &ready).unwrap();
+    assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::NavigationOutcome { request_id: 7, error: Some(error), .. } if error == "renderer crashed")));
+    engine.navigate_owned(8, NavigationCommand::Reload).unwrap();
+    route_native_event(
+        &json!({"event":"renderer_terminated"}),
+        &engine.runtime.routes,
+        &engine.runtime.download_events,
+        &ready,
+    )
+    .unwrap();
+    let events = engine.drain_events();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, WebViewEvent::RendererTerminated))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, WebViewEvent::NavigationOutcome { request_id: 8, .. }))
+    );
+    assert!(
+        engine
+            .shared
+            .navigations
+            .lock()
+            .unwrap()
+            .pending
+            .contains_key(&8)
+    );
+    route_native_event(
+        &json!({"event":"navigation_outcome","request_id":8,"url":"recovered"}),
+        &engine.runtime.routes,
+        &engine.runtime.download_events,
+        &ready,
+    )
+    .unwrap();
+    assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::NavigationOutcome { request_id: 8, error: None, uri } if uri == "recovered")));
+    engine.navigate_owned(9, NavigationCommand::Reload).unwrap();
+    engine.shared.fail("fixture helper disconnected".into());
+    assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::NavigationOutcome { request_id: 9, error: Some(error), .. } if error == "fixture helper disconnected")));
+    assert!(engine.navigate_owned(10, NavigationCommand::Back).is_err());
+    // Closing the queue also drops the helper's stdin; keep the helper alive
+    // past EOF so the reader's disconnect cannot win the race and turn the
+    // refusal into "Chromium is unavailable".
+    let (dir, host) = helper_fixture("exec 3>&1; cat >/dev/null; exec sleep 30");
+    let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
+    engine.tx.close();
+    assert!(
+        engine
+            .navigate_owned(1, NavigationCommand::Reload)
+            .unwrap_err()
+            .contains("not queued")
+    );
+    assert!(engine.shared.navigations.lock().unwrap().pending.is_empty());
+    let unavailable = UnavailableEngine::new("runtime unavailable".into());
+    assert_eq!(
+        unavailable.navigate_owned(1, NavigationCommand::Back),
+        Err("runtime unavailable".into())
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn owned_navigation_concurrent_cancel_cannot_overtake_admitted_command() {
+    let (dir, host) = shared_fixture(&[]);
+    let profile = dir.path().join("profile");
+    let engine = ChromiumEngine::with_host(&host, &profile).unwrap();
+    // Stop the production enqueue at its mutex, after owner registration.
+    let queue_barrier = engine.tx.state.lock().unwrap();
+    let navigating = engine.clone();
+    let navigation =
+        std::thread::spawn(move || navigating.navigate_owned(1, NavigationCommand::Reload));
+    tilo_test_env::wait_until("navigation reserved before blocked enqueue", || {
+        engine
+            .shared
+            .navigations
+            .lock()
+            .unwrap()
+            .pending
+            .contains_key(&1)
+    });
+    assert!(engine.shared.navigation_commands.try_lock().is_err());
+    let cancelling = engine.clone();
+    let (ready, entered) = sync_channel(1);
+    let cancel = std::thread::spawn(move || {
+        ready.send(()).unwrap();
+        cancelling.send(WebViewCommand::CancelScopedNavigation { request_id: 1 });
+    });
+    entered.recv().unwrap();
+    // The held queue barrier makes both scheduling orders deterministic: the
+    // cancel either blocks now or begins after the admitted command was queued.
+    drop(queue_barrier);
+    navigation.join().unwrap().unwrap();
+    cancel.join().unwrap();
+    assert!(engine.shared.navigations.lock().unwrap().pending.is_empty());
+    let mut observed = Vec::new();
+    tilo_test_env::wait_until("owned navigation then cancellation on helper wire", || {
+        let Ok(bytes) = std::fs::read(profile.join("commands")) else {
+            return false;
+        };
+        let mut reader = std::io::Cursor::new(bytes);
+        let mut commands = Vec::new();
+        while let Ok(Some(protocol::Packet::Json(value))) = protocol::read_packet(&mut reader) {
+            if matches!(
+                value["op"].as_str(),
+                Some("scoped_navigation" | "cancel_navigation")
+            ) {
+                commands.push(value);
+            }
+        }
+        if commands.len() == 2 {
+            observed = commands;
+            true
+        } else {
+            false
+        }
+    });
+    assert_eq!(
+        observed,
+        vec![
+            json!({"op":"scoped_navigation","tab":1,"request_id":1,"command":"reload"}),
+            json!({"op":"cancel_navigation","tab":1,"request_id":1}),
+        ]
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn owned_navigation_cancel_refusal_wakes_without_holding_command_order() {
+    // Closing the command queue hangs up helper stdin. Keep stdout owned by
+    // the supervised helper until cancellation fails it; otherwise an unrelated
+    // EOF can win the first-error latch before the refusal under test.
+    let (_fixture, host) = helper_fixture("exec 3>&1; cat >/dev/null; exec sleep 30");
+    // This route joins the supervisor on drop, so a fast test process cannot
+    // exit before its deliberately live helper has been killed and reaped.
+    let root = private_root();
+    let engine = ChromiumEngine::with_private_host(&host, &root).unwrap();
+    let enabled = Arc::new(AtomicBool::new(false));
+    let reentered = Arc::new(AtomicBool::new(false));
+    let weak = Arc::downgrade(&engine);
+    let ready = enabled.clone();
+    let observed = reentered.clone();
+    engine.set_waker(Box::new(move || {
+        if ready.swap(false, Ordering::AcqRel) {
+            weak.upgrade()
+                .unwrap()
+                .send(WebViewCommand::CancelScopedNavigation { request_id: 2 });
+            observed.store(true, Ordering::Release);
+        }
+    }));
+    engine.tx.close();
+    enabled.store(true, Ordering::Release);
+    let cancelling = engine.clone();
+    let (finished, received) = sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        cancelling.send(WebViewCommand::CancelScopedNavigation { request_id: 1 });
+        finished.send(()).unwrap();
+    });
+    received
+        .recv_timeout(Duration::from_secs(5))
+        .expect("cancel refusal must allow its waker to reenter the command path");
+    worker.join().unwrap();
+    assert!(reentered.load(Ordering::Acquire));
+    assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::LoadFailed { error, .. } if error.contains("cancellation was not queued"))));
+    drop(engine);
+    assert!(
+        !root.exists(),
+        "cancellation failure must reap its owned helper"
+    );
+}
+
+#[test]
+fn private_text_input_receipts_route_only_to_the_original_tab_without_public_events() {
+    let first = Arc::new(Shared::default());
+    let second = Arc::new(Shared::default());
+    let (one, a) = first
+        .text_input
+        .lock()
+        .unwrap()
+        .admit(super::super::text_input::Request::Prepare)
+        .unwrap();
+    let (two, b) = second
+        .text_input
+        .lock()
+        .unwrap()
+        .admit(super::super::text_input::Request::Prepare)
+        .unwrap();
+    assert_eq!(
+        a["request_id"], b["request_id"],
+        "tab owners have independent request spaces"
+    );
+    let routes = Arc::new(Mutex::new(HashMap::from([
+        (1, Arc::downgrade(&first)),
+        (2, Arc::downgrade(&second)),
+    ])));
+    let downloads = Mutex::default();
+    let (ready, _) = sync_channel(1);
+    let reply = json!({"event":"text_input_result","tab":2,"request_id":b["request_id"],"ok":true,"navigated":false,"url":"http://fixture.invalid/","message":"Prepared","data":{"lease":"0123456789abcdef0123456789abcdef"}});
+    route_native_event(&reply, &routes, &downloads, &ready).unwrap();
+    assert!(
+        one.poll().is_none(),
+        "another tab cannot acknowledge the original request"
+    );
+    assert!(matches!(two.poll(), Some(Ok(Some(_)))));
+    assert!(first.events.lock().unwrap().is_empty());
+    assert!(second.events.lock().unwrap().is_empty());
+    let mut stale = reply.clone();
+    stale["ok"] = json!(false);
+    stale["code"] = json!("text_input_changed");
+    route_native_event(&stale, &routes, &downloads, &ready).unwrap();
+    assert!(
+        matches!(two.poll(), Some(Ok(Some(_)))),
+        "replayed failures cannot alter a consumed receipt"
+    );
+    first.text_input.lock().unwrap().unavailable();
+    assert!(matches!(
+        one.poll(),
+        Some(Err(super::super::text_input::Failure::Unknown))
+    ));
+}
+
+#[test]
+fn native_history_capability_is_optional_strict_and_per_tab() {
+    let first = Arc::new(Shared::default());
+    let second = Arc::new(Shared::default());
+    let routes = Arc::new(Mutex::new(HashMap::from([
+        (1, Arc::downgrade(&first)),
+        (2, Arc::downgrade(&second)),
+    ])));
+    let downloads = Mutex::default();
+    let (ready, _receiver) = sync_channel(1);
+    assert!(!first.native_edit_history.load(Ordering::Acquire));
+    assert!(!first.native_caret_text_input.load(Ordering::Acquire));
+    route_native_event(&json!({"event":"ready","cef_version":"152","chromium_version":"152","native_edit_history":true,"guarded_edit_history":true,"native_caret_text_input":true}), &routes, &downloads, &ready).unwrap();
+    assert!(first.native_edit_history.load(Ordering::Acquire));
+    assert!(first.guarded_edit_history.load(Ordering::Acquire));
+    assert!(first.native_caret_text_input.load(Ordering::Acquire));
+    route_native_event(
+        &json!({"event":"tab_ready","tab":2}),
+        &routes,
+        &downloads,
+        &ready,
+    )
+    .unwrap();
+    assert!(!second.native_edit_history.load(Ordering::Acquire));
+    assert!(!second.guarded_edit_history.load(Ordering::Acquire));
+    assert!(!second.native_caret_text_input.load(Ordering::Acquire));
+    assert!(first.native_edit_history.load(Ordering::Acquire));
+    route_native_event(
+        &json!({"event":"tab_ready","tab":2,"native_edit_history":true,"guarded_edit_history":true,"native_caret_text_input":true}),
+        &routes,
+        &downloads,
+        &ready,
+    )
+    .unwrap();
+    assert!(second.native_edit_history.load(Ordering::Acquire));
+    assert!(second.guarded_edit_history.load(Ordering::Acquire));
+    assert!(second.native_caret_text_input.load(Ordering::Acquire));
+    assert!(
+        route_native_event(
+            &json!({"event":"tab_ready","tab":2,"native_edit_history":true,"guarded_edit_history":"true"}),
+            &routes,
+            &downloads,
+            &ready
+        )
+        .is_err()
+    );
+    assert!(
+        route_native_event(
+            &json!({"event":"tab_ready","tab":2,"native_caret_text_input":"true"}),
+            &routes,
+            &downloads,
+            &ready,
+        )
+        .is_err()
+    );
+    route_native_event(
+        &json!({"event":"ready","cef_version":"152","chromium_version":"152"}),
+        &routes,
+        &downloads,
+        &ready,
+    )
+    .unwrap();
+    assert!(!first.native_edit_history.load(Ordering::Acquire));
+    assert!(!first.native_caret_text_input.load(Ordering::Acquire));
+    assert!(!first.guarded_edit_history.load(Ordering::Acquire));
+    assert!(second.native_edit_history.load(Ordering::Acquire));
+}
+
+#[test]
+fn native_caret_prepare_opt_in_uses_the_original_tab_capability() {
+    let tx = Arc::new(CommandQueue::default());
+    let first = Arc::new(Shared::default());
+    let second = Arc::new(Shared::default());
+    let routes = Arc::new(Mutex::new(HashMap::from([
+        (1, Arc::downgrade(&first)),
+        (2, Arc::downgrade(&second)),
+    ])));
+    let runtime = Arc::new(Runtime {
+        tx: tx.clone(),
+        process: first.clone(),
+        supervisor: Mutex::default(),
+        routes,
+        next_tab: AtomicU32::new(3),
+        download_events: Arc::default(),
+        server: std::sync::OnceLock::new(),
+        link: None,
+    });
+    let one = ChromiumEngine {
+        tx: tx.clone(),
+        shared: first,
+        runtime: runtime.clone(),
+        tab: 1,
+    };
+    let two = ChromiumEngine {
+        tx: tx.clone(),
+        shared: second,
+        runtime: runtime.clone(),
+        tab: 2,
+    };
+    let original = one
+        .text_input(super::super::text_input::Request::Prepare)
+        .unwrap();
+    let legacy = tx.pop().unwrap();
+    assert!(legacy.get("native_caret").is_none());
+    let (ready, _receiver) = sync_channel(1);
+    route_native_event(
+        &json!({"event":"ready","cef_version":"152","chromium_version":"152","native_caret_text_input":true}),
+        &runtime.routes, &runtime.download_events, &ready,
+    ).unwrap();
+    one.text_input(super::super::text_input::Request::Prepare)
+        .unwrap();
+    let native = tx.pop().unwrap();
+    assert_eq!(native["tab"], 1);
+    assert_eq!(native["native_caret"], true);
+    two.text_input(super::super::text_input::Request::Prepare)
+        .unwrap();
+    let other = tx.pop().unwrap();
+    assert_eq!(other["tab"], 2);
+    assert!(other.get("native_caret").is_none());
+    route_native_event(
+        &json!({"event":"text_input_result","tab":1,"request_id":legacy["request_id"],"ok":true,"navigated":false,"url":"http://fixture.invalid/","message":"Prepared","data":{"lease":"0123456789abcdef0123456789abcdef"}}),
+        &runtime.routes, &runtime.download_events, &ready,
+    ).unwrap();
+    let lease = original.poll().unwrap().unwrap().unwrap();
+    one.text_input(super::super::text_input::Request::Check(lease))
+        .unwrap();
+    let check = tx.pop().unwrap();
+    assert_eq!(check["action"], "check_text_input");
+    assert!(check.get("native_caret").is_none());
+}
+
+#[test]
+fn devtools_extension_calls_round_trip_bounded_and_validated() {
+    // phase: command_encodes_with_its_session_and_is_bounded
+    let load = WebViewCommand::DevTools {
+        request_id: 7,
+        method: "Extensions.loadUnpacked".into(),
+        params: serde_json::json!({"path":"/profile/extensions/a"}),
+        session: None,
+    };
+    assert!(command_within_limits(&load));
+    let encoded = encode_command(load).unwrap();
+    assert_eq!(encoded["op"], "devtools_call");
+    assert_eq!(encoded["request_id"], 7);
+    assert_eq!(encoded["params"]["path"], "/profile/extensions/a");
+    assert!(encoded.get("session").is_none());
+    let attached = encode_command(WebViewCommand::DevTools {
+        request_id: 8,
+        method: "Runtime.evaluate".into(),
+        params: serde_json::json!({}),
+        session: Some("S1".into()),
+    })
+    .unwrap();
+    assert_eq!(attached["session"], "S1");
+    for bad in [
+        WebViewCommand::DevTools {
+            request_id: 0,
+            method: "Extensions.uninstall".into(),
+            params: serde_json::json!({}),
+            session: None,
+        },
+        WebViewCommand::DevTools {
+            request_id: 1,
+            method: "Extensions.uninstall".into(),
+            params: serde_json::json!("not an object"),
+            session: None,
+        },
+        WebViewCommand::DevTools {
+            request_id: 1,
+            method: "x".repeat(129),
+            params: serde_json::json!({}),
+            session: None,
+        },
+        WebViewCommand::DevTools {
+            request_id: 1,
+            method: "Runtime.evaluate".into(),
+            params: serde_json::json!({"expression":"x".repeat(70_000)}),
+            session: Some("S".into()),
+        },
+    ] {
+        assert!(!command_within_limits(&bad));
+    }
+
+    // phase: reply_is_validated_and_decoded
+    let reply = serde_json::json!({"event":"devtools_result","tab":1,"request_id":7,"ok":true,"body":"{\"id\":\"abc\"}"});
+    assert!(validate_event(&reply).is_ok());
+    assert!(matches!(
+        decode_event(&reply),
+        Some(WebViewEvent::DevToolsResult { request_id: 7, ok: true, body }) if body.contains("abc")
+    ));
+    for broken in [
+        serde_json::json!({"event":"devtools_result","tab":1,"request_id":0,"ok":true,"body":""}),
+        serde_json::json!({"event":"devtools_result","tab":1,"request_id":1,"ok":"yes","body":""}),
+        serde_json::json!({"event":"devtools_result","tab":1,"request_id":1,"ok":true}),
+    ] {
+        assert!(validate_event(&broken).is_err());
+    }
+}
+
+#[test]
+fn a_governed_app_routes_page_audio_through_the_host_bridge() {
+    // The sandbox withholds the audio sockets and devices, so the engine must
+    // not try to open any; its sound reaches the app over the host protocol.
+    assert_eq!(host_audio_switches(true), ["--tilo-audio-bridge"]);
+    assert!(host_audio_switches(false).is_empty());
 }

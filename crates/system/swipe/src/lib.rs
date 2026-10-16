@@ -10,19 +10,6 @@
 //! [`FutoSwipe::new`] returns `None`, so callers (the on-screen keyboard)
 //! transparently fall back to their geometric decoder.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 /// A decoded swipe candidate: the word and its final score (higher = better).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Candidate {

@@ -12,7 +12,7 @@ use super::history_actions::{CLOSE, COMPARE, LIST, OPEN, RESOURCE, RESTORE, VIEW
 fn document(values: &[&str]) -> App {
     let mut app = App::new_with_controlled_inputs(
         crate::State::new(),
-        Box::new(crate::widget::Button::new("document", "Document", None)),
+        Box::new(crate::widget::Button::new("document", "Document")),
     );
     for value in values {
         commit_title(&mut app, value);
@@ -75,13 +75,10 @@ fn entries(listing: &Value) -> Vec<String> {
 
 fn reader(app: &mut App) {
     let app_id = crate::collaboration::local_app_id();
-    app.permission_ctx = crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::agent("reader"),
-        vec![crate::permissions::CapOverride::grant(
-            crate::permissions::Subject::agent("reader"),
-            crate::permissions::Scope::App(app_id),
-            crate::permissions::Verb::Read,
-        )],
+    app.permission_ctx = crate::permissions::PermissionContext::agent_granted(
+        "reader",
+        &crate::permissions::TreePath::root().app(app_id),
+        crate::permissions::policy::KindSet::READ,
     );
 }
 
@@ -130,12 +127,15 @@ fn write_holder_lists_previews_compares_and_restores_through_the_registry() {
         .and_then(|change| change.message())
         .and_then(tilo_actions::ActionContext::from_change_message)
         .expect("restore carries its action context");
-    assert_eq!(
-        context.action_label,
-        crate::i18n::I18nManager::lookup_plain("standalone-history-restore-action")
-    );
+    assert!(matches!(
+        context.what,
+        Some(tilo_actions::Did::History(tilo_actions::HistoryStep {
+            op: tilo_actions::HistoryOp::Restore,
+            ..
+        }))
+    ));
     let author = app.local_author().clone();
-    assert!(app.state.undo_as(Some(&author), None, None).is_some());
+    assert!(app.state.undo_as(Some(&author), None, None, None).is_some());
     assert_eq!(title(&app).as_deref(), Some("v3"));
 
     let session = preview["session"].as_str().unwrap();
@@ -238,12 +238,12 @@ fn published_catalogue_declares_write_so_the_broker_withholds_it() {
     assert_eq!(history.len(), 6);
     for descriptor in history {
         let expected = if matches!(descriptor.address.action.as_str(), OPEN | LIST) {
-            tilo_actions::PermissionRequirement::Read
+            tilo_actions::ActionKind::Read
         } else {
-            tilo_actions::PermissionRequirement::Write
+            tilo_actions::ActionKind::Undoable
         };
         assert_eq!(
-            descriptor.contract.permission, expected,
+            descriptor.contract.kind, expected,
             "{}",
             descriptor.address.action
         );
@@ -262,6 +262,7 @@ fn a_broker_delivered_restore_runs_and_is_attributed_to_the_invoker() {
         json!({"entry": v1, "reviewed_live_heads": listing["live_heads"]})
     );
     let changes = app.state.doc.get_changes(&[]).len();
+    app.collaboration.manager = super::semantic_tree_app_tests::admitted_delivery_manager();
     app.apply_collab_event_for_test(CollabEvent::Invocation {
         invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(7)),
         id: 7,
@@ -276,10 +277,141 @@ fn a_broker_delivered_restore_runs_and_is_attributed_to_the_invoker() {
     assert_eq!(all.len(), changes + 1);
     let agent = crate::permissions::UserId("agent:Scribe".into());
     assert!(
-        app.state.undo_as(Some(&agent), None, None).is_some(),
+        app.state.undo_as(Some(&agent), None, None, None).is_some(),
         "the restore is the invoking agent's to undo"
     );
     assert_eq!(title(&app).as_deref(), Some("v2"));
+}
+
+/// What an agent changed for its person reads as the agent's, on behalf of
+/// that person, through `history.list` too: the door scripts, agents and
+/// assistive tech read history by returns who acted and for whom as data.
+#[test]
+fn history_list_returns_an_agents_change_as_the_agents_for_its_person() {
+    use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+    let mut app = document(&["v1", "v2"]);
+    present(&mut app);
+    let listing = invoke(&mut app, LIST, Some(json!({}))).unwrap();
+    let v1 = entries(&listing)[1].clone();
+    let argument = format!(
+        "{}{}",
+        tilo_actions::ARGUMENTS_JSON_PREFIX,
+        json!({"entry": v1, "reviewed_live_heads": listing["live_heads"]})
+    );
+    let local = std::mem::replace(
+        &mut app.collaboration.manager,
+        super::semantic_tree_app_tests::admitted_delivery_manager(),
+    );
+    // The broker stamps the authenticated agent and the person it acts for.
+    let context = ActionContext::for_resource(RESOURCE, RESOURCE, "History").with_invoker(
+        ActionInvoker::actor("agent:Scribe")
+            .with_kind(ActorKind::Agent)
+            .acting_for("ada"),
+    );
+    app.apply_collab_event_for_test(CollabEvent::Invocation {
+        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(8)),
+        id: 8,
+        resource: RESOURCE.into(),
+        action: RESTORE.into(),
+        argument: Some(argument),
+        actor: "agent:Scribe".into(),
+        context: Some(Box::new(context)),
+    });
+    assert_eq!(title(&app).as_deref(), Some("v1"));
+
+    // The person reads the history back on their own device.
+    app.collaboration.manager = local;
+    let listing = invoke(&mut app, LIST, Some(json!({}))).unwrap();
+    let newest = &listing["entries"][0];
+    assert_eq!(newest["author"], "Scribe · Agent, for ada", "{listing}");
+    assert_eq!(
+        newest["attribution"],
+        json!({
+            "actor": "agent:Scribe",
+            "kind": "agent",
+            "actor_name": "Scribe",
+            "on_behalf_of": "ada",
+            "on_behalf_of_name": "ada",
+        }),
+        "{listing}"
+    );
+    assert_eq!(
+        listing["entries"][1]["attribution"],
+        Value::Null,
+        "a person's own change acted for nobody: {listing}"
+    );
+}
+
+/// A change an agent's own device key signed reads in the app's own
+/// history as the agent's, on behalf of its person, once the session named
+/// the room's verified agents; a device it did not verify stays unknown.
+#[test]
+fn history_list_names_a_verified_agents_own_key_change_and_no_other() {
+    let mut app = document(&["v1"]);
+    present(&mut app);
+    // Two collaborators' changes arrive, each signed by its own device.
+    let (scribe, stranger) = ([7_u8; 32], [8_u8; 32]);
+    for (device, value) in [(scribe, "by scribe"), (stranger, "by stranger")] {
+        let mut remote = app
+            .state
+            .doc
+            .fork()
+            .with_actor(automerge::ActorId::from(device.as_slice()));
+        remote.put(ROOT, "title", value).unwrap();
+        remote.commit();
+        app.state.doc.merge(&mut remote).unwrap();
+    }
+    // Newest first: the stranger's change came after the agent's.
+    let (stranger_row, scribe_row) = (0, 1);
+    let unknown = crate::history_source::UNKNOWN_AUTHOR_NAME;
+    let listing = invoke(&mut app, LIST, Some(json!({}))).unwrap();
+    assert_eq!(
+        listing["entries"][scribe_row]["author"], unknown,
+        "{listing}"
+    );
+
+    // The session tells the app which agents of its room it verified.
+    let room = uuid::Uuid::from_u128(5).to_string();
+    let person = [9_u8; 32];
+    app.apply_collab_event_for_test(CollabEvent::HistoryAgents {
+        cluster_id: room.clone(),
+        agents: vec![crate::history_source::RosterAgent {
+            device: scribe,
+            person,
+            person_name: "Ada".into(),
+            agent_id: "scribe".into(),
+            label: "Scribe".into(),
+            color: [10, 20, 30],
+        }],
+    });
+    let listing = invoke(&mut app, LIST, Some(json!({}))).unwrap();
+    let agent = &listing["entries"][scribe_row];
+    assert_eq!(agent["author"], "Scribe · Agent, for Ada", "{listing}");
+    assert_eq!(
+        agent["attribution"],
+        json!({
+            "actor": "agent:scribe",
+            "kind": "agent",
+            "actor_name": "Scribe",
+            "on_behalf_of": hex::encode(person),
+            "on_behalf_of_name": "Ada",
+        }),
+        "{listing}"
+    );
+    let other = &listing["entries"][stranger_row];
+    assert_eq!(other["author"], unknown, "an unverified device: {listing}");
+    assert_eq!(other["attribution"], Value::Null, "{listing}");
+
+    // The session took the agent back: its changes are nobody's again.
+    app.apply_collab_event_for_test(CollabEvent::HistoryAgents {
+        cluster_id: room,
+        agents: Vec::new(),
+    });
+    let listing = invoke(&mut app, LIST, Some(json!({}))).unwrap();
+    assert_eq!(
+        listing["entries"][scribe_row]["author"], unknown,
+        "{listing}"
+    );
 }
 
 #[test]

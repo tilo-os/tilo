@@ -1,6 +1,6 @@
 //! Offscreen shots for `TextInput`'s **multiline** mode (soft-wrapped rows,
-//! cross-line selection, and caret) and **secret** mode (masked bullets, with
-//! a revealed variant for contrast).
+//! cross-line selection, and caret) and **secret** mode (masked bullets, a
+//! revealed variant, and keyboard focus on the built-in show/hide control).
 //!
 //! The shots use the normal five-pass pipeline. `set_selection` only prepares
 //! the public selection state for the still frame.
@@ -76,7 +76,7 @@ pub fn run(_args: &[String]) {
 
     let mut r = OffscreenRenderer::new(500, 230);
     let out_ml = dir.join("multiline.png");
-    r.render_png(&scene, theme.bg_app, &out_ml);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, &out_ml);
     println!("wrote {}", out_ml.display());
 
     // ---- 2. Secret field: masked, and a revealed variant ------------------
@@ -91,6 +91,14 @@ pub fn run(_args: &[String]) {
         .with_reveal(true)
         .with_initial_value("hunter2-s3cret");
     revealed.apply_layout_external(Rect::new(30.0, 140.0, 470.0, 180.0));
+
+    let mut eye_focused = TextInput::local()
+        .with_secret(true)
+        .with_initial_value("hunter2-s3cret");
+    eye_focused.apply_layout_external(Rect::new(30.0, 228.0, 470.0, 268.0));
+    for control in Widget::children_mut(&mut eye_focused) {
+        control.set_focus(true);
+    }
 
     let mut scene2 = Scene::new();
     label(
@@ -111,10 +119,19 @@ pub fn run(_args: &[String]) {
         118.0,
     );
     revealed.draw(&mut scene2, Affine::IDENTITY, &mut tr, &theme, &presence);
+    label(
+        &mut scene2,
+        &mut tr,
+        &theme,
+        "Secret TextInput — show/hide control has keyboard focus",
+        30.0,
+        206.0,
+    );
+    eye_focused.draw(&mut scene2, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-    let mut r2 = OffscreenRenderer::new(500, 210);
+    let mut r2 = OffscreenRenderer::new(500, 296);
     let out_secret = dir.join("secret.png");
-    r2.render_png(&scene2, theme.bg_app, &out_secret);
+    r2.render_png(&scene2, theme.tokens.colors.surfaces.content, &out_secret);
     println!("wrote {}", out_secret.display());
 
     // ---- 3. Writing assistance: spelling + extensible text actions -------
@@ -172,7 +189,7 @@ pub fn run(_args: &[String]) {
     );
     let mut r3 = OffscreenRenderer::new(680, 450);
     let out_assisted = dir.join("writing-assistance.png");
-    r3.render_png(&scene3, theme.bg_app, &out_assisted);
+    r3.render_png(&scene3, theme.tokens.colors.surfaces.content, &out_assisted);
     println!("wrote {}", out_assisted.display());
 
     // ---- 4. Structured inputs inherit opt-out from semantic intent -------
@@ -229,7 +246,11 @@ pub fn run(_args: &[String]) {
     }
     let mut r4 = OffscreenRenderer::new(680, 336);
     let out_structured = dir.join("structured-fields.png");
-    r4.render_png(&scene4, theme.bg_app, &out_structured);
+    r4.render_png(
+        &scene4,
+        theme.tokens.colors.surfaces.content,
+        &out_structured,
+    );
     println!("wrote {}", out_structured.display());
 
     // Sanity: the still frames reflect real widget state.

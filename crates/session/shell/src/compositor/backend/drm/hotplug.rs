@@ -16,6 +16,8 @@
 //! pointer ([`clamp_pointer_to_outputs`]) and the surviving outputs' packing
 //! ([`layout`]) need computing explicitly.
 
+use settings_store::hardware::{OutputMode, OutputTransform};
+
 use crate::compositor::backend::OutputId;
 
 use super::outputs::DrmOutputKey;
@@ -35,7 +37,7 @@ pub struct ConnectedOutput {
     pub key: DrmOutputKey,
     pub size: (u32, u32),
     /// Physical panel size in millimetres, when the connector reports one.
-    /// Feeds [`super::scale::derive_scale`].
+    /// Feeds [`settings_store::display_scale::derive_scale`].
     pub mm: Option<(u32, u32)>,
 }
 
@@ -60,6 +62,74 @@ impl HotplugPlan {
     /// re-modesetting on those would flicker the panel for nothing.
     pub fn is_noop(&self) -> bool {
         self.added.is_empty() && self.removed.is_empty() && self.remoded.is_empty()
+    }
+}
+
+/// The mode a lit output is being driven at, and the configured mode it was
+/// chosen under (`None` when the configuration names none).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct LiveMode {
+    pub mode: OutputMode,
+    pub intent: Option<OutputMode>,
+}
+
+/// The mode a connector that is already lit keeps across a rescan, or `None`
+/// when it should be driven at the mode configuration picks.
+///
+/// A rescan follows every hotplug edge and every display settings write, and
+/// re-probing a connector can reorder or regenerate its mode table — a
+/// virtual GPU lists its default mode first again, and some sinks re-read
+/// their EDID when a neighbour is unplugged. Re-picking from that table
+/// would re-modeset a display nobody touched. So an output keeps its current
+/// mode, while the connector still advertises it, unless something asks for
+/// another one:
+///
+/// - for the same set of monitors (`set_changed` false), a changed request
+///   applies — a mode chosen in Settings, a mirror joined, or a mirror left
+///   (which clears the request: back to the preferred mode);
+/// - when monitors came or went, only a mode the new set's remembered layout
+///   names applies. A set never arranged names none, and the survivors of a
+///   shrunk set keep what they show.
+pub fn retained_mode(
+    live: Option<LiveMode>,
+    intent: Option<OutputMode>,
+    set_changed: bool,
+    advertised: &[OutputMode],
+) -> Option<OutputMode> {
+    let live = live?;
+    let unrequested = intent == live.intent || (set_changed && intent.is_none());
+    (unrequested && advertised.contains(&live.mode)).then_some(live.mode)
+}
+
+/// The scale and rotation a lit output is drawn at.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Presentation {
+    pub scale: f64,
+    pub transform: OutputTransform,
+}
+
+/// The scale and rotation a lit output keeps across a rescan, or `None` when
+/// configuration (or, failing that, the panel's density) decides them.
+///
+/// The same rule as [`retained_mode`], for the rest of what a display shows:
+/// a layout that names the output applies in full; when monitors came or
+/// went and the new set's remembered layout does not name it, the survivor
+/// keeps the scale and rotation it is shown at (`current`), so a 1.25x panel
+/// does not snap to 1x because its neighbour was unplugged. A rescan of the
+/// same set changes nothing (`kept` stays). Its position is not kept: the
+/// survivors are packed afresh, closing the hole the unplugged one left.
+pub fn retained_presentation(
+    current: Presentation,
+    kept: Option<Presentation>,
+    arranged: bool,
+    set_changed: bool,
+) -> Option<Presentation> {
+    if arranged {
+        None
+    } else if set_changed {
+        Some(current)
+    } else {
+        kept
     }
 }
 
@@ -196,6 +266,131 @@ mod tests {
             size,
             mm: None,
         }
+    }
+
+    fn mode(width: u32, height: u32) -> OutputMode {
+        OutputMode {
+            width,
+            height,
+            refresh_mhz: 60_000,
+        }
+    }
+
+    #[test]
+    fn retained_mode_keeps_a_survivor_unless_its_request_changed() {
+        let advertised = [mode(1024, 768), mode(1920, 1080), mode(2560, 1440)];
+        let lit = LiveMode {
+            mode: mode(1920, 1080),
+            intent: None,
+        };
+        // A neighbour's unplug keeps the survivor's mode.
+        // Unplugging one virtual output re-probes the other, whose table now
+        // lists the driver's 1024x768 default first; re-picking from it
+        // re-modesets a display nobody touched.
+        assert_eq!(
+            retained_mode(Some(lit), None, false, &advertised),
+            Some(mode(1920, 1080))
+        );
+        // A connector not lit yet takes what configuration picks.
+        assert_eq!(retained_mode(None, None, false, &advertised), None);
+        // A mode chosen in Settings is applied.
+        assert_eq!(
+            retained_mode(Some(lit), Some(mode(2560, 1440)), false, &advertised),
+            None
+        );
+        // Leaving a mirror clears the request: back to the preferred mode.
+        let mirrored = LiveMode {
+            mode: mode(1024, 768),
+            intent: Some(mode(1024, 768)),
+        };
+        assert_eq!(
+            retained_mode(Some(mirrored), None, false, &advertised),
+            None
+        );
+        // An unchanged request keeps the configured mode lit.
+        assert_eq!(
+            retained_mode(Some(mirrored), Some(mode(1024, 768)), false, &advertised),
+            Some(mode(1024, 768))
+        );
+        // A mode the connector stopped offering cannot be kept.
+        assert_eq!(
+            retained_mode(Some(lit), None, false, &[mode(1024, 768)]),
+            None
+        );
+        // Refresh is part of the mode: 59.94 Hz is not 60 Hz.
+        let ntsc = OutputMode {
+            refresh_mhz: 59_940,
+            ..mode(1920, 1080)
+        };
+        assert_eq!(retained_mode(Some(lit), None, false, &[ntsc]), None);
+    }
+
+    #[test]
+    fn a_survivor_of_a_shrunk_monitor_set_keeps_its_configured_mode() {
+        // Two outputs arranged in Settings: the 1280x800 one was brought up
+        // under that remembered layout's request. Its neighbour is unplugged;
+        // the one-monitor set was never arranged, so its layout names no
+        // mode, and the re-probed table lists the driver's 1024x768 first.
+        let arranged = OutputMode {
+            refresh_mhz: 59_910,
+            ..mode(1280, 800)
+        };
+        let advertised = [mode(1024, 768), arranged];
+        let lit = LiveMode {
+            mode: arranged,
+            intent: Some(arranged),
+        };
+        assert_eq!(
+            retained_mode(Some(lit), None, true, &advertised),
+            Some(arranged),
+            "a set that names no mode leaves the survivor as it is"
+        );
+        // The rescan then records that it answers to the new set's empty
+        // request, so a later rescan of that same set keeps it too.
+        let survivor = LiveMode {
+            mode: arranged,
+            intent: None,
+        };
+        assert_eq!(
+            retained_mode(Some(survivor), None, false, &advertised),
+            Some(arranged)
+        );
+        // A layout remembered for the new set that names a mode applies.
+        assert_eq!(
+            retained_mode(Some(lit), Some(mode(1024, 768)), true, &advertised),
+            None
+        );
+    }
+
+    #[test]
+    fn a_survivor_of_a_shrunk_monitor_set_keeps_its_configured_scale() {
+        // Two outputs arranged in Settings, the 1280x800 one at 1.25x
+        // (1024x640 logical). Its neighbour is unplugged; the one-monitor
+        // set was never arranged, so nothing names its scale and a virtual
+        // connector reports no size to derive one from.
+        let shown = Presentation {
+            scale: 1.25,
+            transform: OutputTransform::Normal,
+        };
+        let kept = retained_presentation(shown, None, false, true);
+        assert_eq!(kept, Some(shown), "the survivor stays at 1.25x");
+        // Later rescans and relayouts of that same set keep it.
+        assert_eq!(retained_presentation(shown, kept, false, false), kept);
+        // A scale arranged for the new set — or chosen for it in Settings
+        // afterwards — applies instead.
+        assert_eq!(retained_presentation(shown, None, true, true), None);
+        assert_eq!(retained_presentation(shown, kept, true, false), None);
+        // Rotation is kept the same way.
+        let portrait = Presentation {
+            scale: 1.0,
+            transform: OutputTransform::Rotate90,
+        };
+        assert_eq!(
+            retained_presentation(portrait, None, false, true),
+            Some(portrait)
+        );
+        // An output never part of a changed set derives its own.
+        assert_eq!(retained_presentation(shown, None, false, false), None);
     }
 
     #[test]

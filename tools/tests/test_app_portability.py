@@ -25,7 +25,7 @@ class AppPortabilityTests(unittest.TestCase):
         self.write(
             "Cargo.toml",
             '[workspace]\nmembers = ["apps/*"]\n\n[workspace.dependencies]\n'
-            'serde = "1"\ntilo-xdg-paths = { path = "crates/system/xdg-paths" }\n',
+            'serde = "1"\nhost-info = { path = "crates/system/host-info" }\n',
         )
 
     def write(self, relative: str, text: str) -> Path:
@@ -90,6 +90,14 @@ class AppPortabilityTests(unittest.TestCase):
         sites = [(Path(f.path).name, f.line) for f in self.findings() if f.rule == "R1"]
         self.assertEqual(sites, [("Cargo.toml", 8), ("lib.rs", 2), ("lib.rs", 4), ("lib.rs", 5)])
 
+    def test_target_dev_dependencies_reach_only_tests(self):
+        self.app(
+            "notes",
+            "pub fn a() {}\n",
+            cargo_extra="\n[target.'cfg(target_os = \"linux\")'.dev-dependencies]\nserde = \"1\"\n",
+        )
+        self.assertEqual([f for f in self.findings() if f.rule == "R1"], [])
+
     def test_os_interfaces_are_r2(self):
         self.app(
             "terminal",
@@ -139,12 +147,12 @@ class AppPortabilityTests(unittest.TestCase):
         self.assertEqual([f.line for f in self.findings() if f.rule == "R4"], [2, 4])
 
     def test_dependencies_are_d1_and_d2_but_dev_dependencies_and_the_sdk_are_not(self):
-        self.write("crates/system/xdg-paths/Cargo.toml", '[package]\nname = "tilo-xdg-paths"\n')
+        self.write("crates/system/host-info/Cargo.toml", '[package]\nname = "host-info"\n')
         self.app(
             "backups",
             dependencies=UI
             + 'libc = "0.2"\n'
-            + "tilo-xdg-paths.workspace = true\n"
+            + "host-info.workspace = true\n"
             + 'tilo-actions = { path = "../../crates/collab/actions" }\n'
             + 'tilo-files = { path = "../../crates/platform/tilo-files" }\n'
             + 'windows-sys = "0.59"\n',
@@ -154,11 +162,11 @@ class AppPortabilityTests(unittest.TestCase):
         found = self.findings()
         self.assertEqual(
             sorted(f.what for f in found if f.rule == "D1"),
-            ["depends on `libc`", "depends on `tilo-xdg-paths`", "depends on `windows-sys`"],
+            ["depends on `host-info`", "depends on `libc`", "depends on `windows-sys`"],
         )
         self.assertEqual(
             sorted(f.what.split("`")[1] for f in found if f.rule == "D2"),
-            ["tilo-actions", "tilo-xdg-paths"],
+            ["host-info", "tilo-actions"],
         )
 
     def test_sdk_backend_features_are_f1(self):

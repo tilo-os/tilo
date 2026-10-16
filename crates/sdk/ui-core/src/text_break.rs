@@ -64,17 +64,110 @@ pub fn discretionary_hyphen_breaks(text: &str, language: &str) -> Vec<usize> {
         let Some(word) = text.get(range.clone()) else {
             continue;
         };
-        let mut source = range.start;
-        let mut syllables = hypher::hyphenate(word, lang).peekable();
-        while let Some(syllable) = syllables.next() {
-            source = source.saturating_add(syllable.len());
-            if syllables.peek().is_some() {
-                breaks.push(source);
-            }
-        }
+        hyphenate(word, lang, &mut |end| {
+            breaks.push(range.start.saturating_add(end));
+        });
     }
     breaks
 }
+
+/// Calls `out` with the byte offset in `word` after each of its syllables
+/// but the last, by `lang`'s patterns.
+pub type Hyphenate = fn(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize));
+
+/// Hands over the patterns' [`Hyphenate`], for [`install_hyphenation`].
+pub type MakeHyphenation = fn() -> Hyphenate;
+
+/// TeX/Liang hyphenation by the patterns hypher embeds.
+#[must_use]
+pub fn builtin_hyphenation() -> Hyphenate {
+    fn by_patterns(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize)) {
+        let mut end = 0_usize;
+        let mut syllables = hypher::hyphenate(word, lang).peekable();
+        while let Some(syllable) = syllables.next() {
+            end = end.saturating_add(syllable.len());
+            if syllables.peek().is_some() {
+                out(end);
+            }
+        }
+    }
+    by_patterns
+}
+
+/// [`Hyphenate`] with the patterns in reach; no breaks while their code is
+/// still to come.
+fn hyphenate(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize)) {
+    if let Some(hyphenate) = hyphenation::patterns() {
+        hyphenate(word, lang, out);
+    }
+}
+
+#[cfg(not(feature = "lazy-hyphenation"))]
+mod hyphenation {
+    use super::Hyphenate;
+
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the lazy-hyphenation build has none until they are fetched"
+    )]
+    pub(super) fn patterns() -> Option<Hyphenate> {
+        Some(super::builtin_hyphenation())
+    }
+
+    /// How many times the patterns arrived: never, as they were always
+    /// there.
+    #[must_use]
+    pub fn hyphenation_generation() -> u64 {
+        0
+    }
+}
+
+/// The patterns are fetched the first time text is hyphenated: the program
+/// hands over a loader ([`defer_hyphenation`]) that fetches their code and
+/// passes back [`builtin_hyphenation`](super::builtin_hyphenation)
+/// ([`install_hyphenation`]). Until then text breaks between words only;
+/// layouts are made again once [`hyphenation_generation`] moved.
+#[cfg(feature = "lazy-hyphenation")]
+mod hyphenation {
+    use super::{Hyphenate, MakeHyphenation};
+    use crate::deferred::Deferred;
+
+    static PATTERNS: Deferred<Hyphenate> = Deferred::new();
+
+    /// The patterns, or `None` while their code is still to come (and then
+    /// fetched).
+    pub(super) fn patterns() -> Option<Hyphenate> {
+        PATTERNS.get()
+    }
+
+    /// Bumped when the patterns arrive: hyphenated layouts are made again
+    /// once this moved.
+    #[must_use]
+    pub fn hyphenation_generation() -> u64 {
+        PATTERNS.generation()
+    }
+
+    /// How the program fetches the patterns' code: `load` starts the fetch
+    /// and, once the code is in, calls [`install_hyphenation`] (or
+    /// [`hyphenation_load_failed`]).
+    pub fn defer_hyphenation(load: fn()) {
+        PATTERNS.defer(load);
+    }
+
+    /// The patterns' code is in: text is hyphenated from now on.
+    pub fn install_hyphenation(make: MakeHyphenation) {
+        PATTERNS.install(make());
+    }
+
+    /// The fetch failed: the next layout that hyphenates fetches again.
+    pub fn hyphenation_load_failed() {
+        PATTERNS.load_failed();
+    }
+}
+
+pub use hyphenation::hyphenation_generation;
+#[cfg(feature = "lazy-hyphenation")]
+pub use hyphenation::{defer_hyphenation, hyphenation_load_failed, install_hyphenation};
 
 pub(crate) const VIRTUAL_BREAK: char = '\u{200b}';
 
@@ -129,6 +222,70 @@ pub(crate) fn paragraph_chunk_boundaries(text: &str) -> Vec<usize> {
     boundaries
 }
 
+/// The whole lines (line-feed-delimited paragraphs) an edit touched: `old[start..old_end]`
+/// became `new[start..new_end]`; both end before a line feed or at the end.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct LineEdit {
+    pub(crate) start: usize,
+    pub(crate) old_end: usize,
+    pub(crate) new_end: usize,
+}
+
+impl LineEdit {
+    pub(crate) fn between(old: &str, new: &str) -> Self {
+        let (old_bytes, new_bytes) = (old.as_bytes(), new.as_bytes());
+        let prefix = old_bytes
+            .iter()
+            .zip(new_bytes)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let room = old.len().min(new.len()).saturating_sub(prefix);
+        let suffix = old_bytes
+            .iter()
+            .rev()
+            .zip(new_bytes.iter().rev())
+            .take(room)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let start = old_bytes[..prefix]
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |at| at.saturating_add(1));
+        // The first byte of the common suffix lies in the last changed
+        // paragraph; it ends at the next line feed of that suffix.
+        let changed_end = old.len().saturating_sub(suffix);
+        let old_end = old_bytes[changed_end..]
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(old.len(), |at| changed_end.saturating_add(at));
+        let new_end = old_end.saturating_add(new.len()).saturating_sub(old.len());
+        Self {
+            start,
+            old_end,
+            new_end,
+        }
+    }
+
+    /// Index of the first touched line.
+    pub(crate) fn first_line(&self, new: &str) -> usize {
+        count_line_feeds(new.as_bytes().get(..self.start).unwrap_or_default())
+    }
+
+    /// Line feeds inside the old touched lines (their count less one).
+    pub(crate) fn old_line_breaks(&self, old: &str) -> usize {
+        count_line_feeds(
+            old.as_bytes()
+                .get(self.start..self.old_end)
+                .unwrap_or_default(),
+        )
+    }
+}
+
+/// Line feeds in `bytes`.
+pub(crate) fn count_line_feeds(bytes: &[u8]) -> usize {
+    bytes.iter().map(|&byte| usize::from(byte == b'\n')).sum()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct VirtualInsertion {
     pub(crate) source: usize,
@@ -175,14 +332,12 @@ impl OffsetMap {
                 let Some(word) = text.get(range.clone()) else {
                     continue;
                 };
-                let mut source = range.start;
-                let mut syllables = hypher::hyphenate(word, lang).peekable();
-                while let Some(syllable) = syllables.next() {
-                    source = source.saturating_add(syllable.len());
-                    if syllables.peek().is_some() {
-                        insertions.push(VirtualInsertion { source, ch: hyphen });
-                    }
-                }
+                hyphenate(word, lang, &mut |end| {
+                    insertions.push(VirtualInsertion {
+                        source: range.start.saturating_add(end),
+                        ch: hyphen,
+                    });
+                });
             }
         }
         insertions.extend(
@@ -208,6 +363,30 @@ impl OffsetMap {
             true
         });
         Self { insertions }
+    }
+
+    /// Add `extra` insertions; each goes after any already at its source
+    /// position.
+    pub(crate) fn add_insertions(&mut self, extra: &[VirtualInsertion]) {
+        self.insertions.extend_from_slice(extra);
+        self.insertions.sort_by_key(|insertion| insertion.source);
+    }
+
+    /// Whether the shaped byte `shaped` lies inside a virtual `ch`.
+    pub(crate) fn is_virtual(&self, shaped: usize, ch: char) -> bool {
+        let mut added = 0usize;
+        for insertion in &self.insertions {
+            let at = insertion.source.saturating_add(added);
+            if shaped < at {
+                return false;
+            }
+            let len = insertion.ch.len_utf8();
+            if shaped < at.saturating_add(len) {
+                return insertion.ch == ch;
+            }
+            added = added.saturating_add(len);
+        }
+        false
     }
 
     pub(crate) fn is_identity(&self) -> bool {
@@ -339,8 +518,9 @@ impl OffsetMap {
 
 /// Extended grapheme clusters (UAX #29) paired with their starting byte
 /// offset, so combining marks, emoji modifiers, flags and ZWJ sequences stay
-/// whole.
-pub(crate) fn grapheme_indices(text: &str) -> impl Iterator<Item = (usize, &str)> {
+/// whole. Offsets address the original UTF-8 string and each slice is a
+/// complete UAX #29 cluster, using the same ICU rules as toolkit selection.
+pub fn grapheme_indices(text: &str) -> impl Iterator<Item = (usize, &str)> {
     use icu_segmenter::{GraphemeClusterSegmenter, GraphemeClusterSegmenterBorrowed};
     const SEGMENTER: GraphemeClusterSegmenterBorrowed<'static> = GraphemeClusterSegmenter::new();
     let mut start = 0;

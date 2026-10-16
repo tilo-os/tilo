@@ -1,9 +1,4 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "test assertions"
-)]
+#![allow(clippy::unwrap_used, clippy::panic, reason = "test assertions")]
 
 //! `#[derive(JsonSchema)]` describes exactly what serde reads and writes,
 //! for each of the shapes serde attributes give a type.
@@ -159,9 +154,65 @@ fn structs_newtypes_and_generics() {
     );
 }
 
+/// Numbers narrower than their types.
+#[derive(Serialize, Deserialize, JsonSchema)]
+struct Ranged {
+    /// 1 to 100.
+    #[schema(range(min = 1, max = 100))]
+    quality: Option<u8>,
+    #[schema(range(min = 0.05, max = 4.0))]
+    scale: f64,
+    #[schema(range(max = 64))]
+    count: u32,
+    #[schema(range(min = -1))]
+    offset: i64,
+}
+
+#[test]
+fn a_field_range_narrows_its_bounds_and_is_enforced() {
+    let schema = Ranged::json_schema();
+    let properties = &schema["properties"];
+    assert_eq!(
+        properties["quality"],
+        json!({"type": ["integer", "null"], "minimum": 1, "maximum": 100, "description": "1 to 100."})
+    );
+    assert_eq!(
+        properties["scale"],
+        json!({"type": "number", "minimum": 0.05, "maximum": 4.0})
+    );
+    assert_eq!(
+        properties["count"],
+        json!({"type": "integer", "minimum": 0, "maximum": 64})
+    );
+    assert_eq!(
+        properties["offset"],
+        json!({"type": "integer", "minimum": -1})
+    );
+    accepts(&Ranged {
+        quality: Some(100),
+        scale: 0.05,
+        count: 64,
+        offset: -1,
+    });
+    let valid = json!({"quality": null, "scale": 1, "count": 0, "offset": 0});
+    assert!(tilo_actions::validate_json_schema(&valid, &schema).is_ok());
+    for (field, value) in [
+        ("quality", json!(0)),
+        ("quality", json!(101)),
+        ("scale", json!(5)),
+        ("count", json!(65)),
+        ("offset", json!(-2)),
+    ] {
+        let mut wrong = valid.clone();
+        wrong[field] = value;
+        refuses::<Ranged>(&wrong);
+    }
+}
+
 #[test]
 fn every_schema_is_publishable() {
     for schema in [
+        Ranged::json_schema(),
         Shape::json_schema(),
         Tagged::json_schema(),
         Adjacent::json_schema(),

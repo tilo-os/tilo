@@ -2,7 +2,7 @@ use super::*;
 use crate::widget::{AppModel, ModelPath};
 use crate::{
     State,
-    headless::Driver,
+    headless::FrameHarness,
     widget::{Button, Column, Widget},
 };
 use crate::{text_render::TextRenderer, theme::Theme};
@@ -55,7 +55,7 @@ impl HistoryPreview for NotebookPreview {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.bg_primary,
+            theme.tokens.colors.surfaces.raised,
             None,
             &self.bounds,
         );
@@ -125,7 +125,7 @@ fn first_control_capture_preserves_admitted_toolbar_until_recomposition() {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "existing document").unwrap();
     state.commit_action(None, None);
-    let mut live = Column::new().push(Box::new(Button::new("live", "Send", None)));
+    let mut live = Column::new().push(Box::new(Button::new("live", "Send")));
     let mut history = host::HistoryHost::new(registration(), &state.doc).unwrap();
     history.set_width(900.0);
     assert!(history.request_open());
@@ -166,7 +166,7 @@ fn replacing_admitted_history_controls_reports_structure_dirty() {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "existing document").unwrap();
     state.commit_action(None, None);
-    let mut live = Column::new().push(Box::new(Button::new("live", "Send", None)));
+    let mut live = Column::new().push(Box::new(Button::new("live", "Send")));
     let mut history = host::HistoryHost::new(registration(), &state.doc).unwrap();
     history.set_width(900.0);
     let build = |history: &mut host::HistoryHost, live: &mut Column| {
@@ -213,7 +213,7 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
         let effects = Rc::new(Cell::new(0));
         let probe = effects.clone();
         let root = Column::new().push(Box::new(
-            Button::new("live-effect", "Send", None).on_click(move || probe.set(probe.get() + 1)),
+            Button::new("live-effect", "Send").on_click(move || probe.set(probe.get() + 1)),
         ));
         let mut state = State::new();
         state.doc.put(ROOT, "body", "first").unwrap();
@@ -221,7 +221,7 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
         state.doc.put(ROOT, "body", "second").unwrap();
         state.commit_action(None, None);
         let before = state.doc.get_heads();
-        let mut driver = Driver::from_managed_root(
+        let mut driver = FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(Box::new(root), registration()),
             (900, 650),
@@ -263,7 +263,7 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
             "wide activity sits beside the content"
         );
         if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
-            driver.render_window_png(&std::path::Path::new(&directory).join("wide.png"));
+            driver.render_png(&std::path::Path::new(&directory).join("wide.png"));
         }
         assert_eq!(driver.state_mut().doc.get_heads(), before);
         driver.state_mut().doc.put(ROOT, "body", "remote").unwrap();
@@ -282,14 +282,7 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
                 .unwrap()
                 .contains("Notebook: first")
         );
-        assert!(
-            driver
-                .state_mut()
-                .doc
-                .get(ROOT, "effect")
-                .unwrap()
-                .is_none()
-        );
+        assert_eq!(crate::testing::clicks("effect"), 0);
         driver.click_named("history-back-live").unwrap();
         assert!(driver.targets().contains_key("live-effect"));
         assert!(!driver.targets().contains_key("history-preview"));
@@ -327,7 +320,7 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
             "narrow navigation leaves the canvas usable"
         );
         if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
-            driver.render_window_png(&std::path::Path::new(&directory).join("narrow.png"));
+            driver.render_png(&std::path::Path::new(&directory).join("narrow.png"));
         }
         driver.click_named("history-activity").unwrap();
         assert!(driver.targets().contains_key("activity_timeline"));
@@ -487,7 +480,7 @@ fn managed_registration_admits_only_real_owners_and_scopes() {
             })
             .collect();
         let registration = HistoryRegistration::new(&MULTI, sources).unwrap();
-        let mut driver = Driver::from_managed_root(
+        let mut driver = FrameHarness::from_managed_root(
             State::new(),
             ManagedRoot::new(Box::new(Column::new()), registration),
             (900, 650),
@@ -532,7 +525,7 @@ fn managed_registration_admits_only_real_owners_and_scopes() {
                 Box::new(tile)
             };
             assert!(
-                Driver::from_managed_root(
+                FrameHarness::from_managed_root(
                     State::new(),
                     ManagedRoot::new(root, registration()),
                     (900, 650)
@@ -545,7 +538,7 @@ fn managed_registration_admits_only_real_owners_and_scopes() {
     {
         for pending in [false, true] {
             for layout in [false, true] {
-                let result = Driver::from_managed_root(
+                let result = FrameHarness::from_managed_root(
                     State::new(),
                     ManagedRoot::new(
                         lazy_owner_root(Rc::new(Cell::new(true)), pending, layout),
@@ -568,7 +561,7 @@ fn managed_registration_admits_only_real_owners_and_scopes() {
                 let mut state = State::new();
                 state.doc.put(ROOT, "body", "outer document").unwrap();
                 state.commit_action(None, None);
-                let mut driver = Driver::from_managed_root(
+                let mut driver = FrameHarness::from_managed_root(
                     state,
                     ManagedRoot::new(
                         lazy_owner_root(mount.clone(), pending, layout),
@@ -674,7 +667,7 @@ fn managed_registration_admits_only_real_owners_and_scopes() {
     }
 }
 
-fn versioned_driver(viewport: (u32, u32)) -> (Driver, String, Vec<automerge::ChangeHash>) {
+fn versioned_driver(viewport: (u32, u32)) -> (FrameHarness, String, Vec<automerge::ChangeHash>) {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "first").unwrap();
     state.commit_action(None, None);
@@ -683,8 +676,10 @@ fn versioned_driver(viewport: (u32, u32)) -> (Driver, String, Vec<automerge::Cha
     state.doc.put(ROOT, "body", "second").unwrap();
     state.commit_action(None, None);
     let before = state.doc.get_heads();
-    let root = Column::new().push(Box::new(Button::new("live-effect", "Send", Some("effect"))));
-    let driver = Driver::from_managed_root(
+    let root = Column::new().push(Box::new(
+        Button::new("live-effect", "Send").on_click(crate::testing::record_click("effect")),
+    ));
+    let driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(root), registration()),
         viewport,
@@ -700,7 +695,7 @@ fn versioned_driver(viewport: (u32, u32)) -> (Driver, String, Vec<automerge::Cha
     )
 }
 
-fn assert_history_frame_idle(driver: &mut Driver, context: &str) {
+fn assert_history_frame_idle(driver: &mut FrameHarness, context: &str) {
     assert!(
         !driver.frame_output().needs_redraw,
         "{context}: visible History branch stayed dirty after draw"
@@ -770,7 +765,7 @@ fn managed_history_visible_branches_drain_and_retained_modes_return_current() {
         }],
     )
     .unwrap();
-    let mut unavailable = Driver::from_managed_root(
+    let mut unavailable = FrameHarness::from_managed_root(
         State::new(),
         ManagedRoot::new(Box::new(Column::new()), registration),
         (900, 650),
@@ -830,10 +825,8 @@ fn history_preserves_pending_work_and_restores_exactly_one_focus() {
                 "timeline-entry:{}",
                 crate::widget::history_group::hex16(&id)
             );
-            let root = Column::new().push(Box::new(
-                TextInput::from_document_string("draft").with_id("draft-editor"),
-            ));
-            let mut driver = Driver::from_managed_root(
+            let root = Column::new().push(Box::new(TextInput::local().with_id("draft-editor")));
+            let mut driver = FrameHarness::from_managed_root(
                 state,
                 ManagedRoot::new(Box::new(root), registration()),
                 (900, 650),
@@ -969,13 +962,9 @@ fn history_preserves_pending_work_and_restores_exactly_one_focus() {
         use crate::widget::TextInput;
         for route in ["tab", "shift-tab", "pointer"] {
             let root = Column::new()
-                .push(Box::new(
-                    TextInput::from_document_string("first").with_id("first-editor"),
-                ))
-                .push(Box::new(
-                    TextInput::from_document_string("second").with_id("second-editor"),
-                ));
-            let mut driver = Driver::from_managed_root(
+                .push(Box::new(TextInput::local().with_id("first-editor")))
+                .push(Box::new(TextInput::local().with_id("second-editor")));
+            let mut driver = FrameHarness::from_managed_root(
                 State::new(),
                 ManagedRoot::new(Box::new(root), registration()),
                 (900, 650),
@@ -1130,9 +1119,8 @@ fn the_history_timeline_explains_scopes_and_announces_live_updates() {
             let live = Column::new().push(Box::new(Button::new(
                 "external-live-marker",
                 "Retained live session",
-                None,
             )));
-            let mut driver = Driver::from_managed_root(
+            let mut driver = FrameHarness::from_managed_root(
                 State::new(),
                 ManagedRoot::new(Box::new(live), registration),
                 viewport,
@@ -1177,10 +1165,7 @@ fn the_history_timeline_explains_scopes_and_announces_live_updates() {
             "toolbar wheel is not canvas navigation"
         );
         let canvas = driver.targets()["history-preview"].center();
-        driver.send(&winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(canvas.x, canvas.y),
-        });
+        driver.send(&crate::synthetic_input::cursor_moved(canvas.x, canvas.y));
         driver.scroll(0.0, 1.0);
         assert!(
             driver
@@ -1246,12 +1231,9 @@ fn the_history_timeline_explains_scopes_and_announces_live_updates() {
         let bounds = node.bounds().unwrap();
         assert!(bounds.x0 >= 0.0 && bounds.x1 <= 390.0 && bounds.y1 <= 650.0);
         if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
-            driver.render_window_png(
-                &std::path::Path::new(&directory).join("narrow-live-update.png"),
-            );
+            driver.render_png(&std::path::Path::new(&directory).join("narrow-live-update.png"));
             driver.resize((900, 650)).unwrap();
-            driver
-                .render_window_png(&std::path::Path::new(&directory).join("wide-live-update.png"));
+            driver.render_png(&std::path::Path::new(&directory).join("wide-live-update.png"));
         }
         assert!(
             driver
@@ -1305,7 +1287,7 @@ impl Widget for LazyOwnerRoot {
     fn get_rect(&self) -> Rect {
         self.child.get_rect()
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         if !self.during_layout {
             self.mount_owner();
         } else if self.mount.get() && !self.mounted {
@@ -1453,11 +1435,10 @@ fn checked_files_activity_keeps_the_wide_live_surface() {
         inner: Box::new(Column::new().push(Box::new(Button::new(
             "checked-live-marker",
             "Retained checked file",
-            None,
         )))),
         source,
     };
-    let mut driver = Driver::from_managed_root(
+    let mut driver = FrameHarness::from_managed_root(
         State::new(),
         ManagedRoot::new(Box::new(live), registration),
         (900, 650),
@@ -1577,13 +1558,168 @@ fn closed_history_strip_insets_its_button_by_the_theme_spacing() {
     let spacing = driver.theme().tokens.spacing;
     let button = driver.targets()["history-open"];
     assert_eq!(
-        button.x0,
-        f64::from(spacing.s3),
-        "sibling step from the edge"
+        button.x1,
+        900.0 - f64::from(spacing.s3),
+        "sibling step from the trailing edge"
     );
     assert_eq!(
         button.y0,
         f64::from(spacing.s1),
         "one control tall, not a band"
     );
+}
+
+/// A `NavShell` app carries the window's History control in its header row;
+/// under the app's registered History that control opens and closes that
+/// History, never the standalone chrome the app does not have.
+#[test]
+fn header_history_control_opens_the_registered_history() {
+    fn history_toggled(driver: &FrameHarness) -> Vec<Option<accesskit::Toggled>> {
+        driver
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| {
+                node.label() == Some("History") && node.role() == accesskit::Role::Button
+            })
+            .map(|(_, node)| node.toggled())
+            .collect()
+    }
+    let mut state = State::new();
+    for body in ["first", "second"] {
+        state.doc.put(ROOT, "body", body).unwrap();
+        state.commit_action(None, None);
+    }
+    let before = state.doc.get_heads();
+    let shell = crate::widget::NavShell::new()
+        .content_header("Notes", vec![])
+        .content(Box::new(crate::widget::Text::new("Body")));
+    let mut driver = FrameHarness::from_managed_root(
+        state,
+        ManagedRoot::new(Box::new(shell), registration()),
+        (1000, 700),
+    )
+    .unwrap();
+    assert!(
+        !driver.targets().contains_key("history-open"),
+        "the header row presents History; the window draws no bar for it"
+    );
+    assert_eq!(history_toggled(&driver), [Some(accesskit::Toggled::False)]);
+
+    driver.click_named("nav-shell-history").unwrap();
+    assert!(
+        driver.targets().contains_key("activity_timeline"),
+        "the header control opens the registered History"
+    );
+    assert!(
+        !driver.targets().contains_key("nav-shell-history"),
+        "while open the inert app's header gives the control to History's bar"
+    );
+    assert_eq!(
+        history_toggled(&driver),
+        [Some(accesskit::Toggled::True)],
+        "and the one History control reads as on"
+    );
+
+    driver.click_named("history-open").unwrap();
+    assert!(!driver.targets().contains_key("activity_timeline"));
+    assert!(driver.targets().contains_key("nav-shell-history"));
+    assert_eq!(history_toggled(&driver), [Some(accesskit::Toggled::False)]);
+
+    // The History door the control is bound to closes it too.
+    driver.click_named("nav-shell-history").unwrap();
+    assert!(driver.targets().contains_key("activity_timeline"));
+    driver
+        .invoke_local_history_action(
+            &tilo_actions::ActionAddress::new(
+                crate::standalone_history_host::HISTORY_RESOURCE,
+                "hide",
+            ),
+            None,
+        )
+        .unwrap();
+    assert!(!driver.targets().contains_key("activity_timeline"));
+    assert_eq!(driver.state_mut().doc.get_heads(), before);
+}
+
+/// Opening History narrows the window's room for the app: its `NavShell`
+/// lays its header rows out again at the width it is given, so header
+/// actions keep their own places and never fold onto one another.
+#[test]
+fn opening_history_lays_the_shell_out_at_its_narrower_width() {
+    use crate::icons::Icon;
+    use crate::widget::decorator::Decorator;
+    /// A header action that remembers where it was last laid out.
+    struct Probe(Button, Rc<Cell<Rect>>);
+    impl Decorator for Probe {
+        type Inner = Button;
+        fn inner(&self) -> &Button {
+            &self.0
+        }
+        fn inner_mut(&mut self) -> &mut Button {
+            &mut self.0
+        }
+        fn apply_layout(
+            &mut self,
+            taffy: &taffy::TaffyTree<()>,
+            node: taffy::NodeId,
+            origin: vello::kurbo::Point,
+        ) {
+            self.0.apply_layout(taffy, node, origin);
+            self.1.set(self.0.get_rect());
+        }
+    }
+    let mut state = State::new();
+    for body in ["first", "second"] {
+        state.doc.put(ROOT, "body", body).unwrap();
+        state.commit_action(None, None);
+    }
+    let ids = [
+        "overview-search",
+        "overview-new",
+        "content-star",
+        "content-more",
+    ];
+    let seen: Vec<Rc<Cell<Rect>>> = ids.iter().map(|_| Rc::default()).collect();
+    let mut probes = ids.iter().zip(&seen).map(|(id, seen)| -> Box<dyn Widget> {
+        Box::new(Probe(
+            Button::icon_only(id, Icon::Plus, id),
+            Rc::clone(seen),
+        ))
+    });
+    let overview = vec![probes.next().unwrap(), probes.next().unwrap()];
+    let content = vec![probes.next().unwrap(), probes.next().unwrap()];
+    let shell = crate::widget::NavShell::new()
+        .sidebar(Box::new(crate::widget::Text::new("Library")))
+        .overview(Box::new(crate::widget::Text::new("List")))
+        .overview_header("All snippets", overview)
+        .content_header("Multi-stage build", content)
+        .content(Box::new(crate::widget::Text::new("Body")));
+    let mut driver = FrameHarness::from_managed_root(
+        state,
+        ManagedRoot::new(Box::new(shell), registration()),
+        (1280, 800),
+    )
+    .unwrap();
+    let apart = |phase: &str| {
+        for pair in [[0, 1], [2, 3]] {
+            let [a, b] = pair.map(|index| seen[index].get());
+            assert!(
+                a.width() > 0.0 && b.width() > 0.0 && a.intersect(b).area() <= 0.0,
+                "{phase}: {a:?} and {b:?} keep their own places"
+            );
+        }
+    };
+    apart("closed");
+
+    driver.click_named("nav-shell-history").unwrap();
+    let timeline = driver.targets()["activity_timeline"];
+    apart("open");
+    for (id, seen) in ids.iter().zip(&seen) {
+        let rect = seen.get();
+        assert!(
+            rect.x0 >= timeline.x1 || rect.x1 <= timeline.x0,
+            "{id} stands beside the timeline, not under it: {rect:?} vs {timeline:?}"
+        );
+        assert!(rect.x1 <= 1280.0, "{id} stays in the window: {rect:?}");
+    }
 }

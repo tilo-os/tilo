@@ -75,10 +75,73 @@ impl<T> EventLoopBuilderExtWayland for EventLoopBuilder<T> {
     }
 }
 
+/// Outcome of the exact surface commit observed through `wp_presentation`.
+/// Times use the clock advertised by the compositor, never callback receipt time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaylandPresentation {
+    Presented {
+        clock_id: u32,
+        timestamp: std::time::Duration,
+        refresh: std::time::Duration,
+        sequence: u64,
+        flags: u32,
+    },
+    Discarded,
+}
+
+impl WaylandPresentation {
+    #[doc(hidden)]
+    pub fn from_protocol(
+        clock_id: Option<u32>,
+        time: (u32, u32, u32),
+        refresh: u32,
+        sequence: (u32, u32),
+        flags: Option<u32>,
+    ) -> Self {
+        match (clock_id, flags) {
+            (Some(clock_id), Some(flags)) if time.2 < 1_000_000_000 => Self::Presented {
+                clock_id,
+                timestamp: std::time::Duration::new(
+                    (u64::from(time.0) << 32) | u64::from(time.1),
+                    time.2,
+                ),
+                refresh: std::time::Duration::from_nanos(u64::from(refresh)),
+                sequence: (u64::from(sequence.0) << 32) | u64::from(sequence.1),
+                flags,
+            },
+            _ => Self::Discarded,
+        }
+    }
+}
+
+/// One-shot observation of the next surface commit. No pixels or input text.
+pub type WaylandPresentationObserver = Box<dyn FnOnce(WaylandPresentation) + Send + 'static>;
+
 /// Additional methods on [`Window`] that are specific to Wayland.
 ///
 /// [`Window`]: crate::window::Window
 pub trait WindowExtWayland {
+    /// Publish whether the original IME field accepts line feeds as text.
+    /// Password and terminal purposes never gain the multiline hint.
+    fn set_ime_multiline(&self, multiline: bool);
+    /// Publish a private, ephemeral equality stamp for the original editable field.
+    /// An empty stamp disables admission. Does not grant microphone or IME ownership.
+    fn private_text_input(&self, snapshot: Option<[u8; 32]>) -> bool;
+    /// Resolve the exact original request after its actual renderer result.
+    /// Outcome is accepted (0), known rejection (1), or unknown delivery (2).
+    fn acknowledge_private_text_input(&self, serial: u32, outcome: u32);
+
+    /// Observe the next committed buffer with the standard presentation protocol.
+    /// Holds the native window state lock across the request and `present` so an
+    /// IME/configure commit cannot take the feedback for an unrelated buffer.
+    /// Always calls `present`; returns false when the protocol is unavailable.
+    /// A frame callback or client submission never completes this observer.
+    fn present_with_feedback(
+        &self,
+        observer: WaylandPresentationObserver,
+        present: impl FnOnce(),
+    ) -> bool;
+
     /// Returns `xdg_toplevel` of the window or [`None`] if the window is X11 window.
     fn xdg_toplevel(&self) -> Option<NonNull<c_void>>;
 
@@ -107,6 +170,51 @@ pub trait WindowExtWayland {
 }
 
 impl WindowExtWayland for Window {
+    fn set_ime_multiline(&self, multiline: bool) {
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => (),
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => window.set_ime_multiline(multiline),
+        }
+    }
+    fn private_text_input(&self, snapshot: Option<[u8; 32]>) -> bool {
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => false,
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => window.private_text_input(snapshot),
+        }
+    }
+    fn acknowledge_private_text_input(&self, serial: u32, outcome: u32) {
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => (),
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => {
+                window.acknowledge_private_text_input(serial, outcome)
+            }
+        }
+    }
+
+    fn present_with_feedback(
+        &self,
+        observer: WaylandPresentationObserver,
+        present: impl FnOnce(),
+    ) -> bool {
+        match &self.window {
+            #[cfg(x11_platform)]
+            crate::platform_impl::Window::X(_) => {
+                present();
+                false
+            }
+            #[cfg(wayland_platform)]
+            crate::platform_impl::Window::Wayland(window) => {
+                window.present_with_feedback(observer, present)
+            }
+        }
+    }
+
     #[inline]
     fn xdg_toplevel(&self) -> Option<NonNull<c_void>> {
         #[allow(clippy::single_match)]
@@ -141,6 +249,19 @@ impl WindowExtWayland for Window {
     }
 }
 
+/// Content-free identity of a key delivered by the Wayland compositor.
+/// The timestamp is the protocol's wrapping millisecond clock, not an
+/// assumed Unix/monotonic epoch. Repeats and synthesized keys have no stamp.
+pub trait KeyEventExtWayland {
+    fn wayland_serial_time(&self) -> Option<(u32, u32)>;
+}
+
+impl KeyEventExtWayland for crate::event::KeyEvent {
+    fn wayland_serial_time(&self) -> Option<(u32, u32)> {
+        self.platform_specific.wayland_stamp
+    }
+}
+
 /// Additional methods on [`WindowAttributes`] that are specific to Wayland.
 pub trait WindowAttributesExtWayland {
     /// Build window with the given name.
@@ -156,8 +277,10 @@ pub trait WindowAttributesExtWayland {
 impl WindowAttributesExtWayland for WindowAttributes {
     #[inline]
     fn with_name(mut self, general: impl Into<String>, instance: impl Into<String>) -> Self {
-        self.platform_specific.name =
-            Some(crate::platform_impl::ApplicationName::new(general.into(), instance.into()));
+        self.platform_specific.name = Some(crate::platform_impl::ApplicationName::new(
+            general.into(),
+            instance.into(),
+        ));
         self
     }
 }
@@ -184,3 +307,7 @@ impl MonitorHandleExtWayland for MonitorHandle {
         self.inner.physical_size_mm()
     }
 }
+
+#[doc(hidden)]
+#[cfg(wayland_platform)]
+pub use crate::platform_impl::wayland::private_text_input_protocol;

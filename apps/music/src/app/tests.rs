@@ -1,18 +1,83 @@
 use super::*;
+use ui::search::SearchProvider as _;
+
+/// The library's search source as the framework builds it from the
+/// resource's entries.
+fn library_source(app: &MusicApp) -> impl ui::search::SearchProvider + use<> {
+    ui::framework::testing::search_source::<crate::model::Library>(
+        crate::search_type::library_entries(&app.lib),
+    )
+}
 use std::io::Cursor;
 use ui::widget::Continuable as _;
 
 fn app_with_doc() -> (MusicApp, AutoCommit) {
     let mut app = MusicApp::new();
     // The behaviour tests exercise playback, queueing and playlists against
-    // the bundled catalog, so — like `--shots` — they opt into the sample
-    // library. The live default (no opt-in) starts empty; see
-    // `default_startup_has_empty_library`.
-    app.seed_sample_library();
-    let mut doc = AutoCommit::new();
-    app.ensure_seeded(&mut doc);
-    app.reload(&mut doc);
+    // the bundled catalog, as the screenshot scenarios do. A new library
+    // starts empty; see `default_startup_has_empty_library`.
+    let doc = seed::sample_document();
+    app.reload(&doc);
     (app, doc)
+}
+
+#[cfg(feature = "audio")]
+#[test]
+fn private_queue_metadata_restores_unsaved_songs_before_resume() {
+    let (mut original, _) = app_with_doc();
+    original.pb.queue = vec!["tk_g1".into(), "tk_g2".into()];
+    original.pb.current = Some("tk_g1".into());
+    original.pb.playing = true;
+    let profile = crate::storage::DeviceProfile {
+        playback: original.pb.clone(),
+        queue_catalogue: original.queue_catalogue(),
+        ..Default::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("profile.json");
+    crate::storage::save_device_profile_to(&path, &profile).unwrap();
+    let restored = crate::storage::load_device_profile_from(&path);
+    let mut app = MusicApp::from_device_profile(restored, false, String::new(), None);
+    let mut doc = seed::empty_document();
+    app.reload(&doc);
+    let before = doc.get_heads();
+    assert!(!app.pb.playing, "restoration never starts audio");
+    assert_eq!(app.pb.queue, original.pb.queue);
+    for id in &app.pb.queue {
+        assert_eq!(app.playback_track(id), original.playback_track(id));
+    }
+    let mut requested = app.pb.clone();
+    requested.playing = true;
+    assert!(app.apply_resource_playback(requested).is_ok());
+    assert!(seed::library_of(&doc).tracks.is_empty());
+    assert_eq!(doc.get_heads(), before);
+    app.audio.stop();
+}
+
+#[cfg(feature = "audio")]
+#[test]
+fn legacy_spotify_queue_resolves_canonical_ids_without_inventing_metadata() {
+    let (mut app, mut doc) = app_with_doc();
+    let before = doc.get_heads();
+    let next = "spotify:track:0DiWol3AO6WpXZgp0goxAV";
+    let request = Playback {
+        current: Some("tk_g1".into()),
+        queue: vec!["tk_g1".into(), next.into()],
+        ..Default::default()
+    };
+    assert!(app.playback_track(next).is_none());
+    assert!(app.apply_resource_playback(request.clone()).is_ok());
+    assert_eq!(app.pb.queue, request.queue);
+    let mut invalid = request;
+    invalid.queue.push("/private/not-granted.wav".into());
+    assert!(app.apply_resource_playback(invalid).is_err());
+    assert!(app.apply_resource_play_queue_item(1, next).is_ok());
+    assert!(
+        app.playback_track(next).is_none(),
+        "the provider must supply metadata"
+    );
+    assert_eq!(doc.get_heads(), before);
+    app.audio.stop();
 }
 
 #[test]
@@ -119,7 +184,7 @@ fn track_context_menu_stays_in_bounds_and_dispatches_its_actions() {
         let idx = menu_index(&app, "Add to queue").unwrap() as i64;
         // Simulate the menu callback firing for that row.
         app.pending.store(idx, Ordering::SeqCst);
-        app.drain_menu_selection(&mut doc);
+        app.drain_menu_selection(&mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(
             app.pb.queue.len(),
             before + 1,
@@ -139,26 +204,116 @@ fn track_context_menu_stays_in_bounds_and_dispatches_its_actions() {
         app.view = View::Songs;
         // Render one frame so row-menu hits + geometry exist.
         draw_once(&mut app, &mut doc);
-        // Find a track row's right-click target.
-        let target = app.row_menu_hits.first().cloned();
-        let target = target.expect("a track row registered a right-click target");
-        let p = target.rect.center();
+        // A track row is its own right-click target.
+        let p = track_row(&app, "tk_g2").center();
         send(&mut app, &cursor_at(p), &mut doc);
         let handled = send(&mut app, &press(MouseButton::Right), &mut doc);
         assert!(handled, "right-click on a row is consumed");
         assert!(app.context.is_open(), "right-click opens the context menu");
     }
 
-    // Phase `draw_registers_row_menu_hits`.
+    // Phase `the_songs_table_is_the_shared_table_with_a_row_per_track`.
     {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Songs;
         draw_once(&mut app, &mut doc);
+        let table = app.track_tables.first().expect("the songs table");
+        assert_eq!(table.table.rows().len(), app.lib.tracks.len());
         assert!(
-            !app.row_menu_hits.is_empty(),
-            "the songs table registers per-row right-click targets"
+            table.table.row_rect(0).is_some(),
+            "its first row is in view"
         );
     }
+}
+
+/// A track row is the shared table's: a press plays it from the table's
+/// queue, and its actions are the toolkit's buttons under the pointer.
+#[test]
+fn track_rows_play_and_act_through_the_shared_table() {
+    // Phase `a_press_on_a_row_plays_it_from_the_tables_queue`.
+    let (mut app, mut doc) = app_with_doc();
+    app.view = View::Songs;
+    draw_once(&mut app, &mut doc);
+    draw_once(&mut app, &mut doc);
+    click_track(&mut app, &mut doc, "tk_g2");
+    assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
+    assert_eq!(
+        app.pb.queue.len(),
+        app.lib.tracks.len(),
+        "the whole list is queued behind it"
+    );
+
+    // Phase `the_queue_rows_reorder_and_remove_with_their_buttons`.
+    app.view = View::Queue;
+    draw_once(&mut app, &mut doc);
+    draw_once(&mut app, &mut doc);
+    let next = app.pb.queue[app.pb.queue_index + 1].clone();
+    let after = app.pb.queue[app.pb.queue_index + 2].clone();
+    let down = track_control(&mut app, &mut doc, &next, "down", draw_once);
+    hosted_click(&mut app, &mut doc, down.center());
+    assert_eq!(
+        app.pb.queue[app.pb.queue_index + 1],
+        after,
+        "Move down swaps the row with the one below"
+    );
+    assert_eq!(
+        app.pb.current.as_deref(),
+        Some("tk_g2"),
+        "playback is untouched"
+    );
+    let before = app.pb.queue.len();
+    draw_once(&mut app, &mut doc);
+    let remove = track_control(&mut app, &mut doc, &after, "remove", draw_once);
+    hosted_click(&mut app, &mut doc, remove.center());
+    assert_eq!(
+        app.pb.queue.len(),
+        before - 1,
+        "Remove takes the row out of the queue"
+    );
+}
+
+/// A cover is the shared media card: a press on it opens what it names, and
+/// the Play action over its art plays it.
+#[test]
+fn cover_cards_open_and_play_through_the_shared_grid() {
+    let (mut app, mut doc) = app_with_doc();
+    app.view = View::Albums;
+    draw_once(&mut app, &mut doc);
+    let album = app
+        .lib
+        .albums
+        .keys()
+        .next()
+        .cloned()
+        .expect("a sample album");
+    let card = app
+        .media_grids
+        .iter()
+        .find_map(|grid| grid.card_rect(&album))
+        .expect("the album has a card");
+    assert!(card.width() > 0.0 && app.body_rect.contains(card.center()));
+
+    // Phase `the_play_action_over_the_art_plays_the_album`.
+    let art = Point::new(card.center().x, card.y0 + card.width() / 2.0);
+    send(&mut app, &cursor_at(art), &mut doc);
+    send(&mut app, &press(MouseButton::Left), &mut doc);
+    send(&mut app, &released(MouseButton::Left), &mut doc);
+    assert_eq!(app.view, View::Albums, "Play does not leave the page");
+    let playing = app.pb.current.clone().expect("the album plays");
+    assert_eq!(
+        app.lib
+            .tracks
+            .get(&playing)
+            .map(|track| track.album_id.clone()),
+        Some(album.clone())
+    );
+
+    // Phase `a_press_on_the_card_opens_the_album`.
+    let title = Point::new(card.x0 + 8.0, card.y1 - 6.0);
+    send(&mut app, &cursor_at(title), &mut doc);
+    send(&mut app, &press(MouseButton::Left), &mut doc);
+    send(&mut app, &released(MouseButton::Left), &mut doc);
+    assert_eq!(app.view, View::Album(album));
 }
 
 /// Test and shot constructors own their caches and never read the real profile;
@@ -193,14 +348,11 @@ fn constructors_isolate_caches_profiles_and_never_fabricate_content() {
         profile.playback.current = Some("sentinel-track".into());
         profile.playback.queue = vec!["sentinel-track".into()];
         profile.playback.position_ms = 42;
-        profile
-            .cache
-            .insert("sentinel-track".into(), CacheState::Cached);
         crate::storage::save_device_profile_to(&path, &profile).unwrap();
 
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_MUSIC_PROFILE", &path);
-        let app = MusicApp::new_for_shot();
+        let app = MusicApp::without_profile();
         drop(env);
         let _ = std::fs::remove_file(path);
 
@@ -225,12 +377,11 @@ fn constructors_isolate_caches_profiles_and_never_fabricate_content() {
     {
         // Migration guarantee: the GUI never loaded the removed relay file.
         // The live app receives its canonical document from the platform; with
-        // a fresh host document (and no `seed_sample_library` opt-in) it must
-        // not fabricate a catalog, a playlist, or an app-owned library store.
+        // a new record's empty library it must not fabricate a catalog, a
+        // playlist, or an app-owned library store.
         let mut app = MusicApp::new();
-        let mut doc = AutoCommit::new();
-        app.ensure_seeded(&mut doc);
-        app.reload(&mut doc);
+        let doc = seed::empty_document();
+        app.reload(&doc);
         assert_eq!(
             app.lib.total_tracks(),
             0,
@@ -243,23 +394,6 @@ fn constructors_isolate_caches_profiles_and_never_fabricate_content() {
         assert!(
             app.pb.current.is_none(),
             "nothing playing on a fresh launch"
-        );
-        // The platform document is still initialised, just empty; a later host
-        // sync can adopt shared state without re-seeding.
-        assert!(
-            doc::is_seeded(&doc),
-            "the empty library still initialises the doc structure"
-        );
-    }
-
-    // Phase `seed_has_no_fabricated_in_progress_download`.
-    {
-        let lib = seed::sample_library();
-        assert!(
-            lib.cache
-                .values()
-                .all(|s| !matches!(s, CacheState::Downloading(_))),
-            "the seed no longer parks a track at a perpetual fake download progress",
         );
     }
 }
@@ -278,10 +412,7 @@ fn picked_covers_normalise_to_portable_values() {
             .unwrap();
         let source = output.into_inner();
         let portable = portable_cover_data_url(&source).expect("small PNG normalizes");
-        let action = crate::actions::set_cover_action("pl_test", &portable);
-        let crate::actions::MusicAction::SetPlaylistCover { cover, .. } = action else {
-            unreachable!("cover builder returns a cover action");
-        };
+        let cover = portable;
         assert!(crate::actions::portable_cover_value(&cover));
         assert!(!cover.contains("file:"));
         assert!(!cover.contains("/tmp/"));
@@ -298,7 +429,7 @@ fn picked_covers_normalise_to_portable_values() {
     // Phase `completed_portal_cover_write_contains_no_device_local_path`.
     {
         let (mut app, mut doc) = app_with_doc();
-        let playlist = app.lib.playlists[0].id.clone();
+        let playlist = app.lib.playlists().next().unwrap().id.clone();
         let mut output = Cursor::new(Vec::new());
         image::DynamicImage::new_rgba8(1, 1)
             .write_to(&mut output, image::ImageFormat::Png)
@@ -310,8 +441,8 @@ fn picked_covers_normalise_to_portable_values() {
         app.cover_embed_for = Some(playlist.clone());
         app.cover_embed = Some(receiver);
 
-        app.drain_cover_embed(&mut doc);
-        let persisted = doc::load_library(&doc)
+        app.drain_cover_embed(&mut ui::widget::Edits::lend(&mut doc));
+        let persisted = seed::library_of(&doc)
             .playlist(&playlist)
             .unwrap()
             .cover
@@ -339,7 +470,11 @@ fn continuation_and_media_handoff_restore_known_tracks_locally() {
             .expect("a selected library track has a portable continuation");
 
         let (mut receiver, mut target) = app_with_doc();
-        assert!(receiver.restore_continuation_metadata(&metadata, &mut target, &automerge::ROOT,));
+        assert!(receiver.restore_continuation_metadata(
+            &metadata,
+            &mut ui::widget::Edits::lend(&mut target),
+            &automerge::ROOT,
+        ));
         assert_eq!(receiver.pb.current.as_deref(), Some("tk_g1"));
         assert_eq!(receiver.pb.position_ms, 12_345);
         assert!(
@@ -351,12 +486,35 @@ fn continuation_and_media_handoff_restore_known_tracks_locally() {
     // Phase `media_handoff_resolves_synced_track_and_restores_transport`.
     {
         let (mut app, mut doc) = app_with_doc();
-        app.pending_media_handoff = Some(PendingMediaHandoff {
-            uri: crate::search_type::SearchHit::track_link("tk_g1"),
-            position_ms: 12_345,
-            resume_playing: true,
-        });
-        app.sync(&mut doc, &automerge::ROOT);
+        let arguments = [crate::search_type::SearchHit::track_link("tk_g1")];
+        app.open_launch(
+            &ui::framework::LaunchInput::new(&arguments, None).with_handoff(Some(
+                &ui::application::PlaybackHandoff {
+                    position_ms: 12_345,
+                    resume_playing: true,
+                    title: None,
+                },
+            )),
+        );
+        let before = (
+            doc.base_heads(),
+            automerge::transaction::Transactable::pending_ops(&doc),
+        );
+        app.sync(&doc, &automerge::ROOT);
+        assert_eq!(
+            (
+                doc.base_heads(),
+                automerge::transaction::Transactable::pending_ops(&doc)
+            ),
+            before
+        );
+        assert!(
+            app.pb.current.is_none(),
+            "sync leaves the pending handoff for authored settlement"
+        );
+        assert!(app.pending_media_handoff.is_some());
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         assert_eq!(app.pb.current.as_deref(), Some("tk_g1"));
         assert_eq!(app.pb.position_ms, 12_345);
         assert_eq!(app.playhead_ms, 12_345.0);
@@ -366,13 +524,23 @@ fn continuation_and_media_handoff_restore_known_tracks_locally() {
 
     // Phase `media_handoff_waits_for_its_synced_resource`.
     {
-        let mut app = MusicApp::new_for_shot().with_media_handoff(
-            crate::search_type::SearchHit::track_link("not-hydrated-yet"),
-            42,
-            true,
+        let mut app = MusicApp::without_profile();
+        let arguments = [crate::search_type::SearchHit::track_link(
+            "not-hydrated-yet",
+        )];
+        app.open_launch(
+            &ui::framework::LaunchInput::new(&arguments, None).with_handoff(Some(
+                &ui::application::PlaybackHandoff {
+                    position_ms: 42,
+                    resume_playing: true,
+                    title: None,
+                },
+            )),
         );
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         assert!(app.pb.current.is_none());
         assert!(app.pending_media_handoff.is_some());
     }
@@ -380,21 +548,82 @@ fn continuation_and_media_handoff_restore_known_tracks_locally() {
     // Phase `shared_library_sync_never_adopts_remote_playback`.
     {
         let (mut app, mut doc) = app_with_doc();
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         let before = app.pb.clone();
         // A peer can still edit a collaborative playlist. It refreshes the
         // library but must leave this device's transport untouched.
         app.perform_action(
-            &mut doc,
-            &crate::actions::create_playlist_action("pl_peer_library", "Peer library edit"),
+            &mut ui::widget::Edits::lend(&mut doc),
+            Library::paths().playlists.insert_as(
+                &ui::tilo_resource::Id::from_raw("pl_peer_library"),
+                0,
+                &crate::model::Playlist::named("pl_peer_library", "Peer library edit"),
+            ),
         );
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         assert_eq!(app.pb, before, "transport remains device-local");
         assert!(
             app.lib.playlist("pl_peer_library").is_some(),
             "collaborative library edits still arrive"
         );
     }
+}
+
+#[test]
+#[cfg(feature = "audio")]
+#[serial_test::serial(audio_backend)]
+fn metadata_duration_does_not_cut_off_real_audio_before_eos() {
+    let (mut app, _) = app_with_doc();
+    app.lib.tracks.get_mut("tk_g1").unwrap().duration_s = 1;
+    app.pb.queue = vec!["tk_g1".into()];
+    app.pb.current = Some("tk_g1".into());
+    app.pb.playing = true;
+
+    // The real two-second PCM source outlasts its one-second catalogue entry.
+    // Unit-test output captures decoded PCM without opening a sound device.
+    let scratch = tempfile::tempdir().unwrap();
+    let path = scratch.path().join("longer-than-metadata.wav");
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&32036u32.to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&8000u32.to_le_bytes());
+    wav.extend_from_slice(&16000u32.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&32000u32.to_le_bytes());
+    wav.resize(32044, 0);
+    std::fs::write(&path, wav).unwrap();
+    app.audio
+        .load(&media::source::path_to_file_uri(&path).unwrap());
+    app.audio.play();
+
+    let deadline = tilo_test_env::hang_deadline();
+    let mut furthest_position = 0.0_f64;
+    while app.pb.playing {
+        app.tick();
+        assert!(app.playback_error.is_none(), "{:?}", app.playback_error);
+        furthest_position = furthest_position.max(app.playhead_ms);
+        assert!(
+            ui::time::now() < deadline,
+            "the real source must reach EOS: {}",
+            app.audio.diagnostics()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(
+        furthest_position >= 1800.0,
+        "metadata must not stop the two-second decoder at {furthest_position}ms"
+    );
+    assert_eq!(app.pb.queue_index, 0);
 }
 
 #[test]
@@ -472,26 +701,83 @@ fn media_handoff_waits_for_decoder_but_preserves_paused_preroll() {
 }
 
 // ---- synthetic winit events (drive `handle_event` like the real loop) --
-use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::NamedKey;
 
-fn synth_device() -> DeviceId {
-    unsafe { std::mem::zeroed() }
+/// Where the row of track `id` stands in the page's track tables.
+fn track_row(app: &MusicApp, id: &str) -> Rect {
+    app.track_tables
+        .iter()
+        .find_map(|slot| {
+            let index = slot.table.rows().iter().position(|row| row.id == id)?;
+            slot.table.row_rect(index)
+        })
+        .unwrap_or_else(|| panic!("track {id} has a row in view"))
 }
+
+/// Bring the pointer over the row of track `id` so it shows its actions,
+/// redraw with `draw`, and return where its control `name` stands.
+fn track_control(
+    app: &mut MusicApp,
+    doc: &mut AutoCommit,
+    id: &str,
+    name: &str,
+    draw: impl Fn(&mut MusicApp, &mut AutoCommit),
+) -> Rect {
+    let row = track_row(app, id);
+    send(
+        app,
+        &cursor_at(Point::new(row.x0 + row.width() * 0.3, row.center().y)),
+        doc,
+    );
+    draw(app, doc);
+    app.track_tables
+        .iter()
+        .find_map(|slot| {
+            let index = slot.table.rows().iter().position(|row| row.id == id)?;
+            slot.table.control_rect(index, name)
+        })
+        .unwrap_or_else(|| panic!("track {id} shows its {name} control under the pointer"))
+}
+
+/// Press and release the left button on the row of track `id`.
+fn click_track(app: &mut MusicApp, doc: &mut AutoCommit, id: &str) {
+    let row = track_row(app, id);
+    send(
+        app,
+        &cursor_at(Point::new(row.x0 + row.width() * 0.3, row.center().y)),
+        doc,
+    );
+    send(app, &press(MouseButton::Left), doc);
+    send(app, &released(MouseButton::Left), doc);
+}
+
 fn cursor_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: synth_device(),
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 fn press(button: MouseButton) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: synth_device(),
-        state: ElementState::Pressed,
-        button,
-    }
+    ui::synthetic_input::mouse_input(ui::winit::event::ElementState::Pressed, button)
 }
 /// Drive one event through the production `handle_event` path.
+/// Send a row-control click through the same custody and action runner as
+/// a live window, retaining the actual Music root and canonical document.
+pub(super) fn hosted_click(app: &mut MusicApp, doc: &mut AutoCommit, at: Point) {
+    let mut state = ui::State::new();
+    state.adopt_doc(std::mem::take(doc));
+    let origin = app.get_rect().origin();
+    let owned = std::mem::take(app);
+    let mut frame = ui::headless::FrameHarness::for_root(state, owned, (1280, 800), Theme::dark());
+    let hosted_origin = frame.root::<MusicApp>().get_rect().origin();
+    frame.click_at(
+        at.x + hosted_origin.x - origin.x,
+        at.y + hosted_origin.y - origin.y,
+    );
+    frame.relayout();
+    let (owned, state) = frame.root_and_state_mut::<MusicApp>();
+    *app = std::mem::take(owned);
+    *doc = std::mem::take(&mut state.doc);
+}
+
 fn send(app: &mut MusicApp, ev: &WindowEvent, doc: &mut AutoCommit) -> bool {
     send_with(app, ev, winit::event::Modifiers::default(), doc)
 }
@@ -503,86 +789,43 @@ fn send_with(
     mods: winit::event::Modifiers,
     doc: &mut AutoCommit,
 ) -> bool {
-    let mut taffy = TaffyTree::<()>::new();
-    let node = taffy.new_leaf(Style::default()).unwrap();
-    let mut handled = false;
-    let mut focus = None;
-    let root = automerge::ROOT;
-    app.handle_event(
-        ev,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &mods,
-            state: doc,
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: node,
-            taffy: &taffy,
-        },
-    );
-    handled
+    ui::testing::Dispatch::new()
+        .modifiers(mods)
+        .doc(doc)
+        .send(app, ev)
+        .handled
 }
 
 fn released(button: MouseButton) -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: synth_device(),
-        state: ElementState::Released,
-        button,
-    }
+    ui::synthetic_input::mouse_input(ui::winit::event::ElementState::Released, button)
 }
 
 fn wheel(lines_y: f32) -> WindowEvent {
-    WindowEvent::MouseWheel {
-        device_id: synth_device(),
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, lines_y),
-        phase: winit::event::TouchPhase::Moved,
-    }
+    ui::synthetic_input::mouse_wheel(0.0, lines_y)
 }
 
-/// A character keypress event (logical key + committed text). `winit`'s
-/// per-platform `KeyEvent` field is `pub(crate)`, so — like the other app
-/// event-path tests — we zero the struct and set the public fields (the
-/// zeroed discriminants land on non-heap enum variants, so this is sound).
+/// A character keypress event (logical key + committed text). like the other app event-path tests.
 fn char_key(c: &str) -> WindowEvent {
-    use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Character(c.into());
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(c.into());
-    WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
+    use winit::keyboard::Key;
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        Key::Character(c.into()),
+        Some(c.into()),
+        ElementState::Pressed,
+    ))
 }
 
 /// A named keypress event (Enter, Escape, Space, arrows …).
 fn named_key(named: winit::keyboard::NamedKey) -> WindowEvent {
-    use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(named);
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
+    use winit::keyboard::Key;
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        Key::Named(named),
+        None,
+        ElementState::Pressed,
+    ))
 }
 
 fn shift_mods() -> winit::event::Modifiers {
     winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT)
-}
-
-fn ctrl_mods() -> winit::event::Modifiers {
-    winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL)
 }
 
 /// The captured click rect (center) for the first hit matching `action`,
@@ -592,6 +835,76 @@ fn hit_center(app: &MusicApp, action: &Action) -> Option<Point> {
         .iter()
         .find(|h| &h.action == action)
         .map(|h| h.rect.center())
+}
+
+#[test]
+fn home_source_picker_keyboard_activation_opens_choices_without_sign_in() {
+    use ui::framework::testing::TestApp;
+    let mut app = TestApp::<crate::resource::MusicShell>::new().unwrap();
+    app.harness()
+        .relayout_themed((360, 900), ui::Theme::high_contrast().with_text_scale(2.0))
+        .unwrap();
+    let before = app.read_document(|doc| doc.clone().get_heads());
+    app.harness()
+        .perform_semantic_named("music-sources", None, &ui::a11y::Action::Focus)
+        .unwrap();
+    app.harness().key("Enter");
+    assert_eq!(app.surface_mut::<MusicApp>().menu_actions.len(), 2);
+    assert!(
+        app.surface_mut::<MusicApp>().source_invocation.is_none(),
+        "opening the source menu never starts OAuth"
+    );
+    assert!(app.surface_mut::<MusicApp>().spotify_jobs.is_empty());
+    app.harness().key("Escape");
+    assert_eq!(app.read_document(|doc| doc.clone().get_heads()), before);
+}
+
+#[test]
+fn spotify_keyboard_creation_and_escape_use_accessible_shared_controls() {
+    use ui::framework::testing::TestApp;
+    for scale in [1.0, 2.0] {
+        let mut app = TestApp::<crate::resource::MusicShell>::new().unwrap();
+        app.surface_mut::<MusicApp>().snap_spotify("spotify-home");
+        app.surface_mut::<MusicApp>().on_nav(View::Playlists);
+        app.harness()
+            .relayout_themed(
+                (360, 900),
+                ui::Theme::high_contrast().with_text_scale(scale),
+            )
+            .unwrap();
+        assert_eq!(app.surface_mut::<MusicApp>().source_widget_mode(), 3);
+        let accessible = app.harness().focus_access_nodes();
+        let label = crate::i18n::t("music-spotify-create-playlist");
+        assert!(
+            accessible
+                .iter()
+                .any(|node| node.name.as_deref() == Some(label.as_str())
+                    && node.state.focusable
+                    && !node.state.disabled),
+            "creation remains keyboard accessible in Playlists: {accessible:?}"
+        );
+        let before = app.read_document(|doc| doc.clone().get_heads());
+        app.harness()
+            .perform_semantic_named(
+                "music-spotify-create-playlist",
+                None,
+                &ui::a11y::Action::Focus,
+            )
+            .unwrap();
+        app.harness().key("Enter");
+        assert!(
+            app.surface_mut::<MusicApp>().name_prompt.is_some(),
+            "host keyboard activation invokes the published effect and opens the shared dialog"
+        );
+        app.harness().key("Escape");
+        assert!(app.surface_mut::<MusicApp>().name_prompt.is_none());
+        assert_eq!(
+            app.read_document(|doc| doc.clone().get_heads()),
+            before,
+            "cancelling never creates a local or provider playlist"
+        );
+        assert!(app.surface_mut::<MusicApp>().spotify_jobs.is_empty());
+    }
 }
 
 #[test]
@@ -607,7 +920,7 @@ fn transport_play_pause_seek_and_repeat_stay_local_and_honest() {
         app.pb.current = Some("tk_g1".into());
         let was = app.pb.playing;
         let heads = doc.get_heads();
-        app.dispatch(Action::TogglePlay, &mut doc);
+        app.dispatch(Action::TogglePlay, &mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(app.pb.playing, !was);
         assert_eq!(doc.get_heads(), heads, "transport does not sync");
     }
@@ -621,7 +934,7 @@ fn transport_play_pause_seek_and_repeat_stay_local_and_honest() {
         assert!(!app.pb.playing);
         // Hitting play with an empty queue / no current track must do nothing —
         // never flip to a fabricated "playing" state.
-        app.dispatch(Action::TogglePlay, &mut doc);
+        app.dispatch(Action::TogglePlay, &mut ui::widget::Edits::lend(&mut doc));
         assert!(!app.pb.playing, "play with nothing loaded stays stopped");
         assert!(app.pb.current.is_none());
     }
@@ -635,7 +948,7 @@ fn transport_play_pause_seek_and_repeat_stay_local_and_honest() {
                 queue: queue.clone().into(),
                 index: 1,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
         assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
         assert_eq!(app.pb.queue, queue);
@@ -663,10 +976,10 @@ fn transport_play_pause_seek_and_repeat_stay_local_and_honest() {
                 queue: vec!["a".into(), "b".into()].into(),
                 index: 1,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
         app.pb.repeat = RepeatMode::All;
-        app.dispatch(Action::Next, &mut doc);
+        app.dispatch(Action::Next, &mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(app.pb.queue_index, 0);
     }
 
@@ -676,7 +989,7 @@ fn transport_play_pause_seek_and_repeat_stay_local_and_honest() {
 
         let (mut app, _doc) = app_with_doc();
         app.pb.playing = false;
-        app.toast = None;
+        app.toast.dismiss();
         app.live_search_pending = None;
         app.resolve_in_flight = 0;
         app.downloads.clear();
@@ -707,7 +1020,10 @@ fn transport_play_pause_seek_and_repeat_stay_local_and_honest() {
     {
         let (mut app, mut doc) = app_with_doc();
         app.pb.current = Some("tk_g1".into()); // 215s
-        app.dispatch(Action::SeekFrac(0.5), &mut doc);
+        app.dispatch(
+            Action::SeekFrac(0.5),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!((app.playhead_ms - 215_000.0 * 0.5).abs() < 1.0);
     }
 }
@@ -757,7 +1073,7 @@ fn request_identities_keep_stale_responses_from_winning() {
 
         // Search has a visible settled failure rather than a pending spinner
         // when no fresh identity can be allocated.
-        app.search_input.set_text("anything");
+        "anything".clone_into(&mut app.search_query);
         app.request_live_search();
         assert!(app.live_search_pending.is_none());
         assert_eq!(app.active_search_request, None);
@@ -767,7 +1083,7 @@ fn request_identities_keep_stale_responses_from_winning() {
     // Phase `stale_search_response_cannot_replace_the_current_query`.
     {
         let (mut app, _doc) = app_with_doc();
-        app.search_input.set_text("new query");
+        "new query".clone_into(&mut app.search_query);
         app.active_search_request = Some(8);
         let old = SearchBundle {
             tracks: vec![TrackHit {
@@ -799,7 +1115,7 @@ fn request_identities_keep_stale_responses_from_winning() {
     // Phase `current_search_failure_settles_loading_and_exposes_retry_state`.
     {
         let (mut app, _doc) = app_with_doc();
-        app.search_input.set_text("unavailable query");
+        "unavailable query".clone_into(&mut app.search_query);
         app.active_search_request = Some(4);
         app.live_search_pending = Some("unavailable query".into());
         app.apply_search_failure("unavailable query", 4, "network unavailable");
@@ -831,9 +1147,8 @@ fn request_identities_keep_stale_responses_from_winning() {
     {
         // The real default startup: an empty library, network allowed.
         let mut app = MusicApp::new();
-        let mut doc = AutoCommit::new();
-        app.ensure_seeded(&mut doc);
-        app.reload(&mut doc);
+        let doc = seed::empty_document();
+        app.reload(&doc);
         assert!(
             app.lib.tracks.is_empty(),
             "default startup has an empty library"
@@ -901,7 +1216,7 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
         assert!(app.perform_semantic_action(
             "music.toggle-play",
             &A11yAction::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(
@@ -916,7 +1231,7 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
         use ui::widget::Widget as _;
 
         let mut app = MusicApp::new();
-        app.set_offline_for_shot();
+        app.disconnect();
         let mut doc = AutoCommit::new();
         draw_once(&mut app, &mut doc);
 
@@ -925,9 +1240,7 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
         assert!(app.lib.artists.is_empty());
         assert!(app.lib.playlists.is_empty());
         assert!(
-            app.hits
-                .iter()
-                .any(|hit| hit.action == Action::Nav(View::Search)),
+            app.hits.iter().any(|hit| hit.action == Action::OpenSearch),
             "the empty-state Search button is a real action"
         );
 
@@ -945,16 +1258,19 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
         let search = empty_library
             .children
             .iter()
-            .find(|node| node.action_target.as_deref() == Some("music.empty-search"))
+            .find(|node| node.action_target.as_deref() == Some("music.open-search"))
             .expect("empty-state Search button has an accessible action");
-        assert_eq!(search.name.as_deref(), Some("Search for music"));
+        assert_eq!(search.name.as_deref(), Some("Search music"));
         assert!(app.perform_semantic_action(
-            "music.empty-search",
+            "music.open-search",
             &A11yAction::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
-        assert_eq!(app.view, View::Search);
+        assert!(
+            app.search_opener.is_pending(),
+            "it opens the platform search"
+        );
     }
 
     // Phase `active_music_page_is_bounded_and_rows_route_to_real_actions`.
@@ -986,7 +1302,7 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
         assert!(app.perform_semantic_action(
             &play,
             &A11yAction::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(
@@ -1001,8 +1317,8 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
         use ui::widget::Widget as _;
 
         let (mut app, mut doc) = app_with_doc();
-        let playlist = app.lib.playlists[0].clone();
-        let first = playlist.track_ids[0].clone();
+        let playlist = app.lib.playlists().next().unwrap().clone();
+        let first = playlist.track_ids()[0].clone();
         app.view = View::Playlist(playlist.id.clone());
         let tree = app.accessibility().expect("music semantics");
         let page = tree
@@ -1030,10 +1346,13 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
         assert!(app.perform_semantic_action(
             &move_down,
             &A11yAction::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
-        assert_eq!(app.lib.playlist(&playlist.id).unwrap().track_ids[1], first);
+        assert_eq!(
+            app.lib.playlist(&playlist.id).unwrap().track_ids()[1],
+            first
+        );
     }
 
     // Phase `assistive_search_edits_and_navigation_use_normal_routes`.
@@ -1043,19 +1362,24 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
 
         let (mut app, mut doc) = app_with_doc();
         assert!(app.perform_semantic_action(
-            "music.search",
-            &A11yAction::SetValue("Aurora".into()),
-            &mut doc,
+            "music.open-search",
+            &A11yAction::Activate,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
-        assert_eq!(app.view, View::Search);
-        assert_eq!(app.search_input.value(), "Aurora");
-        assert!(app.search_edit_at.is_some());
+        assert!(
+            app.search_opener.is_pending(),
+            "the assistive search action opens the platform search"
+        );
+        assert!(
+            ui::widget::controls::ActionControls::take_control_invocation(&mut app).is_some(),
+            "the request leaves through the app's control intents"
+        );
 
         assert!(app.perform_semantic_action(
             "music.nav.albums",
             &A11yAction::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(app.view, View::Albums);
@@ -1071,29 +1395,18 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
     // Phase `offline_download_request_is_honest_and_device_local`.
     {
         let (mut app, mut doc) = app_with_doc();
-        assert_eq!(app.lib.cache_state("tk_g2"), CacheState::Streamed);
+        assert_eq!(app.cache_state("tk_g2"), CacheState::Streamed);
         let heads = doc.get_heads();
-        let keep = serde_json::to_vec(&crate::actions::MusicOperation::SetOffline {
+        let keep = crate::actions::effect_payload(&crate::actions::MusicEffect::KeepOffline {
             tracks: vec!["tk_g2".into()],
-            keep: true,
-        })
-        .unwrap();
+        });
         assert!(matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &keep
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .expect("request queues a real resolver/download lifecycle"),
-            Some(ui::widget::ResourceOperationStart::Accepted)
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &keep)
+                .expect("request queues a real resolver/download lifecycle"),
+            ui::framework::Effected::Pending
         ));
         assert!(matches!(
-            app.lib.cache_state("tk_g2"),
+            app.cache_state("tk_g2"),
             CacheState::Downloading(_)
         ));
         assert_eq!(doc.get_heads(), heads);
@@ -1101,46 +1414,23 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
 
     // Phase `offline_effect_refuses_keep_but_batch_evicts_legacy_metadata_once`.
     {
-        let (mut app, mut doc) = app_with_doc();
+        let (mut app, _doc) = app_with_doc();
         app.device_cache.insert("tk_g1".into(), CacheState::Cached);
         app.device_cache.insert("tk_g2".into(), CacheState::Cached);
-        app.lib.cache.clone_from(&app.device_cache);
-        let keep = serde_json::to_vec(&crate::actions::MusicOperation::SetOffline {
+        let keep = crate::actions::effect_payload(&crate::actions::MusicEffect::KeepOffline {
             tracks: vec!["tk_g1".into(), "tk_g2".into()],
-            keep: true,
-        })
-        .unwrap();
+        });
         assert!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &keep
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_ok()
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &keep)
+                .is_ok()
         );
-        let evict = serde_json::to_vec(&crate::actions::MusicOperation::SetOffline {
+        let evict = crate::actions::effect_payload(&crate::actions::MusicEffect::RemoveOffline {
             tracks: vec!["tk_g1".into(), "tk_g2".into()],
-            keep: false,
-        })
-        .unwrap();
+        });
         assert!(matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &evict
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &evict)
+                .unwrap(),
+            ui::framework::Effected::Done(_)
         ));
         assert!(
             app.device_cache.is_empty(),
@@ -1201,18 +1491,23 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
             .insert("tk_g3".into(), "network ended".into());
         draw_once(&mut app, &mut doc);
 
-        let has_action = |track: &str, keep: bool| {
-            app.hits.iter().any(|hit| {
-                matches!(
-                    &hit.action,
-                    Action::SetOffline { track: id, keep: candidate }
-                        if id == track && *candidate == keep
-                )
-            })
-        };
-        assert!(has_action("tk_g1", false), "active download has Cancel/X");
-        assert!(has_action("tk_g2", false), "cached media has Remove");
-        assert!(has_action("tk_g3", true), "failed download has Retry");
+        // Each row's one action, under the pointer, is the toolkit's button.
+        for (track, name) in [
+            ("tk_g1", "Cancel download"),
+            ("tk_g2", "Remove download"),
+            ("tk_g3", "network ended"),
+        ] {
+            let control = track_control(&mut app, &mut doc, track, "offline", draw_once);
+            send(&mut app, &cursor_at(control.center()), &mut doc);
+            assert_eq!(ui::widget::Widget::tooltip(&app), Some(name), "{track}");
+        }
+        // Pressing the failed row's control retries it.
+        let retry = track_control(&mut app, &mut doc, "tk_g3", "offline", draw_once);
+        hosted_click(&mut app, &mut doc, retry.center());
+        assert!(
+            !app.offline_errors.contains_key("tk_g3"),
+            "Retry clears the failure"
+        );
     }
 
     // Phase `large_text_download_failure_exposes_full_hover_and_assistive_recovery`.
@@ -1226,17 +1521,8 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
             .insert("tk_g3".into(), "connection reset while downloading".into());
         draw_once_large_text(&mut app, &mut doc);
 
-        let retry_hit = app
-            .hits
-            .iter()
-            .find(|hit| {
-                matches!(
-                    &hit.action,
-                    Action::SetOffline { track, keep: true } if track == "tk_g3"
-                )
-            })
-            .expect("large-text failed row has Retry action");
-        app.mouse = retry_hit.rect.center();
+        let retry = track_control(&mut app, &mut doc, "tk_g3", "offline", draw_once_large_text);
+        send(&mut app, &cursor_at(retry.center()), &mut doc);
         assert_eq!(
             app.tooltip(),
             Some("connection reset while downloading"),
@@ -1274,7 +1560,7 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
         assert!(app.perform_semantic_action(
             &retry,
             &A11yAction::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(!app.offline_errors.contains_key("tk_g3"));
@@ -1320,11 +1606,17 @@ fn sidebar_docks_overlays_collapses_and_follows_navigation() {
     // Phase `nav_and_back`.
     {
         let (mut app, mut doc) = app_with_doc();
-        app.dispatch(Action::Nav(View::Albums), &mut doc);
+        app.dispatch(
+            Action::Nav(View::Albums),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert_eq!(app.view, View::Albums);
-        app.dispatch(Action::Nav(View::Album("al_glasslight".into())), &mut doc);
+        app.dispatch(
+            Action::Nav(View::Album("al_glasslight".into())),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert_eq!(app.view, View::Album("al_glasslight".into()));
-        app.dispatch(Action::Back, &mut doc);
+        app.dispatch(Action::Back, &mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(app.view, View::Albums);
     }
 
@@ -1335,10 +1627,11 @@ fn sidebar_docks_overlays_collapses_and_follows_navigation() {
         assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
         sized(&mut app, 480.0);
         assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
-        // Boundary is inclusive at the breakpoint → docked.
-        sized(&mut app, SIDEBAR_BREAKPOINT);
+        // Boundary is inclusive at the drawer's breakpoint → docked.
+        let breakpoint = app.drawer.resolved_breakpoint();
+        sized(&mut app, breakpoint);
         assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
-        sized(&mut app, SIDEBAR_BREAKPOINT - 1.0);
+        sized(&mut app, breakpoint - 1.0);
         assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
     }
 
@@ -1362,9 +1655,15 @@ fn sidebar_docks_overlays_collapses_and_follows_navigation() {
         let (mut app, mut doc) = app_with_doc();
         sized(&mut app, 480.0); // overlay
         assert!(!app.drawer.is_open());
-        app.dispatch(Action::ToggleSidebar, &mut doc);
+        app.dispatch(
+            Action::ToggleSidebar,
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!(app.drawer.is_open(), "hamburger opens the flap");
-        app.dispatch(Action::ToggleSidebar, &mut doc);
+        app.dispatch(
+            Action::ToggleSidebar,
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!(!app.drawer.is_open(), "toggling again closes it");
     }
 
@@ -1375,7 +1674,10 @@ fn sidebar_docks_overlays_collapses_and_follows_navigation() {
         app.drawer.open();
         assert!(app.drawer.is_open());
         // Selecting a destination from the open flap closes it.
-        app.dispatch(Action::Nav(View::Albums), &mut doc);
+        app.dispatch(
+            Action::Nav(View::Albums),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert_eq!(app.view, View::Albums);
         assert!(!app.drawer.is_open(), "selection dismisses the flap");
     }
@@ -1384,7 +1686,10 @@ fn sidebar_docks_overlays_collapses_and_follows_navigation() {
     {
         let (mut app, mut doc) = app_with_doc();
         sized(&mut app, 1280.0); // docked
-        app.dispatch(Action::Nav(View::Albums), &mut doc);
+        app.dispatch(
+            Action::Nav(View::Albums),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!(app.drawer.is_open(), "docked sidebar persists across nav");
     }
 
@@ -1393,7 +1698,7 @@ fn sidebar_docks_overlays_collapses_and_follows_navigation() {
         let (mut app, mut doc) = app_with_doc();
         sized(&mut app, 480.0);
         app.drawer.open();
-        app.dispatch(Action::CloseSidebar, &mut doc);
+        app.dispatch(Action::CloseSidebar, &mut ui::widget::Edits::lend(&mut doc));
         assert!(!app.drawer.is_open());
     }
 
@@ -1403,14 +1708,21 @@ fn sidebar_docks_overlays_collapses_and_follows_navigation() {
         sized(&mut app, 1280.0); // docked, open by default
         assert!(app.drawer.is_open());
         // Collapse via the (docked) toggle.
-        app.dispatch(Action::ToggleSidebar, &mut doc);
-        assert!(!app.drawer.is_open(), "docked sidebar collapses");
-        // Once collapsed, the hamburger reappears so it can be re-expanded.
-        assert!(
-            app.show_hamburger(),
-            "collapsed docked rail offers a re-expand affordance"
+        app.dispatch(
+            Action::ToggleSidebar,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
-        app.dispatch(Action::ToggleSidebar, &mut doc);
+        assert!(!app.drawer.is_open(), "docked sidebar collapses");
+        // Once collapsed, the toggle moves to the content's header so the
+        // sidebar can be re-expanded.
+        assert!(
+            app.toggle_in_content(),
+            "collapsed docked sidebar offers a re-expand affordance"
+        );
+        app.dispatch(
+            Action::ToggleSidebar,
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!(app.drawer.is_open(), "toggling again re-expands it");
     }
 
@@ -1425,7 +1737,10 @@ fn sidebar_docks_overlays_collapses_and_follows_navigation() {
             app.sidebar_rect().width() > 100.0,
             "open docked sidebar has width"
         );
-        app.dispatch(Action::ToggleSidebar, &mut doc);
+        app.dispatch(
+            Action::ToggleSidebar,
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         // Settle the collapse animation.
         app.drawer.snap(false);
         app.drawer.resolve(app.rect);
@@ -1454,13 +1769,8 @@ fn large_text_rows_elide_and_keep_one_identity() {
         let mut tr = TextRenderer::new();
         // A width far too narrow for any character + ellipsis: render nothing,
         // never a stray "…" that would overflow into the next column.
-        let out = elide(
-            &mut tr,
-            "Some Long Album Title",
-            13.0,
-            TextWeight::Regular,
-            2.0,
-        );
+        let style = Theme::dark().text(ui::tokens::TextRole::Label);
+        let out = elide(&mut tr, "Some Long Album Title", &style, 2.0);
         assert!(
             out.is_empty(),
             "too-narrow column renders no text, got {out:?}"
@@ -1473,13 +1783,7 @@ fn large_text_rows_elide_and_keep_one_identity() {
         // A genuinely truncating (but non-degenerate) width keeps some glyphs
         // and appends the ellipsis, and the result stays within the budget.
         let mid_w = 90.0;
-        let mid = elide(
-            &mut tr,
-            "Some Long Album Title",
-            13.0,
-            TextWeight::Regular,
-            mid_w,
-        );
+        let mid = elide(&mut tr, "Some Long Album Title", &style, mid_w);
         assert!(
             mid.ends_with('\u{2026}'),
             "a truncation still shows the ellipsis: {mid:?}"
@@ -1489,41 +1793,33 @@ fn large_text_rows_elide_and_keep_one_identity() {
             "at least one real glyph precedes it: {mid:?}"
         );
         assert!(
-            f64::from(tr.measure_weighted(&mid, 13.0, None, TextWeight::Regular).0) <= mid_w,
+            f64::from(tr.measure_style(&mid, None, &style).0) <= mid_w,
             "the elided string fits inside the column budget",
         );
 
         // Fits outright → returned unchanged, no ellipsis.
-        let whole = elide(&mut tr, "OK", 13.0, TextWeight::Regular, 500.0);
+        let whole = elide(&mut tr, "OK", &style, 500.0);
         assert_eq!(whole, "OK");
     }
 
-    // Phase `large_text_search_keeps_the_query_field_visible_and_editable`.
+    // Phase `large_text_header_actions_stay_in_the_header`.
     {
         let (mut app, mut doc) = app_with_doc();
-        app.view = View::Search;
-        app.search_input.set_text("aurora");
-        app.search_input.set_focus(true);
-
+        app.view = View::Browse;
         draw_once_large_text(&mut app, &mut doc);
-
-        let field = app.search_input.get_rect();
-        assert!(
-            field.width() > 200.0,
-            "large-text search has a usable field"
-        );
-        assert!(
-            field.height() >= 40.0,
-            "large-text search gives the scaled type a touchable target"
-        );
-        assert!(
-            field.y1 <= app.body_rect.y0,
-            "the search control sits in header chrome, not beneath result rows"
-        );
-        assert!(
-            app.search_input.is_focused(),
-            "the visible large-text control preserves the active text edit"
-        );
+        for (name, rect) in [
+            ("search", app.search_button.get_rect()),
+            ("open file", app.open_file_button.get_rect()),
+        ] {
+            assert!(
+                rect.width() > 0.0 && rect.height() >= 28.0,
+                "large-text {name} keeps a real target: {rect:?}"
+            );
+            assert!(
+                rect.y1 <= app.body_rect.y0,
+                "the {name} action sits in the header, not over the page"
+            );
+        }
     }
 
     // Phase `dense_track_rows_share_one_queue_snapshot`.
@@ -1531,19 +1827,13 @@ fn large_text_rows_elide_and_keep_one_identity() {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Songs;
         draw_at(&mut app, &mut doc, 1_280.0, 800.0);
-        let queues = app
-            .hits
-            .iter()
-            .filter_map(|hit| match &hit.action {
-                Action::Play { queue, .. } if queue.len() > 1 => Some(queue),
-                _ => None,
-            })
-            .take(2)
-            .collect::<Vec<_>>();
-        assert_eq!(queues.len(), 2, "two visible track-row actions");
+        let table = app.track_tables.first().expect("the songs table");
+        assert!(table.queue.len() > 1 && table.table.rows().len() == table.queue.len());
+        let before = Arc::clone(&table.queue);
+        draw_at(&mut app, &mut doc, 1_280.0, 800.0);
         assert!(
-            Arc::ptr_eq(queues[0], queues[1]),
-            "rows share one immutable queue instead of cloning it per row"
+            Arc::ptr_eq(&before, &app.track_tables[0].queue),
+            "the rows share one queue, kept across frames while it is the same"
         );
     }
 
@@ -1552,14 +1842,11 @@ fn large_text_rows_elide_and_keep_one_identity() {
         let (mut app, mut doc) = app_with_doc();
         app.snap_album_page();
         draw_once_large_text(&mut app, &mut doc);
-        let queue = app
-            .hits
-            .iter()
-            .find_map(|hit| match &hit.action {
-                Action::Play { queue, .. } => Some(queue),
-                _ => None,
-            })
-            .expect("album exposes playable rows");
+        let queue = &app
+            .track_tables
+            .first()
+            .expect("album exposes playable rows")
+            .queue;
         assert_eq!(
             queue.len(),
             5,
@@ -1568,225 +1855,151 @@ fn large_text_rows_elide_and_keep_one_identity() {
     }
 }
 
-// ---- search categories ------------------------------------------------
+// ---- platform search ---------------------------------------------------
 
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn search_field_chips_and_tabs_filter_results() {
-    // Phase `search_genre_chips_are_clickable_and_filter`.
+fn browse_and_the_live_catalogue_answer_platform_search() {
+    // Phase `browse_cards_open_platform_search_for_their_genre`.
     {
         let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot(); // hermetic
+        app.disconnect(); // hermetic
         app.playback_loaded = true;
-        // The empty Search screen shows the "Browse all" genre chips.
-        app.view = View::Search;
-        app.search_input.set_text("");
+        app.view = View::Browse;
         draw_once(&mut app, &mut doc);
-        // A genre chip is a real, registered click target (not inert decoration).
-        let chip = app
-            .hits
-            .iter()
-            .find_map(|h| match &h.action {
-                Action::BrowseGenre(g) => Some((h.rect, g.clone())),
-                _ => None,
-            })
-            .expect("a Browse-all genre chip registered a click target");
-        let (rect, genre) = chip;
-        // Clicking it (real hit-test path) activates the filter.
-        app.mouse = rect.center();
-        assert_eq!(
-            app.hit_test(app.mouse),
-            Some(Action::BrowseGenre(genre.clone()))
-        );
-        app.dispatch(Action::BrowseGenre(genre.clone()), &mut doc);
-        // The query is now that genre and the results filter to it (non-empty:
-        // at least the genre's own artist matches).
-        assert_eq!(app.search_input.value(), genre);
-        assert_eq!(app.view, View::Search);
-        let res = app.lib.search(&genre);
-        assert!(
-            !res.is_empty(),
-            "clicking the {genre:?} chip surfaces that genre's content",
-        );
-    }
-
-    // Phase `search_focus_shot_opens_the_search_destination`.
-    {
-        let mut app = MusicApp::new();
-        app.snap_search_focus();
-        assert_eq!(app.view, View::Search);
-        assert!(app.search_input.is_focused());
-        assert!(app.search_input.value().is_empty());
-    }
-
-    // Phase `slash_key_focuses_search`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        assert_ne!(app.view, View::Search);
-        send(&mut app, &char_key("/"), &mut doc);
-        assert_eq!(app.view, View::Search);
-        assert!(app.search_input.is_focused());
-    }
-
-    // Phase `typing_in_search_builds_query_and_local_results`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot(); // no live worker thread in tests
-        app.dispatch(Action::FocusSearch, &mut doc);
-        assert!(app.search_input.is_focused());
-        for ch in ["g", "l", "a", "s", "s"] {
-            send(&mut app, &char_key(ch), &mut doc);
-        }
-        assert_eq!(
-            app.search_input.value(),
-            "glass",
-            "typing builds the query through the event path"
-        );
-        // The Search view renders local hits from this exact cache.
-        let res = app.local_search_cached("glass");
-        assert!(
-            res.tracks.contains(&"tk_g1".to_string()),
-            "local search surfaces the matching track (Glasslight)"
-        );
-        send(&mut app, &named_key(NamedKey::Backspace), &mut doc);
-        assert_eq!(
-            app.search_input.value(),
-            "glas",
-            "backspace edits the query"
-        );
-    }
-
-    // Phase `search_ctrl_a_selects_whole_query_via_event_path`.
-    // The header search field is a real `ui::TextInput`, so Ctrl+A selects the
-    // whole query — driven through the production `handle_event` routing, not
-    // by poking the widget.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot();
-        app.dispatch(Action::FocusSearch, &mut doc);
-        app.search_input.set_text("hello world");
-        // Ctrl+A on the focused field.
-        assert!(
-            send_with(&mut app, &char_key("a"), ctrl_mods(), &mut doc),
-            "Ctrl+A is consumed by the focused search field"
-        );
-        assert_eq!(
-            app.search_input.selection_range_public(),
-            Some((0, "hello world".len())),
-            "Ctrl+A selected the entire query on the real handle_event path"
-        );
-    }
-
-    // Phase `search_drag_selects_range_via_event_path`.
-    // A press-drag across the search field selects a range — proving the real
-    // mouse routing reaches the `TextInput`'s drag-select on the event path.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot();
-        app.search_input.set_text("hello world");
-        // Draw once so the field is laid out + its per-char metrics populated
-        // (unfocused, so scroll stays at 0 and the click math is simple).
-        draw_once(&mut app, &mut doc);
-        let rect = app.search_input.get_rect();
-        assert!(rect.width() > 20.0, "the search field laid out with width");
-        let cxp = app.search_input.char_x_positions().to_vec();
-        assert!(cxp.len() >= 10, "per-char metrics populated by the draw");
-        // The widget hit-tests with a 10px inner padding.
-        let x_for = |b: usize| rect.x0 + 10.0 + cxp[b];
-        let y = rect.center().y;
-
-        send(&mut app, &cursor_at(Point::new(x_for(2), y)), &mut doc); // hover → is_hovered
-        send(&mut app, &press(MouseButton::Left), &mut doc); // focus + start drag
-        assert!(
-            app.search_input.is_dragging(),
-            "the press began a selection drag"
-        );
-        send(&mut app, &cursor_at(Point::new(x_for(9), y)), &mut doc); // extend
-        let sel = app
-            .search_input
-            .selection_range_public()
-            .expect("the drag produced a selection");
-        assert!(sel.1 > sel.0, "drag selected a non-empty range ({sel:?})");
+        // A genre card is the shared card: a press on it opens search.
+        let genre = app
+            .lib
+            .artists
+            .values()
+            .map(|artist| artist.genre.clone())
+            .filter(|genre| !genre.is_empty())
+            .min()
+            .expect("a sample genre");
+        let card = page_widget(&app, &format!("music.genre.{genre}"));
+        send(&mut app, &cursor_at(card.center()), &mut doc);
+        send(&mut app, &press(MouseButton::Left), &mut doc);
         send(&mut app, &released(MouseButton::Left), &mut doc);
-        assert!(!app.search_input.is_dragging(), "release ended the drag");
-    }
-
-    // Phase `search_returns_songs_albums_artists_and_playlists`.
-    {
-        let (mut app, mut doc) = search_showing_bundle();
-        // One search populates every result type.
-        let (_, b) = app
-            .live_bundle
-            .as_ref()
-            .expect("bundle stored for the query");
-        assert!(
-            !b.tracks.is_empty()
-                && !b.albums.is_empty()
-                && !b.artists.is_empty()
-                && !b.playlists.is_empty(),
-            "a single search returns songs, albums, artists AND playlists",
-        );
-        // On the All tab the real render surfaces each type as a click target.
-        app.search_tab = SearchTab::All;
-        draw_once(&mut app, &mut doc);
-        assert!(has_play_of(&app, "yt:vid_one"), "a song is a playable row");
-        assert!(
-            has_nav(&app, View::Album("MPREdiscovery".into())),
-            "an album is navigable"
-        );
-        assert!(
-            has_nav(&app, View::Artist("UCdaftpunk".into())),
-            "an artist is navigable"
-        );
-        assert!(
-            has_nav(&app, View::Playlist("PLdaftmix".into())),
-            "a playlist is navigable"
-        );
-    }
-
-    // Phase `filter_tabs_are_clickable_and_switch_instantly`.
-    {
-        let (mut app, mut doc) = search_showing_bundle();
-        app.search_tab = SearchTab::All;
-        draw_once(&mut app, &mut doc);
-        // All five Spotify-style filter tabs are real, registered click targets.
-        for tab in SearchTab::ALL {
-            assert!(
-                app.hits
-                    .iter()
-                    .any(|h| h.action == Action::SelectSearchTab(tab)),
-                "the {tab:?} filter tab is a clickable target",
-            );
-        }
-        // Clicking Albums switches instantly (synchronously): the view now shows
-        // albums and drops the song rows — no async wait on the network.
-        app.dispatch(Action::SelectSearchTab(SearchTab::Albums), &mut doc);
         assert_eq!(
-            app.search_tab,
-            SearchTab::Albums,
-            "the tab switches immediately"
+            app.view,
+            View::Browse,
+            "the app draws no results of its own"
         );
-        draw_once(&mut app, &mut doc);
+        let invocation = ui::widget::controls::ActionControls::take_control_invocation(&mut app)
+            .expect("the card opens the platform search");
         assert!(
-            has_nav(&app, View::Album("MPREdiscovery".into())),
-            "Albums tab shows the albums"
-        );
-        assert!(
-            !has_play_of(&app, "yt:vid_one"),
-            "Albums tab does not render the song list"
-        );
-        // Songs tab is a clean, flat track list (the album-less listening flow).
-        app.dispatch(Action::SelectSearchTab(SearchTab::Songs), &mut doc);
-        assert_eq!(app.search_tab, SearchTab::Songs);
-        draw_once(&mut app, &mut doc);
-        assert!(
-            has_play_of(&app, "yt:vid_one") && has_play_of(&app, "yt:vid_two"),
-            "Songs tab lists every matching song as a playable row",
+            invocation
+                .arguments
+                .values()
+                .any(|value| value.as_str() == Some(genre.as_str())),
+            "the search opens prefilled with {genre:?}: {:?}",
+            invocation.arguments
         );
     }
+
+    // Phase `the_app_draws_no_search_field_and_leaves_the_slash_key_alone`.
+    {
+        let (mut app, mut doc) = app_with_doc();
+        let before = app.view.clone();
+        send(&mut app, &char_key("/"), &mut doc);
+        assert_eq!(app.view, before, "`/` belongs to the platform search");
+        assert!(!app.search_opener.is_pending());
+        draw_once(&mut app, &mut doc);
+        let search = app.search_button.get_rect();
+        assert!(
+            search.width() > 0.0 && search.y1 <= app.body_rect.y0,
+            "the header carries the search launcher: {search:?}"
+        );
+    }
+
+    // Phase `live_catalogue_pages_arrive_after_the_worker_answers`.
+    {
+        let (mut app, mut doc) = app_with_doc();
+        app.playback_loaded = true;
+        let query = ui::search::SearchQuery::new("daft punk");
+        ui::framework::ResourceSurface::<crate::model::Library, crate::actions::MusicEffect>::search_query(&mut app, &query);
+        assert_eq!(
+            app.pending_catalogue_query.as_deref(),
+            Some("daft punk"),
+            "the canonical query is delivered to the worker queue"
+        );
+        app.disconnect();
+        app.pending_catalogue_query = None;
+        app.search_query = "daft punk".into();
+        app.active_search_request = Some(41);
+        app.apply_search_results("daft punk", 40, &sample_bundle());
+        assert!(app.live_bundle.is_none(), "a stale worker reply is ignored");
+        app.apply_search_results("daft punk", 41, &sample_bundle());
+        let provider = ui::framework::testing::search_source::<crate::model::Library>(
+            app.live_search_entries(),
+        );
+        let ready = ui::search::SearchProvider::search_page(&provider, &query, None, 100, 100);
+        assert!(
+            app.active_search_request.is_none(),
+            "the matching worker reply completes the request"
+        );
+        let song = ready
+            .results
+            .iter()
+            .find(|row| row.title == "One More Time")
+            .expect("a song row");
+        assert!(matches!(
+            song.row,
+            Some(ui::search::SearchRow::Media { .. })
+        ));
+        let album = ready
+            .results
+            .iter()
+            .find(|row| row.kind == "Albums")
+            .expect("an album row");
+
+        // Activating a hit plays the song, or opens the album's page.
+        invoke_hit(&mut app, song, &mut doc);
+        assert_eq!(app.pb.current.as_deref(), Some("yt:vid_one"));
+        invoke_hit(&mut app, album, &mut doc);
+        assert_eq!(app.view, View::Album("MPREdiscovery".into()));
+    }
+}
+
+#[test]
+fn a_live_catalogue_like_uses_the_admitted_effect_and_one_undo() {
+    let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
+    app.with_widget(|surface: &mut MusicApp| {
+        surface.disconnect();
+        surface.search_query = "daft punk".into();
+        surface.active_search_request = Some(41);
+        surface.apply_search_results("daft punk", 41, &sample_bundle());
+    })
+    .expect("the production surface accepts the actual worker reply");
+    let providers = ui::search::capability::search_providers(app.harness().root_widget());
+    assert_eq!(providers.len(), 1, "the platform owns Music search");
+    let hits = providers[0].search("One More Time");
+    let song = hits
+        .iter()
+        .find(|hit| hit.title == "One More Time")
+        .expect("the real catalogue reply is in platform search");
+    let row = song.anchor();
+    assert_eq!(
+        row.as_str(),
+        crate::actions::track_resource_id("yt:vid_one")
+    );
+    assert!(!app.state().tracks.contains_key("yt:vid_one"));
+    app.call_on(row.as_str(), "toggle-like", serde_json::json!({}))
+        .unwrap();
+    assert!(
+        app.state().tracks.contains_key("yt:vid_one"),
+        "actual song metadata is imported"
+    );
+    assert!(app.state().is_liked("yt:vid_one"));
+    assert!(app.undo(), "the admitted effect is one authored undo step");
+    assert!(!app.state().is_liked("yt:vid_one"));
+    assert!(
+        !app.state().tracks.contains_key("yt:vid_one"),
+        "undo restores the entire effect"
+    );
 }
 
 // ---- responsive sidebar -----------------------------------------------
@@ -1825,10 +2038,16 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
     {
         let (mut app, mut doc) = app_with_doc();
         assert!(!app.lib.is_album_saved("al_strata"));
-        app.dispatch(Action::ToggleSaveAlbum("al_strata".into()), &mut doc);
+        app.dispatch(
+            Action::ToggleSaveAlbum("al_strata".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!(app.lib.is_album_saved("al_strata"));
-        assert!(doc::load_library(&doc).is_album_saved("al_strata"));
-        app.dispatch(Action::ToggleSaveAlbum("al_strata".into()), &mut doc);
+        assert!(seed::library_of(&doc).is_album_saved("al_strata"));
+        app.dispatch(
+            Action::ToggleSaveAlbum("al_strata".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!(!app.lib.is_album_saved("al_strata"));
     }
 
@@ -1836,18 +2055,24 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
     {
         let (mut app, mut doc) = app_with_doc();
         assert!(!app.lib.is_liked("tk_g2"));
-        app.dispatch(Action::ToggleLike("tk_g2".into()), &mut doc);
+        app.dispatch(
+            Action::ToggleLike("tk_g2".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!(
             app.lib.is_liked("tk_g2"),
             "like is reflected in the snapshot"
         );
         assert!(
-            doc::load_library(&doc).is_liked("tk_g2"),
+            seed::library_of(&doc).is_liked("tk_g2"),
             "like persists to the doc"
         );
         // Liked view surfaces it.
         assert!(app.lib.liked_ids().contains(&"tk_g2".to_string()));
-        app.dispatch(Action::ToggleLike("tk_g2".into()), &mut doc);
+        app.dispatch(
+            Action::ToggleLike("tk_g2".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!(!app.lib.is_liked("tk_g2"));
     }
 
@@ -1856,13 +2081,16 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
         let (mut app, mut doc) = app_with_doc();
         app.name_input = "Roadtrip".into();
         let before = app.lib.playlists.len();
-        app.dispatch(Action::CreatePlaylist, &mut doc);
+        app.dispatch(
+            Action::CreatePlaylist,
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert_eq!(app.lib.playlists.len(), before + 1);
         assert!(
             matches!(app.view, View::Playlist(_)),
             "creating opens the new playlist"
         );
-        let created = app.lib.playlists.iter().any(|p| p.name == "Roadtrip");
+        let created = app.lib.playlists().any(|p| p.name == "Roadtrip");
         assert!(created);
     }
 
@@ -1875,11 +2103,11 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
                 playlist: "pl_morning".into(),
                 track: "tk_h2".into(),
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
         let pl = app.lib.playlist("pl_morning").unwrap().clone();
         assert_eq!(
-            pl.track_ids.last().map(std::string::String::as_str),
+            pl.track_ids().last().map(std::string::String::as_str),
             Some("tk_h2")
         );
         app.dispatch(
@@ -1887,26 +2115,19 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
                 playlist: "pl_morning".into(),
                 track: "tk_g2".into(),
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
-        assert!(
-            !app.lib
-                .playlist("pl_morning")
-                .unwrap()
-                .track_ids
-                .iter()
-                .any(|t| t == "tk_g2")
-        );
+        assert!(!app.lib.playlist("pl_morning").unwrap().contains("tk_g2"));
         app.dispatch(
             Action::MovePlaylistItem {
                 playlist: "pl_morning".into(),
                 from: 0,
                 to: 1,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
         assert_eq!(
-            app.lib.playlist("pl_morning").unwrap().track_ids[1],
+            app.lib.playlist("pl_morning").unwrap().track_ids()[1],
             "tk_p1"
         );
     }
@@ -1915,9 +2136,35 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
     {
         let (mut app, mut doc) = app_with_doc();
         app.name_input = "Concentration".into();
-        app.dispatch(Action::CommitRename("pl_focus".into()), &mut doc);
+        app.dispatch(
+            Action::CommitRename("pl_focus".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert_eq!(app.lib.playlist("pl_focus").unwrap().name, "Concentration");
-        app.dispatch(Action::DeletePlaylist("pl_focus".into()), &mut doc);
+        app.dispatch(
+            Action::DeletePlaylist("pl_focus".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert!(
+            app.lib.playlist("pl_focus").is_some(),
+            "nothing is deleted before the person agrees"
+        );
+        let asked = app
+            .dispatcher
+            .as_ref()
+            .unwrap()
+            .take_asked()
+            .expect("what was asked builds");
+        assert_eq!(asked.len(), 1, "the host asks to delete the playlist");
+        // Confirmed, the door applies what was asked.
+        let mut library = ui::tilo_resource::Replica::<Library>::from_doc(doc.clone());
+        for action in &asked {
+            library
+                .apply_action(action)
+                .expect("a confirmed change applies");
+        }
+        doc = library.doc().clone();
+        app.reload_library(&doc);
         assert!(app.lib.playlist("pl_focus").is_none());
     }
 
@@ -1927,7 +2174,10 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
         // A real rect so the shared dialog lays out and its embedded field can
         // take keystrokes (keyboard is forwarded only after `place_content`).
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.dispatch(Action::BeginNewPlaylist, &mut doc);
+        app.dispatch(
+            Action::BeginNewPlaylist,
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!(matches!(app.name_prompt, Some(NamePrompt::NewPlaylist)));
         // Typing routes through the shared ModalDialog into the real TextInput.
         for ch in ["J", "a", "z", "z"] {
@@ -1949,8 +2199,7 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
         );
         let pl = app
             .lib
-            .playlists
-            .iter()
+            .playlists()
             .find(|p| p.name == "Jazz")
             .expect("Enter on the name prompt created the playlist");
         assert!(
@@ -1967,7 +2216,7 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
         let idx = menu_index(&app, "New playlist\u{2026}")
             .expect("picker offers a New playlist row") as i64;
         app.pending.store(idx, Ordering::SeqCst);
-        app.drain_menu_selection(&mut doc);
+        app.drain_menu_selection(&mut ui::widget::Edits::lend(&mut doc));
         assert!(
             matches!(app.name_prompt, Some(NamePrompt::NewPlaylist)),
             "opens the name prompt"
@@ -1978,44 +2227,40 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
             "remembers the track being added"
         );
         app.name_input = "Late Night".into();
-        app.dispatch(Action::CreatePlaylist, &mut doc);
+        app.dispatch(
+            Action::CreatePlaylist,
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         let pl = app
             .lib
-            .playlists
-            .iter()
+            .playlists()
             .find(|p| p.name == "Late Night")
             .expect("the playlist was created");
         assert!(
-            pl.track_ids.contains(&"tk_s2".to_string()),
+            pl.contains("tk_s2"),
             "the target track was added to the new playlist"
         );
         // And it round-trips through the document, not just the snapshot.
-        let saved = doc::load_library(&doc);
-        let spl = saved
-            .playlists
-            .iter()
-            .find(|p| p.name == "Late Night")
-            .unwrap();
-        assert!(
-            spl.track_ids.contains(&"tk_s2".to_string()),
-            "the add persists to the doc"
-        );
+        let saved = seed::library_of(&doc);
+        let spl = saved.playlists().find(|p| p.name == "Late Night").unwrap();
+        assert!(spl.contains("tk_s2"), "the add persists to the doc");
     }
 
     // Phase `plain_new_playlist_is_empty`.
     {
         let (mut app, mut doc) = app_with_doc();
-        app.dispatch(Action::BeginNewPlaylist, &mut doc);
+        app.dispatch(
+            Action::BeginNewPlaylist,
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         app.name_input = "Blank".into();
-        app.dispatch(Action::CreatePlaylist, &mut doc);
-        let pl = app
-            .lib
-            .playlists
-            .iter()
-            .find(|p| p.name == "Blank")
-            .unwrap();
+        app.dispatch(
+            Action::CreatePlaylist,
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        let pl = app.lib.playlists().find(|p| p.name == "Blank").unwrap();
         assert!(
-            pl.track_ids.is_empty(),
+            pl.is_empty(),
             "a plain create (no target track) makes an empty playlist"
         );
     }
@@ -2023,9 +2268,12 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
     // Phase `saved_album_syncs_via_doc`.
     {
         let (mut app, mut doc) = app_with_doc();
-        let before = doc::load_library(&doc).is_album_saved("al_glasslight");
-        app.dispatch(Action::ToggleSaveAlbum("al_glasslight".into()), &mut doc);
-        let after = doc::load_library(&doc).is_album_saved("al_glasslight");
+        let before = seed::library_of(&doc).is_album_saved("al_glasslight");
+        app.dispatch(
+            Action::ToggleSaveAlbum("al_glasslight".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        let after = seed::library_of(&doc).is_album_saved("al_glasslight");
         assert_ne!(
             before, after,
             "toggling flips the saved-album state in the synced doc"
@@ -2033,7 +2281,7 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
         let mut peer = AutoCommit::new();
         crate::sync::converge(&mut doc, &mut peer);
         assert_eq!(
-            doc::load_library(&peer).is_album_saved("al_glasslight"),
+            seed::library_of(&peer).is_album_saved("al_glasslight"),
             after,
             "the saved-album state syncs to another device via the CRDT"
         );
@@ -2044,17 +2292,23 @@ fn library_edits_like_save_follow_and_playlists_round_trip() {
         let (mut app, mut doc) = app_with_doc();
         let artist = app.lib.artists.keys().next().cloned().unwrap();
         assert!(!app.lib.is_artist_followed(&artist));
-        app.dispatch(Action::ToggleFollow(artist.clone()), &mut doc);
+        app.dispatch(
+            Action::ToggleFollow(artist.clone()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!(
             app.lib.is_artist_followed(&artist),
             "Follow adds the artist"
         );
         // Persisted to the CRDT — a fresh load from the document sees it.
         assert!(
-            doc::load_library(&doc).followed_artists.contains(&artist),
+            seed::library_of(&doc).followed_artists.contains(&artist),
             "follow round-trips through the document",
         );
-        app.dispatch(Action::ToggleFollow(artist.clone()), &mut doc);
+        app.dispatch(
+            Action::ToggleFollow(artist.clone()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!(
             !app.lib.is_artist_followed(&artist),
             "toggling again unfollows"
@@ -2080,10 +2334,13 @@ fn queue_edits_insert_remove_reorder_and_refuse_stale_rows() {
                 queue: vec!["a".into(), "b".into(), "c".into()].into(),
                 index: 0,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
         assert_eq!(app.pb.queue_index, 0);
-        app.dispatch(Action::PlayNext("x".into()), &mut doc);
+        app.dispatch(
+            Action::PlayNext("x".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert_eq!(
             app.pb.queue,
             vec!["a", "x", "b", "c"],
@@ -2099,10 +2356,13 @@ fn queue_edits_insert_remove_reorder_and_refuse_stale_rows() {
                 queue: vec!["a".into(), "b".into(), "c".into()].into(),
                 index: 1,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
         // Remove the entry before current → index shifts down, current stays "b".
-        app.dispatch(Action::RemoveFromQueue(0), &mut doc);
+        app.dispatch(
+            Action::RemoveFromQueue(0),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert_eq!(app.pb.queue, vec!["b", "c"]);
         assert_eq!(app.pb.current.as_deref(), Some("b"));
         assert_eq!(app.pb.queue_index, 0);
@@ -2116,9 +2376,12 @@ fn queue_edits_insert_remove_reorder_and_refuse_stale_rows() {
                 queue: vec!["a".into(), "b".into(), "c".into()].into(),
                 index: 0,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
-        app.dispatch(Action::MoveQueueItem { from: 2, to: 1 }, &mut doc);
+        app.dispatch(
+            Action::MoveQueueItem { from: 2, to: 1 },
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert_eq!(app.pb.queue, vec!["a", "c", "b"]);
         assert_eq!(
             app.pb.current.as_deref(),
@@ -2129,11 +2392,11 @@ fn queue_edits_insert_remove_reorder_and_refuse_stale_rows() {
 
     // Phase `canonical_queue_item_operation_rejects_a_stale_duplicate_row`.
     {
-        let (mut app, mut doc) = app_with_doc();
+        let (mut app, doc) = app_with_doc();
         app.pb.queue = vec!["tk_g1".into(), "tk_g1".into(), "tk_g2".into()];
         app.pb.queue_index = 0;
         app.pb.current = Some("tk_g1".into());
-        let resources = ui::resources::resources(&app, &doc);
+        let resources = app.palette_tree(&doc);
         let queue = resources[0]
             .children
             .iter()
@@ -2146,39 +2409,19 @@ fn queue_edits_insert_remove_reorder_and_refuse_stale_rows() {
             .iter()
             .find(|action| action.id == "remove")
             .expect("second duplicate has its own remove operation");
-        let tilo_actions::ActionInput::Immediate(encoded) = &remove.input else {
-            panic!("queue removal is immediately executable");
-        };
-        let payload = encoded.payload.clone();
+        let payload = remove
+            .build_json(&serde_json::Map::new())
+            .expect("queue removal takes no arguments")
+            .payload;
         assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    &encoded.type_id,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .expect("the observed queue row is removable"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &payload)
+                .expect("the observed queue row is removable"),
+            ui::framework::Effected::Done(_)
         ));
         assert_eq!(app.pb.queue, vec!["tk_g1", "tk_g2"]);
         assert!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    &encoded.type_id,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err(),
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &payload)
+                .is_err(),
             "the old second-occurrence operation cannot remove a recycled row"
         );
     }
@@ -2192,40 +2435,6 @@ fn queue_edits_insert_remove_reorder_and_refuse_stale_rows() {
     reason = "the test intentionally exercises the complete palette-to-resource-operation route"
 )]
 fn global_search_and_canonical_views_route_without_mutation() {
-    // Phase `global_search_deep_links_route_to_the_real_view_and_play_path`.
-    {
-        use crate::search_type::SearchHit;
-        let (mut app, mut doc) = app_with_doc();
-
-        // Real ids straight from the seeded library.
-        let album = app.lib.albums.keys().next().unwrap().clone();
-        let artist = app.lib.artists.keys().next().unwrap().clone();
-        let playlist = app.lib.playlists.first().unwrap().id.clone();
-        let track = app.lib.tracks.keys().next().unwrap().clone();
-
-        // An album deep-link opens the album page.
-        assert!(app.open_deep_link(&SearchHit::album_link(&album), &mut doc));
-        assert_eq!(app.view, View::Album(album));
-
-        // An artist deep-link opens the artist page.
-        assert!(app.open_deep_link(&SearchHit::artist_link(&artist), &mut doc));
-        assert_eq!(app.view, View::Artist(artist));
-
-        // A playlist deep-link opens the playlist page.
-        assert!(app.open_deep_link(&SearchHit::playlist_link(&playlist), &mut doc));
-        assert_eq!(app.view, View::Playlist(playlist));
-
-        // A track deep-link actually plays that track through the real play path.
-        assert!(app.open_deep_link(&SearchHit::track_link(&track), &mut doc));
-        assert_eq!(app.pb.current.as_deref(), Some(track.as_str()));
-        assert!(app.pb.queue.contains(&track));
-
-        // A hostile / unknown link is rejected and changes nothing.
-        let view_before = app.view.clone();
-        assert!(!app.open_deep_link("https://evil/track/x", &mut doc));
-        assert_eq!(app.view, view_before);
-    }
-
     // Phase `ctrl_k_search_provider_is_registered_and_activation_plays_and_navigates`.
     {
         // Exercise the real palette broker seam: a result address resolves in
@@ -2233,43 +2442,45 @@ fn global_search_and_canonical_views_route_without_mutation() {
         // the legacy app callback.
         let (mut app, mut doc) = app_with_doc();
         let track = app.lib.tracks.values().next().unwrap().clone();
-        let resources = ui::resources::resources(&app, &doc);
+        let resources = app.palette_tree(&doc);
         let album = app.lib.albums.values().next().unwrap().clone();
         let artist_for_resolution = app.lib.artists.values().next().unwrap().clone();
-        let playlist = app.lib.playlists.first().unwrap().clone();
-        let providers = ui::search::capability::search_providers(&app);
+        let playlist = app.lib.playlists().next().unwrap().clone();
+        let provider = library_source(&app);
         for (query, expected) in [
             (
                 track.title.as_str(),
-                crate::actions::play_track_address(&track.id),
+                crate::actions::track_resource_id(&track.id),
             ),
             (
                 album.title.as_str(),
-                crate::actions::open_album_address(&album.id),
+                crate::actions::album_resource_id(&album.id),
             ),
             (
                 artist_for_resolution.name.as_str(),
-                crate::actions::open_artist_address(&artist_for_resolution.id),
+                crate::actions::artist_resource_id(&artist_for_resolution.id),
             ),
             (
                 playlist.name.as_str(),
-                crate::actions::open_playlist_address(&playlist.id),
+                crate::actions::playlist_resource_id(&playlist.id),
             ),
         ] {
-            let hit = providers[0]
+            let hit = provider
                 .search(query)
                 .into_iter()
-                .find(|hit| hit.action_address().as_ref() == Some(&expected))
-                .expect("each searchable Music entity has its canonical hit");
-            let address = hit.action_address().expect("canonical search address");
+                .find(|hit| hit.anchor() == expected)
+                .expect("each searchable Music entity is anchored at its row");
             assert!(
-                tilo_actions::door::resolve(&resources, &address).is_some(),
-                "{address:?} resolves against the live Music resource tree"
+                tilo_actions::flatten(&resources)
+                    .iter()
+                    .any(|flat| flat.resource_id.as_str() == hit.anchor()),
+                "{expected} is a row of the live Music resource tree"
             );
+            assert!(crate::actions::anchor_effect(&hit.anchor()).is_some());
         }
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
-        palette.set_providers(ui::search::capability::search_providers(&app));
+        palette.set_providers(vec![Box::new(library_source(&app))]);
         palette.open();
         palette.set_query(&track.title);
         let row = palette
@@ -2279,46 +2490,31 @@ fn global_search_and_canonical_views_route_without_mutation() {
             .expect("song search row is present");
         palette.set_cursor(row);
         palette.activate_selected();
-        let operation = palette.take_operation().expect("play action queued");
-        assert!(palette.take_navigation().is_none());
-        assert_eq!(operation.kind, tilo_actions::OperationKind::Effect);
+        let anchor = palette.take_navigation().expect("the song's row is opened");
         let heads = doc.get_heads();
         let invocation = tilo_actions::InvocationId::new();
-        assert_eq!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    invocation,
-                    operation.kind,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .type_id,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .payload
-                ),
-                &mut doc,
-                &automerge::ROOT
+        assert!(matches!(
+            app.begin_effect(
+                invocation,
+                crate::actions::anchor_effect(&anchor).expect("opening a song plays it")
             )
             .expect("local playback operation starts"),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        );
+            ui::framework::Effected::Pending
+        ));
         assert_eq!(
             app.pb.current.as_deref(),
             Some(track.id.as_str()),
-            "the brokered effect plays the selected track"
+            "opening the hit plays the selected track"
         );
         assert!(app.pb.queue.contains(&track.id));
         assert_eq!(doc.get_heads(), heads, "playback is device-local");
 
-        // Navigation follows the same path but is explicitly a View operation.
+        // Opening an artist hit shows its page and changes no document.
         let heads = doc.get_heads();
         let artist = app.lib.artists.values().next().unwrap().clone();
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
-        palette.set_providers(ui::search::capability::search_providers(&app));
+        palette.set_providers(vec![Box::new(library_source(&app))]);
         palette.open();
         palette.set_query(&artist.name);
         let row = palette
@@ -2328,99 +2524,59 @@ fn global_search_and_canonical_views_route_without_mutation() {
             .expect("artist search row is present");
         palette.set_cursor(row);
         palette.activate_selected();
-        let operation = palette.take_operation().expect("artist view queued");
-        assert_eq!(operation.kind, tilo_actions::OperationKind::View);
+        let anchor = palette
+            .take_navigation()
+            .expect("the artist's row is opened");
         assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    operation.kind,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .type_id,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .payload
-                ),
-                &mut doc,
-                &automerge::ROOT
+            app.begin_effect(
+                ui::tilo_actions::InvocationId::new(),
+                crate::actions::anchor_effect(&anchor).expect("opening an artist shows it")
             )
             .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            ui::framework::Effected::Done(_)
         ));
         assert_eq!(
             app.view,
             View::Artist(artist.id),
-            "brokered view opens the artist page"
+            "opening the hit shows the artist page"
         );
         assert_eq!(doc.get_heads(), heads, "navigation is presentation-only");
     }
 
-    // Phase `ctrl_k_provider_retrieval_reuses_the_prebuilt_catalog_until_library_changes`.
+    // Phase `a_changed_library_is_searchable_once_it_is_reloaded`.
     {
         let (mut app, mut doc) = app_with_doc();
-        let builds = app.library_search_builds;
-        let track = app.lib.tracks.values().next().expect("seed track").clone();
-
-        let first = ui::search::capability::search_providers(&app);
-        let second = ui::search::capability::search_providers(&app);
-        assert_eq!(
-            app.library_search_builds, builds,
-            "retrieval does not reindex"
-        );
-        assert!(first[0].search(&track.title).iter().any(|result| {
-            result.action_address() == Some(crate::actions::play_track_address(&track.id))
-        }));
-        assert!(second[0].search(&track.title).iter().any(|result| {
-            result.action_address() == Some(crate::actions::play_track_address(&track.id))
-        }));
-
-        let mut playback = app.pb.clone();
-        playback.volume = playback.volume.saturating_sub(1);
-        app.pb = playback;
-        assert_eq!(
-            app.library_search_builds, builds,
-            "playback-only document changes do not reindex the library"
-        );
-
         app.perform_action(
-            &mut doc,
-            &crate::actions::create_playlist_action("pl_provider_refresh", "Refresh proof"),
+            &mut ui::widget::Edits::lend(&mut doc),
+            Library::paths().playlists.insert_as(
+                &ui::tilo_resource::Id::from_raw("pl_provider_refresh"),
+                0,
+                &crate::model::Playlist::named("pl_provider_refresh", "Refresh proof"),
+            ),
         );
-        app.reload_library(&mut doc);
-        assert_eq!(
-            app.library_search_builds,
-            builds + 1,
-            "one changed library revision rebuilds the catalog exactly once"
-        );
+        app.reload_library(&doc);
         assert!(
-            ui::search::capability::search_providers(&app)[0]
+            library_source(&app)
                 .search("Refresh proof")
                 .iter()
                 .any(|result| {
-                    result.action_address()
-                        == Some(crate::actions::open_playlist_address("pl_provider_refresh"))
+                    result.anchor() == crate::actions::playlist_resource_id("pl_provider_refresh")
                 })
-        );
-        assert_eq!(
-            app.library_search_builds,
-            builds + 1,
-            "the refreshed provider remains cached across retrievals"
         );
     }
 
     // Phase `membership_open_operation_reveals_the_current_row_and_refuses_stale_rows`.
     {
         let (mut app, mut doc) = app_with_doc();
-        let playlist = app.lib.playlists.first().expect("seed playlist").clone();
-        let track = playlist.track_ids.first().expect("seed membership").clone();
+        let playlist = app.lib.playlists().next().expect("seed playlist").clone();
+        let track = playlist
+            .track_ids()
+            .first()
+            .cloned()
+            .expect("seed membership");
         let resource_id = crate::actions::playlist_track_resource_id(&playlist.id, &track);
         let resource =
-            <MusicApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &resource_id)
-                .expect("membership resolves lazily");
+            MusicApp::publish_resource(&app, &resource_id).expect("membership resolves lazily");
         assert!(
             resource
                 .actions
@@ -2428,24 +2584,16 @@ fn global_search_and_canonical_views_route_without_mutation() {
                 .any(|action| { action.id == "open" && action.label == "Open in playlist" })
         );
 
-        let operation = crate::actions::MusicOperation::OpenPlaylistMembership {
-            playlist: playlist.id.clone(),
-            track: track.clone(),
-        };
-        let payload = serde_json::to_vec(&operation).expect("operation encodes");
+        let payload = crate::actions::effect_payload(&crate::actions::MusicEffect::Open {
+            place: crate::actions::Place::Membership {
+                playlist: playlist.id.clone(),
+                track: track.clone(),
+            },
+        });
         assert!(matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .expect("current membership opens"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &payload)
+                .expect("current membership opens"),
+            ui::framework::Effected::Done(_)
         ));
         assert_eq!(app.view, View::Playlist(playlist.id.clone()));
         assert_eq!(
@@ -2454,21 +2602,12 @@ fn global_search_and_canonical_views_route_without_mutation() {
         );
 
         app.perform_action(
-            &mut doc,
-            &crate::actions::remove_track_action(&playlist.id, &track),
+            &mut ui::widget::Edits::lend(&mut doc),
+            Library::remove_from_playlist(&playlist.id, &track),
         );
-        app.reload_library(&mut doc);
+        app.reload_library(&doc);
         let error = app
-            .start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload,
-                ),
-                &mut doc,
-                &automerge::ROOT,
-            )
+            .start_effect(ui::tilo_actions::InvocationId::new(), &payload)
             .expect_err("stale membership must refuse to open");
         assert!(error.contains("membership is no longer present"));
     }
@@ -2477,55 +2616,31 @@ fn global_search_and_canonical_views_route_without_mutation() {
     {
         let (mut app, mut doc) = app_with_doc();
         let resource_id = crate::actions::view_resource_id("downloads");
-        let resource =
-            <MusicApp as tilo_actions::ResourceProvider>::resource(&app, &doc, &resource_id)
-                .expect("published destination resolves at the authority door");
+        let resource = MusicApp::publish_resource(&app, &resource_id)
+            .expect("published destination resolves at the authority door");
         let open = resource
             .actions
             .iter()
             .find(|action| action.id == "open")
             .expect("view resource exposes open");
-        let operation = match &open.input {
-            tilo_actions::ActionInput::Immediate(operation) => operation,
-            tilo_actions::ActionInput::Prompted { .. }
-            | tilo_actions::ActionInput::Deferred { .. } => {
-                panic!("open destination is immediate")
-            }
-        };
+        let operation = open
+            .build_json(&serde_json::Map::new())
+            .expect("open destination takes no arguments");
         let heads = doc.get_heads();
         assert!(matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    &operation.type_id,
-                    &operation.payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .expect("known canonical destination routes"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &operation.payload)
+                .expect("known canonical destination routes"),
+            ui::framework::Effected::Done(_)
         ));
         assert_eq!(app.view, View::Downloads);
         assert_eq!(doc.get_heads(), heads, "view navigation remains local");
 
-        let forged = serde_json::to_vec(&crate::actions::MusicOperation::OpenView {
-            id: "../../unsafe-local-path".into(),
-        })
-        .expect("operation encodes");
+        let forged = crate::actions::effect_payload(&crate::actions::MusicEffect::Open {
+            place: crate::actions::Place::View("../../unsafe-local-path".into()),
+        });
         assert!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &forged
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err()
+            app.start_effect(ui::tilo_actions::InvocationId::new(), &forged)
+                .is_err()
         );
     }
 
@@ -2549,32 +2664,18 @@ fn global_search_and_canonical_views_route_without_mutation() {
 fn stream_operations_settle_exactly_once_for_their_request() {
     // Phase `changed_track_playback_effect_starts_exactly_one_stream_request`.
     {
-        let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot();
-        let mut playback = app.pb.clone();
-        playback.queue = vec!["tk_g1".into()];
-        playback.queue_index = 0;
-        playback.current = Some("tk_g1".into());
-        playback.position_ms = 0;
-        playback.playing = true;
-        let payload =
-            serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
+        let (mut app, _doc) = app_with_doc();
+        app.disconnect();
+        let payload = crate::actions::effect_payload(&crate::actions::MusicEffect::Play {
+            track: "tk_g1".into(),
+            queued: None,
+        });
         let before = app.next_request_id;
         let invocation = tilo_actions::InvocationId::new();
-        assert_eq!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        );
+        assert!(matches!(
+            app.start_effect(invocation, &payload).unwrap(),
+            ui::framework::Effected::Pending
+        ));
         assert_eq!(
             app.next_request_id,
             before + 1,
@@ -2585,82 +2686,49 @@ fn stream_operations_settle_exactly_once_for_their_request() {
 
     // Phase `stream_operation_reports_exact_success_failure_and_ignores_stale_completion`.
     {
-        let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot();
-        let mut playback = app.pb.clone();
-        playback.queue = vec!["tk_g1".into()];
-        playback.current = Some("tk_g1".into());
-        playback.playing = true;
-        let payload =
-            serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
+        let (mut app, _doc) = app_with_doc();
+        app.disconnect();
+        let payload = crate::actions::effect_payload(&crate::actions::MusicEffect::Play {
+            track: "tk_g1".into(),
+            queued: None,
+        });
         let invocation = tilo_actions::InvocationId::new();
-        assert_eq!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .unwrap(),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        );
+        assert!(matches!(
+            app.start_effect(invocation, &payload).unwrap(),
+            ui::framework::Effected::Pending
+        ));
         let request_id = app.active_resolve_request.unwrap();
-        let competing =
-            serde_json::to_vec(&crate::actions::MusicOperation::PlayTrack { id: "tk_g2".into() })
-                .unwrap();
+        let competing = crate::actions::effect_payload(&crate::actions::MusicEffect::Play {
+            track: "tk_g2".into(),
+            queued: None,
+        });
         assert!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &competing
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err(),
+            app.start_effect(tilo_actions::InvocationId::new(), &competing)
+                .is_err(),
             "concurrent stream start is refused deterministically"
         );
         app.apply_resolve_failure("tk_g1", request_id + 1, "stale failure");
         assert!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none(),
+            app.take_effect_result(invocation).is_none(),
             "a stale worker result cannot settle this invocation"
         );
         app.apply_resolve_failure("tk_g1", request_id, "backend unavailable");
         assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
+            app.take_effect_result(invocation),
             Some(tilo_actions::InvocationUpdate::Failed { .. })
         ));
     }
 
     // Phase `stream_operation_times_out_once_and_late_resolution_is_ignored`.
     {
-        let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot();
-        let mut playback = app.pb.clone();
-        playback.queue = vec!["tk_g1".into()];
-        playback.current = Some("tk_g1".into());
-        playback.playing = true;
-        let payload =
-            serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
+        let (mut app, _doc) = app_with_doc();
+        app.disconnect();
+        let payload = crate::actions::effect_payload(&crate::actions::MusicEffect::Play {
+            track: "tk_g1".into(),
+            queued: None,
+        });
         let invocation = tilo_actions::InvocationId::new();
-        app.start_operation(
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MUSIC_OPERATION_TYPE,
-                &payload,
-            ),
-            &mut doc,
-            &automerge::ROOT,
-        )
-        .unwrap();
+        app.start_effect(invocation, &payload).unwrap();
         let (_, request_id, _, deadline) =
             app.resource_stream_invocation.expect("pending host stream");
 
@@ -2670,14 +2738,13 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             "timeout retires request authority"
         );
         let Some(tilo_actions::InvocationUpdate::Failed { error, .. }) =
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+            app.take_effect_result(invocation)
         else {
             panic!("timeout must settle the accepted operation");
         };
         assert_eq!(error.code, "music.stream_start_timed_out");
         assert!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none(),
+            app.take_effect_result(invocation).is_none(),
             "a terminal operation update is consumed exactly once"
         );
 
@@ -2698,8 +2765,7 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             },
         );
         assert!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none(),
+            app.take_effect_result(invocation).is_none(),
             "a late resolver result cannot overwrite a timeout terminal result"
         );
     }
@@ -2707,31 +2773,27 @@ fn stream_operations_settle_exactly_once_for_their_request() {
     // Phase `local_next_supersedes_pending_host_stream_and_late_result_stays_stale`.
     {
         let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot();
-        let mut playback = app.pb.clone();
-        playback.queue = vec!["tk_g1".into(), "tk_g2".into()];
-        playback.queue_index = 0;
-        playback.current = Some("tk_g1".into());
-        playback.playing = true;
-        let payload =
-            serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
+        app.disconnect();
+        let payload = crate::actions::effect_payload(&crate::actions::MusicEffect::Play {
+            track: "tk_g1".into(),
+            queued: None,
+        });
         let invocation = tilo_actions::InvocationId::new();
-        app.start_operation(
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::MUSIC_OPERATION_TYPE,
-                &payload,
+        app.start_effect(invocation, &payload).unwrap();
+        assert!(matches!(
+            app.start_effect(
+                tilo_actions::InvocationId::new(),
+                &crate::actions::effect_payload(&crate::actions::MusicEffect::AddToQueue {
+                    track: "tk_g2".into(),
+                }),
             ),
-            &mut doc,
-            &automerge::ROOT,
-        )
-        .unwrap();
+            Ok(ui::framework::Effected::Done(_))
+        ));
         let (_, first_request, _, _) = app.resource_stream_invocation.expect("pending host stream");
 
         // This is the normal in-window/media-key next-track route, not a
         // second host operation. User input wins over a slow external caller.
-        app.on_next(&mut doc);
+        app.on_next(&mut ui::widget::Edits::lend(&mut doc));
         let second_request = app.active_resolve_request.expect("new local intent");
         assert_ne!(first_request, second_request);
         assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
@@ -2754,41 +2816,27 @@ fn stream_operations_settle_exactly_once_for_their_request() {
         );
         assert_eq!(app.active_resolve_request, Some(second_request));
         let Some(tilo_actions::InvocationUpdate::Failed { error, .. }) =
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+            app.take_effect_result(invocation)
         else {
             panic!("local supersession must settle the old host operation");
         };
         assert_eq!(error.code, "music.stream_start_superseded");
         assert!(
-            app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                .is_none(),
+            app.take_effect_result(invocation).is_none(),
             "supersession terminal update is delivered exactly once"
         );
     }
 
     // Phase `stream_operation_reports_success_only_for_its_bound_request`.
     {
-        let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot();
-        let mut playback = app.pb.clone();
-        playback.queue = vec!["tk_g1".into()];
-        playback.current = Some("tk_g1".into());
-        playback.playing = true;
-        let payload =
-            serde_json::to_vec(&crate::actions::MusicOperation::SetPlayback { playback }).unwrap();
+        let (mut app, _doc) = app_with_doc();
+        app.disconnect();
+        let payload = crate::actions::effect_payload(&crate::actions::MusicEffect::Play {
+            track: "tk_g1".into(),
+            queued: None,
+        });
         let invocation = tilo_actions::InvocationId::new();
-        let _ = app
-            .start_operation(
-                &ui::widget::ResourceOperation::local(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::MUSIC_OPERATION_TYPE,
-                    &payload,
-                ),
-                &mut doc,
-                &automerge::ROOT,
-            )
-            .unwrap();
+        let _ = app.start_effect(invocation, &payload).unwrap();
         let request_id = app.active_resolve_request.unwrap();
         let stream = crate::backend::ResolvedStream {
             video_id: "yt_tk_g1".into(),
@@ -2805,25 +2853,23 @@ fn stream_operations_settle_exactly_once_for_their_request() {
         app.apply_resolved_stream("tk_g1", request_id, &stream);
         #[cfg(not(feature = "audio"))]
         let update = app
-            .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+            .take_effect_result(invocation)
             .expect("a silent build settles as resolved, never as playing");
         #[cfg(feature = "audio")]
         {
             assert!(
-                app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-                    .is_none(),
+                app.take_effect_result(invocation).is_none(),
                 "resolver success alone is not audio-start success"
             );
-            // Exercise the same settlement branch `tick` uses after its real
-            // `frames_rendered()` observation. The value is deliberately
-            // greater than the invocation's captured baseline.
+            // A synthetic frame count cannot confirm this invalid stream.
+            // Real WAV startup, resume and EOF replay are proved separately
+            // through tick and the actual decoder in local_files tests.
+            assert!(!app.audio.is_playing_confirmed());
             app.settle_resource_stream_after_rendered_frames(u64::MAX);
+            assert!(app.take_effect_result(invocation).is_none());
+            assert_eq!(app.resource_stream_invocation.unwrap().0, invocation);
         }
-        #[cfg(feature = "audio")]
-        let update = app
-            .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
-            .expect("rendered PCM settles the audio invocation as playing");
-
+        #[cfg(not(feature = "audio"))]
         let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
             panic!("the bound resolver completion must succeed");
         };
@@ -2833,31 +2879,28 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             Some(serde_json::json!({ "state": "resolved" })),
             "a no-audio build never labels URL resolution as actual playback"
         );
-        #[cfg(feature = "audio")]
-        assert_eq!(
-            output.value,
-            Some(serde_json::json!({ "state": "playing" })),
-            "only post-render settlement may report actual playback"
-        );
-        let play = crate::actions::catalog_track_resource(
-            &crate::actions::CatalogTrackResource {
-                id: "tk_g1".into(),
-                label: "Track one".into(),
-                album_id: String::new(),
-                artist_id: String::new(),
-                offline: false,
-                liked: false,
-            },
-            &crate::model::Playback::default(),
-        )
+        let play = crate::actions::catalog_track_resource(&crate::actions::CatalogTrackResource {
+            id: "tk_g1".into(),
+            label: "Track one".into(),
+            album_id: String::new(),
+            artist_id: String::new(),
+            offline: false,
+            liked: false,
+        })
         .actions
         .into_iter()
         .find(|action| action.id == "play")
         .expect("play resource action");
-        assert!(
-            play.contract.result.validate(&output).is_ok(),
-            "every terminal lifecycle value must validate against its advertised enum"
+        assert_eq!(
+            play.contract.execution,
+            tilo_actions::ExecutionMode::Background { cancellable: false },
+            "playing a track answers when its audio starts"
         );
+        #[cfg(not(feature = "audio"))]
+        play.contract
+            .result
+            .validate(&output)
+            .expect("the actual stream completion must match its published result");
     }
 
     // Phase `play_drives_the_audio_pipeline_path`.
@@ -2868,7 +2911,7 @@ fn stream_operations_settle_exactly_once_for_their_request() {
                 queue: vec!["tk_g1".into()].into(),
                 index: 0,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
         // The transport started the stream: the engine recorded a load (the
         // stub records the resolved/intended URI; the live backend set the
@@ -2877,7 +2920,10 @@ fn stream_operations_settle_exactly_once_for_their_request() {
         // Either way `start_stream` was invoked and play state is set.
         assert!(app.pb.playing);
         // Volume changes hit the engine.
-        app.dispatch(Action::VolumeFrac(0.5), &mut doc);
+        app.dispatch(
+            Action::VolumeFrac(0.5),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!(
             (app.audio.volume() - 0.5).abs() < 1e-6,
             "volume reaches the audio engine"
@@ -2928,7 +2974,7 @@ fn live_search_top_result(app: &mut MusicApp) -> String {
     use std::time::Duration;
 
     // Submit a real search (spawns the worker + sends the request).
-    app.search_input.set_text("aurora runaway");
+    "aurora runaway".clone_into(&mut app.search_query);
     app.request_live_search();
     assert!(app.worker.is_some(), "search spawned the streaming worker");
 
@@ -2977,7 +3023,7 @@ fn live_play_and_resolve_stream(app: &mut MusicApp, doc: &mut AutoCommit, first:
             queue: vec![first.to_string()].into(),
             index: 0,
         },
-        doc,
+        &mut ui::widget::Edits::lend(doc),
     );
     assert_eq!(app.pb.current.as_deref(), Some(first));
     assert!(
@@ -3007,7 +3053,28 @@ fn live_play_and_resolve_stream(app: &mut MusicApp, doc: &mut AutoCommit, first:
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    let url = loaded_url.expect("app resolved + loaded a rangeable audio URL");
+    let uri_metadata = app
+        .audio
+        .current_uri()
+        .and_then(|uri| url::Url::parse(uri).ok())
+        .map(|uri| {
+            (
+                uri.scheme().to_owned(),
+                uri.host_str().map(str::to_owned),
+                uri.query_pairs()
+                    .map(|(key, _)| key.into_owned())
+                    .collect::<Vec<_>>(),
+            )
+        });
+    assert!(
+        loaded_url.is_some(),
+        "app resolved + loaded a rangeable audio URL; current={:?}, source={:?}, uri_metadata={uri_metadata:?}, request={:?}, error={:?}",
+        app.pb.current,
+        app.lib.track(first).map(|t| &t.yt_id),
+        app.active_resolve_request,
+        app.playback_error
+    );
+    let url = loaded_url.unwrap();
     assert!(
         is_streamable(&url),
         "resolved a rangeable, itag-bearing audio URL"
@@ -3187,8 +3254,7 @@ fn full_track_streams_whole_file_or_reports_the_source_truncation() {
     // Real sound through the system sink is what this proves.
     app.audio = crate::audio::AudioEngine::with_output(crate::audio::AudioOutput::System);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-    app.search_input
-        .set_text("rick astley never gonna give you up");
+    "rick astley never gonna give you up".clone_into(&mut app.search_query);
     app.request_live_search();
     let mut ids = Vec::new();
     for _ in 0..1000 {
@@ -3209,7 +3275,7 @@ fn full_track_streams_whole_file_or_reports_the_source_truncation() {
             queue: vec![first].into(),
             index: 0,
         },
-        &mut doc,
+        &mut ui::widget::Edits::lend(&mut doc),
     );
 
     // Wait until the resolved stream renders PCM and the staging download has
@@ -3366,7 +3432,7 @@ fn lyrics_load_bundled_sync_and_balance_the_wide_layout() {
     // Phase `lyrics_view_loads_synced_and_highlight_moves_with_playhead`.
     {
         let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot();
+        app.disconnect();
         app.playback_loaded = true; // don't let sync clobber the staged track
         app.pb.current = Some("tk_g1".into());
         app.pb.queue = vec!["tk_g1".into()];
@@ -3391,42 +3457,35 @@ fn lyrics_load_bundled_sync_and_balance_the_wide_layout() {
         );
     }
 
-    // Phase `lyrics_wide_layout_is_balanced_with_left_art`.
+    // Phase `lyrics_are_one_readable_column_on_the_gutter`.
     {
-        // Wide: cover art fills the left column and the lyric band shifts right
-        // to balance it — not a centred column with an empty left half.
-        let body = Rect::new(232.0, 72.0, 1280.0, 708.0);
-        let band_top = body.y0 + 92.0;
-        let band_bot = body.y1 - 24.0;
-        let layout = render::lyrics_layout(body, band_top, band_bot);
-        let art = layout.art.expect("wide layout shows cover art on the left");
-        let body_mid = f64::midpoint(body.x0, body.x1);
-        assert!(art.center().x < body_mid, "cover art sits in the left half");
+        // Wide: one column on the content gutter, bounded to a readable
+        // width, not a centred island beside a repeat of the now-playing art.
+        let body = Rect::new(280.0, 57.0, 1280.0, 716.0);
+        let column = render::lyrics_column(body, 640.0, 24.0);
         assert!(
-            art.width() >= 180.0,
-            "the cover art is a substantial square"
+            (column.x0 - body.x0 - 24.0).abs() < 0.5,
+            "lyrics start on the gutter"
         );
         assert!(
-            layout.lyrics.center().x > body_mid,
-            "the lyrics column shifts right to balance the art"
+            column.width() <= 640.0 + 0.5,
+            "lyrics keep a readable measure"
         );
+        assert!(column.y0 >= body.y0 && column.y1 <= body.y1);
+        // Narrow: the column takes the width inside the gutters.
+        let narrow = Rect::new(0.0, 57.0, 500.0, 500.0);
+        let nc = render::lyrics_column(narrow, 640.0, 24.0);
+        assert!((nc.x1 - (narrow.x1 - 24.0)).abs() < 0.5);
+        // Synced lyrics hold the current line a third of the way down;
+        // plain lyrics read from the top.
+        assert!(render::lyrics_scroll(None, 36.0, 600.0).abs() < 1e-9);
+        let first = render::lyrics_scroll(Some(0), 36.0, 600.0);
         assert!(
-            layout.lyrics.x1 <= body.x1,
-            "the lyrics column stays within the body"
+            (-first - 200.0).abs() < 0.5,
+            "the first line sits a third down"
         );
-        assert!(
-            art.x1 < layout.lyrics.x0,
-            "art and lyrics columns don't overlap"
-        );
-
-        // Narrow: a single full-width centred column, no side art.
-        let narrow = Rect::new(0.0, 72.0, 700.0, 708.0);
-        let nl = render::lyrics_layout(narrow, 164.0, 684.0);
-        assert!(nl.art.is_none(), "narrow layout has no side art");
-        assert!(
-            (nl.lyrics.x0 - narrow.x0).abs() < 1.0 && (nl.lyrics.x1 - narrow.x1).abs() < 1.0,
-            "narrow lyrics span the full width"
-        );
+        let tenth = render::lyrics_scroll(Some(10), 36.0, 600.0);
+        assert!((10.0 * 36.0 - tenth - 200.0).abs() < 0.5);
     }
 }
 
@@ -3439,6 +3498,9 @@ fn draw_once(app: &mut MusicApp, doc: &mut AutoCommit) {
     use ui::theme::Theme;
     // Lay the root out to the test viewport first.
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+    app.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
+    app.sync(doc, &automerge::ROOT);
+    app.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
     app.sync(doc, &automerge::ROOT);
     let mut tr = TextRenderer::new();
     let theme = Theme::dark();
@@ -3450,6 +3512,9 @@ fn draw_once_large_text(app: &mut MusicApp, doc: &mut AutoCommit) {
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
     app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
+    app.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
+    app.sync(doc, &automerge::ROOT);
+    app.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
     app.sync(doc, &automerge::ROOT);
     let mut tr = TextRenderer::new();
     let theme = Theme::dark().with_text_scale(2.0);
@@ -3485,9 +3550,12 @@ fn shuffle_permutes_visits_every_track_and_restores_order() {
                 queue: q.clone().into(),
                 index: 0,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
-        app.dispatch(Action::ToggleShuffle, &mut doc);
+        app.dispatch(
+            Action::ToggleShuffle,
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!(app.pb.shuffle);
         assert_eq!(app.shuffle_order.len(), q.len());
         let mut sorted = app.shuffle_order.clone();
@@ -3521,14 +3589,17 @@ fn shuffle_permutes_visits_every_track_and_restores_order() {
                 queue: q.clone().into(),
                 index: 0,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
-        app.dispatch(Action::ToggleShuffle, &mut doc);
+        app.dispatch(
+            Action::ToggleShuffle,
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         app.pb.repeat = RepeatMode::Off;
         let order = app.shuffle_order.clone();
         let mut visited = vec![app.pb.queue_index];
         for _ in 0..(q.len() - 1) {
-            app.dispatch(Action::Next, &mut doc);
+            app.dispatch(Action::Next, &mut ui::widget::Edits::lend(&mut doc));
             visited.push(app.pb.queue_index);
         }
         // The production Next path (advance) consults the shuffled order, not the
@@ -3542,7 +3613,7 @@ fn shuffle_permutes_visits_every_track_and_restores_order() {
             "every queued track is visited exactly once"
         );
         let last = app.pb.current.clone();
-        app.dispatch(Action::Next, &mut doc);
+        app.dispatch(Action::Next, &mut ui::widget::Edits::lend(&mut doc));
         assert!(
             !app.pb.playing,
             "advancing past the final shuffled track stops (repeat off)"
@@ -3563,12 +3634,15 @@ fn shuffle_permutes_visits_every_track_and_restores_order() {
                 queue: q.clone().into(),
                 index: 0,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
-        app.dispatch(Action::ToggleShuffle, &mut doc);
+        app.dispatch(
+            Action::ToggleShuffle,
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         app.pb.repeat = RepeatMode::All;
         for _ in 0..q.len() {
-            app.dispatch(Action::Next, &mut doc);
+            app.dispatch(Action::Next, &mut ui::widget::Edits::lend(&mut doc));
         }
         assert!(
             app.pb.playing,
@@ -3589,17 +3663,23 @@ fn shuffle_permutes_visits_every_track_and_restores_order() {
                 queue: q.into(),
                 index: 0,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
-        app.dispatch(Action::ToggleShuffle, &mut doc); // on
+        app.dispatch(
+            Action::ToggleShuffle,
+            &mut ui::widget::Edits::lend(&mut doc),
+        ); // on
         assert!(!app.shuffle_order.is_empty());
-        app.dispatch(Action::ToggleShuffle, &mut doc); // off
+        app.dispatch(
+            Action::ToggleShuffle,
+            &mut ui::widget::Edits::lend(&mut doc),
+        ); // off
         assert!(!app.pb.shuffle);
         assert!(
             app.shuffle_order.is_empty(),
             "disabling shuffle drops the shuffled order"
         );
-        app.dispatch(Action::Next, &mut doc);
+        app.dispatch(Action::Next, &mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(
             app.pb.queue_index, 1,
             "linear advance resumes after disabling shuffle"
@@ -3615,7 +3695,7 @@ fn shuffle_permutes_visits_every_track_and_restores_order() {
                 queue: vec!["a".into(), "b".into(), "c".into()].into(),
                 index: 0,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
         assert!(!app.pb.shuffle);
         assert!(send(&mut app, &char_key("s"), &mut doc), "'s' is consumed");
@@ -3642,7 +3722,7 @@ fn keyboard_and_pointer_transport_controls_drive_playback() {
                 queue: vec!["a".into()].into(),
                 index: 0,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
         assert!(app.pb.playing);
         send(&mut app, &named_key(NamedKey::Space), &mut doc);
@@ -3659,7 +3739,7 @@ fn keyboard_and_pointer_transport_controls_drive_playback() {
                 queue: vec!["a".into(), "b".into(), "c".into()].into(),
                 index: 0,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
         send(&mut app, &char_key("n"), &mut doc);
         assert_eq!(app.pb.queue_index, 1, "'n' plays the next track");
@@ -3675,7 +3755,7 @@ fn keyboard_and_pointer_transport_controls_drive_playback() {
                 queue: vec!["tk_g1".into(), "tk_g2".into()].into(),
                 index: 0,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
         app.playhead_ms = 10_000.0; // tk_g1 is 215s long
         send(&mut app, &named_key(NamedKey::ArrowRight), &mut doc);
@@ -3780,19 +3860,28 @@ fn keyboard_and_pointer_transport_controls_drive_playback() {
     {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Songs;
+        // The second frame lays the page out beside the scroll bar's lane.
+        draw_once(&mut app, &mut doc);
         draw_once(&mut app, &mut doc);
         let max = (app.content_height - app.body_rect.height()).max(0.0);
         assert!(
             max > 0.0,
             "the songs list overflows, so there is room to scroll"
         );
+        // The wheel scrolls what is under the pointer.
+        let over_body = app.body_rect.center();
+        send(&mut app, &cursor_at(over_body), &mut doc);
         send(&mut app, &wheel(-3.0), &mut doc);
-        assert!(app.scroll > 0.0, "wheel down scrolls the content");
-        assert!(app.scroll <= max);
+        assert!(app.scroll_y() > 0.0, "wheel down scrolls the content");
+        assert!(app.scroll_y() <= max);
         send(&mut app, &wheel(-1000.0), &mut doc);
-        assert_eq!(app.scroll, max, "a big scroll clamps at the content bottom");
+        assert_eq!(
+            app.scroll_y(),
+            max,
+            "a big scroll clamps at the content bottom"
+        );
         send(&mut app, &wheel(1000.0), &mut doc);
-        assert_eq!(app.scroll, 0.0, "scrolling back up clamps at the top");
+        assert_eq!(app.scroll_y(), 0.0, "scrolling back up clamps at the top");
     }
 
     // Phase `toggle_mute_silences_and_restores_volume`.
@@ -3800,13 +3889,13 @@ fn keyboard_and_pointer_transport_controls_drive_playback() {
         let (mut app, mut doc) = app_with_doc();
         app.pb.volume = 76;
         app.audio.set_volume(0.76);
-        app.dispatch(Action::ToggleMute, &mut doc);
+        app.dispatch(Action::ToggleMute, &mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(app.pb.volume, 0, "mute drops the volume to zero");
         assert!(
             app.audio.volume().abs() < 1e-6,
             "the audio engine is silenced"
         );
-        app.dispatch(Action::ToggleMute, &mut doc);
+        app.dispatch(Action::ToggleMute, &mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(app.pb.volume, 76, "unmute restores the pre-mute level");
         assert!((app.audio.volume() - 0.76).abs() < 1e-6);
     }
@@ -3831,9 +3920,9 @@ fn keyboard_and_pointer_transport_controls_drive_playback() {
                 queue: vec!["tk_g1".into(), "tk_g2".into(), "tk_g3".into()].into(),
                 index: 0,
             },
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
         );
-        app.set_offline_for_shot();
+        app.disconnect();
         draw_at(&mut app, &mut doc, 520.0, 800.0); // compact bar
         let bar = app.nowplaying_rect();
         // Start on the bar's empty title area (left of the transport buttons).
@@ -3871,19 +3960,23 @@ fn queue_view_and_volume_controls_are_responsive() {
     {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Albums;
-        app.scroll = 137.0;
+        app.set_scroll_y(137.0);
 
-        app.dispatch(Action::ToggleQueue, &mut doc);
+        app.dispatch(Action::ToggleQueue, &mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(app.view, View::Queue, "toggling opens the queue view");
-        assert_eq!(app.scroll, 0.0, "the queue view starts at the top");
+        assert_eq!(app.scroll_y(), 0.0, "the queue view starts at the top");
 
-        app.dispatch(Action::ToggleQueue, &mut doc);
+        app.dispatch(Action::ToggleQueue, &mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(
             app.view,
             View::Albums,
             "toggling off returns to the prior view"
         );
-        assert_eq!(app.scroll, 137.0, "and restores the prior scroll position");
+        assert_eq!(
+            app.scroll_y(),
+            137.0,
+            "and restores the prior scroll position"
+        );
     }
 
     // Phase `queue_button_hover_opens_preview`.
@@ -3931,7 +4024,7 @@ fn queue_view_and_volume_controls_are_responsive() {
     // Phase `volume_control_is_responsive_by_bar_width`.
     {
         let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot();
+        app.disconnect();
         app.playback_loaded = true;
         app.pb.current = Some("tk_g1".into());
         app.pb.queue = vec!["tk_g1".into()];
@@ -3957,22 +4050,58 @@ fn queue_view_and_volume_controls_are_responsive() {
             app.volume_btn_rect.width() > 0.0,
             "mid bar shows a volume button"
         );
-        // Very small (compact bar): volume hidden entirely.
+        // Very small (compact bar): volume stays a button with its popover.
         draw_at(&mut app, &mut doc, 520.0, 800.0);
         assert_eq!(app.volume_rect, Rect::ZERO);
-        assert_eq!(app.volume_btn_rect, Rect::ZERO, "compact bar hides volume");
+        assert!(
+            app.volume_btn_rect.width() > 0.0,
+            "the compact bar keeps the volume button"
+        );
+        // The rest of the wide bar's controls live in its More menu.
+        let more = app
+            .hits
+            .iter()
+            .find_map(|hit| match hit.action {
+                Action::OpenPlayerMenu(rect) => Some(rect),
+                _ => None,
+            })
+            .expect("the compact bar offers a More menu");
+        app.dispatch(
+            Action::OpenPlayerMenu(more),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert!(app.context.is_open(), "More opens the player menu");
+        let labels: Vec<&str> = app
+            .context
+            .items()
+            .iter()
+            .filter_map(ui::widget::context_menu::MenuItem::label)
+            .collect();
+        for label in ["Shuffle", "Repeat all", "Repeat one", "Lyrics", "Queue"] {
+            assert!(
+                labels.contains(&label),
+                "the More menu offers {label}: {labels:?}"
+            );
+        }
+        assert!(
+            labels.contains(&"Like") || labels.contains(&"Unlike"),
+            "the More menu offers like: {labels:?}"
+        );
     }
 
     // Phase `volume_button_opens_a_slider_popover`.
     {
         let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot();
+        app.disconnect();
         app.playback_loaded = true;
         app.pb.current = Some("tk_g1".into());
         app.pb.queue = vec!["tk_g1".into()];
         draw_at(&mut app, &mut doc, 1000.0, 800.0); // collapsed-to-button width
         assert!(app.volume_btn_rect.width() > 0.0);
-        app.dispatch(Action::ToggleVolumePopover, &mut doc);
+        app.dispatch(
+            Action::ToggleVolumePopover,
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         draw_at(&mut app, &mut doc, 1000.0, 800.0);
         assert!(
             app.volume_popover_open,
@@ -3982,23 +4111,37 @@ fn queue_view_and_volume_controls_are_responsive() {
             app.volume_popover_slider.width() > 0.0,
             "the popover hosts a volume slider"
         );
-        assert_eq!(
-            app.volume_rect, app.volume_popover_slider,
-            "the popover slider is the active volume drag target"
+        let (panel, button) = (app.volume_popover_rect, app.volume_btn_rect);
+        assert!(
+            panel.y1 < button.y0 && (panel.x1 - button.x1).abs() < 0.5,
+            "the popover opens above the button, on its trailing edge ({panel:?} over {button:?})"
+        );
+        assert!(
+            panel.x0 >= 0.0 && panel.x1 <= 1000.0,
+            "the popover stays in the window: {panel:?}"
+        );
+        let (track, slider) = (app.volume_rect, app.volume_popover_slider);
+        assert!(
+            track.width() > 0.0
+                && track.x0 >= slider.x0
+                && track.x1 <= slider.x1
+                && (track.y0 - slider.y0).abs() < 0.5
+                && (track.y1 - slider.y1).abs() < 0.5,
+            "the popover slider is the active volume drag target ({track:?} in {slider:?})"
         );
     }
 
-    // Phase `compact_bar_renders_progress_below_the_status_bar`.
+    // Phase `compact_bar_renders_progress_below_the_song`.
     {
         let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot();
+        app.disconnect();
         app.playback_loaded = true;
         app.pb.current = Some("tk_g1".into());
         app.pb.queue = vec!["tk_g1".into()];
         draw_at(&mut app, &mut doc, 520.0, 800.0); // compact
         assert!(
-            app.scrubber_rect.y1 >= app.rect.y1 - 1.0,
-            "the progress bar sits below the whole status bar (its bottom edge)"
+            app.scrubber_rect.y0 > app.nowplaying_rect().center().y,
+            "the progress bar runs along the bottom of the bar, under the song"
         );
         assert!(
             app.scrubber_rect.width() > 300.0,
@@ -4011,7 +4154,7 @@ fn queue_view_and_volume_controls_are_responsive() {
         // At narrow width the scrub bar must be a real, grabbable track — not a
         // 1-2px hairline glued to the window edge.
         let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot();
+        app.disconnect();
         app.playback_loaded = true;
         app.pb.current = Some("tk_g1".into());
         app.pb.queue = vec!["tk_g1".into()];
@@ -4023,52 +4166,77 @@ fn queue_view_and_volume_controls_are_responsive() {
             sr.height()
         );
         assert!(sr.width() > 300.0, "the scrub bar spans the bar width");
-        // The hit strip still reaches the window's bottom edge (edge press seeks)…
+        // Its top clears the transport row, so a play/pause press never seeks.
         assert!(
-            sr.y1 >= app.rect.y1 - 1.0,
-            "the scrub hit strip reaches the bottom edge"
-        );
-        // …but its top clears the transport row, so a play/pause press never seeks.
-        assert!(
-            sr.y0 > app.rect.y1 - NOWPLAYING_H / 2.0,
+            sr.y0 > app.rect.y1 - app.bar_h / 2.0,
             "the scrub strip stays below the transport buttons"
         );
     }
 
-    // Phase `songs_row_columns_are_balanced_not_cavernous`.
+    // Phase `songs_row_columns_share_the_width_without_a_dead_gap`.
     {
-        // A wide row: the album should sit near the row's horizontal middle
-        // (not bunched against the right-hand control cluster) and the title
-        // column must be bounded — so a row reads as one connected line instead
-        // of "title-left / everything-right" with a cavern between.
-        let left = 260.0;
-        let right = 1372.0;
-        let cols = render::track_row_columns(left, right, true);
-        let mid = f64::midpoint(left, right);
+        // A wide row: the title column is as wide as its widest line (but a
+        // readable column at least), the album follows one column gap
+        // later, so no cavern opens between them; the actions and duration
+        // keep their own trailing columns.
+        let (left, right, gap, min_text) = (304.0, 1256.0, 24.0, 160.0);
+        let widths = render::ColumnWidths {
+            index: 24.0,
+            duration: 32.0,
+            action: 28.0,
+            actions: 2,
+            title: 210.0,
+            gap,
+            min_text,
+        };
+        let cols = render::track_columns(left, right, widths, true);
+        let (album_x, album_x1) = cols.album.expect("a wide row shows the album");
         assert!(
-            (cols.album - mid).abs() < 130.0,
-            "album sits near the row middle (album {} vs mid {mid})",
-            cols.album
+            (album_x - cols.title_x1 - gap).abs() < 0.5,
+            "album follows the title"
         );
         assert!(
-            cols.album + 150.0 < cols.like,
-            "album column leaves room before the control cluster (album {} / like {})",
-            cols.album,
-            cols.like
+            (cols.title_x1 - cols.title_x - 210.0).abs() < 0.5,
+            "the title column fits its widest line"
         );
-        let title_col = cols.album - cols.text;
+        let short = render::track_columns(
+            left,
+            right,
+            render::ColumnWidths {
+                title: 90.0,
+                ..widths
+            },
+            true,
+        );
         assert!(
-            (200.0..=520.0).contains(&title_col),
-            "title column is bounded, not stretched across the row (was {title_col})"
+            (short.title_x1 - short.title_x - min_text).abs() < 0.5,
+            "short titles keep a readable column"
         );
+        let long = render::track_columns(
+            left,
+            right,
+            render::ColumnWidths {
+                title: 2000.0,
+                ..widths
+            },
+            true,
+        );
+        let (long_album, _) = long
+            .album
+            .expect("long titles still leave the album its half");
+        assert!(long_album - long.title_x1 >= gap - 0.5);
+        assert!(long.title_x1 - long.title_x <= (long.actions_x - gap - long.title_x) / 2.0 + 0.5);
+        assert!(album_x1 - album_x >= min_text);
         assert!(
-            cols.album < right - 380.0,
-            "album is not bunched against the right edge (album {})",
-            cols.album
+            (cols.actions_x - album_x1 - gap).abs() < 0.5,
+            "the actions follow the album"
         );
-        // Mid-width rows keep the album ahead of the controls too.
-        let m = render::track_row_columns(60.0, 720.0, true);
-        assert!(m.album >= m.text + 190.0 && m.album <= m.like - 150.0);
+        assert!(cols.actions_x < right);
+
+        // Too narrow for two readable columns: the title keeps the width.
+        let narrow = render::track_columns(0.0, 420.0, widths, true);
+        assert!(narrow.album.is_none());
+        assert!((narrow.actions_x - narrow.title_x1 - gap).abs() < 0.5);
     }
 }
 
@@ -4085,7 +4253,7 @@ fn every_view_renders_and_now_playing_falls_back_to_album_art() {
     // Phase `every_view_renders_without_panic`.
     {
         let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot(); // hermetic: no worker / cover fetches
+        app.disconnect(); // hermetic: no worker / cover fetches
         app.playback_loaded = true;
         app.pb.queue = vec!["tk_g1".into(), "tk_g2".into()];
         app.pb.current = Some("tk_g1".into());
@@ -4098,7 +4266,7 @@ fn every_view_renders_and_now_playing_falls_back_to_album_art() {
             View::Playlists,
             View::Downloads,
             View::Liked,
-            View::Search,
+            View::Browse,
             View::Queue,
             View::Lyrics,
             View::Album("al_glasslight".into()),
@@ -4143,6 +4311,9 @@ fn draw_at(app: &mut MusicApp, doc: &mut AutoCommit, w: f64, h: f64) {
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
     app.rect = Rect::new(0.0, 0.0, w, h);
+    app.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
+    app.sync(doc, &automerge::ROOT);
+    app.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
     app.sync(doc, &automerge::ROOT);
     let mut tr = TextRenderer::new();
     let theme = Theme::dark();
@@ -4163,26 +4334,31 @@ fn canonical_actions_converge_through_the_platform_document() {
     // Phase `canonical_action_host_commit_converges_through_the_platform_document`.
     {
         let (mut app, mut doc) = app_with_doc();
-        assert!(!doc::load_library(&doc).is_liked("tk_g2"));
-        // Like via the normal action pipeline. This is the same ActionHost
-        // boundary used by pointer controls and Ctrl+K, not a Music-owned
-        // transport or a side-channel mutation.
-        app.dispatch(Action::ToggleLike("tk_g2".into()), &mut doc);
+        assert!(!seed::library_of(&doc).is_liked("tk_g2"));
+        // Like via the normal action pipeline: the framework dispatcher
+        // pointer controls and Ctrl+K share, not a Music-owned transport or
+        // a side-channel mutation.
+        app.dispatch(
+            Action::ToggleLike("tk_g2".into()),
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert!(
-            doc::load_library(&doc).is_liked("tk_g2"),
+            seed::library_of(&doc).is_liked("tk_g2"),
             "the canonical action changed the host-owned app document"
         );
-        assert!(
-            app.actions.take_committed().is_some(),
-            "ActionHost produced the committed canonical action that the platform records and replicates"
+        assert_eq!(
+            last_action_label(&mut doc).as_deref(),
+            Some("edit:liked"),
+            "the like is a recorded, attributed action the platform replicates"
         );
+        assert_eq!(last_edit_op(&mut doc), Some(tilo_actions::EditOp::Insert));
         // Model the platform's document replication boundary with an exact
         // Automerge message exchange. Music neither opens a socket nor mints a
         // pairing token; it only reads/writes this canonical document.
         let mut peer = AutoCommit::new();
         crate::sync::converge(&mut doc, &mut peer);
         assert!(
-            doc::load_library(&peer).is_liked("tk_g2"),
+            seed::library_of(&peer).is_liked("tk_g2"),
             "the committed canonical action reaches the peer document"
         );
     }
@@ -4197,39 +4373,53 @@ fn canonical_actions_converge_through_the_platform_document() {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Songs;
         draw_once(&mut app, &mut doc);
-        // Find a real like-heart hit the draw pass registered.
-        let (id, center) = app
-            .hits
-            .iter()
-            .find_map(|h| match &h.action {
-                Action::ToggleLike(id) => Some((id.clone(), h.rect.center())),
-                _ => None,
-            })
-            .expect("a song row registers a like-heart hit");
+        // The like control of a song's row, shown under the pointer.
+        let id = String::from("tk_g2");
+        let center = track_control(&mut app, &mut doc, &id, "like", draw_once).center();
         // The sample library seeds some tracks as already-liked, so assert the
         // membership *flips* rather than assuming a fixed direction.
-        let before = doc::load_library(&doc).is_liked(&id);
-        let expected = crate::actions::encode(&crate::actions::set_liked_action(&id, !before));
+        let before = seed::library_of(&doc).is_liked(&id);
 
-        send(&mut app, &cursor_at(center), &mut doc);
-        send(&mut app, &press(MouseButton::Left), &mut doc);
+        hosted_click(&mut app, &mut doc, center);
 
         assert_eq!(
-            app.actions.last_dispatched(),
-            Some(&expected),
-            "the like heart and the palette build the identical EncodedAction"
-        );
-        assert_eq!(
-            doc::load_library(&doc).is_liked(&id),
+            seed::library_of(&doc).is_liked(&id),
             !before,
             "and it actually toggled the track's liked state in the doc"
         );
-        // The heads captured for the host's undo bracket are armed (the host
-        // drains this via `take_committed_action` to record one undo boundary).
-        assert!(
-            app.actions.take_committed().is_some(),
-            "the click armed exactly one undo boundary for the host to record"
+        assert_eq!(
+            last_edit_op(&mut doc),
+            Some(if before {
+                tilo_actions::EditOp::Remove
+            } else {
+                tilo_actions::EditOp::Insert
+            }),
+            "the click applied the like edit"
         );
+    }
+}
+
+/// What history recorded for the last action applied to `doc`.
+fn last_action(doc: &mut AutoCommit) -> Option<tilo_actions::Did> {
+    let change = doc.get_last_local_change()?;
+    let message = change.message()?;
+    tilo_actions::ActionContext::from_change_message(message)?.what
+}
+
+/// The last action's verb, or `edit:<field>` for a field edit.
+fn last_action_label(doc: &mut AutoCommit) -> Option<String> {
+    match last_action(doc)? {
+        tilo_actions::Did::Verb(verb) => Some(verb.action.action),
+        tilo_actions::Did::Edit(edit) => Some(format!("edit:{}", edit.field)),
+        _ => None,
+    }
+}
+
+/// The operation of the last field edit applied to `doc`.
+fn last_edit_op(doc: &mut AutoCommit) -> Option<tilo_actions::EditOp> {
+    match last_action(doc)? {
+        tilo_actions::Did::Edit(edit) => Some(edit.op),
+        _ => None,
     }
 }
 
@@ -4283,7 +4473,7 @@ fn sample_bundle() -> SearchBundle {
             subscriber_count: 5_000_000,
             avatar_url: String::new(),
         }],
-        playlists: vec![PlaylistHit {
+        playlists: vec![crate::backend::PlaylistHit {
             id: "PLdaftmix".into(),
             title: "This Is Daft Punk".into(),
             subtitle: "YouTube Music".into(),
@@ -4293,26 +4483,86 @@ fn sample_bundle() -> SearchBundle {
     }
 }
 
-/// Put the app on the Search screen showing a fed multi-type bundle, offline
-/// (no worker, no network) so the render path is exercised hermetically.
-fn search_showing_bundle() -> (MusicApp, AutoCommit) {
+/// An app that has taken in a multi-type live search reply, offline (no
+/// worker, no network) so the render path is exercised hermetically.
+fn app_with_live_results() -> (MusicApp, AutoCommit) {
     let (mut app, doc) = app_with_doc();
-    app.set_offline_for_shot();
+    app.disconnect();
     app.playback_loaded = true;
     app.ingest_search_results("daft punk", sample_bundle());
-    app.view = View::Search;
-    app.search_input.set_text("daft punk");
     (app, doc)
 }
 
-fn has_play_of(app: &MusicApp, id: &str) -> bool {
-    app.hits
-        .iter()
-        .any(|h| matches!(&h.action, Action::Play { queue, .. } if queue.iter().any(|q| q == id)))
+/// Invoke the published action search `hit` names, as the palette does: on
+/// the row a search provider resolves, else on the app's published tree.
+/// Open the row `hit` is anchored at, as the window's `open` does.
+fn invoke_hit(app: &mut MusicApp, hit: &ui::search::SearchResult, _doc: &mut AutoCommit) {
+    let anchor = hit.anchor();
+    assert!(
+        app.device_row(&anchor).is_some() || app.publish_resource(&anchor).is_some(),
+        "the hit's row resolves"
+    );
+    let effect = crate::actions::anchor_effect(&anchor).expect("the hit opens its row");
+    app.begin_effect(tilo_actions::InvocationId::new(), effect)
+        .expect("the actual effect runs");
 }
+
+/// Whether track `id` is a row of one of the page's track tables.
+fn has_play_of(app: &MusicApp, id: &str) -> bool {
+    app.track_tables.iter().any(|slot| {
+        slot.queue.iter().any(|queued| queued == id)
+            && slot.table.rows().iter().any(|row| row.id == id)
+    })
+}
+/// Where the page's embedded widget with test id `id` stands.
+fn page_widget(app: &MusicApp, id: &str) -> Rect {
+    app.page_parts
+        .iter()
+        .find_map(|part| part.find(id))
+        .unwrap_or_else(|| panic!("the page shows {id}"))
+}
+
+#[test]
+fn recommendations_shared_input_and_dismiss_controls_record_canonical_actions() {
+    let (mut app, mut doc) = app_with_doc();
+    app.disconnect();
+    app.view = View::Recommendations;
+    draw_at(&mut app, &mut doc, 1280.0, 2400.0);
+    let toggle = page_widget(&app, "music-recommendations-input-likes");
+    hosted_click(&mut app, &mut doc, toggle.center());
+    assert!(!seed::library_of(&doc).recommendations.likes);
+    assert_eq!(last_action_label(&mut doc).as_deref(), Some("edit:likes"));
+    app.dispatch(
+        Action::Recommendation(
+            crate::recommendations::Preferences::input_path(crate::recommendations::Input::Likes)
+                .set(true),
+        ),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    draw_at(&mut app, &mut doc, 1280.0, 2400.0);
+    let pick = crate::recommendations::suggestions(&app.lib, 1)
+        .pop()
+        .unwrap();
+    let dismiss = page_widget(
+        &app,
+        &format!("music-recommendations-dismiss-{}", pick.track),
+    );
+    hosted_click(&mut app, &mut doc, dismiss.center());
+    assert!(
+        seed::library_of(&doc)
+            .recommendations
+            .is_dismissed(&pick.track)
+    );
+    assert_eq!(
+        last_action_label(&mut doc).as_deref(),
+        Some("edit:dismissed")
+    );
+}
+
 fn has_nav(app: &MusicApp, view: View) -> bool {
     let want = Action::Nav(view);
     app.hits.iter().any(|h| h.action == want)
+        || app.media_grids.iter().any(|grid| grid.offers(&want))
 }
 
 #[test]
@@ -4323,14 +4573,20 @@ fn has_nav(app: &MusicApp, view: View) -> bool {
 fn artist_and_album_pages_navigate_and_play() {
     // Phase `artist_page_from_search_result_navigates_and_plays_a_top_track`.
     {
-        let (mut app, mut doc) = search_showing_bundle();
-        app.search_tab = SearchTab::All;
-        draw_once(&mut app, &mut doc);
-        // Click the artist result (real hit-test path) → the artist page opens.
-        let nav = Action::Nav(View::Artist("UCdaftpunk".into()));
-        let p = hit_center(&app, &nav).expect("artist result is a click target");
-        assert_eq!(app.hit_test(p), Some(nav.clone()));
-        app.dispatch(nav, &mut doc);
+        let (mut app, mut doc) = app_with_live_results();
+        // Activating the artist's search hit opens the artist page.
+        let provider = ui::framework::testing::search_source::<crate::model::Library>(
+            app.live_search_entries(),
+        );
+        let query = ui::search::SearchQuery::new("daft punk");
+        let rows =
+            ui::search::SearchProvider::search_page(&provider, &query, None, 100, 100).results;
+
+        let artist = rows
+            .iter()
+            .find(|row| row.anchor() == crate::actions::artist_resource_id("UCdaftpunk"))
+            .expect("the artist's hit");
+        invoke_hit(&mut app, artist, &mut doc);
         assert_eq!(app.view, View::Artist("UCdaftpunk".into()));
         // Supply the real artist page (as the worker would) and render it.
         let page = ArtistPage {
@@ -4357,6 +4613,7 @@ fn artist_and_album_pages_navigate_and_play() {
                     cover_url: String::new(),
                 },
             ],
+            provider_followed: None,
             similar: vec![ArtistHit {
                 id: "UCjustice".into(),
                 name: "Justice".into(),
@@ -4366,15 +4623,13 @@ fn artist_and_album_pages_navigate_and_play() {
         };
         app.absorb_artist(&page);
         app.artist_pages.insert("UCdaftpunk".into(), page);
-        draw_once(&mut app, &mut doc);
+        // Tall enough that the whole page is on screen: rows scrolled out of
+        // view register no clicks.
+        draw_at(&mut app, &mut doc, 1280.0, 2400.0);
         // The full artist page surfaces a Follow control, related artists, and the
         // album + single as separate discography entries.
-        assert!(
-            app.hits
-                .iter()
-                .any(|h| h.action == Action::ToggleFollow("UCdaftpunk".into())),
-            "the artist page has a Follow control",
-        );
+        let follow = page_widget(&app, "music.page.Follow");
+        assert!(follow.width() > 0.0, "the artist page has a Follow control");
         assert!(
             has_nav(&app, View::Artist("UCjustice".into())),
             "related artists are navigable"
@@ -4385,17 +4640,7 @@ fn artist_and_album_pages_navigate_and_play() {
         );
         // Click a top track → it plays.
         let top_id = "yt:top_track".to_string();
-        let play = app
-            .hits
-            .iter()
-            .find_map(|h| match &h.action {
-                Action::Play { queue, .. } if queue.iter().any(|q| q == &top_id) => {
-                    Some(h.action.clone())
-                }
-                _ => None,
-            })
-            .expect("a top track is a playable row on the artist page");
-        app.dispatch(play, &mut doc);
+        click_track(&mut app, &mut doc, &top_id);
         assert_eq!(
             app.pb.current.as_deref(),
             Some("yt:top_track"),
@@ -4407,7 +4652,7 @@ fn artist_and_album_pages_navigate_and_play() {
     // Phase `album_page_lists_ordered_tracks_and_plays_the_album`.
     {
         let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot();
+        app.disconnect();
         app.playback_loaded = true;
         let page = AlbumPage {
             id: "MPREdiscovery".into(),
@@ -4433,14 +4678,229 @@ fn artist_and_album_pages_navigate_and_play() {
                 "album track {vid} is a playable row"
             );
         }
-        // The album header plays the whole album in track order.
-        let header = app.hits.iter().any(|h| {
-            matches!(
-                &h.action,
-                Action::Play { queue, index: 0 }
-                    if queue.len() == 3 && queue[0] == "yt:al_one" && queue[2] == "yt:al_three"
-            )
-        });
-        assert!(header, "the album header plays the whole album in order");
+        // The album header's Play plays the whole album in track order.
+        let play = page_widget(&app, "music.page.Play");
+        send(&mut app, &cursor_at(play.center()), &mut doc);
+        send(&mut app, &press(MouseButton::Left), &mut doc);
+        send(&mut app, &released(MouseButton::Left), &mut doc);
+        assert_eq!(
+            app.pb.queue,
+            ["yt:al_one", "yt:al_two", "yt:al_three"],
+            "the album header plays the whole album in order"
+        );
+        assert_eq!(app.pb.current.as_deref(), Some("yt:al_one"));
     }
+}
+
+#[test]
+fn a_launch_link_plays_from_the_start_or_opens_its_page() {
+    // A plain `music://track/` launch opens the track paused at the start once
+    // it is in the library.
+    let (mut app, mut doc) = app_with_doc();
+    let arguments = [crate::search_type::SearchHit::track_link("tk_g2")];
+    app.open_launch(&ui::framework::LaunchInput::new(&arguments, None));
+    app.sync(&doc, &automerge::ROOT);
+    app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+    app.sync(&doc, &automerge::ROOT);
+    assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
+    assert_eq!(app.pb.position_ms, 0);
+    assert!(!app.pb.playing);
+
+    let (mut app, _doc) = app_with_doc();
+    let arguments = [crate::search_type::SearchHit::album_link("al_glasslight")];
+    app.open_launch(&ui::framework::LaunchInput::new(&arguments, None));
+    assert_eq!(app.view, View::Album("al_glasslight".into()));
+    assert!(app.pb.current.is_none(), "opening a page plays nothing");
+}
+
+#[test]
+fn live_album_tracks_are_discoverable_and_queue_through_the_resource_door() {
+    let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
+    let track = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+    let surface = app.surface_mut::<MusicApp>();
+    surface.absorb_album(&crate::backend::AlbumPage {
+        id: "spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into(),
+        tracks: vec![crate::backend::TrackHit {
+            video_id: track.into(),
+            title: "An admitted catalogue track".into(),
+            artist: "Catalogue artist".into(),
+            artist_id: None,
+            album: Some("Catalogue album".into()),
+            album_id: Some("spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into()),
+            duration_s: 213,
+            cover_url: String::new(),
+        }],
+        ..Default::default()
+    });
+    app.settle();
+    let address = crate::actions::track_resource_id(track);
+    let published = app.agent_surface().to_string();
+    assert!(published.contains(&address), "{published}");
+    assert!(published.contains("Play track"), "{published}");
+    assert!(!app.state().tracks.contains_key(track));
+    app.effect_on(
+        &address,
+        &crate::actions::MusicEffect::AddToQueue {
+            track: track.into(),
+        },
+    )
+    .expect("a live album track exposes its bound queue action");
+    assert!(
+        !app.state().tracks.contains_key(track),
+        "queueing is device-local"
+    );
+    assert!(
+        app.agent_surface()
+            .to_string()
+            .contains(&crate::actions::queue_item_resource_id(0, track))
+    );
+}
+
+#[test]
+fn playback_status_reports_observations_without_mutating_the_library() {
+    let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
+    let before = app.read_document(|doc| doc.clone().get_heads());
+    let track = "spotify:track:4uLU6hMCjMI75M1A2tKUQC";
+    app.surface_mut::<MusicApp>()
+        .absorb_album(&crate::backend::AlbumPage {
+            id: "spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into(),
+            tracks: vec![crate::backend::TrackHit {
+                video_id: track.into(),
+                title: "Observed queue fixture".into(),
+                artist: "Fixture artist".into(),
+                artist_id: None,
+                album: Some("Fixture album".into()),
+                album_id: Some("spotify:album:2w3BTVsZ1rb9LRsgkoWJbG".into()),
+                duration_s: 213,
+                cover_url: String::new(),
+            }],
+            ..Default::default()
+        });
+    app.settle();
+    app.effect_on(
+        &crate::actions::track_resource_id(track),
+        &crate::actions::MusicEffect::AddToQueue {
+            track: track.into(),
+        },
+    )
+    .unwrap();
+    app.effect(&crate::actions::MusicEffect::SetVolume { volume: 37 })
+        .unwrap();
+    app.effect_on(
+        "music.player:player",
+        &crate::actions::MusicEffect::ToggleShuffle,
+    )
+    .unwrap();
+    app.effect_on(
+        "music.player:player",
+        &crate::actions::MusicEffect::CycleRepeat,
+    )
+    .unwrap();
+    let output = app
+        .effect_on(
+            "music.player:player",
+            &crate::actions::MusicEffect::PlaybackStatus,
+        )
+        .expect("read-only playback observations are available on the player");
+    let observed = output
+        .value
+        .expect("the declared result contains observations");
+    assert_eq!(observed["confirmed_playing"], false);
+    assert_eq!(observed["rendered_buffers"], 0);
+    assert!(observed["sink"].is_null());
+    assert!(observed["spotify_stage"].is_null());
+    assert_eq!(observed["queue"], serde_json::json!([track]));
+    assert_eq!(observed["queue_index"], 0);
+    assert_eq!(observed["volume"], 37);
+    assert_eq!(observed["shuffle"], true);
+    assert_eq!(observed["repeat"], "all");
+    assert_eq!(app.read_document(|doc| doc.clone().get_heads()), before);
+}
+
+#[test]
+fn playback_failure_does_not_advertise_retry_of_an_at_most_once_invocation() {
+    use ui::tilo_resource::Effect as _;
+    let (mut app, _) = app_with_doc();
+    let invocation = tilo_actions::InvocationId::new();
+    app.pb.current = Some("tk_g1".into());
+    app.active_resolve_request = Some(42);
+    app.begin_resource_stream_invocation(invocation, 42);
+    app.apply_resolve_failure("tk_g1", 42, "Spotify did not confirm Premium eligibility");
+    let Some(tilo_actions::InvocationUpdate::Failed { error, .. }) =
+        app.take_effect_result(invocation)
+    else {
+        panic!("the actual resolver failure must settle its pending invocation");
+    };
+    let contract = crate::actions::MusicEffect::Play {
+        track: "tk_g1".into(),
+        queued: None,
+    }
+    .bound()
+    .contract;
+    assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
+    assert!(!error.retryable);
+    assert!(error.message.contains("Premium eligibility"));
+}
+
+#[test]
+fn settled_playback_uses_bounded_wakes_instead_of_vsync() {
+    let (mut app, _doc) = app_with_doc();
+    app.pb.playing = true;
+    app.toast.dismiss();
+    app.mark_drawn();
+    let before = app.last_tick;
+    assert!(
+        !app.needs_animation_frame(),
+        "settled playback must leave time for the host output worker"
+    );
+    let deadline = app
+        .next_wake_deadline()
+        .expect("playback still gets polled");
+    assert!(deadline > before && deadline <= before + Duration::from_millis(100));
+    app.last_tick = ui::time::now()
+        .checked_sub(Duration::from_millis(101))
+        .expect("test clock has a preceding playback interval");
+    assert!(
+        app.needs_animation_frame(),
+        "a due playback wake paints its observation"
+    );
+    app.tick();
+    assert!(
+        !app.needs_animation_frame(),
+        "polling rearms the bounded wake"
+    );
+    app.last_tick = ui::time::now()
+        .checked_sub(Duration::from_millis(101))
+        .expect("a slow paint outlives the playback interval");
+    let completed_at = ui::time::now();
+    app.mark_drawn();
+    assert!(
+        !app.needs_animation_frame(),
+        "a completed slow paint must leave time before another paint"
+    );
+    assert!(
+        app.next_wake_deadline().expect("playback still wakes") > completed_at,
+        "the next interval starts after painting, not before it"
+    );
+    app.pb.playing = false;
+    assert!(
+        app.next_wake_deadline().is_none(),
+        "stopped playback stays asleep"
+    );
+}
+
+#[test]
+#[cfg(feature = "audio")]
+fn rendered_frames_without_decoder_confirmation_do_not_settle_play() {
+    let (mut app, _doc) = app_with_doc();
+    app.disconnect();
+    let invocation = tilo_actions::InvocationId::new();
+    app.begin_resource_stream_invocation(invocation, 1);
+    assert!(!app.audio.is_playing_confirmed());
+    app.settle_resource_stream_after_rendered_frames(1);
+    assert!(
+        app.take_effect_result(invocation).is_none(),
+        "PCM observations alone must not acknowledge confirmed playback"
+    );
+    assert_eq!(app.resource_stream_invocation.unwrap().0, invocation);
 }

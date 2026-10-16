@@ -124,6 +124,12 @@ fn write_path(tile: Tile, tile_ix: u32, draw_flags: u32) {
     let n_segs = tile.segment_count_or_ix;
     if n_segs != 0u {
         var seg_ix = atomicAdd(&bump.segments, n_segs);
+        // Segments have their own reservation, separate from seg_counts:
+        // past it path_tiling's writes are dropped, so say so like any other
+        // overflow instead of rendering with the geometry missing.
+        if seg_ix + n_segs > config.segments_size {
+            atomicOr(&bump.failed, STAGE_COARSE);
+        }
         tiles[tile_ix].segment_count_or_ix = ~seg_ix;
         alloc_cmd(4u);
         ptcl[cmd_offset] = CMD_FILL;
@@ -245,8 +251,11 @@ fn main(
     // we still want to know this workgroup's memory requirement.
     if local_id.x == 0u {
         var failed = atomicLoad(&bump.failed) & (STAGE_BINNING | STAGE_TILE_ALLOC | STAGE_FLATTEN);
-        if atomicLoad(&bump.seg_counts) > config.seg_counts_size {
+        let seg_counts = atomicLoad(&bump.seg_counts);
+        if seg_counts > config.seg_counts_size {
             failed |= STAGE_PATH_COUNT;
+        } else if seg_counts > config.segments_size {
+            failed |= STAGE_SEGMENTS;
         }
         // Reuse sh_part_count to hold failed flag, shmem is tight
         sh_part_count[0] = u32(failed);
@@ -368,7 +377,12 @@ fn main(
                         part_ix = probe;
                     }
                 }
-                ix -= select(part_start_ix, sh_part_count[part_ix - 1u], part_ix > 0u);
+                // `select` evaluates both arms, so the first element would read index -1.
+                var part_base = part_start_ix;
+                if part_ix > 0u {
+                    part_base = sh_part_count[part_ix - 1u];
+                }
+                ix -= part_base;
                 let offset = config.bin_data_start + sh_part_offsets[part_ix];
                 sh_drawobj_ix[local_id.x] = info_bin_data[offset + ix];
             }
@@ -432,7 +446,12 @@ fn main(
             }
             drawobj_ix = sh_drawobj_ix[el_ix];
             tag = scene[config.drawtag_base + drawobj_ix];
-            let seq_ix = ix - select(0u, sh_tile_count[el_ix - 1u], el_ix > 0u);
+            // `select` evaluates both arms, so the first element would read index -1.
+            var prev_count = 0u;
+            if el_ix > 0u {
+                prev_count = sh_tile_count[el_ix - 1u];
+            }
+            let seq_ix = ix - prev_count;
             let width = sh_tile_width[el_ix];
             let x0y0 = sh_tile_x0y0[el_ix];
             let x = (x0y0 & 0xffffu) + seq_ix % width;

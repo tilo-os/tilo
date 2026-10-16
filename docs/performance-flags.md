@@ -5,8 +5,7 @@ copy, and performance-harness controls. It covers the retained UI, vendored
 Vello, DRM bridge, and presentation loop, not unrelated application settings or
 every graphics-driver environment variable. Defaults below mean **unset**.
 
-The toolkit's knobs are `TILO_UI_*` (read through `ui::env`). Their former
-`QUICK_UI_*` names still work and print a one-time deprecation warning.
+The toolkit's knobs are `TILO_UI_*` (read through `ui::env`).
 
 Use release binaries, record the exact commit, binary hash, adapter/driver,
 dimensions, environment, and workload, and change one variable at a time.
@@ -87,9 +86,12 @@ plan. Sparse shader experiments below require the supported GPU/Area path.
 | `VELLO_CLIP_SINGLE_GROUP` | Exact-1 | GPU clip-leaf specialization only for 1–256 clips and exactly one clip-leaf workgroup `(1,1,1)`. Other clip shapes use the normal shader. |
 | `VELLO_DEFER_BUMP_READBACK` | Exact-1 | Moves the existing bump-counter readback after fine rasterization in synchronous GPU recording. Not full CPU or asynchronous rendering. Does not remove overflow validation or the readback bytes. |
 | `TILO_DRM_XRGB_DAMAGE` | Exact-1 | Opt-in damage-aware writes into DRM XRGB destinations, also exercised by `redraw_bench`. Per-buffer revision history must be valid; unknown/stale/invalid history and recovery boundaries require full refresh. This is distinct from GPU texture readback damage. |
+| `TILO_KMS_ATOMIC` | Unset: on; exact `0` off | `0` page-flips every output through the legacy `drmModePageFlip` instead of an atomic commit of the primary plane, without asking the driver for atomic (docs/architecture/compositor.md, "Page flips"). Restores the flips Tilo made before atomic presentation: the A/B baseline, or the switch-off for a driver whose atomic flips misbehave. Legacy flips cannot change format, so fullscreen `XBGR8888`/`ABGR8888` clients are composited. Latched at first use. |
+| `TILO_CLIENT_SCANOUT` | Unset: on; exact `0` off | `0` composites every frame instead of page-flipping a qualifying fullscreen client's own buffer (docs/architecture/compositor.md, "Fullscreen client scanout"). The composited baseline for an A/B measurement, or an escape hatch for a driver that misbehaves with client framebuffers. Latched at first use. |
 
 Sources: [shader selection](../vendor/vello/src/render.rs),
 [DRM scanout](../crates/session/shell/src/compositor/backend/drm/scanout.rs),
+[KMS flips](../crates/session/shell/src/compositor/backend/drm/kms_flip.rs),
 [XRGB history](../crates/session/shell/src/compositor/backend/drm/xrgb_history.rs).
 For the recorded `bounds-xrgb-ppt8` experiment, the additional controls were
 `VELLO_SPARSE_COARSE_AUTO=1 VELLO_SPARSE_TILE_BOUNDS=1
@@ -118,7 +120,6 @@ time. Readback payload counters exclude row-padding holes.
 | Variable | Default / values | Effect |
 | --- | --- | --- |
 | `TILO_UI_NO_SCROLL_OPT` | Nonempty, off | Disables the scroll-reposition fast path; forces full layout solving on layout-dirty frames. Cached at first use. |
-| `TILO_UI_NO_SPLIT_CACHE` | Nonempty, off | Disables `NavSplit` scene caching for troubleshooting. Cached at first use. |
 | `TILO_UI_PERF` | Nonempty, off | Enables application performance logging. Cached at first use. |
 | `TILO_UI_PRESENT` | Present, off | Render-thread encode/acquire/present timing logs; useful for costs absent from offscreen benchmarks. Latched when the render thread starts. |
 | `TILO_PROFILE` | Nonempty, off | Enables the in-app profiling HUD, including in release builds. The HUD itself adds UI work. |
@@ -148,13 +149,10 @@ selection. Keep their values identical across steady-state comparisons.
 | `TILO_STARTUP_WARM` | On; trimmed, case-insensitive `off`, `0`, `false`, or `no` disables | Master background warmup switch, cached at first use. Empty/other values enable it. The shell warms a throwaway font system to populate OS/font caches; this is not a persistent GPU pipeline cache. |
 | `TILO_STARTUP_WARM_VELLO` | Off; trimmed empty/`0`/`off`/`false`/`no` disables, case-insensitive | Other supplied values additionally request a 4×4 Vello scratch render in shell and shot-harness startup. Requires master warmup enabled. Can contend with real renderer initialization; do not assume it improves first paint. |
 | `TILO_STARTUP_METRICS_PATH` | Unset: disabled; path | Enables startup event capture at initialization. Explicit dump or scoped shutdown writes/replaces JSON at that path; parent directories are not created and write errors are ignored. Verify the file exists before reporting a result. |
-| `TILO_WEBVIEW_DMABUF` | Present, off | WPE-only EGL/DMA-BUF export path; **`=0` enables the request**. Setup failure falls back to SHM. Requires the compiled WPE/import path and compatible devices; request alone is not proof of zero-copy. |
-| `TILO_WEBVIEW_DRM_NODE` | `/dev/dri/renderD128`; path | DRM node for WPE EGL setup when DMA-BUF export is requested. Empty/unusable paths fail setup and fall back to SHM. Not the wgpu adapter selector. |
 | `TILO_DMABUF_DEVICE` | Unset: automatic probe; path | Selects the render node advertised to compositor clients. Empty explicitly disables DMA-BUF advertisement; an unusable override is rejected. Automatic selection requires an openable, known CPU-mappable driver; an override bypasses that driver allow-list. The compositor's foreign-surface route CPU-maps the buffer, so DMA-BUF advertisement does **not** imply a GPU-only zero-copy import. |
 
 Sources: [warmup.rs](../crates/sdk/ui-core/src/warmup.rs), [shell startup](../crates/session/shell/src/main.rs),
 [startup metrics](../crates/system/tilo-startup-metrics/src/lib.rs),
-[WPE export](../crates/sdk/ui-core/src/webview/wpe/mod.rs), [EGL node](../crates/sdk/ui-core/src/webview/wpe/egl.rs),
 [compositor render node](../crates/session/shell/src/compositor/render_node.rs).
 
 ## UI dashboard benchmark
@@ -178,6 +176,7 @@ harness-only; none sets a production frame-rate limit.
 | `TILO_UI_DASH_ALLOC_BREAKDOWN` | Nonempty, off | Enables allocation counting plus phase attribution; also enabled automatically by either per-redraw allocation budget. |
 | `TILO_UI_DASH_VERIFY` | Exact-1, off | Retained-versus-full native pixel preflight. Adds reference textures/readbacks, suppresses performance reporting, rejects all acceptance budgets and the four profile-report flags above. Cannot combine with GPU timestamp mode. |
 | `TILO_UI_DASH_VERIFY_FRAMES` | `40`; integer `20..=100` | Number of frames required for verification; invalid values fail with exit 2. Used in verification mode; supply enough iterations/redraws (normally the same number). |
+| `TILO_UI_DASH_SAMPLES` | Unset, or nonempty path | Writes every redrawing frame's total (microseconds, one per line) after the loop, the population the frame budgets rank, for `tools/perf/record.py emit`. Fails with exit 2 when no frame redrew or the file cannot be written. Rejected in verification and GPU timestamp modes. |
 
 ### Optional acceptance budgets
 
@@ -236,6 +235,7 @@ claim. Its CPU destination is reused memory, not a physical KMS mapping.
 | --- | --- | --- |
 | `TILO_REDRAW_BENCH_PROFILE` | Exact-1, off | Phase timing and joined action diagnostics. Acceptance is disabled and the run deliberately returns nonzero even when rendering succeeds. |
 | `TILO_REDRAW_BENCH_PROFILE_OUTPUT` | Unset, or nonempty path | Profile-only all-action report, written after the loop to a newly created file; existing paths are not overwritten. Empty paths fail in profile mode. Ignored outside profile mode. |
+| `TILO_REDRAW_BENCH_SAMPLES` | Unset, or nonempty path | Writes the 1,000 action samples (microseconds, one per line, action order) before the gate decides, so a run that misses the gate is still recorded. Only a complete, valid sample set is written. Empty paths fail; rejected with PROFILE=1. |
 | `TILO_REDRAW_BENCH_SCENE_REUSE` | Exact-1, off | Requires PROFILE=1. Compares/retains resolved upload bytes for **telemetry**, not production scene-reuse enablement. |
 | `TILO_REDRAW_BENCH_GEOMETRY_REUSE` | Exact-1, off | Requires PROFILE=1. Measures potential geometry reuse for **telemetry**, not an implemented production geometry cache. |
 | `SHELL_DRAW_ITERS` | `500`; usize | Only the separate `draw_bench` example: repeated CPU scene paint at 1600×900, no GPU/present. Invalid falls back; use a positive count. |
@@ -266,6 +266,7 @@ separate from headless and nested-window results.
 | `TILO_LOOP_TIMING` | Present (Unicode), off | Logs a phase breakdown for native-loop ticks with more than 100 ms of non-sleeping work. `=0` still enables it; no log does not establish a 16.67 ms deadline. |
 | `TILO_RUN_SECONDS` | Unset: run indefinitely | Positive finite fractional seconds requests clean shutdown; malformed/nonpositive values mean no timeout. |
 | `TILO_REFRESH_HZ` | Backend refresh, or 60 Hz fallback | Diagnostic pacing override, finite 20–1000 Hz including fractional rates (rounded to millihertz). Invalid values warn and are ignored. Does not reconfigure a physical monitor. |
+| `TILO_TEST_FRAME_STALL_MS` | Unset; `80` or `50-130` (ms, at most 2000) | Developer override (debug or `dev-overrides` builds only; release builds ignore it): blocks the loop after every painted frame, a fresh delay from the range each frame, so layout springs, animations and configures run at a slow machine's frame times. Invalid values warn and are ignored. `os/dev/test-slow-frame-launch.sh` opens apps under it. |
 | `TILO_HEADLESS_SIZE` | `1600x900` | Initial headless output `WxH`, positive u32 dimensions; malformed/zero falls back. |
 | `TILO_HEADLESS_WATCH` | Unset: unwatched | `1` rasterizes every headless frame from the start, as a streaming viewer needs; otherwise frames are rasterized only after the control socket's `watch` (snapshots render on demand regardless). |
 | `TILO_WINIT_SIZE` | `1600x900` | Initial nested window `WxH`, positive u32 dimensions; malformed/zero falls back. |
@@ -296,19 +297,19 @@ offscreen GPU fence nor a queue submission proves a physical page flip.
 
 ### Projector capture workload
 
-`TILO_PROJECTOR_PROFILE` is an **input JSON path**, not a profiling-output flag.
-It defaults to `XDG_RUNTIME_DIR/tilo-projector/capture-profile.json` when that
-directory variable exists; otherwise no profile file is selected. The path is
-latched at capture construction, but active capture rereads the file at most
-once per second. Its u32 fields are `max_width`, `max_height`, `fps`, and
-`bitrate_kbps`; unreadable/malformed files leave the prior profile in place.
+The capture profile is not a flag. The projector service sends it to the
+shell as a `CaptureProfile` event on its control socket whenever it changes
+(`tilo_projector::control`), and the capture tap drains that channel before
+each frame; nothing is read from disk on the render thread. Its u32 fields are
+`max_width`, `max_height`, `fps`, and `bitrate_kbps`.
 The initial unknown-receiver ceiling is 1920×1080 at 60 fps and 10,368 kbps.
 Encoder pressure can reduce the effective dimensions/bitrate below the ceiling.
 This changes the streamed workload, not native display resolution; scaled
 projector results are not native-4K redraw evidence.
 
 `TILO_PROJECTOR_VIDEO_SOCKET` selects the capture worker's Unix socket, defaulting
-to `XDG_RUNTIME_DIR/tilo-projector/video.sock` when available. It routes output,
+to `video.sock` in the projector runtime directory (`TILO_PROJECTOR_RUNTIME_DIR`,
+else `XDG_RUNTIME_DIR/tilo-projector`). It routes output,
 not rendering speed. Sources:
 [capture](../crates/session/shell/src/compositor/projection_capture.rs),
 [profile schema and defaults](../crates/system/projector/src/lib.rs),
@@ -379,9 +380,8 @@ an application can enable them through dependency feature unification):
 | --- | --- | --- |
 | `ui/dmabuf-import` | Off | Vulkan external-memory import of a compatible DMA-BUF; avoids a CPU pixel round-trip. Requires supported formats/modifiers/device sharing; enabling the feature does not guarantee successful zero-copy import. |
 | `ui/gpu-video` | Off | Enables DMA-BUF import plus NV12/P010-to-RGB GPU conversion. Conversion is still GPU work even when no CPU pixel copy occurs. |
-| `ui/webview-wpe` | Off | WPE WebKit backend, enabling DMA-BUF import; requires the WPE system stack. |
 | `media/realtime` | Off (the shell enables it) | GStreamer real-time encoder/decoder: hardware first (VA-API, NVCODEC, V4L2), then royalty-free software, then Cisco openh264. Which hardware runs is decided at runtime from the registry. |
-| `shell/hosted-test-control` | On | Hosted input-control test socket; remove from production feature selection when that test surface is unwanted. Not a frame-rate optimization. |
+| `shell/hosted-test-control` | On | Deterministic test seams for `shots` and integration tests; remove from production feature selection when that test surface is unwanted. Not a frame-rate optimization. |
 
 See [UI features](../crates/sdk/ui-core/Cargo.toml) and [shell features](../crates/session/shell/Cargo.toml).
 `--no-default-features` changes the workload/capability set; document it in any

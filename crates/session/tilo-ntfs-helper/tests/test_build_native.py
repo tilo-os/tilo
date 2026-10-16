@@ -18,6 +18,7 @@ class SourcePinTests(unittest.TestCase):
             with self.subTest(optimized=optimized), tempfile.TemporaryDirectory() as temp:
                 root = pathlib.Path(temp)
                 shutil.copyfile(ROOT / 'build_native.py', root / 'build_native.py')
+                shutil.copyfile(ROOT / 'source_artifact.py', root / 'source_artifact.py')
                 (root / 'vendor').mkdir()
                 with tarfile.open(root / 'vendor/ntfs-3g-source.tar.gz', 'w:gz') as archive:
                     marker = tarfile.TarInfo('extraction-must-not-happen')

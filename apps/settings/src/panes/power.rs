@@ -1,67 +1,41 @@
-#![allow(
-    clippy::expect_used,
-    clippy::items_after_statements,
-    clippy::needless_pass_by_value,
-    clippy::struct_excessive_bools,
-    clippy::too_many_lines,
-    reason = "power uses a closed static resource contract and keeps the coupled idle-policy transaction auditable"
-)]
-
 //! Power pane — battery status, the active power profile, and session-idle
 //! preferences.
 //!
 //! Every surface here is real or honestly absent:
 //! - **Battery** is read from `/sys/class/power_supply` (`capacity`,
 //!   `status`, `cycle_count`) and the AC adapter's `online` flag, so the card
-//!   reflects the machine's real charge. A device with no battery (a desktop
-//!   under `--shots`) shows an honest "running on AC power" state rather than
-//!   a fabricated level.
-//! - **Power profile** (Saver / Balanced / Performance) drives
-//!   `powerprofilesctl` through the shared `os_actions::Dispatcher`
-//!   (`set_power_profile`), the same binding the compositor's quick-settings
-//!   uses. The initial selection and the offered choices are sampled from
-//!   `powerprofilesctl`; unavailable profiles are never presented as working.
-//! - **Automatic suspend** and **screen-blank timeout** are durable
-//!   preferences persisted to the shared store ([`crate::prefs::SystemPrefs`]);
-//!   the compositor's idle layer reads them.
-//
-// CRDT keys this pane reads / writes:
-//   `power.profile`     — string, power-profile dropdown
-//   `power.auto_suspend`— bool, suspend-when-idle toggle
-//   `power.blank`       — string, screen-blank timeout dropdown
-//   `power.lock`        — string, session-lock timeout dropdown
+//!   reflects the machine's real charge. A device with no battery shows an
+//!   honest "running on AC power" state rather than a fabricated level.
+//! - **Power profile** (Saver / Balanced / Performance) and the **charge
+//!   cap** are this device's, changed by [`PowerEffect`] jobs through
+//!   `powerprofilesctl` and the battery driver. Unavailable profiles are
+//!   never presented as working.
+//! - **Automatic suspend**, the idle timeouts and the lid, power-key and
+//!   critical-battery actions are the device's `power` settings, which the
+//!   compositor's idle layer reads.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use ui::doc::{read_bool, read_str_or_text};
-use ui::widget::{AppModel, ModelPath};
+use std::cell::OnceCell;
+use std::sync::{Arc, Mutex};
 
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
-use os_actions::{BatteryInfo, ChargeCapBackend, ChargeCapCapability, Dispatcher, PowerProfile};
-use taffy::{NodeId, TaffyTree};
-use tracing::warn;
+use os_actions::{BatteryInfo, ChargeCapBackend, ChargeCapCapability, PowerProfile};
+use ui::LocalState;
+use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::theme::Theme;
-use ui::widget::{Dropdown, ProgressBar, Sparkline, Toggle, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use ui::tilo_resource;
+use ui::widget::{AppModel, ModelPath, ProgressBar, Sparkline, Widget};
 
-use crate::dispatcher::dispatcher_or_real;
-use crate::prefs::{PowerActionPref, PowerPrefs, SystemPrefs};
-use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
-
-pub const PROFILE_KEY: &str = "power.profile";
-pub const AUTO_SUSPEND_KEY: &str = "power.auto_suspend";
-pub const BLANK_KEY: &str = "power.blank";
-pub const LOCK_KEY: &str = "power.lock";
-pub const SUSPEND_KEY: &str = "power.suspend";
-pub const LID_KEY: &str = "power.lid";
-pub const POWER_KEY_KEY: &str = "power.power_key";
-pub const CRITICAL_KEY: &str = "power.critical";
-pub const CHARGE_LIMIT_KEY: &str = "power.charge_limit";
-pub const SAVER_SUSPEND_KEY: &str = "power.profile_idle.saver";
-pub const BALANCED_SUSPEND_KEY: &str = "power.profile_idle.balanced";
-pub const PERFORMANCE_SUSPEND_KEY: &str = "power.profile_idle.performance";
+use crate::effects::effect;
+use crate::host::{Followed, PaneCx};
+use crate::i18n::{english, t, t_args};
+use crate::prefs::{PowerActionPref, PowerPrefs};
+use crate::resource::Settings;
+use crate::row::Row;
+use crate::settings_app::SettingsApp;
+use crate::widgets::{
+    Item, SettingsSection, block, card, error_caption, note, row, rows, untitled, value_row,
+};
+use ui::i18n::ArgValue;
+use ui::lock::MutexRecover as _;
 
 /// Idle-suspend timeout options, `(label, minutes)`. `0` = never.
 const SUSPEND_OPTIONS: &[(&str, u32)] = &[
@@ -74,18 +48,43 @@ const SUSPEND_OPTIONS: &[(&str, u32)] = &[
     ("Never", 0),
 ];
 
-fn suspend_label(minutes: u32) -> &'static str {
-    SUSPEND_OPTIONS
-        .iter()
-        .find(|(_, m)| *m == minutes)
-        .map_or("15 minutes", |(l, _)| *l)
+fn duration_ftl(english: &str) -> &'static str {
+    match english {
+        "1 minute" => "power-1-minute",
+        "5 minutes" => "power-5-minutes",
+        "10 minutes" => "power-10-minutes",
+        "30 minutes" => "power-30-minutes",
+        "45 minutes" => "power-45-minutes",
+        "1 hour" => "power-1-hour",
+        "Never" => "power-never",
+        _ => "power-15-minutes",
+    }
 }
 
-fn suspend_from_label(label: &str) -> Option<u32> {
-    SUSPEND_OPTIONS
+fn duration_shown(english: &str) -> String {
+    t(duration_ftl(english))
+}
+
+fn duration_from_options(options: &[(&str, u32)], label: &str) -> Option<u32> {
+    options
         .iter()
-        .find(|(l, _)| *l == label)
-        .map(|(_, m)| *m)
+        .find(|(english, _)| *english == label || duration_shown(english) == label)
+        .map(|(_, minutes)| *minutes)
+}
+
+fn duration_options(options: &[(&str, u32)]) -> Vec<String> {
+    options
+        .iter()
+        .map(|(english, _)| duration_shown(english))
+        .collect()
+}
+
+fn suspend_label(minutes: u32) -> String {
+    let english = SUSPEND_OPTIONS
+        .iter()
+        .find(|(_, m)| *m == minutes)
+        .map_or("15 minutes", |(l, _)| *l);
+    duration_shown(english)
 }
 
 /// The action options offered for the lid / power-key / critical-battery
@@ -96,11 +95,27 @@ const ACTION_OPTIONS: &[PowerActionPref] = &[
     PowerActionPref::Ignore,
 ];
 
-fn action_options() -> Vec<String> {
+fn action_ftl(pref: PowerActionPref) -> &'static str {
+    match pref {
+        PowerActionPref::Suspend => "power-action-suspend",
+        PowerActionPref::Lock => "power-action-lock",
+        PowerActionPref::Ignore => "power-action-ignore",
+    }
+}
+
+fn action_shown(pref: PowerActionPref) -> String {
+    t(action_ftl(pref))
+}
+
+pub(crate) fn action_from_label(label: &str) -> Option<PowerActionPref> {
     ACTION_OPTIONS
         .iter()
-        .map(|a| a.display().to_string())
-        .collect()
+        .copied()
+        .find(|pref| pref.display() == label || action_shown(*pref) == label)
+}
+
+fn action_options() -> Vec<String> {
+    ACTION_OPTIONS.iter().copied().map(action_shown).collect()
 }
 
 /// The power-profile options, as `(display label, profile)`. The label is what
@@ -111,15 +126,31 @@ const PROFILES: &[(&str, PowerProfile)] = &[
     ("Performance", PowerProfile::Performance),
 ];
 
-fn profile_label(p: PowerProfile) -> &'static str {
-    PROFILES
-        .iter()
-        .find(|(_, pp)| *pp == p)
-        .map_or("Balanced", |(l, _)| *l)
+fn profile_ftl(english: &str) -> &'static str {
+    match english {
+        "Power Saver" => "power-profile-saver",
+        "Performance" => "power-profile-performance",
+        _ => "power-profile-balanced",
+    }
 }
 
-fn profile_from_label(label: &str) -> Option<PowerProfile> {
-    PROFILES.iter().find(|(l, _)| *l == label).map(|(_, p)| *p)
+fn profile_shown(english: &str) -> String {
+    t(profile_ftl(english))
+}
+
+fn profile_label(p: PowerProfile) -> String {
+    let english = PROFILES
+        .iter()
+        .find(|(_, pp)| *pp == p)
+        .map_or("Balanced", |(l, _)| *l);
+    profile_shown(english)
+}
+
+pub(crate) fn profile_from_label(label: &str) -> Option<PowerProfile> {
+    PROFILES
+        .iter()
+        .find(|(english, _)| *english == label || profile_shown(english) == label)
+        .map(|(_, p)| *p)
 }
 
 /// The screen-blank timeout options, as `(display label, minutes)`. `0`
@@ -133,18 +164,12 @@ const BLANK_OPTIONS: &[(&str, u32)] = &[
     ("Never", 0),
 ];
 
-fn blank_label(minutes: u32) -> &'static str {
-    BLANK_OPTIONS
+fn blank_label(minutes: u32) -> String {
+    let english = BLANK_OPTIONS
         .iter()
         .find(|(_, m)| *m == minutes)
-        .map_or("10 minutes", |(l, _)| *l)
-}
-
-fn blank_from_label(label: &str) -> Option<u32> {
-    BLANK_OPTIONS
-        .iter()
-        .find(|(l, _)| *l == label)
-        .map(|(_, m)| *m)
+        .map_or("10 minutes", |(l, _)| *l);
+    duration_shown(english)
 }
 
 /// Idle-lock timeout options. `0` is the explicit "Never" value persisted
@@ -158,225 +183,193 @@ const LOCK_OPTIONS: &[(&str, u32)] = &[
     ("Never", 0),
 ];
 
-fn lock_label(minutes: u32) -> &'static str {
-    LOCK_OPTIONS
+fn lock_label(minutes: u32) -> String {
+    let english = LOCK_OPTIONS
         .iter()
         .find(|(_, value)| *value == minutes)
-        .map_or("5 minutes", |(label, _)| *label)
+        .map_or("5 minutes", |(label, _)| *label);
+    duration_shown(english)
 }
 
-fn lock_from_label(label: &str) -> Option<u32> {
-    LOCK_OPTIONS
-        .iter()
-        .find(|(candidate, _)| *candidate == label)
-        .map(|(_, value)| *value)
+fn battery_status_shown(battery: &BatteryInfo) -> String {
+    let capacity = ArgValue::from(i64::from(battery.capacity));
+    match battery.status.as_str() {
+        "Full" => t("power-status-full"),
+        "Charging" => t_args("power-status-charging", &[("capacity", capacity)]),
+        "Not charging" => t_args("power-status-plugged", &[("capacity", capacity)]),
+        _ => t_args("power-status-battery", &[("capacity", capacity)]),
+    }
 }
 
-/// Power pane widget.
-pub struct PowerPane {
-    dispatcher: Arc<dyn Dispatcher + Send + Sync>,
+fn health_explanation_shown(battery: &BatteryInfo) -> String {
+    match battery.health_percent() {
+        None => t("power-health-none"),
+        Some(90..=100) => t("power-health-good"),
+        Some(80..=89) => t("power-health-aged"),
+        Some(60..=79) => t("power-health-reduced"),
+        Some(_) => t("power-health-severe"),
+    }
+}
+
+/// This device's power hardware, as the pane and the effects reach it.
+pub trait PowerControl: Send + Sync {
+    /// The battery now.
+    fn battery(&self) -> BatteryInfo;
+    /// Every power supply, for a device with more than one.
+    fn devices(&self) -> Vec<os_actions::PowerDevice>;
+    /// Recent charge, written by the shell's monitor.
+    fn history(&self) -> os_actions::BatteryHistory;
+    /// The active profile and the ones offered, or why they are unknown.
+    fn profiles(
+        &self,
+    ) -> (
+        Result<PowerProfile, String>,
+        Result<Vec<PowerProfile>, String>,
+    );
+    /// # Errors
+    ///
+    /// Why the profile was not changed.
+    fn set_profile(&self, profile: PowerProfile) -> Result<(), String>;
+    /// The battery's charge cap, where the driver offers one.
+    fn charge_cap(&self) -> Option<ChargeCapCapability>;
+    /// # Errors
+    ///
+    /// Why the cap was not applied.
+    fn set_charge_limit(&self, percent: u32) -> Result<ChargeCapCapability, String>;
+}
+
+/// The device's power hardware.
+pub struct SystemPower;
+
+impl PowerControl for SystemPower {
+    fn battery(&self) -> BatteryInfo {
+        BatteryInfo::from_system()
+    }
+
+    fn devices(&self) -> Vec<os_actions::PowerDevice> {
+        os_actions::power_devices()
+    }
+
+    fn history(&self) -> os_actions::BatteryHistory {
+        // The shell-owned UPower monitor is the single history writer.
+        os_actions::load_battery_history()
+    }
+
+    fn profiles(
+        &self,
+    ) -> (
+        Result<PowerProfile, String>,
+        Result<Vec<PowerProfile>, String>,
+    ) {
+        (
+            os_actions::get_power_profile(),
+            os_actions::available_power_profiles(),
+        )
+    }
+
+    fn set_profile(&self, profile: PowerProfile) -> Result<(), String> {
+        os_actions::set_power_profile(profile)
+    }
+
+    fn charge_cap(&self) -> Option<ChargeCapCapability> {
+        os_actions::charge_capability()
+    }
+
+    fn set_charge_limit(&self, percent: u32) -> Result<ChargeCapCapability, String> {
+        os_actions::set_charge_limit_checked(percent)
+    }
+}
+
+/// The power hardware a capture shows: a laptop battery on Balanced, which
+/// the effects change in memory only.
+pub struct SamplePower {
+    profile: Mutex<PowerProfile>,
+    cap: Mutex<ChargeCapCapability>,
+}
+
+impl Default for SamplePower {
+    fn default() -> Self {
+        Self {
+            profile: Mutex::new(PowerProfile::Balanced),
+            cap: Mutex::new(ChargeCapCapability {
+                backend: ChargeCapBackend::PowerSupply,
+                current: 80,
+                choices: vec![60, 70, 80, 90, 100],
+                supports_start_threshold: false,
+            }),
+        }
+    }
+}
+
+impl PowerControl for SamplePower {
+    fn battery(&self) -> BatteryInfo {
+        BatteryInfo {
+            present: true,
+            capacity: 72,
+            status: "Discharging".into(),
+            cycle_count: Some(148),
+            on_ac: false,
+            full_capacity: Some(40_000_000),
+            design_capacity: Some(50_000_000),
+            charge_limit: Some(self.cap.lock_recover().current),
+        }
+    }
+
+    fn devices(&self) -> Vec<os_actions::PowerDevice> {
+        Vec::new()
+    }
+
+    fn history(&self) -> os_actions::BatteryHistory {
+        os_actions::BatteryHistory::default()
+    }
+
+    fn profiles(
+        &self,
+    ) -> (
+        Result<PowerProfile, String>,
+        Result<Vec<PowerProfile>, String>,
+    ) {
+        (
+            Ok(*self.profile.lock_recover()),
+            Ok(PROFILES.iter().map(|(_, profile)| *profile).collect()),
+        )
+    }
+
+    fn set_profile(&self, profile: PowerProfile) -> Result<(), String> {
+        *self.profile.lock_recover() = profile;
+        Ok(())
+    }
+
+    fn charge_cap(&self) -> Option<ChargeCapCapability> {
+        Some(self.cap.lock_recover().clone())
+    }
+
+    fn set_charge_limit(&self, percent: u32) -> Result<ChargeCapCapability, String> {
+        let mut cap = self.cap.lock_recover();
+        cap.current = percent;
+        Ok(cap.clone())
+    }
+}
+
+/// What the device's power hardware reports, read once when first needed.
+#[derive(Clone)]
+struct PowerState {
     battery: BatteryInfo,
     devices: Vec<os_actions::PowerDevice>,
     history: os_actions::BatteryHistory,
-    charge_cap: Option<ChargeCapCapability>,
-    charge_notice: Option<String>,
-    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
-    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    local_doc: AutoCommit,
-    isolate_document: bool,
-    require_operation_token: bool,
-    available_profiles: Vec<PowerProfile>,
-    profile_notice: Option<String>,
     profile: PowerProfile,
-    last_profile: PowerProfile,
-    prefs: PowerPrefs,
-    last_prefs: PowerPrefs,
-    needs_seed: bool,
-    commit_context_pending: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    available_profiles: Vec<PowerProfile>,
+    /// Why the profiles could not be read.
+    profiles_unavailable: Option<String>,
+    /// The active profile could not be read; `profile` is then only the
+    /// first choice offered, never shown as the active one.
+    profile_unread: bool,
+    charge_cap: Option<ChargeCapCapability>,
 }
 
-impl Default for PowerPane {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PowerPane {
-    #[must_use]
-    pub fn with_command_state(
-        mut self,
-        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    ) -> Self {
-        self.command_state = commands.clone();
-        self.isolate_document = true;
-        self
-    }
-    #[must_use]
-    pub fn with_operation_status(
-        mut self,
-        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
-    ) -> Self {
-        self.operation_status = status.clone();
-        self.require_operation_token = true;
-        self
-    }
-
-    fn operation_finished(
-        &self,
-        operation: &crate::actions::PowerOperation,
-        result: Result<String, String>,
-    ) {
-        let token = crate::actions::local_operation_token_for(
-            crate::actions::POWER_OPERATION_TYPE,
-            operation,
-        );
-        if !matches!(
-            self.operation_status.get(),
-            crate::actions::LocalOperationStatus::Running { token: active } if active == token
-        ) {
-            return;
-        }
-        self.operation_status.set(match result {
-            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
-            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
-        });
-    }
-
-    fn operation_is_running(&self, operation: &crate::actions::PowerOperation) -> bool {
-        if !self.require_operation_token {
-            return true;
-        }
-        let token = crate::actions::local_operation_token_for(
-            crate::actions::POWER_OPERATION_TYPE,
-            operation,
-        );
-        matches!(self.operation_status.get(), crate::actions::LocalOperationStatus::Running { token: active } if active == token)
-    }
-
-    fn restore_authoritative_controls(&self, state: &mut AutoCommit, root: &ObjId) {
-        fn restore_text(state: &mut AutoCommit, root: &ObjId, key: &str, value: &str) {
-            if read_str_or_text(state, root, key).as_deref() != Some(value) {
-                let _ = state.put(root, key, value);
-            }
-        }
-        fn restore_bool(state: &mut AutoCommit, root: &ObjId, key: &str, value: bool) {
-            if read_bool(state, root, key) != Some(value) {
-                let _ = state.put(root, key, value);
-            }
-        }
-        restore_text(state, root, PROFILE_KEY, profile_label(self.last_profile));
-        restore_bool(state, root, AUTO_SUSPEND_KEY, self.last_prefs.auto_suspend);
-        restore_text(
-            state,
-            root,
-            BLANK_KEY,
-            blank_label(self.last_prefs.blank_minutes),
-        );
-        restore_text(
-            state,
-            root,
-            SUSPEND_KEY,
-            suspend_label(self.last_prefs.suspend_minutes),
-        );
-        restore_text(
-            state,
-            root,
-            SAVER_SUSPEND_KEY,
-            suspend_label(self.last_prefs.saver_suspend_minutes),
-        );
-        restore_text(
-            state,
-            root,
-            BALANCED_SUSPEND_KEY,
-            suspend_label(self.last_prefs.balanced_suspend_minutes),
-        );
-        restore_text(
-            state,
-            root,
-            PERFORMANCE_SUSPEND_KEY,
-            suspend_label(self.last_prefs.performance_suspend_minutes),
-        );
-        restore_text(
-            state,
-            root,
-            LID_KEY,
-            self.last_prefs.lid_close_action.display(),
-        );
-        restore_text(
-            state,
-            root,
-            POWER_KEY_KEY,
-            self.last_prefs.power_key_action.display(),
-        );
-        restore_text(
-            state,
-            root,
-            CRITICAL_KEY,
-            self.last_prefs.critical_action.display(),
-        );
-        if let Some(capability) = &self.charge_cap {
-            restore_text(
-                state,
-                root,
-                CHARGE_LIMIT_KEY,
-                &format!("{}%", capability.current),
-            );
-        }
-    }
-
-    fn execute_local_command(
-        &mut self,
-        local: &mut AutoCommit,
-        operation: crate::actions::PowerOperation,
-    ) {
-        let root = automerge::ROOT;
-        use crate::actions::PowerOperation as Op;
-        match &operation {
-            Op::SetChargeLimit { percent } => {
-                let _ = local.put(&root, CHARGE_LIMIT_KEY, format!("{percent}%"));
-            }
-            Op::SetProfile { profile } => {
-                let _ = local.put(&root, PROFILE_KEY, profile.as_str());
-            }
-            Op::SetAutoSuspend { enabled } => {
-                let _ = local.put(&root, AUTO_SUSPEND_KEY, *enabled);
-            }
-            Op::SetBlankTimeout { label } => {
-                let _ = local.put(&root, BLANK_KEY, label.as_str());
-            }
-            Op::SetLockTimeout { label } => {
-                let _ = local.put(&root, LOCK_KEY, label.as_str());
-            }
-            Op::SetSuspendTimeout { profile, label } => {
-                let key = match profile.as_str() {
-                    "default" => SUSPEND_KEY,
-                    "saver" => SAVER_SUSPEND_KEY,
-                    "balanced" => BALANCED_SUSPEND_KEY,
-                    _ => PERFORMANCE_SUSPEND_KEY,
-                };
-                let _ = local.put(&root, key, label.as_str());
-            }
-            Op::SetLidAction { action } => {
-                let _ = local.put(&root, LID_KEY, action.as_str());
-            }
-            Op::SetPowerKeyAction { action } => {
-                let _ = local.put(&root, POWER_KEY_KEY, action.as_str());
-            }
-            Op::SetCriticalAction { action } => {
-                let _ = local.put(&root, CRITICAL_KEY, action.as_str());
-            }
-        }
-        self.handle_profile_change(local, &root);
-        self.handle_charge_limit(local, &root);
-        self.handle_idle_prefs(local, &root);
-        self.handle_action_prefs(local, &root);
-    }
-
-    pub fn new() -> Self {
-        let profile_result = os_actions::get_power_profile();
-        let available_result = os_actions::available_power_profiles();
+impl PowerState {
+    fn read(control: &dyn PowerControl) -> Self {
+        let (profile_result, available_result) = control.profiles();
         let mut available_profiles = available_result.clone().unwrap_or_default();
         let profile = profile_result.clone().unwrap_or_else(|_| {
             available_profiles
@@ -387,7 +380,8 @@ impl PowerPane {
         if profile_result.is_ok() && !available_profiles.contains(&profile) {
             available_profiles.push(profile);
         }
-        let profile_notice = match (profile_result.err(), available_result.err()) {
+        let profile_unread = profile_result.is_err();
+        let profiles_unavailable = match (profile_result.err(), available_result.err()) {
             (None, None) => None,
             (profile_error, capability_error) => {
                 let mut details = Vec::new();
@@ -397,868 +391,596 @@ impl PowerPane {
                 if let Some(error) = capability_error {
                     details.push(format!("capabilities: {error}"));
                 }
-                Some(format!(
-                    "Power-profile service is unavailable: {}.",
-                    details.join("; ")
+                Some(t_args(
+                    "power-profile-service-unavailable",
+                    &[("details", ArgValue::from(details.join("; ")))],
                 ))
             }
         };
-        let battery = BatteryInfo::from_system();
-        // The shell-owned UPower monitor is the single history writer.
-        // Settings only reads the canonical atomic file.
-        let history = os_actions::load_battery_history();
         Self {
-            dispatcher: dispatcher_or_real(None),
-            battery,
-            devices: os_actions::power_devices(),
-            history,
-            charge_cap: os_actions::charge_capability(),
-            charge_notice: None,
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            local_doc: AutoCommit::new(),
-            isolate_document: false,
-            require_operation_token: false,
-            available_profiles,
-            profile_notice,
+            battery: control.battery(),
+            devices: control.devices(),
+            history: control.history(),
             profile,
-            last_profile: profile,
-            prefs: SystemPrefs::load().power,
-            last_prefs: PowerPrefs::default(),
-            needs_seed: true,
-            commit_context_pending: false,
-            composed: None,
-            rect: Rect::ZERO,
+            available_profiles,
+            profiles_unavailable,
+            profile_unread,
+            charge_cap: control.charge_cap(),
+        }
+    }
+}
+
+/// What the last profile and charge-cap changes said.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Notices {
+    profile: Option<String>,
+    charge: Option<String>,
+}
+
+/// What the power area keeps for the window: the hardware, what it last
+/// reported, and what the last changes said.
+pub struct PowerArea {
+    control: Arc<dyn PowerControl>,
+    state: OnceCell<LocalState<PowerState>>,
+    /// Bumped by every change the hardware took, so the pane reads it again.
+    applied: LocalState<u64>,
+    notices: LocalState<Notices>,
+}
+
+impl PowerArea {
+    /// The area over this device's power hardware, or a stand-in for a
+    /// capture. Nothing is read until the pane or an effect needs it.
+    pub fn new(cx: &PaneCx) -> Self {
+        let control: Arc<dyn PowerControl> = if cx.reaches_devices() {
+            Arc::new(SystemPower)
+        } else {
+            Arc::new(SamplePower::default())
+        };
+        Self {
+            control,
+            state: OnceCell::new(),
+            applied: LocalState::new(0),
+            notices: LocalState::new(Notices::default()),
         }
     }
 
-    /// Test / `--shots` constructor: inject the dispatcher, a deterministic
-    /// battery snapshot, the starting profile, and prefs.
-    pub fn with_parts(
-        dispatcher: Arc<dyn Dispatcher + Send + Sync>,
-        battery: BatteryInfo,
-        profile: PowerProfile,
-        prefs: PowerPrefs,
-    ) -> Self {
-        let charge_cap = battery.charge_limit.map(|current| ChargeCapCapability {
-            backend: ChargeCapBackend::PowerSupply,
-            current,
-            choices: vec![60, 70, 80, 90, 100],
-            supports_start_threshold: false,
-        });
+    fn state(&self) -> &LocalState<PowerState> {
+        self.state
+            .get_or_init(|| LocalState::new(PowerState::read(self.control.as_ref())))
+    }
+}
+
+/// The power profile and charge cap of this device, and its idle and button
+/// preferences.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum PowerEffect {
+    /// Set this device's power profile.
+    #[effect(job, idempotent)]
+    SetPowerProfile {
+        #[param("The profile", choices = english(PROFILES))]
+        profile: String,
+    },
+    /// Set how full this device's battery charges.
+    #[effect(job, idempotent)]
+    SetChargeLimit {
+        #[param("The cap, in percent")]
+        percent: u32,
+    },
+}
+
+/// Answer `effect`: hardware changes run off the UI thread. The idle and
+/// button preferences are field edits of the `power` section.
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: PowerEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    let not = |value: &str| format!("`{value}` is not offered");
+    match effect {
+        PowerEffect::SetPowerProfile { profile } => {
+            let profile = profile_from_label(&profile).ok_or_else(|| not(&profile))?;
+            let area = app.power();
+            if !area
+                .state()
+                .with(|state| state.available_profiles.contains(&profile))
+            {
+                return Err(format!(
+                    "{} is not supported by this device",
+                    profile_label(profile)
+                ));
+            }
+            let control = Arc::clone(&area.control);
+            Ok(cx.thread(
+                move |_| control.set_profile(profile).map(|()| profile),
+                |app: &mut SettingsApp, outcome: Result<PowerProfile, String>, _| {
+                    let area = app.power();
+                    let mut notices = area.notices.get();
+                    let answer = match outcome {
+                        Ok(profile) => {
+                            area.state().update(|state| {
+                                state.profile = profile;
+                                state.profile_unread = false;
+                            });
+                            area.applied
+                                .update(|applied| *applied = applied.wrapping_add(1));
+                            notices.profile =
+                                Some(format!("{} is now active.", profile_label(profile)));
+                            Ok(Effected::done())
+                        }
+                        Err(error) => {
+                            let error = format!("Could not change the power profile: {error}");
+                            notices.profile = Some(error.clone());
+                            Err(error)
+                        }
+                    };
+                    area.notices.set(notices);
+                    answer
+                },
+            ))
+        }
+        PowerEffect::SetChargeLimit { percent } => {
+            let area = app.power();
+            let offered = area.state().with(|state| {
+                state
+                    .charge_cap
+                    .as_ref()
+                    .is_some_and(|cap| cap.choices.contains(&percent))
+            });
+            if !offered {
+                return Err(format!("this battery offers no {percent}% charge cap"));
+            }
+            let control = Arc::clone(&area.control);
+            Ok(cx.thread(
+                move |_| control.set_charge_limit(percent).map(|cap| (percent, cap)),
+                |app: &mut SettingsApp, outcome: Result<(u32, ChargeCapCapability), String>, _| {
+                    let area = app.power();
+                    let mut notices = area.notices.get();
+                    let answer = match outcome {
+                        Ok((percent, cap)) => {
+                            area.state().update(|state| {
+                                state.battery.charge_limit = Some(percent);
+                                state.charge_cap = Some(cap);
+                            });
+                            area.applied
+                                .update(|applied| *applied = applied.wrapping_add(1));
+                            notices.charge =
+                                Some(format!("Hardware confirmed a {percent}% charge cap."));
+                            Ok(Effected::done())
+                        }
+                        Err(error) => {
+                            let error = format!("Charge cap was not applied: {error}");
+                            notices.charge = Some(error.clone());
+                            Err(error)
+                        }
+                    };
+                    area.notices.set(notices);
+                    answer
+                },
+            ))
+        }
+    }
+}
+
+/// Power pane widget.
+pub struct PowerPane {
+    cx: PaneCx,
+    prefs: Followed<PowerPrefs>,
+    /// What the hardware reports, kept current by the area.
+    hardware: LocalState<PowerState>,
+    state: PowerState,
+    applied: LocalState<u64>,
+    applied_seen: u64,
+    notices_state: LocalState<Notices>,
+    notices: Notices,
+    composed: ui::widget::Composed,
+}
+
+impl PowerPane {
+    /// The pane over `area`'s hardware and `cx`'s power settings.
+    pub fn new(cx: PaneCx, area: &PowerArea) -> Self {
+        let hardware = area.state().clone();
         Self {
-            dispatcher,
-            battery,
-            devices: Vec::new(),
-            history: os_actions::BatteryHistory::default(),
-            charge_cap,
-            charge_notice: None,
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            local_doc: AutoCommit::new(),
-            isolate_document: false,
-            require_operation_token: false,
-            available_profiles: PROFILES.iter().map(|(_, profile)| *profile).collect(),
-            profile_notice: None,
-            profile,
-            last_profile: profile,
-            prefs,
-            last_prefs: prefs,
-            needs_seed: true,
-            commit_context_pending: false,
-            composed: None,
-            rect: Rect::ZERO,
+            prefs: cx.follow::<PowerPrefs>(),
+            cx,
+            state: hardware.get(),
+            hardware,
+            applied_seen: area.applied.get(),
+            applied: area.applied.clone(),
+            notices: area.notices.get(),
+            notices_state: area.notices.clone(),
+            composed: ui::widget::Composed::default(),
         }
     }
 
     pub fn battery(&self) -> &BatteryInfo {
-        &self.battery
-    }
-
-    pub fn profile(&self) -> PowerProfile {
-        self.profile
+        &self.state.battery
     }
 
     pub fn prefs(&self) -> &PowerPrefs {
-        &self.prefs
+        self.prefs.get()
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let mut cards = vec![
-            self.battery_card(),
-            self.profile_card(),
-            self.idle_card(),
-            self.actions_card(),
-        ];
-        if let Some(device_card) = self.devices_card() {
-            cards.insert(1, device_card);
-        }
+        let mut cards = self.battery_card();
+        cards.extend(self.devices_card());
+        cards.push(self.profile_card());
+        cards.extend(self.idle_card());
+        cards.push(self.actions_card());
         crate::widgets::cards(cards)
     }
 
-    fn battery_card(&self) -> El {
-        if !self.battery.present {
-            return card(
-                "Power source",
+    fn battery_card(&self) -> Vec<SettingsSection> {
+        if !self.state.battery.present {
+            return vec![card(
+                &t("power-source-title"),
                 rows(vec![
-                    value_row("Source", "AC power"),
-                    caption(
-                        "This device has no battery — it runs on mains power, so \
-                         charge and battery-saver settings don't apply.",
-                    ),
+                    value_row(&t("power-source"), &t("power-source-ac")),
+                    note(&t("power-source-caption")),
                 ]),
-            );
+            )];
         }
-        let mut battery_rows: Vec<El> = vec![
-            Box::new(ProgressBar::new(self.battery.capacity as f32 / 100.0)),
-            value_row("Charge", &format!("{}%", self.battery.capacity)),
-            value_row("Status", &self.battery.summary()),
+        let charge = format!("{}%", self.state.battery.capacity);
+        let status = battery_status_shown(&self.state.battery);
+        let mut battery_rows: Vec<Item> = vec![
+            block(Box::new(ProgressBar::new(
+                self.state.battery.capacity as f32 / 100.0,
+            ))),
+            value_row(&t("power-charge"), &charge),
+            value_row(&t("power-status"), &status),
         ];
-        if let Some(cycles) = self.battery.cycle_count {
-            battery_rows.push(value_row("Charge cycles", &cycles.to_string()));
+        if let Some(cycles) = self.state.battery.cycle_count {
+            battery_rows.push(value_row(&t("power-cycles"), &cycles.to_string()));
         }
-        if let Some(health) = self.battery.health_percent() {
-            battery_rows.push(value_row("Battery health", &format!("{health}%")));
-            battery_rows.push(caption(self.battery.health_explanation()));
+        if let Some(health) = self.state.battery.health_percent() {
+            battery_rows.push(value_row(&t("power-health"), &format!("{health}%")));
+            battery_rows.push(note(&health_explanation_shown(&self.state.battery)));
         } else {
-            battery_rows.push(value_row("Battery health", "Not reported by this device"));
+            battery_rows.push(value_row(&t("power-health"), &t("power-health-unknown")));
         }
         let trend: Vec<f32> = self
+            .state
             .history
             .points
             .iter()
             .map(|p| p.capacity as f32)
             .collect();
-        if trend.len() >= 2 {
-            battery_rows.push(Box::new(
-                Sparkline::new(trend, Theme::dark().accent_primary)
-                    .with_max(100.0)
-                    .with_size(320.0, 56.0),
-            ));
-            battery_rows.push(caption("Charge history · last 30 days · sampled at most every 15 minutes. Device names and serial numbers are never stored."));
-        }
-        if let Some(capability) = &self.charge_cap {
+        if let Some(capability) = &self.state.charge_cap {
             let choices: Vec<String> = capability
                 .choices
                 .iter()
                 .map(|limit| format!("{limit}%"))
                 .collect();
-            battery_rows.push(choice_row(
-                "Charge cap",
-                Box::new(
-                    Dropdown::new(choices, CHARGE_LIMIT_KEY)
-                        .with_id("power.charge_limit")
-                        .on_action(
-                            crate::actions::power_charge_binding(
-                                &capability.choices,
-                                capability.current,
-                            )
-                            .expect(
-                                "charge-cap resource exists when the hardware control is visible",
-                            ),
-                        )
-                        .with_placeholder(&format!("{}%", capability.current)),
-                ),
-            ));
+            let current = format!("{}%", capability.current);
+            battery_rows.push(
+                self.cx
+                    .row(t("power-charge-cap"))
+                    .id("power.charge_limit")
+                    .choice_effect(
+                        choices,
+                        &LocalState::new(current),
+                        effect(PowerEffect::SET_CHARGE_LIMIT).map(|shown: String| {
+                            shown
+                                .trim_end_matches('%')
+                                .parse::<u32>()
+                                .unwrap_or_default()
+                        }),
+                    ),
+            );
             let detail = match capability.backend {
-                ChargeCapBackend::ConservationMode => {
-                    "This laptop exposes a discrete conservation mode, so only its real hardware choices are offered."
-                }
-                ChargeCapBackend::HuaweiWmi => {
-                    "The platform uses paired start/end thresholds; Tilo preserves a safe charging window."
-                }
+                ChargeCapBackend::ConservationMode => t("power-charge-cap-conservation"),
+                ChargeCapBackend::HuaweiWmi => t("power-charge-cap-huawei"),
                 ChargeCapBackend::PowerSupply if capability.supports_start_threshold => {
-                    "The kernel exposes start and stop thresholds; Tilo adjusts the start only when required by a lower cap."
+                    t("power-charge-cap-start-stop")
                 }
-                ChargeCapBackend::PowerSupply => {
-                    "The kernel exposes a hardware stop threshold. A lower cap can reduce long-term battery wear."
-                }
+                ChargeCapBackend::PowerSupply => t("power-charge-cap-stop"),
             };
-            battery_rows.push(caption(detail));
+            battery_rows.push(note(&detail));
         } else {
-            battery_rows.push(value_row("Charge cap", "Not supported by this hardware"));
+            battery_rows.push(value_row(
+                &t("power-charge-cap"),
+                &t("power-charge-cap-unsupported"),
+            ));
         }
-        if let Some(notice) = &self.charge_notice {
-            battery_rows.push(caption(notice));
+        if let Some(notice) = &self.notices.charge {
+            battery_rows.push(note(notice));
         }
-        card("Battery", rows(battery_rows))
+        let mut sections = vec![card(&t("power-battery-title"), rows(battery_rows))];
+        if trend.len() >= 2 {
+            sections.push(untitled(rows(vec![
+                // A chart is not a row.
+                block(Box::new(
+                    Sparkline::new(trend, Theme::dark().tokens.colors.text_primary)
+                        .with_max(100.0)
+                        .with_size(320.0, 56.0),
+                )),
+                note(&t("power-history-caption")),
+            ])));
+        }
+        sections
     }
 
-    fn profile_card(&self) -> El {
+    fn profile_card(&self) -> SettingsSection {
         let profile_opts: Vec<String> = self
+            .state
             .available_profiles
             .iter()
-            .map(|profile| profile_label(*profile).to_string())
+            .map(|profile| profile_label(*profile))
             .collect();
-        let mut profile_rows =
-            if profile_opts.is_empty() {
-                vec![value_row("Profile", "Power-profile service unavailable")]
+        let current = if self.state.profile_unread {
+            t("power-profile-unread")
+        } else {
+            profile_label(self.state.profile)
+        };
+        let mut profile_rows = if profile_opts.is_empty() {
+            vec![value_row(
+                &t("power-profile"),
+                &t("power-profile-unavailable"),
+            )]
+        } else {
+            vec![
+                self.cx
+                    .row(t("power-profile"))
+                    .id("power.profile")
+                    .choice_effect(
+                        profile_opts,
+                        &LocalState::new(current),
+                        effect(PowerEffect::SET_POWER_PROFILE).map(|shown: String| {
+                            profile_from_label(&shown)
+                                .and_then(|profile| {
+                                    PROFILES.iter().find(|(_, known)| *known == profile)
+                                })
+                                .map_or(shown, |(english, _)| (*english).to_owned())
+                        }),
+                    ),
+            ]
+        };
+        profile_rows.push(note(&t("power-profile-caption")));
+        if let Some(notice) = &self.notices.profile {
+            profile_rows.push(note(notice));
+        } else if let Some(unavailable) = &self.state.profiles_unavailable {
+            profile_rows.push(if self.state.profile_unread {
+                row(error_caption(unavailable))
             } else {
-                vec![choice_row(
-                    "Profile",
-                    Box::new(
-                        Dropdown::new(profile_opts, PROFILE_KEY)
-                            .with_id("power.profile")
-                            .on_action(crate::actions::power_text_binding("profile").expect(
-                                "power profile action is part of the static resource contract",
-                            ))
-                            .with_placeholder(profile_label(self.profile)),
-                    ),
-                )]
-            };
-        profile_rows.push(caption(
-            "Only modes supported by this device are shown. Balanced trades performance for battery life; Power Saver favours runtime; Performance favours speed.",
-        ));
-        if let Some(notice) = &self.profile_notice {
-            profile_rows.push(caption(notice));
+                note(unavailable)
+            });
         }
-        card("Power profile", rows(profile_rows))
+        card(&t("power-profile-title"), rows(profile_rows))
     }
 
-    fn idle_card(&self) -> El {
-        let blank_opts: Vec<String> = BLANK_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
-        let lock_opts: Vec<String> = LOCK_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
-        let suspend_opts: Vec<String> =
-            SUSPEND_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
+    /// `row` choosing a timeout among `options`, showing `current`.
+    fn timeout(
+        row: Row<'_>,
+        options: &'static [(&'static str, u32)],
+        current: &str,
+        field: tilo_resource::Path<PowerPrefs, u32>,
+    ) -> Item {
+        row.choice(
+            duration_options(options),
+            &LocalState::new(current.to_owned()),
+            field,
+            move |shown: String| {
+                duration_from_options(options, &shown)
+                    .ok_or_else(|| format!("`{shown}` is not offered"))
+            },
+        )
+    }
+
+    /// `row` choosing the suspend timeout of `profile`.
+    fn suspend_timeout(row: Row<'_>, profile: &'static str, current: &str) -> Item {
+        let paths = PowerPrefs::paths();
+        let field = match profile {
+            "saver" => paths.saver_suspend_minutes,
+            "balanced" => paths.balanced_suspend_minutes,
+            "performance" => paths.performance_suspend_minutes,
+            _ => paths.suspend_minutes,
+        };
+        let row = if profile == "default" {
+            row.id("power.suspend")
+        } else {
+            row
+        };
+        Self::timeout(row, SUSPEND_OPTIONS, current, field)
+    }
+
+    fn idle_card(&self) -> [SettingsSection; 2] {
+        let prefs = *self.prefs();
+        [
+            card(
+                &t("power-idle-title"),
+                rows(vec![
+                    self.cx
+                        .row(t("power-suspend-idle"))
+                        .id("power.auto_suspend")
+                        .toggle(
+                            &LocalState::new(prefs.auto_suspend),
+                            PowerPrefs::paths().auto_suspend,
+                        ),
+                    Self::suspend_timeout(
+                        self.cx.row(t("power-suspend-after")),
+                        "default",
+                        &suspend_label(prefs.suspend_minutes),
+                    ),
+                    Self::timeout(
+                        self.cx.row(t("power-blank")).id("power.blank"),
+                        BLANK_OPTIONS,
+                        &blank_label(prefs.blank_minutes),
+                        PowerPrefs::paths().blank_minutes,
+                    ),
+                    Self::timeout(
+                        self.cx.row(t("power-lock-after")).id("power.lock"),
+                        LOCK_OPTIONS,
+                        &lock_label(prefs.lock_minutes),
+                        PowerPrefs::paths().lock_minutes,
+                    ),
+                    note(&t("power-idle-caption")),
+                ]),
+            ),
+            untitled(rows(vec![
+                Self::suspend_timeout(
+                    self.cx.row(t("power-saver-suspend")),
+                    "saver",
+                    &suspend_label(prefs.saver_suspend_minutes),
+                ),
+                Self::suspend_timeout(
+                    self.cx.row(t("power-balanced-suspend")),
+                    "balanced",
+                    &suspend_label(prefs.balanced_suspend_minutes),
+                ),
+                Self::suspend_timeout(
+                    self.cx.row(t("power-performance-suspend")),
+                    "performance",
+                    &suspend_label(prefs.performance_suspend_minutes),
+                ),
+                note(&t("power-profile-idle-caption")),
+            ])),
+        ]
+    }
+
+    /// `row` choosing what a button or a critical battery does.
+    fn action_choice(
+        row: Row<'_>,
+        current: PowerActionPref,
+        field: tilo_resource::Path<PowerPrefs, PowerActionPref>,
+    ) -> Item {
+        row.choice(
+            action_options(),
+            &LocalState::new(action_shown(current)),
+            field,
+            |shown: String| {
+                action_from_label(&shown).ok_or_else(|| format!("`{shown}` is not offered"))
+            },
+        )
+    }
+
+    fn actions_card(&self) -> SettingsSection {
+        let prefs = *self.prefs();
+        let warn = t_args(
+            "power-warn-caption",
+            &[
+                ("warn", ArgValue::from(i64::from(prefs.low_battery_percent))),
+                (
+                    "critical",
+                    ArgValue::from(i64::from(prefs.critical_battery_percent)),
+                ),
+            ],
+        );
         card(
-            "Automatic power saving",
+            &t("power-behaviour-title"),
             rows(vec![
-                setting_row(
-                    "Suspend when idle",
-                    Box::new(
-                        Toggle::new("settings.power.auto_suspend", AUTO_SUSPEND_KEY)
-                            .with_id("power.auto_suspend")
-                            .on_action(
-                                crate::actions::power_bool_binding("auto_suspend")
-                                    .expect("automatic-suspend action is part of the static resource contract"),
-                            ),
-                    ),
+                Self::action_choice(
+                    self.cx.row(t("power-lid")).id("power.lid"),
+                    prefs.lid_close_action,
+                    PowerPrefs::paths().lid_close_action,
                 ),
-                choice_row(
-                    "Suspend after",
-                    Box::new(
-                        Dropdown::new(suspend_opts.clone(), SUSPEND_KEY)
-                            .with_id("power.suspend")
-                            .on_action(
-                                crate::actions::power_text_binding("suspend-after")
-                                    .expect("suspend action is part of the static resource contract"),
-                            )
-                            .with_placeholder(suspend_label(self.prefs.suspend_minutes)),
-                    ),
+                Self::action_choice(
+                    self.cx.row(t("power-power-key")).id("power.power_key"),
+                    prefs.power_key_action,
+                    PowerPrefs::paths().power_key_action,
                 ),
-                choice_row(
-                    "Blank screen when idle",
-                    Box::new(
-                        Dropdown::new(blank_opts, BLANK_KEY)
-                            .with_id("power.blank")
-                            .on_action(
-                                crate::actions::power_text_binding("blank-after")
-                                    .expect("blank action is part of the static resource contract"),
-                            )
-                            .with_placeholder(blank_label(self.prefs.blank_minutes)),
-                    ),
+                Self::action_choice(
+                    self.cx.row(t("power-critical")).id("power.critical"),
+                    prefs.critical_action,
+                    PowerPrefs::paths().critical_action,
                 ),
-                choice_row(
-                    "Lock after",
-                    Box::new(
-                        Dropdown::new(lock_opts, LOCK_KEY)
-                            .with_id("power.lock")
-                            .on_action(
-                                crate::actions::power_text_binding("lock-after")
-                                    .expect("lock action is part of the static resource contract"),
-                            )
-                            .with_placeholder(lock_label(self.prefs.lock_minutes)),
-                    ),
-                ),
-                caption("Idle timeouts are applied by the compositor's power layer."),
-                choice_row(
-                    "Power Saver suspend",
-                    Box::new(
-                        Dropdown::new(suspend_opts.clone(), SAVER_SUSPEND_KEY)
-                            .on_action(
-                                crate::actions::power_text_binding("saver-suspend")
-                                    .expect("saver suspend action is part of the static resource contract"),
-                            )
-                            .with_placeholder(suspend_label(self.prefs.saver_suspend_minutes)),
-                    ),
-                ),
-                choice_row(
-                    "Balanced suspend",
-                    Box::new(
-                        Dropdown::new(suspend_opts.clone(), BALANCED_SUSPEND_KEY)
-                            .on_action(
-                                crate::actions::power_text_binding("balanced-suspend")
-                                    .expect("balanced suspend action is part of the static resource contract"),
-                            )
-                            .with_placeholder(suspend_label(self.prefs.balanced_suspend_minutes)),
-                    ),
-                ),
-                choice_row(
-                    "Performance suspend",
-                    Box::new(
-                        Dropdown::new(suspend_opts, PERFORMANCE_SUSPEND_KEY)
-                            .on_action(
-                                crate::actions::power_text_binding("performance-suspend")
-                                    .expect("performance suspend action is part of the static resource contract"),
-                            )
-                            .with_placeholder(suspend_label(self.prefs.performance_suspend_minutes)),
-                    ),
-                ),
-                caption(
-                    "The active power profile selects its own idle timeout in the compositor; changing profile never creates a second policy owner.",
-                ),
+                note(&warn),
             ]),
         )
     }
 
-    fn actions_card(&self) -> El {
-        card(
-            "Power behaviour",
-            rows(vec![
-                choice_row(
-                    "When the lid is closed",
-                    Box::new(
-                        Dropdown::new(action_options(), LID_KEY)
-                            .with_id("power.lid")
-                            .on_action(
-                                crate::actions::power_text_binding("lid")
-                                    .expect("lid action is part of the static resource contract"),
-                            )
-                            .with_placeholder(self.prefs.lid_close_action.display()),
-                    ),
-                ),
-                choice_row(
-                    "When the power key is pressed",
-                    Box::new(
-                        Dropdown::new(action_options(), POWER_KEY_KEY)
-                            .with_id("power.power_key")
-                            .on_action(
-                                crate::actions::power_text_binding("power_key").expect(
-                                    "power-key action is part of the static resource contract",
-                                ),
-                            )
-                            .with_placeholder(self.prefs.power_key_action.display()),
-                    ),
-                ),
-                choice_row(
-                    "When the battery is critically low",
-                    Box::new(
-                        Dropdown::new(action_options(), CRITICAL_KEY)
-                            .with_id("power.critical")
-                            .on_action(
-                                crate::actions::power_text_binding("critical").expect(
-                                    "critical action is part of the static resource contract",
-                                ),
-                            )
-                            .with_placeholder(self.prefs.critical_action.display()),
-                    ),
-                ),
-                caption(&format!(
-                    "You'll be warned at {}% and this action runs at {}%.",
-                    self.prefs.low_battery_percent, self.prefs.critical_battery_percent
-                )),
-            ]),
-        )
-    }
-
-    fn devices_card(&self) -> Option<El> {
-        if self.devices.len() <= 1 {
+    fn devices_card(&self) -> Option<SettingsSection> {
+        if self.state.devices.len() <= 1 {
             return None;
         }
         let mut entries = Vec::new();
-        for d in &self.devices {
-            let kind = match d.kind {
-                os_actions::PowerSupplyKind::Battery => "Battery",
-                os_actions::PowerSupplyKind::Ups => "UPS",
-            };
-            entries.push(value_row(
-                d.model.as_deref().unwrap_or(&d.id),
-                &format!("{kind} · {}% · {}", d.capacity, d.status),
-            ));
+        for d in &self.state.devices {
+            let kind = t(match d.kind {
+                os_actions::PowerSupplyKind::Battery => "power-device-battery",
+                os_actions::PowerSupplyKind::Ups => "power-device-ups",
+            });
+            let line = t_args(
+                "power-device-line",
+                &[
+                    ("kind", ArgValue::from(kind.as_str())),
+                    ("capacity", ArgValue::from(i64::from(d.capacity))),
+                    ("status", ArgValue::from(d.status.as_str())),
+                ],
+            );
+            entries.push(value_row(d.model.as_deref().unwrap_or(&d.id), &line));
         }
-        Some(card("Power devices", rows(entries)))
+        Some(card(&t("power-devices-title"), rows(entries)))
     }
-
-    fn persist(&self) -> Result<(), String> {
-        let mut p = SystemPrefs::load();
-        p.power = self.prefs;
-        p.save().map(|_| ()).map_err(|error| {
-            warn!(target: "tilo::settings", op = "power_prefs_save", %error, "failed to persist power prefs");
-            format!("Power preference was not saved: {error}")
-        })
-    }
-
-    fn seed(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if !self.needs_seed {
-            return;
-        }
-        let _ = state.put(root, PROFILE_KEY, profile_label(self.profile));
-        let _ = state.put(
-            root,
-            AUTO_SUSPEND_KEY,
-            automerge::ScalarValue::Boolean(self.prefs.auto_suspend),
-        );
-        let _ = state.put(root, SUSPEND_KEY, suspend_label(self.prefs.suspend_minutes));
-        let _ = state.put(root, BLANK_KEY, blank_label(self.prefs.blank_minutes));
-        let _ = state.put(root, LOCK_KEY, lock_label(self.prefs.lock_minutes));
-        let _ = state.put(
-            root,
-            SAVER_SUSPEND_KEY,
-            suspend_label(self.prefs.saver_suspend_minutes),
-        );
-        let _ = state.put(
-            root,
-            BALANCED_SUSPEND_KEY,
-            suspend_label(self.prefs.balanced_suspend_minutes),
-        );
-        let _ = state.put(
-            root,
-            PERFORMANCE_SUSPEND_KEY,
-            suspend_label(self.prefs.performance_suspend_minutes),
-        );
-        let _ = state.put(root, LID_KEY, self.prefs.lid_close_action.display());
-        let _ = state.put(root, POWER_KEY_KEY, self.prefs.power_key_action.display());
-        let _ = state.put(root, CRITICAL_KEY, self.prefs.critical_action.display());
-        if let Some(capability) = &self.charge_cap {
-            let _ = state.put(root, CHARGE_LIMIT_KEY, format!("{}%", capability.current));
-        }
-        self.last_prefs = self.prefs;
-        self.needs_seed = false;
-    }
-
-    /// Power profile → dispatch on change, guarded so it doesn't re-fire.
-    fn handle_profile_change(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let Some(label) = read_str_or_text(state, root, PROFILE_KEY) else {
-            return;
-        };
-        let Some(p) = profile_from_label(&label) else {
-            return;
-        };
-        if p == self.last_profile {
-            return;
-        }
-        let operation = crate::actions::PowerOperation::SetProfile {
-            profile: label.clone(),
-        };
-        if !self.operation_is_running(&operation) {
-            let _ = state.put(root, PROFILE_KEY, profile_label(self.last_profile));
-            return;
-        }
-        if self.available_profiles.contains(&p) {
-            match self.dispatcher.set_power_profile(p) {
-                Ok(()) => {
-                    self.last_profile = p;
-                    self.profile = p;
-                    self.profile_notice = Some(format!("{} is now active.", profile_label(p)));
-                    self.operation_finished(
-                        &operation,
-                        Ok(format!("{} is now active.", profile_label(p))),
-                    );
-                }
-                Err(e) => {
-                    let _ = state.put(root, PROFILE_KEY, profile_label(self.last_profile));
-                    self.profile_notice = Some(format!("Could not change the power profile: {e}"));
-                    self.operation_finished(
-                        &operation,
-                        Err(format!("Could not change the power profile: {e}")),
-                    );
-                    warn!(target: "tilo::settings", op = "set_power_profile", error = %e, "power pane dispatch failed");
-                }
-            }
-        } else {
-            let _ = state.put(root, PROFILE_KEY, profile_label(self.last_profile));
-            self.profile_notice = Some(format!(
-                "{} is not supported by this device.",
-                profile_label(p)
-            ));
-            self.operation_finished(
-                &crate::actions::PowerOperation::SetProfile { profile: label },
-                Err("Power profile is not supported by this device.".into()),
-            );
-        }
-    }
-
-    fn handle_charge_limit(&mut self, state: &AutoCommit, root: &ObjId) {
-        let Some(label) = read_str_or_text(state, root, CHARGE_LIMIT_KEY) else {
-            return;
-        };
-        let Some(limit) = label.strip_suffix('%').and_then(|s| s.parse::<u32>().ok()) else {
-            return;
-        };
-        if !self
-            .charge_cap
-            .as_ref()
-            .is_some_and(|cap| cap.current != limit && cap.choices.contains(&limit))
-        {
-            return;
-        }
-        let operation = crate::actions::PowerOperation::SetChargeLimit { percent: limit };
-        if !self.operation_is_running(&operation) {
-            return;
-        }
-        match os_actions::set_charge_limit_checked(limit) {
-            Ok(actual) => {
-                self.battery.charge_limit = Some(limit);
-                self.charge_cap = Some(actual);
-                self.charge_notice = Some(format!("Hardware confirmed a {limit}% charge cap."));
-                self.operation_finished(
-                    &operation,
-                    Ok(format!("hardware confirmed a {limit}% charge cap")),
-                );
-            }
-            Err(e) => {
-                self.charge_notice = Some(format!("Charge cap was not applied: {e}"));
-                self.operation_finished(
-                    &operation,
-                    Err(format!("Charge cap was not applied: {e}")),
-                );
-                warn!(target: "tilo::settings", op = "set_charge_limit", error = %e, "battery cap failed");
-            }
-        }
-    }
-
-    /// Auto-suspend, screen-blank and the three per-profile idle-suspend
-    /// timeouts → persisted on change.
-    fn handle_idle_prefs(&mut self, state: &AutoCommit, root: &ObjId) {
-        if let Some(b) = read_bool(state, root, AUTO_SUSPEND_KEY)
-            && b != self.last_prefs.auto_suspend
-            && self.operation_is_running(&crate::actions::PowerOperation::SetAutoSuspend {
-                enabled: b,
-            })
-        {
-            self.last_prefs.auto_suspend = b;
-            self.prefs.auto_suspend = b;
-            let result = self
-                .persist()
-                .map(|()| "Automatic suspend preference saved.".into());
-            self.operation_finished(
-                &crate::actions::PowerOperation::SetAutoSuspend { enabled: b },
-                result,
-            );
-        }
-
-        if let Some(label) = read_str_or_text(state, root, BLANK_KEY)
-            && let Some(m) = blank_from_label(&label)
-            && m != self.last_prefs.blank_minutes
-            && self.operation_is_running(&crate::actions::PowerOperation::SetBlankTimeout {
-                label: label.clone(),
-            })
-        {
-            self.last_prefs.blank_minutes = m;
-            self.prefs.blank_minutes = m;
-            let result = self
-                .persist()
-                .map(|()| "Screen blank timeout saved.".into());
-            self.operation_finished(
-                &crate::actions::PowerOperation::SetBlankTimeout { label },
-                result,
-            );
-        }
-
-        if let Some(label) = read_str_or_text(state, root, LOCK_KEY)
-            && let Some(minutes) = lock_from_label(&label)
-            && minutes != self.last_prefs.lock_minutes
-            && self.operation_is_running(&crate::actions::PowerOperation::SetLockTimeout {
-                label: label.clone(),
-            })
-        {
-            self.last_prefs.lock_minutes = minutes;
-            self.prefs.lock_minutes = minutes;
-            let result = self
-                .persist()
-                .map(|()| "Automatic lock timeout saved.".into());
-            self.operation_finished(
-                &crate::actions::PowerOperation::SetLockTimeout { label },
-                result,
-            );
-        }
-
-        if let Some(label) = read_str_or_text(state, root, SUSPEND_KEY)
-            && let Some(m) = suspend_from_label(&label)
-            && m != self.last_prefs.suspend_minutes
-            && self.operation_is_running(&crate::actions::PowerOperation::SetSuspendTimeout {
-                profile: "default".into(),
-                label: label.clone(),
-            })
-        {
-            self.last_prefs.suspend_minutes = m;
-            self.prefs.suspend_minutes = m;
-            let result = self.persist().map(|()| "Suspend timeout saved.".into());
-            self.operation_finished(
-                &crate::actions::PowerOperation::SetSuspendTimeout {
-                    profile: "default".into(),
-                    label,
-                },
-                result,
-            );
-        }
-        for (key, current, set) in [
-            (
-                SAVER_SUSPEND_KEY,
-                self.last_prefs.saver_suspend_minutes,
-                0u8,
-            ),
-            (
-                BALANCED_SUSPEND_KEY,
-                self.last_prefs.balanced_suspend_minutes,
-                1u8,
-            ),
-            (
-                PERFORMANCE_SUSPEND_KEY,
-                self.last_prefs.performance_suspend_minutes,
-                2u8,
-            ),
-        ] {
-            if let Some(label) = read_str_or_text(state, root, key)
-                && let Some(minutes) = suspend_from_label(&label)
-                && minutes != current
-            {
-                let profile = match set {
-                    0 => "saver",
-                    1 => "balanced",
-                    _ => "performance",
-                };
-                let operation = crate::actions::PowerOperation::SetSuspendTimeout {
-                    profile: profile.into(),
-                    label: label.clone(),
-                };
-                if !self.operation_is_running(&operation) {
-                    continue;
-                }
-                match set {
-                    0 => {
-                        self.last_prefs.saver_suspend_minutes = minutes;
-                        self.prefs.saver_suspend_minutes = minutes;
-                    }
-                    1 => {
-                        self.last_prefs.balanced_suspend_minutes = minutes;
-                        self.prefs.balanced_suspend_minutes = minutes;
-                    }
-                    _ => {
-                        self.last_prefs.performance_suspend_minutes = minutes;
-                        self.prefs.performance_suspend_minutes = minutes;
-                    }
-                }
-                let result = self
-                    .persist()
-                    .map(|()| format!("{profile} suspend timeout saved."));
-                self.operation_finished(&operation, result);
-            }
-        }
-    }
-
-    /// Lid-close, power-key and critical-battery actions → persisted on
-    /// change.
-    fn handle_action_prefs(&mut self, state: &AutoCommit, root: &ObjId) {
-        if let Some(label) = read_str_or_text(state, root, LID_KEY)
-            && let Some(a) = PowerActionPref::from_display(&label)
-            && a != self.last_prefs.lid_close_action
-            && self.operation_is_running(&crate::actions::PowerOperation::SetLidAction {
-                action: label.clone(),
-            })
-        {
-            self.last_prefs.lid_close_action = a;
-            self.prefs.lid_close_action = a;
-            let result = self.persist().map(|()| "Lid-close action saved.".into());
-            self.operation_finished(
-                &crate::actions::PowerOperation::SetLidAction { action: label },
-                result,
-            );
-        }
-
-        if let Some(label) = read_str_or_text(state, root, POWER_KEY_KEY)
-            && let Some(a) = PowerActionPref::from_display(&label)
-            && a != self.last_prefs.power_key_action
-            && self.operation_is_running(&crate::actions::PowerOperation::SetPowerKeyAction {
-                action: label.clone(),
-            })
-        {
-            self.last_prefs.power_key_action = a;
-            self.prefs.power_key_action = a;
-            let result = self.persist().map(|()| "Power-key action saved.".into());
-            self.operation_finished(
-                &crate::actions::PowerOperation::SetPowerKeyAction { action: label },
-                result,
-            );
-        }
-
-        if let Some(label) = read_str_or_text(state, root, CRITICAL_KEY)
-            && let Some(a) = PowerActionPref::from_display(&label)
-            && a != self.last_prefs.critical_action
-            && self.operation_is_running(&crate::actions::PowerOperation::SetCriticalAction {
-                action: label.clone(),
-            })
-        {
-            self.last_prefs.critical_action = a;
-            self.prefs.critical_action = a;
-            let result = self
-                .persist()
-                .map(|()| "Critical-battery action saved.".into());
-            self.operation_finished(
-                &crate::actions::PowerOperation::SetCriticalAction { action: label },
-                result,
-            );
-        }
-    }
-}
-
-pub fn build() -> Box<dyn Widget> {
-    Box::new(PowerPane::new())
 }
 
 impl Widget for PowerPane {
-    ui::provides!(dyn ui::undo::UndoPoints);
-
-    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
-        let (shared, _) = ui::doc::document(shared, root);
-        let isolated = self.isolate_document;
-        let mut state = if isolated {
-            std::mem::take(&mut self.local_doc)
-        } else {
-            std::mem::take(shared)
-        };
-        let root = automerge::ROOT;
-        self.seed(&mut state, &root);
-        if let Some(crate::actions::LocalPaneCommand::Power(operation)) = self.command_state.get() {
-            self.command_state.set(None);
-            self.execute_local_command(&mut state, operation);
+    fn sync(&mut self, shared: &AppModel, root: &ModelPath) {
+        // The controls are built from the values: a change rebuilds them.
+        if self.prefs.refresh() {
+            self.composed.invalidate();
         }
-        if self.require_operation_token
-            && !matches!(
-                self.operation_status.get(),
-                crate::actions::LocalOperationStatus::Running { .. }
-            )
-        {
-            self.restore_authoritative_controls(&mut state, &root);
-        } else {
-            self.handle_profile_change(&mut state, &root);
-            self.handle_charge_limit(&state, &root);
-            self.handle_idle_prefs(&state, &root);
-            self.handle_action_prefs(&state, &root);
+        let applied = self.applied.get();
+        if applied != self.applied_seen {
+            self.applied_seen = applied;
+            self.state = self.hardware.get();
+            self.composed.invalidate();
         }
-
-        if let Some(c) = &mut self.composed {
-            c.sync(&mut state, &root);
+        let notices = self.notices_state.get();
+        if notices != self.notices {
+            self.notices = notices;
+            self.composed.invalidate();
         }
-        if isolated {
-            self.local_doc = state;
-        } else {
-            *shared = state;
-        }
+        self.composed.sync(shared, root);
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        // `child` was just created in this same `taffy` tree, so wrapping it
-        // cannot fail in practice; falling back to the child node itself
-        // (skipping the wrapper style) is a real degraded behaviour rather
-        // than a panic if that invariant is ever broken.
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let was_handled = *ctx.handled;
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-        self.commit_context_pending |= !was_handled && *ctx.handled;
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
+    crate::panes::composed_pane!();
 
     fn name(&self) -> &'static str {
         "PowerPane"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
-impl ui::undo::UndoPoints for PowerPane {
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
-        crate::panes::preference_commit_context(
-            pending,
-            "power",
-            "Power",
-            "Change power preferences",
-        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dispatcher::testing::RecordingDispatcher;
+    use crate::effects::SettingsEffect;
+    use crate::resource::SettingsShell;
+    use std::collections::HashMap;
+    use taffy::{NodeId, TaffyTree};
+    use ui::prelude::TestApp;
+
+    /// The pane and the session's system-settings actions offer the same
+    /// timeouts, so a value one accepts is never refused by the other.
+    #[test]
+    fn the_pane_offers_the_timeouts_the_system_actions_validate() {
+        let minutes = |options: &[(&str, u32)]| options.iter().map(|(_, m)| *m).collect::<Vec<_>>();
+        let sorted = |values: &[u32]| {
+            let mut values = values.to_vec();
+            values.sort_unstable();
+            values
+        };
+        let mut blank = minutes(BLANK_OPTIONS);
+        let mut lock = minutes(LOCK_OPTIONS);
+        let mut suspend = minutes(SUSPEND_OPTIONS);
+        blank.sort_unstable();
+        lock.sort_unstable();
+        suspend.sort_unstable();
+        assert_eq!(blank, sorted(settings_store::power::BLANK_CHOICES));
+        assert_eq!(lock, sorted(settings_store::power::LOCK_CHOICES));
+        assert_eq!(suspend, sorted(settings_store::power::SUSPEND_CHOICES));
+        let defaults = PowerPrefs::default();
+        assert_eq!(
+            defaults.lock_minutes,
+            settings_store::power::DEFAULT_LOCK_MINUTES
+        );
+        assert_eq!(
+            defaults.blank_minutes,
+            settings_store::power::DEFAULT_BLANK_MINUTES
+        );
+        assert_eq!(
+            defaults.suspend_minutes,
+            settings_store::power::DEFAULT_SUSPEND_MINUTES
+        );
+    }
 
     fn sample_battery() -> BatteryInfo {
         BatteryInfo {
@@ -1283,9 +1005,6 @@ mod tests {
         assert_eq!(profile_from_label("Nonsense"), None);
         for (minutes, label) in [(0, "Never"), (10, "10 minutes")] {
             assert_eq!(blank_label(minutes), label);
-        }
-        for (label, minutes) in [("30 minutes", 30), ("Never", 0)] {
-            assert_eq!(blank_from_label(label), Some(minutes), "{label}");
         }
     }
 
@@ -1333,183 +1052,87 @@ mod tests {
 
         // Case `builds_layout`.
         {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane = PowerPane::with_parts(
-                rec as Arc<dyn Dispatcher + Send + Sync>,
-                sample_battery(),
-                PowerProfile::Balanced,
-                PowerPrefs::default(),
-            );
+            let profile = tempfile::tempdir().unwrap();
+            let cx = PaneCx::in_file(profile.path().join("settings.json"));
+            let mut pane = PowerPane::new(cx.clone(), &PowerArea::new(&cx));
+            assert_eq!(pane.battery(), &sample_battery());
             let theme = Theme::dark();
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
             let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
-        }
-    }
 
-    /// Profile selection dispatches once, reverts on failure, and replicated latches never reach the device.
-    #[test]
-    fn profile_selection_dispatches_once_and_never_lies() {
-        // Case `selecting_profile_dispatches_once`.
-        // Selecting a profile dispatches `set_power_profile` once with the chosen
-        // profile, and not again while it rests — the real dispatch path.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane = PowerPane::with_parts(
-                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-                sample_battery(),
-                PowerProfile::Balanced,
-                PowerPrefs::default(),
-            );
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            assert!(rec.calls().is_empty(), "seed must not dispatch");
-            let _ = doc.put(&root, PROFILE_KEY, "Performance");
-            pane.sync(&mut doc, &root);
-            pane.sync(&mut doc, &root); // idempotent at rest
-            assert_eq!(rec.calls(), vec!["set_power_profile(performance)"]);
-            assert_eq!(pane.profile(), PowerProfile::Performance);
-        }
-
-        // Case `failed_profile_change_reverts_instead_of_lying`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            rec.set_fail_power_profile(true);
-            let mut pane = PowerPane::with_parts(
-                rec as Arc<dyn Dispatcher + Send + Sync>,
-                sample_battery(),
-                PowerProfile::Balanced,
-                PowerPrefs::default(),
-            );
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, PROFILE_KEY, "Performance");
-            pane.sync(&mut doc, &root);
-
-            assert_eq!(pane.profile(), PowerProfile::Balanced);
-            assert_eq!(
-                read_str_or_text(&doc, &root, PROFILE_KEY).as_deref(),
-                Some("Balanced")
-            );
+            cx.settings::<PowerPrefs>()
+                .update(|prefs| prefs.auto_suspend = !prefs.auto_suspend)
+                .unwrap();
+            pane.sync(&ui::automerge::AutoCommit::new(), &ui::automerge::ROOT);
             assert!(
-                pane.profile_notice
-                    .as_deref()
-                    .is_some_and(|notice| notice.contains("simulated"))
+                pane.take_structure_dirty(),
+                "a preference change rebuilds the controls"
             );
-        }
-
-        // Case `replicated_power_latches_never_reach_device_or_persistence`.
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let rec = Arc::new(RecordingDispatcher::default());
-            let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Running {
-                token: crate::actions::local_operation_token_for(
-                    crate::actions::POWER_OPERATION_TYPE,
-                    &crate::actions::PowerOperation::SetBlankTimeout {
-                        label: "30 minutes".into(),
-                    },
-                ),
-            });
-            let commands = ui::LocalState::new(None);
-            let defaults = PowerPrefs::default();
-            let mut pane = PowerPane::with_parts(
-                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-                sample_battery(),
-                PowerProfile::Balanced,
-                defaults,
-            )
-            .with_command_state(&commands)
-            .with_operation_status(&status);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let initial_heads = doc.get_heads();
-            pane.sync(&mut doc, &root);
-            assert_eq!(doc.get_heads(), initial_heads);
-
-            // Only the exact blank-timeout command is admitted. Concurrent remote
-            // mutations of every other hardware latch remain inert.
-            let _ = doc.put(&root, PROFILE_KEY, "Performance");
-            let _ = doc.put(&root, AUTO_SUSPEND_KEY, false);
-            let _ = doc.put(&root, LID_KEY, PowerActionPref::Ignore.display());
-            pane.sync(&mut doc, &root);
-
-            assert!(rec.calls().is_empty());
-            assert_eq!(pane.profile(), PowerProfile::Balanced);
-            assert_eq!(pane.prefs().auto_suspend, defaults.auto_suspend);
-            assert_eq!(pane.prefs().lid_close_action, defaults.lid_close_action);
         }
     }
 
-    /// Idle and behaviour preferences are adopted and persist to disk.
+    /// The profile and the charge cap reach the hardware off the UI thread;
+    /// an unsupported cap is refused before it does.
     #[test]
-    fn power_prefs_are_adopted_and_persist() {
-        // Case `idle_prefs_are_adopted_on_change`.
-        // The idle preferences are durable: toggling auto-suspend and choosing a
-        // blank timeout are adopted into the pane's tracked prefs (persisted via
-        // the shared store, asserted against disk in the persistence test).
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane = PowerPane::with_parts(
-                rec as Arc<dyn Dispatcher + Send + Sync>,
-                sample_battery(),
-                PowerProfile::Balanced,
-                PowerPrefs::default(),
-            );
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(
-                &root,
-                AUTO_SUSPEND_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
-            let _ = doc.put(&root, BLANK_KEY, "30 minutes");
-            let _ = doc.put(&root, LOCK_KEY, "Never");
-            pane.sync(&mut doc, &root);
-            assert!(!pane.prefs().auto_suspend);
-            assert_eq!(pane.prefs().blank_minutes, 30);
-            assert_eq!(pane.prefs().lock_minutes, 0);
-            assert_eq!(SystemPrefs::load().power.lock_minutes, 0);
-        }
+    fn hardware_effects_reach_the_device() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        app.effect(&SettingsEffect::from(PowerEffect::SetPowerProfile {
+            profile: "Performance".into(),
+        }))
+        .expect("the profile is offered");
+        app.effect(&SettingsEffect::from(PowerEffect::SetChargeLimit {
+            percent: 60,
+        }))
+        .expect("the cap is offered");
+        assert!(
+            app.effect(&SettingsEffect::from(PowerEffect::SetChargeLimit {
+                percent: 65
+            }))
+            .is_err()
+        );
+        app.effect(&SettingsEffect::from(
+            crate::effects::NavigationEffect::OpenPane {
+                pane: "power".into(),
+            },
+        ))
+        .unwrap();
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains("Performance is now active."), "{frame}");
+        assert!(
+            frame.contains("Hardware confirmed a 60% charge cap."),
+            "{frame}"
+        );
+    }
 
-        // Case `power_behaviour_prefs_persist_to_disk`.
-        // The new power-behaviour controls (suspend timeout, lid, power key,
-        // critical action) are adopted on change and land on disk in the shared
-        // settings file — the real persist path the compositor reads.
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane = PowerPane::with_parts(
-                rec as Arc<dyn Dispatcher + Send + Sync>,
-                sample_battery(),
-                PowerProfile::Balanced,
-                PowerPrefs::default(),
-            );
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-
-            // Drive each new control through the CRDT the way the dropdowns do.
-            let _ = doc.put(&root, SUSPEND_KEY, "30 minutes");
-            let _ = doc.put(&root, LID_KEY, PowerActionPref::Lock.display());
-            let _ = doc.put(&root, POWER_KEY_KEY, PowerActionPref::Ignore.display());
-            let _ = doc.put(&root, CRITICAL_KEY, PowerActionPref::Suspend.display());
-            pane.sync(&mut doc, &root);
-
-            assert_eq!(pane.prefs().suspend_minutes, 30);
-            assert_eq!(pane.prefs().lid_close_action, PowerActionPref::Lock);
-            assert_eq!(pane.prefs().power_key_action, PowerActionPref::Ignore);
-            assert_eq!(pane.prefs().critical_action, PowerActionPref::Suspend);
-
-            // Reload from the real settings file: the compositor sees exactly this.
-            let reloaded = SystemPrefs::load().power;
-            assert_eq!(reloaded.suspend_minutes, 30);
-            assert_eq!(reloaded.lid_close_action, PowerActionPref::Lock);
-            assert_eq!(reloaded.power_key_action, PowerActionPref::Ignore);
-            assert_eq!(reloaded.critical_action, PowerActionPref::Suspend);
-        }
+    /// The idle and button preferences are the device's `power` section,
+    /// which the compositor's idle layer reads.
+    #[test]
+    fn idle_and_button_preferences_write_the_power_section() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        crate::host::testing::edit_field(
+            &mut app,
+            crate::host::testing::POWER,
+            "auto_suspend",
+            false,
+        )
+        .unwrap();
+        let edit = |app: &mut TestApp<SettingsShell>, field: &str, value: serde_json::Value| {
+            crate::host::testing::edit_field(app, crate::host::testing::POWER, field, value)
+        };
+        edit(&mut app, "blank_minutes", 30.into()).unwrap();
+        edit(&mut app, "lock_minutes", 0.into()).unwrap();
+        edit(&mut app, "saver_suspend_minutes", 5.into()).unwrap();
+        edit(&mut app, "lid_close_action", "lock".into()).unwrap();
+        let power = app.settings::<PowerPrefs>().get();
+        assert!(!power.auto_suspend);
+        assert_eq!(power.blank_minutes, 30);
+        assert_eq!(power.lock_minutes, 0);
+        assert_eq!(power.saver_suspend_minutes, 5);
+        assert_eq!(power.lid_close_action, PowerActionPref::Lock);
+        assert!(
+            edit(&mut app, "blank_minutes", (25 * 60).into()).is_err(),
+            "a delay past a day is refused"
+        );
     }
 }

@@ -17,8 +17,14 @@ impl PeerPublishSink for ShellNetwork {
         self.publish_app_presence(app_id, cluster_id, presence);
     }
 
-    fn scrollback_request(&self, artifact: ArtifactId, before_seq: u64, max: u16) {
-        self.publish_scrollback_request(artifact, before_seq, max);
+    fn scrollback_request(
+        &self,
+        cluster_id: &str,
+        artifact: ArtifactId,
+        before_seq: u64,
+        max: u16,
+    ) {
+        self.publish_scrollback_request(cluster_id, artifact, before_seq, max);
     }
 
     fn app_live_presence(

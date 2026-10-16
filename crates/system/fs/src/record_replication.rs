@@ -6,13 +6,15 @@
 //! deliberately outside this module: callers authenticate an operation here
 //! before translating it into namespace changes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use collab_types::{
-    CanonicalError, ConflictResolution, ConflictStatus, ContentRevisionV1, FileActor,
-    FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationTransaction, FileProvenance,
-    FileRecordError, FileRecordId, FileVersionId, FileVersionV1, Signature, VerifyError,
-    canonical_bytes, prefer_conflict_resolution, sign_event, verify_event,
+    CanonicalError, Signature, VerifyError, canonical_bytes, sign_event, verify_event,
+};
+use fs_protocol::{
+    ConflictResolution, ConflictStatus, ContentRevisionV1, FileActor, FileBindingV1,
+    FileConflictV1, FileMetadataV1, FileMutationTransaction, FileProvenance, FileRecordError,
+    FileRecordId, FileVersionId, FileVersionV1, prefer_conflict_resolution,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -351,6 +353,10 @@ pub struct RecordReplica {
     binding: Option<(BindingStamp, FileBindingV1)>,
     metadata: Option<(MetadataStamp, FileMetadataV1)>,
     content_revision: Option<(RevisionStamp, ContentRevisionV1)>,
+    /// Keep every incomparable signed candidate, including candidates that
+    /// lose the concurrent tie-break. A later descendant can supersede that
+    /// winner without superseding the other branch.
+    content_revision_frontier: HashMap<FileVersionId, (RevisionStamp, ContentRevisionV1)>,
     versions: HashMap<FileVersionId, FileVersionV1>,
     /// Signed versions proposed by locally committed transaction envelopes.
     /// They are validation dependencies only; repository-wide participant
@@ -379,7 +385,7 @@ struct BindingStamp {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct RevisionStamp {
-    /// Signed version time is the primary content order. In particular this
+    /// Signed version time orders incomparable causal tips. In particular this
     /// makes concurrent conflict-resolution result revisions choose the same
     /// winner as `prefer_conflict_resolution` (timestamp, actor, result),
     /// instead of letting unrelated per-device sequence counters disagree
@@ -420,12 +426,12 @@ impl RecordReplica {
     /// clone only; incomplete transactions never enter the live replica fields.
     pub(crate) fn project_completed_participant(
         &mut self,
-        participant: &collab_types::FileMutationParticipant,
+        participant: &fs_protocol::FileMutationParticipant,
         commit_sequence: u64,
     ) {
         let binding = &participant.proposed_binding;
         let stamp = BindingStamp::for_binding(binding, commit_sequence);
-        if participant.role != collab_types::FileMutationParticipantRole::RestoreContent
+        if participant.role != fs_protocol::FileMutationParticipantRole::RestoreContent
             && self
                 .binding
                 .as_ref()
@@ -439,13 +445,7 @@ impl RecordReplica {
                 participant.proposed_version.actor,
                 commit_sequence,
             );
-            if self
-                .content_revision
-                .as_ref()
-                .is_none_or(|(current, _)| stamp > *current)
-            {
-                self.content_revision = Some((stamp, revision));
-            }
+            self.select_content_revision(stamp, revision);
         }
     }
 
@@ -457,6 +457,7 @@ impl RecordReplica {
             binding: None,
             metadata: None,
             content_revision: None,
+            content_revision_frontier: HashMap::new(),
             versions: HashMap::new(),
             transaction_versions: HashMap::new(),
             conflicts: HashMap::new(),
@@ -485,16 +486,7 @@ impl RecordReplica {
         authorizer: &A,
     ) -> Result<(), RecordReplicationError> {
         envelope.verify()?;
-        if envelope.record_id != self.record_id {
-            return Err(RecordReplicationError::WrongRecord);
-        }
-        if !authorizer.actor_is_certified(&envelope.actor) {
-            return Err(RecordReplicationError::UncertifiedActor);
-        }
-        if !authorizer.allows(&envelope.actor, self.record_id, RecordAction::Write) {
-            return Err(RecordReplicationError::WriteDenied);
-        }
-        self.apply_verified(envelope)
+        self.merge_authenticated(envelope, authorizer)
     }
 
     /// [`Self::merge`] for an envelope this process just signed with the
@@ -658,13 +650,7 @@ impl RecordReplica {
                     return Err(RecordReplicationError::ContentRevisionMismatch);
                 }
                 let stamp = RevisionStamp::for_version(version, envelope.actor, envelope.sequence);
-                if self
-                    .content_revision
-                    .as_ref()
-                    .is_none_or(|(current, _)| stamp > *current)
-                {
-                    self.content_revision = Some((stamp, *revision));
-                }
+                self.select_content_revision(stamp, *revision);
             }
             RecordOperationV1::AppendConflict(conflict) => {
                 if conflict.versions.iter().any(|version| {
@@ -720,6 +706,48 @@ impl RecordReplica {
         self.highest_sequence
             .insert(envelope.actor, envelope.sequence);
         Ok(())
+    }
+
+    fn select_content_revision(&mut self, stamp: RevisionStamp, revision: ContentRevisionV1) {
+        if self
+            .content_revision_frontier
+            .get(&revision.version_id)
+            .is_none_or(|(current, _)| stamp > *current)
+        {
+            self.content_revision_frontier
+                .insert(revision.version_id, (stamp, revision));
+        }
+        // Causality precedes the concurrent stamp: a signed edit supersedes
+        // its ancestors even when the clock has not advanced. Traverse the
+        // union once, rather than comparing pairs with an order that can cycle.
+        let mut ancestors = HashSet::new();
+        let mut pending = Vec::new();
+        for version_id in self.content_revision_frontier.keys() {
+            if let Some(version) = self
+                .versions
+                .get(version_id)
+                .or_else(|| self.transaction_versions.get(version_id))
+            {
+                pending.extend(version.parents.iter().copied());
+            }
+        }
+        while let Some(version_id) = pending.pop() {
+            if ancestors.insert(version_id)
+                && let Some(version) = self
+                    .versions
+                    .get(&version_id)
+                    .or_else(|| self.transaction_versions.get(&version_id))
+            {
+                pending.extend(version.parents.iter().copied());
+            }
+        }
+        self.content_revision_frontier
+            .retain(|version_id, _| !ancestors.contains(version_id));
+        self.content_revision = self
+            .content_revision_frontier
+            .values()
+            .max_by_key(|(stamp, _)| *stamp)
+            .copied();
     }
 
     pub(crate) fn version_count(&self) -> usize {
@@ -790,11 +818,6 @@ impl RecordReplica {
             versions,
             conflicts,
         }
-    }
-
-    /// Sequence numbers already consumed, useful when persisting replay state.
-    pub fn sequence_watermarks(&self) -> impl Iterator<Item = (&FileActor, &u64)> {
-        self.highest_sequence.iter()
     }
 }
 
@@ -877,17 +900,68 @@ pub enum RecordReplicationError {
     Canonical(#[from] CanonicalError),
 }
 
+/// Authorizers for tests whose subject is not authorization itself.
+#[cfg(test)]
+pub(crate) mod test_authorizers {
+    use super::{FileActor, FileRecordId, RecordAction, RecordAuthorizer};
+    use std::collections::BTreeSet;
+
+    /// Certifies every actor and allows every action.
+    pub(crate) struct AllowAll;
+
+    impl RecordAuthorizer for AllowAll {
+        fn actor_is_certified(&self, _: &FileActor) -> bool {
+            true
+        }
+
+        fn allows(&self, _: &FileActor, _: FileRecordId, _: RecordAction) -> bool {
+            true
+        }
+    }
+
+    /// Certifies one actor and allows it every action on every record.
+    #[derive(Clone, Copy)]
+    pub(crate) struct AllowActor(pub(crate) FileActor);
+
+    impl RecordAuthorizer for AllowActor {
+        fn actor_is_certified(&self, actor: &FileActor) -> bool {
+            *actor == self.0
+        }
+
+        fn allows(&self, actor: &FileActor, _: FileRecordId, _: RecordAction) -> bool {
+            *actor == self.0
+        }
+    }
+
+    /// Certifies one actor and allows it every action on these records only.
+    pub(crate) struct AllowActorOn {
+        pub(crate) actor: FileActor,
+        pub(crate) records: BTreeSet<FileRecordId>,
+    }
+
+    impl RecordAuthorizer for AllowActorOn {
+        fn actor_is_certified(&self, actor: &FileActor) -> bool {
+            *actor == self.actor
+        }
+
+        fn allows(&self, actor: &FileActor, record: FileRecordId, _: RecordAction) -> bool {
+            *actor == self.actor && self.records.contains(&record)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    use collab_types::{
+    use collab_types::generate_keypair;
+    use fs_protocol::{
         CONTENT_REVISION_VERSION, ConflictResolution, ConflictStatus, ConflictStrategy,
         ContentHash, FILE_BINDING_VERSION, FILE_MUTATION_TRANSACTION_VERSION, FileConflictV1,
         FileMutationOperation, FileMutationParticipant, FileMutationParticipantRole,
         FileMutationTransactionManifest, FileNodeKind, FilePropertiesV1, FileProvenance,
-        FileVersionId, IndexStatus, generate_keypair,
+        FileVersionId, IndexStatus,
     };
 
     #[derive(Default)]
@@ -929,7 +1003,7 @@ mod tests {
 
     fn metadata(record: FileRecordId, actor: FileActor, observed_at_ms: u64) -> FileMetadataV1 {
         FileMetadataV1 {
-            schema_version: collab_types::files::FILE_METADATA_VERSION,
+            schema_version: fs_protocol::files::FILE_METADATA_VERSION,
             record_id: record,
             content_hash: Some(ContentHash([7; 32])),
             byte_len: 12,
@@ -939,7 +1013,7 @@ mod tests {
             observed_at_ms,
             index_status: IndexStatus::Indexed,
             properties: Some(FilePropertiesV1 {
-                schema_version: collab_types::files::FILE_PROPERTIES_VERSION,
+                schema_version: fs_protocol::files::FILE_PROPERTIES_VERSION,
                 image_width: Some(16),
                 image_height: Some(9),
                 duration_ms: None,
@@ -1044,6 +1118,145 @@ mod tests {
         .unwrap()
     }
 
+    fn causal_revision_operations(
+        actors: &[(ed25519_dalek::SigningKey, FileActor)],
+        root: FileVersionV1,
+        versions: &[FileVersionV1],
+    ) -> (RecordReplica, Vec<RecordEnvelopeV1>, TestAuthorizer) {
+        let record = root.record_id;
+        let mut auth = TestAuthorizer::default();
+        for (_, actor) in actors {
+            auth.certified.insert(*actor);
+            auth.readers.insert((record, *actor));
+            auth.writers.insert((record, *actor));
+        }
+        let (key, actor) = actors.first().unwrap();
+        let mut common = RecordReplica::new(record);
+        common
+            .merge(
+                &RecordEnvelopeV1::signed(
+                    record,
+                    *actor,
+                    1,
+                    RecordOperationV1::AppendVersion(root),
+                    key,
+                )
+                .unwrap(),
+                &auth,
+            )
+            .unwrap();
+        for index in [2, 0, 1] {
+            let (key, actor) = actors.get(index).unwrap();
+            common
+                .merge(
+                    &RecordEnvelopeV1::signed(
+                        record,
+                        *actor,
+                        if index == 0 { 2 } else { 1 },
+                        RecordOperationV1::AppendVersion(versions.get(index).unwrap().clone()),
+                        key,
+                    )
+                    .unwrap(),
+                    &auth,
+                )
+                .unwrap();
+        }
+        let proposals = actors
+            .iter()
+            .zip(versions)
+            .enumerate()
+            .map(|(index, ((key, actor), version))| {
+                RecordEnvelopeV1::signed(
+                    record,
+                    *actor,
+                    if index == 0 { 3 } else { 2 },
+                    RecordOperationV1::SetContentRevision(ContentRevisionV1 {
+                        schema_version: CONTENT_REVISION_VERSION,
+                        record_id: record,
+                        version_id: version.id,
+                        content_hash: version.content_hash,
+                        byte_len: 1,
+                        metadata_hash: version.metadata_hash,
+                    }),
+                    key,
+                )
+                .unwrap()
+            })
+            .collect();
+        (common, proposals, auth)
+    }
+
+    #[test]
+    fn causal_revision_frontier_converges_across_all_publication_orders() {
+        let mut actors: Vec<_> = (0..3)
+            .map(|_| {
+                let (key, actor, _, _) = fixture();
+                (key, actor)
+            })
+            .collect();
+        actors.sort_by_key(|(_, actor)| (*actor.person.as_bytes(), *actor.device.as_bytes()));
+        let record = FileRecordId::new();
+        let (_, first_actor) = actors.first().unwrap();
+        let root = FileVersionV1 {
+            id: FileVersionId(uuid::Uuid::from_u128(4)),
+            record_id: record,
+            parents: vec![],
+            actor: *first_actor,
+            timestamp_ms: 1,
+            content_hash: Some(ContentHash([4; 32])),
+            metadata_hash: ContentHash([14; 32]),
+            provenance: FileProvenance::Create,
+        };
+        let versions: Vec<_> = actors
+            .iter()
+            .enumerate()
+            .map(|(index, (_, actor))| FileVersionV1 {
+                id: FileVersionId(uuid::Uuid::from_u128(index as u128 + 1)),
+                record_id: record,
+                parents: vec![if index == 0 {
+                    FileVersionId(uuid::Uuid::from_u128(3))
+                } else {
+                    root.id
+                }],
+                actor: *actor,
+                timestamp_ms: 10,
+                content_hash: Some(ContentHash([u8::try_from(index).unwrap(); 32])),
+                metadata_hash: ContentHash([u8::try_from(index).unwrap() + 10; 32]),
+                provenance: FileProvenance::Edit,
+            })
+            .collect();
+        let (common, proposals, auth) = causal_revision_operations(&actors, root, &versions);
+        let expected = versions.get(1).unwrap().id;
+        let mut converged = None;
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let mut replica = common.clone();
+            for index in order {
+                replica.merge(proposals.get(index).unwrap(), &auth).unwrap();
+            }
+            let snapshot = replica.snapshot(first_actor, &auth).unwrap();
+            assert_eq!(
+                snapshot.content_revision.unwrap().version_id,
+                expected,
+                "the ancestor loses, but its incomparable competitor remains eligible"
+            );
+            if let Some(previous) = &converged {
+                assert_eq!(
+                    &snapshot, previous,
+                    "the same signed operations must converge"
+                );
+            } else {
+                converged = Some(snapshot);
+            }
+        }
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1108,7 +1321,7 @@ mod tests {
                     provenance: FileProvenance::Create,
                 };
                 let revision = ContentRevisionV1 {
-                    schema_version: collab_types::CONTENT_REVISION_VERSION,
+                    schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                     record_id: record,
                     version_id: version.id,
                     content_hash: version.content_hash,
@@ -1331,7 +1544,7 @@ mod tests {
                     first_actor,
                     5,
                     RecordOperationV1::SetContentRevision(ContentRevisionV1 {
-                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                         record_id: record,
                         version_id: first_result.id,
                         content_hash: first_result.content_hash,
@@ -1354,7 +1567,7 @@ mod tests {
                     second_actor,
                     2,
                     RecordOperationV1::SetContentRevision(ContentRevisionV1 {
-                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                         record_id: record,
                         version_id: second_result.id,
                         content_hash: second_result.content_hash,
@@ -1537,11 +1750,11 @@ mod tests {
             let (key, actor, record, _) = fixture();
             let parent = FileRecordId::new();
             let binding = FileBindingV1 {
-                schema_version: collab_types::FILE_BINDING_VERSION,
+                schema_version: fs_protocol::FILE_BINDING_VERSION,
                 record_id: record,
                 parent: Some(parent),
                 name: "bound.txt".into(),
-                kind: collab_types::FileNodeKind::File,
+                kind: fs_protocol::FileNodeKind::File,
                 tombstoned: false,
                 actor,
                 observed_at_ms: 1,
@@ -1583,11 +1796,11 @@ mod tests {
             let (key, actor, record, auth) = fixture();
             let parent = FileRecordId::new();
             let binding = |name: &str, observed_at_ms: u64| FileBindingV1 {
-                schema_version: collab_types::FILE_BINDING_VERSION,
+                schema_version: fs_protocol::FILE_BINDING_VERSION,
                 record_id: record,
                 parent: Some(parent),
                 name: name.into(),
-                kind: collab_types::FileNodeKind::File,
+                kind: fs_protocol::FileNodeKind::File,
                 tombstoned: false,
                 actor,
                 observed_at_ms,

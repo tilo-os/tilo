@@ -40,6 +40,7 @@ use tokio::sync::Notify;
 use super::{Duration, EndpointAddr, Hash, Hydrator, Result, anyhow};
 use crate::content::{self, Manifest, RangeSet};
 use crate::store::Retention;
+use tilo_lock::MutexRecover as _;
 
 /// Requested bytes per `GET` for background work and read-ahead.
 const REQUEST_BYTES: u64 = 16 * 1024 * 1024;
@@ -146,9 +147,7 @@ pub(crate) struct Flights {
 
 impl Flights {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<Hash, (RangeSet, Arc<Notify>)>> {
-        self.ranges
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.ranges.lock_recover()
     }
 
     /// Claims the parts of `wanted` nobody is fetching. Returns them, and a
@@ -332,26 +331,24 @@ impl Hydrator {
     ) -> Result<()> {
         let key = *content.as_bytes();
         let files = Arc::clone(self.store.files());
-        let mut tried = false;
+        // What this call fetched itself: still missing afterwards, nobody
+        // served it. A range another reader's failed fetch released is
+        // fetched here instead.
+        let mut fetched: Vec<Range<u64>> = Vec::new();
         loop {
             let missing = files.missing(&key, &piece);
             if missing.is_empty() {
                 return Ok(());
             }
-            if tried {
-                // Whatever the claimed fetch did not make resident, nobody
-                // served; another holder's fetch may since have failed too.
-                let (claimed, _) = self.flights.claim(content, &missing);
-                self.flights.release(content, &claimed);
-                if !claimed.is_empty() {
-                    return Err(anyhow!(
-                        "{} bytes of {content} were not served by any peer",
-                        claimed
-                            .iter()
-                            .map(|r| r.end.saturating_sub(r.start))
-                            .sum::<u64>()
-                    ));
-                }
+            let unserved: u64 = missing
+                .iter()
+                .flat_map(|m| fetched.iter().map(move |f| (m, f)))
+                .map(|(m, f)| m.end.min(f.end).saturating_sub(m.start.max(f.start)))
+                .sum();
+            if unserved > 0 {
+                return Err(anyhow!(
+                    "{unserved} bytes of {content} were not served by any peer"
+                ));
             }
             // Background work is admitted before it claims anything, so it
             // never holds ranges a reader waits for while it waits itself.
@@ -375,7 +372,7 @@ impl Hydrator {
             self.flights.release(content, &claimed);
             drop(admission);
             result?;
-            tried = true;
+            fetched.extend(claimed);
         }
     }
 
@@ -721,17 +718,7 @@ mod tests {
         assert_eq!(c, vec![0..100]);
     }
 
-    fn pseudo(len: usize, seed: u64) -> Vec<u8> {
-        let mut x = seed | 1;
-        (0..len)
-            .map(|_| {
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                x.to_le_bytes()[0]
-            })
-            .collect()
-    }
+    use crate::test_bytes::pseudo;
 
     /// A peer serving `data` as one file version, and an empty client.
     async fn pair(

@@ -10,6 +10,7 @@ pub(crate) const MAX_DPR: f64 = 2.0;
 
 /// Bounds on the canvas backing store.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[expect(clippy::struct_field_names, reason = "every field is a maximum")]
 pub(crate) struct SurfaceCaps {
     pub max_side: u32,
     pub max_pixels: u64,
@@ -22,7 +23,7 @@ impl SurfaceCaps {
         max_pixels: MAX_SURFACE_PIXELS,
         max_dpr: MAX_DPR,
     };
-    /// WebKit's GPU process holds every surface and binding of a frame
+    /// `WebKit`'s GPU process holds every surface and binding of a frame
     /// resident on top of a large fixed cost, under Safari's 600 MB limit.
     pub const CONSERVATIVE: Self = Self {
         max_side: 1920,

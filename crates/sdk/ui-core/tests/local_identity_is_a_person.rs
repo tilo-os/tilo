@@ -8,16 +8,6 @@
 //! These tests set the environment through `tilo_test_env`, which serialises
 //! them against every other test in the process that does.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use tilo_ui::collaboration::{local_app_id, local_user_id};
 
 /// Set and remove `vars` until the returned scope drops, which restores each

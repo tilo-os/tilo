@@ -47,7 +47,7 @@ pub use dir::DirBackend;
 #[cfg(feature = "dir")]
 pub use files::FilesBackend;
 pub use memory::MemoryBackend;
-pub use sniff::sniff;
+pub use sniff::{ImageFormat, image_format, image_size, sniff};
 
 /// The app-files owner of a page's content store (see [`ContentStore::for_app`]).
 #[cfg(feature = "dir")]
@@ -257,6 +257,20 @@ impl ContentStore {
         Self::new(MemoryBackend::default())
     }
 
+    /// The device content store, when the launcher handed this process its capability.
+    /// Every returned store shares the one connection. Returns `None` on hosts without
+    /// device transport or when the `device` feature is disabled; no storage fallback is opened.
+    pub fn device() -> Option<Self> {
+        #[cfg(all(unix, feature = "device"))]
+        {
+            device::store()
+        }
+        #[cfg(not(all(unix, feature = "device")))]
+        {
+            None
+        }
+    }
+
     /// Content in the directory `root`, created on first write.
     #[cfg(feature = "dir")]
     pub fn in_dir(root: impl Into<PathBuf>) -> Self {
@@ -272,7 +286,6 @@ impl ContentStore {
     /// memory.
     #[cfg(feature = "dir")]
     pub fn for_app() -> Self {
-        #[cfg(all(unix, feature = "device"))]
         if let Some(device) = Self::device() {
             return device;
         }
@@ -284,18 +297,15 @@ impl ContentStore {
         if let Some(shared) = env(SHARED_STORE_ENV).filter(|value| !value.is_empty()) {
             return Self::in_dir(PathBuf::from(shared));
         }
-        if !matches!(
-            tilo_files::availability(tilo_files::Feature::NativePaths),
-            tilo_files::Availability::Available
-        ) {
+        if !tilo_files::available(tilo_files::Feature::NativePaths) {
             return Self::in_page_files();
         }
-        let Some(data) = xdg_paths::data_dir() else {
+        let Some(data) = tilo_paths::data_dir() else {
             tracing::warn!("no data directory; binary content is kept in memory only");
             return Self::memory();
         };
         let mut backend = DirBackend::new(data.join("tilo").join("content"));
-        if let Some(cache) = xdg_paths::cache_dir() {
+        if let Some(cache) = tilo_paths::cache_dir() {
             backend = backend.reading_also(cache.join("tilo").join("blobs"));
         }
         Self::new(backend)
@@ -335,7 +345,8 @@ impl ContentStore {
             .map(|stored| stored.hash)
     }
 
-    /// Store everything `reader` yields without holding it in memory.
+    /// Store everything `reader` yields without holding it in memory: the device store sends it
+    /// to the daemon one `runtime_fs::blobs::MAX_PUT_CHUNK` at a time.
     ///
     /// # Errors
     /// See [`ContentBackend::put`].
@@ -546,5 +557,15 @@ impl<R: Read> Read for Verifying<R> {
     }
 }
 
-#[cfg(all(test, feature = "dir"))]
+#[cfg(test)]
+#[cfg(feature = "dir")]
 mod tests;
+
+#[cfg(test)]
+#[cfg(not(all(unix, feature = "device")))]
+mod device_api_tests {
+    #[test]
+    fn device_store_is_unavailable_without_device_transport() {
+        assert!(super::ContentStore::device().is_none());
+    }
+}

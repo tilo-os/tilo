@@ -2,9 +2,6 @@
     test,
     allow(
         clippy::disallowed_methods,
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
@@ -18,21 +15,24 @@
 //!
 //! | Target | Backend |
 //! |---|---|
-//! | Linux | the notification portal (which the Tilo shell implements), else `org.freedesktop.Notifications` |
+//! | Linux | the notification portal, else `org.freedesktop.Notifications`; Tilo's service also owns durable deadlines |
 //! | macOS | `UNUserNotificationCenter`, which needs the app bundle's identifier: an unbundled binary has none and answers [`NotifyError::Unavailable`] |
 //! | Web | the Notifications API, while the page is open |
 //! | Windows | toasts under the installer-registered app id |
 //!
 //! A notification may carry an activation URI
-//! ([`Notification::with_activation`]); a click hands it to the app's
-//! [`set_activation_handler`] where the platform reports clicks.
+//! ([`Notification::with_activation`]); a click hands it to the handler the
+//! app installed for the URI's scheme ([`set_activation_handler`]) where the
+//! platform reports clicks.
 //!
 //! [`availability`] says which [`Feature`]s the target has; a backend may do
 //! less at run time (no notification service on this session), never more.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
+mod calendar;
 mod caps;
+pub use calendar::{AlarmSchedule, CalendarAlarm};
 pub mod conformance;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -50,7 +50,7 @@ pub mod windows_toasts {
     pub use crate::windows::{HostNotifications, ScheduledNotice, register_shortcut};
 }
 
-pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability, available};
 pub use tilo_clock::SystemTime;
 
 /// One user-visible notification.
@@ -66,6 +66,26 @@ pub struct Notification {
     /// clicks the notification (`tilo-clocks:timer/<id>`), where the platform
     /// reports clicks ([`Feature::Activate`]).
     pub activation: Option<String>,
+    /// What choosing the notification does, in the person's words ("Try
+    /// again"), for a host that shows the activation as a button. Without
+    /// one a click opens the app.
+    pub action: Option<String>,
+    /// How much it asks of the person: a host marks a warning or an error
+    /// the way it marks its own.
+    pub severity: Severity,
+}
+
+/// How much a notification asks of the person.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Severity {
+    /// News: something happened.
+    #[default]
+    Info,
+    /// Something went wrong that the person can put right, such as a save
+    /// that did not go through.
+    Warning,
+    /// Something failed that needs the person now.
+    Error,
 }
 
 impl Notification {
@@ -75,6 +95,8 @@ impl Notification {
             title: title.into(),
             body: body.into(),
             activation: None,
+            action: None,
+            severity: Severity::Info,
         }
     }
 
@@ -84,17 +106,38 @@ impl Notification {
         self.activation = Some(uri.into());
         self
     }
+
+    /// Name what the activation does ("Try again"), for a host that shows
+    /// it as a button.
+    #[must_use]
+    pub fn with_action(mut self, label: impl Into<String>) -> Self {
+        self.action = Some(label.into());
+        self
+    }
+
+    /// Mark it as a warning or an error.
+    #[must_use]
+    pub fn with_severity(mut self, severity: Severity) -> Self {
+        self.severity = severity;
+        self
+    }
 }
 
 /// Receives the activation URIs of clicked notifications.
 type ActivationHandler = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// The installed handler, and the clicks that arrived before one was (a
-/// click that launched the app).
+/// The installed handlers by URI scheme, and the clicks that arrived
+/// before theirs was (a click that launched the app). Several apps share a
+/// process on a Tilo desktop, so each owns only its scheme's clicks.
 #[derive(Default)]
 struct Activations {
-    handler: Option<ActivationHandler>,
+    handlers: std::collections::HashMap<String, ActivationHandler>,
     pending: Vec<String>,
+}
+
+/// The scheme of activation URI `uri`, as handlers are keyed.
+fn scheme_of(uri: &str) -> &str {
+    uri.split_once(':').map_or(uri, |(scheme, _)| scheme)
 }
 
 fn activations() -> &'static Mutex<Activations> {
@@ -106,34 +149,47 @@ fn activations() -> &'static Mutex<Activations> {
 const PENDING_ACTIVATIONS: usize = 16;
 
 /// Call `handler` with the activation URI of every notification the user
-/// clicks, on whatever thread the platform reports it, starting with any
-/// click that arrived before (the one that launched the app). Replaces an
-/// earlier handler.
-pub fn set_activation_handler(handler: impl Fn(&str) + Send + Sync + 'static) {
+/// clicks whose URI has `scheme` (`tilo-clocks`), on whatever thread the
+/// platform reports it, starting with any such click that arrived before
+/// (the one that launched the app). Replaces an earlier handler for
+/// `scheme`.
+pub fn set_activation_handler(scheme: &str, handler: impl Fn(&str) + Send + Sync + 'static) {
     let handler: ActivationHandler = Arc::new(handler);
     let pending = {
         let Ok(mut activations) = activations().lock() else {
             return;
         };
-        activations.handler = Some(handler.clone());
-        std::mem::take(&mut activations.pending)
+        activations
+            .handlers
+            .insert(scheme.to_owned(), handler.clone());
+        let (mine, others) = std::mem::take(&mut activations.pending)
+            .into_iter()
+            .partition(|uri| scheme_of(uri) == scheme);
+        activations.pending = others;
+        mine
     };
     for uri in pending {
         handler(&uri);
     }
 }
 
+/// Report that the person chose a notification carrying `uri`, for a host
+/// that shows applications' notifications itself (a desktop drawing its own
+/// banners) rather than through a platform backend. The app's
+/// [`set_activation_handler`] receives it as it would a platform click.
+pub fn report_activation(uri: &str) {
+    if valid_activation(uri) {
+        activated(uri);
+    }
+}
+
 /// A backend's report that the user clicked a notification carrying `uri`.
-#[cfg_attr(
-    not(any(target_os = "linux", target_os = "macos")),
-    allow(dead_code, reason = "only these backends report clicks")
-)]
 pub(crate) fn activated(uri: &str) {
     let handler = {
         let Ok(mut activations) = activations().lock() else {
             return;
         };
-        if let Some(handler) = &activations.handler {
+        if let Some(handler) = activations.handlers.get(scheme_of(uri)) {
             handler.clone()
         } else {
             if activations.pending.len() == PENDING_ACTIVATIONS {
@@ -180,6 +236,17 @@ pub struct Scheduled {
     pub at: SystemTime,
 }
 
+/// The host's authoritative occurrence and delivery history for an alarm.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AlarmState {
+    pub tag: String,
+    pub alarm: CalendarAlarm,
+    pub enabled_at_ms: i64,
+    pub next_at: Option<SystemTime>,
+    pub last_at: Option<SystemTime>,
+    pub last_rung: Option<chrono::NaiveDate>,
+}
+
 /// Host-owned user notifications.
 pub trait Notifier: Send + Sync {
     /// Show `notification`, replacing any earlier one with the same tag.
@@ -201,9 +268,34 @@ pub trait Notifier: Send + Sync {
     /// [`Feature::Schedule`] is unsupported here, or the platform refused.
     fn schedule(&self, notification: &Notification, at: SystemTime) -> Result<(), NotifyError> {
         let _ = (notification, at);
-        Err(NotifyError::Unsupported(caps::unsupported(
-            Feature::Schedule,
-        )))
+        Err(NotifyError::Unsupported(Unsupported::of(Feature::Schedule)))
+    }
+
+    /// Schedule a local-time alarm. Hosts that understand calendar alarms
+    /// retain recurrence and timezone semantics after the app closes; other
+    /// hosts retain the supplied next occurrence through `schedule`.
+    ///
+    /// # Errors
+    /// Invalid calendar fields, an unavailable scheduler, or a host refusal.
+    fn schedule_alarm(
+        &self,
+        notification: &Notification,
+        at: SystemTime,
+        schedule: AlarmSchedule,
+    ) -> Result<(), NotifyError> {
+        if !schedule.alarm.valid() {
+            return Err(NotifyError::Invalid("invalid alarm time or weekdays"));
+        }
+        self.schedule(notification, at)
+    }
+
+    /// Calendar handoffs and delivered occurrences owned by this app.
+    /// Hosts that retain only an absolute deadline return no calendar state.
+    ///
+    /// # Errors
+    /// The durable calendar service is unavailable or refused the caller.
+    fn alarm_states(&self) -> Result<Vec<AlarmState>, NotifyError> {
+        Ok(Vec::new())
     }
 
     /// The notifications this app has scheduled that are not yet delivered.
@@ -211,9 +303,7 @@ pub trait Notifier: Send + Sync {
     /// # Errors
     /// As [`schedule`](Self::schedule).
     fn scheduled(&self) -> Result<Vec<Scheduled>, NotifyError> {
-        Err(NotifyError::Unsupported(caps::unsupported(
-            Feature::Schedule,
-        )))
+        Err(NotifyError::Unsupported(Unsupported::of(Feature::Schedule)))
     }
 
     /// Cancel the scheduled notification under `tag`, if any.
@@ -222,9 +312,7 @@ pub trait Notifier: Send + Sync {
     /// As [`schedule`](Self::schedule).
     fn cancel_scheduled(&self, tag: &str) -> Result<(), NotifyError> {
         let _ = tag;
-        Err(NotifyError::Unsupported(caps::unsupported(
-            Feature::Schedule,
-        )))
+        Err(NotifyError::Unsupported(Unsupported::of(Feature::Schedule)))
     }
 }
 
@@ -246,7 +334,7 @@ pub(crate) fn validate(notification: &Notification) -> Result<(), NotifyError> {
 
 /// `scheme:rest`, the scheme as RFC 3986 spells it, without control
 /// characters or whitespace.
-fn valid_activation(uri: &str) -> bool {
+pub fn valid_activation(uri: &str) -> bool {
     let Some((scheme, _)) = uri.split_once(':') else {
         return false;
     };
@@ -347,7 +435,7 @@ impl Notifier for UnavailableNotifier {
 fn schedule_refusal() -> NotifyError {
     match availability(Feature::Schedule) {
         Availability::Unsupported(_) => {
-            NotifyError::Unsupported(caps::unsupported(Feature::Schedule))
+            NotifyError::Unsupported(Unsupported::of(Feature::Schedule))
         }
         Availability::Available | Availability::Prompt => NotifyError::Unavailable,
     }
@@ -384,7 +472,7 @@ fn priority_contacts(app_id: &str, contacts: &[PriorityContact]) -> Result<(), N
 
 #[cfg(not(target_os = "linux"))]
 fn priority_contacts(_app_id: &str, _contacts: &[PriorityContact]) -> Result<(), NotifyError> {
-    Err(NotifyError::Unsupported(caps::unsupported(
+    Err(NotifyError::Unsupported(Unsupported::of(
         Feature::PriorityContacts,
     )))
 }
@@ -409,11 +497,16 @@ mod tests {
         activated("tilo-test:launch");
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
-        set_activation_handler(move |uri| sink.lock().unwrap().push(uri.to_owned()));
+        activated("tilo-other:launch");
+        set_activation_handler("tilo-test", move |uri| {
+            sink.lock().unwrap().push(uri.to_owned());
+        });
         activated("tilo-test:later");
+        activated("tilo-other:later");
         assert_eq!(
             *seen.lock().unwrap(),
-            ["tilo-test:launch", "tilo-test:later"]
+            ["tilo-test:launch", "tilo-test:later"],
+            "a handler sees only its scheme's clicks"
         );
     }
 

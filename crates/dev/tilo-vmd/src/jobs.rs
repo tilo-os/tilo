@@ -257,6 +257,11 @@ impl Daemon {
         let mut cargo = Command::new("cargo");
         cargo.args(component.cargo_args(&extra)).current_dir(src);
         cargo_env(&mut cargo, job.color, sccache);
+        if matches!(component.profile.as_str(), "dev" | "test")
+            && let (_, Some(target)) = toolchain()
+        {
+            crate::linker::configure(&mut cargo, &self.root, &target)?;
+        }
         eprintln!(
             "tilo-vmd: cargo {} (in {})",
             component.cargo_args(&extra).join(" "),
@@ -477,17 +482,7 @@ pub fn app_package_args(dir: &str, out: &Path) -> Vec<String> {
 }
 
 pub fn ci_provenance(job: &CiJob, digest: Option<String>, revision: Option<String>) -> Provenance {
-    let mut provenance = Provenance::local(&job.component);
-    provenance.authority = "ci".into();
-    provenance.builder = Some("ci".into());
-    provenance.source_commit = revision.or_else(|| job.provenance.source_commit.clone());
-    provenance.base_image_digest = digest;
-    provenance.target = Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH));
-    provenance
-        .cargo_profile
-        .clone_from(&job.provenance.cargo_profile);
-    provenance.features.clone_from(&job.provenance.features);
-    provenance
+    Provenance::from_ci(&job.provenance, std::env::consts::ARCH, digest, revision)
 }
 
 /// What a failed `podman pull` means.
@@ -500,7 +495,10 @@ pub fn pull_error(image: &str, output: &str) -> DaemonError {
         DaemonError::RegistryAuth {
             image: image.to_owned(),
         }
-    } else if lower.contains("manifest unknown") || lower.contains("not found") {
+    } else if lower.contains("manifest unknown")
+        || lower.contains("not found")
+        || lower.contains("no image found in manifest list")
+    {
         DaemonError::ImageNotFound {
             image: image.to_owned(),
         }
@@ -596,6 +594,13 @@ mod tests {
                 DaemonError::ImageNotFound { .. }
             ));
             assert!(matches!(
+                pull_error(
+                    "i",
+                    "Error: choosing an image from manifest list docker://i: no image found in manifest list for architecture \"arm64\", variant \"v8\", OS \"linux\""
+                ),
+                DaemonError::ImageNotFound { .. }
+            ));
+            assert!(matches!(
                 pull_error("i", "no space left on device\n"),
                 DaemonError::Job { .. }
             ));
@@ -664,6 +669,18 @@ mod tests {
             assert_eq!(p.builder.as_deref(), Some("ci"));
             assert_eq!(p.source_commit.as_deref(), Some("abc"));
             assert_eq!(p.base_image_digest.as_deref(), Some("sha256:d"));
+            assert_eq!(
+                p.target,
+                Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH))
+            );
+            // The host's extraction for an aarch64 device writes the same record.
+            let host =
+                Provenance::from_ci(&job.provenance, "aarch64", Some("sha256:d".into()), None);
+            assert_eq!(host.target.as_deref(), Some("aarch64-unknown-linux-gnu"));
+            assert_eq!(
+                (host.authority.as_str(), host.builder.as_deref()),
+                ("ci", Some("ci"))
+            );
         }
         // Phase `app_packaging_commands`.
         {

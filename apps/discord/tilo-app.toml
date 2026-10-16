@@ -1,0 +1,71 @@
+# Discord — Tilo connector manifest.
+#
+# Installed on a room's host. The app itself only shows and plans the
+# bridged server; its outside worker (`bin/discord-worker`) talks to
+# Discord, so egress is pinned to Discord's API, gateway and CDN and
+# nothing else. The bot token lives in the host's secret store
+# (`set-bot-token`), never in the record.
+
+[package]
+id       = "so.tilo.discord"
+name     = "Discord"
+category = "Network"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "tilo-runtime/2026.07"
+platforms = ["linux"]
+platform-reason = "A connector runs on a room's host: it keeps the bot token in the host's secret store and starts the worker that talks to Discord."
+
+[package.isa]
+x86_64 = "v3"
+aarch64 = "aarch64"
+
+[capabilities]
+required = ["network.http", "secrets"]
+
+[resources]
+kinds = ["discord.guild"]
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "tilo-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+    "net",
+]
+seccomp    = "tilo-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "allowlist"
+hosts = [
+    "discord.com",
+    "gateway.discord.gg",
+    "cdn.discordapp.com",
+]
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+
+[entrypoint]
+bin             = "bin/discord"
+type            = "gui"
+splash-segments = ["bin/discord[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []

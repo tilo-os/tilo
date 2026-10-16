@@ -4,13 +4,16 @@
 use example_shared_checklist::{App, Checklist};
 use ui::a11y::Action;
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Id, Replica, TestApp};
+use ui::prelude::{Edit, Id, Invoke, Replica, TestApp};
+
+#[expect(clippy::expect_used, reason = "a test helper fails the test loudly")]
+fn edit(edit: &Edit<Checklist>) -> Invoke<Checklist> {
+    Invoke::edit(edit).expect("an edit serializes")
+}
 
 #[expect(clippy::expect_used, reason = "a test helper fails the test loudly")]
 fn add(list: &mut Replica<Checklist>, title: &str) -> Id {
-    list.apply(Checklist::SET_DRAFT.with(title.into()))
-        .expect("draft");
-    list.apply(Checklist::ADD.invoke()).expect("add");
+    list.apply(Checklist::ADD.with(title)).expect("add");
     let state = list.state().expect("checklist");
     state
         .items
@@ -59,10 +62,11 @@ fn concurrent_typing_in_one_title_merges() {
     let mut ada = Replica::<Checklist>::new().as_author("ada");
     let milk = add(&mut ada, "Buy milk");
     let mut grace = ada.fork().as_author("grace");
-    ada.apply(Checklist::RETITLE.with((milk.clone(), "Buy oat milk".into())))
+    let title = Checklist::paths().items.item(&milk).title;
+    ada.apply(edit(&title.splice(4, 0, "oat ")))
         .expect("ada types");
     grace
-        .apply(Checklist::RETITLE.with((milk, "Buy milk today".into())))
+        .apply(edit(&title.splice(8, 0, " today")))
         .expect("grace types");
     ada.sync_with(&mut grace).expect("sync");
     assert_eq!(titles(&ada), ["Buy oat milk today"]);
@@ -76,10 +80,10 @@ fn concurrent_edits_to_one_item_converge() {
     let mut ada = Replica::<Checklist>::new().as_author("ada");
     let milk = add(&mut ada, "Milk");
     let mut grace = ada.fork().as_author("grace");
-    ada.apply(Checklist::SET_DONE.with((milk.clone(), true)))
-        .expect("ada checks it");
+    let at = Checklist::paths().items.item(&milk);
+    ada.apply(edit(&at.done.set(true))).expect("ada checks it");
     grace
-        .apply(Checklist::RETITLE.with((milk.clone(), "Oat milk".into())))
+        .apply(edit(&at.title.replace("Oat milk")))
         .expect("grace retitles it");
     ada.sync_with(&mut grace).expect("sync");
     let merged = ada.state().expect("ada");
@@ -87,36 +91,47 @@ fn concurrent_edits_to_one_item_converge() {
     assert!(item.done);
     assert_eq!(item.title, "Oat milk");
 
-    ada.apply(Checklist::SET_DONE.with((milk.clone(), false)))
-        .expect("ada unchecks");
+    ada.apply(edit(&at.done.set(false))).expect("ada unchecks");
     grace
-        .apply(Checklist::SET_DONE.with((milk, true)))
+        .apply(edit(&at.done.set(true)))
         .expect("grace keeps it checked");
     ada.sync_with(&mut grace).expect("sync");
     assert_eq!(ada.state().expect("ada"), grace.state().expect("grace"));
 }
 
-/// Every action is a version attributed to whoever made it.
+/// Every edit and every verb is a version attributed to whoever made it.
 #[test]
 fn history_is_attributed() {
+    use ui::tilo_actions::Did;
     let mut ada = Replica::<Checklist>::new().as_author("ada");
     let mut grace = ada.fork().as_author("grace");
-    ada.apply(Checklist::RENAME.with("Groceries".into()))
+    ada.apply(edit(&Checklist::paths().name.replace("Groceries")))
         .expect("rename");
     add(&mut grace, "Bread");
     ada.sync_with(&mut grace).expect("sync");
     let versions = ada.versions();
-    let by = |author: &[u8], summary: &str| {
+    let by = |author: &[u8], did: &dyn Fn(&Did) -> bool| {
         versions.iter().any(|version| {
-            version.actor == hex(author) && version.summary().as_deref() == Some(summary)
+            version.actor == hex(author)
+                && version
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.what.as_ref())
+                    .is_some_and(did)
         })
     };
     assert!(
-        by(b"ada", "Rename the checklist · Checklist"),
+        by(
+            b"ada",
+            &|did| matches!(did, Did::Edit(edit) if edit.field == "name")
+        ),
         "{versions:#?}"
     );
     assert!(
-        by(b"grace", "Add the drafted item · Checklist"),
+        by(
+            b"grace",
+            &|did| matches!(did, Did::Verb(verb) if verb.action.action == "add")
+        ),
         "{versions:#?}"
     );
 }
@@ -126,7 +141,7 @@ fn history_is_attributed() {
 #[test]
 fn undo_takes_back_only_my_own_actions() {
     let mut app = TestApp::<App>::new().expect("the app opens");
-    app.invoke(Checklist::RENAME.with("Groceries".into()))
+    app.invoke(edit(&Checklist::paths().name.replace("Groceries")))
         .expect("rename");
     let mut grace = Replica::<Checklist>::from_doc(app.peer_document()).as_author("grace");
     add(&mut grace, "Bread");
@@ -148,14 +163,12 @@ fn undo_takes_back_only_my_own_actions() {
 fn clearing_checked_items_is_one_undo_step() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     for title in ["Milk", "Bread", "Eggs"] {
-        app.invoke(Checklist::SET_DRAFT.with(title.into()))
-            .expect("draft");
-        app.invoke(Checklist::ADD.invoke()).expect("add");
+        app.invoke(Checklist::ADD.with(title)).expect("add");
     }
     let ids = app.state().items.ids().cloned().collect::<Vec<_>>();
     for id in ids.iter().take(2) {
         app.harness()
-            .perform_named(&format!("set-done-{id}"), &Action::ToggleCheck)
+            .perform_named(&format!("items-{id}-done"), &Action::ToggleCheck)
             .expect("the row checkbox is addressable");
     }
     assert!(
@@ -172,7 +185,10 @@ fn clearing_checked_items_is_one_undo_step() {
 #[test]
 fn a_viewer_follows_but_cannot_edit() {
     let mut app = TestApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
-    assert!(app.invoke(Checklist::RENAME.with("Mine".into())).is_err());
+    assert!(
+        app.invoke(edit(&Checklist::paths().name.replace("Mine")))
+            .is_err()
+    );
     app.harness()
         .expect(&SemanticExpectation::named("name-input").enabled(false))
         .expect("the input disables itself");
@@ -183,4 +199,19 @@ fn initial_native_app_contract_is_certified() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     let audit = app.harness().native_app_audit();
     assert!(audit.is_certified(), "{audit:#?}");
+}
+
+/// The next item's title is typed into a form: nothing is written or synced
+/// until it is added, and then it is one invocation of `add`.
+#[test]
+fn typing_the_next_item_writes_nothing_until_it_is_added() {
+    let mut app = TestApp::<App>::new().expect("the app opens");
+    let versions = app.versions().len();
+    app.harness()
+        .perform_named("draft-input", &Action::SetValue("Milk".into()))
+        .expect("the draft input is addressable");
+    assert_eq!(app.versions().len(), versions, "a draft is not a change");
+    app.harness().click_named("add").expect("add");
+    assert_eq!(app.state().progress(), (0, 1));
+    assert_eq!(app.versions().len(), versions + 1);
 }

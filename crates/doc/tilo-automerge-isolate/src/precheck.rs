@@ -14,6 +14,8 @@ use crate::{Limits, Rejected};
 const MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
 /// Document, change, compressed change and bundle.
 const KNOWN_CHUNK_TYPES: std::ops::RangeInclusive<u8> = 0..=3;
+#[cfg(target_os = "linux")]
+pub(crate) const DOCUMENT: u8 = 0;
 pub(crate) const CHANGE: u8 = 1;
 pub(crate) const COMPRESSED_CHANGE: u8 = 2;
 

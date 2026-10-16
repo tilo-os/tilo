@@ -68,6 +68,9 @@ const INHERITED_ENV: &[&str] = &[
     // GTK and Qt host applications while native Tilo fields keep working.
     "XMODIFIERS",
     "GTK_IM_MODULE",
+    // A deliberately selected compatibility module may live with its GTK
+    // runtime. Keep its discovery path alongside the selected module name.
+    "GTK_PATH",
     "QT_IM_MODULE",
     // Qt 6 on Fedora advertises its ordered Wayland/IBus fallback through
     // the plural spelling; keeping only QT_IM_MODULE loses that selection.
@@ -92,7 +95,7 @@ const CLEARED_ENV: &[&str] = &[
 ];
 
 /// The desktop name Tilo announces, and what `OnlyShowIn`/`NotShowIn` are matched against.
-pub const XDG_CURRENT_DESKTOP: &str = "tilo";
+pub const XDG_CURRENT_DESKTOP: &str = "tilo:GNOME";
 
 /// Marker set in a host application's environment. Not a capability and not read by anything
 /// Tilo enforces — there so `ps`, a crash report or a confused user can tell it was started by
@@ -212,15 +215,38 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
         id: entry.id.clone(),
     })?;
 
+    let program = PathBuf::from(program);
+    let mut arguments: Vec<String> = argv.collect();
+    grant_flatpak_x11(&program, &mut arguments, env);
+
     Ok(HostLaunch {
         desktop_id: entry.id.clone(),
         display_name: entry.name.clone(),
-        program: PathBuf::from(program),
-        args: argv.collect(),
+        program,
+        args: arguments,
         env: build_env(env),
         window_identities: entry.window_identities(),
         source: entry.source.clone(),
     })
+}
+
+/// Let a Flatpak reach the workspace's X11 bridge.
+///
+/// With a Wayland socket in its environment, `flatpak run` leaves X11 out of
+/// the sandbox for an app that lists `fallback-x11`, DISPLAY unset, even
+/// when the same app also lists `x11`. Apps that are Wayland windows with an
+/// X11 clipboard (1Password's Rust core opens the X server for it) then fail
+/// every copy. Asking for the socket explicitly exposes the display (and a
+/// matching Xauthority) that `build_env` names.
+fn grant_flatpak_x11(program: &std::path::Path, args: &mut Vec<String>, env: &LaunchEnv) {
+    let is_flatpak = program.file_name().is_some_and(|name| name == "flatpak");
+    if is_flatpak
+        && env.x11_display.is_some()
+        && env.x11_authority.is_some()
+        && args.first().is_some_and(|arg| arg == "run")
+    {
+        args.insert(1, "--socket=x11".to_string());
+    }
 }
 
 /// `Exec=` split and field-code expanded for `env`'s files and URLs.
@@ -323,7 +349,7 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
     );
     env.insert(
         "XDG_SESSION_DESKTOP".to_string(),
-        XDG_CURRENT_DESKTOP.to_string(),
+        crate::scan::CURRENT_DESKTOP.to_string(),
     );
     env.insert("XDG_SESSION_TYPE".to_string(), "wayland".to_string());
     // Electron releases differ on whether Wayland auto-selection is the
@@ -354,6 +380,10 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
         // The session's composing input method serves each workspace display
         // over XIM; X11 toolkits find it through this name.
         env.insert("XMODIFIERS".to_string(), "@im=fcitx".to_string());
+        // XSETTINGS + Xft.dpi cover GTK and Xft. Qt still needs these to
+        // honour the same DPI instead of painting a 96-DPI window.
+        env.insert("QT_AUTO_SCREEN_SCALE_FACTOR".to_string(), "1".to_string());
+        env.insert("QT_ENABLE_HIGHDPI_SCALING".to_string(), "1".to_string());
         // Keep the conventional startup-id channel for X11 clients.  The
         // installed xwayland-satellite also reads XDG_ACTIVATION_TOKEN above
         // from the X client's environment and relays it on map.
@@ -418,6 +448,34 @@ mod tests {
              StartupWMClass=spotify\nX-Flatpak=com.spotify.Client\n",
             "com.spotify.Client",
         )
+    }
+
+    /// `flatpak run` drops X11 for a `fallback-x11` app when a Wayland socket
+    /// is set, so 1Password's X11 clipboard had no server to open. The plan
+    /// asks for the socket whenever there is a workspace display to give.
+    #[test]
+    fn a_flatpak_is_given_the_x11_bridge_it_would_otherwise_drop() {
+        let bridged = LaunchEnv {
+            wayland_socket: Some(PathBuf::from("/run/user/1000/wayland-3")),
+            x11_display: Some(":13625".into()),
+            x11_authority: Some(PathBuf::from("/run/user/1000/tilo-session/Xauthority")),
+            ..Default::default()
+        };
+        let launch = plan(&spotify(), &bridged).expect("plans");
+        assert_eq!(
+            launch.args,
+            vec![
+                "run",
+                "--socket=x11",
+                "--file-forwarding",
+                "com.spotify.Client"
+            ]
+        );
+        let launch = plan(&spotify(), &LaunchEnv::default()).expect("plans");
+        assert!(
+            !launch.args.iter().any(|arg| arg.starts_with("--socket")),
+            "no bridge, no socket request"
+        );
     }
 
     #[test]
@@ -541,7 +599,7 @@ mod tests {
             );
             assert_eq!(
                 launch.env.get("XDG_CURRENT_DESKTOP").map(String::as_str),
-                Some("tilo")
+                Some("tilo:GNOME")
             );
             assert!(
                 !launch.env.contains_key("DISPLAY"),
@@ -600,6 +658,20 @@ mod tests {
                 Some("@im=fcitx"),
                 "X11 apps find the session's input method over XIM"
             );
+            assert_eq!(
+                launch
+                    .env
+                    .get("QT_AUTO_SCREEN_SCALE_FACTOR")
+                    .map(String::as_str),
+                Some("1")
+            );
+            assert_eq!(
+                launch
+                    .env
+                    .get("QT_ENABLE_HIGHDPI_SCALING")
+                    .map(String::as_str),
+                Some("1")
+            );
         }
         // Phase `to_command_starts_from_an_empty_environment`.
         // `env_clear()` then the map: nothing from the launcher's own environment reaches the
@@ -639,8 +711,10 @@ mod tests {
                 "WAYLAND_DISPLAY=wayland-tilo",
                 "XDG_RUNTIME_DIR=/run/user/1000",
                 "DISPLAY=:71",
-                "XDG_CURRENT_DESKTOP=tilo",
+                "XDG_CURRENT_DESKTOP=tilo:GNOME",
                 "XDG_SESSION_DESKTOP=tilo",
+                "QT_AUTO_SCREEN_SCALE_FACTOR=1",
+                "QT_ENABLE_HIGHDPI_SCALING=1",
                 "ELECTRON_OZONE_PLATFORM_HINT=auto",
                 "TILO_HOST_APP=1",
             ] {
@@ -719,6 +793,7 @@ mod tests {
         for key in [
             "XMODIFIERS",
             "GTK_IM_MODULE",
+            "GTK_PATH",
             "QT_IM_MODULE",
             "QT_IM_MODULES",
             "SDL_IM_MODULE",
@@ -729,6 +804,7 @@ mod tests {
         for key in [
             "XMODIFIERS",
             "GTK_IM_MODULE",
+            "GTK_PATH",
             "QT_IM_MODULE",
             "QT_IM_MODULES",
             "SDL_IM_MODULE",

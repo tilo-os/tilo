@@ -63,7 +63,7 @@ impl<'a> Context<'a> {
         self.label
     }
 
-    fn aad(&self, header: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn aad(&self, header: &[u8]) -> Result<Vec<u8>> {
         let label = self.label.as_bytes();
         let label_len = u16::try_from(label.len()).map_err(|_| Error::Malformed("label"))?;
         let record_len =

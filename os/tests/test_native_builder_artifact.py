@@ -29,19 +29,23 @@ def restart_fixture(test):
 
 @unittest.skipUnless(os.getuid() == 0, 'mounted image ownership checks require root')
 class ArtifactTests(unittest.TestCase):
+    ENGINE = 'usr/lib/tilo-runtime/2026.10.0-chromium/lib/chromium/tilo-chromium-host'
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        self.inputs = {'architecture': 'aarch64', 'runtime_version': '2026.07', 'revision': 'a' * 40}
+        self.inputs = {'architecture': 'aarch64', 'runtime_version': '2026.07',
+                       'engine_runtime_version': '2026.10.0-chromium', 'revision': 'a' * 40}
         header = bytearray(64)
         header[:7] = b'\x7fELF\x02\x01\x01'
         struct.pack_into('<HH', header, 16, 3, 183)
-        for name in (*artifact.REQUIRED, 'optional/browser'):
+        for name in artifact.REQUIRED:
             self.write('out/' + name, bytes(header), 0o755)
+        self.write(self.ENGINE, bytes(header), 0o755)
         for name in ('runtime-bundle-publisher.hex', 'app-publisher.hex'):
             self.write('out/' + name, b'1' * 64 + b'\n')
-        self.write('usr/lib/tilo-runtime/2026.07/bundle.json', b'{}')
+        self.write('usr/lib/tilo-runtime/2026.07+native.' + '0' * 32 + '/bundle.json', b'{}')
         self.write('usr/share/tilo-apps/registry.toml', b'fixture')
 
     def write(self, name, data, mode=0o644):
@@ -55,7 +59,7 @@ class ArtifactTests(unittest.TestCase):
             (self.root / 'out/shell-alias').symlink_to('shell')
             result = artifact.inventory(self.root, self.inputs)
             self.assertEqual(result['out/shell-alias']['target'], 'shell')
-            self.assertIn('out/optional/browser', result)
+            self.assertIn(self.ENGINE, result)
         restart_fixture(self)
         with self.subTest(phase="foreign_required_executable_rejected"):
             path = self.root / 'out/shell'
@@ -65,9 +69,9 @@ class ArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'foreign'):
                 artifact.inventory(self.root, self.inputs)
         restart_fixture(self)
-        with self.subTest(phase="missing_browser_rejected"):
-            (self.root / 'out/optional/browser').unlink()
-            with self.assertRaisesRegex(ValueError, 'browser'):
+        with self.subTest(phase="missing_browser_engine_rejected"):
+            (self.root / self.ENGINE).unlink()
+            with self.assertRaisesRegex(ValueError, 'chromium'):
                 artifact.inventory(self.root, self.inputs)
         restart_fixture(self)
         with self.subTest(phase="security_tools_are_required"):
@@ -100,6 +104,13 @@ class ArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'absolute'):
                 artifact.inventory(self.root, self.inputs)
             path.unlink()
+            # An environment image's links are read inside an environment.
+            image = self.root / 'usr/share/tilo-apps/pkgs' / ('ab' * 32) / 'etc'
+            image.mkdir(parents=True)
+            (image / 'mtab').symlink_to('../proc/self/mounts')
+            rows = artifact.inventory(self.root, self.inputs)
+            self.assertEqual(rows['usr/share/tilo-apps/pkgs/' + 'ab' * 32 + '/etc/mtab']['target'],
+                             '../proc/self/mounts')
             (self.root / 'out/shell').chmod(0o4755)
             with self.assertRaisesRegex(ValueError, 'mode'):
                 artifact.inventory(self.root, self.inputs)
@@ -129,7 +140,7 @@ class ArtifactTests(unittest.TestCase):
         with self.subTest(phase="source_mismatch_rejected_before_export"):
             with patch.object(artifact.tools, 'command', return_value=b'b' * 40):
                 with self.assertRaisesRegex(ValueError, 'source revision'):
-                    artifact.expected_inputs(self.root, 'a' * 40, 'aarch64', '', '', '', '1' * 64, 1)
+                    artifact.expected_inputs(self.root, 'a' * 40, 'aarch64', '', '', 1)
         restart_fixture(self)
         with self.subTest(phase="valid_pinned_receipt_rejects_changed_build_inputs"):
             receipt = {'schema': 1, 'purpose': artifact.PURPOSE, 'inputs': self.inputs,

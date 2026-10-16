@@ -167,10 +167,9 @@ class Session:
         self.log_path = os.path.join(self.dir, "shell.log")
         self.log = open(self.log_path, "w")
         self.proc = subprocess.Popen(
-            # `--mode native` is not optional here: it is the smithay
-            # compositor, and therefore the only mode a Wayland client
-            # can attach to. The hosted mode draws the same chrome with
-            # no socket for an app to reach.
+            # `--mode native` names the smithay compositor, the only
+            # session there is and one a Wayland client can attach to;
+            # the flag is kept so this proof states what it drives.
             [str(SHELL), "--mode", "native", "--backend", "headless",
              "--enable-peer-sync"],
             env=env, stdout=self.log, stderr=subprocess.STDOUT,
@@ -267,10 +266,9 @@ class Session:
             **self.env,
             "WAYLAND_DISPLAY": display,
             # How the toolkit addresses the broker: which app, and which
-            # room. The room is the cluster id, which is the whole reason
+            # room. The room is the workspace id, which is the whole reason
             # two machines' apps can reach each other.
             "QUICK_APP_ID": APP_ID,
-            "QUICK_CLUSTER_ID": room,
             "TILO_PACKAGE_ID": APP_ID,
             "TILO_WORKSPACE_ID": room,
             "QUICK_COLLAB_SOCK": self.collab_sock,

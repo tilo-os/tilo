@@ -31,7 +31,7 @@ use taffy::{Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
-use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, RawKeyEvent, WindowEvent};
+use winit::event::{ElementState, KeyEvent, Modifiers, RawKeyEvent, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
 
 use tilo_ui::offscreen::OffscreenRenderer;
@@ -42,8 +42,6 @@ use tilo_ui::widget::Dropdown;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::autocomplete::{Autocomplete, Suggestion};
 use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
-use tilo_ui::widget::link_popover::PageEntry;
-use tilo_ui::widget::page_palette::PageJumpPalette as PagePalette;
 use tilo_ui::widget::slash_menu::SlashMenu;
 
 const CANVAS_W: u32 = 480;
@@ -57,9 +55,9 @@ const MIN_DELTA_L: f64 = 4.0;
 /// The floor for an *armed* row (the one Enter / a click activates). The
 /// 10 % veneer that used to paint the context menu's armed row measured
 /// ΔL* 11.6 on dark — the value the user reported as "no highlighting" — so a
-/// floor that the old paint would pass guards nothing. Every shipped preset's
-/// accent clears 20 (the lowest, `gruvboxlight`, measures 28.6).
-const MIN_ARMED_DELTA_L: f64 = 20.0;
+/// floor that the old paint would pass guards nothing. The armed row is the
+/// panel's overlay lift, which clears this on every material.
+const MIN_ARMED_DELTA_L: f64 = 15.0;
 
 fn color_of(px: (u8, u8, u8, u8)) -> Color {
     Color::from_rgba8(px.0, px.1, px.2, px.3)
@@ -92,7 +90,7 @@ fn dispatch(widget: &mut dyn Widget, event: &WindowEvent) {
         &mut tilo_ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: &mut doc,
+            state: tilo_ui::widget::Edits::lend(&mut doc),
             path: &ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -103,10 +101,7 @@ fn dispatch(widget: &mut dyn Widget, event: &WindowEvent) {
 }
 
 fn cursor_moved(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    }
+    tilo_ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 fn key_press(key: NamedKey) -> WindowEvent {
@@ -123,11 +118,7 @@ fn key_press(key: NamedKey) -> WindowEvent {
         None,
         key,
     );
-    WindowEvent::KeyboardInput {
-        device_id: DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    tilo_ui::synthetic_input::keyboard_input(event)
 }
 
 struct Rendered {
@@ -160,7 +151,7 @@ fn render(theme: &Theme, paint: impl FnOnce(&mut Scene, &mut TextRenderer)) -> R
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
     paint(&mut scene, &mut tr);
-    let rgba = renderer.render(&scene, theme.bg_app);
+    let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
     Rendered { rgba }
 }
 
@@ -193,8 +184,9 @@ fn assert_highlight_visible(
 }
 
 /// The assertion for an *armed* row: the sampled fill must be exactly the
-/// theme's primary accent (so a regression back to any veneer fails on the
-/// colour, not on a threshold), the step to the neighbour must clear
+/// panel's overlay lift (`floating_surface::armed_row`), a lift and not an
+/// inverted slab, so a regression to any other paint fails on the colour,
+/// not on a threshold; the step to the neighbour must clear
 /// [`MIN_ARMED_DELTA_L`], and the ink the row draws its label with must meet
 /// the text-contrast floor against the fill actually painted.
 fn assert_armed_row(
@@ -215,11 +207,12 @@ fn assert_armed_row(
         lo.3, 0xff,
         "{surface}/{theme_name}: plain row sample is not opaque"
     );
-    let accent = theme.tokens.colors.accent[tilo_ui::tokens::colors::ACCENT_PRIMARY_IDX].to_rgba8();
-    assert_eq!(
-        (hi.0, hi.1, hi.2),
-        (accent.r, accent.g, accent.b),
-        "{surface}/{theme_name}: armed row is painted {hi:?}, not the theme accent"
+    let (fill, ink) = tilo_ui::widget::floating_surface::armed_row(theme);
+    let lift = fill.to_rgba8();
+    let close = |a: u8, b: u8| a.abs_diff(b) <= 1;
+    assert!(
+        close(hi.0, lift.r) && close(hi.1, lift.g) && close(hi.2, lift.b),
+        "{surface}/{theme_name}: armed row is painted {hi:?}, not the overlay lift {lift:?}"
     );
     let delta = (lightness(hi) - lightness(lo)).abs();
     eprintln!("{surface}/{theme_name}: armed {hi:?} vs plain {lo:?} → ΔL*={delta:.2}");
@@ -228,10 +221,6 @@ fn assert_armed_row(
         "{surface}/{theme_name}: armed row {hi:?} vs plain row {lo:?} differ by only \
          ΔL*={delta:.2} (< {MIN_ARMED_DELTA_L})"
     );
-    let ink = theme
-        .tokens
-        .colors
-        .on_accent(tilo_ui::tokens::colors::ON_FILL_MIN_CONTRAST);
     let ratio = tilo_ui::a11y::contrast_ratio(ink, color_of(hi));
     assert!(
         ratio >= tilo_ui::tokens::colors::ON_FILL_MIN_CONTRAST,
@@ -270,7 +259,7 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
 
             let presence = PresenceCtx::default();
             let rendered = render(&theme, |scene, tr| {
-                menu.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
+                menu.draw_overlay(scene, Affine::IDENTITY, tr, &theme, &presence);
             });
             rendered.dump(&format!("menu_highlight_context_menu_hover_{name}"));
             assert_armed_row(
@@ -305,7 +294,7 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
             let row2 = menu.item_rect(2).unwrap();
 
             let rendered = render(&theme, |scene, tr| {
-                menu.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
+                menu.draw_overlay(scene, Affine::IDENTITY, tr, &theme, &presence);
             });
             rendered.dump(&format!("menu_highlight_context_menu_keyboard_{name}"));
             assert_armed_row(
@@ -341,7 +330,7 @@ fn context_menu_highlight_is_visible_by_pointer_keyboard_and_theme() {
 
             let presence = PresenceCtx::default();
             let rendered = render(&theme, |scene, tr| {
-                menu.draw(scene, Affine::IDENTITY, tr, &theme, &presence);
+                menu.draw_overlay(scene, Affine::IDENTITY, tr, &theme, &presence);
             });
             rendered.dump(&format!("menu_highlight_context_menu_hover_{name}"));
             assert_armed_row(
@@ -369,8 +358,8 @@ fn list_menu_cursor_rows_are_visible_in_both_themes() {
             let mut dd = Dropdown::new(options, "choice").open();
             let control = Rect::new(40.0, 20.0, 300.0, 60.0);
             dd.apply_layout_external(control);
-            let mut doc = AutoCommit::new();
-            dd.sync(&mut doc, &ROOT);
+            let doc = AutoCommit::new();
+            dd.sync(&doc, &ROOT);
             // Rows hang directly under the control: LIST_GAP 4, ITEM_HEIGHT 32.
             let row = |i: f64| {
                 let top = control.y1 + 4.0 + i * 32.0;
@@ -466,70 +455,19 @@ fn list_menu_cursor_rows_are_visible_in_both_themes() {
             );
         }
     }
-
-    // Case `page_palette_cursor_row_is_visible_in_both_themes`.
-    {
-        for (name, theme) in themes() {
-            let mut palette = PagePalette::new();
-            palette.set_items(
-                labels()
-                    .iter()
-                    .map(|s| PageEntry {
-                        id: uuid::Uuid::new_v4(),
-                        title: (*s).to_string(),
-                    })
-                    .collect(),
-            );
-            palette.set_anchor(Point::new(0.0, 0.0));
-            palette.set_visible(true);
-            dispatch_key_to_palette(&mut palette, NamedKey::ArrowDown);
-            assert_eq!(
-                palette.highlighted().map(|e| e.title.as_str()),
-                Some("Open"),
-                "ArrowDown moves the cursor to row 1"
-            );
-            // Card PADDING 12; input INPUT_HEIGHT 44; rows ROW_HEIGHT 36.
-            let rect = palette.rect();
-            let list_top = rect.y0 + 12.0 + 44.0 + 12.0;
-            let row = |i: f64| {
-                let top = list_top + i * 36.0;
-                Rect::new(rect.x0 + 12.0, top, rect.x1 - 12.0, top + 36.0)
-            };
-
-            let rendered = render(&theme, |scene, tr| {
-                palette.draw_overlay(scene, Affine::IDENTITY, tr, &theme);
-            });
-            rendered.dump(&format!("menu_highlight_page_palette_cursor_{name}"));
-            assert_armed_row(
-                &rendered,
-                text_free_probe(row(1.0)),
-                text_free_probe(row(2.0)),
-                &theme,
-                name,
-                "page-palette",
-            );
-        }
-    }
-}
-
-fn dispatch_key_to_palette(palette: &mut PagePalette, key: NamedKey) {
-    assert!(
-        palette.handle_key(&key_press(key)),
-        "the open palette consumes {key:?}"
-    );
 }
 
 #[test]
 fn closed_dropdown_hover_is_visible_on_an_opaque_ground() {
-    // Case `bg_app_ground_is_opaque_so_samples_are_meaningful`.
+    // Case `window_ground_is_opaque_so_samples_are_meaningful`.
     {
         // Guards the sampling method itself: every case composites over the
         // theme's window ground, so a transparent ground would make each ΔL*
         // above meaningless rather than merely wrong.
         for name in Theme::ALL {
             let theme = Theme::named(name).expect("shipped preset resolves");
-            let px = theme.bg_app.to_rgba8();
-            assert_eq!(px.a, 0xff, "{name}: bg_app must be opaque");
+            let px = theme.tokens.colors.surfaces.content.to_rgba8();
+            assert_eq!(px.a, 0xff, "{name}: the window ground must be opaque");
         }
     }
 
@@ -545,8 +483,8 @@ fn closed_dropdown_hover_is_visible_on_an_opaque_ground() {
             let mut dd = Dropdown::new(options, "choice");
             let control = Rect::new(40.0, 20.0, 300.0, 60.0);
             dd.apply_layout_external(control);
-            let mut doc = AutoCommit::new();
-            dd.sync(&mut doc, &ROOT);
+            let doc = AutoCommit::new();
+            dd.sync(&doc, &ROOT);
             let presence = PresenceCtx::default();
             // Clear of both the label (left) and the chevron (right 30 px).
             let probe = Point::new(control.x1 - 44.0, control.center().y);

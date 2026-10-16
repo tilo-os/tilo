@@ -7,6 +7,10 @@
 //! * [`envelope`]: at-rest XChaCha20-Poly1305 envelopes under a symmetric
 //!   key or an Argon2id password, with a versioned header, 192-bit random
 //!   nonces, mandatory [`Context`] binding and key wrapping.
+//! * [`secret_service`]: the Secret Service API's session encryption
+//!   (Diffie-Hellman, AES-128-CBC), fixed by that specification.
+//! * [`web`]: AES-256-GCM under an HKDF-SHA256 key, the wrap a browser
+//!   computes with `WebCrypto`, so native code opens what a page sealed.
 //!
 //! Every operation takes a [`Label`] from one closed registry, so each
 //! ciphertext is bound to a single purpose. Secret key types zeroize on
@@ -18,10 +22,6 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
         clippy::arithmetic_side_effects,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -32,6 +32,8 @@ pub mod error;
 pub mod hpke;
 pub mod keys;
 pub mod label;
+pub mod secret_service;
+pub mod web;
 
 pub use envelope::{Context, PasswordParams};
 pub use error::{Error, Result};

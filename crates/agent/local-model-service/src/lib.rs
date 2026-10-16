@@ -5,32 +5,39 @@
 //! their SHA-256 identity; only then can a signed runtime extension and model
 //! become eligible for a typed vLLM launch. There is no generic
 //! command, URL, tag, or package-install API.
-
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "tests assert service boundaries"
-    )
-)]
+//!
+//! Some signed models run in the process that uses them instead (an ONNX
+//! graph a per-user service loads on the CPU). They go through the same
+//! verified download and licence record, but nothing is started: once
+//! installed, [`installed_in_process_model`] finds the verified object by
+//! capability, reading only the store under [`user_model_root`].
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant};
 
+pub use agent_provider_config::local::InProcessCapability;
 use agent_provider_config::local::{
     LocalEndpoint, LocalModelRelease, LocalModelStatus, ModelArtifactFormat, PinnedArtifact,
-    RuntimeRelease,
+    RuntimeExecution, RuntimeRelease,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use system_extension::{AcceptedExtension, ExtensionKind};
 use thiserror::Error;
+
+pub mod catalog;
+pub mod developer;
+pub mod ownership;
+pub mod run_observation;
+#[cfg(target_os = "linux")]
+pub mod speech;
+#[cfg(target_os = "linux")]
+pub mod supervision;
 
 const STATE_FILE: &str = "state.json";
 const MAX_SNAPSHOT_FILES: u32 = 100_000;
@@ -41,6 +48,14 @@ const MAX_SNAPSHOT_PATH_BYTES: usize = 1024;
 /// provides the already-open private partial file, so transports never choose
 /// arbitrary filesystem destinations.
 pub trait HttpsTransport {
+    /// Validate a transfer pin. The default production transport accepts HTTPS
+    /// only; the explicit developer transport also accepts offline receipts.
+    /// # Errors
+    /// Rejects invalid or unsupported artifact identities.
+    fn validate_pin(&self, artifact: &PinnedArtifact) -> Result<(), ServiceError> {
+        validate_artifact(artifact)
+    }
+
     /// Append the bytes of `url` from offset `start` to `destination`, never
     /// more than `maximum_bytes`, and return how many were written.
     ///
@@ -72,12 +87,25 @@ pub trait ProcessSupervisor {
         archive: &Path,
         signed_image: &str,
     ) -> Result<(), ServiceError>;
-    /// Launch `command` and return a handle once the endpoint accepts connections.
+    /// Prepare a stopped container and return its exact custody before model code runs.
+    ///
+    /// # Errors
+    /// Returns an error when preparation or exact identity verification fails.
+    fn prepare(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError>;
+    /// Launch the durably recorded `handle` and wait for exact endpoint health.
     ///
     /// # Errors
     /// Returns [`ServiceError::Backend`] when the supervisor refuses the
     /// command or the service does not become ready.
-    fn start(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError>;
+    fn start(&mut self, command: &VllmCommand, handle: &ProcessHandle) -> Result<(), ServiceError>;
+    /// Capture content-free counters of this exact owned runtime.
+    /// Unsupported supervisors report unavailable, never invented zeros.
+    fn observe(
+        &self,
+        _handle: &ProcessHandle,
+    ) -> run_observation::Observed<run_observation::RuntimeSample> {
+        run_observation::Observed::unavailable("supervisor has no owned-runtime observer")
+    }
     /// Stop the process behind `handle`.
     ///
     /// # Errors
@@ -88,6 +116,9 @@ pub trait ProcessSupervisor {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessHandle {
     pub id: String,
+    /// Absent only in legacy state. The production supervisor refuses unverifiable cleanup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<ownership::ContainerOwnership>,
 }
 
 /// An argv-vector representation suitable for a process/container supervisor.
@@ -134,8 +165,94 @@ impl SignedRuntime {
         {
             return Err(ServiceError::RuntimeNotAccepted);
         }
+        self.release
+            .validate_execution()
+            .map_err(|_| ServiceError::RuntimeNotAccepted)?;
         Ok(())
     }
+}
+
+/// Build bounded argv exclusively from signed runtime/model metadata.
+fn runtime_arguments(
+    runtime: &RuntimeRelease,
+    model: &LocalModelRelease,
+    path: &str,
+    port: u16,
+) -> Result<Vec<String>, ServiceError> {
+    runtime
+        .validate_execution()
+        .map_err(|_| ServiceError::RuntimeNotAccepted)?;
+    model
+        .validate_shape()
+        .map_err(|_| ServiceError::RuntimeNotAccepted)?;
+    if port == 0
+        || model.id.is_empty()
+        || model.id.len() > 128
+        || model.id.starts_with('-')
+        || !model.id.bytes().all(|byte| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'-' | b'_' | b'.' | b'/')
+        })
+    {
+        return Err(ServiceError::InvalidEndpoint);
+    }
+    if !runtime.supports_format(model.artifact_format)
+        || !model.allowed_runtimes.contains(&runtime.kind)
+    {
+        return Err(ServiceError::RuntimeNotAccepted);
+    }
+    let mut args = match &runtime.execution {
+        Some(RuntimeExecution::LlamaCpp {
+            max_context_tokens,
+            gpu_layers,
+            parallel_slots,
+        }) => {
+            let mut args = vec![
+                "--model".into(),
+                path.into(),
+                "--alias".into(),
+                model.id.clone(),
+                "--ctx-size".into(),
+                (*max_context_tokens).min(model.context_window).to_string(),
+                "--n-gpu-layers".into(),
+                gpu_layers.to_string(),
+                "--jinja".into(),
+            ];
+            if let Some(slots) = parallel_slots {
+                args.extend(["--parallel".into(), slots.get().to_string()]);
+            }
+            args
+        }
+        execution => {
+            let mut args = vec![
+                "serve".into(),
+                path.into(),
+                "--served-model-name".into(),
+                model.id.clone(),
+            ];
+            if let Some(RuntimeExecution::Vllm {
+                max_context_tokens,
+                cpu_offload_gib,
+            }) = execution
+            {
+                args.extend([
+                    "--max-model-len".into(),
+                    (*max_context_tokens).min(model.context_window).to_string(),
+                    "--cpu-offload-gb".into(),
+                    cpu_offload_gib.to_string(),
+                ]);
+            }
+            args
+        }
+    };
+    args.extend([
+        "--host".into(),
+        "127.0.0.1".into(),
+        "--port".into(),
+        port.to_string(),
+    ]);
+    Ok(args)
 }
 
 /// Persisted non-secret lifecycle state for a model. A process handle is an
@@ -156,6 +273,120 @@ pub struct ManagedModel {
     pub model_sha256: String,
     pub status: LocalModelStatus,
     pub process: Option<ProcessHandle>,
+    /// Present only for a model that runs in the process using it. It holds
+    /// what [`installed_in_process_model`] answers without the signed catalog,
+    /// copied from the release that was installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_process: Option<InProcessRecord>,
+}
+
+/// The installed facts of an in-process model, recorded with its state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InProcessRecord {
+    pub revision: String,
+    pub license_id: String,
+    pub size_bytes: u64,
+    pub capabilities: Vec<InProcessCapability>,
+    /// When this release was recorded, so the newest of two installed models
+    /// with one capability wins.
+    pub recorded_at_unix_ms: u64,
+}
+
+impl ManagedModel {
+    fn for_release(model: &LocalModelRelease, status: LocalModelStatus) -> Self {
+        Self {
+            model_sha256: model.artifact.sha256.clone(),
+            status,
+            process: None,
+            in_process: model.runs_in_process().then(|| InProcessRecord {
+                revision: model.version.clone(),
+                license_id: model.license_id.clone(),
+                size_bytes: model.artifact.size_bytes,
+                capabilities: model.in_process_capabilities(),
+                recorded_at_unix_ms: tilo_clock::unix_now_ms(),
+            }),
+        }
+    }
+}
+
+/// An installed in-process model, as [`installed_in_process_model`] finds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstalledInProcessModel {
+    /// Signed catalog id (`u2net-subject`).
+    pub id: String,
+    /// Immutable signed revision.
+    pub revision: String,
+    /// SHA-256 of the object at `path`, verified when it was installed.
+    pub sha256: String,
+    /// The content-addressed object file: `<root>/sha256/<sha256>`.
+    pub path: PathBuf,
+    /// SPDX licence id the person accepted it under.
+    pub license_id: String,
+}
+
+/// The per-user model store every Tilo model service shares:
+/// `$XDG_DATA_HOME/tilo/models`, or `None` without a data home. There is no
+/// shared fallback: a store anyone can write would let them plant the model
+/// this user runs.
+pub fn user_model_root() -> Option<PathBuf> {
+    tilo_paths::xdg::data_home().map(|data| data.join("tilo/models"))
+}
+
+/// Find the installed in-process model that provides `capability` in the
+/// store at `root` (normally [`user_model_root`]). Reads `state.json` and
+/// checks the object only on the filesystem; it never touches the network,
+/// the signed catalog or the model manager.
+///
+/// Only a model whose state is `installed` counts, and only when its object
+/// is still a regular file of the recorded size. The bytes were hashed when
+/// they were installed and the object is never rewritten, so this does not
+/// hash 176 MB on every lookup. With several, the most recently installed
+/// wins.
+///
+/// # Errors
+/// Returns an I/O or decode error for an unreadable state file, or
+/// [`ServiceError::UnsafeStatePath`] when it is a symlink.
+pub fn installed_in_process_model(
+    root: &Path,
+    capability: InProcessCapability,
+) -> Result<Option<InstalledInProcessModel>, ServiceError> {
+    let state = load_state(&root.join(STATE_FILE))?;
+    let mut found: Option<(u64, InstalledInProcessModel)> = None;
+    for (id, managed) in state.models {
+        let Some(record) = managed.in_process else {
+            continue;
+        };
+        if managed.status != LocalModelStatus::Installed
+            || !record.capabilities.contains(&capability)
+            || validate_sha256(&managed.model_sha256).is_err()
+        {
+            continue;
+        }
+        let path = root.join("sha256").join(&managed.model_sha256);
+        let intact = fs::symlink_metadata(&path).is_ok_and(|metadata| {
+            metadata.file_type().is_file() && metadata.len() == record.size_bytes
+        });
+        if !intact {
+            continue;
+        }
+        if found
+            .as_ref()
+            .is_some_and(|(recorded, _)| *recorded > record.recorded_at_unix_ms)
+        {
+            continue;
+        }
+        found = Some((
+            record.recorded_at_unix_ms,
+            InstalledInProcessModel {
+                id,
+                revision: record.revision,
+                sha256: managed.model_sha256,
+                path,
+                license_id: record.license_id,
+            },
+        ));
+    }
+    Ok(found.map(|(_, model)| model))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +409,7 @@ pub struct LocalModelService<T, P> {
     transport: T,
     supervisor: P,
     state: ServiceState,
+    persisted: ServiceState,
 }
 
 impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
@@ -202,12 +434,96 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             root,
             transport,
             supervisor,
+            persisted: state.clone(),
             state,
         })
     }
 
     pub fn state(&self) -> &ServiceState {
         &self.state
+    }
+
+    /// Observe current exact runtime custody without starting or changing it.
+    #[must_use]
+    pub fn runtime_observations(
+        &self,
+    ) -> BTreeMap<String, run_observation::Observed<run_observation::RuntimeSample>> {
+        self.state
+            .models
+            .iter()
+            .filter_map(|(id, model)| model.process.as_ref().map(|handle| (id, handle)))
+            .enumerate()
+            .map(|(index, (id, handle))| {
+                let observation = if index < 2 {
+                    self.fenced_observation(id, handle)
+                } else {
+                    run_observation::Observed::unavailable(
+                        "snapshot live observation count exceeds bound",
+                    )
+                };
+                (id.clone(), observation)
+            })
+            .collect()
+    }
+
+    fn fenced_observation(
+        &self,
+        model_id: &str,
+        handle: &ProcessHandle,
+    ) -> run_observation::Observed<run_observation::RuntimeSample> {
+        let agrees = || {
+            load_state(&self.root.join(STATE_FILE)).is_ok_and(|state| {
+                state.models.get(model_id).is_some_and(|model| {
+                    model.process.as_ref() == Some(handle)
+                        && self
+                            .state
+                            .models
+                            .get(model_id)
+                            .is_some_and(|expected| expected.model_sha256 == model.model_sha256)
+                })
+            })
+        };
+        if !agrees() {
+            return run_observation::Observed::unavailable(
+                "runtime state frontier unavailable or changed",
+            );
+        }
+        let sample = self.supervisor.observe(handle);
+        if !agrees() {
+            return run_observation::Observed::unavailable(
+                "runtime state frontier changed during observation",
+            );
+        }
+        sample
+    }
+
+    fn checkpoint(
+        &self,
+        model_id: &str,
+        handle: &ProcessHandle,
+        phase: &str,
+        runtime_id: Option<String>,
+    ) -> Option<run_observation::RunCheckpoint> {
+        let model = self.state.models.get(model_id)?;
+        Some(run_observation::RunCheckpoint {
+            schema: 1,
+            phase: phase.into(),
+            model_id: model_id.into(),
+            model_sha256: model.model_sha256.clone(),
+            runtime_id,
+            process: handle.clone(),
+            sample: self.fenced_observation(model_id, handle),
+        })
+    }
+
+    fn retain_checkpoint(&self, checkpoint: Option<run_observation::RunCheckpoint>) {
+        if let Some(checkpoint) = checkpoint
+            && run_observation::retain(&self.root, &checkpoint).is_err()
+        {
+            eprintln!(
+                "owned runtime observation checkpoint could not be retained; cleanup is unaffected"
+            );
+        }
     }
 
     /// Path of the content-addressed object named by `sha256`.
@@ -228,7 +544,12 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     fn model_path(&self, model: &LocalModelRelease) -> Result<PathBuf, ServiceError> {
         match model.artifact_format {
             ModelArtifactFormat::HfSnapshotTarZst => self.snapshot_path(&model.artifact.sha256),
-            ModelArtifactFormat::VllmGguf => self.object_path(&model.artifact.sha256),
+            ModelArtifactFormat::VllmGguf
+            | ModelArtifactFormat::LlamaCppGguf
+            | ModelArtifactFormat::OnnxFile
+            | ModelArtifactFormat::WhisperGgml
+            | ModelArtifactFormat::WhistleCact
+            | ModelArtifactFormat::SileroGgml => self.object_path(&model.artifact.sha256),
         }
     }
 
@@ -240,7 +561,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     /// larger than the pin, a transfer or I/O failure, an incomplete
     /// download, or a digest mismatch.
     pub fn fetch_verified(&mut self, artifact: &PinnedArtifact) -> Result<PathBuf, ServiceError> {
-        validate_artifact(artifact)?;
+        self.transport.validate_pin(artifact)?;
         let final_path = self.object_path(&artifact.sha256)?;
         if final_path.exists() {
             verify_file(&final_path, artifact)?;
@@ -302,7 +623,12 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     fn materialize_model(&mut self, model: &LocalModelRelease) -> Result<PathBuf, ServiceError> {
         let object = self.fetch_verified(&model.artifact)?;
         match model.artifact_format {
-            ModelArtifactFormat::VllmGguf => Ok(object),
+            ModelArtifactFormat::VllmGguf
+            | ModelArtifactFormat::LlamaCppGguf
+            | ModelArtifactFormat::OnnxFile
+            | ModelArtifactFormat::WhisperGgml
+            | ModelArtifactFormat::WhistleCact
+            | ModelArtifactFormat::SileroGgml => Ok(object),
             ModelArtifactFormat::HfSnapshotTarZst => self.extract_snapshot(&object, model),
         }
     }
@@ -350,15 +676,12 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         &mut self,
         model: &LocalModelRelease,
     ) -> Result<LocalModelStatus, ServiceError> {
+        self.require_process_absent(&model.id)?;
         self.require_license_acceptance(model)?;
         self.materialize_model(model)?;
         self.state.models.insert(
             model.id.clone(),
-            ManagedModel {
-                model_sha256: model.artifact.sha256.clone(),
-                status: LocalModelStatus::Installed,
-                process: None,
-            },
+            ManagedModel::for_release(model, LocalModelStatus::Installed),
         );
         self.persist()?;
         Ok(LocalModelStatus::Installed)
@@ -376,17 +699,13 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         runtime: &SignedRuntime,
         model: &LocalModelRelease,
     ) -> Result<LocalModelStatus, ServiceError> {
-        runtime.validate()?;
-        self.require_license_acceptance(model)?;
-        let archive = self.fetch_verified(&runtime.release.artifact)?;
-        self.supervisor
-            .install_runtime_image(&archive, &runtime.release.oci_image)?;
+        self.install_accepted_runtime(runtime, model)?;
         self.install_model(model)
     }
 
-    /// Background-worker variant that atomically publishes each received model
-    /// byte count, then verification and installation phases. The transfer
-    /// implementation calls `progress` for every chunk it actually writes.
+    /// Background-worker variant that durably publishes bounded transfer
+    /// progress, then verification and installation phases. Transfer callbacks
+    /// still observe every chunk; intermediate state fsyncs are coalesced.
     ///
     /// # Errors
     /// As [`Self::install_with_runtime`], plus any failure to publish progress.
@@ -395,16 +714,70 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         runtime: &SignedRuntime,
         model: &LocalModelRelease,
     ) -> Result<LocalModelStatus, ServiceError> {
+        self.install_accepted_runtime(runtime, model)?;
+        self.install_model_with_progress(model)
+    }
+
+    /// Check `runtime` may serve `model` and its licence is accepted, then
+    /// fetch and install the verified runtime image.
+    fn install_accepted_runtime(
+        &mut self,
+        runtime: &SignedRuntime,
+        model: &LocalModelRelease,
+    ) -> Result<(), ServiceError> {
         runtime.validate()?;
+        if !runtime.release.supports_format(model.artifact_format)
+            || !model.allowed_runtimes.contains(&runtime.release.kind)
+        {
+            return Err(ServiceError::RuntimeNotAccepted);
+        }
         self.require_license_acceptance(model)?;
         let archive = self.fetch_verified(&runtime.release.artifact)?;
         self.supervisor
             .install_runtime_image(&archive, &runtime.release.oci_image)?;
+        Ok(())
+    }
+
+    /// Background-worker install of a model that runs in the process using
+    /// it: the same verified, resumable download and licence check, with no
+    /// runtime image and nothing to start. It ends `Installed`.
+    ///
+    /// # Errors
+    /// Returns [`ServiceError::NotInProcess`] for a runtime-served model, and
+    /// otherwise as [`Self::install_with_runtime_progress`].
+    pub fn install_in_process_with_progress(
+        &mut self,
+        model: &LocalModelRelease,
+    ) -> Result<LocalModelStatus, ServiceError> {
+        if !model.runs_in_process() {
+            return Err(ServiceError::NotInProcess(model.id.clone()));
+        }
+        self.require_license_acceptance(model)?;
+        self.install_model_with_progress(model)
+    }
+
+    fn install_model_with_progress(
+        &mut self,
+        model: &LocalModelRelease,
+    ) -> Result<LocalModelStatus, ServiceError> {
+        self.require_process_absent(&model.id)?;
         let mut published = self.state.clone();
+        let mut persisted = self.persisted.clone();
         let state_path = self.root.join(STATE_FILE);
         let model_id = model.id.clone();
         let total = model.artifact.size_bytes;
+        published.models.entry(model_id.clone()).or_insert_with(|| {
+            ManagedModel::for_release(
+                model,
+                LocalModelStatus::Downloading {
+                    received_bytes: 0,
+                    total_bytes: total,
+                },
+            )
+        });
         let mut progress_error = None;
+        let mut last_received = None;
+        let mut last_publication = Instant::now();
         let transfer = {
             let mut progress = |event: TransferEvent| {
                 if let Some(managed) = published.models.get_mut(&model_id) {
@@ -416,15 +789,48 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
                         TransferEvent::Verifying => LocalModelStatus::Verifying,
                     };
                 }
-                // Keep the state update outside the `get_mut` borrow: every
-                // confirmed write has a durable status record before the
-                // worker proceeds to the next chunk.
-                if let Err(error) = persist_state(&state_path, &published) {
-                    progress_error = Some(error);
+                // State reflects only written bytes. Publish the initial
+                // resume offset, completion and phase transition immediately;
+                // bound intermediate fsyncs by bytes or elapsed time.
+                let publish = match event {
+                    TransferEvent::Received(received) => {
+                        last_received.is_none()
+                            || received == total
+                            || received.saturating_sub(last_received.unwrap_or(0))
+                                >= 16 * 1024 * 1024
+                            || last_publication.elapsed() >= Duration::from_secs(1)
+                    }
+                    TransferEvent::Verifying => true,
+                };
+                if !publish || progress_error.is_some() {
+                    return;
                 }
+                match persist_state(&state_path, &persisted, &published) {
+                    Err(error) => {
+                        progress_error = Some(error);
+                        return;
+                    }
+                    Ok(merged) => {
+                        published = merged;
+                        persisted = published.clone();
+                    }
+                }
+                if let TransferEvent::Received(received) = event {
+                    last_received = Some(received);
+                }
+                last_publication = Instant::now();
             };
             self.fetch_verified_with_progress(&model.artifact, &mut progress)
         };
+        // An interrupted transfer can end between publication thresholds.
+        // Retain its last actual byte count for a resumed worker or status
+        // reader before propagating the transfer error.
+        if transfer.is_err() && progress_error.is_none() {
+            published = persist_state(&state_path, &persisted, &published)?;
+            persisted = published.clone();
+        }
+        self.persisted = persisted.clone();
+        self.state = published.clone();
         transfer?;
         if let Some(error) = progress_error {
             return Err(error);
@@ -433,10 +839,12 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             let archive = self.object_path(&model.artifact.sha256)?;
             self.extract_snapshot(&archive, model)?;
         }
-        if let Some(managed) = published.models.get_mut(&model_id) {
-            managed.status = LocalModelStatus::Installed;
-        }
-        persist_state(&state_path, &published)?;
+        published.models.insert(
+            model_id,
+            ManagedModel::for_release(model, LocalModelStatus::Installed),
+        );
+        published = persist_state(&state_path, &persisted, &published)?;
+        self.persisted = published.clone();
         self.state = published;
         Ok(LocalModelStatus::Installed)
     }
@@ -446,7 +854,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         artifact: &PinnedArtifact,
         progress: &mut dyn FnMut(TransferEvent),
     ) -> Result<PathBuf, ServiceError> {
-        validate_artifact(artifact)?;
+        self.transport.validate_pin(artifact)?;
         let final_path = self.object_path(&artifact.sha256)?;
         if final_path.exists() {
             progress(TransferEvent::Received(artifact.size_bytes));
@@ -490,6 +898,9 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
                 actual: total,
             });
         }
+        if reported != total {
+            progress(TransferEvent::Received(total));
+        }
         progress(TransferEvent::Verifying);
         verify_file(&partial, artifact)?;
         fs::rename(&partial, &final_path).map_err(ServiceError::Io)?;
@@ -501,17 +912,17 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     /// # Errors
     /// Returns [`ServiceError::LicenseNotAccepted`] or a persistence error.
     pub fn queue_install(&mut self, model: &LocalModelRelease) -> Result<(), ServiceError> {
+        self.require_process_absent(&model.id)?;
         self.require_license_acceptance(model)?;
         self.state.models.insert(
             model.id.clone(),
-            ManagedModel {
-                model_sha256: model.artifact.sha256.clone(),
-                status: LocalModelStatus::Downloading {
+            ManagedModel::for_release(
+                model,
+                LocalModelStatus::Downloading {
                     received_bytes: 0,
                     total_bytes: model.artifact.size_bytes,
                 },
-                process: None,
-            },
+            ),
         );
         self.persist()
     }
@@ -555,7 +966,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         }
     }
 
-    /// Mark `model_id` failed with `message` and forget its process.
+    /// Mark `model_id` failed with `message`, retaining any outstanding process custody.
     ///
     /// # Errors
     /// Returns [`ServiceError::ModelNotInstalled`] for an unknown model, or a
@@ -573,7 +984,6 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         managed.status = LocalModelStatus::Failed {
             message: message.into(),
         };
-        managed.process = None;
         self.persist()
     }
 
@@ -585,6 +995,17 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     /// Returns [`ServiceError::ModelNotInstalled`] for an unknown model, or a
     /// persistence error.
     pub fn mark_starting(&mut self, model_id: &str) -> Result<(), ServiceError> {
+        self.require_process_absent(model_id)?;
+        if self
+            .state
+            .models
+            .get(model_id)
+            .is_some_and(|model| model.status == LocalModelStatus::Starting)
+        {
+            return Err(ServiceError::Backend(
+                "a local model start is already queued".into(),
+            ));
+        }
         self.update_status(model_id, LocalModelStatus::Starting, None)
     }
 
@@ -600,14 +1021,27 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         model: &LocalModelRelease,
         port: u16,
     ) -> Result<LocalEndpoint, ServiceError> {
+        if model.runs_in_process() {
+            return Err(ServiceError::InProcessModel(model.id.clone()));
+        }
+        self.require_process_absent(&model.id)?;
         runtime.validate()?;
+        if !runtime.release.supports_format(model.artifact_format)
+            || !model.allowed_runtimes.contains(&runtime.release.kind)
+        {
+            return Err(ServiceError::RuntimeNotAccepted);
+        }
         if port == 0 {
             return Err(ServiceError::InvalidPort);
         }
         let model_path = self.model_path(model)?;
         let model_container_path = match model.artifact_format {
             ModelArtifactFormat::HfSnapshotTarZst if model_path.is_dir() => "/models/model",
-            ModelArtifactFormat::VllmGguf if model_path.is_file() => "/models/model.gguf",
+            ModelArtifactFormat::VllmGguf | ModelArtifactFormat::LlamaCppGguf
+                if model_path.is_file() =>
+            {
+                "/models/model.gguf"
+            }
             _ => return Err(ServiceError::ModelNotInstalled(model.id.clone())),
         };
         if matches!(model.artifact_format, ModelArtifactFormat::HfSnapshotTarZst) {
@@ -630,32 +1064,95 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         let command = VllmCommand {
             runtime_image: runtime.release.oci_image.clone(),
             runtime_kind: runtime.release.kind,
-            args: vec![
-                "serve".into(),
-                // The supervisor mounts this verified host object at this
-                // stable, container-visible path. Never pass a host path to
-                // vLLM inside the OCI container.
-                model_container_path.into(),
-                "--host".into(),
-                "127.0.0.1".into(),
-                "--port".into(),
-                port.to_string(),
-            ],
+            args: runtime_arguments(&runtime.release, model, model_container_path, port)?,
             model_path,
             model_container_path: model_container_path.into(),
             endpoint: endpoint.clone(),
             runtime_extension_id: runtime.accepted.signed.manifest.id.clone(),
         };
         self.update_status(&model.id, LocalModelStatus::Starting, None)?;
-        let handle = self.supervisor.start(&command)?;
-        self.update_status(
+        let handle = self.start_prepared(&model.id, &command)?;
+        if let Err(error) = self.update_status(
             &model.id,
             LocalModelStatus::Ready {
                 endpoint: endpoint.clone(),
             },
-            Some(handle),
-        )?;
+            Some(handle.clone()),
+        ) {
+            return Err(self.failed_start(&model.id, &handle, &error));
+        }
+        self.retain_checkpoint(self.checkpoint(
+            &model.id,
+            &handle,
+            "ready",
+            Some(runtime.release.id.clone()),
+        ));
         Ok(endpoint)
+    }
+
+    fn require_process_absent(&self, model_id: &str) -> Result<(), ServiceError> {
+        let current = load_state(&self.root.join(STATE_FILE))?;
+        if current
+            .models
+            .get(model_id)
+            .is_some_and(|model| model.process.is_some())
+        {
+            return Err(ServiceError::Backend(
+                "local model still has runtime custody; stop it before replacing it".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn start_prepared(
+        &mut self,
+        model_id: &str,
+        command: &VllmCommand,
+    ) -> Result<ProcessHandle, ServiceError> {
+        let handle = self.supervisor.prepare(command)?;
+        if let Err(error) =
+            self.update_status(model_id, LocalModelStatus::Starting, Some(handle.clone()))
+        {
+            // Retain detached custody before attempting cleanup: canonical CAS
+            // refusal must never erase the only selector for a prepared container.
+            let custody = ownership::retain_orphan(&self.root, model_id, &handle);
+            let cleanup = self.supervisor.stop(&handle);
+            if cleanup.is_ok()
+                && let Ok(id) = &custody
+            {
+                let _ = std::fs::remove_file(
+                    self.root.join("orphan-custody").join(format!("{id}.json")),
+                );
+            }
+            return Err(ServiceError::Backend(format!(
+                "prepared runtime was not admitted: {error}; detached custody: {custody:?}; cleanup: {cleanup:?}"
+            )));
+        }
+        if let Err(error) = self.supervisor.start(command, &handle) {
+            return Err(self.failed_start(model_id, &handle, &error));
+        }
+        Ok(handle)
+    }
+
+    fn failed_start(
+        &mut self,
+        model_id: &str,
+        handle: &ProcessHandle,
+        error: &ServiceError,
+    ) -> ServiceError {
+        let checkpoint = self.checkpoint(model_id, handle, "failed_start", None);
+        let cleanup = self.supervisor.stop(handle);
+        let retained = cleanup.is_err().then(|| handle.clone());
+        let message = format!("runtime start failed: {error}; cleanup: {cleanup:?}");
+        let publication = self.update_status(
+            model_id,
+            LocalModelStatus::Failed {
+                message: message.clone(),
+            },
+            retained,
+        );
+        self.retain_checkpoint(checkpoint);
+        ServiceError::Backend(format!("{message}; state publication: {publication:?}"))
     }
 
     /// Stop `model_id`'s running process, if any, and mark it installed.
@@ -670,10 +1167,28 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             .get(model_id)
             .cloned()
             .ok_or_else(|| ServiceError::ModelNotInstalled(model_id.into()))?;
+        let checkpoint = managed
+            .process
+            .as_ref()
+            .and_then(|handle| self.checkpoint(model_id, handle, "before_stop", None));
         if let Some(handle) = managed.process {
-            self.supervisor.stop(&handle)?;
+            if let Err(error) = self.supervisor.stop(&handle) {
+                let _ = self.record_failure(model_id, error.to_string());
+                self.retain_checkpoint(checkpoint);
+                return Err(error);
+            }
+        } else if matches!(
+            managed.status,
+            LocalModelStatus::Starting | LocalModelStatus::Ready { .. }
+        ) {
+            return Err(ServiceError::Backend(
+                "runtime state has no observable process custody".into(),
+            ));
         }
-        self.update_status(model_id, LocalModelStatus::Installed, None)?;
+        let publication = self.update_status(model_id, LocalModelStatus::Installed, None);
+        // Disk retention is deliberately after exact cleanup and its state CAS.
+        self.retain_checkpoint(checkpoint);
+        publication?;
         Ok(LocalModelStatus::Installed)
     }
 
@@ -718,18 +1233,83 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             .ok_or_else(|| ServiceError::ModelNotInstalled(model_id.into()))?;
         managed.status = status;
         managed.process = process;
-        self.persist()
+        let merged = transact_state(
+            &self.root.join(STATE_FILE),
+            &self.persisted,
+            &self.state,
+            Some(model_id),
+        )?;
+        self.persisted = merged.clone();
+        self.state = merged;
+        Ok(())
     }
 
-    fn persist(&self) -> Result<(), ServiceError> {
-        persist_state(&self.root.join(STATE_FILE), &self.state)
+    fn persist(&mut self) -> Result<(), ServiceError> {
+        let merged = persist_state(&self.root.join(STATE_FILE), &self.persisted, &self.state)?;
+        self.persisted = merged.clone();
+        self.state = merged;
+        Ok(())
     }
 }
 
-fn persist_state(path: &Path, state: &ServiceState) -> Result<(), ServiceError> {
-    let mut bytes = serde_json::to_vec_pretty(state)?;
+fn persist_state(
+    path: &Path,
+    before: &ServiceState,
+    after: &ServiceState,
+) -> Result<ServiceState, ServiceError> {
+    transact_state(path, before, after, None)
+}
+
+fn transact_state(
+    path: &Path,
+    before: &ServiceState,
+    after: &ServiceState,
+    required_model: Option<&str>,
+) -> Result<ServiceState, ServiceError> {
+    let _transaction = ownership::StateFileLock::acquire(path).map_err(ServiceError::Backend)?;
+    let mut current = load_state(path)?;
+    if let Some(id) = required_model
+        && current.models.get(id) != before.models.get(id)
+    {
+        return Err(ServiceError::Backend(
+            "exact local runtime frontier changed".into(),
+        ));
+    }
+    merge_changes(&mut current.models, &before.models, &after.models)?;
+    merge_changes(
+        &mut current.accepted_licenses,
+        &before.accepted_licenses,
+        &after.accepted_licenses,
+    )?;
+    let mut bytes = serde_json::to_vec_pretty(&current)?;
     bytes.push(b'\n');
-    atomic_file::write_creating_parent(path, &bytes)?;
+    tilo_files::native::atomic::write_creating_parent(path, &bytes)?;
+    Ok(current)
+}
+
+fn merge_changes<T: Clone + PartialEq>(
+    current: &mut BTreeMap<String, T>,
+    before: &BTreeMap<String, T>,
+    after: &BTreeMap<String, T>,
+) -> Result<(), ServiceError> {
+    for key in before
+        .keys()
+        .chain(after.keys().filter(|key| !before.contains_key(*key)))
+    {
+        if before.get(key) == after.get(key) {
+            continue;
+        }
+        if current.get(key) != before.get(key) {
+            return Err(ServiceError::Backend(
+                "local model state changed during lifecycle work".into(),
+            ));
+        }
+        if let Some(value) = after.get(key) {
+            current.insert(key.clone(), value.clone());
+        } else {
+            current.remove(key);
+        }
+    }
     Ok(())
 }
 
@@ -765,22 +1345,37 @@ fn validate_sha256(value: &str) -> Result<(), ServiceError> {
     }
 }
 fn verify_file(path: &Path, artifact: &PinnedArtifact) -> Result<(), ServiceError> {
-    let metadata = fs::metadata(path)?;
-    if metadata.len() != artifact.size_bytes {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK);
+    let mut file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() != artifact.size_bytes {
         return Err(ServiceError::DigestMismatch);
     }
-    let mut file = File::open(path)?;
+    // Hash the same descriptor whose size was checked. Reading one extra byte
+    // detects growth without letting a concurrently extended object turn a
+    // pinned receipt into an unbounded read. Large delivery stays constant-space.
+    let maximum = artifact
+        .size_bytes
+        .checked_add(1)
+        .ok_or(ServiceError::InvalidArtifact)?;
+    let mut reader = (&mut file).take(maximum);
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 32 * 1024];
+    let mut total = 0_u64;
     loop {
-        let read = file.read(&mut buffer)?;
+        let read = reader.read(&mut buffer)?;
         if read == 0 {
             break;
         }
-        // `Read` never reports more bytes than the buffer holds.
+        total = total
+            .checked_add(u64::try_from(read).map_err(|_| ServiceError::DigestMismatch)?)
+            .ok_or(ServiceError::DigestMismatch)?;
         hasher.update(buffer.get(..read).ok_or(ServiceError::DigestMismatch)?);
     }
-    if hex::encode(hasher.finalize()) == artifact.sha256 {
+    if total == artifact.size_bytes && hex::encode(hasher.finalize()) == artifact.sha256 {
         Ok(())
     } else {
         Err(ServiceError::DigestMismatch)
@@ -978,6 +1573,10 @@ pub enum ServiceError {
     ModelNotInstalled(String),
     #[error("model license has not been accepted for this exact release: {0}")]
     LicenseNotAccepted(String),
+    #[error("model runs in the process that uses it and is never started: {0}")]
+    InProcessModel(String),
+    #[error("model is served by a runtime, not loaded in-process: {0}")]
+    NotInProcess(String),
     #[error("invalid port")]
     InvalidPort,
     #[error("invalid local endpoint")]
@@ -995,6 +1594,615 @@ mod tests {
     use super::*;
     use agent_provider_config::local::RuntimeKind;
     use std::io::{Cursor, Write as _};
+
+    #[test]
+    fn offline_developer_fetch_uses_signed_identity_and_existing_hash_gate() {
+        let bytes = b"actual offline fixture";
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("inputs");
+        fs::create_dir(&input).unwrap();
+        let mut release = model(bytes);
+        release.artifact.url = format!("offline:sha256:{}", release.artifact.sha256);
+        let payload = catalog::CatalogPayload {
+            schema: 1,
+            models: vec![release.clone()],
+            runtimes: vec![],
+            recommendation: release.id.clone(),
+        };
+        let pin = &release.artifact;
+        fs::write(input.join(&pin.sha256), bytes).unwrap();
+        let store = dir.path().join("store");
+        let mut service = LocalModelService::open(
+            &store,
+            developer::OfflineTransport::new(&input, &payload).unwrap(),
+            Supervisor {
+                command: None,
+                stopped: vec![],
+            },
+        )
+        .unwrap();
+        fs::write(
+            store.join("partial").join(format!("{}.part", pin.sha256)),
+            &bytes[..3],
+        )
+        .unwrap();
+        let object = service.fetch_verified(pin).unwrap();
+        assert_eq!(fs::read(&object).unwrap(), bytes);
+        let mut unknown = pin.clone();
+        unknown.url = "offline:sha256:unknown".into();
+        assert!(service.fetch_verified(&unknown).is_err());
+        fs::remove_file(&object).unwrap();
+        fs::write(input.join(&pin.sha256), vec![b'x'; bytes.len()]).unwrap();
+        assert!(matches!(
+            service.fetch_verified(pin),
+            Err(ServiceError::DigestMismatch)
+        ));
+        assert!(!object.exists());
+        let mut normal = LocalModelService::open(
+            dir.path().join("normal"),
+            Transport {
+                bytes: bytes.to_vec(),
+                starts: vec![],
+            },
+            Supervisor {
+                command: None,
+                stopped: vec![],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            normal.fetch_verified(pin),
+            Err(ServiceError::NonHttpsArtifact)
+        ));
+        assert!(normal.transport.starts.is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn offline_developer_fetch_refuses_links_and_wrong_sizes() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("inputs");
+        fs::create_dir(&input).unwrap();
+        let bytes = b"source";
+        let mut release = model(bytes);
+        release.artifact.url = format!("offline:sha256:{}", release.artifact.sha256);
+        let pin = release.artifact.clone();
+        let payload = catalog::CatalogPayload {
+            schema: 1,
+            models: vec![release],
+            runtimes: vec![],
+            recommendation: String::new(),
+        };
+        let real = dir.path().join("real");
+        fs::write(&real, bytes).unwrap();
+        symlink(&real, input.join(&pin.sha256)).unwrap();
+        let mut service = LocalModelService::open(
+            dir.path().join("store"),
+            developer::OfflineTransport::new(&input, &payload).unwrap(),
+            Supervisor {
+                command: None,
+                stopped: vec![],
+            },
+        )
+        .unwrap();
+        assert!(service.fetch_verified(&pin).is_err());
+        fs::remove_file(input.join(&pin.sha256)).unwrap();
+        fs::write(input.join(&pin.sha256), b"short").unwrap();
+        assert!(matches!(
+            service.fetch_verified(&pin),
+            Err(ServiceError::InvalidArtifact)
+        ));
+        fs::write(input.join(&pin.sha256), bytes).unwrap();
+        let linked = dir.path().join("linked-inputs");
+        symlink(&input, &linked).unwrap();
+        let mut linked_service = LocalModelService::open(
+            dir.path().join("linked-store"),
+            developer::OfflineTransport::new(&linked, &payload).unwrap(),
+            Supervisor {
+                command: None,
+                stopped: vec![],
+            },
+        )
+        .unwrap();
+        assert!(linked_service.fetch_verified(&pin).is_err());
+        assert!(
+            !dir.path()
+                .join("linked-store/sha256")
+                .join(&pin.sha256)
+                .exists()
+        );
+    }
+
+    #[test]
+    fn signed_execution_builds_bounded_engine_argv_and_rejects_layout_mismatch() {
+        let mut runtime = RuntimeRelease {
+            id: "test-runtime".into(),
+            kind: RuntimeKind::NvidiaCuda,
+            version: "pinned".into(),
+            artifact: artifact(b"runtime"),
+            oci_image: format!("registry.example.invalid/runtime@sha256:{}", "a".repeat(64)),
+            execution: Some(RuntimeExecution::LlamaCpp {
+                max_context_tokens: 16384,
+                gpu_layers: 12,
+                parallel_slots: None,
+            }),
+        };
+        let mut release = model(b"weights");
+        release.context_window = 4096;
+        release.allowed_runtimes.insert(RuntimeKind::NvidiaCuda);
+        assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
+        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        release.vision = true;
+        assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
+        release.vision = false;
+        let args = runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).unwrap();
+        assert_eq!(
+            args,
+            [
+                "--model",
+                "/models/model.gguf",
+                "--alias",
+                "tiny",
+                "--ctx-size",
+                "4096",
+                "--n-gpu-layers",
+                "12",
+                "--jinja",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8000"
+            ]
+        );
+        for slots in [1, 64, 65] {
+            runtime.execution = Some(RuntimeExecution::LlamaCpp {
+                max_context_tokens: 16384,
+                gpu_layers: 12,
+                parallel_slots: std::num::NonZeroU16::new(slots),
+            });
+            let generated = runtime_arguments(&runtime, &release, "/models/model.gguf", 8000);
+            if slots == 65 {
+                assert!(generated.is_err());
+            } else {
+                let mut expected = args.clone();
+                expected.splice(9..9, ["--parallel".into(), slots.to_string()]);
+                assert_eq!(generated.unwrap(), expected);
+            }
+        }
+        runtime.kind = RuntimeKind::Cpu;
+        assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
+        runtime.execution = Some(RuntimeExecution::Vllm {
+            max_context_tokens: 1024,
+            cpu_offload_gib: 16,
+        });
+        release.artifact_format = ModelArtifactFormat::VllmGguf;
+        let args = runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).unwrap();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--served-model-name", "tiny"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--max-model-len", "1024"])
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--cpu-offload-gb", "16"])
+        );
+        for invalid_id in ["--host", "alias,other", "", "bad\0id"] {
+            release.id = invalid_id.into();
+            assert!(runtime_arguments(&runtime, &release, "/models/model.gguf", 8000).is_err());
+        }
+    }
+
+    #[test]
+    fn service_launches_signed_llama_metadata_through_existing_supervisor() {
+        let bytes = b"synthetic model and runtime fixture";
+        let mut runtime = signed_fixture_runtime(bytes);
+        let mut release = model(bytes);
+        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        release.context_window = 4096;
+        let dir = tempfile::tempdir().unwrap();
+        let mut service = service_for(dir.path(), bytes);
+        service.install_with_runtime(&runtime, &release).unwrap();
+        let endpoint = service.start(&runtime, &release, 9000).unwrap();
+        assert_eq!(endpoint.model_id, "tiny");
+        assert_eq!(endpoint.url, "http://127.0.0.1:9000/v1");
+        let command = service.supervisor.command.as_ref().unwrap();
+        assert_eq!(command.runtime_image, runtime.release.oci_image);
+        assert_eq!(command.model_path, service.model_path(&release).unwrap());
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--alias", "tiny"])
+        );
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--ctx-size", "1024"])
+        );
+        service.supervisor.command = None;
+        runtime.release.execution = None;
+        assert!(service.start(&runtime, &release, 9000).is_err());
+        assert!(service.supervisor.command.is_none());
+    }
+
+    #[test]
+    fn owned_runtime_unavailable_observation_and_retention_failure_do_not_prevent_stop() {
+        let bytes = b"counter observer failure fixture";
+        let runtime = signed_fixture_runtime(bytes);
+        let mut release = model(bytes);
+        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        let root = tempfile::tempdir().unwrap();
+        let mut service = service_for(root.path(), bytes);
+        service.install_with_runtime(&runtime, &release).unwrap();
+        service.start(&runtime, &release, 9000).unwrap();
+        assert!(matches!(
+            service.runtime_observations().get("tiny"),
+            Some(run_observation::Observed::Unavailable { .. })
+        ));
+        fs::write(root.path().join("run-observations"), b"not a directory").unwrap();
+        assert_eq!(service.stop("tiny").unwrap(), LocalModelStatus::Installed);
+        assert_eq!(service.supervisor.stopped, ["svc-1"]);
+        assert!(
+            load_state(&root.path().join(STATE_FILE)).unwrap().models["tiny"]
+                .process
+                .is_none()
+        );
+        assert!(matches!(
+            run_observation::retained(root.path()),
+            run_observation::Observed::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn owned_runtime_observation_refuses_retired_state_frontier() {
+        let bytes = b"retired counter observer fixture";
+        let runtime = signed_fixture_runtime(bytes);
+        let mut release = model(bytes);
+        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        let root = tempfile::tempdir().unwrap();
+        let mut service = service_for(root.path(), bytes);
+        service.install_with_runtime(&runtime, &release).unwrap();
+        service.start(&runtime, &release, 9000).unwrap();
+        let stale = service_for(root.path(), bytes);
+        service.stop("tiny").unwrap();
+        let observations = stale.runtime_observations();
+        assert_eq!(
+            observations.get("tiny"),
+            Some(&run_observation::Observed::unavailable(
+                "runtime state frontier unavailable or changed"
+            ))
+        );
+    }
+
+    fn signed_fixture_runtime(bytes: &[u8]) -> SignedRuntime {
+        let item = artifact(bytes);
+        let manifest = system_extension::ExtensionManifest {
+            schema_version: system_extension::SCHEMA_VERSION,
+            id: "test-llama-runtime".into(),
+            kind: ExtensionKind::LocalModelRuntime,
+            version: "test".into(),
+            artifact: system_extension::PinnedArtifact {
+                source: item.url.clone(),
+                sha256: item.sha256.clone(),
+                size_bytes: item.size_bytes,
+            },
+            target: system_extension::ImageConstraint {
+                base_image_digest: format!("sha256:{}", "a".repeat(64)),
+                architecture: None,
+                kernel_abi: None,
+            },
+            requires_reboot: false,
+        };
+        let signed = system_extension::SignedExtensionManifest::sign(
+            manifest,
+            "unit-test-key",
+            &ed25519_dalek::SigningKey::from_bytes(&[5; 32]),
+        )
+        .unwrap();
+        SignedRuntime {
+            accepted: AcceptedExtension {
+                signed,
+                artifact: system_extension::ArtifactReceipt {
+                    sha256: item.sha256.clone(),
+                    size_bytes: item.size_bytes,
+                },
+                committed_revision: 1,
+            },
+            release: RuntimeRelease {
+                id: "test-llama-runtime".into(),
+                kind: RuntimeKind::Cpu,
+                version: "test".into(),
+                artifact: item,
+                oci_image: format!("registry.example.invalid/llama@sha256:{}", "a".repeat(64)),
+                execution: Some(RuntimeExecution::LlamaCpp {
+                    max_context_tokens: 1024,
+                    gpu_layers: 0,
+                    parallel_slots: None,
+                }),
+            },
+        }
+    }
+
+    struct BarrierSupervisor {
+        state_path: PathBuf,
+        entered: Option<std::sync::mpsc::Sender<()>>,
+        resume: Option<std::sync::mpsc::Receiver<()>>,
+        fail_start: bool,
+        fail_stop: bool,
+    }
+    impl ProcessSupervisor for BarrierSupervisor {
+        fn install_runtime_image(&mut self, _: &Path, _: &str) -> Result<(), ServiceError> {
+            Ok(())
+        }
+        fn prepare(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError> {
+            let container = ownership::ContainerOwnership {
+                container_id: "a".repeat(64),
+                run_id: "b".repeat(64),
+                image: command.runtime_image.clone(),
+                model_id_sha256: hex::encode(Sha256::digest(command.endpoint.model_id.as_bytes())),
+                arguments_sha256: ownership::arguments_digest(&command.args),
+            };
+            Ok(ProcessHandle {
+                id: container.unit(),
+                container: Some(container),
+            })
+        }
+        fn start(
+            &mut self,
+            command: &VllmCommand,
+            handle: &ProcessHandle,
+        ) -> Result<(), ServiceError> {
+            let durable = load_state(&self.state_path)?;
+            let model = durable
+                .models
+                .get(&command.endpoint.model_id)
+                .ok_or_else(|| ServiceError::Backend("fixture model missing".into()))?;
+            if model.process.as_ref() != Some(handle) || model.status != LocalModelStatus::Starting
+            {
+                return Err(ServiceError::Backend(
+                    "launch attempted before durable custody".into(),
+                ));
+            }
+            if let Some(entered) = self.entered.take() {
+                entered.send(()).unwrap();
+            }
+            if let Some(resume) = self.resume.take() {
+                resume
+                    .recv_timeout(Duration::from_secs(10))
+                    .map_err(|_| ServiceError::Backend("test barrier timed out".into()))?;
+            }
+            if self.fail_start {
+                Err(ServiceError::Backend(
+                    "observed fixture launch refusal".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        fn stop(&mut self, _: &ProcessHandle) -> Result<(), ServiceError> {
+            if self.fail_stop {
+                Err(ServiceError::Backend(
+                    "observed fixture cleanup refusal".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn owned_runtime_concurrent_stop_prevents_stale_ready_publication() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = b"barrier runtime fixture";
+        let runtime = signed_fixture_runtime(bytes);
+        let mut release = model(bytes);
+        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        release.context_window = 4096;
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let mut running = LocalModelService::open(
+            dir.path(),
+            Transport {
+                bytes: bytes.to_vec(),
+                starts: vec![],
+            },
+            BarrierSupervisor {
+                state_path: dir.path().join(STATE_FILE),
+                entered: Some(entered_tx),
+                resume: Some(resume_rx),
+                fail_start: false,
+                fail_stop: false,
+            },
+        )
+        .unwrap();
+        running.install_with_runtime(&runtime, &release).unwrap();
+        running.mark_starting(&release.id).unwrap();
+        let thread = std::thread::spawn(move || running.start(&runtime, &release, 9000));
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let mut stopped = service_for(dir.path(), bytes);
+        let prepared = stopped.state.models["tiny"].process.clone().unwrap();
+        assert!(prepared.container.is_some());
+        assert!(stopped.mark_starting("tiny").is_err());
+        assert_eq!(stopped.stop("tiny").unwrap(), LocalModelStatus::Installed);
+        resume_tx.send(()).unwrap();
+        assert!(thread.join().unwrap().is_err());
+        let observed = load_state(&dir.path().join(STATE_FILE)).unwrap();
+        assert_eq!(observed.models["tiny"].status, LocalModelStatus::Installed);
+        assert!(observed.models["tiny"].process.is_none());
+    }
+
+    #[test]
+    fn owned_runtime_failed_launch_and_cleanup_retain_durable_exact_custody() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = b"failed runtime fixture";
+        let runtime = signed_fixture_runtime(bytes);
+        let mut release = model(bytes);
+        release.artifact_format = ModelArtifactFormat::LlamaCppGguf;
+        release.context_window = 4096;
+        let mut service = LocalModelService::open(
+            dir.path(),
+            Transport {
+                bytes: bytes.to_vec(),
+                starts: vec![],
+            },
+            BarrierSupervisor {
+                state_path: dir.path().join(STATE_FILE),
+                entered: None,
+                resume: None,
+                fail_start: true,
+                fail_stop: true,
+            },
+        )
+        .unwrap();
+        service.install_with_runtime(&runtime, &release).unwrap();
+        assert!(service.start(&runtime, &release, 9000).is_err());
+        let handle = load_state(&dir.path().join(STATE_FILE)).unwrap().models["tiny"]
+            .process
+            .clone()
+            .unwrap();
+        assert!(handle.container.is_some());
+        service
+            .record_failure("tiny", "worker recorded failure")
+            .unwrap();
+        assert_eq!(
+            load_state(&dir.path().join(STATE_FILE)).unwrap().models["tiny"].process,
+            Some(handle.clone())
+        );
+        assert!(service.queue_install(&release).is_err());
+        assert!(service.mark_starting("tiny").is_err());
+        assert!(service.stop("tiny").is_err());
+        assert_eq!(
+            load_state(&dir.path().join(STATE_FILE)).unwrap().models["tiny"].process,
+            Some(handle)
+        );
+    }
+
+    #[test]
+    fn owned_runtime_refused_admission_retains_detached_custody_and_exact_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = b"orphan custody fixture";
+        let mut canonical = service_for(dir.path(), bytes);
+        canonical.install_model(&model(bytes)).unwrap();
+        let mut stale = LocalModelService::open(
+            dir.path(),
+            Transport {
+                bytes: bytes.to_vec(),
+                starts: vec![],
+            },
+            BarrierSupervisor {
+                state_path: dir.path().join(STATE_FILE),
+                entered: None,
+                resume: None,
+                fail_start: true,
+                fail_stop: true,
+            },
+        )
+        .unwrap();
+        canonical
+            .record_failure("tiny", "new canonical frontier")
+            .unwrap();
+        let command = VllmCommand {
+            runtime_image: format!("registry.example/runtime@sha256:{}", "c".repeat(64)),
+            runtime_kind: RuntimeKind::Cpu,
+            args: vec!["serve".into()],
+            model_path: dir.path().join("fixture"),
+            model_container_path: "/models/model.gguf".into(),
+            endpoint: LocalEndpoint {
+                url: "http://127.0.0.1:9000/v1".into(),
+                model_id: "tiny".into(),
+            },
+            runtime_extension_id: "fixture".into(),
+        };
+        let prior = std::fs::read(dir.path().join(STATE_FILE)).unwrap();
+        assert!(stale.start_prepared("tiny", &command).is_err());
+        assert_eq!(std::fs::read(dir.path().join(STATE_FILE)).unwrap(), prior);
+        let receipt_path = dir
+            .path()
+            .join("orphan-custody")
+            .join(format!("{}.json", "b".repeat(64)));
+        assert!(receipt_path.is_file());
+        assert!(
+            ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).is_err()
+        );
+        assert!(receipt_path.is_file());
+        let body = std::fs::read(&receipt_path).unwrap();
+        std::fs::remove_file(&receipt_path).unwrap();
+        let foreign_path = dir.path().join("foreign-receipt.json");
+        std::fs::write(&foreign_path, &body).unwrap();
+        std::os::unix::fs::symlink(&foreign_path, &receipt_path).unwrap();
+        assert!(
+            ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).is_err()
+        );
+        assert_eq!(std::fs::read(&foreign_path).unwrap(), body);
+        std::fs::remove_file(&receipt_path).unwrap();
+        std::fs::write(&receipt_path, &body).unwrap();
+        std::fs::set_permissions(&receipt_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).is_err()
+        );
+        std::fs::set_permissions(&receipt_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut changed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        changed["process"]["container"]["run_id"] = serde_json::json!("c".repeat(64));
+        std::fs::write(&receipt_path, serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert!(
+            ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).is_err()
+        );
+        std::fs::write(&receipt_path, &body).unwrap();
+        let handle = stale.supervisor.prepare(&command).unwrap();
+        canonical.state.models.get_mut("tiny").unwrap().process = Some(handle);
+        canonical.persist().unwrap();
+        stale.supervisor.fail_stop = false;
+        assert!(
+            ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).is_err()
+        );
+        assert!(receipt_path.is_file());
+        canonical.state.models.get_mut("tiny").unwrap().process = None;
+        canonical.persist().unwrap();
+        let current = std::fs::read(dir.path().join(STATE_FILE)).unwrap();
+        ownership::recover_orphan(dir.path(), &mut stale.supervisor, &"b".repeat(64)).unwrap();
+        assert!(!receipt_path.exists());
+        assert_eq!(std::fs::read(dir.path().join(STATE_FILE)).unwrap(), current);
+        assert!(
+            ownership::recover_orphan(dir.path(), &mut stale.supervisor, "../foreign").is_err()
+        );
+    }
+
+    #[test]
+    fn owned_runtime_state_transactions_merge_foreign_models_and_refuse_stale_custody() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = b"merge fixture";
+        let mut first = service_for(dir.path(), bytes);
+        let mut second = service_for(dir.path(), bytes);
+        first.install_model(&model(bytes)).unwrap();
+        let mut other = model(bytes);
+        other.id = "other".into();
+        second.install_model(&other).unwrap();
+        assert_eq!(
+            load_state(&dir.path().join(STATE_FILE))
+                .unwrap()
+                .models
+                .len(),
+            2
+        );
+        first.state.models.get_mut("tiny").unwrap().process = Some(ProcessHandle {
+            id: "retained-legacy".into(),
+            container: None,
+        });
+        first.persist().unwrap();
+        assert!(second.record_failure("tiny", "stale worker").is_err());
+        let observed = load_state(&dir.path().join(STATE_FILE)).unwrap();
+        assert_eq!(observed.models.len(), 2);
+        assert_eq!(
+            observed.models["tiny"].process.as_ref().unwrap().id,
+            "retained-legacy"
+        );
+        assert_eq!(observed.models["other"].status, LocalModelStatus::Installed);
+    }
 
     fn artifact(bytes: &[u8]) -> PinnedArtifact {
         PinnedArtifact {
@@ -1021,6 +2229,28 @@ mod tests {
             context_window: 1,
             vision: false,
             face_recognition: false,
+            segmentation: false,
+        }
+    }
+    fn onnx_model(bytes: &[u8]) -> LocalModelRelease {
+        LocalModelRelease {
+            id: "subject".into(),
+            label: "Subject".into(),
+            description: "A tiny segmentation test model".into(),
+            version: "c".repeat(64),
+            artifact: artifact(bytes),
+            artifact_format: ModelArtifactFormat::OnnxFile,
+            license_id: "Apache-2.0".into(),
+            license_url: "https://catalog.example.invalid/license".into(),
+            requires_acceptance: true,
+            installed_size_bytes: bytes.len() as u64,
+            allowed_runtimes: std::collections::BTreeSet::new(),
+            required_memory_mib: 1,
+            required_accelerator_mib: 0,
+            context_window: 0,
+            vision: false,
+            face_recognition: false,
+            segmentation: true,
         }
     }
 
@@ -1077,6 +2307,125 @@ mod tests {
     struct ChunkedTransport {
         bytes: Vec<u8>,
     }
+    struct ObservedChunkTransport {
+        bytes: Vec<u8>,
+        state_path: PathBuf,
+        observed: Vec<u64>,
+        interrupt: bool,
+    }
+    impl HttpsTransport for ObservedChunkTransport {
+        fn resume(
+            &mut self,
+            _: &str,
+            start: u64,
+            _: u64,
+            progress: &mut dyn FnMut(u64),
+            destination: &mut File,
+        ) -> Result<u64, ServiceError> {
+            let mut written = 0_u64;
+            let start = usize::try_from(start).map_err(|_| ServiceError::PartialTooLarge)?;
+            for chunk in self.bytes[start..].chunks(32) {
+                destination.write_all(chunk)?;
+                written = written
+                    .checked_add(chunk.len() as u64)
+                    .ok_or(ServiceError::PartialTooLarge)?;
+                progress(written);
+                let state = load_state(&self.state_path)?;
+                let LocalModelStatus::Downloading { received_bytes, .. } =
+                    state.models.values().next().unwrap().status
+                else {
+                    return Err(ServiceError::Io(std::io::Error::other(
+                        "transfer must remain downloading until verification",
+                    )));
+                };
+                self.observed.push(received_bytes);
+                if self.interrupt && written >= 128 {
+                    return Err(ServiceError::Io(std::io::Error::other("interrupted")));
+                }
+            }
+            Ok(written)
+        }
+    }
+
+    #[test]
+    fn model_install_coalesces_durable_progress_and_flushes_interruption() {
+        for interrupt in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let bytes = vec![37; 32 * 256];
+            let release = onnx_model(&bytes);
+            let mut service = LocalModelService::open(
+                dir.path(),
+                ObservedChunkTransport {
+                    bytes: bytes.clone(),
+                    state_path: dir.path().join(STATE_FILE),
+                    observed: Vec::new(),
+                    interrupt,
+                },
+                Supervisor {
+                    command: None,
+                    stopped: Vec::new(),
+                },
+            )
+            .unwrap();
+            service.record_license_acceptance(&release).unwrap();
+            service.queue_install(&release).unwrap();
+            let result = service.install_in_process_with_progress(&release);
+            let state = load_state(&dir.path().join(STATE_FILE)).unwrap();
+            if interrupt {
+                assert!(result.is_err());
+                assert_eq!(
+                    state.models[&release.id].status,
+                    LocalModelStatus::Downloading {
+                        received_bytes: 128,
+                        total_bytes: bytes.len() as u64
+                    }
+                );
+                let partial = dir
+                    .path()
+                    .join("partial")
+                    .join(format!("{}.part", release.artifact.sha256));
+                assert_eq!(fs::read(partial).unwrap(), bytes[..128]);
+                assert!(
+                    !service
+                        .object_path(&release.artifact.sha256)
+                        .unwrap()
+                        .exists()
+                );
+                service.transport.interrupt = false;
+                assert_eq!(
+                    service.install_in_process_with_progress(&release).unwrap(),
+                    LocalModelStatus::Installed
+                );
+                assert_eq!(
+                    fs::read(service.object_path(&release.artifact.sha256).unwrap()).unwrap(),
+                    bytes
+                );
+            } else {
+                assert_eq!(result.unwrap(), LocalModelStatus::Installed);
+                assert_eq!(
+                    state.models[&release.id].status,
+                    LocalModelStatus::Installed
+                );
+                assert_eq!(
+                    fs::read(service.object_path(&release.artifact.sha256).unwrap()).unwrap(),
+                    bytes
+                );
+                assert_eq!(
+                    service.transport.observed.last(),
+                    Some(&(bytes.len() as u64))
+                );
+                // The production installer receives 256 actual chunk writes;
+                // intermediate chunks do not each become durable updates.
+                assert!(
+                    service
+                        .transport
+                        .observed
+                        .windows(2)
+                        .any(|pair| pair[0] == pair[1])
+                );
+            }
+        }
+    }
     impl HttpsTransport for ChunkedTransport {
         fn resume(
             &mut self,
@@ -1107,9 +2456,15 @@ mod tests {
         fn install_runtime_image(&mut self, _: &Path, _: &str) -> Result<(), ServiceError> {
             Ok(())
         }
-        fn start(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError> {
+        fn prepare(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError> {
             self.command = Some(command.clone());
-            Ok(ProcessHandle { id: "svc-1".into() })
+            Ok(ProcessHandle {
+                id: "svc-1".into(),
+                container: None,
+            })
+        }
+        fn start(&mut self, _: &VllmCommand, _: &ProcessHandle) -> Result<(), ServiceError> {
+            Ok(())
         }
         fn stop(&mut self, handle: &ProcessHandle) -> Result<(), ServiceError> {
             self.stopped.push(handle.id.clone());
@@ -1180,6 +2535,30 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn model_delivery_refuses_cached_links_and_non_files() {
+        let bytes = b"pinned object";
+        let dir = tempfile::tempdir().unwrap();
+        let pin = artifact(bytes);
+        let mut service = service_for(dir.path(), bytes);
+        let path = service.object_path(&pin.sha256).unwrap();
+        let outside = dir.path().join("outside-object");
+        fs::write(&outside, bytes).unwrap();
+        std::os::unix::fs::symlink(&outside, &path).unwrap();
+        assert!(service.fetch_verified(&pin).is_err());
+        assert!(service.transport.starts.is_empty());
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(service.fetch_verified(&pin).is_err());
+        fs::remove_dir(&path).unwrap();
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(service.fetch_verified(&pin).unwrap(), path);
+        assert!(service.transport.starts.is_empty());
+        fs::write(&path, b"pinned object extra").unwrap();
+        assert!(service.fetch_verified(&pin).is_err());
     }
 
     /// A verified snapshot is safely extracted to a content-addressed directory; the path policy
@@ -1290,6 +2669,279 @@ mod tests {
         }
     }
 
+    fn service_for(root: &Path, bytes: &[u8]) -> LocalModelService<Transport, Supervisor> {
+        LocalModelService::open(
+            root,
+            Transport {
+                bytes: bytes.to_vec(),
+                starts: vec![],
+            },
+            Supervisor {
+                command: None,
+                stopped: vec![],
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn speech_install_uses_verified_objects_and_never_launches_a_runtime() {
+        for format in [
+            ModelArtifactFormat::WhisperGgml,
+            ModelArtifactFormat::WhistleCact,
+            ModelArtifactFormat::SileroGgml,
+        ] {
+            assert_speech_install(format);
+        }
+    }
+
+    fn assert_speech_install(format: ModelArtifactFormat) {
+        let capability = if format == ModelArtifactFormat::SileroGgml {
+            InProcessCapability::SpeechActivity
+        } else {
+            InProcessCapability::SpeechRecognition
+        };
+        let bytes = b"synthetic speech graph receipt";
+        let dir = tempfile::tempdir().unwrap();
+        let mut release = onnx_model(bytes);
+        release.id = "speech".into();
+        release.artifact_format = format;
+        release.segmentation = false;
+        let mut service = service_for(dir.path(), bytes);
+        assert!(matches!(
+            service.install_in_process_with_progress(&release),
+            Err(ServiceError::LicenseNotAccepted(_))
+        ));
+        service.record_license_acceptance(&release).unwrap();
+        service.queue_install(&release).unwrap();
+        assert_eq!(
+            installed_in_process_model(dir.path(), capability).unwrap(),
+            None
+        );
+        assert_eq!(
+            service.install_in_process_with_progress(&release).unwrap(),
+            LocalModelStatus::Installed
+        );
+        assert!(service.supervisor.command.is_none());
+        assert_eq!(
+            installed_in_process_model(dir.path(), InProcessCapability::Segmentation).unwrap(),
+            None
+        );
+        let installed = installed_in_process_model(dir.path(), capability)
+            .unwrap()
+            .unwrap();
+        assert_eq!(installed.id, "speech");
+        assert_eq!(installed.sha256, release.artifact.sha256);
+        assert_eq!(fs::read(&installed.path).unwrap(), bytes);
+        // A test-only trust fixture stays in this temporary directory; it
+        // never changes the image keyring or the person's model store.
+        #[cfg(target_os = "linux")]
+        {
+            use crate::catalog::VerifiedCatalog;
+            let (verified, signed, catalog_path, keys_path) =
+                signed_speech_witness(dir.path(), &release);
+            if format == ModelArtifactFormat::SileroGgml {
+                service.state.models.get_mut("speech").unwrap().status =
+                    LocalModelStatus::NotInstalled;
+                service.persist().unwrap();
+                assert!(matches!(
+                    crate::speech::speech_activity_file(dir.path(), &verified),
+                    Err(crate::speech::SpeechError::ModelUnavailable)
+                ));
+                service.state.models.get_mut("speech").unwrap().status =
+                    LocalModelStatus::Installed;
+                service.persist().unwrap();
+            }
+            assert_speech_witness(dir.path(), &verified, format, bytes);
+            fs::write(&installed.path, vec![0; bytes.len()]).unwrap();
+            assert!(matches!(
+                read_speech_witness(dir.path(), &verified, format),
+                Err(crate::speech::SpeechError::ModelReceipt)
+            ));
+            fs::write(&installed.path, bytes).unwrap();
+            service.state.accepted_licenses.clear();
+            service.persist().unwrap();
+            assert!(matches!(
+                read_speech_witness(dir.path(), &verified, format),
+                Err(crate::speech::SpeechError::ModelUnavailable)
+            ));
+            service.record_license_acceptance(&release).unwrap();
+            fs::remove_file(&installed.path).unwrap();
+            std::os::unix::fs::symlink(&catalog_path, &installed.path).unwrap();
+            assert!(matches!(
+                read_speech_witness(dir.path(), &verified, format),
+                Err(crate::speech::SpeechError::ModelUnavailable)
+            ));
+            fs::remove_file(&installed.path).unwrap();
+            fs::write(&installed.path, bytes).unwrap();
+            let mut forged = signed;
+            forged.payload.models[0].artifact_format = ModelArtifactFormat::OnnxFile;
+            fs::write(&catalog_path, serde_json::to_vec(&forged).unwrap()).unwrap();
+            assert!(VerifiedCatalog::load(&catalog_path, &keys_path).is_err());
+        }
+        service.remove("speech").unwrap();
+        assert_eq!(
+            installed_in_process_model(dir.path(), capability).unwrap(),
+            None
+        );
+    }
+
+    fn signed_speech_witness(
+        root: &Path,
+        release: &LocalModelRelease,
+    ) -> (
+        crate::catalog::VerifiedCatalog,
+        crate::catalog::SignedCatalog,
+        PathBuf,
+        PathBuf,
+    ) {
+        use crate::catalog::{
+            CATALOG_SIGNATURE_DOMAIN, CatalogPayload, SignedCatalog, VerifiedCatalog,
+            catalog_signing_bytes,
+        };
+        use ed25519_dalek::{Signer as _, SigningKey};
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let payload = CatalogPayload {
+            schema: 1,
+            models: vec![release.clone()],
+            runtimes: vec![],
+            recommendation: String::new(),
+        };
+        let signed = SignedCatalog {
+            schema: 1,
+            signature_domain: CATALOG_SIGNATURE_DOMAIN.into(),
+            key_id: "isolated-test-only".into(),
+            signature: key
+                .sign(&catalog_signing_bytes(&payload).unwrap())
+                .to_bytes()
+                .to_vec(),
+            payload,
+        };
+        let catalog_path = root.join("test-catalog.json");
+        let keys_path = root.join("test-keys.json");
+        fs::write(&catalog_path, serde_json::to_vec(&signed).unwrap()).unwrap();
+        fs::write(&keys_path, serde_json::to_vec(&serde_json::json!({"keys": {"isolated-test-only": hex::encode(key.verifying_key().to_bytes())}})).unwrap()).unwrap();
+        let verified = VerifiedCatalog::load(&catalog_path, &keys_path).unwrap();
+        (verified, signed, catalog_path, keys_path)
+    }
+
+    fn assert_speech_witness(
+        root: &Path,
+        verified: &crate::catalog::VerifiedCatalog,
+        format: ModelArtifactFormat,
+        bytes: &[u8],
+    ) {
+        let sealed = if format == ModelArtifactFormat::SileroGgml {
+            assert!(matches!(
+                crate::speech::speech_model_file(root, verified),
+                Err(crate::speech::SpeechError::ModelUnavailable)
+            ));
+            crate::speech::speech_activity_file(root, verified)
+                .unwrap()
+                .unwrap()
+        } else {
+            assert!(
+                crate::speech::speech_activity_file(root, verified)
+                    .unwrap()
+                    .is_none()
+            );
+            crate::speech::speech_model_file(root, verified).unwrap()
+        };
+        assert_eq!(sealed.format(), format);
+        assert_eq!(read_speech_witness(root, verified, format).unwrap(), bytes);
+        #[cfg(feature = "whisper")]
+        if format == ModelArtifactFormat::WhistleCact {
+            // These authenticated fixture weights deliberately have the wrong
+            // pinned size. Both feature configurations must reject them before
+            // configuring a session or entering any native model parser.
+            let mut input = std::io::empty();
+            let mut output = Vec::new();
+            assert_eq!(
+                crate::speech::worker::serve(root, verified, &mut input, &mut output),
+                Err(crate::speech::SpeechError::ModelUnavailable)
+            );
+            assert!(output.is_empty());
+        }
+    }
+
+    fn read_speech_witness(
+        root: &Path,
+        verified: &crate::catalog::VerifiedCatalog,
+        format: ModelArtifactFormat,
+    ) -> Result<Vec<u8>, crate::speech::SpeechError> {
+        use std::io::Read as _;
+        let sealed = if format == ModelArtifactFormat::SileroGgml {
+            crate::speech::speech_activity_file(root, verified)?
+                .ok_or(crate::speech::SpeechError::ModelUnavailable)?
+        } else {
+            crate::speech::speech_model_file(root, verified)?
+        };
+        let mut bytes = Vec::new();
+        sealed
+            .file()
+            .try_clone()
+            .map_err(|_| crate::speech::SpeechError::ModelReceipt)?
+            .read_to_end(&mut bytes)
+            .map_err(|_| crate::speech::SpeechError::ModelReceipt)?;
+        Ok(bytes)
+    }
+
+    /// An in-process model installs through the verified download and the
+    /// licence record alone, is found by capability from the store on disk,
+    /// is never started, and disappears from the lookup once removed.
+    #[test]
+    fn in_process_models_install_without_a_runtime_and_are_found_by_capability() {
+        let bytes = b"onnx graph";
+        let dir = tempfile::tempdir().unwrap();
+        let release = onnx_model(bytes);
+        let mut service = service_for(dir.path(), bytes);
+        assert_eq!(
+            installed_in_process_model(dir.path(), InProcessCapability::Segmentation).unwrap(),
+            None
+        );
+        assert!(matches!(
+            service.install_in_process_with_progress(&release),
+            Err(ServiceError::LicenseNotAccepted(_))
+        ));
+        assert!(matches!(
+            service.install_in_process_with_progress(&model(bytes)),
+            Err(ServiceError::NotInProcess(_))
+        ));
+
+        service.record_license_acceptance(&release).unwrap();
+        service.queue_install(&release).unwrap();
+        assert_eq!(
+            installed_in_process_model(dir.path(), InProcessCapability::Segmentation).unwrap(),
+            None,
+            "a queued download is not an installed model"
+        );
+        assert_eq!(
+            service.install_in_process_with_progress(&release).unwrap(),
+            LocalModelStatus::Installed
+        );
+        assert!(service.supervisor.command.is_none());
+
+        let found = installed_in_process_model(dir.path(), InProcessCapability::Segmentation)
+            .unwrap()
+            .expect("installed segmentation model");
+        assert_eq!(found.id, "subject");
+        assert_eq!(found.revision, "c".repeat(64));
+        assert_eq!(found.sha256, release.artifact.sha256);
+        assert_eq!(found.license_id, "Apache-2.0");
+        assert_eq!(
+            found.path,
+            dir.path().join("sha256").join(&release.artifact.sha256)
+        );
+        assert_eq!(fs::read(&found.path).unwrap(), bytes);
+
+        service.remove("subject").unwrap();
+        assert!(!found.path.exists());
+        assert_eq!(
+            installed_in_process_model(dir.path(), InProcessCapability::Segmentation).unwrap(),
+            None
+        );
+    }
+
     /// Acceptance is pinned to the exact model release, status persists and removal stops the supervised
     /// service, and the command is argv that never uses a mutable tag.
     #[test]
@@ -1345,7 +2997,9 @@ mod tests {
             service.install_model(&model).unwrap();
             service.state.models.get_mut("tiny").unwrap().process = Some(ProcessHandle {
                 id: "active".into(),
+                container: None,
             });
+            service.persist().unwrap();
             service.remove("tiny").unwrap();
             assert_eq!(service.supervisor.stopped, ["active"]);
             assert!(

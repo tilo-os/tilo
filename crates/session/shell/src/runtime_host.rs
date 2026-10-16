@@ -27,6 +27,10 @@ use std::{
 use tilo_runtime::RuntimeServices;
 use tilo_runtime::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, unix};
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "runtime_host/admission_tests.rs"]
+mod admission_tests;
+
 /// A single-user service session. Drop applications before dropping the session.
 /// Identity discovery uses the same environment as Tilo; configure it before
 /// starting any threads when using an isolated profile.
@@ -40,6 +44,9 @@ pub struct Session {
     blob_socket: PathBuf,
     _media: tilo_runtime::profile::MediaHost,
     _membership: crate::shell::state::WorkspaceTreeHandle,
+    // Fields retire in declaration order: stop all save producers and release
+    // membership before flushing, while the profile lock still excludes restart.
+    _final_saves: FinalSessionSaves,
     _lock: advisory_lock::FileLock,
 }
 
@@ -56,14 +63,46 @@ impl Session {
     /// # Errors
     /// Rejects a locked profile, invalid persisted state, or failed provisioning.
     pub fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
+        Self::start_with_identity(root, stage, None)
+    }
+
+    fn start_with_identity(
+        root: &Path,
+        stage: &mut dyn FnMut(&str),
+        admission_owner: Option<u32>,
+    ) -> io::Result<Self> {
+        if let Some(owner_uid) = admission_owner
+            && (owner_uid == 0 || rustix::process::geteuid().as_raw() != owner_uid)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "native admission must run as the existing non-root device owner",
+            ));
+        }
         stage("locking the profile");
         let lock = tilo_runtime::profile::lock(root)?;
         stage("provisioning the collaboration identity");
         let identity_dir = runtime_identity::identity_dir_from_env()?;
-        crate::firstboot::ensure_collaboration_identity(
-            &identity_dir,
-            &crate::firstboot::collaboration_identity_paths(),
-        )?;
+        let identity_paths = crate::firstboot::collaboration_identity_paths();
+        if admission_owner.is_some() {
+            stage("verifying the existing collaboration identity");
+            crate::firstboot::verify_collaboration_identity(
+                &identity_dir,
+                &identity_paths,
+                tilo_clock::unix_now_ns(),
+            )?;
+            if !tilo_identity_host::provisioning::active_identity_owns_device(
+                &identity_dir,
+                &identity_paths,
+            )? {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "native admission identity does not own this device",
+                ));
+            }
+        } else {
+            crate::firstboot::ensure_collaboration_identity(&identity_dir, &identity_paths)?;
+        }
         stage("loading the workspace");
         let path = root.join("workspace.json");
         let mut tree = match persist::load_tree_from(&path) {
@@ -86,7 +125,7 @@ impl Session {
         let profile = crate::identity_registry::selected_identity_profile(&room_id)?
             .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
         let actor = profile.principal_id();
-        if workspace.owner.is_none() {
+        if workspace.owner().is_none() {
             workspace.set_owner(actor.clone());
         }
         stage("saving the workspace");
@@ -97,17 +136,30 @@ impl Session {
         stage("starting the identity service");
         let identity =
             identity_broker::spawn(identity_socket.clone(), tree.clone(), channel_keys.clone())?;
-        stage("starting the collaboration broker");
-        let peer_sync = PeerSync::start(&tree);
-        let broker = collab_broker::spawn_native(
-            root.join(COLLAB_SOCKET),
-            &peer_sync.as_ref().map(|sync| Arc::clone(&sync.network)),
-            tree.clone(),
-        )?;
-        channel_keys.set(broker.channel_encryption());
         let blob_socket = root.join(BLOB_SOCKET);
         stage("opening the content store");
         let media = tilo_runtime::profile::MediaHost::start(&root.join("content"), &blob_socket)?;
+        stage("starting the collaboration broker");
+        let peer_sync = PeerSync::start(&tree);
+        // No frame loop waits here: open the owner before the broker, whose
+        // services otherwise answer that it is still opening until it is.
+        stage("opening the workspace owner");
+        let opened = match peer_sync.as_ref() {
+            Some(sync) => sync.network.native_owner(),
+            None => crate::shell::native_workspace_owner::open(tree.clone()),
+        };
+        if let Err(error) = &opened {
+            tracing::warn!(%error, "the runtime's workspace owner did not open");
+        }
+        let broker = collab_broker::spawn_native_offloading(
+            root.join(COLLAB_SOCKET),
+            &peer_sync.as_ref().map(|sync| Arc::clone(&sync.network)),
+            tree.clone(),
+            // Offloadable actions of the room may run on a better-placed
+            // device of this person, over the room's media in this store.
+            tilo_runtime::offload::action_offload(&[room_id.as_str()], media.store()),
+        )?;
+        channel_keys.set(broker.channel_encryption());
         Ok(Self {
             broker,
             _peer_sync: peer_sync,
@@ -118,6 +170,7 @@ impl Session {
             blob_socket,
             _media: media,
             _membership: tree,
+            _final_saves: FinalSessionSaves,
             _lock: lock,
         })
     }
@@ -129,6 +182,11 @@ impl Session {
     )]
     pub(crate) fn workspace_tree(&self) -> crate::shell::state::WorkspaceTreeHandle {
         self._membership.clone()
+    }
+
+    /// The identity service an app this session connects joins with.
+    pub fn identity_socket(&self) -> &Path {
+        &self.identity_socket
     }
 
     /// Read document media an app in this session's room stored, through
@@ -164,6 +222,14 @@ impl RuntimeServices for Session {
         Self::start_reporting(root, stage)
     }
 
+    fn start_admission_reporting(
+        root: &Path,
+        owner_uid: u32,
+        stage: &mut dyn FnMut(&str),
+    ) -> io::Result<Self> {
+        Self::start_with_identity(root, stage, Some(owner_uid))
+    }
+
     fn room(&self) -> &str {
         &self.room
     }
@@ -181,6 +247,13 @@ impl RuntimeServices for Session {
 
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
         Self::launch(self, app_id, command)
+    }
+
+    fn media(&self) -> Option<std::sync::Arc<dyn tilo_runtime::MediaReader>> {
+        Some(std::sync::Arc::new(tilo_runtime::profile::BlobMedia::new(
+            &self.blob_socket,
+            &self.room,
+        )))
     }
 }
 
@@ -203,14 +276,13 @@ impl PeerSync {
         if !crate::shell::network::collab_host_configured() {
             return None;
         }
-        let network =
-            match ShellNetwork::spawn(tree.clone(), &crate::shell::network::peer_key_path()) {
-                Ok(network) => Arc::new(network),
-                Err(error) => {
-                    tracing::warn!(%error, "peer-sync: spawn failed; the session stays local");
-                    return None;
-                }
-            };
+        let network = match ShellNetwork::spawn_for_session(tree.clone()) {
+            Ok(network) => Arc::new(network),
+            Err(error) => {
+                tracing::warn!(%error, "peer-sync: spawn failed; the session stays local");
+                return None;
+            }
+        };
         let _ = network.join_default_workspace();
         let stop = Arc::new(AtomicBool::new(false));
         let pump = {
@@ -232,6 +304,25 @@ impl PeerSync {
             stop,
             pump,
         })
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // Keep brokers owned until retirement and close admission before their
+        // fields retire. BrokerHandle's close is idempotent; the final-save
+        // guard drains any shutdown work after those producers have stopped.
+        self.broker.local_session_lifecycle().close();
+    }
+}
+
+struct FinalSessionSaves;
+
+impl Drop for FinalSessionSaves {
+    /// Broker teardown can enqueue snapshots. Drain them after the brokers
+    /// retire, before the next session can acquire this profile lock.
+    fn drop(&mut self) {
+        persist::wait_for_saves_within(Duration::from_secs(10));
     }
 }
 

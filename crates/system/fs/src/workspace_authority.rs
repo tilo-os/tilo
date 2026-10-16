@@ -24,21 +24,81 @@ const MAX_PERSISTED_CONTENT_PEERS: usize = 32;
 /// daemon owns that node's UDP socket.
 pub const LOCAL_AUTHORITY_SOCKET: &str = "workspace-authority.sock";
 
+const LOCAL_AUTHORITY_SOCKET_PREFIX: &str = "workspace-authority-";
+const LOCAL_SOCKET_SUFFIX: &str = ".sock";
+
+/// `/run/tilo`, created root:tilo-identity by tmpfiles, unless
+/// `TILO_AUTHORITY_SOCKET_DIR` names another.
+fn local_socket_dir() -> PathBuf {
+    std::env::var_os("TILO_AUTHORITY_SOCKET_DIR")
+        .map_or_else(|| PathBuf::from("/run/tilo"), PathBuf::from)
+}
+
 /// The stable local control path for a workspace. `/run/tilo` is created
 /// root:tilo-identity by the service unit, so no root-owned cache directory is
 /// exposed to the desktop publisher.
 pub fn local_authority_socket_path(workspace: uuid::Uuid) -> PathBuf {
-    std::env::var_os("TILO_AUTHORITY_SOCKET_DIR")
-        .map_or_else(|| PathBuf::from("/run/tilo"), PathBuf::from)
-        .join(format!("workspace-authority-{workspace}.sock"))
+    local_socket_dir().join(format!(
+        "{LOCAL_AUTHORITY_SOCKET_PREFIX}{workspace}{LOCAL_SOCKET_SUFFIX}"
+    ))
+}
+
+/// The workspace authority the filesystem daemon serves on this machine, and
+/// its socket. The workspace comes from the socket's name, so the desktop
+/// publisher learns it without reading the daemon's root-only cache.
+///
+/// # Errors
+///
+/// When the socket directory cannot be read, or not exactly one authority
+/// socket answers.
+#[cfg(unix)]
+pub async fn find_local_authority() -> anyhow::Result<(uuid::Uuid, PathBuf)> {
+    find_local_authority_in(&local_socket_dir()).await
+}
+
+#[cfg(unix)]
+async fn find_local_authority_in(dir: &Path) -> anyhow::Result<(uuid::Uuid, PathBuf)> {
+    use anyhow::Context as _;
+
+    let mut live = Vec::new();
+    for entry in std::fs::read_dir(dir).with_context(|| format!("list {}", dir.display()))? {
+        let entry = entry?;
+        let Some(workspace) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.strip_prefix(LOCAL_AUTHORITY_SOCKET_PREFIX))
+            .and_then(|name| name.strip_suffix(LOCAL_SOCKET_SUFFIX))
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        else {
+            continue;
+        };
+        // A daemon that served another workspace before a rebind leaves its
+        // socket behind; only one that still answers is the authority.
+        let path = entry.path();
+        if tokio::net::UnixStream::connect(&path).await.is_ok() {
+            live.push((workspace, path));
+        }
+    }
+    match live.len() {
+        1 => Ok(live.remove(0)),
+        0 => anyhow::bail!(
+            "no filesystem daemon serves a workspace authority in {} yet",
+            dir.display()
+        ),
+        _ => anyhow::bail!(
+            "{} workspace authorities answer in {}; expected one",
+            live.len(),
+            dir.display()
+        ),
+    }
 }
 
 /// Stable, workspace-scoped handoff for a direct endpoint returned by the
 /// authenticated relay discovery ALPN.
 pub fn local_content_socket_path(workspace: uuid::Uuid) -> PathBuf {
-    std::env::var_os("TILO_AUTHORITY_SOCKET_DIR")
-        .map_or_else(|| PathBuf::from("/run/tilo"), PathBuf::from)
-        .join(format!("workspace-content-{workspace}.sock"))
+    local_socket_dir().join(format!(
+        "workspace-content-{workspace}{LOCAL_SOCKET_SUFFIX}"
+    ))
 }
 
 /// Durable direct Files endpoints discovered through the authenticated relay.
@@ -143,7 +203,10 @@ fn persist_content_peer(cache_dir: &Path, peer: PersistedContentPeer) -> anyhow:
         }
         peers.push(peer);
     }
-    atomic_file::write(&content_peers_path(cache_dir), &serde_json::to_vec(&peers)?)?;
+    tilo_files::native::atomic::write(
+        &content_peers_path(cache_dir),
+        &serde_json::to_vec(&peers)?,
+    )?;
     Ok(())
 }
 
@@ -163,7 +226,10 @@ fn remove_persisted_content_peers(
         }
         !matches
     });
-    atomic_file::write(&content_peers_path(cache_dir), &serde_json::to_vec(&peers)?)?;
+    tilo_files::native::atomic::write(
+        &content_peers_path(cache_dir),
+        &serde_json::to_vec(&peers)?,
+    )?;
     Ok(removed)
 }
 
@@ -173,32 +239,13 @@ pub struct WorkspaceAuthorityEnvelope {
     pub workspace: uuid::Uuid,
     pub revision: u64,
     pub capabilities: Vec<CapOverride>,
+    /// Who may reach each room a relay carries, by its relay room id.
+    #[serde(default)]
+    pub room_members: std::collections::BTreeMap<String, Vec<collab_types::RoomMember>>,
     pub tombstoned: bool,
     pub governor: [u8; 32],
-    #[serde(with = "serde_bytes_64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
-}
-
-mod serde_bytes_64 {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S>(value: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serde_bytes::Bytes::new(value).serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 64], D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = serde_bytes::ByteBuf::deserialize(deserializer)?;
-        value
-            .as_ref()
-            .try_into()
-            .map_err(|_| serde::de::Error::invalid_length(value.len(), &"64 bytes"))
-    }
 }
 
 impl WorkspaceAuthorityEnvelope {
@@ -210,19 +257,51 @@ impl WorkspaceAuthorityEnvelope {
     pub fn sign(
         workspace: uuid::Uuid,
         revision: u64,
-        capabilities: Vec<CapOverride>,
+        authority: impl Into<collab_types::FsAuthority>,
         tombstoned: bool,
         governor: &ed25519_dalek::SigningKey,
     ) -> anyhow::Result<Self> {
+        Self::sign_with(
+            workspace,
+            revision,
+            authority,
+            tombstoned,
+            governor.verifying_key().to_bytes(),
+            |payload| Ok(governor.sign(payload).to_bytes()),
+        )
+    }
+
+    /// [`Self::sign`] for a governor whose key this process cannot hold, such
+    /// as a person's identity record: `sign` receives the exact payload and
+    /// returns the governor's Ed25519 signature over it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the payload cannot be encoded, `sign` fails, or
+    /// its signature does not verify against `governor`.
+    pub fn sign_with(
+        workspace: uuid::Uuid,
+        revision: u64,
+        authority: impl Into<collab_types::FsAuthority>,
+        tombstoned: bool,
+        governor: [u8; 32],
+        sign: impl FnOnce(&[u8]) -> anyhow::Result<[u8; 64]>,
+    ) -> anyhow::Result<Self> {
+        let collab_types::FsAuthority {
+            capabilities,
+            room_members,
+        } = authority.into();
         let mut envelope = Self {
             workspace,
             revision,
             capabilities,
+            room_members,
             tombstoned,
-            governor: governor.verifying_key().to_bytes(),
+            governor,
             signature: [0; 64],
         };
-        envelope.signature = governor.sign(&envelope.payload()?).to_bytes();
+        envelope.signature = sign(&envelope.payload()?)?;
+        envelope.verify(workspace, governor)?;
         Ok(envelope)
     }
 
@@ -247,6 +326,7 @@ impl WorkspaceAuthorityEnvelope {
             self.workspace,
             self.revision,
             &self.capabilities,
+            &self.room_members,
             self.tombstoned,
             self.governor,
         ))?)
@@ -361,13 +441,61 @@ impl WorkspaceAuthority {
             }
         }
         let bytes = postcard::to_allocvec(&next)?;
-        atomic_file::write(&self.path, &bytes)?;
+        tilo_files::native::atomic::write(&self.path, &bytes)?;
         self.handle
             .replace(project(self.subject, &self.principals, Some(&next)));
         *current = Some(next);
         drop(current);
         Ok(true)
     }
+}
+
+/// Keep `authority` in step with the host-local capability list at `path`:
+/// whenever the file's bytes change, sign them as the next revision with
+/// `governor` and apply it. Waits on the file's change events with
+/// `cadence`'s backstop, or polls every `cadence.poll` when the file cannot
+/// be watched (#4224; it used to poll once a second). Bytes present when
+/// the task starts are taken as already applied; an unreadable or malformed
+/// file changes nothing, so a half-written list is never signed.
+#[must_use]
+pub fn spawn_capability_file_reload(
+    path: PathBuf,
+    authority: std::sync::Arc<WorkspaceAuthority>,
+    governor: ed25519_dalek::SigningKey,
+    cadence: crate::file_watch::ReloadCadence,
+) -> tokio::task::JoinHandle<()> {
+    let mut previous = std::fs::read(&path).ok();
+    let mut trigger = crate::file_watch::ReloadTrigger::for_file(&path, cadence);
+    tokio::spawn(async move {
+        loop {
+            trigger.next().await;
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            if previous.as_ref() == Some(&bytes) {
+                continue;
+            }
+            let Ok(capabilities) = serde_json::from_slice::<collab_types::FsAuthority>(&bytes)
+            else {
+                continue;
+            };
+            let revision = authority
+                .current()
+                .map_or(1, |current| current.revision.saturating_add(1));
+            let Ok(envelope) = WorkspaceAuthorityEnvelope::sign(
+                authority.workspace(),
+                revision,
+                capabilities,
+                false,
+                &governor,
+            ) else {
+                continue;
+            };
+            if authority.apply(envelope).is_ok() {
+                previous = Some(bytes);
+            }
+        }
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -815,7 +943,7 @@ mod tests {
                 Subject::User(collab_types::Ed25519PublicKey(subject)),
                 Scope::FsPath("/".into()),
                 Effect::Grant,
-                Verb::Read,
+                CapAccess::Read,
             );
             assert!(
                 authority
@@ -852,8 +980,160 @@ mod tests {
         }
     }
     use crate::Access;
-    use collab_types::{Effect, Scope, Subject, Verb};
+    use collab_types::{Access as CapAccess, Effect, Scope, Subject};
     use std::sync::Arc;
+
+    /// #4224. The workspace authority follows the host-local capability
+    /// list through the file watch alone (poll fallback and backstop an
+    /// hour away): a revocation written to the list is signed, applied and
+    /// enforced within the one-second bound the old poll gave, and a
+    /// half-written list is never signed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_revoked_capability_leaves_the_workspace_authority_through_the_watch() {
+        let hour = std::time::Duration::from_secs(3600);
+        let bound = std::time::Duration::from_secs(1);
+        let temp = tempfile::tempdir().unwrap();
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let workspace = uuid::Uuid::new_v4();
+        let subject = [4; 32];
+        let grant = |path: &str| {
+            CapOverride::new(
+                Subject::User(collab_types::Ed25519PublicKey(subject)),
+                Scope::FsPath(path.into()),
+                Effect::Grant,
+                CapAccess::Read,
+            )
+        };
+        let list = temp.path().join("fs-capabilities.json");
+        std::fs::write(
+            &list,
+            serde_json::to_vec(&collab_types::FsAuthority::from(vec![
+                grant("/docs"),
+                grant("/plans"),
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        let authority = Arc::new(
+            WorkspaceAuthority::open(
+                temp.path().join("authority.bin"),
+                workspace,
+                governor.verifying_key().to_bytes(),
+                subject,
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        authority
+            .apply(
+                WorkspaceAuthorityEnvelope::sign(
+                    workspace,
+                    1,
+                    vec![grant("/docs"), grant("/plans")],
+                    false,
+                    &governor,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let handle = authority.handle();
+        let reload = spawn_capability_file_reload(
+            list.clone(),
+            Arc::clone(&authority),
+            governor.clone(),
+            crate::file_watch::ReloadCadence {
+                poll: hour,
+                backstop: hour,
+            },
+        );
+        assert!(handle.permits(&subject, "/plans/b.md", Access::Read));
+
+        // What a reader sees if it catches an in-place rewrite midway.
+        std::fs::write(&list, b"{\"capabilities\":[{\"subject\"").unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(
+            authority.current().unwrap().revision,
+            1,
+            "a half-written list must never be signed"
+        );
+
+        let written = std::time::Instant::now();
+        std::fs::write(
+            &list,
+            serde_json::to_vec(&collab_types::FsAuthority::from(vec![grant("/docs")])).unwrap(),
+        )
+        .unwrap();
+        while handle.permits(&subject, "/plans/b.md", Access::Read) {
+            assert!(
+                written.elapsed() <= bound,
+                "a revocation must reach the workspace authority within the bound"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(authority.current().unwrap().revision, 2);
+        assert!(handle.permits(&subject, "/docs/a.md", Access::Read));
+        reload.abort();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_publisher_finds_the_answering_authority_by_its_socket_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let governor = ed25519_dalek::SigningKey::from_bytes(&[8; 32]);
+        let workspace = uuid::Uuid::new_v4();
+        let authority = Arc::new(
+            WorkspaceAuthority::open(
+                temp.path().join("authority.bin"),
+                workspace,
+                governor.verifying_key().to_bytes(),
+                [1; 32],
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let sockets = temp.path().join("run");
+        std::fs::create_dir(&sockets).unwrap();
+        assert!(
+            find_local_authority_in(&sockets).await.is_err(),
+            "no daemon is serving yet"
+        );
+        // What a daemon serving another workspace before a rebind leaves.
+        let stale = sockets.join(format!(
+            "{LOCAL_AUTHORITY_SOCKET_PREFIX}{}{LOCAL_SOCKET_SUFFIX}",
+            uuid::Uuid::new_v4()
+        ));
+        drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
+        std::fs::write(sockets.join("workspace-content-x.sock"), b"").unwrap();
+        let live = sockets.join(format!(
+            "{LOCAL_AUTHORITY_SOCKET_PREFIX}{workspace}{LOCAL_SOCKET_SUFFIX}"
+        ));
+        let task = serve_local_authority(&live, authority).unwrap();
+        assert_eq!(
+            find_local_authority_in(&sockets).await.unwrap(),
+            (workspace, live)
+        );
+        let other_workspace = uuid::Uuid::new_v4();
+        let other_authority = Arc::new(
+            WorkspaceAuthority::open(
+                temp.path().join("other-authority.bin"),
+                other_workspace,
+                governor.verifying_key().to_bytes(),
+                [1; 32],
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let other_socket = sockets.join(format!(
+            "{LOCAL_AUTHORITY_SOCKET_PREFIX}{other_workspace}{LOCAL_SOCKET_SUFFIX}"
+        ));
+        let other_task = serve_local_authority(&other_socket, other_authority).unwrap();
+        assert!(
+            find_local_authority_in(&sockets).await.is_err(),
+            "multiple live workspace authorities must not be guessed"
+        );
+        other_task.abort();
+        task.abort();
+    }
 
     #[cfg(unix)]
     #[tokio::test]

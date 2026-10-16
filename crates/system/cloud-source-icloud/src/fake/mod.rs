@@ -31,12 +31,14 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
 
-use num_bigint::BigUint;
 use test_http::{Reply, Request, Responder};
+use tilo_crypto::srp_apple::{ELEMENT_LEN, server::ServerSession};
 use url::Url;
+use zeroize::Zeroizing;
 
 use crate::ICloudConfig;
-use crate::auth::{Authenticator, Endpoints, SignIn, StoredSession};
+use crate::auth::{AccountInfo, Endpoints, StoredSession};
+use crate::http::Cookies;
 
 mod auth;
 mod drive;
@@ -61,6 +63,9 @@ pub enum FakeFault {
     ServerError,
     /// The next content download declares its full length but sends half.
     TruncatedBody,
+    /// The next content download sends half its body, declares no length
+    /// and closes the connection.
+    ClosedEarly,
     /// The next setup/drivews/docws request is answered 421, as if the web
     /// session had lapsed; it works again afterwards.
     ExpiredSession,
@@ -127,16 +132,16 @@ struct Node {
 }
 
 struct SignInState {
-    b: BigUint,
-    b_pub: BigUint,
-    a_pub: Option<BigUint>,
+    /// The server half of this sign-in's SRP exchange.
+    srp: ServerSession,
+    /// The client's `A`, as sent to `/signin/init`.
+    a_pub: Option<Vec<u8>>,
     /// The idmsa session token issued at `/signin/complete`.
     session_token: Option<String>,
     code_verified: bool,
     texted: Option<u64>,
 }
 
-#[allow(clippy::struct_excessive_bools, reason = "independent server switches")]
 struct State {
     options: Options,
     base: String,
@@ -147,7 +152,7 @@ struct State {
     // Sign-in.
     salt: Vec<u8>,
     iterations: u32,
-    verifier: BigUint,
+    verifier: [u8; ELEMENT_LEN],
     sign_ins: HashMap<String, SignInState>,
     /// idmsa session tokens → trusted.
     session_tokens: HashMap<String, bool>,
@@ -249,25 +254,35 @@ impl FakeICloud {
         ICloudConfig::with_endpoints(&self.endpoints())
     }
 
-    pub fn authenticator(&self) -> Authenticator {
-        Authenticator::new(self.endpoints()).expect("authenticator")
-    }
-
-    /// Sign in through the full flow (SRP, the pushed code, trust,
-    /// `accountLogin`), as Settings would.
-    pub fn sign_in(&self) -> StoredSession {
-        let auth = self.authenticator();
-        match auth.sign_in(APPLE_ID, PASSWORD, None).expect("sign in") {
-            SignIn::Complete(session) => session,
-            SignIn::NeedsCode(mut pending) => {
-                let code = match pending.delivery() {
-                    crate::auth::CodeDelivery::TrustedDevice => DEVICE_CODE,
-                    crate::auth::CodeDelivery::Phone { .. } => SMS_CODE,
-                };
-                auth.submit_code(&mut pending, code)
-                    .expect("verification code")
-            }
-        }
+    /// A trusted session, as a completed sign-in leaves it (idmsa session
+    /// and trust tokens, the web cookies `accountLogin` sets), issued
+    /// directly. Signing in is custody's (`account_custody::icloud::auth`),
+    /// whose tests run the full SRP and two-factor flow against this server.
+    pub fn session(&self) -> StoredSession {
+        let mut state = self.lock();
+        let trust = state.next("tt-");
+        let token = state.next("st-");
+        let web = state.next("wt-");
+        let validate = state.next("val-");
+        state.trust_tokens.insert(trust.clone());
+        state.session_tokens.insert(token.clone(), true);
+        state.web_tokens.insert(web.clone());
+        let info: AccountInfo =
+            serde_json::from_value(auth::account(&state, true)).expect("account description");
+        drop(state);
+        let cookies = Cookies::from_header(&format!(
+            "X-APPLE-WEBAUTH-TOKEN=\"v=2:t={web}\"; X-APPLE-WEBAUTH-USER=\"v=1:s=0:d=12345\"; \
+             X-APPLE-WEBAUTH-VALIDATE=\"v=1:t={validate}\"; X-APPLE-DS-WEB-SESSION-TOKEN=\"fake\""
+        ));
+        StoredSession::from_login(
+            APPLE_ID,
+            "USA",
+            Zeroizing::new(token),
+            Zeroizing::new(trust),
+            cookies,
+            &info,
+        )
+        .expect("a trusted session")
     }
 
     pub fn set_offline(&self, offline: bool) {
@@ -369,7 +384,7 @@ fn take_fault(state: &mut State) -> Option<Reply> {
     let position = state
         .faults
         .iter()
-        .position(|fault| *fault != FakeFault::TruncatedBody)?;
+        .position(|fault| !matches!(fault, FakeFault::TruncatedBody | FakeFault::ClosedEarly))?;
     match state.faults.remove(position)? {
         FakeFault::RateLimited => Some(Reply::status(429).header("Retry-After", "1")),
         FakeFault::ServerError => Some(Reply::status(503)),
@@ -377,7 +392,7 @@ fn take_fault(state: &mut State) -> Option<Reply> {
             421,
             &serde_json::json!({"error": "Invalid global session"}),
         )),
-        FakeFault::TruncatedBody => None,
+        FakeFault::TruncatedBody | FakeFault::ClosedEarly => None,
     }
 }
 

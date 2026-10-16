@@ -3,6 +3,7 @@
 autotests = false
 name = "settings"
 version = "0.1.0"
+description = "Personal Settings: the device and account settings hub"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
@@ -19,15 +20,21 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+# Shared platform layout data keeps Settings independent of the OSK app.
+tilo-keyboard-map = { version = "0.1.0", path = "../../crates/platform/tilo-keyboard-map" }
+tilo-locale = { path = "../../crates/platform/tilo-locale" }
 hex.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # One owner for ~/.config/tilo/settings.json.
-settings-store = { path = "../../crates/system/settings-store" }
+settings-store = { path = "../../crates/system/settings-store", features = ["model"] }
+tilo-accessibility-settings = { path = "../../crates/platform/tilo-accessibility-settings", features = ["model"] }
 desktop-policy = { path = "../../crates/system/desktop-policy" }
-launcher = { path = "../../crates/packaging/launcher" }
 package-store = { path = "../../crates/packaging/package-store" }
+# Installed manifests are read through the package format's one decoder,
+# not the sandbox launcher's library.
+tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 # The same freedesktop scanner the shell uses for host and Flatpak launches;
 # notification rules must be keyed by those canonical desktop identities.
 desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
@@ -48,10 +55,9 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # `shell` and the Settings app drive the same hardware bindings without
 # this app depending on the compositor crate.
 os-actions = { path = "../../crates/system/os-actions" }
-# Public identity summaries + active selector. The secret share never enters
-# Settings state; switching writes only the non-secret active id.
+# Public identity summaries, as the host's identity actions answer them. The
+# identity store itself is the host's: no record or secret enters Settings.
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
-tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 runtime-fs = { path = "../../crates/runtime/runtime-fs" }
 # Device role, workspace residency and server relay policy use the same types
 # the tilo-relay daemon loads; Settings never keeps a shadow sync model.
@@ -60,17 +66,17 @@ tilo-bluez = { path = "../../crates/system/tilo-bluez" }
 # The shared multi-account store + encrypted secret vault. Settings reads and
 # writes email + CalDAV accounts through this one canonical store, so it and
 # the Mail / Calendar apps can no longer disagree on the on-disk shape.
-accounts = { path = "../../crates/system/accounts" }
+accounts = { path = "../../crates/system/accounts", features = ["person"] }
 # Credential custody for cloud accounts: the shared OAuth client, Nextcloud
 # Login Flow v2, iCloud sessions and the short-lived handoff to the storage
 # daemon.
 account-custody = { path = "../../crates/system/account-custody" }
 # Provider metadata is shared with the headless agent runner. This dependency
 # contains no HTTP client and no secret values.
-agent-provider-config = { path = "../../crates/agent/provider-config" }
+agent-provider-config = { path = "../../crates/agent/provider-config", features = ["model"] }
 # Settings uses this only over the launcher-passed service FD to put/remove a
 # key; no vault file or provider network capability is linked into the app.
-tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
+tilo-model-gateway = { path = "../../crates/agent/model-gateway", default-features = false }
 # The audio graph client: enumerate the PipeWire/WirePlumber node graph and
 # route per-application streams. The Sound pane drives audio routing
 # through it (default features only — no gstreamer decode stack pulled in).
@@ -105,6 +111,8 @@ uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# The platform adapter the native runner feeds, for the live-bus benchmark.
+accesskit_unix = { version = "0.23.0", default-features = false, features = ["tokio"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
 # Serialised, self-restoring HOME/XDG redirection for the tests that
@@ -115,10 +123,6 @@ test-http = { path = "../../crates/dev/test-http" }
 # The persistence tests read the shared account store + vault back to verify
 # the pane wrote through them.
 accounts = { path = "../../crates/system/accounts" }
-# The accounts→Mail loop test drives the Settings add flow, then loads the
-# account back through Mail's own reader to verify Mail consumes what
-# Settings persisted across the shared store.
-mail = { path = "../mail" }
 # A fake authorization server and browser for the sign-in flow tests.
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 # The cloud storage end-to-end test: Settings signs in, the storage
@@ -129,6 +133,9 @@ cloud-source-gdrive = { path = "../../crates/system/cloud-source-gdrive", featur
 cloud-source-onedrive = { path = "../../crates/system/cloud-source-onedrive", features = ["fake-server"] }
 cloud-source-dropbox = { path = "../../crates/system/cloud-source-dropbox", features = ["fake-server"] }
 cloud-source-icloud = { path = "../../crates/system/cloud-source-icloud", features = ["fake-server"] }
+# The keyboard preview's confinement test runs it inside the launcher's real
+# read-only sandbox profile. The app itself never links the launcher.
+launcher = { path = "../../crates/packaging/launcher" }
 
 [[test]]
 name = "it"

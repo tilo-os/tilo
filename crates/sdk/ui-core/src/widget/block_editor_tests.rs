@@ -1,4 +1,117 @@
 use super::*;
+use crate::testing::{Dispatch, dispatch};
+use automerge::transaction::Transactable as _;
+
+#[test]
+fn retained_block_batches_include_empty_rows_and_refuse_interleaved_peers() {
+    let rows = vec![
+        BlockContent::paragraph("a", "First"),
+        BlockContent::paragraph("empty", ""),
+        BlockContent::paragraph("c", "After"),
+    ];
+    let mut editor = BlockEditor::new();
+    editor.present_blocks(&rows);
+    editor.retain_block_selection(vec!["a".into(), "empty".into()], false);
+    assert_eq!(editor.selected_block_move(false), Some((0..2, 3)));
+    editor.present_blocks(&[rows[2].clone(), rows[0].clone(), rows[1].clone()]);
+    assert_eq!(editor.selected_block_range(), Some(1..3));
+    assert_eq!(editor.selected_block_move(true), Some((1..3, 0)));
+    let tree = editor.accessibility().unwrap();
+    assert!(
+        tree.children
+            .iter()
+            .find(|row| row.semantic_key.as_deref() == Some("notes.block:empty"))
+            .unwrap()
+            .state
+            .selected
+    );
+    editor.present_blocks(&[
+        rows[0].clone(),
+        BlockContent::paragraph("peer", "Peer"),
+        rows[1].clone(),
+        rows[2].clone(),
+    ]);
+    assert_eq!(editor.selected_block_move(false), None);
+    assert_eq!(editor.document_selection(), None);
+    assert!(
+        editor
+            .blocks()
+            .iter()
+            .all(|block| block.line.selection_range().is_none())
+    );
+    editor.present_blocks(&rows);
+    assert_eq!(
+        editor.selected_block_range(),
+        None,
+        "peer removal cannot revive an invisible batch"
+    );
+    assert_eq!(editor.document_selection(), None);
+    editor.select_document_range(
+        DocumentPosition { block: 0, byte: 0 },
+        DocumentPosition { block: 1, byte: 0 },
+    );
+    assert_eq!(editor.selected_block_range(), Some(0..1));
+    editor.focus_block(2, CursorPlacement::End);
+    editor.clear_document_selection();
+    assert_eq!(editor.selected_block_range(), Some(2..3));
+}
+
+#[test]
+fn peer_added_descendant_invalidates_retained_batches_for_every_command() {
+    let rows = vec![
+        BlockContent::paragraph("a", "A"),
+        BlockContent::paragraph("b", "B"),
+        BlockContent::paragraph("c", "C"),
+    ];
+    let mut editor = BlockEditor::new();
+    editor.present_blocks(&rows);
+    editor.retain_block_selection(vec!["a".into(), "b".into()], false);
+    let mut child = BlockContent::paragraph("peer", "Peer child");
+    child.nesting = 1;
+    editor.present_blocks(&[rows[0].clone(), rows[1].clone(), child, rows[2].clone()]);
+    assert_eq!(
+        editor.selected_block_range(),
+        None,
+        "duplication has no partial batch"
+    );
+    assert!(!editor.try_indent_selection(1));
+    assert_eq!(editor.selected_block_move(false), None);
+    assert_eq!(
+        editor.document_selection(),
+        None,
+        "typing cannot replace peer content"
+    );
+}
+
+#[test]
+fn selected_movement_refuses_mixed_parents_and_keeps_complete_fences() {
+    let mut editor = BlockEditor::from_markdown("- Parent\n  - child\n- Next\n");
+    editor.select_document_range(
+        DocumentPosition { block: 1, byte: 0 },
+        DocumentPosition { block: 2, byte: 2 },
+    );
+    assert_eq!(editor.selected_block_move(true), None);
+    editor.clear_document_selection();
+    editor.focus_block(1, CursorPlacement::Start);
+    assert_eq!(editor.selected_block_move(true), None);
+    assert_eq!(editor.selected_block_move(false), None);
+    let mut first = Block::code_block(Some("rust".into()), "first");
+    let mut second = Block::code_block(Some("rust".into()), "second");
+    first.code_group = Some("fence".into());
+    second.code_group = Some("fence".into());
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![
+        Block::paragraph("Before"),
+        first,
+        second,
+        Block::paragraph("After"),
+    ]);
+    editor.select_document_range(
+        DocumentPosition { block: 0, byte: 0 },
+        DocumentPosition { block: 2, byte: 2 },
+    );
+    assert_eq!(editor.selected_block_move(false), Some((0..3, 4)));
+}
 
 #[test]
 fn document_accessibility_exposes_role_focus_tables_and_images() {
@@ -139,10 +252,14 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             for _ in 0..3 {
                 layout_image_editor(&mut editor, width, &mut renderer);
                 let preview = editor.image_preview_rects[0].unwrap();
-                assert!((preview.width() - f64::from(width)).abs() < 0.01);
+                // The image stands on the content edge: inside the line's
+                // text inset on both sides.
+                let inner = f64::from(width) - editor.handle_column() - 2.0 * editor.text_pad;
+                assert!((preview.width() - inner).abs() < 0.01, "{preview:?}");
                 assert!(
-                    (preview.height() - f64::from(width) * 100.0 / 160.0).abs() < 0.01,
-                    "image must occupy its full available width at its native aspect: {preview:?}"
+                    (preview.height() - inner * 100.0 / 160.0).abs() <= 0.5,
+                    "image must occupy its full available width at its native aspect \
+                     (within the layout's whole-pixel rounding): {preview:?}"
                 );
                 let source = editor.blocks[0].line.get_rect();
                 let following = editor.blocks[1].line.get_rect();
@@ -169,6 +286,54 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         }
     }
 
+    fn a_tall_image_takes_at_most_its_share_of_the_viewport_at_its_aspect() {
+        let bytes = crate::png::encode_rgba8(300, 1200, &vec![255; 300 * 1200 * 4]).unwrap();
+        let fetch: crate::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
+        let mut editor = BlockEditor::new();
+        editor.set_blocks(vec![
+            Block::paragraph("![Phone screenshot](assets/tall.png)"),
+            Block::paragraph("Text below the screenshot"),
+        ]);
+        editor.set_image_store(Some(crate::ImageStore::new(&fetch)));
+        assert!(
+            editor.prewarm_images_for_shots(),
+            "fixture image must decode"
+        );
+        let mut renderer = TextRenderer::new();
+        layout_image_editor(&mut editor, 1000.0, &mut renderer);
+        let inner = 1000.0 - editor.handle_column() - 2.0 * editor.text_pad;
+        let natural = editor.image_preview_rects[0].unwrap();
+        assert!(
+            (natural.height() - inner * 4.0).abs() <= 0.5,
+            "a host that reports no viewport keeps the native size: {natural:?}"
+        );
+
+        assert!(editor.set_viewport_height(Some(900.0)));
+        assert!(!editor.set_viewport_height(Some(900.0)), "unchanged");
+        layout_image_editor(&mut editor, 1000.0, &mut renderer);
+        let preview = editor.image_preview_rects[0].unwrap();
+        let cap = 900.0 * IMAGE_VIEWPORT_FRACTION;
+        assert!(
+            (preview.height() - cap).abs() <= 0.5,
+            "a tall picture is capped to {cap}: {preview:?}"
+        );
+        let following = editor.blocks[1].line.get_rect();
+        assert!(following.y0 >= preview.y1, "the text below moves up");
+        let painted = fitted_image_rect(preview, (300, 1200));
+        assert!(
+            (painted.width() / painted.height() - 0.25).abs() < 1e-6,
+            "its aspect is kept: {painted:?}"
+        );
+        assert!((painted.height() - preview.height()).abs() < 1e-6);
+        assert!(painted.width() < preview.width(), "so it is drawn narrower");
+
+        // A picture shorter than the cap keeps its native size.
+        assert!(editor.set_viewport_height(Some(20_000.0)));
+        layout_image_editor(&mut editor, 1000.0, &mut renderer);
+        let preview = editor.image_preview_rects[0].unwrap();
+        assert!((preview.height() - inner * 4.0).abs() <= 0.5, "{preview:?}");
+    }
+
     fn missing_image_reserves_placeholder_and_wraps_its_editable_source() {
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![Block::paragraph(
@@ -185,7 +350,9 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             source.height() > 28.0,
             "long image source must not be clipped to one line"
         );
-        assert!((preview.height() - 220.0).abs() < 0.01);
+        // The preview's edges snap to whole pixels below a fractional
+        // source block, so its height may differ by up to half a pixel.
+        assert!((preview.height() - 220.0).abs() <= 0.5, "{preview:?}");
         assert!(preview.y0 > source.y1);
     }
 
@@ -208,7 +375,6 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         let source = "![Scan](assets/scan.png)";
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![Block::paragraph(source)]);
-        editor.set_action_interception(true);
         let id = editor.blocks[0].id.clone();
         let mut renderer = TextRenderer::new();
         let mut doc = AutoCommit::new();
@@ -224,15 +390,15 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             "shared edit button is host-discoverable"
         );
         assert_control(&editor, &format!("notes.image-edit:{id}"));
-        editor.begin_action_intercept();
+        editor.begin_edit();
         assert!(editor.perform_semantic_action(
             &format!("notes.image-edit:{id}"),
             &crate::a11y::Action::Activate,
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert!(
-            editor.take_intercepted_ops().is_empty(),
+            editor.take_edit_ops().is_empty(),
             "presentation mode is not a document action"
         );
         layout_image_editor(&mut editor, 640.0, &mut renderer);
@@ -256,21 +422,21 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             "last valid preview stays in place"
         );
         editor.blocks[0].line.set_text(source);
-        editor.begin_action_intercept();
+        editor.begin_edit();
         assert!(editor.perform_semantic_action(
             &format!("notes.image-done:{id}"),
             &crate::a11y::Action::Activate,
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
-        assert!(editor.take_intercepted_ops().is_empty());
+        assert!(editor.take_edit_ops().is_empty());
         layout_image_editor(&mut editor, 640.0, &mut renderer);
         assert_eq!(editor.blocks[0].line.get_rect().height(), 0.0);
         assert_eq!(editor.blocks[0].text(), source);
         assert!(!editor.perform_semantic_action(
             &format!("notes.image-source:{id}"),
             &crate::a11y::Action::SetValue("hidden overwrite".into()),
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
     }
@@ -280,79 +446,40 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         let source = "![Scan](assets/scan.png)";
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![Block::paragraph(source)]);
-        editor.set_action_interception(true);
         let mut renderer = TextRenderer::new();
         layout_image_editor(&mut editor, 640.0, &mut renderer);
         editor.focus_block(0, CursorPlacement::Start);
-        let mut doc = AutoCommit::new();
-        let tree = TaffyTree::new();
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Character("x".into());
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        let event = crate::synthetic_input::key_event(
+            Key::Character("x".into()),
+            Some("x".into()),
+            ElementState::Pressed,
         );
-        event.state = ElementState::Pressed;
-        event.text = Some("x".into());
-        let character = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
-        };
-        editor.begin_action_intercept();
+        let character = crate::synthetic_input::keyboard_input(event);
+        editor.begin_edit();
         for event in [character, WindowEvent::Ime(Ime::Commit("hidden".into()))] {
-            let mut handled = false;
-            editor.handle_event(
-                &event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: &mut doc,
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut None,
-                    node_id: NodeId::new(0),
-                    taffy: &tree,
-                },
-            );
+            let handled = dispatch(&mut editor, &event);
             assert!(handled);
             assert_eq!(editor.blocks[0].text(), source);
         }
-        assert!(editor.take_intercepted_ops().is_empty());
-        let mut key: KeyEvent = unsafe { std::mem::zeroed() };
-        key.logical_key = Key::Named(NamedKey::Backspace);
-        key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        assert!(editor.take_edit_ops().is_empty());
+        let key = crate::synthetic_input::key_event(
+            Key::Named(NamedKey::Backspace),
+            None,
+            ElementState::Pressed,
         );
-        key.state = ElementState::Pressed;
-        key.text = None;
-        let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: key,
-            is_synthetic: false,
-        };
-        editor.begin_action_intercept();
-        editor.handle_event(
-            &event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: &mut doc,
-                path: &automerge::ROOT,
-                handled: &mut false,
-                focus_target: &mut None,
-                node_id: NodeId::new(0),
-                taffy: &tree,
-            },
-        );
+        let event = crate::synthetic_input::keyboard_input(key);
+        editor.begin_edit();
+        dispatch(&mut editor, &event);
         assert_eq!(
             editor.blocks[0].text(),
             "",
             "Delete removes the attachment rather than one hidden character"
         );
-        assert!(!editor.take_intercepted_ops().is_empty());
+        assert!(!editor.take_edit_ops().is_empty());
     }
 
     image_attachment_sizes_to_available_width_without_layout_feedback();
+    a_tall_image_takes_at_most_its_share_of_the_viewport_at_its_aspect();
     missing_image_reserves_placeholder_and_wraps_its_editable_source();
     image_source_mode_is_explicit_stable_and_does_not_mutate_content();
     image_preview_rejects_hidden_typing_and_ime_and_deletes_atomically();
@@ -411,7 +538,6 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
     fn accessible_block_reorder_controls_are_stable_and_action_owned() {
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![Block::paragraph("first"), Block::paragraph("second")]);
-        editor.set_action_interception(true);
         let first_id = editor.blocks()[0].id.clone();
         let second_id = editor.blocks()[1].id.clone();
         let node = Widget::accessibility(&editor).expect("document semantics");
@@ -432,7 +558,7 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
             &mut editor,
             &down_target,
             &crate::a11y::Action::Activate,
-            &mut AutoCommit::new(),
+            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
             &automerge::ROOT,
         ));
         assert_eq!(editor.blocks()[1].id, first_id);
@@ -459,7 +585,7 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
                 &mut editor,
                 "notes.block-move:missing:down",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ),
             "a stale stable id must refuse instead of moving another block"
@@ -475,12 +601,11 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
         ]);
         let first_id = editor.blocks()[0].id.clone();
         let second_id = editor.blocks()[1].id.clone();
-        editor.set_action_interception(true);
-        editor.begin_action_intercept();
+        editor.begin_edit();
         assert!(editor.move_block_to(0, 2));
         assert_eq!(editor.blocks()[2].id, first_id);
         assert!(editor.take_structure_dirty());
-        let ops = editor.take_intercepted_ops();
+        let ops = editor.take_edit_ops();
         assert!(ops.contains(&BlockEditOp::Move {
             block_id: second_id,
             after: None,
@@ -495,7 +620,7 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
 fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
     fn click_focuses_the_block_under_the_cursor() {
         use winit::dpi::PhysicalPosition;
-        use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+        use winit::event::{ElementState, MouseButton, WindowEvent};
 
         let mut e = BlockEditor::new();
         e.set_blocks(vec![Block::paragraph("first"), Block::paragraph("second")]);
@@ -509,7 +634,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         e.focus_block(0, CursorPlacement::End);
         assert_eq!(e.focused, Some(0));
 
-        let dev: DeviceId = unsafe { std::mem::zeroed() };
+        let dev = winit::event::DeviceId::dummy();
         let moved = WindowEvent::CursorMoved {
             device_id: dev,
             position: PhysicalPosition::new(50.0, 30.0), // inside block 1
@@ -520,26 +645,8 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
             button: MouseButton::Left,
         };
 
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let mods = Modifiers::default();
         for ev in [&moved, &click] {
-            let mut handled = false;
-            let mut focus_target = None;
-            e.handle_event(
-                ev,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: &mut state,
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: NodeId::new(0),
-                    taffy: &taffy,
-                },
-            );
+            dispatch(&mut e, ev);
         }
         assert_eq!(
             e.focused,
@@ -549,25 +656,9 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
     }
 
     fn ctrl_shift_arrow_extends_selection_across_blocks() {
-        use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-        use winit::keyboard::{
-            Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey,
-        };
+        use winit::keyboard::{ModifiersState, NamedKey};
 
-        fn arrow(named: NamedKey) -> WindowEvent {
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Named(named);
-            ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-            ev.location = KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
-            WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: ev,
-                is_synthetic: false,
-            }
-        }
+        use crate::synthetic_input::named_key;
 
         let mut e = BlockEditor::new();
         e.set_blocks(vec![
@@ -577,31 +668,11 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         ]);
         e.focus_block(0, CursorPlacement::Byte(2)); // caret after "he"
 
-        let ctrl_shift = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
-
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let mut send = |e: &mut BlockEditor, ev: &WindowEvent| {
-            let mut handled = false;
-            let mut ft = None;
-            e.handle_event(
-                ev,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &ctrl_shift,
-                    state: &mut state,
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut ft,
-                    node_id: NodeId::new(0),
-                    taffy: &taffy,
-                },
-            );
-        };
+        let mut ctrl_shift =
+            Dispatch::new().modifiers(ModifiersState::CONTROL | ModifiersState::SHIFT);
 
         // Down once: selects the tail of block 0 ("llo"), caret into block 1.
-        send(&mut e, &arrow(NamedKey::ArrowDown));
+        ctrl_shift.send(&mut e, &named_key(NamedKey::ArrowDown));
         assert_eq!(e.focused_index(), Some(1), "active end walked into block 1");
         assert_eq!(
             e.blocks()[0].line.selection_range(),
@@ -610,7 +681,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         );
 
         // Down again: block 1 fully selected too.
-        send(&mut e, &arrow(NamedKey::ArrowDown));
+        ctrl_shift.send(&mut e, &named_key(NamedKey::ArrowDown));
         assert_eq!(e.focused_index(), Some(2));
         assert_eq!(e.blocks()[0].line.selection_range(), Some((2, 5)));
         assert_eq!(
@@ -620,7 +691,7 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         );
 
         // Retreat up: block 2 cleared, block 1 selected to its end.
-        send(&mut e, &arrow(NamedKey::ArrowUp));
+        ctrl_shift.send(&mut e, &named_key(NamedKey::ArrowUp));
         assert_eq!(e.focused_index(), Some(1));
         assert_eq!(
             e.blocks()[2].line.selection_range(),
@@ -646,26 +717,8 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
         editor.focus_block(0, CursorPlacement::End);
         editor.open_slash_menu_for_test();
 
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        let taffy = TaffyTree::<()>::new();
-        let mut send = |editor: &mut BlockEditor, event: &WindowEvent| {
-            let mut handled = false;
-            let mut focus_target = None;
-            editor.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &Modifiers::default(),
-                    state: &mut state,
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: NodeId::new(0),
-                    taffy: &taffy,
-                },
-            );
-            assert!(handled);
+        let send = |editor: &mut BlockEditor, event: &WindowEvent| {
+            assert!(dispatch(editor, event));
         };
 
         send(
@@ -695,82 +748,142 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
     slash_menu_owns_ime_without_committing_filter_text_into_the_document();
 }
 
-#[test]
-fn editor_binds_seeds_and_converges_blocks_through_the_doc() {
-    fn editor_adopts_blocks_from_doc() {
-        use automerge::{ObjType, ROOT, transaction::Transactable};
-        let mut doc = AutoCommit::new();
-        let list = doc.put_object(&ROOT, "blocks", ObjType::List).unwrap();
-        let b0 = doc.insert_object(&list, 0, ObjType::Map).unwrap();
-        doc.put(&b0, "kind", "heading1").unwrap();
-        let t0 = doc.put_object(&b0, "text", ObjType::Text).unwrap();
-        doc.splice_text(&t0, 0, 0, "Title").unwrap();
+/// Seed a canonical block list the way an action owner stores it.
+fn seed_canonical_blocks(doc: &mut AutoCommit, blocks: &[(&str, &str)]) -> (ObjId, Vec<String>) {
+    use automerge::transaction::Transactable;
+    let list = doc
+        .put_object(automerge::ROOT, "blocks", ObjType::List)
+        .unwrap();
+    let mut ids = Vec::with_capacity(blocks.len());
+    for (index, (kind, text)) in blocks.iter().enumerate() {
+        let map = doc.insert_object(&list, index, ObjType::Map).unwrap();
+        let id = Uuid::new_v4().to_string();
+        doc.put(&map, "id", id.as_str()).unwrap();
+        doc.put(&map, "kind", *kind).unwrap();
+        let body = doc.put_object(&map, "text", ObjType::Text).unwrap();
+        doc.splice_text(&body, 0, 0, text).unwrap();
+        ids.push(id);
+    }
+    (list, ids)
+}
 
+/// Replay text and structure operations the way an owner would, over
+/// `(id, text)` rows.
+fn replay_edit_ops(rows: &mut Vec<(String, String)>, ops: &[BlockEditOp]) {
+    let position = |rows: &[(String, String)], id: &str| {
+        rows.iter()
+            .position(|(row, _)| row == id)
+            .unwrap_or_else(|| panic!("op addresses unknown block {id}"))
+    };
+    let slot_after = |rows: &[(String, String)], after: &Option<String>| {
+        after.as_ref().map_or(0, |after| position(rows, after) + 1)
+    };
+    for op in ops {
+        match op {
+            BlockEditOp::TextSplice {
+                block_id,
+                start,
+                end,
+                text,
+            } => {
+                let index = position(rows, block_id);
+                rows[index].1.replace_range(*start..*end, text);
+            }
+            BlockEditOp::Insert {
+                block_id,
+                after,
+                text,
+                ..
+            } => {
+                let slot = slot_after(rows, after);
+                rows.insert(slot, (block_id.clone(), text.clone()));
+            }
+            BlockEditOp::Delete { block_id } => {
+                let index = position(rows, block_id);
+                rows.remove(index);
+            }
+            BlockEditOp::Move { block_id, after } => {
+                let index = position(rows, block_id);
+                let row = rows.remove(index);
+                let slot = slot_after(rows, after);
+                rows.insert(slot, row);
+            }
+            BlockEditOp::SetKind { .. }
+            | BlockEditOp::SetChecklist { .. }
+            | BlockEditOp::SetNesting { .. }
+            | BlockEditOp::SetCodeGroup { .. } => {}
+        }
+    }
+}
+
+#[test]
+fn editor_adopts_canonical_blocks_and_reports_structure_edits_as_ops() {
+    fn editor_adopts_blocks_from_doc() {
+        let mut doc = AutoCommit::new();
+        let (list, ids) = seed_canonical_blocks(&mut doc, &[("heading1", "Title")]);
         let mut ed = BlockEditor::new();
-        ed.bind_blocks(&mut doc, list);
-        // Non-empty doc -> adopt it.
+        ed.bind_existing_blocks(&doc, list).unwrap();
         assert_eq!(ed.blocks().len(), 1);
         assert_eq!(ed.blocks()[0].text(), "Title");
+        assert_eq!(ed.blocks()[0].id, ids[0]);
         assert!(matches!(ed.blocks()[0].kind, BlockKind::Heading(1)));
     }
 
-    fn editor_seeds_empty_doc_from_local_blocks() {
-        use automerge::{ObjType, ROOT, transaction::Transactable};
-        let mut doc = AutoCommit::new();
-        let list = doc.put_object(&ROOT, "blocks", ObjType::List).unwrap();
-
-        let mut ed = BlockEditor::new();
-        ed.set_blocks(vec![Block::paragraph("hello")]);
-        ed.bind_blocks(&mut doc, list.clone());
-
-        // Empty doc -> seeded from local blocks.
-        assert_eq!(doc.length(&list), 1);
-        let t = doc_text_obj(&doc, &list, 0).unwrap();
-        assert_eq!(doc.text(&t).unwrap(), "hello");
-    }
-
-    fn two_editors_converge_on_block_text() {
-        use automerge::{ObjType, ROOT, transaction::Transactable};
+    fn late_joining_peer_adopts_the_same_blocks() {
+        use automerge::ROOT;
         let mut a_doc = AutoCommit::new();
-        let a_list = a_doc.put_object(&ROOT, "blocks", ObjType::List).unwrap();
+        let (a_list, ids) = seed_canonical_blocks(&mut a_doc, &[("paragraph", "from-A")]);
         let mut a = BlockEditor::new();
-        a.set_blocks(vec![Block::paragraph("from-A")]);
-        a.bind_blocks(&mut a_doc, a_list);
+        a.bind_existing_blocks(&a_doc, a_list).unwrap();
 
         // Peer B joins from A's full state (the late-join handshake).
-        let mut b_doc = AutoCommit::load(&a_doc.save()).unwrap();
+        let b_doc = AutoCommit::load(&a_doc.save()).unwrap();
         let Ok(Some((Value::Object(ObjType::List), b_list))) = b_doc.get(&ROOT, "blocks") else {
             panic!("blocks list should exist in B's adopted doc");
         };
         let mut b = BlockEditor::new();
-        b.bind_blocks(&mut b_doc, b_list);
+        b.bind_existing_blocks(&b_doc, b_list).unwrap();
 
         assert_eq!(b.blocks()[0].text(), "from-A", "B adopts A's block text");
+        assert_eq!(b.blocks()[0].id, a.blocks()[0].id);
+        assert_eq!(b.blocks()[0].id, ids[0]);
     }
 
-    fn split_then_sync_mirrors_structure_into_doc() {
-        use automerge::{ObjType, ROOT, transaction::Transactable};
+    fn split_reports_the_new_block_as_ops_without_writing_the_doc() {
         let mut doc = AutoCommit::new();
-        let list = doc.put_object(&ROOT, "blocks", ObjType::List).unwrap();
+        let (list, ids) = seed_canonical_blocks(&mut doc, &[("paragraph", "abcdef")]);
+        doc.commit();
+        let heads = (doc.base_heads(), doc.pending_ops());
         let mut ed = BlockEditor::new();
-        ed.set_blocks(vec![Block::paragraph("abcdef")]);
-        ed.bind_blocks(&mut doc, list.clone());
-        assert_eq!(doc.length(&list), 1);
+        ed.bind_existing_blocks(&doc, list.clone()).unwrap();
 
+        ed.begin_edit();
         ed.split_at_cursor(0, 3);
-        ed.sync(&mut doc, &ROOT);
-
-        assert_eq!(doc.length(&list), 2, "doc gained the split block");
-        let t0 = doc_text_obj(&doc, &list, 0).unwrap();
-        let t1 = doc_text_obj(&doc, &list, 1).unwrap();
-        assert_eq!(doc.text(&t0).unwrap(), "abc");
-        assert_eq!(doc.text(&t1).unwrap(), "def");
+        let new_id = ed.blocks()[1].id.clone();
+        assert_eq!(
+            ed.take_edit_ops(),
+            vec![
+                BlockEditOp::TextSplice {
+                    block_id: ids[0].clone(),
+                    start: 3,
+                    end: 6,
+                    text: String::new(),
+                },
+                BlockEditOp::Insert {
+                    block_id: new_id,
+                    after: Some(ids[0].clone()),
+                    kind: "paragraph".into(),
+                    text: "def".into(),
+                },
+            ]
+        );
+        assert_eq!(doc.length(&list), 1, "the owner applies structure edits");
+        assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
     }
 
     editor_adopts_blocks_from_doc();
-    editor_seeds_empty_doc_from_local_blocks();
-    two_editors_converge_on_block_text();
-    split_then_sync_mirrors_structure_into_doc();
+    late_joining_peer_adopts_the_same_blocks();
+    split_reports_the_new_block_as_ops_without_writing_the_doc();
 }
 
 #[test]
@@ -872,14 +985,10 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
         assert_eq!(e.blocks()[0].line.cursor_pos(), 6);
         assert_eq!(e.document_selection(), None);
         assert!(
-            crate::undo::needs_commit(&e),
-            "replacement arms one undo boundary"
+            !e.take_edit_ops().is_empty(),
+            "the replacement reaches the owner"
         );
-        crate::undo::on_commit(&mut e);
-        assert!(
-            !crate::undo::needs_commit(&e),
-            "the boundary is rising-edge"
-        );
+        assert!(e.take_edit_ops().is_empty(), "and only once");
     }
 
     fn multiline_paste_replaces_range_and_uses_enter_continuation_kinds() {
@@ -904,47 +1013,16 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
     }
 
     fn ctrl_a_then_typing_replaces_the_document_through_the_real_event_path() {
-        use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-        use winit::keyboard::{Key, KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
+        use winit::event::{ElementState, WindowEvent};
+        use winit::keyboard::{Key, ModifiersState};
 
         fn character(key: &str, text: Option<&str>) -> WindowEvent {
-            let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-            event.logical_key = Key::Character(key.into());
-            event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-            event.location = KeyLocation::Standard;
-            event.state = ElementState::Pressed;
-            event.repeat = false;
-            event.text = text.map(Into::into);
-            WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event,
-                is_synthetic: false,
-            }
-        }
-
-        fn dispatch(
-            editor: &mut BlockEditor,
-            state: &mut AutoCommit,
-            taffy: &TaffyTree<()>,
-            event: &WindowEvent,
-            modifiers: Modifiers,
-        ) {
-            let mut handled = false;
-            let mut focus_target = None;
-            editor.handle_event(
-                event,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state,
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus_target,
-                    node_id: NodeId::new(0),
-                    taffy,
-                },
+            let event = crate::synthetic_input::key_event(
+                Key::Character(key.into()),
+                text.map(Into::into),
+                ElementState::Pressed,
             );
-            assert!(handled);
+            crate::synthetic_input::keyboard_input(event)
         }
 
         let mut editor = BlockEditor::new();
@@ -954,62 +1032,66 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
             Block::paragraph("omega"),
         ]);
         editor.focus_block(1, CursorPlacement::Byte(3));
-        let mut state = AutoCommit::new();
-        let taffy = TaffyTree::new();
-        dispatch(
-            &mut editor,
-            &mut state,
-            &taffy,
-            &character("a", None),
-            Modifiers::from(ModifiersState::CONTROL),
+        assert!(
+            Dispatch::new()
+                .modifiers(ModifiersState::CONTROL)
+                .send(&mut editor, &character("a", None))
+                .handled
         );
         assert_eq!(
             editor.selected_text().as_deref(),
             Some("alpha\nmiddle\nomega")
         );
 
-        dispatch(
-            &mut editor,
-            &mut state,
-            &taffy,
-            &character("X", Some("X")),
-            Modifiers::default(),
-        );
+        assert!(dispatch(&mut editor, &character("X", Some("X"))));
         assert_eq!(editor.blocks().len(), 1);
         assert_eq!(editor.blocks()[0].text(), "X");
         assert_eq!(editor.blocks()[0].kind, BlockKind::Paragraph);
-        assert!(crate::undo::needs_commit(&editor));
+        assert!(!editor.take_edit_ops().is_empty());
     }
 
-    fn cross_block_replacement_syncs_as_one_coherent_document_state() {
-        use automerge::{ObjType, ROOT, transaction::Transactable};
-
+    fn cross_block_replacement_emits_one_coherent_document_state() {
         let mut doc = AutoCommit::new();
-        let list = doc.put_object(&ROOT, "blocks", ObjType::List).unwrap();
+        let (list, ids) = seed_canonical_blocks(
+            &mut doc,
+            &[
+                ("paragraph", "left OLD"),
+                ("paragraph", "remove"),
+                ("paragraph", "OLD right"),
+            ],
+        );
         let mut e = BlockEditor::new();
-        e.set_blocks(vec![
-            Block::paragraph("left OLD"),
-            Block::paragraph("remove"),
-            Block::paragraph("OLD right"),
-        ]);
-        e.bind_blocks(&mut doc, list.clone());
+        e.bind_existing_blocks(&doc, list).unwrap();
         e.paint_cross_block_selection(0, 5, 2, 3);
 
+        e.begin_edit();
         assert!(e.replace_document_selection("new\nline"));
-        e.sync(&mut doc, &ROOT);
+        let ops = e.take_edit_ops();
 
-        assert_eq!(doc.length(&list), 2);
-        let first = doc_text_obj(&doc, &list, 0).unwrap();
-        let second = doc_text_obj(&doc, &list, 1).unwrap();
-        assert_eq!(doc.text(&first).unwrap(), "left new");
-        assert_eq!(doc.text(&second).unwrap(), "line right");
+        let mut rows = ids
+            .iter()
+            .cloned()
+            .zip(["left OLD", "remove", "OLD right"].map(String::from))
+            .collect::<Vec<_>>();
+        replay_edit_ops(&mut rows, &ops);
+        assert_eq!(
+            rows.iter()
+                .map(|(_, text)| text.as_str())
+                .collect::<Vec<_>>(),
+            ["left new", "line right"],
+            "one batch of ops reproduces the replacement: {ops:?}"
+        );
+        assert_eq!(
+            rows.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            e.blocks().iter().map(|b| b.id.as_str()).collect::<Vec<_>>()
+        );
     }
 
     cross_block_selection_serializes_plain_text_in_document_order();
     deleting_cross_block_selection_merges_prefix_and_suffix();
     multiline_paste_replaces_range_and_uses_enter_continuation_kinds();
     ctrl_a_then_typing_replaces_the_document_through_the_real_event_path();
-    cross_block_replacement_syncs_as_one_coherent_document_state();
+    cross_block_replacement_emits_one_coherent_document_state();
 }
 
 #[test]
@@ -1042,11 +1124,13 @@ fn block_typography_scales_and_bands_each_kind() {
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![heading, paragraph, numbered]);
 
-        // H1 is the `x3l` step (32) — the heading sizes moved onto the type
-        // scale in the 2026-09-17 review; what this test guards is that the
-        // shaped size is that step once, then exactly doubled at 2×.
+        // H1 is the `LargeTitle` role; what this test guards is that the
+        // shaped size is that role's size once, then exactly doubled at 2×.
         let h1 = BlockKind::Heading(1).font_size();
-        assert_eq!(h1, crate::tokens::TypeScale::default().x3l);
+        assert_eq!(
+            h1,
+            Theme::dark().text(crate::tokens::TextRole::LargeTitle).size
+        );
         layout_and_draw_editor(&mut editor, &Theme::dark());
         assert_eq!(
             editor.blocks[0].line.inner().shaped_font_size_for_test(),
@@ -1054,7 +1138,7 @@ fn block_typography_scales_and_bands_each_kind() {
         );
         assert_eq!(
             editor.blocks[1].line.inner().shaped_font_size_for_test(),
-            Some(16.0)
+            Some(BlockKind::Paragraph.font_size())
         );
 
         let large = Theme::dark().with_text_scale(2.0);
@@ -1069,23 +1153,25 @@ fn block_typography_scales_and_bands_each_kind() {
                     .line
                     .inner()
                     .shaped_font_size_for_test(),
-                Some(32.0)
+                Some(BlockKind::Paragraph.font_size() * 2.0)
             );
         }
         let selection = editor.blocks[1].line.selection_rect(&large, 0, 6);
-        assert!((selection.height() - 40.0).abs() < 0.1);
+        assert!(
+            (selection.height() - f64::from(BlockKind::Paragraph.font_size()) * 2.5).abs() < 0.1
+        );
 
         let numbered_line = &editor.blocks[2].line;
         let line_rect = numbered_line.get_rect();
         let gutter = prefix_gutter_for(&editor.blocks[2].kind) * 2.0;
         let mut renderer = TextRenderer::new();
         renderer.set_text_scale(2.0);
-        let (label_width, _) = renderer.measure("1.", 16.0, None);
+        let (label_width, _) = renderer.measure("1.", BlockKind::Paragraph.font_size(), None);
         let origin = numbered_prefix_origin(
             line_rect,
             line_rect.x0 - gutter,
             f64::from(label_width),
-            16.0,
+            BlockKind::Paragraph.font_size(),
             2.0,
             large.tokens.metrics.icon_label_gap,
         );
@@ -1120,11 +1206,20 @@ fn block_typography_scales_and_bands_each_kind() {
 
         let checklist = editor.blocks[0].line.get_rect();
         let code = editor.blocks[1].line.get_rect();
+        // A row holds its text at its role's leading, scaled with the text.
+        let band = |kind: BlockKind| {
+            let style = crate::tokens::typography::stock().style(kind.text_role());
+            let leading = f64::from(style.line_height_px() / style.size).max(1.0);
+            f64::from(kind.font_size()) * 2.0 * leading - 0.01
+        };
         assert!(
-            checklist.height() >= 48.0,
-            "2× checklist text needs a 48px band"
+            checklist.height() >= band(BlockKind::Paragraph),
+            "2× checklist text needs its full scaled line band"
         );
-        assert!(code.height() >= 42.0, "2× code text needs a 42px band");
+        assert!(
+            code.height() >= band(BlockKind::CodeBlock { lang: None }),
+            "2× code text needs its full scaled line band"
+        );
         assert!(checklist.y1 <= code.y0, "scaled rows must not collide");
         assert!(code.x0 >= prefix_gutter_for(&editor.blocks[1].kind) * 2.0);
     }
@@ -1274,7 +1369,12 @@ fn code_fences_copy_highlight_and_render_formulas() {
             Some("rust".into()),
             "let answer = 42; // documented",
         )];
-        apply_syntax_colors(&mut blocks, &[Some("rust".into())]);
+        assert_eq!(refresh_syntax_colors(&mut blocks), 1);
+        assert_eq!(
+            refresh_syntax_colors(&mut blocks),
+            0,
+            "an unchanged run keeps its colours"
+        );
         let colors = blocks[0].line.transient_colors();
         assert!(
             colors.iter().any(|span| span.kind == TokenKind::Keyword),
@@ -1343,10 +1443,11 @@ fn code_fences_copy_highlight_and_render_formulas() {
             .unwrap()
             .editor
             .type_char('+');
+        editor.begin_edit();
         editor.commit_visual_formula_edit(0, 0, crate::math::FormulaSyntax::Typst);
         assert!(editor.blocks[0].text().starts_with("vec("));
         assert!(editor.blocks[0].text().ends_with('+'));
-        assert!(crate::undo::needs_commit(&editor));
+        assert!(!editor.take_edit_ops().is_empty());
     }
 
     code_copy_targets_are_bounded_and_copy_complete_runs();
@@ -1814,9 +1915,9 @@ fn canonical_existing_list_restore_and_empty_baseline() {
         editor.focus_block(0, CursorPlacement::Start);
         let id = editor.blocks()[0].id.clone();
         for _ in 0..3 {
-            editor.begin_action_intercept();
-            assert!(editor.take_intercepted_ops().is_empty());
-            editor.sync(&mut doc, &automerge::ROOT);
+            editor.begin_edit();
+            assert!(editor.take_edit_ops().is_empty());
+            editor.sync(&doc, &automerge::ROOT);
             assert_eq!(editor.blocks()[0].id, id);
             assert_eq!(editor.blocks()[0].line.cursor_pos(), 0);
             assert_eq!(editor.focused_index(), Some(0));
@@ -1827,12 +1928,7 @@ fn canonical_existing_list_restore_and_empty_baseline() {
 
     fn canonical_existing_list_returns_to_empty_baseline_after_removal() {
         let mut doc = AutoCommit::new();
-        let list = doc
-            .put_object(automerge::ROOT, "blocks", ObjType::List)
-            .unwrap();
-        let mut seed = BlockEditor::new();
-        seed.set_blocks(vec![Block::paragraph("old")]);
-        seed.bind_blocks(&mut doc, list.clone());
+        let (list, _) = seed_canonical_blocks(&mut doc, &[("paragraph", "old")]);
         doc.commit();
         let mut editor = BlockEditor::new();
         editor.bind_existing_blocks(&doc, list.clone()).unwrap();
@@ -1841,21 +1937,21 @@ fn canonical_existing_list_restore_and_empty_baseline() {
         doc.delete(&list, 0).unwrap();
         doc.commit();
         let before = (doc.base_heads(), doc.pending_ops());
-        editor.sync(&mut doc, &automerge::ROOT);
+        editor.sync(&doc, &automerge::ROOT);
         let placeholder = editor.blocks()[0].id.clone();
         for _ in 0..3 {
-            editor.begin_action_intercept();
-            assert!(editor.take_intercepted_ops().is_empty());
-            editor.sync(&mut doc, &automerge::ROOT);
+            editor.begin_edit();
+            assert!(editor.take_edit_ops().is_empty());
+            editor.sync(&doc, &automerge::ROOT);
             assert_eq!(editor.blocks()[0].id, placeholder);
             assert_eq!(editor.focused_index(), Some(0));
             assert_eq!(editor.blocks()[0].line.cursor_pos(), 0);
             assert_eq!((doc.base_heads(), doc.pending_ops()), before);
         }
-        editor.begin_action_intercept();
+        editor.begin_edit();
         editor.blocks_mut()[0].line.set_text("é");
         assert_eq!(
-            editor.take_intercepted_ops(),
+            editor.take_edit_ops(),
             vec![BlockEditOp::Insert {
                 block_id: placeholder,
                 after: None,
@@ -1863,28 +1959,18 @@ fn canonical_existing_list_restore_and_empty_baseline() {
                 text: "é".into(),
             }]
         );
-        assert!(editor.take_intercepted_ops().is_empty());
+        assert!(editor.take_edit_ops().is_empty());
         assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-        // Switching back to the legacy API still seeds its empty durable list.
-        editor.bind_blocks(&mut doc, list.clone());
-        assert_eq!(doc.length(&list), 1);
-        assert_eq!(editor.blocks()[0].text(), "é");
     }
 
-    fn canonical_existing_list_nonempty_adoption_is_readonly_and_legacy_still_seeds() {
+    fn canonical_existing_list_nonempty_adoption_is_readonly() {
         let mut doc = AutoCommit::new();
-        let list = doc
-            .put_object(automerge::ROOT, "blocks", ObjType::List)
-            .unwrap();
-        let mut legacy = BlockEditor::new();
-        legacy.set_blocks(vec![Block::paragraph("retained")]);
-        legacy.bind_blocks(&mut doc, list.clone());
-        assert_eq!(doc.length(&list), 1);
+        let (list, _) = seed_canonical_blocks(&mut doc, &[("paragraph", "retained")]);
         doc.commit();
         let heads = (doc.base_heads(), doc.pending_ops());
         let mut canonical = BlockEditor::new();
         canonical.bind_existing_blocks(&doc, list).unwrap();
-        canonical.sync(&mut doc, &automerge::ROOT);
+        canonical.sync(&doc, &automerge::ROOT);
         assert_eq!(canonical.blocks()[0].text(), "retained");
         assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
     }
@@ -1892,7 +1978,7 @@ fn canonical_existing_list_restore_and_empty_baseline() {
     canonical_readonly_restore_rejects_shape_before_installing_editor();
     canonical_existing_list_empty_noop_retains_caret_and_heads();
     canonical_existing_list_returns_to_empty_baseline_after_removal();
-    canonical_existing_list_nonempty_adoption_is_readonly_and_legacy_still_seeds();
+    canonical_existing_list_nonempty_adoption_is_readonly();
 }
 
 #[test]
@@ -1907,10 +1993,10 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
         let mut editor = BlockEditor::new();
         editor.bind_existing_blocks(&doc, list).unwrap();
         let id = editor.blocks()[0].id.clone();
-        editor.begin_action_intercept();
+        editor.begin_edit();
         editor.blocks_mut()[0].line.set_text("first é");
         assert_eq!(
-            editor.take_intercepted_ops(),
+            editor.take_edit_ops(),
             vec![BlockEditOp::Insert {
                 block_id: id,
                 after: None,
@@ -1918,7 +2004,7 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
                 text: "first é".into()
             }]
         );
-        assert!(editor.take_intercepted_ops().is_empty());
+        assert!(editor.take_edit_ops().is_empty());
         assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
     }
 
@@ -1931,7 +2017,7 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
         let heads = (doc.base_heads(), doc.pending_ops());
         let mut editor = BlockEditor::new();
         editor.bind_existing_blocks(&doc, list).unwrap();
-        editor.begin_action_intercept();
+        editor.begin_edit();
         editor.split_at_cursor(0, 0);
         let ids = editor
             .blocks()
@@ -1939,7 +2025,7 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
             .map(|b| b.id.clone())
             .collect::<Vec<_>>();
         assert_eq!(
-            editor.take_intercepted_ops(),
+            editor.take_edit_ops(),
             vec![
                 BlockEditOp::Insert {
                     block_id: ids[0].clone(),
@@ -1967,7 +2053,7 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
         let before = (doc.base_heads(), doc.pending_ops());
         let mut editor = BlockEditor::new();
         editor.bind_existing_blocks(&doc, list).unwrap();
-        editor.begin_action_intercept();
+        editor.begin_edit();
         editor.blocks_mut()[0].line.set_text("first ésecond");
         editor.blocks_mut()[0]
             .line
@@ -1987,7 +2073,7 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
             .map(|block| block.id.clone())
             .collect::<Vec<_>>();
         assert_eq!(
-            editor.take_intercepted_ops(),
+            editor.take_edit_ops(),
             vec![
                 BlockEditOp::Insert {
                     block_id: ids[0].clone(),
@@ -2003,18 +2089,14 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
                 },
             ]
         );
-        assert!(editor.take_intercepted_ops().is_empty());
+        assert!(editor.take_edit_ops().is_empty());
         assert_eq!((doc.base_heads(), doc.pending_ops()), before);
     }
 
     fn canonical_object_projection_preserves_text_identity_and_ignores_storage_order() {
         let mut doc = AutoCommit::new();
-        let list = doc
-            .put_object(automerge::ROOT, "blocks", ObjType::List)
-            .unwrap();
-        let mut legacy = BlockEditor::new();
-        legacy.set_blocks(vec![Block::paragraph("first"), Block::paragraph("second")]);
-        legacy.bind_blocks(&mut doc, list.clone());
+        let (list, _) =
+            seed_canonical_blocks(&mut doc, &[("paragraph", "first"), ("paragraph", "second")]);
         let first = list_map(&doc, &list, 0).unwrap();
         let second = list_map(&doc, &list, 1).unwrap();
         let first_text = doc_text_obj(&doc, &list, 0).unwrap();
@@ -2026,7 +2108,7 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
             .bind_existing_block_objects(&doc, &[second, first.clone()])
             .unwrap();
         editor.focus_block(1, CursorPlacement::Byte(3));
-        editor.sync(&mut doc, &automerge::ROOT);
+        editor.sync(&doc, &automerge::ROOT);
         assert_eq!(
             editor.blocks().iter().map(Block::text).collect::<Vec<_>>(),
             ["second", "first"]
@@ -2052,60 +2134,73 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
 }
 
 #[test]
-fn action_bridge_emits_uuid_ops_and_reads_legacy_ids_without_mutation() {
-    fn action_bridge_emits_uuid_ops_and_unicode_boundaries() {
-        let mut editor = BlockEditor::new();
-        editor.set_blocks(vec![Block::paragraph("café")]);
-        editor.set_action_interception(true);
-        let id = editor.blocks()[0].id.clone();
-        editor.begin_action_intercept();
-        editor.blocks_mut()[0].line.set_text("cafe");
-        let ops = editor.take_intercepted_ops();
-        assert_eq!(
-            ops,
-            vec![BlockEditOp::TextSplice {
-                block_id: id,
-                start: 3,
-                end: 5,
-                text: "e".into(),
-            }]
-        );
+fn action_bridge_emits_uuid_ops_at_unicode_boundaries() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("café")]);
+    let id = editor.blocks()[0].id.clone();
+    editor.begin_edit();
+    editor.blocks_mut()[0].line.set_text("cafe");
+    let ops = editor.take_edit_ops();
+    assert_eq!(
+        ops,
+        vec![BlockEditOp::TextSplice {
+            block_id: id,
+            start: 3,
+            end: 5,
+            text: "e".into(),
+        }]
+    );
+}
+
+#[test]
+fn hidden_find_controls_do_not_extend_content_and_reopen_after_layout() {
+    fn layout(editor: &mut BlockEditor) -> f32 {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nodes = HashMap::new();
+        let node = editor.build_layout(&mut taffy, &theme, &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(640.0),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            )
+            .expect("editor layout");
+        editor.apply_layout(&taffy, node, Point::ZERO);
+        taffy
+            .layout(node)
+            .expect("editor content")
+            .content_size
+            .height
     }
 
-    fn action_interception_reads_legacy_ids_without_mutating_document() {
-        use automerge::ROOT;
-
-        let mut doc = AutoCommit::new();
-        let list = doc
-            .put_object(&ROOT, "notes", ObjType::List)
-            .expect("notes list");
-        let block = doc
-            .insert_object(&list, 0, ObjType::Map)
-            .expect("legacy block");
-        doc.put(&block, "kind", "paragraph").expect("legacy kind");
-        let text = doc
-            .put_object(&block, "text", ObjType::Text)
-            .expect("legacy text");
-        doc.splice_text(&text, 0, 0, "legacy")
-            .expect("legacy content");
-
-        let mut editor = BlockEditor::new();
-        editor.set_action_interception(true);
-        editor.bind_blocks(&mut doc, list.clone());
-
-        assert_eq!(
-            read_block_id(&doc, &block),
-            None,
-            "action interception derives a legacy UUID but never writes it"
-        );
-        assert_eq!(
-            editor.blocks()[0].id,
-            legacy_block_id(&list, 0, "paragraph", "legacy")
-        );
-    }
-
-    action_bridge_emits_uuid_ops_and_unicode_boundaries();
-    action_interception_reads_legacy_ids_without_mutating_document();
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("Short draft")]);
+    let before = editor.to_markdown();
+    let hidden_height = layout(&mut editor);
+    assert!(
+        hidden_height < 44.0,
+        "hidden search must not add its overlay height"
+    );
+    let _ = editor.take_structure_dirty();
+    editor.open_find();
+    assert!(
+        editor.take_structure_dirty(),
+        "opening search rebuilds its layout"
+    );
+    assert!(layout(&mut editor) >= 44.0);
+    assert!(editor.find_field.get_rect().height() > 0.0);
+    editor.close_find();
+    assert!(
+        editor.take_structure_dirty(),
+        "closing search removes its layout"
+    );
+    let closed_height = layout(&mut editor);
+    assert!((closed_height - hidden_height).abs() < f32::EPSILON);
+    assert_eq!(editor.to_markdown(), before);
+    assert!(editor.take_edit_ops().is_empty());
 }
 
 #[test]
@@ -2146,7 +2241,7 @@ fn find_matches_unicode_safely_and_navigates_without_editing() {
         editor.step_find(true);
         assert_eq!(editor.focused_index(), Some(1));
         assert_eq!(editor.to_markdown(), before);
-        assert!(!crate::undo::needs_commit(&editor));
+        assert!(editor.take_edit_ops().is_empty());
     }
 
     find_ranges_are_case_insensitive_and_unicode_byte_safe();
@@ -2295,19 +2390,9 @@ fn focused_block_ime_repaints_after_an_idle_paint() {
     editor.set_focus(true);
     layout_and_draw_editor(&mut editor, &Theme::dark());
     editor.mark_drawn();
-    let mut handled = false;
-    editor.handle_event(
+    let handled = dispatch(
+        &mut editor,
         &WindowEvent::Ime(winit::event::Ime::Preedit("candidate".into(), Some((0, 9)))),
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: &mut AutoCommit::new(),
-            path: &automerge::ROOT,
-            handled: &mut handled,
-            focus_target: &mut None,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
-        },
     );
     assert!(handled);
     assert!(
@@ -2390,4 +2475,98 @@ fn a_mention_replaces_its_typed_query_as_one_marked_run() {
     );
     e.set_read_only(true);
     assert!(!e.insert_text("x"), "a read-only editor takes nothing");
+}
+
+#[test]
+fn visual_formula_cut_waits_for_clipboard_acceptance() {
+    use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    #[derive(Default)]
+    struct Clipboard {
+        accept: AtomicBool,
+        stored: InProcessClipboard,
+    }
+    impl ClipboardBackend for Clipboard {
+        fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
+            self.accept.load(Ordering::Relaxed) && self.stored.set_text(target, text)
+        }
+        fn text(&self, target: ClipboardTarget) -> Option<String> {
+            self.stored.text(target)
+        }
+        fn name(&self) -> &'static str {
+            "formula-test-clipboard"
+        }
+    }
+    let clipboard = Arc::new(Clipboard::default());
+    let services = crate::host::HostServices::null().with_clipboard(clipboard.clone());
+    let _host = crate::host::enter(&services);
+    let mut editor = crate::math::edit::Editor::from_linear("x + y");
+    editor.select_all();
+    let before = editor.to_linear();
+    let selected = editor.selected_linear();
+    assert!(selected.is_some());
+    let key = Key::Character("x".into());
+    let modifiers = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+    assert!(!handle_visual_formula_key(&mut editor, &key, modifiers));
+    assert_eq!(editor.to_linear(), before);
+    assert_eq!(editor.selected_linear(), selected);
+    clipboard.accept.store(true, Ordering::Relaxed);
+    assert!(handle_visual_formula_key(&mut editor, &key, modifiers));
+    assert_eq!(clipboard.text(ClipboardTarget::Clipboard), selected);
+    assert!(editor.to_linear().is_empty());
+}
+
+#[test]
+fn a_block_fields_suggestion_timer_wakes_the_editor() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("so beautifull")]);
+    assert_eq!(Widget::next_wake_deadline(&editor), None);
+
+    // Far enough ahead that a slow test run never sees the deadline pass.
+    let now = crate::time::now() + crate::time::Duration::from_secs(3600);
+    let field = editor.blocks[0].line.inner_mut();
+    Widget::set_focus(field, true);
+    field.set_cursor_pos("so beautifull".len());
+    field.refresh_suggestion_at(now);
+
+    // Block lines are not widget children; their timers still reach the host.
+    assert_eq!(
+        Widget::next_wake_deadline(&editor),
+        Some(now + crate::text_edit::SUGGESTION_SETTLE)
+    );
+}
+
+#[test]
+fn deferred_input_document_tracks_identical_blocks_cross_block_selection_and_read_only() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("same"), Block::paragraph("same")]);
+    editor.set_focus(true);
+    editor.focus_block(0, CursorPlacement::End);
+    let first = editor.ime_edit_fingerprint(&[8; 32]).unwrap();
+    editor.focus_block(1, CursorPlacement::End);
+    let second = editor.ime_edit_fingerprint(&[8; 32]).unwrap();
+    assert_ne!(
+        first, second,
+        "identical paragraphs have distinct insertion targets"
+    );
+    editor.select_document_range(
+        DocumentPosition { block: 0, byte: 0 },
+        DocumentPosition { block: 1, byte: 4 },
+    );
+    let selection = editor.ime_edit_fingerprint(&[8; 32]).unwrap();
+    assert_ne!(selection, second);
+    editor.select_document_range(
+        DocumentPosition { block: 1, byte: 0 },
+        DocumentPosition { block: 1, byte: 4 },
+    );
+    assert_ne!(
+        editor.ime_edit_fingerprint(&[8; 32]).unwrap(),
+        selection,
+        "changing the document selection anchor must invalidate at an unchanged caret"
+    );
+    editor.set_read_only(true);
+    assert!(editor.ime_edit_fingerprint(&[8; 32]).is_none());
 }

@@ -526,7 +526,8 @@ The parts of this that are built, so the gap is visible rather than implied:
 - OS-image reproducibility: digest-pinned base, frozen RPM snapshot,
   `SOURCE_DATE_EPOCH`, verified byte-identical rebuilds, cosign signatures and
   a complete registry SBOM digest-bound in logged provenance, and `bootc upgrade` refusing unsigned images
-  (`docs/supply-chain.md`).
+  from the official Tilo repositories; other references fall to the policy's
+  permissive default (`docs/supply-chain.md`, `docs/security/defects.md` P2-6).
 
 Not built: source logs and witnessing, rebuilder attestations, the Profile,
 offers, public records, budgets, and per-origin network implication.

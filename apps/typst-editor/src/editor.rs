@@ -9,31 +9,35 @@
 //! error spans, and the hover tooltip), rendered on top of the shared editor
 //! using its public geometry.
 //!
-//! The source text lives in the Automerge `Text` object the editor is bound to;
-//! every edit splices into it through the shared widget.
+//! The editor shows the source text of the file the app has open and submits
+//! every edit as a splice of the file's `source` field, so a keystroke is an
+//! attributed, undoable, permission-checked action.
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{BlendMode, Fill};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
+use ui::framework::{Dispatcher, TextControl};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tilo_resource::Path;
 use ui::widget::Widget;
-use ui::widget::code_editor::{CodeEditor, Language};
+use ui::widget::code_editor::{CodeEditor, Diagnostic as CodeDiagnostic, Language, Severity};
 
 use crate::compile::{DiagKind, Diagnostic};
+use crate::resource::Workspace;
 
-/// Monospace point size of the editor text.
-pub const FONT_SIZE: f32 = 13.0;
 /// Tab expands to this many spaces (soft tabs).
 const TAB_WIDTH: usize = 2;
 
 pub struct SourceEditor {
     /// The shared code-editing widget — caret, selection, clipboard, undo,
-    /// gutter, and Typst syntax highlighting all live here.
-    code: CodeEditor,
+    /// gutter, and Typst syntax highlighting all live here — over the open
+    /// file's source.
+    code: TextControl<CodeEditor, Workspace>,
+    /// Where the edits go, once the window is attached.
+    dispatcher: Option<Dispatcher<Workspace>>,
     /// Whether the source pane holds keyboard focus. Mirrored onto `code` each
     /// frame so its caret paints and its key routing engages.
     pub focused: bool,
@@ -45,13 +49,17 @@ pub struct SourceEditor {
     hover: Option<Point>,
 }
 
-impl Default for SourceEditor {
-    fn default() -> Self {
+impl SourceEditor {
+    /// An editor over no source, read only until a dispatcher is
+    /// [attached](Self::attach).
+    pub fn new() -> Self {
+        let nowhere = Workspace::paths()
+            .files
+            .item(&ui::tilo_resource::Id::from_raw(""))
+            .source;
         Self {
-            code: CodeEditor::local()
-                .with_language(Language::Typst)
-                .with_font_size(FONT_SIZE)
-                .with_tab_width(TAB_WIDTH),
+            code: TextControl::view_only_at(Self::control_new(), nowhere),
+            dispatcher: None,
             focused: true,
             rect: Rect::ZERO,
             drag_anchor: None,
@@ -60,92 +68,91 @@ impl Default for SourceEditor {
     }
 }
 
+impl Default for SourceEditor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SourceEditor {
-    #[cfg(test)]
-    pub(crate) fn history_test_caret_rect(&self, theme: &Theme, byte: usize) -> Rect {
-        self.code.caret_rect(theme, byte)
+    fn control_new() -> CodeEditor {
+        CodeEditor::local()
+            .with_language(Language::Typst)
+            .with_tab_width(TAB_WIDTH)
     }
 
-    /// Unbound source presentation with no caret and persistent local scrolling.
-    pub(crate) fn snapshot(source: &str) -> Self {
-        let mut editor = Self::new();
-        editor.focused = false;
-        editor.code.inner_mut().set_preserve_unfocused_scroll(true);
-        editor.set_text(source);
-        editor
+    fn control(&self) -> &CodeEditor {
+        self.code.control()
     }
 
-    /// Prepare immutable source geometry using the widget's normal cached
-    /// measurement, including its renderer font/locale epoch invalidation.
-    pub(crate) fn prepare_snapshot_layout(&mut self, tr: &mut TextRenderer) {
-        Widget::measure(
-            &mut self.code,
-            taffy::Size {
-                width: Some(self.rect.width() as f32),
-                height: Some(self.rect.height() as f32),
-            },
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(self.rect.width() as f32),
-                height: taffy::AvailableSpace::Definite(self.rect.height() as f32),
-            },
-            tr,
-        );
-    }
-
-    pub fn new() -> Self {
-        Self::default()
+    fn control_mut(&mut self) -> &mut CodeEditor {
+        self.code.control_mut()
     }
 
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
-        self.code.set_rect(rect);
+        self.control_mut().set_rect(rect);
     }
 
-    pub fn rect(&self) -> Rect {
-        self.rect
+    /// Show the source at `path`, each edit a splice there once a
+    /// dispatcher is attached.
+    pub fn follow(&mut self, path: Path<Workspace, String>) {
+        let mut control = Self::control_new();
+        control.set_rect(self.rect);
+        self.code = TextControl::view_only_at(control, path);
+        if let Some(dispatcher) = &self.dispatcher {
+            self.code.attach(dispatcher.clone());
+        }
     }
 
-    pub fn line_height(&self) -> f64 {
-        self.code.line_height().max(f64::from(FONT_SIZE))
+    /// Submit the edits of the source shown through `dispatcher`.
+    pub fn attach(&mut self, dispatcher: Dispatcher<Workspace>) {
+        self.code.attach(dispatcher.clone());
+        self.dispatcher = Some(dispatcher);
     }
 
-    /// Bind the editor to the Automerge `Text` object holding the source and
-    /// pull its current content. Called from the app's `sync`.
-    pub fn bind(&mut self, obj: ObjId, doc: &mut AutoCommit) {
-        self.code.bind_text(obj);
+    /// Show the open file's source as `doc` holds it. Called from the app's
+    /// `sync`.
+    pub fn pull(&mut self, doc: &AutoCommit) {
         self.code.pull(doc);
+    }
+
+    /// Submit what the control edited since the last call: a splice of the
+    /// source, or taken back while no dispatcher is attached.
+    fn submit(&mut self, edits: &mut ui::widget::Edits<'_>) {
+        self.code.submit(edits);
     }
 
     /// The caret's byte offset in the source.
     pub fn caret(&self) -> usize {
-        self.code.cursor_pos()
+        self.control().cursor_pos()
     }
 
     /// Move the caret to a byte offset (used by the screenshot harness).
     pub fn set_caret(&mut self, byte: usize) {
-        self.code.set_cursor_pos(byte);
+        self.control_mut().set_cursor_pos(byte);
     }
 
     /// The current buffer text (mirrors the bound Automerge object).
     pub fn text(&self) -> &str {
-        self.code.value()
+        self.control().value()
     }
 
     /// Programmatically set the buffer (local/unbound use — tests, seeding).
     pub fn set_text(&mut self, s: &str) {
-        self.code.set_text(s);
+        self.control_mut().set_text(s);
     }
 
     /// Reset the caret to the document start (used when switching documents).
     pub fn reset_cursor(&mut self) {
-        self.code.set_cursor_pos(0);
-        self.code.scroll_by(-1.0e9);
+        self.control_mut().set_cursor_pos(0);
+        self.control_mut().scroll_by(-1.0e9);
     }
 
     /// Screenshot harness only: select a couple of source lines so a capture
     /// shows a real selection band over highlighted code.
     pub fn demo_select(&mut self) {
-        let text = self.code.value().to_string();
+        let text = self.control_mut().value().to_string();
         let start = byte_of_line_col(&text, 1, 0);
         let end = byte_of_line_col(&text, 3, 0).min(text.len());
         let (a, b) = if end > start {
@@ -153,27 +160,22 @@ impl SourceEditor {
         } else {
             (0, text.len().min(24))
         };
-        self.code.set_selection(a, b);
+        self.control_mut().set_selection(a, b);
         self.focused = true;
     }
 
     /// Place the caret on a specific 1-based line (used when a diagnostic is
     /// clicked). `_text` is unused — the widget holds the source.
     pub fn goto_line(&mut self, _text: &str, line_1based: usize) {
-        self.code.goto_line(line_1based);
+        self.control_mut().goto_line(line_1based);
     }
 
     // ----- scrolling -------------------------------------------------------
 
-    /// Effective bounded offset for immutable History view persistence.
-    pub(crate) fn snapshot_scroll_y(&self) -> f64 {
-        self.code.inner().scroll_y()
-    }
-
     /// Wheel scroll. `dx`/`_text` are unused — the code view soft-wraps, so it
     /// only scrolls vertically.
     pub fn scroll_by(&mut self, _dx: f32, dy: f32, _text: &str) {
-        self.code.scroll_by(f64::from(dy));
+        self.control_mut().scroll_by(f64::from(dy));
     }
 
     /// Scroll the caret into view. The shared widget follows the caret after
@@ -184,22 +186,24 @@ impl SourceEditor {
 
     pub fn on_mouse_down(&mut self, p: Point, shift: bool, _text: &str) {
         self.focused = true;
-        self.code.set_focused(true);
-        let byte = self.code.byte_at_point(p);
+        self.control_mut().set_focused(true);
+        let byte = self.control_mut().byte_at_point(p);
         if shift {
-            let anchor = self.drag_anchor.unwrap_or_else(|| self.code.cursor_pos());
-            self.code.set_selection(anchor, byte);
+            let anchor = self
+                .drag_anchor
+                .unwrap_or_else(|| self.control_mut().cursor_pos());
+            self.control_mut().set_selection(anchor, byte);
             self.drag_anchor = Some(anchor);
         } else {
-            self.code.set_cursor_pos(byte);
+            self.control_mut().set_cursor_pos(byte);
             self.drag_anchor = Some(byte);
         }
     }
 
     pub fn on_mouse_drag(&mut self, p: Point, _text: &str) {
         if let Some(anchor) = self.drag_anchor {
-            let byte = self.code.byte_at_point(p);
-            self.code.set_selection(anchor, byte);
+            let byte = self.control_mut().byte_at_point(p);
+            self.control_mut().set_selection(anchor, byte);
         }
     }
 
@@ -220,9 +224,9 @@ impl SourceEditor {
 
     // ----- keyboard --------------------------------------------------------
 
-    /// Handle a keyboard event through the shared widget. Returns true if
-    /// consumed. `text_id` is the bound source object; the widget is already
-    /// bound to it, so edits splice there.
+    /// Handle a keyboard event through the shared widget, submitting what it
+    /// edited as one splice of the open file's source. Returns true if
+    /// consumed.
     ///
     /// # Panics
     /// Never panics: `taffy::TaffyTree::new_leaf` cannot return `Err` for a
@@ -232,11 +236,11 @@ impl SourceEditor {
         &mut self,
         event: &WindowEvent,
         modifiers: &Modifiers,
-        doc: &mut AutoCommit,
-        text_id: &ObjId,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         use taffy::{Style, TaffyTree};
-        self.code.set_focused(self.focused);
+        let focused = self.focused;
+        self.control_mut().set_focused(focused);
         let mut handled = false;
         let mut focus_target = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -245,26 +249,30 @@ impl SourceEditor {
             reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
         )]
         let node = taffy.new_leaf(Style::default()).unwrap();
-        // `text_id` is the object the widget was bound to; pass it as the root so
-        // the resolve falls back to it even if the binding were ever cleared.
-        self.code.handle_event(
+        self.control_mut().handle_event(
             event,
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers,
-                state: doc,
-                path: text_id,
+                state: doc.reborrow(),
+                path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
                 node_id: node,
                 taffy: &taffy,
             },
         );
+        self.submit(doc);
         handled
     }
 
     // ----- rendering -------------------------------------------------------
 
+    /// Paint the pane. The editor stands on the window ground: it fills
+    /// nothing of its own. The shared widget paints the gutter, line numbers,
+    /// current-line band, selection, highlighted text and caret, and the
+    /// compiler's diagnostics: a severity mark in the gutter and a squiggle
+    /// under each span, in the theme's status colours.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -273,173 +281,52 @@ impl SourceEditor {
         theme: &Theme,
         diags: &[Diagnostic],
     ) {
-        let c = &theme.tokens.colors;
-        // Pane background (slightly darker than chrome for an "editor" feel).
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
-
-        // The shared widget paints the gutter, line numbers, current-line band,
-        // selection, highlighted text, and caret.
-        self.code.set_focused(self.focused);
-        self.code.set_rect(self.rect);
-        self.code.draw_embedded(scene, transform, tr, theme);
-
-        // Diagnostics overlay, drawn on top using the widget's geometry, clipped
-        // to the pane so squiggles/markers never spill past it.
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            transform,
-            &self.rect,
-        );
-        self.draw_diagnostics(scene, transform, tr, theme, diags);
-        scene.pop_layer();
-
-        // Hover tooltip for a diagnostic squiggle — drawn last and outside the
-        // clip so it floats above the source and can overflow the pane.
-        if let Some(hp) = self.hover
-            && self.rect.contains(hp)
-        {
-            let byte = self.code.byte_at_point(hp);
-            let text = self.code.value().to_string();
-            if let Some(d) = diags.iter().find(|d| {
-                diag_byte_span(d, &text).is_some_and(|(b0, b1)| byte >= b0 && byte < b1.max(b0 + 1))
-            }) {
-                self.draw_tooltip(scene, transform, tr, theme, hp, d);
-            }
-        }
+        let focused = self.focused;
+        self.control_mut().set_focused(focused);
+        let rect = self.rect;
+        self.control_mut().set_rect(rect);
+        // This embedded editor bypasses widget measurement. Give it the
+        // theme's resolved code size instead of its stock 1× role size;
+        // content sizing prevents applying the accessibility scale twice.
+        self.control_mut()
+            .inner_mut()
+            .set_content_size(Some(theme.text(ui::tokens::TextRole::Code).size));
+        let text = self.control().value().to_string();
+        let spans = diags
+            .iter()
+            .filter_map(|d| {
+                let (b0, b1) = diag_byte_span(d, &text)?;
+                let severity = match d.kind {
+                    DiagKind::Error => Severity::Error,
+                    DiagKind::Warning => Severity::Warning,
+                };
+                let message = match d.hints.first() {
+                    Some(hint) => format!("{}\n{hint}", d.message),
+                    None => d.message.clone(),
+                };
+                Some(CodeDiagnostic::new(b0..b1, severity, message))
+            })
+            .collect();
+        self.control_mut().set_diagnostics(spans);
+        let pointer = self.hover.filter(|p| self.rect.contains(*p));
+        self.control_mut().set_pointer(pointer);
+        self.control_mut()
+            .draw_embedded(scene, transform, tr, theme);
     }
 
-    /// Gutter severity markers + inline squiggles, positioned from the shared
-    /// widget's caret / selection geometry so they track scroll, wrap, and the
-    /// gutter width exactly.
-    fn draw_diagnostics(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        _tr: &mut TextRenderer,
-        theme: &Theme,
-        diags: &[Diagnostic],
-    ) {
-        if diags.is_empty() {
-            return;
-        }
-        let text = self.code.value().to_string();
-        let lh = self.code.line_height();
-
-        // Gutter severity dot on each line a diagnostic starts on.
-        for (line0, kind) in worst_severity_by_line(diags) {
-            let byte = byte_of_line_col(&text, line0, 0);
-            let cr = self.code.caret_rect(theme, byte);
-            if cr.y1 < self.rect.y0 || cr.y0 > self.rect.y1 {
-                continue;
-            }
-            let cx = self.rect.x0 + 7.0;
-            let cy = cr.y0 + lh * 0.5;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                diag_color(kind, theme),
-                None,
-                &Circle::new(Point::new(cx, cy), 3.0),
-            );
-        }
-
-        // Inline squiggle under every diagnostic span, one segment per visual row.
-        for d in diags {
-            if let Some((b0, b1)) = diag_byte_span(d, &text) {
-                for r in self.code.selection_rects(theme, b0, b1) {
-                    let yb = r.y1 - 3.5;
-                    draw_squiggle(scene, transform, r.x0, r.x1, yb, diag_color(d.kind, theme));
-                }
-            }
-        }
-    }
-
-    /// Draw a floating tooltip card near `at` carrying a diagnostic's message
-    /// (and its first hint, dimmed). Sizing is measured from the text so the
-    /// card hugs the content.
-    fn draw_tooltip(
+    /// The hover card for the diagnostic under the pointer, drawn in the
+    /// window's top layer so it floats above the preview and can overflow
+    /// the pane.
+    pub fn draw_tooltip(
         &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        at: Point,
-        d: &Diagnostic,
+        window: Rect,
     ) {
-        let c = &theme.tokens.colors;
-        let pad = 8.0;
-        let font = 12.0;
-        let gap = 3.0;
-        let max_text_w = 360.0f64;
-        let mut lines: Vec<(String, bool)> = vec![(d.message.clone(), false)];
-        if let Some(h) = d.hints.first() {
-            lines.push((format!("hint: {h}"), true));
-        }
-        let mut w = 0.0f64;
-        let mut total_h = 0.0f64;
-        let mut heights = Vec::with_capacity(lines.len());
-        for (s, _) in &lines {
-            let (tw, th) = tr.measure(s, font, Some(max_text_w as f32));
-            w = w.max(f64::from(tw));
-            let h = f64::from(th).max(f64::from(font) * 1.2);
-            heights.push(h);
-            total_h += h + gap;
-        }
-        total_h -= gap;
-        let card_w = (w + pad * 2.0).min(max_text_w + pad * 2.0);
-        let card_h = total_h + pad * 2.0;
-        let mut x0 = at.x + 12.0;
-        let mut y0 = at.y + 18.0;
-        if x0 + card_w > self.rect.x1 - 4.0 {
-            x0 = (self.rect.x1 - 4.0 - card_w).max(self.rect.x0 + 4.0);
-        }
-        if y0 + card_h > self.rect.y1 - 4.0 {
-            y0 = (at.y - card_h - 8.0).max(self.rect.y0 + 4.0);
-        }
-        let card = Rect::new(x0, y0, x0 + card_w, y0 + card_h);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            c.surfaces.overlay,
-            None,
-            &RoundedRect::from_rect(card.inflate(2.0, 2.0), 8.0),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            c.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(card, 7.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(card, 7.0),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            diag_color(d.kind, theme),
-            None,
-            &Rect::new(card.x0, card.y0, card.x0 + 3.0, card.y1),
-        );
-        let mut ty = y0 + pad;
-        for ((s, dim), h) in lines.iter().zip(heights.iter()) {
-            let col = if *dim { c.text_dim } else { c.text_primary };
-            tr.draw_text(
-                scene,
-                s,
-                font,
-                col,
-                transform * Affine::translate((x0 + pad + 4.0, ty)),
-                Some((card_w - pad * 2.0 - 4.0) as f32),
-            );
-            ty += h + gap;
-        }
+        self.control()
+            .draw_diagnostic_card(scene, transform, tr, theme, window);
     }
 
     /// The caret is a steady bar, so a focused-but-idle editor needs no
@@ -447,32 +334,6 @@ impl SourceEditor {
     pub fn wants_animation(&self) -> bool {
         false
     }
-}
-
-/// The theme colour a diagnostic severity draws in.
-fn diag_color(kind: DiagKind, theme: &Theme) -> vello::peniko::Color {
-    match kind {
-        DiagKind::Error => theme.tokens.colors.semantic.danger,
-        DiagKind::Warning => theme.tokens.colors.semantic.warning,
-    }
-}
-
-/// Map each 0-based source line that a diagnostic *starts* on to the worst
-/// severity present there (Error beats Warning), for the gutter markers.
-fn worst_severity_by_line(diags: &[Diagnostic]) -> std::collections::HashMap<usize, DiagKind> {
-    let mut map: std::collections::HashMap<usize, DiagKind> = std::collections::HashMap::new();
-    for d in diags {
-        let Some(line1) = d.line else { continue };
-        let line = line1.saturating_sub(1);
-        map.entry(line)
-            .and_modify(|k| {
-                if d.kind == DiagKind::Error {
-                    *k = DiagKind::Error;
-                }
-            })
-            .or_insert(d.kind);
-    }
-    map
 }
 
 /// The byte offset in `text` of 0-based `(line, col)` (col in chars). Clamps to
@@ -505,47 +366,39 @@ fn diag_byte_span(d: &Diagnostic, text: &str) -> Option<(usize, usize)> {
     Some((b0, b1.min(text.len())))
 }
 
-/// Stroke a wavy underline (a squiggle) between `x0` and `x1` at baseline `y`.
-fn draw_squiggle(
-    scene: &mut Scene,
-    transform: Affine,
-    x0: f64,
-    x1: f64,
-    y: f64,
-    color: vello::peniko::Color,
-) {
-    const PERIOD: f64 = 4.0;
-    const AMP: f64 = 1.6;
-    if x1 <= x0 {
-        return;
-    }
-    let mut path = BezPath::new();
-    path.move_to(Point::new(x0, y));
-    let mut x = x0;
-    let mut up = true;
-    loop {
-        if x >= x1 {
-            break;
-        }
-        x = (x + PERIOD * 0.5).min(x1);
-        let dy = if up { -AMP } else { AMP };
-        path.line_to(Point::new(x, y + dy));
-        up = !up;
-    }
-    scene.stroke(&Stroke::new(1.3), transform, color, None, &path);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::transaction::Transactable;
-    use automerge::{ObjType, ROOT, ReadDoc};
+    use ui::tilo_resource::{Id, Invoke, Replica, Resource as _};
 
-    fn doc_with(text: &str) -> (AutoCommit, ObjId) {
-        let mut doc = AutoCommit::new();
-        let id = doc.put_object(&ROOT, "source", ObjType::Text).unwrap();
-        doc.splice_text(&id, 0, 0, text).unwrap();
-        (doc, id)
+    /// A workspace whose one file holds `text`, and an editor showing it
+    /// that nothing edits.
+    fn showing(text: &str) -> (AutoCommit, SourceEditor) {
+        let mut workspace = Replica::<Workspace>::new();
+        let id = Id::from_raw("file");
+        let file = crate::resource::TypstFile {
+            source: text.to_owned(),
+            ..crate::resource::TypstFile::default()
+        };
+        workspace
+            .apply(Invoke::edit(&Workspace::paths().files.insert_as(&id, 0, &file)).unwrap())
+            .unwrap();
+        let doc = AutoCommit::load(&workspace.save()).unwrap();
+        let mut editor = SourceEditor::new();
+        editor.follow(Workspace::paths().files.item(&id).source);
+        editor.pull(&doc);
+        (doc, editor)
+    }
+
+    fn source(doc: &AutoCommit) -> String {
+        Workspace::read(doc)
+            .unwrap()
+            .files
+            .values()
+            .next()
+            .unwrap()
+            .source
+            .clone()
     }
 
     #[test]
@@ -612,48 +465,95 @@ mod tests {
                 end_col: Some(6),
                 hints: vec![],
             };
-            let map = worst_severity_by_line(&[warn, err]);
-            assert_eq!(map.get(&1), Some(&DiagKind::Error));
+            let mut ed = SourceEditor::new();
+            ed.set_text("a\nbcdefg\n");
+            ed.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+            ed.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                &[warn, err],
+            );
+            let severities: Vec<Severity> = ed
+                .control()
+                .diagnostics()
+                .iter()
+                .map(|d| d.severity)
+                .collect();
+            assert_eq!(
+                severities,
+                [Severity::Warning, Severity::Error],
+                "the widget marks each span at its severity"
+            );
         }
     }
 
     #[test]
-    fn editor_input_edits_document_and_moves_caret() {
-        // Case `typing_edits_the_bound_document`:
-        // Typing through the shell edits the bound Automerge object via the shared
-        // widget's real key path.
+    fn embedded_source_scales_type_gutter_and_hit_testing_together() {
+        let mut editor = SourceEditor::new();
+        editor.set_text("= Motion\n\nA short note.\n");
+        editor.set_rect(Rect::new(0.0, 0.0, 660.0, 700.0));
+        let mut tr = TextRenderer::new();
+        let mut base_line = 0.0;
+        let mut base_gutter = 0.0;
+        for (index, theme) in [
+            Theme::dark(),
+            Theme::dark().with_ui_scale(1.5),
+            Theme::dark().with_ui_scale(1.5).with_text_scale(1.2),
+            Theme::dark(),
+        ]
+        .iter()
+        .enumerate()
         {
-            use winit::event::{ElementState, KeyEvent};
+            editor.draw(&mut Scene::new(), Affine::IDENTITY, &mut tr, theme, &[]);
+            let input = editor.control().inner();
+            let line = input.body_line_height();
+            let gutter = editor.control().gutter_width();
+            if index == 0 {
+                base_line = line;
+                base_gutter = gutter;
+            }
+            let factor = f64::from(theme.ui_scale * theme.text_scale);
+            assert!((line / base_line - factor).abs() < 0.01);
+            if index == 1 || index == 2 {
+                assert!(gutter > base_gutter, "line numbers grow with source text");
+            }
+            let caret = editor.control().caret_rect(theme, 4);
+            assert_eq!(editor.control().byte_at_point(caret.center()), 4);
+        }
+    }
+
+    #[test]
+    fn editor_input_without_a_dispatcher_and_caret_moves() {
+        // Case `typing_without_a_dispatcher_changes_nothing`:
+        // An editor nobody attached a dispatcher to only shows the text; the
+        // keys it takes are taken back.
+        {
+            use winit::event::ElementState;
             use winit::keyboard::{Key, SmolStr};
-            let (mut doc, id) = doc_with("");
-            let mut ed = SourceEditor::new();
+            let (mut doc, mut ed) = showing("");
             ed.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
-            ed.bind(id.clone(), &mut doc);
             ed.focused = true;
             for ch in ["h", "i"] {
-                let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-                ev.logical_key = Key::Character(SmolStr::new(ch));
-                ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                    winit::keyboard::NativeKeyCode::Unidentified,
+                let ev = ui::synthetic_input::key_event(
+                    Key::Character(SmolStr::new(ch)),
+                    Some(SmolStr::new(ch)),
+                    ElementState::Pressed,
                 );
-                ev.location = winit::keyboard::KeyLocation::Standard;
-                ev.state = ElementState::Pressed;
-                ev.repeat = false;
-                ev.text = Some(SmolStr::new(ch));
-                let event = WindowEvent::KeyboardInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    event: ev,
-                    is_synthetic: false,
-                };
-                assert!(ed.handle_key(&event, &Modifiers::default(), &mut doc, &id));
+                let event = ui::synthetic_input::keyboard_input(ev);
+                assert!(ed.handle_key(
+                    &event,
+                    &Modifiers::default(),
+                    &mut ui::widget::Edits::lend(&mut doc)
+                ));
             }
-            assert_eq!(doc.text(&id).unwrap(), "hi");
+            assert_eq!(source(&doc), "");
+            assert_eq!(ed.text(), "");
         }
         // Case `goto_line_moves_the_caret_to_the_line_start`.
         {
-            let (mut doc, id) = doc_with("one\ntwo\nthree");
-            let mut ed = SourceEditor::new();
-            ed.bind(id, &mut doc);
+            let (_doc, mut ed) = showing("one\ntwo\nthree");
             ed.goto_line("", 2);
             assert_eq!(ed.caret(), 4, "line 2 starts just after the first newline");
         }

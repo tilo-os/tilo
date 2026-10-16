@@ -215,7 +215,7 @@ pub const CURRENT_DESKTOP: &str = "tilo";
 /// `XDG_CURRENT_DESKTOP=tilo`, so `xdg-open`, `GLib` and Qt agree with the desktop.
 #[cfg(feature = "host-storage")]
 pub fn published_list_path() -> Option<PathBuf> {
-    Some(xdg_paths::xdg::config_home()?.join(format!("{CURRENT_DESKTOP}-mimeapps.list")))
+    Some(tilo_paths::xdg::config_home()?.join(format!("{CURRENT_DESKTOP}-mimeapps.list")))
 }
 
 /// The session's chain as input to Tilo's own resolution. The list Tilo publishes is
@@ -233,10 +233,10 @@ pub fn session_chain() -> MimeAppsChain {
     let published = published_list_path();
     let paths: Vec<PathBuf> = search_path(
         &desktops,
-        xdg_paths::xdg::config_home().as_deref(),
-        &xdg_paths::xdg::config_dirs(),
-        xdg_paths::xdg::data_home().as_deref(),
-        &xdg_paths::xdg::data_dirs(),
+        tilo_paths::xdg::config_home().as_deref(),
+        &tilo_paths::xdg::config_dirs(),
+        tilo_paths::xdg::data_home().as_deref(),
+        &tilo_paths::xdg::data_dirs(),
     )
     .into_iter()
     .filter(|path| Some(path) != published.as_ref())
@@ -259,7 +259,7 @@ pub fn publish(path: &Path, list: &MimeAppsList) -> std::io::Result<bool> {
     if std::fs::read_to_string(path).is_ok_and(|current| current == body) {
         return Ok(false);
     }
-    atomic_file::write_creating_parent(path, body.as_bytes())?;
+    tilo_files::native::atomic::write_creating_parent(path, body.as_bytes())?;
     Ok(true)
 }
 

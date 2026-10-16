@@ -171,9 +171,9 @@ Discovery is not permission to invoke later: revocation must take effect after
 a result is listed too.
 
 Keep signing material in the host through the existing identity broker and
-secure-store provider boundary. Use the existing `MlsVaultProvider` abstraction
-instead of carrying the concrete Secret Service implementation into portable
-host code. Broker audit logs and document history remain distinct; document
+secure-store provider boundary. Portable host code receives the MLS vault's
+derived channel-state key and root, never the concrete Secret Service vault
+(`SecretServiceMlsVault`) itself. Broker audit logs and document history remain distinct; document
 history comes from the permitted record's actual state.
 
 The first integrated host should serve one real local workspace and two ordinary
@@ -215,10 +215,10 @@ must not be described as runtime-verified macOS behavior on a Windows machine.
 - `crates/sdk/ui-core/src/history_source/` and `crates/sdk/ui-core/src/widget/activity_timeline.rs`: shared history.
 - `crates/sdk/ui-core/src/collaboration.rs`, `crates/runtime/runtime-collab/` and
   `crates/runtime/runtime-portal/`: existing service client and transport boundary.
-- `crates/session/shell/src/compositor/macos.rs`, `crates/session/shell/src/compositor/hosted.rs` and
+- `crates/session/shell/src/compositor/macos.rs`, `crates/session/shell/src/compositor/session_bootstrap.rs` and
   `crates/session/shell/src/shell/overlay_host/mod.rs`: current host implementations and room policy.
 - `crates/session/shell/src/shell/launcher.rs` and `crates/session/shell/src/shell/collab_broker_capnp.rs`:
   process attestation, service admission and filtered action-directory serving.
 - `crates/session/shell/src/identity_broker.rs`, `crates/runtime/runtime-identity/src/secure_store.rs`
-  and `crates/session/shell/src/shell/collab_mls_authority.rs`: identity and MLS custody boundaries.
+  and `crates/session/shell/src/shell/mls_vault.rs`: identity and MLS custody boundaries.
 - `docs/superpowers/specs/2026-09-12-macos-app-qualification.json`: qualification status.

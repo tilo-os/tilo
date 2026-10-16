@@ -8,6 +8,7 @@
 //! variant, placed by this layer rather than by the workspace column.
 
 use std::collections::HashMap;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, Style, TaffyTree};
@@ -111,18 +112,27 @@ impl Widget for DisplayBars {
         Some(self)
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         for (_, bar) in &mut self.bars {
             bar.sync(state, root);
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, root: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, root: &ModelPath) -> bool {
         let mut changed = false;
         for (_, bar) in &mut self.bars {
             changed |= bar.update(state, root);
         }
         changed
+    }
+
+    /// The bars hold no children for the default walk, so their clocks'
+    /// deadlines are gathered here.
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.bars
+            .iter()
+            .filter_map(|(_, bar)| bar.next_wake_deadline())
+            .min()
     }
 
     fn build_layout(
@@ -133,22 +143,10 @@ impl Widget for DisplayBars {
     ) -> NodeId {
         // The bars are placed on their displays directly; this layer takes
         // no room in the desktop's layout.
-        let node = taffy
-            .new_leaf(Style::default())
-            .unwrap_or_else(|_| NodeId::from(0u64));
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(Style::default(), node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-    }
+    ui::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -172,7 +170,7 @@ impl Widget for DisplayBars {
         }
         let target = match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let p = ctx.logical(position);
                 self.cursor = Some(p);
                 self.bar_under(p)
             }
@@ -195,10 +193,6 @@ impl Widget for DisplayBars {
         if let Some((_, bar)) = self.bars.iter_mut().find(|(id, _)| *id == target) {
             bar.handle_event(event, ctx);
         }
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 
     fn needs_redraw(&self) -> bool {

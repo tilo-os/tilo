@@ -1,21 +1,27 @@
 use super::*;
 use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
-use collab_types::caps::{CapOverride, Expiry, Scope, Subject, Verb};
+use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Role, Subject, TreePath};
+fn editor_grant(room: &str) -> Grant {
+    Grant::new(
+        "editor-reads",
+        Subject::Role(Role::Editor),
+        TreePath::room(room),
+        KindSet::READ,
+        Answer::Allow,
+        Subject::Role(Role::Owner),
+    )
+}
 fn fixture() -> crate::StatePeer {
     let (mut peer, _, _, _, _) = crate::admission_tests::seeded();
     let mut room = peer.admitted_room().unwrap().clone();
-    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
-    for (index, at) in [8, 7, 7, 3].iter().enumerate() {
-        let cap = CapOverride::grant(
-            Subject::Role(collab_types::Role::Editor),
-            Scope::Workspace,
-            Verb::Read,
-        )
-        .expiring(Expiry::AtUnix(*at));
+    let caps = room.get(ROOT, "grants").unwrap().unwrap().1;
+    for (index, at) in [8_u64, 7, 7, 3].into_iter().enumerate() {
+        let grant =
+            editor_grant(peer.room()).with_lifetime(Lifetime::Until(at.saturating_mul(1000)));
         room.put(
             &caps,
             index.to_string(),
-            ScalarValue::Bytes(serde_json::to_vec(&cap).unwrap()),
+            ScalarValue::Bytes(serde_json::to_vec(&grant).unwrap()),
         )
         .unwrap();
     }
@@ -55,7 +61,7 @@ fn shared_private_policy_matches_existing_exact_revision_and_expiry_order() {
     .unwrap();
     assert_eq!(
         result.revision,
-        crate::owner_commit::governance_revision(&peer).unwrap()
+        crate::legacy_policy::governance_revision(&peer).unwrap()
     );
     assert_eq!(result.expiries, vec![3, 7, 8]);
 }
@@ -86,7 +92,7 @@ fn bounded_private_policy_matches_governance_revision_and_expiries() {
     .unwrap();
     assert_eq!(
         result.revision(),
-        crate::owner_commit::governance_revision(&peer).unwrap()
+        crate::legacy_policy::governance_revision(&peer).unwrap()
     );
     assert_eq!(result.next_expiry_after(3), Some(7));
     assert_eq!(result.next_expiry_after(7), Some(8));

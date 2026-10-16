@@ -8,7 +8,8 @@
 //! native path or a path inside a [`VirtualRoot`] (the browser's
 //! origin-private file system, or memory); [`Location::native_path`] is the
 //! explicit, fallible way back to a `Path`. What a target cannot provide is
-//! an [`Unsupported`] error at run time and a row of [`CAPABILITIES`], never a
+//! an [`Unsupported`] error at run time and an entry of its [`Feature`]'s
+//! targets, never a
 //! missing item: this crate is where the target-specific code lives, so apps
 //! need none.
 //!
@@ -42,29 +43,17 @@
 //! [`UserDir`] and its shorthands ([`document_dir`], [`download_dir`], …)
 //! resolve the user's content folders, localized through `user-dirs.dirs`.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::ffi::OsString;
 use std::path::PathBuf;
 
 mod app;
 mod caps;
 mod location;
+pub mod login;
 pub mod session;
 
 pub use app::{AppPaths, DEFAULT_PROFILE, default_profile, set_default_profile};
-pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability, available};
 pub use location::{InvalidVPath, Location, VPath, VirtualRoot};
 
 /// Where a Tilo Linux session mounts the collaborative workspace, and the
@@ -85,15 +74,6 @@ pub fn workspace_root() -> Option<PathBuf> {
         .map(std::path::Path::to_path_buf)
 }
 
-/// Where Tilo apps kept their data before [`AppPaths`]: an absolute
-/// `$XDG_DATA_HOME`, else `%LOCALAPPDATA%` on Windows and `$HOME/.local/share`
-/// elsewhere (macOS included). For stores whose location is already on
-/// users' disks, and for migrating them; new stores use [`AppPaths`].
-#[must_use]
-pub fn legacy_data_home() -> Option<PathBuf> {
-    env_dir("XDG_DATA_HOME").or_else(legacy::data_home)
-}
-
 #[cfg(windows)]
 mod legacy {
     pub fn data_home() -> Option<std::path::PathBuf> {
@@ -102,11 +82,7 @@ mod legacy {
 }
 
 #[cfg(not(windows))]
-mod legacy {
-    pub fn data_home() -> Option<std::path::PathBuf> {
-        Some(super::home()?.join(".local/share"))
-    }
-}
+mod legacy {}
 
 /// The user's home directory: `$HOME` when set and non-empty, the account
 /// database's entry when `$HOME` is unset (on Unix), and `None` for an empty
@@ -125,10 +101,7 @@ pub fn home() -> Option<PathBuf> {
     }
 }
 
-#[cfg_attr(
-    windows,
-    expect(dead_code, reason = "Windows asks the shell for the profile folder")
-)]
+#[cfg(not(windows))]
 fn home_from(
     var: &dyn Fn(&str) -> Option<OsString>,
     account_home: impl FnOnce() -> Option<PathBuf>,
@@ -262,6 +235,22 @@ pub mod xdg {
     #[must_use]
     pub fn runtime_dir() -> Option<PathBuf> {
         Base::Runtime.resolve(&env, home)
+    }
+
+    /// [`runtime_dir`], else where the platform keeps it without the
+    /// variable: `/run/user/<euid>` as systemd-logind creates it, the per-user
+    /// `$TMPDIR` on macOS. For callers that must name a per-user socket or
+    /// file even in a session started without `$XDG_RUNTIME_DIR`.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn runtime_dir_or_default() -> PathBuf {
+        runtime_dir().unwrap_or_else(|| {
+            if cfg!(target_os = "macos") {
+                std::env::temp_dir()
+            } else {
+                PathBuf::from(format!("/run/user/{}", rustix::process::geteuid().as_raw()))
+            }
+        })
     }
 
     /// `$XDG_DATA_DIRS` in preference order, else `/usr/local/share` and
@@ -418,7 +407,7 @@ pub fn runtime_dir() -> Option<PathBuf> {
 /// have a native path; an app's own scratch space is [`AppPaths::runtime`].
 #[must_use]
 pub fn temp_dir() -> Option<PathBuf> {
-    (availability(Feature::NativePaths) == Availability::Available).then(std::env::temp_dir)
+    (available(Feature::NativePaths)).then(std::env::temp_dir)
 }
 
 /// Directories the system and the user install fonts into, most general
@@ -430,34 +419,6 @@ pub fn temp_dir() -> Option<PathBuf> {
 #[must_use]
 pub fn system_font_dirs() -> Vec<PathBuf> {
     platform::font_dirs()
-}
-
-/// Per-user data for stores that follow XDG on every Unix, macOS included:
-/// [`xdg::data_home`] there, and [`data_local_dir`] on Windows.
-#[must_use]
-pub fn data_home_or_local_app_data() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        data_local_dir()
-    }
-    #[cfg(not(windows))]
-    {
-        xdg::data_home()
-    }
-}
-
-/// Per-user state for stores that follow XDG on every Unix, macOS included:
-/// [`xdg::state_home`] there, and [`data_local_dir`] on Windows.
-#[must_use]
-pub fn state_home_or_local_app_data() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        data_local_dir()
-    }
-    #[cfg(not(windows))]
-    {
-        xdg::state_home()
-    }
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]

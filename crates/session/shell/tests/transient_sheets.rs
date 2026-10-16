@@ -1,16 +1,11 @@
 //! Wire-level tests for transient toplevels: a toplevel with an xdg parent
 //! is a sheet on its parent's tile, never a tab of its own.
 
-use std::os::unix::net::UnixStream;
-use std::sync::Arc;
-
-use smithay::reexports::calloop::EventLoop;
-use smithay::reexports::wayland_server::Display;
 use vello::kurbo::Rect;
-use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
+use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::xdg::dialog::v1::client::{xdg_dialog_v1, xdg_wm_dialog_v1};
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::xdg::shell::client::{xdg_toplevel, xdg_wm_base};
 
 use shell::compositor::foreign::{PointRoute, store};
 
@@ -20,27 +15,10 @@ struct Client {
     keyboard_enter: Option<wl_surface::WlSurface>,
     toplevel_configures: Vec<(u32, i32, i32)>,
     closed: Vec<u32>,
+    pressed_keys: Vec<u32>,
 }
 
-impl Dispatch<wl_registry::WlRegistry, ()> for Client {
-    fn event(
-        state: &mut Self,
-        _: &wl_registry::WlRegistry,
-        event: wl_registry::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            state.globals.push((name, interface, version));
-        }
-    }
-}
+crate::support::wayland::test_client!(Client);
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
     fn event(
@@ -51,38 +29,14 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_keyboard::Event::Enter { surface, .. } = event {
-            state.keyboard_enter = Some(surface);
-        }
-    }
-}
-
-impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Client {
-    fn event(
-        _: &mut Self,
-        base: &xdg_wm_base::XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<xdg_surface::XdgSurface, ()> for Client {
-    fn event(
-        _: &mut Self,
-        surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
+        match event {
+            wl_keyboard::Event::Enter { surface, .. } => state.keyboard_enter = Some(surface),
+            wl_keyboard::Event::Key {
+                key,
+                state: wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed),
+                ..
+            } => state.pressed_keys.push(key),
+            _ => {}
         }
     }
 }
@@ -113,67 +67,7 @@ delegate_noop!(Client: ignore wl_seat::WlSeat);
 delegate_noop!(Client: ignore xdg_wm_dialog_v1::XdgWmDialogV1);
 delegate_noop!(Client: ignore xdg_dialog_v1::XdgDialogV1);
 
-struct Harness {
-    display: Display<shell::compositor::state::State>,
-    state: shell::compositor::state::State,
-    queue: wayland_client::EventQueue<Client>,
-    client: Client,
-    conn: Connection,
-    _event_loop: EventLoop<'static, shell::compositor::state::State>,
-}
-
-impl Harness {
-    fn new() -> Self {
-        let event_loop = EventLoop::try_new().expect("calloop");
-        let display = Display::new().expect("display");
-        let state = shell::compositor::state::State::new(event_loop.handle(), display.handle());
-        let (server, client) = UnixStream::pair().expect("socket pair");
-        display
-            .handle()
-            .insert_client(
-                server,
-                Arc::new(shell::compositor::state::ClientState::default()),
-            )
-            .expect("client insert");
-        client.set_nonblocking(true).expect("nonblocking");
-        let conn = Connection::from_socket(client).expect("client connection");
-        let queue = conn.new_event_queue::<Client>();
-        Self {
-            display,
-            state,
-            queue,
-            client: Client::default(),
-            conn,
-            _event_loop: event_loop,
-        }
-    }
-
-    fn pump(&mut self) {
-        for _ in 0..6 {
-            let _ = self.queue.flush();
-            let _ = self.display.dispatch_clients(&mut self.state);
-            let _ = self.display.flush_clients();
-            if let Some(guard) = self.conn.prepare_read() {
-                let _ = guard.read();
-            }
-            let _ = self.queue.dispatch_pending(&mut self.client);
-        }
-    }
-
-    fn bind<I: Proxy + 'static>(&self, interface: &str, version: u32) -> Option<I>
-    where
-        Client: Dispatch<I, ()>,
-    {
-        let (name, _, advertised) = self
-            .client
-            .globals
-            .iter()
-            .find(|(_, name, _)| name == interface)?
-            .clone();
-        let registry = self.conn.display().get_registry(&self.queue.handle(), ());
-        Some(registry.bind(name, version.min(advertised), &self.queue.handle(), ()))
-    }
-}
+type Harness = crate::support::wayland::Harness<Client>;
 
 fn foreign_tabs(state: &shell::compositor::state::State) -> Vec<(u64, String)> {
     let tree = state.workspace_tree.read();
@@ -203,18 +97,10 @@ fn opaque(w: u32, h: u32) -> Vec<u8> {
 #[test]
 fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
     let mut h = Harness::new();
-    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
-    h.pump();
-    let compositor = h
-        .bind::<wl_compositor::WlCompositor>("wl_compositor", 4)
-        .expect("compositor");
-    let wm = h
-        .bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3)
-        .expect("xdg shell");
-    let dialogs = h
-        .bind::<xdg_wm_dialog_v1::XdgWmDialogV1>("xdg_wm_dialog_v1", 1)
-        .expect("xdg_wm_dialog_v1 must be advertised");
-    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9).expect("seat");
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let dialogs = h.bind::<xdg_wm_dialog_v1::XdgWmDialogV1>("xdg_wm_dialog_v1", 1);
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
     let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
     let qh = h.queue.handle();
 
@@ -309,6 +195,63 @@ fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
         "the client saw keyboard enter on the dialog"
     );
 
+    // A remote viewer addresses the streamed parent, while the seat enters
+    // its modal child. Publish the real frame's view and deliver a key through
+    // the production firewall: the parent share must still reach its sheet.
+    let mut fb = shell::compositor::frame::FrameBuilder::with_tree(
+        h.state.workspace_tree.read().clone(),
+        (1000, 800),
+    );
+    fb.relayout();
+    shell::compositor::client_input::publish_remote_input_view(&mut h.state, &fb, false);
+    drop(fb);
+    assert!(
+        h.state
+            .remote_input_firewall
+            .view()
+            .rect(parent_id)
+            .is_some(),
+        "the published view must observe the parent tile"
+    );
+    h.state
+        .share_registry
+        .insert(9, parent_id, shell::network::StreamingShare::new());
+    assert!(h.state.apply_remote_input(
+        9,
+        parent_id,
+        shell::network::InputEvent::KeyboardFocus {
+            surface: parent_id,
+            focused: true
+        }
+    ));
+    assert!(
+        h.state.apply_remote_input(
+            9,
+            parent_id,
+            shell::network::InputEvent::Key {
+                keysym: 30,
+                pressed: true,
+                modifiers: 0
+            }
+        ),
+        "the focused modal child accepts a key addressed to its streamed parent"
+    );
+    assert!(h.state.apply_remote_input(
+        9,
+        parent_id,
+        shell::network::InputEvent::Key {
+            keysym: 30,
+            pressed: false,
+            modifiers: 0
+        }
+    ));
+    h.pump();
+    assert_eq!(h.client.pressed_keys, vec![30]);
+    assert_eq!(
+        h.client.keyboard_enter.as_ref().map(Proxy::id),
+        Some(child.id())
+    );
+
     // Dropping the modal hint gives the parent its pointer back.
     dialog.unset_modal();
     h.pump();
@@ -331,5 +274,160 @@ fn a_modal_dialog_is_a_sheet_on_its_parent_tile_and_owns_its_input() {
             .map(|(id, _)| id)
             .collect::<Vec<_>>(),
         vec![child_id]
+    );
+}
+
+/// The strip state a dialog must leave alone: which workspace, strip and
+/// group are active (what the viewport follows) and how many groups exist.
+fn strip_view(state: &shell::compositor::state::State) -> String {
+    let tree = state.workspace_tree.read();
+    let workspace = tree.desktop.active;
+    let strip = tree.desktop.active_strip.get(&workspace).copied();
+    let group = strip.and_then(|strip| tree.desktop.active_group_for(strip));
+    let groups: usize = tree
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|ws| ws.strips.iter())
+        .map(|strip| strip.window_groups.len())
+        .sum();
+    let view = format!("{workspace:?} {strip:?} {group:?} {groups}");
+    drop(tree);
+    view
+}
+
+/// What a host-service prompt (gcr-prompter's keyring unlock) sends: no
+/// parent, no dialog hint, the id announced after `get_toplevel`.
+#[test]
+fn a_parentless_system_prompt_is_a_sheet_and_leaves_the_strip_alone() {
+    let mut h = Harness::new();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let qh = h.queue.handle();
+
+    let mut keep = Vec::new();
+    for app in ["org.example.Editor", "org.example.Browser"] {
+        let surface = compositor.create_surface(&qh, ());
+        let xdg = wm.get_xdg_surface(&surface, &qh, ());
+        let top = xdg.get_toplevel(&qh, ());
+        top.set_app_id(app.into());
+        surface.commit();
+        h.pump();
+        keep.push((surface, xdg, top));
+    }
+    let tabs = foreign_tabs(&h.state);
+    assert_eq!(tabs.len(), 2);
+    let focused = tabs[1].0;
+    h.state.set_client_keyboard_focus(Some(focused));
+    h.pump();
+
+    let before = strip_view(&h.state);
+
+    let prompt = compositor.create_surface(&qh, ());
+    let prompt_xdg = wm.get_xdg_surface(&prompt, &qh, ());
+    let prompt_top = prompt_xdg.get_toplevel(&qh, ());
+    prompt_top.set_app_id("gcr-prompter".into());
+    prompt.commit();
+    h.pump();
+
+    assert_eq!(
+        foreign_tabs(&h.state).len(),
+        2,
+        "a system prompt is never a tab"
+    );
+    assert_eq!(
+        strip_view(&h.state),
+        before,
+        "the strip did not change or pan"
+    );
+    let sheets = store().sheets_over(focused);
+    assert_eq!(
+        sheets.len(),
+        1,
+        "the prompt is a sheet over the focused window"
+    );
+    drop(keep);
+}
+
+#[test]
+fn a_system_prompt_with_no_window_to_sit_on_is_a_system_modal_overlay() {
+    let mut h = Harness::new();
+    h.state.output_size = (1000, 800);
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let qh = h.queue.handle();
+    let before = strip_view(&h.state);
+
+    let prompt = compositor.create_surface(&qh, ());
+    let prompt_xdg = wm.get_xdg_surface(&prompt, &qh, ());
+    let prompt_top = prompt_xdg.get_toplevel(&qh, ());
+    prompt_top.set_app_id("gcr-prompter".into());
+    prompt.commit();
+    h.pump();
+
+    assert!(foreign_tabs(&h.state).is_empty(), "never a tab");
+    assert_eq!(strip_view(&h.state), before, "the strip did not move");
+    assert!(h.state.has_system_modal());
+    let id = h.state.top_system_modal().expect("the prompt");
+    assert!(!store().is_sheet(id));
+    assert!(
+        h.state.is_transient_surface(id),
+        "painted and hit above the desktop"
+    );
+
+    store().publish_rgba(id, &opaque(300, 200), 300, 200);
+    assert_eq!(
+        h.state.system_modal_surfaces(),
+        vec![(id, Rect::new(350.0, 300.0, 650.0, 500.0))],
+        "centred on the output"
+    );
+}
+
+#[test]
+fn modal_and_fixed_size_dialogs_that_name_no_parent_are_sheets() {
+    let mut h = Harness::new();
+    h.state.output_size = (1000, 800);
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let dialogs = h.bind::<xdg_wm_dialog_v1::XdgWmDialogV1>("xdg_wm_dialog_v1", 1);
+    let qh = h.queue.handle();
+
+    let window = compositor.create_surface(&qh, ());
+    let window_xdg = wm.get_xdg_surface(&window, &qh, ());
+    let window_top = window_xdg.get_toplevel(&qh, ());
+    window_top.set_app_id("org.example.Editor".into());
+    window.commit();
+    h.pump();
+    let host = foreign_tabs(&h.state)[0].0;
+    h.state.set_client_keyboard_focus(Some(host));
+    let before = strip_view(&h.state);
+
+    // xdg_dialog_v1 modal, no parent, an app id nobody listed.
+    let modal = compositor.create_surface(&qh, ());
+    let modal_xdg = wm.get_xdg_surface(&modal, &qh, ());
+    let modal_top = modal_xdg.get_toplevel(&qh, ());
+    modal_top.set_app_id("org.example.Whatever".into());
+    dialogs.get_xdg_dialog(&modal_top, &qh, ()).set_modal();
+    modal.commit();
+    h.pump();
+
+    // A fixed-size window: min == max.
+    let fixed = compositor.create_surface(&qh, ());
+    let fixed_xdg = wm.get_xdg_surface(&fixed, &qh, ());
+    let fixed_top = fixed_xdg.get_toplevel(&qh, ());
+    fixed_top.set_app_id("org.example.Other".into());
+    fixed_top.set_min_size(320, 200);
+    fixed_top.set_max_size(320, 200);
+    fixed.commit();
+    h.pump();
+    shell::compositor::foreign::flush_configures(&mut h.state);
+    h.pump();
+
+    assert_eq!(foreign_tabs(&h.state).len(), 1, "neither dialog is a tab");
+    assert_eq!(strip_view(&h.state), before, "the strip did not move");
+    assert_eq!(
+        store().sheets_over(host).len(),
+        2,
+        "both are sheets on the focused window"
     );
 }

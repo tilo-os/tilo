@@ -70,6 +70,10 @@ pub enum Fault {
     ServerError,
     /// The next body is cut off before its declared length.
     TruncatedBody,
+    /// The next download body is cut off by closing the connection, with
+    /// no `Content-Length` declared: only the client's own length check can
+    /// tell.
+    ClosedEarly,
     /// The next request is answered 401 as if the token had expired; the
     /// credential works again afterwards.
     ExpiredCredential,
@@ -195,6 +199,7 @@ macro_rules! conformance_suite {
                 native_documents,
                 transient_faults_are_retryable,
                 truncated_bodies_are_errors,
+                truncated_ranged_reads_are_errors,
                 expired_credentials_recover,
                 cursor_resets_restart_enumeration,
             );
@@ -817,6 +822,41 @@ pub fn truncated_bodies_are_errors(fixture: &dyn Fixture) {
         ),
     }
     assert_eq!(read_all(source, &item.id), bytes);
+}
+
+/// A ranged body cut short by a closed connection is an error even though
+/// no length was declared: the requested range is the length to check.
+pub fn truncated_ranged_reads_are_errors(fixture: &dyn Fixture) {
+    let bytes = pattern(50_000);
+    put_remote(fixture, "cut-range.bin", &bytes);
+    let source = fixture.source();
+    let item = must(source, "cut-range.bin");
+    if !fixture.inject(Fault::ClosedEarly) {
+        return;
+    }
+    let range = 1_000..41_000_u64;
+    let outcome = source
+        .read(&item.id, Some(range.clone()), None)
+        .and_then(|mut download| {
+            let mut body = Vec::new();
+            download.body.read_to_end(&mut body)?;
+            Ok(body)
+        });
+    if let Ok(body) = outcome {
+        panic!(
+            "a ranged body cut short was accepted ({} of {} bytes)",
+            body.len(),
+            range.end - range.start
+        );
+    }
+    let mut body = Vec::new();
+    source
+        .read(&item.id, Some(range), None)
+        .expect("ranged read")
+        .body
+        .read_to_end(&mut body)
+        .expect("range body");
+    assert_eq!(body, &bytes[1_000..41_000]);
 }
 
 /// An expired credential is reported once and the refreshed one works.

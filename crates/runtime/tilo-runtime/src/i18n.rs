@@ -4,30 +4,7 @@
 
 use ui::i18n::{ArgValue, EmbeddedCatalog};
 
-static CATALOG: EmbeddedCatalog = catalog();
-
-const fn catalog() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new(
-        "en-US",
-        &[
-            ("en-US", include_str!("../locales/en-US.ftl")),
-            ("de-DE", include_str!("../locales/de-DE.ftl")),
-        ],
-        "device-consent-question",
-    )
-    .with_system_locale();
-    #[cfg(test)]
-    let catalog = catalog.with_pinned_locale("en-US");
-    catalog
-}
-
-pub(crate) fn t(key: &str) -> String {
-    CATALOG.t(key)
-}
-
-pub(crate) fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
-    CATALOG.t_args(key, args)
-}
+ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 
 /// The arguments of a message about `app` and `device`: each catalogue
 /// selects its own sentence on the device, since a spliced-in noun does not
@@ -76,12 +53,9 @@ mod tests {
 
     #[test]
     fn german_names_each_device_with_its_own_article() {
-        let catalog = EmbeddedCatalog::new(
-            "de-DE",
-            &[("de-DE", include_str!("../locales/de-DE.ftl"))],
-            "device-consent-question",
-        )
-        .with_pinned_locale("de-DE");
+        let catalog =
+            EmbeddedCatalog::new("de-DE", &[("de-DE", include_str!("../locales/de-DE.ftl"))])
+                .with_pinned_locale("de-DE");
         let ask = |device| catalog.t_args("device-consent-question", &device_args("Video", device));
         assert!(
             ask(tilo_capture::DeviceKind::Camera).ends_with("die Kamera verwenden?"),

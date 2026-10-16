@@ -4,16 +4,6 @@
 //! and assert on the production `PresenceCtx` surface the widgets render
 //! from — not a bespoke helper.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::time::{Instant, SystemTime};
 
 use tilo_ui::app::App;
@@ -28,10 +18,6 @@ fn app() -> App {
     App::new(State::new(), Box::new(Container::new()))
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
-)]
 #[test]
 fn room_arrivals_status_and_follow_reach_the_right_surface() {
     // Case `remote_arrival_on_tab_flags_the_right_nav_item`.

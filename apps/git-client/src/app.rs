@@ -1,40 +1,56 @@
 //! Root widget for the git client.
 //!
-//! Owns the in-memory [`RepoModel`], the currently-shown diff, the active
-//! screen and all transient selection / scroll state. Durable preferences
-//! live in the CRDT via [`Settings`]. The widget draws everything itself
-//! into the Vello scene — a top app bar with a screen switcher, then the
-//! active screen (changes / history / panels). Events are routed by
-//! hit-testing the regions each screen emits.
+//! Owns the in-memory [`RepoModel`], the diffs, the active screen and all
+//! transient selection and scroll state. Durable preferences live in the
+//! CRDT via [`Settings`]. The widget paints the window from toolkit faces:
+//! one header row holding each column's header (the sidebar toggle and the
+//! repository name over the list, the screen switcher and the screen's
+//! commands over the content), the list column of the Changes and History
+//! screens on the sidebar region through a [`SidebarDrawer`] (docked when the
+//! window is wide, a floating drawer when it is narrow), and the screen's
+//! content on the window ground. Presses are routed through the targets the
+//! last paint recorded.
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use ui::time::Instant;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
-use taffy::{NodeId, Style, TaffyTree};
+#[cfg(test)]
+use automerge::AutoCommit;
+use automerge::ObjId;
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::ColorCompat;
+use crate::actions::GitClientEffect;
+use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, RunMode};
 use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{ButtonFace, FlapState, SplitLayout, TextInput, TextInputKind, Widget};
+use ui::tilo_actions::ActionOutput;
+use ui::tilo_resource::Invoke;
+use ui::tokens::TextRole;
+use ui::widget::scrollbar::{BarFade, PressOutcome, ScrollMetrics, Scrollbar};
+use ui::widget::toolbar::Orientation;
+use ui::widget::{
+    Banner, ButtonFace, ControlSize, EmptyState, EmptyStateContent, ModalAction, ModalHit,
+    ModalLayout, ModalSpec, SegmentedFace, SegmentedTouch, SegmentedTouchGroup,
+    SegmentedTouchResult, SidebarDrawer, TextInput, TextInputKind, ToggleGroup, Toolbar, Widget,
+};
 
-use crate::changes::{ChangesColumn, ChangesHit};
-use crate::diffview::{self, DiffView, HunkInteraction};
-use crate::draw;
+use crate::changes::{self, ChangesHit};
+use crate::diffview::{self, DiffHit, HunkAction};
 use crate::graph::{self, GraphLayout};
-use crate::history::{self, HistoryView};
+use crate::history;
+use crate::i18n::{t, t_args};
 use crate::model::{ChangeArea, DiffKey, DiffMap, FileChange, RepoModel};
-use crate::panels::{BranchAction, PanelHit, PanelsView, RemoteAction};
+use crate::panels::{self, BranchAction, PanelHit, RemoteAction};
 use crate::settings::{DiffLayout, Settings};
 
 /// Which embedded text field currently holds keyboard focus. Text editing is
@@ -42,12 +58,15 @@ use crate::settings::{DiffLayout, Settings};
 /// clipboard); this tracks which one keys route to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Field {
-    /// The commit-message summary field.
+    /// The commit-message field.
     Commit,
     /// The new-branch name field on the Branches screen.
     Branch,
-    /// The repository-path field on the empty "open a repository" screen.
+    /// The repository-path field on the "open a repository" screen.
     Open,
+    WorktreeBranch,
+    WorktreePath,
+    WorktreeStart,
 }
 
 /// Host event resources retained while one event is routed through embedded
@@ -56,7 +75,7 @@ struct InputEventCtx<'a> {
     event: &'a WindowEvent,
     scale_factor: f64,
     modifiers: winit::event::Modifiers,
-    state: &'a mut AutoCommit,
+    state: ui::widget::Edits<'a>,
     path: &'a ObjId,
     taffy: &'a TaffyTree<()>,
 }
@@ -69,183 +88,143 @@ pub enum Screen {
     Panels,
 }
 
-/// A destructive discard action armed for confirmation, scoped to the file
-/// currently shown in the diff pane.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DiscardTarget {
-    /// Revert the whole file's worktree changes (or delete an untracked file).
-    File,
-    /// Revert a single hunk of the file's worktree changes.
-    Hunk(usize),
-}
-
 impl Screen {
-    /// Whether this screen has a primary left list column that adapts into an
-    /// overlay flap on a narrow window. The Changes (file list) and History
-    /// (commit list) screens are master-detail; Branches & Remotes is a
-    /// full-width dashboard with no collapsible list.
-    fn has_sidebar(self) -> bool {
+    const ALL: [Self; 3] = [Self::Changes, Self::History, Self::Panels];
+
+    /// Whether the screen has a list column (on the sidebar region, a
+    /// drawer in a narrow window). Branches is one page with no list.
+    fn has_list(self) -> bool {
         matches!(self, Screen::Changes | Screen::History)
     }
-}
 
-const TABS: [(Screen, &str); 3] = [
-    (Screen::Changes, "Changes"),
-    (Screen::History, "History"),
-    (Screen::Panels, "Branches & Remotes"),
-];
+    fn label(self) -> String {
+        t(match self {
+            Screen::Changes => "git-screen-changes",
+            Screen::History => "git-screen-history",
+            Screen::Panels => "git-screen-branches",
+        })
+    }
 
-const APPBAR_H: f64 = 56.0;
-/// Second app-bar row that hosts the screen tabs when the title, tab group and
-/// settings cluster cannot share the 56px row (narrow windows). Nothing is
-/// hidden or overwritten: the title keeps `TITLE_MIN_W`, the settings stay on
-/// the first row and the tabs move underneath.
-const APPBAR_TAB_ROW_H: f64 = 44.0;
-/// Horizontal app-bar gutter: the title's left inset and the cluster's right
-/// inset are the same value so the bar reads as one composed row.
-const APPBAR_GUTTER: f64 = 20.0;
-/// Width the overlay-mode hamburger occupies before the title starts.
-const HAMBURGER_SLOT: f64 = 44.0;
-/// Narrowest title block the one-row app bar may leave before it wraps.
-const TITLE_MIN_W: f64 = 96.0;
-/// Height shared by every app-bar control (tabs, segmented control, syntax
-/// toggle, hamburger) so they sit on one centre line.
-const APPBAR_CONTROL_H: f64 = 32.0;
-/// Gap between the tab group and the settings cluster, and between the two
-/// settings controls.
-const APPBAR_CLUSTER_GAP: f64 = 12.0;
-/// Fractional app-bar text sizes. Whole-number sizes (15 px Bold title, 14 px
-/// branch pill, 13 px tabs, 12 px settings, 13/12 px diff header) stay inline
-/// at their call sites — the F1 spacing ratchet counts named whole-number
-/// `f32` consts and these files carry none to spare.
-const SUBTITLE_FONT: f32 = 11.5;
-const DIFF_DISCARD_FONT: f32 = 11.5;
-
-/// App-bar band and control heights measured from the renderer the bar paints
-/// with: the 1× constants until the text scale outgrows them, then the
-/// measured lines plus their padding, so the title, subtitle, pill, tabs and
-/// settings grow together instead of the subtitle overprinting the title.
-/// `Default` is the bar's 1× rhythm: 9 px above the title, 3 px to the
-/// subtitle (9 + 18.75 + 3 + 14.4 + 9 ≤ 56), 7 px around a tab label inside a
-/// 32 px control and 6 px around a control inside its row.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct BarMetrics {
-    /// Height of the title row (title + subtitle stack).
-    row_h: f64,
-    /// Height of the wrapped tab row.
-    tab_row_h: f64,
-    /// Height of every bar control (tabs, segmented switch, toggle, hamburger).
-    control_h: f64,
-    /// Measured title and subtitle line heights.
-    title_h: f64,
-    subtitle_h: f64,
-    /// Vertical rhythm: title block padding, title→subtitle gap, tab label
-    /// padding inside a control, control padding inside a row.
-    title_pad: f64,
-    title_gap: f64,
-    control_pad: f64,
-    row_pad: f64,
-}
-
-impl Default for BarMetrics {
-    fn default() -> Self {
-        Self {
-            row_h: APPBAR_H,
-            tab_row_h: APPBAR_TAB_ROW_H,
-            control_h: APPBAR_CONTROL_H,
-            title_h: 18.75,
-            subtitle_h: 14.375,
-            title_pad: 9.0,
-            title_gap: 3.0,
-            control_pad: 7.0,
-            row_pad: 6.0,
+    fn target(self) -> &'static str {
+        match self {
+            Screen::Changes => "git.screen.changes",
+            Screen::History => "git.screen.history",
+            Screen::Panels => "git.screen.branches",
         }
     }
 }
 
-/// What the diff-pane header shows about the selected file, copied out of the
-/// diff so the header can paint while `self` is mutated.
-struct DiffHeaderInfo {
-    old_path: Option<String>,
-    path: String,
-    additions: u32,
-    deletions: u32,
+/// A destructive step waiting for the person to confirm it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Confirm {
+    /// Revert a file's worktree changes (or delete an untracked file).
+    DiscardFile {
+        area: ChangeArea,
+        index: usize,
+        name: String,
+    },
+    /// Revert one hunk of the selected file's worktree changes.
+    DiscardHunk(usize),
+    /// Delete a local branch.
+    DeleteBranch(String),
 }
 
-/// Measured widths of the app-bar tabs: each tab's cell, and the whole run
-/// including the 6px gaps between cells.
-struct TabWidths {
-    cells: Vec<f64>,
-    total: f64,
+impl Confirm {
+    fn title(&self) -> String {
+        match self {
+            Confirm::DiscardFile { name, .. } => {
+                t_args("git-confirm-discard-file-title", &[("name", name.into())])
+            }
+            Confirm::DiscardHunk(_) => t("git-confirm-discard-hunk-title"),
+            Confirm::DeleteBranch(name) => {
+                t_args("git-confirm-delete-branch-title", &[("name", name.into())])
+            }
+        }
+    }
+
+    fn body(&self) -> String {
+        t(match self {
+            Confirm::DiscardFile { area, .. } if *area == ChangeArea::Untracked => {
+                "git-confirm-discard-untracked-body"
+            }
+            Confirm::DiscardFile { .. } | Confirm::DiscardHunk(_) => "git-confirm-discard-body",
+            Confirm::DeleteBranch(_) => "git-confirm-delete-branch-body",
+        })
+    }
+
+    fn action(&self) -> String {
+        t(match self {
+            Confirm::DiscardFile { .. } | Confirm::DiscardHunk(_) => "git-confirm-discard",
+            Confirm::DeleteBranch(_) => "git-delete-branch",
+        })
+    }
 }
 
-/// Measured widths of the two app-bar settings controls: the Unified/Split
-/// segmented control (both halves as wide as the wider label) and the
-/// Syntax toggle, each with symmetric label padding.
+/// Something a press, a key or an assistive action can do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Hit {
+    /// Show or hide the list column.
+    SidebarToggle,
+    Screen(Screen),
+    DiffLayout(DiffLayout),
+    SyntaxHighlight,
+    Remote(RemoteAction),
+    /// The scrim behind an open drawer: dismisses it.
+    Scrim,
+    DismissError,
+    Change(ChangesHit),
+    Diff(DiffHit),
+    /// A commit row, by index.
+    Commit(usize),
+    Panel(PanelHit),
+    OpenPath,
+    OpenRepository,
+}
+
+/// A target the last paint recorded: where, and what it does.
+#[derive(Clone, Debug)]
+struct Target {
+    rect: Rect,
+    hit: Hit,
+}
+
+/// View state a screenshot scenario asks for, applied once the window has
+/// the layout it needs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Staged {
+    Nothing,
+    /// Open the list drawer once the window is narrow.
+    OpenDrawer,
+}
+
+/// What a wheel over a region scrolls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scroller {
+    ChangesList,
+    Diff,
+    HistoryList,
+    Detail,
+    Panels,
+}
+
+/// One scrollable region of the last paint and how far it may scroll.
 #[derive(Clone, Copy, Debug)]
-struct SettingsWidths {
-    segmented: f64,
-    syntax: f64,
+struct ScrollRegion {
+    rect: Rect,
+    scroller: Scroller,
+    max_y: f64,
+    max_x: f64,
+    /// The ground the content stands on, which the edge fades blend into.
+    ground: vello::peniko::Color,
 }
-
-impl SettingsWidths {
-    fn measure(tr: &mut TextRenderer) -> Self {
-        let label_w = |tr: &mut TextRenderer, label: &str| {
-            f64::from(tr.measure_weighted(label, 12.0, None, TextWeight::Medium).0)
-        };
-        let half = label_w(tr, "Unified").max(label_w(tr, "Split")) + 24.0;
-        Self {
-            segmented: half * 2.0 + 6.0,
-            syntax: label_w(tr, "Syntax") + 24.0,
-        }
-    }
-
-    /// Width of the whole cluster, the gap between the two controls included.
-    fn total(self) -> f64 {
-        self.segmented + APPBAR_CLUSTER_GAP + self.syntax
-    }
-}
-
-impl BarMetrics {
-    fn measure(tr: &mut TextRenderer) -> Self {
-        let one = Self::default();
-        let title_h = f64::from(tr.measure_weighted("Ag", 15.0, None, TextWeight::Bold).1);
-        let subtitle_h = f64::from(tr.measure("Ag", SUBTITLE_FONT, None).1);
-        let tab_h = f64::from(tr.measure_weighted("Ag", 13.0, None, TextWeight::Medium).1);
-        let control_h = (tab_h + 2.0 * one.control_pad).max(APPBAR_CONTROL_H);
-        let stack = one.title_pad + title_h + one.title_gap + subtitle_h + one.title_pad;
-        let row_h = stack.max(control_h + 2.0 * one.row_pad).max(APPBAR_H);
-        let tab_row_h = (control_h + 2.0 * one.row_pad).max(APPBAR_TAB_ROW_H);
-        Self {
-            row_h,
-            tab_row_h,
-            control_h,
-            title_h,
-            subtitle_h,
-            ..one
-        }
-    }
-}
-const CHANGES_COL_W: f64 = 320.0;
-
-/// Below this allocated width (logical px) the primary list column stops
-/// fitting comfortably beside a readable detail pane, so it collapses into an
-/// overlay flap. Chosen so the 320px list + a usable diff/detail pane keep
-/// breathing room above the breakpoint and the app bar's tab + settings
-/// clusters still fit.
-const NARROW_BREAKPOINT: f64 = 760.0;
-
-/// Width of the overlay flap when fully revealed on a narrow window. Matches
-/// the docked changes column so the list looks identical in both layouts.
-const FLAP_W: f64 = CHANGES_COL_W;
 
 /// One owned repository operation. Completion stays available until its action
 /// invocation consumes it, even when a normal UI sync receives it first.
 struct RemoteJob {
     receiver: Receiver<Result<(), String>>,
-    result: Option<Result<(), String>>,
-    invocation: Option<tilo_actions::InvocationId>,
-    progress_sent: bool,
+    reply: Option<EffectReply>,
+    /// Palette label while the transfer is in flight (a live row).
+    label: String,
 }
 
 pub struct GitClientApp {
@@ -253,29 +232,30 @@ pub struct GitClientApp {
     diffs: DiffMap,
     graph_layout: GraphLayout,
 
-    /// Framework-owned action dispatch (the only action-dispatch state the app
-    /// holds). Every durable view-preference toggle dispatches its
-    /// [`GitClientAction`](crate::actions::GitClientAction) through this: the
-    /// host brackets the undo boundary, encodes and applies through the executor
-    /// (so it replays byte-identically on peers), and remembers the last action
-    /// for the affordance == `ActionSpec` covenant test.
-    actions: ui::ActionHost,
+    /// Framework-owned action dispatch: opening a repository and recording
+    /// what collaborators see of it go through this, as do the effects the
+    /// controls ask the host for.
+    dispatcher: Option<ui::framework::Dispatcher<crate::resource::GitClient>>,
+    mode: RunMode,
+    opened: Option<String>,
+    presented: bool,
+    preferences: Option<ui::framework::Setting<Settings>>,
+    control_actions: Option<ui::framework::Actions<crate::resource::GitClient>>,
 
-    /// No repository is bound and none was reachable at launch — the app shows
-    /// the honest "open a repository" empty state rather than any placeholder
-    /// data. Cleared once a repo is opened (via the path field or at startup).
+    /// No repository is bound: keep the "open a repository" empty state
+    /// until an explicit path or restored record selects a repository.
     awaiting_repo: bool,
     /// Which embedded text field holds focus, if any.
     focus: Option<Field>,
-    /// Commit-message summary field (toolkit `TextInput`, local mode).
+    /// Commit-message field (toolkit `TextInput`, local mode).
     commit_input: TextInput,
     /// New-branch name field (toolkit `TextInput`, local mode).
     branch_input: TextInput,
+    worktree_branch_input: TextInput,
+    worktree_path_input: TextInput,
+    worktree_start_input: TextInput,
     /// Repository-path field on the empty-state screen (toolkit `TextInput`).
     open_input: TextInput,
-    /// Hit rects for the empty-state open field + button.
-    open_input_rect: Rect,
-    open_button_rect: Rect,
 
     /// Path the repository was opened from, when backed by a real on-disk
     /// repo. `None` for the bundled sample (the `--shots` path), in which
@@ -283,25 +263,14 @@ pub struct GitClientApp {
     /// screenshot still demonstrates the flow. When `Some`, every action
     /// drives `git2` against the real repo and re-reads the model.
     repo_path: Option<std::path::PathBuf>,
-    /// Last action error, surfaced in the UI (e.g. "no identity set").
+    /// Last action error, shown in a banner over the content until dismissed.
     last_error: Option<String>,
     remote_job: Option<RemoteJob>,
 
     settings: Settings,
+    /// Fingerprint of the last shared-repo projection written to the document.
+    shared_repo_fingerprint: Option<String>,
     /// Set once after the first sync seeds the settings into the doc.
-    settings_seeded: bool,
-    /// An initial preference was forced at construction (the `GIT_CLIENT_SPLIT`
-    /// screenshot path), so the first sync keeps it rather than adopting the
-    /// document's persisted value. Interactive toggles never set this — they go
-    /// through the action executor, which writes the document directly.
-    settings_forced: bool,
-    /// Cached hit rects for the app-bar settings controls, set during draw.
-    settings_seg: Rect,
-    settings_syn: Rect,
-    /// Last painted subtitle, shared with the native live text node.
-    status_rect: Rect,
-    status_text: String,
-
     screen: Screen,
     rect: Rect,
 
@@ -309,62 +278,57 @@ pub struct GitClientApp {
     selected_change: Option<(ChangeArea, usize)>,
     changes_scroll: f64,
     diff_scroll: f64,
-    hover_hunk: Option<usize>,
-    /// A discard action armed for confirmation on the selected file: the next
-    /// click on the same (now red) affordance performs it; any other
-    /// interaction disarms. Guards the destructive worktree revert behind a
-    /// deliberate second click.
-    armed_discard: Option<DiscardTarget>,
+    diff_hscroll: f64,
 
     // --- History screen state ---
     selected_commit: usize,
     history_scroll: f64,
     detail_scroll: f64,
 
-    // --- Panels screen state ---
-    hover_action: Option<RemoteAction>,
-    /// Hit rects for the Panels "new branch" input + create button.
-    new_branch_input: Rect,
-    new_branch_button: Rect,
+    // --- Branches screen state ---
+    panels_scroll: f64,
 
-    // --- Responsive sidebar (the primary list column) ---
-    /// Eased open/closed state of the primary list column, shared with every
-    /// other adaptive app via the toolkit kernel. Open when docked (wide),
-    /// closed overlay flap when narrow, summoned by the hamburger.
-    flap: FlapState,
-    /// Wall-clock of the last flap animation tick, so the eased slide is
-    /// frame-rate independent.
-    last_flap_tick: Instant,
-    /// Hit rect for the app-bar hamburger toggle (overlay mode only).
-    hamburger_rect: Rect,
+    /// A destructive step waiting for confirmation, and where its sheet was
+    /// laid out last.
+    confirm: Option<Confirm>,
+    confirm_layout: Option<ModalLayout>,
 
-    last_mouse: Point,
+    /// The list column of the Changes and History screens: docked beside the
+    /// content when the window is wide, a floating drawer when it is narrow.
+    drawer: SidebarDrawer,
+    /// The window's History control, which the header row holds, and where
+    /// the last paint put it.
+    history: ui::widget::HistoryOpener,
+    history_rect: Rect,
+    /// The Syntax toggle in the Changes header, and the press it reports.
+    syntax_tool: Toolbar,
+    syntax_pressed: Rc<Cell<bool>>,
+    /// View state a screenshot scenario asks for once the window is laid out.
+    staged: Staged,
 
-    // Click regions emitted by the last draw, used for hit-testing the
-    // next click. Boxed closures keep geometry out of the event handler.
-    change_hits: Vec<Box<dyn Fn(Point) -> Option<ChangesHit>>>,
-    change_semantic_hits: Vec<(Rect, ChangesHit)>,
-    diff_hunk_buttons: Vec<diffview::HunkButton>,
-    /// Row metrics the diff painted last, so wheel scrolling clamps to the
-    /// same pitch the rows use at the current text scale.
-    diff_metrics: diffview::Metrics,
-    /// Measured diff-pane header height from the last draw.
-    diff_header_h: f64,
-    /// Hit rect for the diff-header "Discard file" button (worktree side only).
-    discard_file_rect: Rect,
-    history_rows: Vec<Rect>,
-    /// Row metrics the commit list painted last (see `diff_metrics`).
-    history_metrics: history::Metrics,
-    panel_hits: Vec<Box<dyn Fn(Point) -> Option<PanelHit>>>,
-    panel_semantic_hits: Vec<(Rect, PanelHit)>,
-    tab_rects: Vec<(Screen, Rect)>,
-    /// Measured app-bar height from the last draw: one row, or two when the
-    /// tabs wrap under the title on a narrow window. Body, scroll and hit
-    /// computations read this rather than the one-row constant.
-    appbar_h: f64,
-    /// Title block (name, branch pill, subtitle) from the last draw, so tests
-    /// can prove it never runs under the tab group or the settings cluster.
-    title_rect: Rect,
+    /// The pointer, while it is over the window.
+    pointer: Option<Point>,
+    segmented_touch: SegmentedTouch,
+    /// The host's keyboard conventions (which modifier is the command key).
+    conventions: ui::platform::PlatformConventions,
+
+    /// Targets the last paint recorded, back to front.
+    targets: Vec<Target>,
+    /// What assistive technology can reach: every control and row of the
+    /// last paint, including row actions that show only on hover.
+    semantic: Vec<Target>,
+    /// Scrollable regions of the last paint, back to front.
+    scroll_regions: Vec<ScrollRegion>,
+    /// The scroll bar track of every region of the last paint whose content
+    /// overflows, with how its content stood.
+    scroll_bars: Vec<(Scroller, Rect, ScrollMetrics)>,
+    /// The toolkit scroll bar of the region whose thumb is held or under
+    /// the pointer, and which region that is.
+    scrollbar: Scrollbar,
+    scrollbar_region: Option<Scroller>,
+    /// The bars show while a region scrolls or the pointer is on one, then
+    /// fade out like every toolkit scroll view's.
+    bar_fade: BarFade,
 }
 
 impl Default for GitClientApp {
@@ -380,32 +344,16 @@ impl GitClientApp {
     /// when no repository is reachable.
     ///
     /// Setting `GIT_CLIENT_SAMPLE=1` forces the bundled fixture regardless
-    /// of any reachable repository — the headless screenshot path uses
-    /// this so the capture is a fully populated, deterministic state
-    /// (rename + delete + new file across all three areas, a multi-lane
-    /// commit graph) rather than whatever happens to sit around the CWD.
+    /// of any reachable repository.
     pub fn new() -> Self {
-        let force_sample =
-            std::env::var("GIT_CLIENT_SAMPLE").is_ok_and(|v| v != "0" && !v.is_empty());
-        if force_sample {
-            let (model, diffs) = crate::sample::model();
-            return Self::from_model(model, diffs);
-        }
-        if let Some((path, model, diffs)) = Self::load_repo() {
-            let mut app = Self::from_model(model, diffs);
-            app.repo_path = Some(path);
-            app
-        } else {
-            // No reachable repository — show the honest "open a repository"
-            // empty state rather than any placeholder data. The path field
-            // is pre-filled with the current directory as a convenience.
-            let mut app = Self::from_model(RepoModel::default(), DiffMap::new());
-            app.awaiting_repo = true;
-            if let Ok(cwd) = std::env::current_dir() {
-                app.open_input.set_text(&cwd.to_string_lossy());
-            }
-            app
-        }
+        Self::open_empty()
+    }
+
+    /// The app over the bundled sample repository: a populated, deterministic
+    /// state with no repository on disk (screenshots and demos).
+    pub fn sample() -> Self {
+        let (model, diffs) = crate::sample::model();
+        Self::from_model(model, diffs)
     }
 
     /// Open a real repository discovered from `path` and build the app
@@ -431,79 +379,53 @@ impl GitClientApp {
         app
     }
 
-    /// `--shots --scenario`: open a screen directly so each one can be
-    /// reviewed from a single offscreen frame.
-    pub fn shot_screen(&mut self, screen: Screen) {
-        self.switch_screen(screen);
-    }
-
-    /// `--shots --scenario split`: the side-by-side diff layout, pinned so
-    /// the document sync does not fold it back to the stored preference.
-    pub fn shot_split_diff(&mut self) {
-        self.settings.diff_layout = DiffLayout::SideBySide;
-        self.settings_forced = true;
-    }
-
-    /// `--shots --scenario commit`: a typed commit summary so the commit box
-    /// and its primary action render in their enabled state.
-    pub fn shot_commit_message(&mut self, message: &str) {
-        self.commit_input.set_text(message);
-    }
-
-    /// `--shots --scenario discard`: the two-click discard confirmation
-    /// armed on the selected file, so the danger state is capturable.
-    pub fn shot_arm_discard(&mut self) {
-        self.armed_discard = Some(DiscardTarget::File);
-    }
-
     /// Construct from an explicit model — used by the sample path and tests.
     pub fn from_model(mut model: RepoModel, diffs: DiffMap) -> Self {
         let graph_layout = graph::layout(&mut model.commits);
         // Pre-select the first changed file so the diff pane is populated.
         let selected_change = first_change(&model);
-        // Allow the headless capture to open a specific screen so each
-        // screen can be reviewed; defaults to Changes for the live app.
-        let screen = match std::env::var("GIT_CLIENT_SCREEN").as_deref() {
-            Ok("history") => Screen::History,
-            Ok("panels") => Screen::Panels,
-            _ => Screen::Changes,
-        };
-        let mut settings = Settings::default();
-        let split_forced = std::env::var("GIT_CLIENT_SPLIT").is_ok();
-        if split_forced {
-            settings.diff_layout = DiffLayout::SideBySide;
-        }
-        // The primary list column defaults open when docked. The headless
-        // narrow capture sets `GIT_CLIENT_FLAP_OPEN` so the single offscreen
-        // frame shows the overlay flap fully revealed over its scrim rather
-        // than the closed default a fresh narrow window opens to.
-        let mut flap = FlapState::open_when_docked();
-        if std::env::var("GIT_CLIENT_FLAP_OPEN").is_ok_and(|v| v != "0" && !v.is_empty()) {
-            flap.snap(true);
-        }
         let commit_input = TextInput::local()
             .with_id("git.commit-message")
-            .with_accessible_name("Commit message")
-            .with_placeholder("Summary of changes…")
-            .with_font_size(13.0);
+            .with_accessible_name(t("git-commit-message"))
+            .with_placeholder(t("git-commit-message"));
         let branch_input = TextInput::local()
             .with_id("git.branch-name")
-            .with_accessible_name("New branch name")
+            .with_accessible_name(t("git-new-branch-name"))
             .with_kind(TextInputKind::Name)
-            .with_placeholder("new branch name…")
-            .with_font_size(12.5);
+            .with_placeholder(t("git-branch-name"));
+        let worktree_branch_input = TextInput::local()
+            .with_id("git.worktree-branch")
+            .with_accessible_name(t("git-worktree-branch"))
+            .with_kind(TextInputKind::Name)
+            .with_placeholder(t("git-worktree-branch"));
+        let worktree_path_input = TextInput::local()
+            .with_id("git.worktree-path")
+            .with_accessible_name(t("git-worktree-path"))
+            .with_kind(TextInputKind::Path)
+            .with_placeholder(t("git-worktree-path"));
+        let mut worktree_start_input = TextInput::local()
+            .with_id("git.worktree-start")
+            .with_accessible_name(t("git-worktree-start"))
+            .with_kind(TextInputKind::Code)
+            .with_placeholder(t("git-worktree-start"));
+        worktree_start_input.set_text("HEAD");
         let open_input = TextInput::local()
             .with_id("git.repository-path")
-            .with_accessible_name("Repository path")
+            .with_accessible_name(t("git-repository-path"))
             .with_kind(TextInputKind::Path)
-            .with_placeholder("/path/to/repository")
-            .with_font_size(14.0)
-            .with_mono();
+            .with_placeholder(t("git-repository-path"));
+        let syntax_pressed = Rc::new(Cell::new(false));
+        let pressed = Rc::clone(&syntax_pressed);
+        let syntax_tool =
+            Toolbar::new(Orientation::Horizontal)
+                .push_toggle(&t("git-syntax"), true, move || pressed.set(true));
         Self {
-            actions: ui::ActionHost::new(),
-            flap,
-            last_flap_tick: ui::time::now(),
-            hamburger_rect: Rect::ZERO,
+            dispatcher: None,
+            mode: RunMode::Live,
+            opened: None,
+            presented: false,
+            preferences: None,
+            control_actions: None,
             model,
             diffs,
             graph_layout,
@@ -511,46 +433,54 @@ impl GitClientApp {
             focus: None,
             commit_input,
             branch_input,
+            worktree_branch_input,
+            worktree_path_input,
+            worktree_start_input,
             open_input,
-            open_input_rect: Rect::ZERO,
-            open_button_rect: Rect::ZERO,
             repo_path: None,
             last_error: None,
             remote_job: None,
-            settings,
-            settings_seeded: false,
-            settings_forced: split_forced,
-            settings_seg: Rect::ZERO,
-            settings_syn: Rect::ZERO,
-            status_rect: Rect::ZERO,
-            status_text: String::new(),
-            screen,
+            settings: Settings::default(),
+            shared_repo_fingerprint: None,
+            screen: Screen::Changes,
             rect: Rect::ZERO,
             selected_change,
             changes_scroll: 0.0,
             diff_scroll: 0.0,
-            hover_hunk: None,
-            armed_discard: None,
+            diff_hscroll: 0.0,
             selected_commit: 0,
             history_scroll: 0.0,
             detail_scroll: 0.0,
-            hover_action: None,
-            new_branch_input: Rect::ZERO,
-            new_branch_button: Rect::ZERO,
-            last_mouse: Point::ZERO,
-            change_hits: Vec::new(),
-            change_semantic_hits: Vec::new(),
-            diff_hunk_buttons: Vec::new(),
-            diff_metrics: diffview::Metrics::default(),
-            diff_header_h: 36.0,
-            discard_file_rect: Rect::ZERO,
-            history_rows: Vec::new(),
-            history_metrics: history::Metrics::default(),
-            panel_hits: Vec::new(),
-            panel_semantic_hits: Vec::new(),
-            tab_rects: Vec::new(),
-            appbar_h: APPBAR_H,
-            title_rect: Rect::ZERO,
+            panels_scroll: 0.0,
+            confirm: None,
+            confirm_layout: None,
+            // Both lists are content the person reads: the overview width,
+            // docked or as a drawer, so a row reads the same in both.
+            // The diff beside them keeps the content minimum plus a rail's
+            // width for its line numbers before the list becomes a drawer.
+            drawer: SidebarDrawer::new()
+                .docked_width(f64::from(ui::tokens::Metrics::BASE.overview_width))
+                .overlay_width(f64::from(ui::tokens::Metrics::BASE.overview_width))
+                .breakpoint(f64::from(
+                    ui::tokens::Metrics::BASE.overview_width
+                        + ui::tokens::Metrics::BASE.content_min_width
+                        + ui::tokens::Metrics::BASE.rail_width,
+                )),
+            syntax_tool,
+            syntax_pressed,
+            staged: Staged::Nothing,
+            pointer: None,
+            segmented_touch: SegmentedTouch::default(),
+            conventions: ui::platform::PlatformConventions::default(),
+            targets: Vec::new(),
+            semantic: Vec::new(),
+            history: ui::widget::HistoryOpener::new(),
+            history_rect: Rect::ZERO,
+            scroll_regions: Vec::new(),
+            scroll_bars: Vec::new(),
+            scrollbar: Scrollbar::vertical(),
+            bar_fade: BarFade::default(),
+            scrollbar_region: None,
         }
     }
 
@@ -568,11 +498,6 @@ impl GitClientApp {
     #[doc(hidden)]
     pub fn test_stage_all(&mut self) {
         self.stage_all();
-    }
-    /// Drive the production "unstage all" action.
-    #[doc(hidden)]
-    pub fn test_unstage_all(&mut self) {
-        self.unstage_all();
     }
     /// Set the commit message and drive the production commit action.
     #[doc(hidden)]
@@ -600,11 +525,6 @@ impl GitClientApp {
     #[doc(hidden)]
     pub fn test_discard_file(&mut self, area: ChangeArea, idx: usize) {
         self.discard_file(area, idx);
-    }
-    /// Drive the production "discard hunk" action for the selected file.
-    #[doc(hidden)]
-    pub fn test_discard_hunk(&mut self, hunk: usize) {
-        self.discard_hunk(hunk);
     }
     /// Whether the app is showing the empty "open a repository" state.
     #[doc(hidden)]
@@ -654,18 +574,6 @@ impl GitClientApp {
     #[doc(hidden)]
     pub fn test_last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
-    }
-
-    fn load_repo() -> Option<(std::path::PathBuf, RepoModel, DiffMap)> {
-        let path = std::env::var("GIT_CLIENT_REPO").map_or_else(
-            |_| std::env::current_dir().unwrap_or_else(|_| ".".into()),
-            std::path::PathBuf::from,
-        );
-        // Anchor actions on the working directory so later opens are stable
-        // even if the CWD changes; fall back to the given path when bare.
-        let anchor = crate::repo::workdir(&path).unwrap_or_else(|| path.clone());
-        let (model, diffs) = crate::repo::load(&path)?;
-        Some((anchor, model, diffs))
     }
 
     /// Re-read the live repository into the model after a mutation, so the
@@ -720,7 +628,7 @@ impl GitClientApp {
         &mut self,
         action: RemoteAction,
         remote: Option<String>,
-        invocation: Option<tilo_actions::InvocationId>,
+        reply: Option<EffectReply>,
     ) -> Result<(), String> {
         if self.remote_job.is_some() {
             return Err(ui::i18n!("git-remote-busy"));
@@ -728,6 +636,12 @@ impl GitClientApp {
         let path = self
             .repo()
             .ok_or_else(|| "remote operation requires a repository".to_string())?;
+        let label = match action {
+            RemoteAction::Fetch => "Fetching…",
+            RemoteAction::Pull => "Pulling…",
+            RemoteAction::Push => "Pushing…",
+        }
+        .to_string();
         let (sender, receiver) = mpsc::channel();
         std::thread::Builder::new()
             .name("git-remote".into())
@@ -744,9 +658,8 @@ impl GitClientApp {
         self.last_error = None;
         self.remote_job = Some(RemoteJob {
             receiver,
-            result: None,
-            invocation,
-            progress_sent: false,
+            reply,
+            label,
         });
         Ok(())
     }
@@ -755,50 +668,21 @@ impl GitClientApp {
         let Some(job) = self.remote_job.as_mut() else {
             return;
         };
-        if job.result.is_some() {
-            return;
-        }
         let result = match job.receiver.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
             Err(TryRecvError::Disconnected) => Err(ui::i18n!("git-remote-worker-stopped")),
         };
         self.last_error = result.as_ref().err().cloned();
-        job.result = Some(result);
-        if job.invocation.is_none() {
-            self.remote_job = None;
+        // libgit2 operations are not cancellable: the worker's actual outcome
+        // is the answer, so a push the server accepted is never reported as
+        // cancelled.
+        if let Some(reply) = self.remote_job.take().and_then(|job| job.reply) {
+            reply.finish(result.map(|()| ActionOutput::default()));
         }
-        // A failed transfer can still have fetched objects/refs. Refresh from
+        // A failed operation can still have changed objects/refs. Refresh from
         // disk on either outcome; never infer rollback from an error.
         self.reload();
-    }
-
-    // --- Responsive layout -------------------------------------------
-
-    /// Resolve the sidebar layout from the app's allocated width. The active
-    /// screen also gates this: only master-detail screens have a collapsible
-    /// list, so screens without one always report `Docked` (their content is
-    /// already full-width and no flap/scrim/hamburger appears).
-    fn layout_mode(&self) -> SplitLayout {
-        if !self.screen.has_sidebar() {
-            return SplitLayout::Docked;
-        }
-        SplitLayout::from_width(self.rect.width(), NARROW_BREAKPOINT)
-    }
-
-    /// Whether the primary list column is currently a revealed/open overlay.
-    fn flap_open(&self) -> bool {
-        self.flap.is_open(self.layout_mode())
-    }
-
-    /// Advance the flap reveal toward its target using real elapsed time.
-    /// Called once per drawn frame so the slide + scrim fade are smooth and
-    /// frame-rate independent.
-    fn tick_flap(&mut self) {
-        let now = ui::time::now();
-        let dt = (now - self.last_flap_tick).as_secs_f64();
-        self.last_flap_tick = now;
-        self.flap.tick(self.layout_mode(), dt.min(0.1));
     }
 
     /// The diff-map key for the currently selected change, if any. Resolves
@@ -812,11 +696,6 @@ impl GitClientApp {
             ChangeArea::Untracked => &self.model.untracked,
         };
         Some(DiffKey::for_area(area, list.get(idx)?.path.clone()))
-    }
-
-    /// Resolve the [`FileDiff`] for the currently selected change, if any.
-    fn current_diff(&self) -> Option<&crate::model::FileDiff> {
-        self.diffs.get(&self.current_diff_key()?)
     }
 
     fn selected_is_staged(&self) -> bool {
@@ -924,6 +803,11 @@ impl GitClientApp {
         self.selected_change = first_change(&self.model);
     }
 
+    /// Whether there is something staged and a message to commit it with.
+    fn can_commit(&self) -> bool {
+        !self.model.staged.is_empty() && !self.commit_input.value().trim().is_empty()
+    }
+
     fn do_commit(&mut self) {
         if self.repository_busy() {
             return;
@@ -997,13 +881,12 @@ impl GitClientApp {
     }
 
     /// Discard a file's worktree changes (revert unstaged edits, or delete an
-    /// untracked file). Two-click armed: the first click on a discard
-    /// affordance arms the row; only a second confirming click reaches here.
+    /// untracked file). The controls reach here only through the
+    /// confirmation sheet.
     fn discard_file(&mut self, area: ChangeArea, idx: usize) {
         if self.repository_busy() {
             return;
         }
-        self.armed_discard = None;
         let Some(path) = self.repo() else { return };
         let list = match area {
             ChangeArea::Staged => &self.model.staged,
@@ -1045,25 +928,21 @@ impl GitClientApp {
         if raw.is_empty() {
             return;
         }
-        let path = std::path::PathBuf::from(&raw);
-        match crate::repo::load(&path) {
-            Some((model, diffs)) => {
-                let anchor = crate::repo::workdir(&path).unwrap_or(path);
-                self.model = model;
-                self.diffs = diffs;
-                self.graph_layout = graph::layout(&mut self.model.commits);
-                self.model.graph_width = self.graph_layout.lanes;
-                self.repo_path = Some(anchor);
-                self.selected_change = first_change(&self.model);
-                self.awaiting_repo = false;
-                self.last_error = None;
-                self.set_focus(None);
-                self.screen = Screen::Changes;
-                self.flap.reconcile(self.layout_mode());
+        if self.bind_repository(std::path::Path::new(&raw)) {
+            self.last_error = None;
+            self.set_focus(None);
+            self.screen = Screen::Changes;
+            self.drawer.resolve(self.rect);
+            // The record opens this repository from now on, on every device
+            // that opens it.
+            if let Some(path) = &self.repo_path {
+                let path = path.to_string_lossy().into_owned();
+                self.opened = Some(path.clone());
+                let repository = crate::resource::GitClient::paths().repository;
+                self.submit(Invoke::edit(&repository.set(ui::tilo_resource::Atom(path))));
             }
-            None => {
-                self.last_error = Some(format!("No git repository at {raw}"));
-            }
+        } else {
+            self.last_error = Some(format!("No git repository at {raw}"));
         }
     }
 
@@ -1074,6 +953,12 @@ impl GitClientApp {
         self.commit_input.set_focus(field == Some(Field::Commit));
         self.branch_input.set_focus(field == Some(Field::Branch));
         self.open_input.set_focus(field == Some(Field::Open));
+        self.worktree_branch_input
+            .set_focus(field == Some(Field::WorktreeBranch));
+        self.worktree_path_input
+            .set_focus(field == Some(Field::WorktreePath));
+        self.worktree_start_input
+            .set_focus(field == Some(Field::WorktreeStart));
     }
 
     // --- Durable view-preference actions -------------------------------
@@ -1087,854 +972,34 @@ impl GitClientApp {
     // source of truth (see `crate::actions`).
 
     /// Flip the diff-pane layout (unified ⇄ side-by-side). Routed to by the
-    /// app-bar segmented control and the `d` shortcut.
-    fn toggle_diff_layout(&mut self, doc: &mut AutoCommit) {
-        self.settings.toggle_layout();
-        self.diff_scroll = 0.0;
-        let action = crate::actions::set_diff_layout_action(self.settings.diff_layout);
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::GIT_CLIENT_ACTION_TYPE,
-            &action,
-            tilo_actions::ActionContext::for_action("so.tilo.git-client", "Git", &action),
-        );
-    }
-
-    /// Flip diff syntax highlighting. Routed to by the app-bar `</>` pill.
-    fn toggle_syntax_highlight(&mut self, doc: &mut AutoCommit) {
-        self.settings.syntax_highlight = !self.settings.syntax_highlight;
-        let action = crate::actions::GitClientAction::SetSyntaxHighlight {
-            on: self.settings.syntax_highlight,
-        };
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::GIT_CLIENT_ACTION_TYPE,
-            &action,
-            tilo_actions::ActionContext::for_action("so.tilo.git-client", "Git", &action),
-        );
-    }
-
-    /// Borrow the current external repository projection for the bounded
-    /// resource catalogue. Presentation-only state is intentionally excluded.
-    pub(crate) fn resource_model(&self) -> Option<&RepoModel> {
-        (!self.awaiting_repo).then_some(&self.model)
-    }
-
-    /// The last preference [`EncodedAction`](tilo_actions::EncodedAction) an
-    /// on-screen control dispatched, for the affordance == `ActionSpec`
-    /// covenant test.
-    #[doc(hidden)]
-    pub fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
-    }
-
-    // --- Drawing -------------------------------------------------------
-
-    /// The app bar's raised surface and its bottom edge.
-    fn paint_appbar_surface(ctx: &mut PaintCtx<'_>, bar: Rect) {
-        let raised = ctx.theme.tokens.colors.surfaces.raised;
-        ctx.fill_rect(bar, raised);
-        draw::hline(ctx, bar.y1, bar.x0, bar.x1, draw::edge(raised));
-    }
-
-    fn draw_appbar(&mut self, ctx: &mut PaintCtx<'_>) {
-        let overlay = self.layout_mode() == SplitLayout::Overlay;
-        // Measure every cluster before placing anything: the title is clamped
-        // against measured neighbours, never against a guessed width.
-        let tabs = Self::measure_appbar_tabs(ctx.text, self.rect.width() < 420.0);
-        let settings = SettingsWidths::measure(ctx.text);
-        let cluster_w = settings.total();
-        let left_pad = if overlay { HAMBURGER_SLOT } else { 0.0 };
-        let title_x = self.rect.x0 + APPBAR_GUTTER + left_pad;
-        // Tab group background carries a 6px inset on either side.
-        let tab_group_w = tabs.total + 12.0;
-        let one_row_right = self.rect.x1 - APPBAR_GUTTER;
-        let cluster_x = one_row_right - cluster_w;
-        let one_row_tabs_left = cluster_x - APPBAR_CLUSTER_GAP - tab_group_w;
-        // Wrap the tabs under the title when a readable title cannot sit
-        // beside the tab group and the settings on one row.
-        let wrap = one_row_tabs_left - 8.0 - title_x < TITLE_MIN_W;
-        let m = BarMetrics::measure(ctx.text);
-        // On the narrowest windows even the title and measured settings cannot
-        // share a row. Keep upstream's separate settings row at that limit.
-        let separate_settings_row = cluster_x - APPBAR_CLUSTER_GAP - title_x < 40.0;
-        self.appbar_h = if separate_settings_row {
-            m.row_h * 2.0 + m.tab_row_h
-        } else if wrap {
-            m.row_h + m.tab_row_h
-        } else {
-            m.row_h
-        };
-        let bar = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y0 + self.appbar_h,
-        );
-        Self::paint_appbar_surface(ctx, bar);
-        let row1 = Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + m.row_h);
-        // The span of `row` from `x0` to `x1`.
-        let span = |row: Rect, x0: f64, x1: f64| Rect::new(x0, row.y0, x1, row.y1);
-
-        // Hamburger toggle: shown only when the primary list column has
-        // collapsed into an overlay flap (narrow window, master-detail
-        // screen). It summons/dismisses the flap. The title block shifts
-        // right to make room. Outside overlay mode there's no flap to toggle.
-        if overlay {
-            self.draw_hamburger(ctx, row1, m.control_h);
-        } else {
-            self.hamburger_rect = Rect::ZERO;
-        }
-
-        self.tab_rects.clear();
-        if wrap {
-            // Row 1: title + settings cluster. Row 2: the screen tabs, left
-            // aligned on the same gutter as the title.
-            let title_limit = if separate_settings_row {
-                one_row_right
-            } else {
-                cluster_x - APPBAR_CLUSTER_GAP
-            };
-            self.draw_appbar_title(ctx, span(row1, title_x, title_limit), &m);
-            let settings_row = if separate_settings_row {
-                Rect::new(bar.x0, row1.y1 + m.tab_row_h, bar.x1, bar.y1)
-            } else {
-                row1
-            };
-            self.draw_settings_cluster(
-                ctx,
-                span(settings_row, cluster_x, settings_row.x1),
-                settings,
-                m.control_h,
-            );
-            let row2 = Rect::new(bar.x0, row1.y1, bar.x1, row1.y1 + m.tab_row_h);
-            let tx_start = bar.x0 + APPBAR_GUTTER + 6.0;
-            let wrapped = Self::fit_wrapped_appbar_tabs(&tabs.cells, bar.x1, tx_start, ctx.theme);
-            self.draw_appbar_tab_group(ctx, span(row2, tx_start, row2.x1), &wrapped, m.control_h);
-        } else {
-            let tx_start = one_row_tabs_left + 6.0;
-            let title_limit = one_row_tabs_left - 8.0;
-            self.draw_appbar_title(ctx, span(row1, title_x, title_limit), &m);
-            self.draw_appbar_tab_group(ctx, span(row1, tx_start, row1.x1), &tabs, m.control_h);
-            self.draw_settings_cluster(ctx, span(row1, cluster_x, row1.x1), settings, m.control_h);
+    /// header's layout control and the `d` shortcut.
+    fn toggle_diff_layout(&mut self) {
+        if let Err(error) = self.switch_diff_layout() {
+            self.last_error = Some(error);
         }
     }
 
-    /// Each tab's pixel width and their combined width (including the 6px
-    /// gaps between them) — needed both to clamp the title and to lay out
-    /// the tab group's pill background.
-    fn measure_appbar_tabs(tr: &mut TextRenderer, compact: bool) -> TabWidths {
-        let widths: Vec<f64> = TABS
-            .iter()
-            .map(|(_, label)| {
-                f64::from(tr.measure_weighted(label, 13.0, None, TextWeight::Medium).0)
-                    + if compact { 16.0 } else { 28.0 }
-            })
-            .collect();
-        let total = widths.iter().sum::<f64>() + (TABS.len() as f64 - 1.0) * 6.0;
-        TabWidths {
-            cells: widths,
-            total,
+    /// Flip diff syntax highlighting. Routed to by the header's Syntax toggle.
+    fn toggle_syntax_highlight(&mut self) {
+        if let Err(error) = self.change_preferences(|s| s.syntax_highlight = !s.syntax_highlight) {
+            self.last_error = Some(error);
         }
     }
 
-    /// Fit the wrapped (second-row) tab group between `tx_start` and the
-    /// bar's right gutter at the theme's minimum pointer width.
-    fn fit_wrapped_appbar_tabs(
-        widths: &[f64],
-        bar_x1: f64,
-        tx_start: f64,
-        theme: &Theme,
-    ) -> TabWidths {
-        let available = (bar_x1 - APPBAR_GUTTER - 6.0 - tx_start).max(0.0);
-        Self::fit_appbar_tabs(
-            widths,
-            available,
-            f64::from(theme.tokens.metrics.min_pointer_target),
-        )
-    }
-
-    /// Compress only the padding/slack of a wrapped tab row. Every semantic
-    /// target keeps the theme's minimum pointer width; labels are elided at
-    /// paint time while accessibility and keyboard routing retain full names.
-    fn fit_appbar_tabs(widths: &[f64], available: f64, minimum: f64) -> TabWidths {
-        let gaps = TABS.len().saturating_sub(1) as f64 * 6.0;
-        let natural_cells = widths.iter().sum::<f64>();
-        let allowed_cells = (available - gaps).max(minimum * widths.len() as f64);
-        if natural_cells <= allowed_cells {
-            return TabWidths {
-                cells: widths.to_vec(),
-                total: natural_cells + gaps,
-            };
-        }
-        let slack = widths
-            .iter()
-            .map(|width| (width - minimum).max(0.0))
-            .sum::<f64>();
-        let keep = (slack - (natural_cells - allowed_cells)).max(0.0);
-        let factor = if slack > 0.0 { keep / slack } else { 0.0 };
-        let fitted: Vec<f64> = widths
-            .iter()
-            .map(|width| minimum + (width - minimum).max(0.0) * factor)
-            .collect();
-        let total = fitted.iter().sum::<f64>() + gaps;
-        TabWidths {
-            cells: fitted,
-            total,
-        }
-    }
-
-    /// Draw the repo name, branch pill and pending-changes/error subtitle into
-    /// `slot` (the title's span of its bar row), clamped so a long name
-    /// ellipsises before the tab group.
-    fn draw_appbar_title(&mut self, ctx: &mut PaintCtx<'_>, slot: Rect, m: &BarMetrics) {
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let title_x = slot.x0;
-        let right_limit = slot.x1;
-        let title_max = (right_limit - title_x).max(40.0) as f32;
-        // Elide rather than wrap: a wrapped repository name or subtitle used
-        // to spill out of the bar on a narrow window.
-        let name =
-            ctx.text
-                .elide_to_width_weighted(&self.model.name, 15.0, title_max, TextWeight::Bold);
-        let (nw, _) = ctx
-            .text
-            .measure_weighted(&name, 15.0, None, TextWeight::Bold);
-        let nh = m.title_h;
-        // The title + subtitle stack centres in the row: at 1× that is the
-        // historical `y0 + 9`, at 2× the row has grown to hold both lines.
-        let stack_h = nh + m.title_gap + m.subtitle_h;
-        let title_y = slot.y0 + (slot.height() - stack_h) / 2.0;
-        ctx.text(
-            &name,
-            &TextStyle::new(15.0).with_weight(TextWeight::Bold),
-            c.text_primary,
-            Point::new(title_x, title_y),
-            None,
-        );
-        let mut right = title_x + f64::from(nw);
-        let pill_x = right + 8.0;
-        // Paint the branch pill only when its *measured* width fits left of
-        // the next control (the pill measures `head` at 14px Medium with 6px
-        // padding either side); centre it on the title's measured line.
-        let pill_h = draw::pill_height(ctx.text, 14.0);
-        let pill_w = draw::pill_width(ctx.text, &self.model.head, 14.0);
-        if pill_x + pill_w <= right_limit {
-            draw::pill(
-                ctx,
-                Point::new(pill_x, title_y + (nh - pill_h) / 2.0),
-                &self.model.head,
-                &draw::PillStyle {
-                    size: 14.0,
-                    fg: Color::WHITE,
-                    bg: theme.accent_primary,
-                    edge: draw::PillEdge::Bare,
-                },
-            );
-            right = pill_x + pill_w;
-        }
-        // change count subtitle — or the last action error when present.
-        let (sub, sub_color) = if self.remote_job.is_some() {
-            (ui::i18n!("git-remote-running"), c.text_dim)
-        } else {
-            match &self.last_error {
-                Some(err) => (err.clone(), c.semantic.danger),
-                None => (
-                    format!(
-                        "{} pending change{}",
-                        self.model.change_count(),
-                        if self.model.change_count() == 1 {
-                            ""
-                        } else {
-                            "s"
-                        }
-                    ),
-                    c.text_dim,
-                ),
-            }
-        };
-        self.status_text.clone_from(&sub);
-        let sub = ctx.text.elide_to_width(&sub, SUBTITLE_FONT, title_max);
-        let (sw, _) = ctx.text.measure(&sub, SUBTITLE_FONT, None);
-        let sub_y = title_y + nh + m.title_gap;
-        self.status_rect = Rect::new(
-            title_x,
-            sub_y,
-            title_x + f64::from(title_max),
-            sub_y + m.subtitle_h,
-        );
-        ctx.text(
-            &sub,
-            &TextStyle::new(SUBTITLE_FONT),
-            sub_color,
-            Point::new(title_x, sub_y),
-            None,
-        );
-        self.title_rect = Rect::new(
-            title_x,
-            slot.y0,
-            right.max(title_x + f64::from(sw)),
-            slot.y1,
-        );
-    }
-
-    /// Draw the tab-group pill background and each tab of `tabs`, starting at
-    /// `row.x0` and centred in `row` at `tab_h` tall, recording each hit rect
-    /// in `self.tab_rects`.
-    fn draw_appbar_tab_group(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        row: Rect,
-        tabs: &TabWidths,
-        tab_h: f64,
-    ) {
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let tx_start = row.x0;
-        let tab_y = row.y0 + (row.height() - tab_h) / 2.0;
-        let group_bg = Rect::new(
-            tx_start - 6.0,
-            tab_y,
-            tx_start + tabs.total + 6.0,
-            tab_y + tab_h,
-        );
-        // The tab group is a base-toned track on the raised bar; its derived
-        // edge is what separates the two surfaces on the dark preset.
-        draw::card(ctx, group_bg, 9.0, c.surfaces.base);
-        let label_style = TextStyle::new(13.0).with_weight(TextWeight::Medium);
-        let mut tx = tx_start;
-        for (i, (screen, label)) in TABS.iter().enumerate() {
-            let Some(&w) = tabs.cells.get(i) else {
-                continue;
-            };
-            let trect = Rect::new(tx, tab_y, tx + w, tab_y + tab_h);
-            let active = *screen == self.screen;
-            if active {
-                ctx.fill_round(trect, 7.0, theme.accent_primary);
-            }
-            let fg = if active { Color::WHITE } else { c.text_dim };
-            let shown = ctx.text.elide_to_width_weighted(
-                label,
-                13.0,
-                (w - 12.0).max(0.0) as f32,
-                TextWeight::Medium,
-            );
-            let lw = f64::from(ctx.text.measure_style(&shown, None, &label_style).0);
-            let label_y =
-                draw::centered_top(ctx.text, &shown, 13.0, TextWeight::Medium, tab_y, tab_h);
-            ctx.text(
-                &shown,
-                &label_style,
-                fg,
-                Point::new(tx + (w - lw) / 2.0, label_y),
-                None,
-            );
-            self.tab_rects.push((*screen, trect));
-            tx += w + 6.0;
-        }
-    }
-
-    /// Draw the diff-layout segmented control and the syntax toggle from
-    /// `row.x0`, each `control_h` tall and centred in `row`, and record their
-    /// hit rects.
-    fn draw_settings_cluster(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        row: Rect,
-        widths: SettingsWidths,
-        control_h: f64,
-    ) {
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let x = row.x0;
-        let y = row.y0 + (row.height() - control_h) / 2.0;
-        let label_style = TextStyle::new(12.0).with_weight(TextWeight::Medium);
-        // Diff-layout segmented control.
-        let seg = Rect::new(x, y, x + widths.segmented, y + control_h);
-        draw::card(ctx, seg, 9.0, c.surfaces.base);
-        let half = widths.segmented / 2.0;
-        let unified_active = self.settings.diff_layout == DiffLayout::Unified;
-        let active_rect = if unified_active {
-            Rect::new(seg.x0 + 3.0, seg.y0 + 3.0, seg.x0 + half, seg.y1 - 3.0)
-        } else {
-            Rect::new(seg.x0 + half, seg.y0 + 3.0, seg.x1 - 3.0, seg.y1 - 3.0)
-        };
-        ctx.fill_round(active_rect, 7.0, theme.accent_primary);
-        for (i, label) in ["Unified", "Split"].iter().enumerate() {
-            let active = (i == 0) == unified_active;
-            let fg = if active { Color::WHITE } else { c.text_dim };
-            let cx = seg.x0 + half * i as f64;
-            let lw = f64::from(ctx.text.measure_style(label, None, &label_style).0);
-            let label_y =
-                draw::centered_top(ctx.text, label, 12.0, TextWeight::Medium, y, control_h);
-            ctx.text(
-                label,
-                &label_style,
-                fg,
-                Point::new(cx + (half - lw) / 2.0, label_y),
-                None,
-            );
-        }
-        // Note: the segmented control's click rect is stored as the whole
-        // seg; the click handler flips the layout.
-        self.settings_seg = seg;
-
-        // Syntax-highlight toggle. Keep the visible label explicit: this is a
-        // preference, not a repository status, and "Syn" is ambiguous when a
-        // control is viewed without its tooltip or action palette.
-        let hx = seg.x1 + APPBAR_CLUSTER_GAP;
-        let hl = Rect::new(hx, y, hx + widths.syntax, y + control_h);
-        let on = self.settings.syntax_highlight;
-        if on {
-            ctx.fill_round(hl, 9.0, theme.accent_primary);
-        } else {
-            draw::card(ctx, hl, 9.0, c.surfaces.base);
-        }
-        let hlfg = if on { Color::WHITE } else { c.text_dim };
-        let label = "Syntax";
-        let lw = f64::from(ctx.text.measure_style(label, None, &label_style).0);
-        let label_y = draw::centered_top(ctx.text, label, 12.0, TextWeight::Medium, y, control_h);
-        ctx.text(
-            label,
-            &label_style,
-            hlfg,
-            Point::new(hl.x0 + (hl.width() - lw) / 2.0, label_y),
-            None,
-        );
-        self.settings_syn = hl;
-    }
-
-    /// Draw the hamburger toggle at the left of the app bar and record its hit
-    /// rect. Highlighted while the flap is open so it reads as an active
-    /// toggle. Three stacked bars — the universal "open the menu" affordance.
-    fn draw_hamburger(&mut self, ctx: &mut PaintCtx<'_>, bar: Rect, size: f64) {
-        let bx = bar.x0 + 12.0;
-        let by = bar.y0 + (bar.height() - size) / 2.0;
-        let btn = Rect::new(bx, by, bx + size, by + size);
-        self.hamburger_rect = btn;
-        self.paint_hamburger(ctx, btn);
-    }
-
-    /// Paint the hamburger glyph into `btn` (its placed rect) — also used to
-    /// repaint it above an open flap so the toggle stays reachable.
-    fn paint_hamburger(&self, ctx: &mut PaintCtx<'_>, btn: Rect) {
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let size = btn.height();
-        let open = self.flap_open();
-        if open {
-            ctx.fill_round(btn, 8.0, theme.accent_primary);
-        } else {
-            draw::card(ctx, btn, 8.0, c.surfaces.base);
-        }
-        let fg = if open { Color::WHITE } else { c.text_dim };
-        // Three 2px bars at a 6px pitch, centred as a block in the button.
-        let inset = 8.0;
-        let x0 = btn.x0 + inset;
-        let x1 = btn.x1 - inset;
-        let bar_h = 2.0;
-        let pitch = 6.0;
-        let block_h = pitch * 2.0 + bar_h;
-        let block_top = btn.y0 + (size - block_h) / 2.0;
-        for i in 0..3 {
-            let ly = block_top + f64::from(i) * pitch;
-            let line = Rect::new(x0, ly, x1, ly + bar_h);
-            ctx.fill_round(line, 1.0, fg);
-        }
-    }
-
-    /// Resolve a master-detail screen's geometry responsively from the flap.
-    ///
-    /// Returns `(list_rect, detail_rect, list_visible)`. Wide (docked): the
-    /// list column sits beside the detail, which is inset to make room; the
-    /// reveal eases the column's width so a toggle is smooth. Narrow
-    /// (overlay): the detail spans the full body and the list column slides
-    /// in over it from the left edge (the caller paints the scrim between the
-    /// two via [`Self::draw_overlay_scrim`]). The list is hidden entirely
-    /// while collapsed so it doesn't paint behind a zero-width column.
-    fn master_detail_rects(&self, body: Rect, list_w: f64) -> (Rect, Rect, bool) {
-        match self.layout_mode() {
-            SplitLayout::Docked => {
-                let inset = list_w * self.flap.reveal();
-                let col = Rect::new(body.x0, body.y0, body.x0 + inset, body.y1);
-                let detail = Rect::new(col.x1, body.y0, body.x1, body.y1);
-                (col, detail, inset > 0.5)
-            }
-            SplitLayout::Overlay => {
-                let slide = self.flap.slide();
-                let x0 = body.x0 - list_w * (1.0 - slide);
-                let col = Rect::new(x0, body.y0, x0 + list_w, body.y1);
-                (col, body, self.flap.reveal() > 0.001)
-            }
-        }
-    }
-
-    /// Paint the dimming scrim over `body` in overlay mode, sized to the flap
-    /// reveal. A no-op when docked or fully closed. Drawn after the detail and
-    /// before the list column so the column floats above the dimmed content.
-    fn draw_overlay_scrim(&self, ctx: &mut PaintCtx<'_>, body: Rect) {
-        if self.layout_mode() != SplitLayout::Overlay {
+    /// Write the shared repository projection when branches/commits/remotes move.
+    fn publish_shared_repo_if_needed(&mut self) {
+        if self.awaiting_repo || !self.mode.is_live() {
             return;
         }
-        let reveal = self.flap.reveal();
-        if reveal <= 0.001 {
+        let fingerprint = crate::shared::shared_fingerprint(&self.model);
+        if self.shared_repo_fingerprint.as_deref() == Some(fingerprint.as_str()) {
             return;
         }
-        let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor((reveal * 0.86) as f32);
-        ctx.scene.fill(
-            Fill::NonZero,
-            ctx.transform,
-            scrim,
-            None,
-            &Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, body.y1),
-        );
-    }
-
-    fn draw_changes(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx, body: Rect) {
-        let (col, pane, list_visible) = self.master_detail_rects(body, CHANGES_COL_W);
-        // Detail (diff) first — it sits behind the overlay flap.
-        self.draw_diff_pane(ctx, pane);
-        // Scrim between detail and list (overlay mode only).
-        self.draw_overlay_scrim(ctx, body);
-        if list_visible {
-            let msg = self.commit_input.value().to_string();
-            let out = ChangesColumn::draw(
-                ctx,
-                col,
-                &self.model,
-                self.selected_change,
-                self.changes_scroll,
-                &msg,
-            );
-            self.change_hits = out.hits;
-            self.change_semantic_hits = out.semantic_hits;
-            // Position and draw the commit-message TextInput in the reserved
-            // rect — the toolkit input owns its frame, text, caret and
-            // selection so editing is a first-class ui component.
-            self.commit_input.apply_layout_external(out.commit_input);
-            self.commit_input
-                .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
-        } else {
-            self.change_hits.clear();
-            self.change_semantic_hits.clear();
-            self.commit_input.apply_layout_external(Rect::ZERO);
-        }
-    }
-
-    /// Paint the diff detail pane (header + diff body) into `pane`.
-    fn draw_diff_pane(&mut self, ctx: &mut PaintCtx<'_>, pane: Rect) {
-        // The header is 36 px at 1× and grows to hold its 13 px title line
-        // plus padding at larger text scales; the body and scroll clamp read
-        // the same measured height.
-        let (_, title_h) = ctx
-            .text
-            .measure_weighted("Ag", 13.0, None, TextWeight::Medium);
-        self.diff_header_h = (f64::from(title_h) + 2.0 * 9.0).max(36.0);
-        let header = Rect::new(pane.x0, pane.y0, pane.x1, pane.y0 + self.diff_header_h);
-        let c = &ctx.theme.tokens.colors;
-        ctx.fill_rect(header, c.surfaces.raised);
-        draw::hline(
-            ctx,
-            header.y1,
-            header.x0,
-            header.x1,
-            draw::edge(c.surfaces.raised),
-        );
-
-        let key = self.current_diff_key();
-        // Pull the header facts out as owned values so the `self.diffs` borrow
-        // ends before we mutate `self` (discard rect) or re-borrow for the body.
-        let info = key
-            .as_ref()
-            .and_then(|k| self.diffs.get(k))
-            .map(|d| DiffHeaderInfo {
-                old_path: d.old_path.clone(),
-                path: d.path.clone(),
-                additions: d.additions(),
-                deletions: d.deletions(),
-            });
-        self.discard_file_rect = Rect::ZERO;
-        let staged = self.selected_is_staged();
-
-        if let Some(info) = info {
-            self.draw_diff_header_file(ctx, header, info, staged);
-        } else {
-            let hint = "Select a file to view its diff";
-            let hy = draw::centered_top(
-                ctx.text,
-                hint,
-                13.0,
-                TextWeight::Regular,
-                header.y0,
-                header.height(),
-            );
-            ctx.text(
-                hint,
-                &TextStyle::new(13.0),
-                c.text_dim,
-                Point::new(header.x0 + 16.0, hy),
-                None,
-            );
-        }
-
-        let viewport = Rect::new(pane.x0, header.y1, pane.x1, pane.y1);
-        self.draw_diff_body(ctx, viewport, key.as_ref(), staged);
-    }
-
-    /// Draw the diff-pane header for the selected file: title, +/− summary,
-    /// and (on the worktree side of a real repo) the two-click "Discard
-    /// file" affordance.
-    fn draw_diff_header_file(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        header: Rect,
-        info: DiffHeaderInfo,
-        staged: bool,
-    ) {
-        let c = &ctx.theme.tokens.colors;
-        let title = match info.old_path {
-            Some(old) => format!("{old}  →  {}", info.path),
-            None => info.path,
-        };
-        let summary = format!("+{}  −{}", info.additions, info.deletions);
-        let aw = f64::from(draw::mono_width(ctx.text, &summary, 12.0));
-        let sy = draw::mono_centered_top(ctx.text, &summary, 12.0, header.y0, header.height());
-        draw::mono(
-            ctx,
-            &summary,
-            12.0,
-            c.text_dim,
-            Point::new(header.x1 - aw - 16.0, sy),
-        );
-
-        // Discard-file affordance on the worktree (unstaged / untracked)
-        // side of a real repo. Two-click armed: shows "Discard file?" when
-        // armed, filled danger.
-        let mut title_max = (header.width() - aw - 16.0 - 16.0 - 12.0).max(40.0) as f32;
-        let can_discard = self.repo_path.is_some() && !staged && self.selected_change.is_some();
-        if can_discard {
-            title_max = self.draw_discard_file_button(ctx, header, aw);
-        }
-        // Elide rather than wrap: a second title line has no room in the
-        // header band and used to paint over the diff's first row.
-        let title = ctx
-            .text
-            .elide_to_width_weighted(&title, 13.0, title_max, TextWeight::Medium);
-        let ty = draw::centered_top(
-            ctx.text,
-            &title,
-            13.0,
-            TextWeight::Medium,
-            header.y0,
-            header.height(),
-        );
-        ctx.text(
-            &title,
-            &TextStyle::new(13.0).with_weight(TextWeight::Medium),
-            c.text_primary,
-            Point::new(header.x0 + 16.0, ty),
-            None,
-        );
-    }
-
-    /// Draw the "Discard file" / (armed) "Discard file?" button and return
-    /// the title's clamped max width now that the button occupies space.
-    fn draw_discard_file_button(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        header: Rect,
-        summary_w: f64,
-    ) -> f32 {
-        let armed = self.armed_discard == Some(DiscardTarget::File);
-        let label = if armed {
-            "Discard file?"
-        } else {
-            "Discard file"
-        };
-        let lw = f64::from(
-            ctx.text
-                .measure_weighted(label, DIFF_DISCARD_FONT, None, TextWeight::Medium)
-                .0,
-        );
-        let bw = lw + 20.0;
-        let bx = header.x1 - summary_w - 16.0 - 12.0 - bw;
-        let brect = Rect::new(bx, header.y0 + 6.0, bx + bw, header.y1 - 6.0);
-        // Destructive outline at rest, filled danger once armed — the shared
-        // face keeps the danger ink legible on every ground it sits on.
-        let face = ButtonFace::new(brect, label)
-            .radius(6.0)
-            .text_size(DIFF_DISCARD_FONT);
-        let face = if armed {
-            face.danger()
-        } else {
-            face.danger_outline()
-        };
-        draw::button(ctx, &face);
-        self.discard_file_rect = brect;
-        (bx - header.x0 - 24.0).max(40.0) as f32
-    }
-
-    /// Draw the diff body into `viewport` (the pane below its header): the
-    /// hunk view for the selected file, or an empty pane when nothing is
-    /// selected.
-    fn draw_diff_body(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        viewport: Rect,
-        key: Option<&DiffKey>,
-        staged: bool,
-    ) {
-        let armed_discard = match self.armed_discard {
-            Some(DiscardTarget::Hunk(h)) => Some(h),
-            _ => None,
-        };
-        if let Some(diff) = key.and_then(|k| self.diffs.get(k)) {
-            let interaction = HunkInteraction {
-                hovered: self.hover_hunk,
-                staged_side: staged,
-                armed_discard,
-            };
-            let out = DiffView::draw_with_metrics(
-                ctx,
-                viewport,
-                diff,
-                self.diff_scroll,
-                &self.settings,
-                interaction,
-            );
-            self.diff_hunk_buttons = out.buttons;
-            self.diff_metrics = out.metrics;
-        } else {
-            ctx.fill_rect(viewport, ctx.theme.tokens.colors.surfaces.base);
-            self.diff_hunk_buttons.clear();
-        }
-    }
-
-    fn current_path(&self) -> Option<String> {
-        let (area, idx) = self.selected_change?;
-        let list = match area {
-            ChangeArea::Staged => &self.model.staged,
-            ChangeArea::Unstaged => &self.model.unstaged,
-            ChangeArea::Untracked => &self.model.untracked,
-        };
-        list.get(idx).map(|f| f.path.clone())
-    }
-
-    fn draw_history(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) {
-        match self.layout_mode() {
-            SplitLayout::Docked => {
-                // Wide: the commit list keeps its generous ~56% split, eased
-                // in/out by the flap reveal so a toggle slides smoothly.
-                let full_split = (body.width() * 0.56).max(420.0).min(body.width() - 320.0);
-                let split = body.x0 + full_split * self.flap.reveal();
-                let detail = Rect::new(split, body.y0, body.x1, body.y1);
-                if let Some(commit) = self.model.commits.get(self.selected_commit) {
-                    HistoryView::draw_detail(ctx, detail, commit, self.detail_scroll);
-                }
-                if self.flap.reveal() > 0.001 {
-                    let list = Rect::new(body.x0, body.y0, split, body.y1);
-                    let out = HistoryView::draw_list(
-                        ctx,
-                        list,
-                        &self.model,
-                        &self.graph_layout,
-                        self.selected_commit,
-                        self.history_scroll,
-                    );
-                    self.history_rows = out.rows;
-                    self.history_metrics = out.metrics;
-                } else {
-                    self.history_rows.clear();
-                }
-            }
-            SplitLayout::Overlay => {
-                // Narrow: detail spans full width; the commit list overlays it
-                // as a fixed-width flap behind a scrim.
-                let detail = body;
-                if let Some(commit) = self.model.commits.get(self.selected_commit) {
-                    HistoryView::draw_detail(ctx, detail, commit, self.detail_scroll);
-                }
-                self.draw_overlay_scrim(ctx, body);
-                if self.flap.reveal() > 0.001 {
-                    let slide = self.flap.slide();
-                    let x0 = body.x0 - FLAP_W * (1.0 - slide);
-                    let list = Rect::new(x0, body.y0, x0 + FLAP_W, body.y1);
-                    let out = HistoryView::draw_list(
-                        ctx,
-                        list,
-                        &self.model,
-                        &self.graph_layout,
-                        self.selected_commit,
-                        self.history_scroll,
-                    );
-                    self.history_rows = out.rows;
-                    self.history_metrics = out.metrics;
-                } else {
-                    self.history_rows.clear();
-                }
-            }
-        }
-    }
-
-    fn draw_panels(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx, body: Rect) {
-        let panels = PanelsView::draw(ctx, body, &self.model, self.hover_action);
-        self.panel_hits = panels.hits;
-        self.panel_semantic_hits = panels.semantic_hits;
-        // New-branch creator: a compact labelled input + button drawn in the
-        // toolbar's centre band, between the branch status (left) and the
-        // fetch/pull/push cluster (right). Only meaningful for a real repo.
-        if self.repo_path.is_some() {
-            self.draw_new_branch(ctx, presence, body);
-        } else {
-            self.new_branch_input = Rect::ZERO;
-            self.new_branch_button = Rect::ZERO;
-            self.branch_input.apply_layout_external(Rect::ZERO);
-        }
-    }
-
-    /// Draw the new-branch input + "Create" button in the panels toolbar and
-    /// record their hit rects. The toolbar is the top 56px band of `body`.
-    fn draw_new_branch(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx, body: Rect) {
-        let tb = Rect::new(body.x0, body.y0, body.x1, body.y0 + 56.0);
-        // Reserve room for the 3 action buttons (84*3 + gaps + margins ≈ 300).
-        let actions_w = 300.0;
-        let btn_w = 70.0;
-        let gap = 8.0;
-        let h = 28.0;
-        let y = tb.y0 + (tb.height() - h) / 2.0;
-        let right = tb.x1 - actions_w;
-        let bx = right - btn_w;
-        let input = Rect::new(
-            (right - btn_w - gap - 180.0).max(tb.x0 + 180.0),
-            y,
-            bx - gap,
-            y + h,
-        );
-        if input.width() < 60.0 {
-            // Too tight to render meaningfully — skip.
-            self.new_branch_input = Rect::ZERO;
-            self.new_branch_button = Rect::ZERO;
-            self.branch_input.apply_layout_external(Rect::ZERO);
-            return;
-        }
-        // Input field — the toolkit TextInput draws its own frame + caret.
-        self.branch_input.apply_layout_external(input);
-        self.branch_input
-            .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
-        self.new_branch_input = input;
-        // Create button.
-        let brect = Rect::new(bx, y, bx + btn_w, y + h);
-        let enabled = !self.branch_input.value().trim().is_empty();
-        draw::button(
-            ctx,
-            &ButtonFace::new(brect, "Branch")
-                .primary()
-                .radius(6.0)
-                .text_size(12.0)
-                .disabled(!enabled),
-        );
-        self.new_branch_button = brect;
+        let shared = crate::shared::SharedRepo::from_model(&self.model);
+        self.submit(Ok(
+            crate::resource::GitClient::RECORD_REPOSITORY.with(shared)
+        ));
+        self.shared_repo_fingerprint = Some(fingerprint);
     }
 
     fn create_new_branch(&mut self) {
@@ -1953,233 +1018,6 @@ impl GitClientApp {
                 self.branch_input.set_text("");
                 self.set_focus(None);
             }
-        }
-    }
-
-    /// Draw the empty "open a repository" state: a centered card with a path
-    /// field (toolkit `TextInput`) and an Open button. This is the honest
-    /// default when no repository is reachable — no placeholder repo data.
-    fn draw_open(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx) {
-        ctx.fill_rect(self.rect, ctx.theme.tokens.colors.surfaces.base);
-
-        let cw = 520.0_f64.min(self.rect.width() - 48.0);
-        let cx = self.rect.x0 + (self.rect.width() - cw) / 2.0;
-        let cy = self.rect.y0 + (self.rect.height() * 0.30).max(80.0);
-
-        let y = Self::draw_open_intro(ctx, Point::new(cx, cy), cw);
-        self.draw_open_path_field(ctx, presence, Point::new(cx, y), cw);
-    }
-
-    /// Draw the branch-glyph mark, title and subtitle of the `width`-wide
-    /// column whose top-left is `origin`, above the path field. Returns the y
-    /// position the path field should start at.
-    fn draw_open_intro(ctx: &mut PaintCtx<'_>, origin: Point, width: f64) -> f64 {
-        let theme = ctx.theme;
-        let c = &theme.tokens.colors;
-        let (cx, cw, cy) = (origin.x, width, origin.y);
-        // Branch glyph mark.
-        let mark = Rect::new(cx + cw / 2.0 - 22.0, cy, cx + cw / 2.0 + 22.0, cy + 44.0);
-        ctx.fill_round(mark, 12.0, c.accent[2]);
-        let glyph_style = TextStyle::new(24.0).with_weight(TextWeight::Bold);
-        let gw = f64::from(ctx.text.measure_style("⑂", None, &glyph_style).0);
-        ctx.text(
-            "⑂",
-            &glyph_style,
-            theme.accent_primary,
-            Point::new(mark.x0 + (mark.width() - gw) / 2.0, mark.y0 + 8.0),
-            None,
-        );
-
-        let mut y = cy + 64.0;
-        let title = "No repository open";
-        let title_style = TextStyle::new(20.0).with_weight(TextWeight::Bold);
-        let tw = f64::from(ctx.text.measure_style(title, None, &title_style).0);
-        ctx.text(
-            title,
-            &title_style,
-            c.text_primary,
-            Point::new(cx + (cw - tw) / 2.0, y),
-            None,
-        );
-        y += 30.0;
-        let sub = "Open a git repository to view its changes, history and branches.";
-        let sw = f64::from(ctx.text.measure(sub, 13.0, None).0);
-        ctx.text(
-            sub,
-            &TextStyle::new(13.0),
-            c.text_dim,
-            Point::new(cx + (cw - sw).max(0.0) / 2.0, y),
-            Some(cw as f32),
-        );
-        y + 40.0
-    }
-
-    /// Draw the repository path field, Open button, and any open error of the
-    /// `width`-wide column from `origin`, below the intro block drawn by
-    /// [`Self::draw_open_intro`].
-    fn draw_open_path_field(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        presence: &PresenceCtx,
-        origin: Point,
-        width: f64,
-    ) {
-        let c = &ctx.theme.tokens.colors;
-        let (cx, cw, mut y) = (origin.x, width, origin.y);
-        // Path field + Open button.
-        let btn_w = 92.0;
-        let gap = 10.0;
-        let field_h = 40.0;
-        let field = Rect::new(cx, y, cx + cw - btn_w - gap, y + field_h);
-        self.open_input.apply_layout_external(field);
-        self.open_input
-            .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
-        self.open_input_rect = field;
-        let brect = Rect::new(field.x1 + gap, y, cx + cw, y + field_h);
-        let enabled = !self.open_input.value().trim().is_empty();
-        draw::button(
-            ctx,
-            &ButtonFace::new(brect, "Open")
-                .primary()
-                .radius(8.0)
-                .text_size(14.0)
-                .weight(TextWeight::Semibold)
-                .disabled(!enabled),
-        );
-        self.open_button_rect = brect;
-
-        // Any open error (e.g. "No git repository at …").
-        if let Some(err) = &self.last_error {
-            y += field_h + 16.0;
-            let ew = f64::from(ctx.text.measure(err, 12.5, None).0);
-            ctx.text(
-                err,
-                &TextStyle::new(12.5),
-                c.semantic.danger,
-                Point::new(cx + (cw - ew).max(0.0) / 2.0, y),
-                Some(cw as f32),
-            );
-        }
-    }
-
-    // --- Event helpers -------------------------------------------------
-
-    /// Switch the active screen and reconcile the flap to the new screen's
-    /// layout mode. Switching to a full-width screen (Branches & Remotes) or
-    /// between master-detail screens may change whether a flap exists, so the
-    /// reconcile re-applies the right default for the destination.
-    fn switch_screen(&mut self, screen: Screen) {
-        self.screen = screen;
-        self.set_focus(None);
-        self.armed_discard = None;
-        self.flap.reconcile(self.layout_mode());
-    }
-
-    fn handle_click(&mut self, pos: Point, doc: &mut AutoCommit) {
-        // Hamburger toggle (overlay mode only) summons / dismisses the flap.
-        if self.hamburger_rect.width() > 0.0 && self.hamburger_rect.contains(pos) {
-            self.flap.toggle(self.layout_mode());
-            return;
-        }
-        // While the overlay flap is open, a click on the scrim (the dimmed
-        // detail to the right of the list column) dismisses it — and is
-        // consumed so it doesn't also hit the content behind.
-        if self.layout_mode() == SplitLayout::Overlay && self.flap_open() {
-            let col_w = match self.screen {
-                Screen::History => FLAP_W,
-                _ => CHANGES_COL_W,
-            };
-            if pos.y < self.rect.y0 + self.appbar_h {
-                return;
-            }
-            if pos.x > self.rect.x0 + col_w {
-                self.flap.close();
-                return;
-            }
-            match self.screen {
-                Screen::Changes => self.handle_changes_click(pos),
-                Screen::History => self.handle_history_click(pos),
-                Screen::Panels => {}
-            }
-            return;
-        }
-        // Tabs.
-        for (screen, rect) in &self.tab_rects {
-            if rect.contains(pos) {
-                self.switch_screen(*screen);
-                return;
-            }
-        }
-        // Settings segmented control + syntax toggle — durable preferences,
-        // dispatched as actions so they undo and replicate.
-        if self.settings_seg.contains(pos) {
-            self.toggle_diff_layout(doc);
-            return;
-        }
-        if self.settings_syn.contains(pos) {
-            self.toggle_syntax_highlight(doc);
-            return;
-        }
-
-        match self.screen {
-            Screen::Changes => self.handle_changes_click(pos),
-            Screen::History => self.handle_history_click(pos),
-            Screen::Panels => self.handle_panels_click(pos),
-        }
-    }
-
-    fn handle_changes_click(&mut self, pos: Point) {
-        // Discard-file button (diff header) — armed two-click confirm.
-        if self.discard_file_rect.width() > 0.0 && self.discard_file_rect.contains(pos) {
-            if self.armed_discard == Some(DiscardTarget::File) {
-                if let Some((area, idx)) = self.selected_change {
-                    self.discard_file(area, idx);
-                }
-            } else {
-                self.armed_discard = Some(DiscardTarget::File);
-            }
-            return;
-        }
-        // Hunk action buttons take priority (they overlap the diff body).
-        if let Some((hunk, action)) = diffview::hunk_action_at(&self.diff_hunk_buttons, pos) {
-            match action {
-                diffview::HunkAction::Toggle => {
-                    self.armed_discard = None;
-                    self.stage_hunk(hunk);
-                }
-                diffview::HunkAction::Discard => {
-                    if self.armed_discard == Some(DiscardTarget::Hunk(hunk)) {
-                        self.discard_hunk(hunk);
-                    } else {
-                        self.armed_discard = Some(DiscardTarget::Hunk(hunk));
-                    }
-                }
-            }
-            return;
-        }
-        // Resolve against the changes column regions.
-        let mut hit: Option<ChangesHit> = None;
-        for f in &self.change_hits {
-            if let Some(h) = f(pos) {
-                hit = Some(h);
-                break;
-            }
-        }
-        // Any other interaction disarms a pending discard.
-        self.armed_discard = None;
-        let Some(hit) = hit else {
-            return;
-        };
-        match hit {
-            ChangesHit::SelectFile(area, idx) => {
-                self.selected_change = Some((area, idx));
-                self.diff_scroll = 0.0;
-            }
-            ChangesHit::ToggleStage(area, idx) => self.toggle_stage(area, idx),
-            ChangesHit::StageAll(_) => self.stage_all(),
-            ChangesHit::UnstageAll(_) => self.unstage_all(),
-            ChangesHit::Commit => self.do_commit(),
-            ChangesHit::FocusMessage => self.set_focus(Some(Field::Commit)),
         }
     }
 
@@ -2226,36 +1064,6 @@ impl GitClientApp {
         hunk
     }
 
-    fn handle_history_click(&mut self, pos: Point) {
-        for (i, rect) in self.history_rows.iter().enumerate() {
-            if rect.contains(pos) {
-                self.selected_commit = i;
-                self.detail_scroll = 0.0;
-                return;
-            }
-        }
-    }
-
-    fn handle_panels_click(&mut self, pos: Point) {
-        // Create button (the input's own focus is handled before this router).
-        if self.new_branch_button.width() > 0.0 && self.new_branch_button.contains(pos) {
-            self.create_new_branch();
-            return;
-        }
-        let mut hit: Option<PanelHit> = None;
-        for f in &self.panel_hits {
-            if let Some(action) = f(pos) {
-                hit = Some(action);
-                break;
-            }
-        }
-        match hit {
-            Some(PanelHit::Remote(a)) => self.apply_remote_action(a),
-            Some(PanelHit::Branch(a)) => self.apply_branch_action(a),
-            None => {}
-        }
-    }
-
     /// Apply a remote action (fetch / pull / push) against the live repo via
     /// `git2`, then re-read the model so the ahead/behind counters reflect
     /// the real tracking state. For the sample, reconcile the counters so the
@@ -2292,59 +1100,1180 @@ impl GitClientApp {
         self.run_action(res);
     }
 
-    fn scroll_active(&mut self, dy: f64, pos: Point) {
-        // When the list is an open overlay flap it captures the wheel over its
-        // own column; the detail behind it scrolls only when the flap is shut.
-        let overlay_open = self.layout_mode() == SplitLayout::Overlay && self.flap_open();
-        match self.screen {
-            Screen::Changes => {
-                // The list column occupies the left `CHANGES_COL_W` strip
-                // whether docked or an open overlay; scroll it there.
-                let over_list = (overlay_open || self.layout_mode() == SplitLayout::Docked)
-                    && pos.x < self.rect.x0 + CHANGES_COL_W
-                    && self.flap_open();
-                if over_list {
-                    self.changes_scroll = (self.changes_scroll - dy).max(0.0);
-                } else {
-                    // Clamp at the pitch and header height the last draw
-                    // painted, so 2× rows scroll as far as they extend.
-                    let metrics = self.diff_metrics;
-                    let max = self
-                        .current_diff()
-                        .map_or(0.0, |d| DiffView::content_height_with_metrics(d, &metrics))
-                        - (self.rect.height() - self.appbar_h - self.diff_header_h);
-                    self.diff_scroll = (self.diff_scroll - dy).clamp(0.0, max.max(0.0));
-                }
-            }
-            Screen::History => {
-                let list_w = if overlay_open {
-                    FLAP_W
-                } else {
-                    (self.rect.width() * 0.56).max(420.0)
-                };
-                let over_list = pos.x < self.rect.x0 + list_w && self.flap_open();
-                if over_list {
-                    let max = HistoryView::content_height(&self.model, &self.history_metrics)
-                        - (self.rect.height() - self.appbar_h);
-                    self.history_scroll = (self.history_scroll - dy).clamp(0.0, max.max(0.0));
-                } else {
-                    self.detail_scroll = (self.detail_scroll - dy).max(0.0);
-                }
-            }
-            Screen::Panels => {}
+    fn current_path(&self) -> Option<String> {
+        let (area, idx) = self.selected_change?;
+        change_list(&self.model, area)
+            .get(idx)
+            .map(|f| f.path.clone())
+    }
+
+    // --- Layout and paint ------------------------------------------------
+
+    /// The header row's height: the shell metric, grown so a control and its
+    /// `s3` insets always fit at a large text scale.
+    fn header_height(theme: &Theme) -> f64 {
+        let control = ui::widget::text_control_height(
+            f64::from(ui::tokens::Metrics::BASE.min_pointer_target),
+            theme,
+        );
+        f64::from(theme.tokens.metrics.header_height)
+            .max(control + 2.0 * f64::from(theme.tokens.spacing.s3))
+    }
+
+    /// Whether an open drawer covers the window: everything under its scrim
+    /// is inert until it closes.
+    fn drawer_is_modal(&self) -> bool {
+        self.screen.has_list() && self.drawer.is_overlay() && self.drawer.is_open()
+    }
+
+    fn push_target(&mut self, rect: Rect, hit: Hit) {
+        if rect.width() > 0.0 && rect.height() > 0.0 {
+            self.targets.push(Target {
+                rect,
+                hit: hit.clone(),
+            });
+            self.semantic.push(Target { rect, hit });
         }
     }
 
+    /// Paint the whole window for this frame, record its targets, and show
+    /// where each overflowing region stands.
+    fn paint_window(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx) {
+        self.paint_screens(ctx, presence);
+        self.paint_scroll_bars(ctx);
+    }
+
+    /// Paint the screens, the header row and the list column.
+    fn paint_screens(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx) {
+        self.targets.clear();
+        self.semantic.clear();
+        self.scroll_regions.clear();
+        if self.awaiting_repo {
+            self.syntax_tool.lay_out_in(Rect::ZERO, ctx.text, ctx.theme);
+            self.paint_open(ctx, presence);
+            return;
+        }
+        let theme = ctx.theme;
+        let window = self.rect;
+        let header_h = Self::header_height(theme);
+        let has_list = self.screen.has_list();
+        // The window's header row: the drawer lays its toggle out in it and
+        // a floating drawer opens under it, so the row stays live. The
+        // History control takes the trailing corner.
+        let row = Rect::new(
+            window.x0,
+            window.y0,
+            window.x1,
+            (window.y0 + header_h).min(window.y1),
+        );
+        let history_shown = self.history.is_shown();
+        let face = if has_list {
+            self.drawer.header_with_history(row, theme, history_shown)
+        } else {
+            ui::chrome::HeaderRowFace::new(row, theme).with_history_if(history_shown)
+        };
+        self.history_rect = face.history;
+        if has_list {
+            self.drawer.tick(theme);
+            self.drawer.resolve(window);
+            // A staged drawer opens once the window has its narrow layout.
+            if self.staged == Staged::OpenDrawer && self.drawer.is_overlay() {
+                self.drawer.snap(true);
+                self.staged = Staged::Nothing;
+            }
+        }
+        let overlay = has_list && self.drawer.is_overlay();
+        let column = if has_list {
+            self.drawer.content_rect()
+        } else {
+            window
+        };
+        let header = Rect::new(column.x0, row.y0, column.x1, row.y1);
+        let body = Rect::new(column.x0, header.y1, column.x1, window.y1.max(header.y1));
+        let body = self.paint_banner(ctx, body);
+        match self.screen {
+            Screen::Changes => self.paint_diff(ctx, body),
+            Screen::History => self.paint_detail(ctx, body),
+            Screen::Panels => self.paint_panels(ctx, presence, body),
+        }
+        // A docked, open list column holds the toggle in its own header; in
+        // every other case it leads the content header.
+        let toggle_in_list = has_list && !overlay && self.drawer.is_open();
+        self.paint_content_header(
+            ctx,
+            presence,
+            header,
+            has_list && !toggle_in_list,
+            face.toggle,
+        );
+        self.history
+            .paint(ctx.scene, ctx.transform, ctx.text, theme, self.history_rect);
+
+        if !has_list {
+            return;
+        }
+        let panel = self.drawer.sidebar_rect();
+        if overlay {
+            if self.drawer.reveal() <= 0.001 || panel.width() <= 0.0 {
+                return;
+            }
+            self.drawer.draw_scrim(ctx.scene, ctx.transform, theme);
+            // Everything under the drawer is inert while it is out; the row
+            // above it stays live.
+            self.targets.retain(|t| t.rect.y1 <= row.y1 + 0.5);
+            self.semantic.retain(|t| t.rect.y1 <= row.y1 + 0.5);
+            self.targets.push(Target {
+                rect: Rect::new(window.x0, row.y1, window.x1, window.y1),
+                hit: Hit::Scrim,
+            });
+            self.scroll_regions.clear();
+            let local = self.drawer.paint_panel(ctx.scene, ctx.transform, theme);
+            let mut lctx = PaintCtx::new(&mut *ctx.scene, ctx.transform, &mut *ctx.text, &local);
+            self.paint_list_column(&mut lctx, presence, panel, panel, 0.0, None);
+        } else if panel.width() > 0.5 {
+            let local = self.drawer.paint_panel(ctx.scene, ctx.transform, theme);
+            // The list keeps its width while the column opens or closes: it
+            // slides under the column's edge instead of reflowing.
+            let full = Rect::new(
+                panel.x1 - self.drawer.resolved_docked_width(),
+                panel.y0,
+                panel.x1,
+                panel.y1,
+            );
+            let mut lctx = PaintCtx::new(&mut *ctx.scene, ctx.transform, &mut *ctx.text, &local);
+            let toggle = toggle_in_list.then_some(face.toggle);
+            self.paint_list_column(&mut lctx, presence, panel, full, header_h, toggle);
+        } else {
+            self.commit_input.apply_layout_external(Rect::ZERO);
+        }
+    }
+
+    fn paint_toggle(&mut self, ctx: &mut PaintCtx<'_>, rect: Rect) {
+        let hovered = self.pointer.is_some_and(|p| rect.contains(p));
+        self.drawer
+            .draw_toggle(ctx.scene, ctx.transform, ctx.text, ctx.theme, rect, hovered);
+        self.push_target(rect, Hit::SidebarToggle);
+    }
+
+    /// The list column: its header (the toggle and the repository's name)
+    /// over the Changes or History list. `full` is the column at its full
+    /// width; `clip` is what of it is showing.
+    fn paint_list_column(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        presence: &PresenceCtx,
+        clip: Rect,
+        full: Rect,
+        header_h: f64,
+        toggle: Option<Rect>,
+    ) {
+        let theme = ctx.theme;
+        let s3 = f64::from(theme.tokens.spacing.s3);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        ctx.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            ctx.transform,
+            &clip,
+        );
+        let header = Rect::new(full.x0, full.y0, full.x1, full.y0 + header_h);
+        // Under the window's header row (a floating drawer) the column has
+        // no header of its own.
+        if header_h > 0.0 {
+            let x = if let Some(rect) = toggle {
+                self.paint_toggle(ctx, rect);
+                rect.x1 + gap
+            } else {
+                header.x0 + s3
+            };
+            let heading = theme.text(TextRole::Heading);
+            let name = ctx.text.elide_to_width_style(
+                &self.model.name,
+                ui::num::f32_of_f64((header.x1 - s3 - x).max(0.0)),
+                &heading,
+            );
+            ctx.text_role_in_band(
+                &name,
+                TextRole::Heading,
+                theme.text_primary,
+                x,
+                header,
+                None,
+            );
+        }
+
+        let list = Rect::new(full.x0, header.y1, full.x1, full.y1.max(header.y1));
+        match self.screen {
+            Screen::Changes => self.paint_changes_list(ctx, presence, list, clip),
+            Screen::History => self.paint_history_list(ctx, list, clip),
+            Screen::Panels => {}
+        }
+        ctx.scene.pop_layer();
+    }
+
+    /// The Changes list in `list`, of which `clip` is showing.
+    fn paint_changes_list(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        presence: &PresenceCtx,
+        list: Rect,
+        clip: Rect,
+    ) {
+        let pointer = self.pointer.filter(|p| clip.contains(*p));
+        let out = changes::paint(
+            ctx,
+            list,
+            &changes::ChangesInput {
+                model: &self.model,
+                selected: self.selected_change,
+                scroll: self.changes_scroll,
+                message: self.commit_input.value(),
+                pointer,
+            },
+        );
+        for (rect, hit) in out.targets {
+            let rect = rect.intersect(clip);
+            if rect.width() <= 0.0 || rect.height() <= 0.0 {
+                continue;
+            }
+            // Row actions show under the pointer; their semantic
+            // twins are recorded for every row below.
+            if matches!(hit, ChangesHit::ToggleStage(..)) {
+                self.targets.push(Target {
+                    rect,
+                    hit: Hit::Change(hit),
+                });
+                continue;
+            }
+            if let ChangesHit::SelectFile(area, index) = hit {
+                self.semantic.push(Target {
+                    rect,
+                    hit: Hit::Change(ChangesHit::ToggleStage(area, index)),
+                });
+            }
+            self.push_target(rect, Hit::Change(hit));
+        }
+        let viewport =
+            Rect::new(list.x0, list.y0, list.x1, list.y0 + out.viewport_height).intersect(clip);
+        self.scroll_regions.push(ScrollRegion {
+            rect: viewport,
+            scroller: Scroller::ChangesList,
+            max_y: out.content_height - out.viewport_height,
+            max_x: 0.0,
+            ground: ctx.theme.tokens.colors.surfaces.content,
+        });
+        self.changes_scroll = self
+            .changes_scroll
+            .clamp(0.0, (out.content_height - out.viewport_height).max(0.0));
+        if !out.commit_enabled {
+            let rect = out.commit_button.intersect(clip);
+            if rect.width() > 0.0 && rect.height() > 0.0 {
+                self.semantic.push(Target {
+                    rect,
+                    hit: Hit::Change(ChangesHit::Commit),
+                });
+            }
+        }
+        self.commit_input.apply_layout_external(out.commit_input);
+        self.commit_input
+            .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
+    }
+
+    /// The commit list in `list`, of which `clip` is showing.
+    fn paint_history_list(&mut self, ctx: &mut PaintCtx<'_>, list: Rect, clip: Rect) {
+        let pointer = self.pointer.filter(|p| clip.contains(*p));
+        let out = history::paint_list(
+            ctx,
+            list,
+            &history::ListInput {
+                model: &self.model,
+                layout: &self.graph_layout,
+                selected: self.selected_commit,
+                scroll: self.history_scroll,
+                pointer,
+            },
+        );
+        for (index, rect) in out.rows {
+            self.push_target(rect.intersect(clip), Hit::Commit(index));
+        }
+        self.scroll_regions.push(ScrollRegion {
+            rect: list.intersect(clip),
+            scroller: Scroller::HistoryList,
+            max_y: out.content_height - list.height(),
+            max_x: 0.0,
+            ground: ctx.theme.tokens.colors.surfaces.content,
+        });
+    }
+
+    /// The content column's header: the toggle when the list is hidden, the
+    /// screen switcher, and the screen's commands at the trailing end; one
+    /// hairline under it.
+    fn paint_content_header(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        presence: &PresenceCtx,
+        header: Rect,
+        with_toggle: bool,
+        toggle: Rect,
+    ) {
+        let theme = ctx.theme;
+        let s3 = f64::from(theme.tokens.spacing.s3);
+        let gap = f64::from(theme.tokens.spacing.s2);
+        ui::surface::separator(
+            ctx.scene,
+            ctx.transform,
+            header.x0,
+            header.x1,
+            header.y1,
+            0.0,
+            theme.tokens.colors.surfaces.content,
+        );
+        let x = if with_toggle {
+            self.paint_toggle(ctx, toggle);
+            toggle.x1 + gap
+        } else {
+            header.x0 + s3
+        };
+
+        let owned: Vec<String> = Screen::ALL.iter().map(|s| s.label()).collect();
+        let labels: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let natural =
+            SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, ctx.text, theme);
+        let mut right = header.x1 - s3;
+        if self.history_rect.width() > 0.0 {
+            right = right.min(self.history_rect.x0 - gap);
+        }
+        let min_x = x + natural + s3;
+        match self.screen {
+            Screen::Changes => {
+                right = self.paint_diff_commands(ctx, presence, header, right, min_x);
+            }
+            Screen::Panels => {
+                let placed = panels::remote_buttons(ctx, header, right, min_x, self.pointer);
+                for (rect, action) in placed {
+                    right = right.min(rect.x0 - s3);
+                    self.push_target(rect, Hit::Remote(action));
+                }
+            }
+            Screen::History => {}
+        }
+        if self.screen != Screen::Changes {
+            self.syntax_tool.lay_out_in(Rect::ZERO, ctx.text, theme);
+        }
+
+        let width = natural.min((right - x).max(0.0));
+        let h = SegmentedFace::height(ControlSize::Regular, theme);
+        let y = header.center().y - h / 2.0;
+        let each = width / labels.len() as f64;
+        let rects: Vec<Rect> = (0..labels.len())
+            .map(|i| Rect::new(x + each * i as f64, y, x + each * (i + 1) as f64, y + h))
+            .collect();
+        let selected = Screen::ALL
+            .iter()
+            .position(|s| *s == self.screen)
+            .unwrap_or(0);
+        let hovered = self
+            .pointer
+            .and_then(|p| rects.iter().position(|r| r.contains(p)));
+        ToggleGroup::paint(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            &SegmentedFace::new(&rects, &labels, selected).hovered(hovered),
+        );
+        for (rect, screen) in rects.iter().zip(Screen::ALL) {
+            self.push_target(*rect, Hit::Screen(screen));
+        }
+    }
+
+    /// The diff commands at the header's trailing end: the layout choice and
+    /// the Syntax toggle. Where both do not fit right of `min_x` the layout
+    /// choice stays and the toggle leaves (it stays in the palette).
+    /// Returns where the commands start.
+    fn paint_diff_commands(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        presence: &PresenceCtx,
+        header: Rect,
+        right: f64,
+        min_x: f64,
+    ) -> f64 {
+        let theme = ctx.theme;
+        let s3 = f64::from(theme.tokens.spacing.s3);
+        let h = SegmentedFace::height(ControlSize::Regular, theme);
+        let y = header.center().y - h / 2.0;
+
+        self.syntax_tool
+            .set_active(0, self.settings.syntax_highlight);
+        self.syntax_tool.lay_out_in(Rect::ZERO, ctx.text, theme);
+        let tool_w = f64::from(
+            Widget::measure(
+                &mut self.syntax_tool,
+                taffy::Size {
+                    width: None,
+                    height: None,
+                },
+                taffy::Size {
+                    width: taffy::AvailableSpace::MaxContent,
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                ctx.text,
+            )
+            .width,
+        );
+        let (unified, split) = (t("git-diff-unified"), t("git-diff-split"));
+        let labels = [unified.as_str(), split.as_str()];
+        let layout_w =
+            SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, ctx.text, theme);
+        let with_tool = right - tool_w - s3 - layout_w >= min_x;
+        if !with_tool && right - layout_w < min_x {
+            return right;
+        }
+
+        let mut right = right;
+        if with_tool {
+            // As tall as the header's other controls.
+            let tool = Rect::new(right - tool_w, y, right, y + h);
+            self.syntax_tool.lay_out_in(tool, ctx.text, theme);
+            Widget::draw(
+                &mut self.syntax_tool,
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                theme,
+                presence,
+            );
+            self.semantic.push(Target {
+                rect: tool,
+                hit: Hit::SyntaxHighlight,
+            });
+            right = tool.x0 - s3;
+        }
+
+        let x0 = right - layout_w;
+        let rects = [
+            Rect::new(x0, y, x0 + layout_w / 2.0, y + h),
+            Rect::new(x0 + layout_w / 2.0, y, right, y + h),
+        ];
+        let selected = usize::from(self.settings.diff_layout == DiffLayout::SideBySide);
+        let hovered = self
+            .pointer
+            .and_then(|p| rects.iter().position(|r| r.contains(p)));
+        ToggleGroup::paint(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            &SegmentedFace::new(&rects, &labels, selected)
+                .style(ui::widget::SegmentedStyle::Quiet)
+                .hovered(hovered),
+        );
+        self.push_target(rects[0], Hit::DiffLayout(DiffLayout::Unified));
+        self.push_target(rects[1], Hit::DiffLayout(DiffLayout::SideBySide));
+        x0 - s3
+    }
+
+    /// An error or a running transfer as a banner at the top of the content;
+    /// returns the content area under it.
+    fn paint_banner(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) -> Rect {
+        use ui::widget::banner::{BannerContent, BannerKind};
+        let (kind, title, dismissible) = if let Some(job) = &self.remote_job {
+            (BannerKind::Info, job.label.clone(), false)
+        } else if let Some(error) = &self.last_error {
+            (BannerKind::Error, error.clone(), true)
+        } else {
+            return body;
+        };
+        let theme = ctx.theme;
+        let margin = f64::from(theme.tokens.spacing.s3);
+        let rect_w = (body.width() - 2.0 * margin).max(1.0);
+        let content = BannerContent::new(kind, &title).dismissible(dismissible);
+        let h = Banner::height(&content, rect_w, ctx.text, theme);
+        let rect = Rect::new(
+            body.x0 + margin,
+            body.y0 + margin,
+            body.x1 - margin,
+            body.y0 + margin + h,
+        );
+        let hover = self.pointer.unwrap_or(Point::new(f64::MIN, f64::MIN));
+        let hit = Banner::paint(ctx, rect, &content, hover);
+        self.semantic.push(Target {
+            rect,
+            hit: Hit::DismissError,
+        });
+        if let Some(dismiss) = hit.dismiss {
+            self.targets.push(Target {
+                rect: dismiss,
+                hit: Hit::DismissError,
+            });
+        }
+        Rect::new(body.x0, rect.y1, body.x1, body.y1.max(rect.y1))
+    }
+
+    /// The selected file's diff, or one sentence when there is none.
+    fn paint_diff(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) {
+        let key = self.current_diff_key();
+        let Some(diff) = key.as_ref().and_then(|k| self.diffs.get(k)) else {
+            let title = t(if self.model.change_count() == 0 {
+                "git-tree-clean"
+            } else {
+                "git-select-file"
+            });
+            EmptyState::paint(
+                ctx,
+                body,
+                &EmptyStateContent::new(&title),
+                Point::new(f64::MIN, f64::MIN),
+            );
+            return;
+        };
+        let staged = self.selected_is_staged();
+        let out = diffview::paint(
+            ctx,
+            body,
+            &diffview::DiffInput {
+                diff,
+                scroll: self.diff_scroll,
+                hscroll: self.diff_hscroll,
+                settings: self.settings,
+                staged,
+                can_discard: true,
+                pointer: self.pointer,
+            },
+        );
+        for (rect, hit) in out.targets {
+            self.push_target(rect, Hit::Diff(hit));
+        }
+        let max_y = out.content_height - out.viewport.height();
+        self.diff_scroll = self.diff_scroll.clamp(0.0, max_y.max(0.0));
+        self.diff_hscroll = self.diff_hscroll.clamp(0.0, out.max_hscroll);
+        self.scroll_regions.push(ScrollRegion {
+            rect: out.viewport,
+            scroller: Scroller::Diff,
+            max_y,
+            max_x: out.max_hscroll,
+            ground: ctx.theme.tokens.colors.surfaces.content,
+        });
+    }
+
+    /// The selected commit.
+    fn paint_detail(&mut self, ctx: &mut PaintCtx<'_>, body: Rect) {
+        let Some(commit) = self.model.commits.get(self.selected_commit) else {
+            EmptyState::paint(
+                ctx,
+                body,
+                &EmptyStateContent::new(&t("git-no-commits")),
+                Point::new(f64::MIN, f64::MIN),
+            );
+            return;
+        };
+        let height = history::paint_detail(ctx, body, commit, self.detail_scroll);
+        let max_y = height - body.height();
+        self.detail_scroll = self.detail_scroll.clamp(0.0, max_y.max(0.0));
+        self.scroll_regions.push(ScrollRegion {
+            rect: body,
+            scroller: Scroller::Detail,
+            max_y,
+            max_x: 0.0,
+            ground: ctx.theme.tokens.colors.surfaces.content,
+        });
+    }
+
+    /// The branches page.
+    fn paint_panels(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx, body: Rect) {
+        let out = panels::paint(
+            ctx,
+            body,
+            &panels::PanelsInput {
+                model: &self.model,
+                scroll: self.panels_scroll,
+                pointer: self.pointer,
+                can_create: self.repo_path.is_some(),
+                branch_name: self.branch_input.value(),
+                worktree_fields: [
+                    self.worktree_branch_input.value(),
+                    self.worktree_path_input.value(),
+                    self.worktree_start_input.value(),
+                ],
+            },
+        );
+        for (rect, hit) in out.targets {
+            if rect.width() > 0.0 && rect.height() > 0.0 {
+                self.targets.push(Target {
+                    rect,
+                    hit: Hit::Panel(hit),
+                });
+            }
+        }
+        for (rect, hit) in out.semantic {
+            if rect.width() > 0.0 && rect.height() > 0.0 {
+                self.semantic.push(Target {
+                    rect,
+                    hit: Hit::Panel(hit),
+                });
+            }
+        }
+        self.branch_input.apply_layout_external(out.branch_field);
+        if out.branch_field.width() > 0.0 {
+            self.branch_input
+                .draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
+        }
+        for (input, rect) in [
+            &mut self.worktree_branch_input,
+            &mut self.worktree_path_input,
+            &mut self.worktree_start_input,
+        ]
+        .into_iter()
+        .zip(out.worktree_fields)
+        {
+            input.apply_layout_external(rect);
+            if rect.width() > 0.0 {
+                input.draw(ctx.scene, ctx.transform, ctx.text, ctx.theme, presence);
+            }
+        }
+        let max_y = out.content_height - body.height();
+        self.panels_scroll = self.panels_scroll.clamp(0.0, max_y.max(0.0));
+        self.scroll_regions.push(ScrollRegion {
+            rect: body,
+            scroller: Scroller::Panels,
+            max_y,
+            max_x: 0.0,
+            ground: ctx.theme.tokens.colors.surfaces.content,
+        });
+    }
+
+    /// The "open a repository" screen: the window's header row (empty: no
+    /// repository has screens yet), then what to do, the path field and the
+    /// Open button, and the reason the last attempt failed.
+    fn paint_open(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx) {
+        use ui::widget::banner::{BannerContent, BannerKind};
+        let theme = ctx.theme;
+        let s = &theme.tokens.spacing;
+        let window = self.rect;
+        let header_y = (window.y0 + Self::header_height(theme)).min(window.y1);
+        ui::surface::separator(
+            ctx.scene,
+            ctx.transform,
+            window.x0,
+            window.x1,
+            header_y,
+            0.0,
+            theme.tokens.colors.surfaces.content,
+        );
+        let body = Rect::new(window.x0, header_y, window.x1, window.y1.max(header_y));
+        let lane = ui::content_layout::FocusedContentLane::new()
+            .max_width(f64::from(theme.tokens.metrics.panel_width_sheet))
+            .gutter(f64::from(s.s6))
+            .layout(body);
+        let width = ui::num::f32_of_f64(lane.width());
+        let mut y = body.y0 + body.height() / 3.0;
+        let title = t("git-open-title");
+        let title_h = ctx
+            .measure_role(&title, TextRole::Title, Some(width))
+            .height;
+        ctx.text_role(
+            &title,
+            TextRole::Title,
+            theme.text_primary,
+            Point::new(lane.x0, y),
+            Some(width),
+        );
+        y += title_h + f64::from(s.s2);
+        let hint = t("git-open-hint");
+        let hint_h = ctx.measure_role(&hint, TextRole::Body, Some(width)).height;
+        ctx.text_role(
+            &hint,
+            TextRole::Body,
+            theme.text_dim,
+            Point::new(lane.x0, y),
+            Some(width),
+        );
+        y += hint_h + f64::from(s.s6);
+
+        let h = ButtonFace::height(ControlSize::Regular, theme);
+        let label = t("git-open");
+        let button_w = ButtonFace::new(Rect::ZERO, &label).intrinsic_width(ctx.text, theme);
+        let button = Rect::new(lane.x1 - button_w, y, lane.x1, y + h);
+        let field = Rect::new(lane.x0, y, button.x0 - f64::from(s.s2), y + h);
+        self.open_input.apply_layout_external(field);
+        self.open_input
+            .draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
+        self.semantic.push(Target {
+            rect: field,
+            hit: Hit::OpenPath,
+        });
+        self.targets.push(Target {
+            rect: field,
+            hit: Hit::OpenPath,
+        });
+        let enabled = !self.open_input.value().trim().is_empty();
+        ui::widget::Button::paint(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            theme,
+            &ButtonFace::new(button, &label)
+                .role(ui::widget::ButtonRole::Primary)
+                .hovered(enabled && self.pointer.is_some_and(|p| button.contains(p)))
+                .disabled(!enabled),
+        );
+        self.semantic.push(Target {
+            rect: button,
+            hit: Hit::OpenRepository,
+        });
+        if enabled {
+            self.targets.push(Target {
+                rect: button,
+                hit: Hit::OpenRepository,
+            });
+        }
+
+        if let Some(error) = &self.last_error {
+            let top = button.y1 + f64::from(s.s4);
+            let content = BannerContent::new(BannerKind::Error, error);
+            let h = Banner::height(&content, lane.width(), ctx.text, theme);
+            let banner = Rect::new(lane.x0, top, lane.x1, top + h);
+            Banner::paint(ctx, banner, &content, Point::new(f64::MIN, f64::MIN));
+        }
+    }
+
+    // --- Activation -----------------------------------------------------
+
+    /// Switch the active screen.
+    fn switch_screen(&mut self, screen: Screen) {
+        self.screen = screen;
+        self.set_focus(None);
+        self.confirm = None;
+    }
+
+    fn segmented_rects(&self) -> (Vec<Rect>, Vec<Rect>) {
+        if self.confirm.is_some() || self.drawer_is_modal() {
+            return (Vec::new(), Vec::new());
+        }
+        let screens = self
+            .targets
+            .iter()
+            .filter_map(|target| matches!(target.hit, Hit::Screen(_)).then_some(target.rect))
+            .collect();
+        let layouts = self
+            .targets
+            .iter()
+            .filter_map(|target| matches!(target.hit, Hit::DiffLayout(_)).then_some(target.rect))
+            .collect();
+        (screens, layouts)
+    }
+
+    fn handle_segmented_touch(
+        &mut self,
+        touch: &winit::event::Touch,
+        scale: f64,
+        edits: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        let (screens, layouts) = self.segmented_rects();
+        let selected_screen = Screen::ALL
+            .iter()
+            .position(|screen| *screen == self.screen)
+            .unwrap_or(0);
+        let layout = self
+            .preferences
+            .as_ref()
+            .map_or(self.settings.diff_layout, |preferences| {
+                preferences.get().diff_layout
+            });
+        let selected_layout = usize::from(layout == DiffLayout::SideBySide);
+        let groups = [
+            SegmentedTouchGroup::new(0, &screens, selected_screen),
+            SegmentedTouchGroup::new(1, &layouts, selected_layout),
+        ];
+        let result = self.segmented_touch.handle(touch, scale, &groups);
+        if let SegmentedTouchResult::Selected { group, index } = result {
+            let hit = if group == 0 {
+                Screen::ALL.get(index).copied().map(Hit::Screen)
+            } else {
+                [DiffLayout::Unified, DiffLayout::SideBySide]
+                    .get(index)
+                    .copied()
+                    .map(Hit::DiffLayout)
+            };
+            if let Some(hit) = hit {
+                self.activate(hit, edits);
+            }
+        }
+        result.handled()
+    }
+
+    /// Do what `hit` names: the one path pointer presses, keys and
+    /// assistive actions share.
+    fn activate(&mut self, hit: Hit, _doc: &mut ui::widget::Edits<'_>) {
+        if let (Some(dispatcher), Some((row, effect))) =
+            (&self.dispatcher, self.effect_for_hit(&hit))
+        {
+            if matches!(hit, Hit::DiffLayout(layout) if layout == self.preferences.as_ref().map_or(self.settings.diff_layout, |preferences| preferences.get().diff_layout))
+            {
+                return;
+            }
+            if let Some(row) = row {
+                dispatcher.effect_on(&row, &effect);
+            } else {
+                dispatcher.effect(&effect);
+            }
+            return;
+        }
+        let in_drawer = self.drawer_is_modal();
+        match hit {
+            Hit::SidebarToggle => self.drawer.toggle(),
+            Hit::Scrim => {
+                if !self
+                    .pointer
+                    .is_some_and(|point| self.drawer.sidebar_rect().contains(point))
+                {
+                    self.drawer.close();
+                }
+            }
+            Hit::Screen(screen) => self.switch_screen(screen),
+            Hit::DiffLayout(layout) => {
+                if self.settings.diff_layout != layout {
+                    self.toggle_diff_layout();
+                }
+            }
+            Hit::SyntaxHighlight => self.toggle_syntax_highlight(),
+            Hit::Remote(action) => self.apply_remote_action(action),
+            Hit::DismissError => self.last_error = None,
+            Hit::Change(change) => self.activate_change(change, in_drawer),
+            Hit::Diff(diff) => self.activate_diff(diff),
+            Hit::Commit(index) => {
+                self.selected_commit = index;
+                self.detail_scroll = 0.0;
+                if in_drawer {
+                    self.drawer.close();
+                }
+            }
+            Hit::Panel(panel) => self.activate_panel(panel),
+            Hit::OpenPath => self.set_focus(Some(Field::Open)),
+            Hit::OpenRepository => self.open_repo_from_input(),
+        }
+    }
+
+    fn activate_change(&mut self, hit: ChangesHit, in_drawer: bool) {
+        match hit {
+            ChangesHit::SelectFile(area, idx) => {
+                self.selected_change = Some((area, idx));
+                self.diff_scroll = 0.0;
+                self.diff_hscroll = 0.0;
+                // Choosing in a drawer shows what was chosen.
+                if in_drawer {
+                    self.drawer.close();
+                }
+            }
+            ChangesHit::ToggleStage(area, idx) => self.toggle_stage(area, idx),
+            ChangesHit::StageAll(_) => self.stage_all(),
+            ChangesHit::UnstageAll(_) => self.unstage_all(),
+            ChangesHit::Commit => self.do_commit(),
+            ChangesHit::FocusMessage => self.set_focus(Some(Field::Commit)),
+        }
+    }
+
+    fn activate_diff(&mut self, hit: DiffHit) {
+        let Some((area, index)) = self.selected_change else {
+            return;
+        };
+        match hit {
+            DiffHit::StageFile => self.toggle_stage(area, index),
+            DiffHit::DiscardFile => {
+                if let Some(file) = change_list(&self.model, area).get(index) {
+                    self.confirm = Some(Confirm::DiscardFile {
+                        area,
+                        index,
+                        name: file.name().to_string(),
+                    });
+                }
+            }
+            DiffHit::Hunk(hunk, HunkAction::Toggle) => self.stage_hunk(hunk),
+            DiffHit::Hunk(hunk, HunkAction::Discard) => {
+                self.confirm = Some(Confirm::DiscardHunk(hunk));
+            }
+        }
+    }
+
+    fn activate_panel(&mut self, hit: PanelHit) {
+        match hit {
+            PanelHit::Branch(BranchAction::Delete(name)) => {
+                self.confirm = Some(Confirm::DeleteBranch(name));
+            }
+            PanelHit::Branch(action) => self.apply_branch_action(action),
+            PanelHit::BranchName => self.set_focus(Some(Field::Branch)),
+            PanelHit::CreateBranch => self.create_new_branch(),
+            PanelHit::WorktreeBranch => self.set_focus(Some(Field::WorktreeBranch)),
+            PanelHit::WorktreePath => self.set_focus(Some(Field::WorktreePath)),
+            PanelHit::WorktreeStart => self.set_focus(Some(Field::WorktreeStart)),
+            PanelHit::WorktreeInfo(_) | PanelHit::WorktreeError => {}
+            PanelHit::CreateWorktree => {
+                self.last_error = Some(t("git-worktree-host-required"));
+            }
+        }
+    }
+
+    /// Carry out the confirmed destructive step.
+    fn perform_confirmed(&mut self) {
+        match self.confirm.take() {
+            Some(Confirm::DiscardFile { area, index, .. }) => self.discard_file(area, index),
+            Some(Confirm::DiscardHunk(hunk)) => self.discard_hunk(hunk),
+            Some(Confirm::DeleteBranch(name)) => {
+                self.apply_branch_action(BranchAction::Delete(name));
+            }
+            None => {}
+        }
+    }
+
+    /// A press while the confirmation sheet is up: its buttons, its close
+    /// control and its scrim; nothing under it.
+    fn confirm_press(&mut self, pos: Point) {
+        let Some(layout) = &self.confirm_layout else {
+            return;
+        };
+        match layout.hit(pos) {
+            Some(ModalHit::Action(0) | ModalHit::Close) => self.confirm = None,
+            Some(ModalHit::Action(_)) => self.perform_confirmed(),
+            Some(ModalHit::Scrim) if layout.dismiss_on_scrim => self.confirm = None,
+            _ => {}
+        }
+    }
+
+    /// Scroll the region under `pos`.
+    fn scroll_at(&mut self, pos: Point, dx: f64, dy: f64) {
+        let Some(region) = self
+            .scroll_regions
+            .iter()
+            .rev()
+            .find(|r| r.rect.contains(pos))
+            .copied()
+        else {
+            return;
+        };
+        let max_y = region.max_y.max(0.0);
+        let max_x = region.max_x.max(0.0);
+        self.bar_fade.wake(ui::time::now());
+        match region.scroller {
+            Scroller::ChangesList => {
+                self.changes_scroll = (self.changes_scroll - dy).clamp(0.0, max_y);
+            }
+            Scroller::Diff => {
+                self.diff_scroll = (self.diff_scroll - dy).clamp(0.0, max_y);
+                self.diff_hscroll = (self.diff_hscroll - dx).clamp(0.0, max_x);
+            }
+            Scroller::HistoryList => {
+                self.history_scroll = (self.history_scroll - dy).clamp(0.0, max_y);
+            }
+            Scroller::Detail => self.detail_scroll = (self.detail_scroll - dy).clamp(0.0, max_y),
+            Scroller::Panels => self.panels_scroll = (self.panels_scroll - dy).clamp(0.0, max_y),
+        }
+    }
+
+    /// How far `scroller` is scrolled.
+    fn scroll_offset(&self, scroller: Scroller) -> f64 {
+        match scroller {
+            Scroller::ChangesList => self.changes_scroll,
+            Scroller::Diff => self.diff_scroll,
+            Scroller::HistoryList => self.history_scroll,
+            Scroller::Detail => self.detail_scroll,
+            Scroller::Panels => self.panels_scroll,
+        }
+    }
+
+    fn set_scroll_offset(&mut self, scroller: Scroller, offset: f64) {
+        let slot = match scroller {
+            Scroller::ChangesList => &mut self.changes_scroll,
+            Scroller::Diff => &mut self.diff_scroll,
+            Scroller::HistoryList => &mut self.history_scroll,
+            Scroller::Detail => &mut self.detail_scroll,
+            Scroller::Panels => &mut self.panels_scroll,
+        };
+        *slot = offset;
+        self.bar_fade.wake(ui::time::now());
+    }
+
+    /// Whether the bars stay shown: a thumb is held, or the pointer is on a
+    /// bar's track.
+    fn bars_held(&self) -> bool {
+        self.scrollbar.is_active()
+            || self.pointer.is_some_and(|p| {
+                self.scroll_bars
+                    .iter()
+                    .any(|(_, track, _)| track.inflate(4.0, 0.0).contains(p))
+            })
+    }
+
+    /// Fade each region's content out at an edge more of it can scroll in
+    /// from, so a list or a diff cut by its edge shows that it goes on.
+    fn paint_edge_fades(&self, ctx: &mut PaintCtx<'_>) {
+        use ui::surface::{ContentEdge, content_edge_fade};
+        for region in &self.scroll_regions {
+            let offset = self.scroll_offset(region.scroller);
+            let mut edges = Vec::new();
+            if offset > 0.5 {
+                edges.push(ContentEdge::Top);
+            }
+            if region.max_y - offset > 0.5 {
+                edges.push(ContentEdge::Bottom);
+            }
+            // The diff's line numbers stand still while its code scrolls
+            // sideways, so only the trailing edge fades.
+            if region.scroller == Scroller::Diff && region.max_x - self.diff_hscroll > 0.5 {
+                edges.push(ContentEdge::Trailing);
+            }
+            for edge in edges {
+                content_edge_fade(ctx.scene, ctx.transform, region.rect, edge, region.ground);
+            }
+        }
+    }
+
+    /// The edge fades, then the toolkit scroll thumb along the trailing edge
+    /// of every region whose content overflows, shown while it scrolls or is
+    /// pointed at and faded out at rest; records the tracks for the pointer.
+    fn paint_scroll_bars(&mut self, ctx: &mut PaintCtx<'_>) {
+        self.paint_edge_fades(ctx);
+        // The toolkit scroll view's bar: a thumb `s2` thick, held half an
+        // `s1` off the region's edges.
+        let s = &ctx.theme.tokens.spacing;
+        let thickness = f64::from(s.s2);
+        let margin = f64::from(s.s1) / 2.0;
+        self.scroll_bars = self
+            .scroll_regions
+            .iter()
+            .filter_map(|region| {
+                let r = region.rect;
+                let metrics = ScrollMetrics::new(
+                    r.height() + region.max_y.max(0.0),
+                    r.height(),
+                    self.scroll_offset(region.scroller),
+                );
+                metrics.overflows().then(|| {
+                    (
+                        region.scroller,
+                        Rect::new(
+                            r.x1 - margin - thickness,
+                            r.y0 + margin,
+                            r.x1 - margin,
+                            r.y1 - margin,
+                        ),
+                        metrics,
+                    )
+                })
+            })
+            .collect();
+        let opacity = self.bar_fade.opacity_at(ui::time::now(), self.bars_held());
+        if opacity <= 0.003 {
+            return;
+        }
+        for &(scroller, track, metrics) in &self.scroll_bars {
+            let bar = if self.scrollbar_region == Some(scroller) {
+                self.scrollbar
+            } else {
+                Scrollbar::vertical()
+            };
+            ctx.scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                opacity,
+                ctx.transform,
+                &track,
+            );
+            bar.draw(ctx.scene, ctx.transform, track, metrics, ctx.theme, false);
+            ctx.scene.pop_layer();
+        }
+    }
+
+    /// A press on a scroll bar: the thumb starts a drag, the track pages.
+    /// Returns whether the press was the scroll bar's.
+    fn scroll_bar_press(&mut self, pos: Point) -> bool {
+        let Some(&(scroller, track, metrics)) = self
+            .scroll_bars
+            .iter()
+            .rev()
+            .find(|(_, track, _)| track.contains(pos))
+        else {
+            return false;
+        };
+        let mut bar = Scrollbar::vertical();
+        match bar.press(track, metrics, pos) {
+            PressOutcome::Thumb => {
+                self.scrollbar = bar;
+                self.scrollbar_region = Some(scroller);
+                true
+            }
+            PressOutcome::Page(offset) => {
+                self.set_scroll_offset(scroller, offset);
+                true
+            }
+            PressOutcome::Miss => false,
+        }
+    }
+
+    /// Pointer motion over the scroll bars: a held thumb follows it, and the
+    /// thumb under it brightens.
+    fn scroll_bar_move(&mut self, pos: Point) {
+        if self.scrollbar.is_dragging() {
+            let held = self
+                .scroll_bars
+                .iter()
+                .find(|(scroller, _, _)| Some(*scroller) == self.scrollbar_region)
+                .copied();
+            if let Some((scroller, track, metrics)) = held
+                && let Some(offset) = self.scrollbar.drag_to(track, metrics, pos)
+            {
+                self.set_scroll_offset(scroller, offset);
+            }
+            return;
+        }
+        let hovered = self
+            .scroll_bars
+            .iter()
+            .rev()
+            .find(|(_, track, metrics)| {
+                Scrollbar::vertical()
+                    .thumb_rect(*track, *metrics)
+                    .is_some_and(|thumb| thumb.contains(pos))
+            })
+            .map(|(scroller, _, _)| *scroller);
+        self.scrollbar.set_hover(hovered.is_some());
+        if hovered.is_some() {
+            // Leaving the bar lets it rest a moment before it fades.
+            self.bar_fade.wake(ui::time::now());
+        }
+        self.scrollbar_region = hovered;
+    }
+
+    // --- Accessibility --------------------------------------------------
+
+    /// The semantic inventory of the last paint: one node per control and
+    /// row, keyed by a stable action target.
+    fn accessibility_targets(&self) -> Vec<(String, Rect, ui::a11y::AccessNode)> {
+        self.semantic_entries()
+            .into_iter()
+            .map(|(target, rect, node, _)| (target, rect, node))
+            .collect()
+    }
+
+    /// What the semantic target `target` does, if it does anything.
+    fn semantic_hit(&self, target: &str) -> Option<Hit> {
+        self.semantic_entries()
+            .into_iter()
+            .find(|(candidate, _, _, _)| candidate == target)
+            .and_then(|(_, _, _, hit)| hit)
+    }
+
+    /// The semantic inventory with what each entry does.
     #[allow(
         clippy::too_many_lines,
-        reason = "this is the single derived semantic inventory for the app's three mutually exclusive screens"
+        reason = "one exhaustive match keeps every kind of target and its node auditable together"
     )]
-    fn accessibility_targets(&self) -> Vec<(String, Rect, ui::a11y::AccessNode)> {
+    fn semantic_entries(&self) -> Vec<(String, Rect, ui::a11y::AccessNode, Option<Hit>)> {
         use ui::a11y::{AccessNode, AccessState, Role};
-
-        let button = |target: &str, rect: Rect, label: String| {
+        let button = |target: String, rect: Rect, label: String| {
             (
-                target.to_string(),
+                target,
                 rect,
                 AccessNode::new(Role::Button)
                     .with_name(label)
@@ -2352,281 +2281,371 @@ impl GitClientApp {
                     .with_bounds(rect),
             )
         };
-        if self.awaiting_repo {
-            let mut targets = Vec::new();
-            if self.open_input_rect.area() > 0.0 {
-                targets.push((
-                    "git.open-path".into(),
-                    self.open_input_rect,
-                    self.open_input
-                        .accessibility()
-                        .unwrap_or_else(|| {
-                            AccessNode::new(Role::TextInput).with_name("Repository path")
-                        })
-                        .with_bounds(self.open_input_rect),
-                ));
-            }
-            if self.open_button_rect.area() > 0.0 {
-                targets.push(button(
-                    "git.open-repository",
-                    self.open_button_rect,
-                    "Open repository".into(),
-                ));
-            }
-            return targets;
-        }
-
-        let mut targets = Vec::new();
-        if self.hamburger_rect.area() > 0.0 {
-            targets.push(button(
-                "git.navigation-toggle",
-                self.hamburger_rect,
-                if self.flap_open() {
-                    "Hide repository navigation"
-                } else {
-                    "Show repository navigation"
-                }
-                .into(),
-            ));
-        }
-        // An open compact flap is a modal navigation surface: the visual
-        // scrim, pointer routing, keyboard routing and semantic tree must all
-        // agree that obscured detail/app-bar controls are temporarily inert.
-        let overlay_modal = self.layout_mode() == SplitLayout::Overlay && self.flap_open();
-        if !overlay_modal && self.status_rect.area() > 0.0 {
-            targets.push((
-                "git.status".into(),
-                self.status_rect,
-                AccessNode::new(Role::StaticText)
-                    .with_name(&self.status_text)
-                    .with_value(&self.status_text)
-                    .with_live(ui::a11y::Politeness::Polite)
-                    .with_bounds(self.status_rect),
-            ));
-        }
-        if !overlay_modal {
-            targets.extend(self.tab_rects.iter().map(|(screen, rect)| {
-                let label = TABS
-                    .iter()
-                    .find(|(candidate, _)| candidate == screen)
-                    .map_or("Repository view", |(_, label)| *label);
-                (
-                    match screen {
-                        Screen::Changes => "git.screen.changes",
-                        Screen::History => "git.screen.history",
-                        Screen::Panels => "git.screen.branches",
-                    }
-                    .to_string(),
-                    *rect,
+        let field = |target: &str, rect: Rect, input: &TextInput, name: &str| {
+            (
+                target.to_string(),
+                rect,
+                input
+                    .accessibility()
+                    .unwrap_or_else(|| AccessNode::new(Role::TextInput).with_name(name))
+                    .with_bounds(rect),
+            )
+        };
+        let mut out = Vec::new();
+        for target in &self.semantic {
+            let rect = target.rect;
+            let entry = match &target.hit {
+                Hit::SidebarToggle => button(
+                    "git.navigation-toggle".into(),
+                    rect,
+                    t(if self.drawer.is_open() {
+                        "git-sidebar-hide"
+                    } else {
+                        "git-sidebar-show"
+                    }),
+                ),
+                Hit::Screen(screen) => (
+                    screen.target().to_string(),
+                    rect,
                     AccessNode::new(Role::Tab)
-                        .with_name(label)
+                        .with_name(screen.label())
                         .with_state(
                             AccessState::new()
                                 .focusable(true)
                                 .selected(*screen == self.screen),
                         )
-                        .with_bounds(*rect),
-                )
-            }));
-        }
-        if !overlay_modal && self.settings_seg.area() > 0.0 {
-            targets.push(button(
-                "git.diff-layout",
-                self.settings_seg,
-                "Diff layout".into(),
-            ));
-        }
-        if !overlay_modal && self.settings_syn.area() > 0.0 {
-            targets.push(button(
-                "git.syntax-highlight",
-                self.settings_syn,
-                "Syntax highlighting".into(),
-            ));
-        }
-        match self.screen {
-            Screen::Changes if self.commit_input.get_rect().area() > 0.0 => {
-                for (rect, hit) in &self.change_semantic_hits {
-                    if matches!(hit, ChangesHit::FocusMessage) {
+                        .with_bounds(rect),
+                ),
+                Hit::DiffLayout(layout) => {
+                    let (target, name) = match layout {
+                        DiffLayout::Unified => {
+                            ("git.diff-layout.unified", t("git-diff-unified-name"))
+                        }
+                        DiffLayout::SideBySide => {
+                            ("git.diff-layout.split", t("git-diff-split-name"))
+                        }
+                    };
+                    (
+                        target.to_string(),
+                        rect,
+                        AccessNode::new(Role::Button)
+                            .with_name(name)
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .selected(self.settings.diff_layout == *layout),
+                            )
+                            .with_bounds(rect),
+                    )
+                }
+                Hit::SyntaxHighlight => (
+                    "git.syntax-highlight".to_string(),
+                    rect,
+                    AccessNode::new(Role::Button)
+                        .with_name(t("git-syntax-name"))
+                        .with_state(
+                            AccessState::new()
+                                .focusable(true)
+                                .checked(self.settings.syntax_highlight),
+                        )
+                        .with_bounds(rect),
+                ),
+                Hit::Remote(action) => {
+                    let (target, name) = match action {
+                        RemoteAction::Fetch => ("git.remote.fetch", t("git-fetch-name")),
+                        RemoteAction::Pull => ("git.remote.pull", t("git-pull-name")),
+                        RemoteAction::Push => ("git.remote.push", t("git-push-name")),
+                    };
+                    button(target.into(), rect, name)
+                }
+                Hit::DismissError => {
+                    let text = if let Some(job) = &self.remote_job {
+                        job.label.clone()
+                    } else {
+                        self.last_error.clone().unwrap_or_default()
+                    };
+                    out.push((
+                        "git.status".to_string(),
+                        rect,
+                        AccessNode::new(Role::StaticText)
+                            .with_name(&text)
+                            .with_value(&text)
+                            .with_live(ui::a11y::Politeness::Polite)
+                            .with_bounds(rect),
+                        None,
+                    ));
+                    if self.remote_job.is_some() {
                         continue;
                     }
-                    let (target, name, role, selected) = match hit {
-                        ChangesHit::SelectFile(area, row) => {
-                            let list = match area {
-                                ChangeArea::Staged => &self.model.staged,
-                                ChangeArea::Unstaged => &self.model.unstaged,
-                                ChangeArea::Untracked => &self.model.untracked,
-                            };
-                            let Some(change) = list.get(*row) else {
-                                continue;
-                            };
-                            (
-                                format!("git.change.open:{area:?}:{}", change.path),
-                                format!("Open {} diff, {}", change.path, change.kind.badge()),
-                                Role::ListItem,
-                                self.selected_change == Some((*area, *row)),
-                            )
+                    button("git.dismiss-error".into(), rect, t("git-dismiss-error"))
+                }
+                Hit::Change(ChangesHit::FocusMessage) => field(
+                    "git.commit-message",
+                    rect,
+                    &self.commit_input,
+                    &t("git-commit-message"),
+                ),
+                Hit::Change(hit) => match self.change_node(hit, rect) {
+                    Some(entry) => entry,
+                    None => continue,
+                },
+                Hit::Diff(hit) => {
+                    let (target, name) = match hit {
+                        DiffHit::StageFile if self.selected_is_staged() => {
+                            ("git.diff.unstage-file".to_string(), t("git-unstage-file"))
                         }
-                        ChangesHit::ToggleStage(area, row) => {
-                            let verb = if *area == ChangeArea::Staged {
-                                "Unstage"
-                            } else {
-                                "Stage"
-                            };
-                            let list = match area {
-                                ChangeArea::Staged => &self.model.staged,
-                                ChangeArea::Unstaged => &self.model.unstaged,
-                                ChangeArea::Untracked => &self.model.untracked,
-                            };
-                            let Some(change) = list.get(*row) else {
-                                continue;
-                            };
-                            (
-                                format!("git.change.{verb}:{area:?}:{}", change.path),
-                                format!("{verb} {}", change.path),
-                                Role::Button,
-                                false,
-                            )
+                        DiffHit::StageFile => {
+                            ("git.diff.stage-file".to_string(), t("git-stage-file"))
                         }
-                        ChangesHit::StageAll(area) => (
-                            format!("git.changes.stage-all:{area:?}"),
-                            "Stage all changes".into(),
-                            Role::Button,
-                            false,
-                        ),
-                        ChangesHit::UnstageAll(area) => (
-                            format!("git.changes.unstage-all:{area:?}"),
-                            "Unstage all changes".into(),
-                            Role::Button,
-                            false,
-                        ),
-                        ChangesHit::Commit => (
-                            "git.changes.commit".into(),
-                            "Commit staged changes".into(),
-                            Role::Button,
-                            false,
-                        ),
-                        ChangesHit::FocusMessage => continue,
+                        DiffHit::DiscardFile => {
+                            ("git.discard-file".to_string(), t("git-discard-file-name"))
+                        }
+                        DiffHit::Hunk(hunk, action) => {
+                            let name = t(match action {
+                                HunkAction::Toggle if self.selected_is_staged() => {
+                                    "git-unstage-hunk"
+                                }
+                                HunkAction::Toggle => "git-stage-hunk",
+                                HunkAction::Discard => "git-discard-hunk",
+                            });
+                            (format!("git.hunk:{hunk}:{action:?}"), name)
+                        }
                     };
-                    targets.push((
+                    button(target, rect, name)
+                }
+                Hit::Commit(index) => {
+                    let Some(commit) = self.model.commits.get(*index) else {
+                        continue;
+                    };
+                    (
+                        format!("git.commit:{}", commit.id),
+                        rect,
+                        AccessNode::new(Role::ListItem)
+                            .with_name(t_args(
+                                "git-commit-row-name",
+                                &[
+                                    ("summary", commit.summary.as_str().into()),
+                                    ("author", commit.author_name.as_str().into()),
+                                    ("age", history::age(commit.time).into()),
+                                ],
+                            ))
+                            .with_state(
+                                AccessState::new()
+                                    .focusable(true)
+                                    .selected(*index == self.selected_commit),
+                            )
+                            .with_bounds(rect),
+                    )
+                }
+                Hit::Panel(PanelHit::WorktreeInfo(index)) => {
+                    let Some(worktree) = self.model.worktrees.get(*index) else {
+                        continue;
+                    };
+                    out.push((
+                        format!("git.worktree:{}", worktree.path),
+                        rect,
+                        AccessNode::new(Role::ListItem)
+                            .with_name(worktree.head.clone())
+                            .with_description(worktree.path.clone())
+                            .with_bounds(rect),
+                        None,
+                    ));
+                    continue;
+                }
+                Hit::Panel(PanelHit::WorktreeError) => {
+                    let Some(error) = &self.model.worktree_error else {
+                        continue;
+                    };
+                    out.push((
+                        "git.worktrees-error".into(),
+                        rect,
+                        AccessNode::new(Role::StaticText)
+                            .with_name(t("git-worktree-read-failed"))
+                            .with_description(error.clone())
+                            .with_bounds(rect),
+                        None,
+                    ));
+                    continue;
+                }
+                Hit::Panel(PanelHit::BranchName) => field(
+                    "git.new-branch-name",
+                    rect,
+                    &self.branch_input,
+                    &t("git-new-branch-name"),
+                ),
+                Hit::Panel(PanelHit::WorktreeBranch) => field(
+                    "git.worktree-branch",
+                    rect,
+                    &self.worktree_branch_input,
+                    &t("git-worktree-branch"),
+                ),
+                Hit::Panel(PanelHit::WorktreePath) => field(
+                    "git.worktree-path",
+                    rect,
+                    &self.worktree_path_input,
+                    &t("git-worktree-path"),
+                ),
+                Hit::Panel(PanelHit::WorktreeStart) => field(
+                    "git.worktree-start",
+                    rect,
+                    &self.worktree_start_input,
+                    &t("git-worktree-start"),
+                ),
+                Hit::Panel(PanelHit::CreateWorktree) => {
+                    let (target, rect, node) =
+                        button("git.create-worktree".into(), rect, t("git-create-worktree"));
+                    let disabled = [
+                        self.worktree_branch_input.value(),
+                        self.worktree_path_input.value(),
+                        self.worktree_start_input.value(),
+                    ]
+                    .iter()
+                    .any(|text| text.trim().is_empty());
+                    (
                         target,
-                        *rect,
-                        AccessNode::new(role)
-                            .with_name(name)
-                            .with_state(AccessState::new().focusable(true).selected(selected))
-                            .with_bounds(*rect),
-                    ));
+                        rect,
+                        node.with_state(AccessState::new().focusable(true).disabled(disabled)),
+                    )
                 }
-                targets.push((
-                    "git.commit-message".into(),
-                    self.commit_input.get_rect(),
-                    self.commit_input
-                        .accessibility()
-                        .unwrap_or_else(|| {
-                            AccessNode::new(Role::TextInput).with_name("Commit message")
-                        })
-                        .with_bounds(self.commit_input.get_rect()),
-                ));
-                if !overlay_modal {
-                    for hunk in &self.diff_hunk_buttons {
-                        let label = match hunk.action {
-                            diffview::HunkAction::Toggle if self.selected_is_staged() => {
-                                "Unstage hunk"
-                            }
-                            diffview::HunkAction::Toggle => "Stage hunk",
-                            diffview::HunkAction::Discard => "Discard hunk",
-                        };
-                        targets.push(button(
-                            &format!("git.hunk:{}:{:?}", hunk.hunk, hunk.action),
-                            hunk.rect,
-                            label.into(),
-                        ));
-                    }
+                Hit::Panel(PanelHit::CreateBranch) => {
+                    let (target, rect, node) =
+                        button("git.create-branch".into(), rect, t("git-create-branch"));
+                    let disabled = self.branch_input.value().trim().is_empty();
+                    (
+                        target,
+                        rect,
+                        node.with_state(AccessState::new().focusable(true).disabled(disabled)),
+                    )
                 }
-            }
-            Screen::History => {
-                for (index, rect) in self.history_rows.iter().enumerate() {
-                    if let Some(commit) = self.model.commits.get(index) {
-                        targets.push((
-                            format!("git.commit:{}", commit.id),
-                            *rect,
-                            AccessNode::new(Role::ListItem)
-                                .with_name(format!(
-                                    "{} by {}, {}",
-                                    commit.summary, commit.author_name, commit.when
-                                ))
-                                .with_state(
-                                    AccessState::new()
-                                        .focusable(true)
-                                        .selected(index == self.selected_commit),
-                                )
-                                .with_bounds(*rect),
-                        ));
-                    }
-                }
-            }
-            Screen::Panels => {
-                for (rect, hit) in &self.panel_semantic_hits {
-                    let (target, label) = match hit {
-                        PanelHit::Remote(RemoteAction::Fetch) => {
-                            ("git.remote.fetch".into(), "Fetch from remote".into())
-                        }
-                        PanelHit::Remote(RemoteAction::Pull) => {
-                            ("git.remote.pull".into(), "Pull from remote".into())
-                        }
-                        PanelHit::Remote(RemoteAction::Push) => {
-                            ("git.remote.push".into(), "Push to remote".into())
-                        }
-                        PanelHit::Branch(BranchAction::Checkout(name)) => (
+                Hit::Panel(PanelHit::Branch(action)) => {
+                    let (target, name) = match action {
+                        BranchAction::Checkout(name) => (
                             format!("git.branch.checkout:{name}"),
-                            format!("Check out {name}"),
+                            t_args("git-check-out-name", &[("name", name.into())]),
                         ),
-                        PanelHit::Branch(BranchAction::Delete(name)) => (
+                        BranchAction::Delete(name) => (
                             format!("git.branch.delete:{name}"),
-                            format!("Delete {name}"),
+                            t_args("git-delete-name", &[("name", name.into())]),
                         ),
-                        PanelHit::Branch(BranchAction::StashApply(index)) => (
+                        BranchAction::StashApply(index) => (
                             format!("git.stash.apply:{index}"),
-                            format!("Apply stash {index}"),
+                            t_args("git-apply-stash-name", &[("index", (*index).into())]),
                         ),
                     };
-                    targets.push(button(&target, *rect, label));
+                    button(target, rect, name)
                 }
-                if self.new_branch_input.area() > 0.0 {
-                    targets.push((
-                        "git.new-branch-name".into(),
-                        self.new_branch_input,
-                        self.branch_input
-                            .accessibility()
-                            .unwrap_or_else(|| {
-                                AccessNode::new(Role::TextInput).with_name("New branch name")
-                            })
-                            .with_bounds(self.new_branch_input),
-                    ));
+                Hit::OpenPath => field(
+                    "git.open-path",
+                    rect,
+                    &self.open_input,
+                    &t("git-repository-path"),
+                ),
+                Hit::OpenRepository => {
+                    let (target, rect, node) =
+                        button("git.open-repository".into(), rect, t("git-open-name"));
+                    let disabled = self.open_input.value().trim().is_empty();
+                    (
+                        target,
+                        rect,
+                        node.with_state(AccessState::new().focusable(true).disabled(disabled)),
+                    )
                 }
-                if self.new_branch_button.area() > 0.0 {
-                    targets.push(button(
-                        "git.create-branch",
-                        self.new_branch_button,
-                        "Create branch".into(),
-                    ));
-                }
+                Hit::Scrim => continue,
+            };
+            let (id, rect, node) = entry;
+            out.push((id, rect, node, Some(target.hit.clone())));
+        }
+        out
+    }
+
+    /// The node for one entry of the changes column.
+    fn change_node(
+        &self,
+        hit: &ChangesHit,
+        rect: Rect,
+    ) -> Option<(String, Rect, ui::a11y::AccessNode)> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let node = |role: Role, name: String, selected: bool| {
+            AccessNode::new(role)
+                .with_name(name)
+                .with_state(AccessState::new().focusable(true).selected(selected))
+                .with_bounds(rect)
+        };
+        Some(match hit {
+            ChangesHit::SelectFile(area, row) => {
+                let change = change_list(&self.model, *area).get(*row)?;
+                (
+                    format!("git.change.open:{area:?}:{}", change.path),
+                    rect,
+                    node(
+                        Role::ListItem,
+                        t_args(
+                            "git-change-open",
+                            &[
+                                ("path", change.path.as_str().into()),
+                                ("kind", change.kind.label().into()),
+                            ],
+                        ),
+                        self.selected_change == Some((*area, *row)),
+                    ),
+                )
             }
-            Screen::Changes => {}
-        }
-        if !overlay_modal && self.discard_file_rect.area() > 0.0 {
-            targets.push(button(
-                "git.discard-file",
-                self.discard_file_rect,
-                "Discard file changes".into(),
-            ));
-        }
-        targets
+            ChangesHit::ToggleStage(area, row) => {
+                let (verb, key) = if *area == ChangeArea::Staged {
+                    ("Unstage", "git-unstage-path")
+                } else {
+                    ("Stage", "git-stage-path")
+                };
+                let change = change_list(&self.model, *area).get(*row)?;
+                (
+                    format!("git.change.{verb}:{area:?}:{}", change.path),
+                    rect,
+                    node(
+                        Role::Button,
+                        t_args(key, &[("path", change.path.as_str().into())]),
+                        false,
+                    ),
+                )
+            }
+            ChangesHit::StageAll(area) => (
+                format!("git.changes.stage-all:{area:?}"),
+                rect,
+                node(Role::Button, t("git-stage-all-name"), false),
+            ),
+            ChangesHit::UnstageAll(area) => (
+                format!("git.changes.unstage-all:{area:?}"),
+                rect,
+                node(Role::Button, t("git-unstage-all-name"), false),
+            ),
+            ChangesHit::Commit => (
+                "git.changes.commit".into(),
+                rect,
+                AccessNode::new(Role::Button)
+                    .with_name(changes::commit_label(&self.model))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .disabled(!self.can_commit()),
+                    )
+                    .with_bounds(rect),
+            ),
+            ChangesHit::FocusMessage => return None,
+        })
     }
 }
 
 /// Whether `p` falls inside a non-empty `rect` (a zero-size rect never hits).
 fn rect_hit(rect: Rect, p: Point) -> bool {
-    rect.width() > 0.0 && rect.contains(p)
+    rect.width() > 0.0 && rect.height() > 0.0 && rect.contains(p)
+}
+
+/// The files of one change area.
+fn change_list(model: &RepoModel, area: ChangeArea) -> &[FileChange] {
+    match area {
+        ChangeArea::Staged => &model.staged,
+        ChangeArea::Unstaged => &model.unstaged,
+        ChangeArea::Untracked => &model.untracked,
+    }
 }
 
 fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
@@ -2643,61 +2662,26 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
 
 impl Widget for GitClientApp {
     ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
+        dyn ui::widget::WindowHeader,
+        dyn ui::widget::controls::ActionControls
     );
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::GIT_CLIENT_OPERATION_TYPE]
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.adopt_preferences();
         self.drain_remote();
-        if self.settings_seeded {
-            // Adopt document changes: remote collaborators, and this app's own
-            // preference actions, which the framework `ActionHost` applies
-            // straight to the document through the executor.
-            self.settings = Settings::read(state);
-        } else {
-            // First sync: adopt any persisted preferences, then seed the doc so
-            // it is the source of truth and collaborators see the same
-            // preferences. An initial override forced at construction (the
-            // GIT_CLIENT_SPLIT screenshot path) wins over the persisted value.
-            if !self.settings_forced {
-                self.settings = Settings::read(state);
-            }
-            self.settings.write(state);
-            self.settings_seeded = true;
-        }
+        self.publish_shared_repo_if_needed();
     }
 
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         // The app draws itself; a single full-size leaf node carries it.
-        // `new_leaf` is typed `-> TaffyResult<NodeId>` for API generality but
-        // cannot actually return `Err` for a fresh leaf (see the
-        // `TaffyTreeExt` doc comment in `ui::widget::mod`), and
-        // `Widget::build_layout` returns a bare `NodeId` across every
-        // implementor, so there is nowhere to surface a theoretical error.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        let node = taffy.fill_leaf(node_map, self);
+        // The list column's breakpoint and widths grow with the text scale.
+        self.drawer.scale_for(theme);
         node
     }
 
@@ -2705,17 +2689,14 @@ impl Widget for GitClientApp {
         // Real fallback rather than a panic if `node` somehow doesn't
         // belong to this tree, matching every `ui` widget's `apply_layout`.
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-        // The layout mode is now known from the allocated width — reconcile
-        // the flap so a window resize across the breakpoint adopts the new
-        // mode's default (wide ⇒ docked-open, narrow ⇒ overlay-closed) unless
-        // the user expressed an explicit preference this session.
-        self.flap.reconcile(self.layout_mode());
+        self.rect = ui::widget::placed(&layout, origin);
+        // The drawer adopts the new width now, so the next press is tested
+        // against the layout the next paint shows.
+        self.drawer.resolve(self.rect);
+    }
+
+    fn set_platform_conventions(&mut self, conventions: ui::platform::PlatformConventions) {
+        self.conventions = conventions;
     }
 
     fn draw(
@@ -2727,109 +2708,146 @@ impl Widget for GitClientApp {
         presence: &PresenceCtx,
     ) {
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
+        self.paint_window(&mut ctx, presence);
+    }
 
-        // Honest empty state: no repository bound. Show the open-a-repository
-        // screen instead of the workspace chrome.
-        if self.awaiting_repo {
-            self.draw_open(&mut ctx, presence);
-            return;
-        }
-
-        // Advance the flap reveal toward its target so the slide + scrim fade
-        // are smooth. The live loop keeps redrawing while
-        // `needs_animation_frame` is true.
-        self.flap.reconcile(self.layout_mode());
-        self.tick_flap();
-
-        ctx.fill_rect(self.rect, theme.tokens.colors.surfaces.base);
-
-        self.draw_appbar(&mut ctx);
-
-        let body = Rect::new(
-            self.rect.x0,
-            self.rect.y0 + self.appbar_h,
-            self.rect.x1,
-            self.rect.y1,
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        use ui::widget::modal_dialog;
+        Widget::draw_overlay(
+            &mut self.syntax_tool,
+            scene,
+            transform,
+            text,
+            theme,
+            presence,
         );
-        match self.screen {
-            Screen::Changes => self.draw_changes(&mut ctx, presence, body),
-            Screen::History => self.draw_history(&mut ctx, body),
-            Screen::Panels => self.draw_panels(&mut ctx, presence, body),
-        }
-        if self.layout_mode() == SplitLayout::Overlay && self.flap_open() {
-            // Repaint the toggle above the open flap at the rect the app bar
-            // placed it — the same measured row, not a fixed 1× bar height.
-            let btn = self.hamburger_rect;
-            self.paint_hamburger(&mut ctx, btn);
-        }
+        let Some(confirm) = &self.confirm else {
+            self.confirm_layout = None;
+            return;
+        };
+        let window = presence.viewport.get().unwrap_or(self.rect);
+        let title = confirm.title();
+        let body = confirm.body();
+        let action = confirm.action();
+        let cancel = t("git-cancel");
+        let hovered = |index: usize| {
+            self.confirm_layout
+                .as_ref()
+                .and_then(|layout| layout.actions.get(index).copied())
+                .zip(self.pointer)
+                .is_some_and(|(rect, p)| rect.contains(p))
+        };
+        let actions = [
+            ModalAction::secondary(&cancel).hovered(hovered(0)),
+            ModalAction::danger(&action).hovered(hovered(1)),
+        ];
+        let style = theme.text(TextRole::Body);
+        let spec = ModalSpec::new(&title).actions(&actions);
+        let width = modal_dialog::body_width(window, spec.max_width, theme);
+        let (_, body_h) = text.measure_style(&body, Some(ui::num::f32_of_f64(width)), &style);
+        let spec = spec.body_height(f64::from(body_h)).dismiss_on_scrim(true);
+        let layout = modal_dialog::layout(window, &spec, text, theme);
+        modal_dialog::paint_backdrop(scene, transform, text, theme, &layout, &spec);
+        let (_, dim) = modal_dialog::ink(theme);
+        text.draw_style(
+            scene,
+            &body,
+            dim,
+            transform.pre_translate(vello::kurbo::Vec2::new(layout.body.x0, layout.body.y0)),
+            Some(ui::num::f32_of_f64(layout.body.width())),
+            &style,
+        );
+        modal_dialog::paint_actions(scene, transform, text, theme, &layout, &spec);
+        self.confirm_layout = Some(layout);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self
+            .history
+            .handle_event(event, self.history_rect, ctx.scale_factor)
+        {
+            *ctx.handled = true;
+            return;
+        }
+        if let WindowEvent::Touch(touch) = event
+            && self.handle_segmented_touch(touch, ctx.scale_factor, &mut ctx.state)
+        {
+            *ctx.handled = true;
+            return;
+        }
+        let mut input = InputEventCtx {
+            event,
+            scale_factor: ctx.scale_factor,
+            modifiers: *ctx.modifiers,
+            state: ctx.state.reborrow(),
+            path: ctx.path,
+            taffy: ctx.taffy,
+        };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                // Hover state for hunk buttons + remote actions.
-                self.hover_hunk =
-                    diffview::hunk_button_at(&self.diff_hunk_buttons, self.last_mouse);
-                self.hover_action = None;
-                for f in &self.panel_hits {
-                    if let Some(PanelHit::Remote(a)) = f(self.last_mouse) {
-                        self.hover_action = Some(a);
-                        break;
-                    }
-                }
+                let pos = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.pointer = Some(pos);
+                self.scroll_bar_move(pos);
                 // Keep an in-flight text-selection drag updating.
-                self.forward_to_inputs(&mut InputEventCtx {
-                    event,
-                    scale_factor: ctx.scale_factor,
-                    modifiers: *ctx.modifiers,
-                    state: ctx.state,
-                    path: ctx.path,
-                    taffy: ctx.taffy,
-                });
+                self.forward_to_inputs(&mut input);
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.pointer = None;
+                self.forward_to_inputs(&mut input);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_press(&mut InputEventCtx {
-                    event,
-                    scale_factor: ctx.scale_factor,
-                    modifiers: *ctx.modifiers,
-                    state: ctx.state,
-                    path: ctx.path,
-                    taffy: ctx.taffy,
-                });
+                self.handle_press(&mut input);
                 *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 ..
             } => {
-                self.forward_to_inputs(&mut InputEventCtx {
-                    event,
-                    scale_factor: ctx.scale_factor,
-                    modifiers: *ctx.modifiers,
-                    state: ctx.state,
-                    path: ctx.path,
-                    taffy: ctx.taffy,
-                });
+                self.scrollbar.release();
+                self.forward_to_inputs(&mut input);
+                if self.syntax_pressed.replace(false) {
+                    self.toggle_syntax_highlight();
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 36.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => {
+                        let line = f64::from(ui::tokens::Metrics::BASE.min_pointer_target);
+                        (f64::from(*x) * line, f64::from(*y) * line)
+                    }
+                    MouseScrollDelta::PixelDelta(p) => {
+                        (p.x / ctx.scale_factor, p.y / ctx.scale_factor)
+                    }
                 };
-                self.scroll_active(dy, self.last_mouse);
+                // Shift turns a vertical wheel sideways.
+                let (dx, dy) = if ctx.modifiers.state().shift_key() && dx == 0.0 {
+                    (dy, 0.0)
+                } else {
+                    (dx, dy)
+                };
+                if self.confirm.is_none()
+                    && let Some(pos) = self.pointer
+                {
+                    self.scroll_at(pos, dx, dy);
+                }
                 *ctx.handled = true;
             }
             WindowEvent::KeyboardInput { .. } => {
                 self.handle_key(
                     event,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.taffy,
                     ctx.handled,
@@ -2837,6 +2855,18 @@ impl Widget for GitClientApp {
             }
             _ => {}
         }
+    }
+
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        let (screens, layouts) = self.segmented_rects();
+        screens
+            .iter()
+            .chain(&layouts)
+            .any(|rect| rect.contains(point))
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.segmented_touch.is_active()
     }
 
     fn name(&self) -> &'static str {
@@ -2848,7 +2878,7 @@ impl Widget for GitClientApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        let children = self
+        let mut children: Vec<_> = self
             .accessibility_targets()
             .into_iter()
             .enumerate()
@@ -2860,15 +2890,16 @@ impl Widget for GitClientApp {
                 node.with_key(index as u64).with_action_target(target)
             })
             .collect();
+        children.extend(self.history.accessibility(self.history_rect));
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::Group)
-                .with_name("Git Client")
-                .with_description(if self.remote_job.is_some() {
-                    ui::i18n!("git-remote-running")
+                .with_name("Git")
+                .with_description(if let Some(job) = &self.remote_job {
+                    job.label.clone()
                 } else if self.awaiting_repo {
-                    "Open a repository".to_string()
+                    t("git-open-title")
                 } else {
-                    "Repository changes, history, branches and remotes".to_string()
+                    t("git-app-description")
                 })
                 .with_children(children),
         )
@@ -2887,16 +2918,22 @@ impl Widget for GitClientApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        if self.history.perform_semantic_action(target, action) {
+            return true;
+        }
         let (state, path) = ui::doc::document(state, path);
 
         let field = match target {
             "git.open-path" => Some(Field::Open),
             "git.commit-message" => Some(Field::Commit),
             "git.new-branch-name" => Some(Field::Branch),
+            "git.worktree-branch" => Some(Field::WorktreeBranch),
+            "git.worktree-path" => Some(Field::WorktreePath),
+            "git.worktree-start" => Some(Field::WorktreeStart),
             _ => None,
         };
         if let Some(field) = field {
@@ -2908,8 +2945,11 @@ impl Widget for GitClientApp {
                 Field::Open => &mut self.open_input,
                 Field::Commit => &mut self.commit_input,
                 Field::Branch => &mut self.branch_input,
+                Field::WorktreeBranch => &mut self.worktree_branch_input,
+                Field::WorktreePath => &mut self.worktree_path_input,
+                Field::WorktreeStart => &mut self.worktree_start_input,
             };
-            return input.perform_action(action, state, path);
+            return input.perform_action(action, &[], state, path);
         }
         if !matches!(action, Action::Activate | Action::ToggleCheck) {
             return false;
@@ -2918,406 +2958,55 @@ impl Widget for GitClientApp {
             self.open_repo_from_input();
             return true;
         }
-        let Some(rect) = self
-            .accessibility_targets()
-            .into_iter()
-            .find_map(|(candidate, rect, _)| (candidate == target).then_some(rect))
-        else {
+        let Some(hit) = self.semantic_hit(target) else {
             return false;
         };
-        self.handle_click(rect.center(), state);
+        self.activate(hit, state);
         true
     }
 
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if self.remote_job.as_ref()?.invocation != Some(invocation) {
-            return None;
-        }
-        // libgit2 operations are currently non-cancellable. In particular,
-        // never report a cancelled push when the server may have accepted it.
-        self.drain_remote();
-        let job = self.remote_job.as_mut()?;
-        if let Some(result) = job.result.take() {
-            self.remote_job = None;
-            return Some(match result {
-                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(message) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "git.remote_failed".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            });
-        }
-        if !job.progress_sent {
-            job.progress_sent = true;
-            return Some(tilo_actions::InvocationUpdate::Progress {
-                invocation,
-                sequence: 1,
-                phase: "git.remote".into(),
-                completed: None,
-                total: None,
-                message: Some(ui::i18n!("git-remote-running")),
-            });
-        }
-        None
-    }
-
     fn needs_animation_frame(&self) -> bool {
-        // Redraw while the flap animates, and while any embedded text field is
-        // focused so its caret keeps blinking.
-        self.flap.is_animating(self.layout_mode())
-            || self
-                .remote_job
-                .as_ref()
-                .is_some_and(|job| job.result.is_none())
+        // Redraw while the list column slides, while a transfer runs, and
+        // while an embedded text field is focused so its caret keeps
+        // blinking.
+        (self.screen.has_list() && self.drawer.is_animating())
+            || self.remote_job.is_some()
             || self.commit_input.needs_animation_frame()
             || self.branch_input.needs_animation_frame()
+            || self.worktree_branch_input.needs_animation_frame()
+            || self.worktree_path_input.needs_animation_frame()
+            || self.worktree_start_input.needs_animation_frame()
             || self.open_input.needs_animation_frame()
+            || self.bar_fade.fading_at(ui::time::now(), self.bars_held())
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, tr, theme, presence);
-    }
-}
-
-impl ui::resources::PublishesResources for GitClientApp {
-    /// Publish the open repository and its view-preference actions to the
-    /// shell's Ctrl+K palette (delegates to the `ResourceProvider` impl in
-    /// [`crate::actions`]). Empty when no repository is open.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-}
-
-impl ui::undo::CommittedActions for GitClientApp {
-    /// Hand the host the document heads captured before an on-screen preference
-    /// control dispatched, so it records exactly one undo boundary bracketing
-    /// it — the same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        // The bars start to fade once a scroll has rested a moment.
+        self.bar_fade
+            .fade_deadline_at(ui::time::now(), self.bars_held())
     }
 }
 
 impl GitClientApp {
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        use crate::actions::GitClientOperation;
-        if type_id != crate::actions::GIT_CLIENT_OPERATION_TYPE {
-            return Ok(None);
-        }
-        let operation: crate::actions::GitClientOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let remote = match (kind, operation) {
-            (tilo_actions::OperationKind::Effect, GitClientOperation::Fetch { remote }) => {
-                Some((RemoteAction::Fetch, remote))
-            }
-            (tilo_actions::OperationKind::Effect, GitClientOperation::Pull { remote }) => {
-                Some((RemoteAction::Pull, remote))
-            }
-            (tilo_actions::OperationKind::Effect, GitClientOperation::Push { remote }) => {
-                Some((RemoteAction::Push, remote))
-            }
-            _ => None,
-        };
-        if let Some((action, remote)) = remote {
-            self.start_remote(action, Some(remote), Some(invocation))?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        self.answer_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| {
-                handled.then(|| {
-                    ui::widget::ResourceOperationStart::Completed(
-                        tilo_actions::ActionOutput::default(),
-                    )
-                })
-            })
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exhaustive typed protocol match keeps publication-to-handler coverage auditable"
-    )]
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if type_id != crate::actions::GIT_CLIENT_OPERATION_TYPE {
-            return Ok(false);
-        }
-        if kind == tilo_actions::OperationKind::Effect && self.repository_busy() {
-            return Err(ui::i18n!("git-remote-busy"));
-        }
-        let operation: crate::actions::GitClientOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        match (kind, operation) {
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::GitClientOperation::ShowChanges,
-            ) => {
-                self.switch_screen(Screen::Changes);
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::GitClientOperation::ShowHistory,
-            ) => {
-                self.switch_screen(Screen::History);
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::GitClientOperation::ShowBranches,
-            ) => {
-                self.switch_screen(Screen::Panels);
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::GitClientOperation::OpenChange { area, path },
-            ) => {
-                let area = match area.as_str() {
-                    "staged" => ChangeArea::Staged,
-                    "unstaged" => ChangeArea::Unstaged,
-                    "untracked" => ChangeArea::Untracked,
-                    _ => return Err("unknown change area".into()),
-                };
-                let list = match area {
-                    ChangeArea::Staged => &self.model.staged,
-                    ChangeArea::Unstaged => &self.model.unstaged,
-                    ChangeArea::Untracked => &self.model.untracked,
-                };
-                let index = list
-                    .iter()
-                    .position(|change| change.path == path)
-                    .ok_or_else(|| "changed file no longer exists".to_string())?;
-                self.switch_screen(Screen::Changes);
-                self.selected_change = Some((area, index));
-                self.diff_scroll = 0.0;
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::GitClientOperation::OpenCommit { id },
-            ) => {
-                let index = self
-                    .model
-                    .commits
-                    .iter()
-                    .position(|commit| commit.id == id)
-                    .ok_or_else(|| "commit is outside the current history window".to_string())?;
-                self.switch_screen(Screen::History);
-                self.selected_commit = index;
-                self.detail_scroll = 0.0;
-            }
-            (tilo_actions::OperationKind::Effect, crate::actions::GitClientOperation::StageAll) => {
-                self.stage_all();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::UnstageAll,
-            ) => {
-                self.unstage_all();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::StageFile { path },
-            ) => {
-                let found = self
-                    .model
-                    .unstaged
-                    .iter()
-                    .position(|change| change.path == path)
-                    .map(|index| (ChangeArea::Unstaged, index))
-                    .or_else(|| {
-                        self.model
-                            .untracked
-                            .iter()
-                            .position(|change| change.path == path)
-                            .map(|index| (ChangeArea::Untracked, index))
-                    })
-                    .ok_or_else(|| "file is no longer unstaged".to_string())?;
-                self.toggle_stage(found.0, found.1);
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::UnstageFile { path },
-            ) => {
-                let index = self
-                    .model
-                    .staged
-                    .iter()
-                    .position(|change| change.path == path)
-                    .ok_or_else(|| "file is no longer staged".to_string())?;
-                self.toggle_stage(ChangeArea::Staged, index);
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::DiscardFile { path },
-            ) => {
-                let found = self
-                    .model
-                    .unstaged
-                    .iter()
-                    .position(|change| change.path == path)
-                    .map(|index| (ChangeArea::Unstaged, index))
-                    .or_else(|| {
-                        self.model
-                            .untracked
-                            .iter()
-                            .position(|change| change.path == path)
-                            .map(|index| (ChangeArea::Untracked, index))
-                    })
-                    .ok_or_else(|| "file has no worktree changes".to_string())?;
-                if self.repo_path.is_none() {
-                    return Err("discard is unavailable in the demonstration repository".into());
-                }
-                self.discard_file(found.0, found.1);
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::Commit { message },
-            ) => {
-                if self.model.staged.is_empty() {
-                    return Err("there are no staged changes to commit".into());
-                }
-                if message.trim().is_empty() {
-                    return Err("commit message cannot be empty".into());
-                }
-                self.commit_input.set_text(&message);
-                self.do_commit();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::CreateBranch { name },
-            ) => {
-                if name.trim().is_empty() {
-                    return Err("branch name cannot be empty".into());
-                }
-                if self.repo_path.is_none() {
-                    return Err("branch creation requires a real repository".into());
-                }
-                self.branch_input.set_text(&name);
-                self.create_new_branch();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::CheckoutBranch { name },
-            ) => self.apply_branch_action(BranchAction::Checkout(name)),
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::DeleteBranch { name },
-            ) => self.apply_branch_action(BranchAction::Delete(name)),
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::ApplyStash { index },
-            ) => self.apply_branch_action(BranchAction::StashApply(index)),
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::SaveStash { message },
-            ) => {
-                let path = self
-                    .repo()
-                    .ok_or_else(|| "stashing requires a real repository".to_string())?;
-                crate::repo::stash_save(&path, &message).map_err(|error| error.to_string())?;
-                self.last_error = None;
-                self.reload();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::Fetch { .. }
-                | crate::actions::GitClientOperation::Pull { .. }
-                | crate::actions::GitClientOperation::Push { .. },
-            ) => return Err("remote operations require lifecycle-aware action dispatch".into()),
-            _ => return Err("operation kind does not match Git operation".into()),
-        }
-        if kind == tilo_actions::OperationKind::Effect
-            && let Some(error) = &self.last_error
-        {
-            return Err(error.clone());
-        }
-        Ok(true)
-    }
-}
-
-impl GitClientApp {
-    /// Forward one event to a single embedded [`TextInput`], returning whether
-    /// it consumed the event.
+    /// Forward one event to a single embedded widget (a text field or the
+    /// Syntax toggle), returning whether it consumed the event.
     fn fwd(
-        input: &mut TextInput,
+        widget: &mut dyn Widget,
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         taffy: &TaffyTree<()>,
     ) -> bool {
         let mut handled = false;
         let mut ft: Option<NodeId> = None;
-        input.handle_event(
+        widget.handle_event(
             event,
             &mut ui::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target: &mut ft,
@@ -3329,93 +3018,105 @@ impl GitClientApp {
     }
 
     /// Forward a pointer event to every text field (so an in-flight drag-select
-    /// keeps updating regardless of which field started it).
+    /// keeps updating regardless of which field started it) and to the
+    /// Syntax toggle.
     fn forward_to_inputs(&mut self, ctx: &mut InputEventCtx<'_>) {
-        Self::fwd(
-            &mut self.commit_input,
-            ctx.event,
-            ctx.scale_factor,
-            ctx.modifiers,
-            &mut *ctx.state,
-            ctx.path,
-            ctx.taffy,
-        );
-        Self::fwd(
-            &mut self.branch_input,
-            ctx.event,
-            ctx.scale_factor,
-            ctx.modifiers,
-            &mut *ctx.state,
-            ctx.path,
-            ctx.taffy,
-        );
-        Self::fwd(
-            &mut self.open_input,
-            ctx.event,
-            ctx.scale_factor,
-            ctx.modifiers,
-            &mut *ctx.state,
-            ctx.path,
-            ctx.taffy,
-        );
+        let modal = self.drawer_is_modal() || self.confirm.is_some();
+        let tool = (!modal && self.screen == Screen::Changes)
+            .then_some(&mut self.syntax_tool as &mut dyn Widget);
+        let widgets: [Option<&mut dyn Widget>; 7] = [
+            Some(&mut self.commit_input),
+            Some(&mut self.branch_input),
+            Some(&mut self.worktree_branch_input),
+            Some(&mut self.worktree_path_input),
+            Some(&mut self.worktree_start_input),
+            Some(&mut self.open_input),
+            tool,
+        ];
+        for widget in widgets.into_iter().flatten() {
+            Self::fwd(
+                widget,
+                ctx.event,
+                ctx.scale_factor,
+                ctx.modifiers,
+                &mut ctx.state,
+                ctx.path,
+                ctx.taffy,
+            );
+        }
     }
 
-    /// Route a left-press: text fields first (focus + caret placement), then
-    /// the geometry click router. Blurs any focused field on a click outside.
+    /// Route a left press: the confirmation sheet when it is up, a text
+    /// field (focus and caret), the Syntax toggle, then the target under the
+    /// pointer. A press anywhere else blurs the focused field.
     fn handle_press(&mut self, ctx: &mut InputEventCtx<'_>) {
-        let pos = self.last_mouse;
-        // Empty "open a repository" state routes entirely to its own controls.
-        if self.awaiting_repo {
-            if self.open_button_rect.width() > 0.0 && self.open_button_rect.contains(pos) {
-                self.open_repo_from_input();
-                return;
-            }
-            if self.open_input_rect.width() > 0.0 && self.open_input_rect.contains(pos) {
-                self.set_focus(Some(Field::Open));
-                Self::fwd(
-                    &mut self.open_input,
-                    ctx.event,
-                    ctx.scale_factor,
-                    ctx.modifiers,
-                    &mut *ctx.state,
-                    ctx.path,
-                    ctx.taffy,
-                );
-                return;
-            }
+        let Some(pos) = self.pointer else {
+            return;
+        };
+        if self.confirm.is_some() {
+            self.confirm_press(pos);
+            return;
+        }
+        if self.scroll_bar_press(pos) {
             self.set_focus(None);
             return;
         }
-        // A press on a visible text field focuses it and places the caret.
-        if self.screen == Screen::Changes && rect_hit(self.commit_input.get_rect(), pos) {
-            self.set_focus(Some(Field::Commit));
+        if !self.drawer_is_modal()
+            && self.screen == Screen::Changes
+            && rect_hit(self.syntax_tool.get_rect(), pos)
+        {
+            self.set_focus(None);
             Self::fwd(
-                &mut self.commit_input,
+                &mut self.syntax_tool,
                 ctx.event,
                 ctx.scale_factor,
                 ctx.modifiers,
-                &mut *ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 ctx.taffy,
             );
             return;
         }
-        if self.screen == Screen::Panels && rect_hit(self.new_branch_input, pos) {
-            self.set_focus(Some(Field::Branch));
+        let hit = self
+            .targets
+            .iter()
+            .rev()
+            .find(|target| target.rect.contains(pos))
+            .map(|target| target.hit.clone());
+        let field = match hit {
+            Some(Hit::Change(ChangesHit::FocusMessage)) => Some(Field::Commit),
+            Some(Hit::Panel(PanelHit::BranchName)) => Some(Field::Branch),
+            Some(Hit::Panel(PanelHit::WorktreeBranch)) => Some(Field::WorktreeBranch),
+            Some(Hit::Panel(PanelHit::WorktreePath)) => Some(Field::WorktreePath),
+            Some(Hit::Panel(PanelHit::WorktreeStart)) => Some(Field::WorktreeStart),
+            Some(Hit::OpenPath) => Some(Field::Open),
+            _ => None,
+        };
+        if let Some(field) = field {
+            self.set_focus(Some(field));
+            let input = match field {
+                Field::Commit => &mut self.commit_input,
+                Field::Branch => &mut self.branch_input,
+                Field::WorktreeBranch => &mut self.worktree_branch_input,
+                Field::WorktreePath => &mut self.worktree_path_input,
+                Field::WorktreeStart => &mut self.worktree_start_input,
+                Field::Open => &mut self.open_input,
+            };
             Self::fwd(
-                &mut self.branch_input,
+                input,
                 ctx.event,
                 ctx.scale_factor,
                 ctx.modifiers,
-                &mut *ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 ctx.taffy,
             );
             return;
         }
-        // Anywhere else: blur the fields and run the normal click router.
         self.set_focus(None);
-        self.handle_click(pos, ctx.state);
+        if let Some(hit) = hit {
+            self.activate(hit, &mut ctx.state);
+        }
     }
 
     /// Submit the focused field's action (Enter).
@@ -3424,18 +3125,23 @@ impl GitClientApp {
             Field::Commit => self.do_commit(),
             Field::Branch => self.create_new_branch(),
             Field::Open => self.open_repo_from_input(),
+            Field::WorktreeBranch | Field::WorktreePath | Field::WorktreeStart => {
+                if let Some(dispatcher) = &self.dispatcher {
+                    dispatcher.effect(&GitClientEffect::CreateWorktree {
+                        path: self.worktree_path_input.value().to_owned(),
+                        branch: self.worktree_branch_input.value().to_owned(),
+                        start: self.worktree_start_input.value().to_owned(),
+                    });
+                }
+            }
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the widget event contract and modal/global/list keyboard layers are kept together"
-    )]
     fn handle_key(
         &mut self,
         event: &WindowEvent,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         taffy: &TaffyTree<()>,
         handled: &mut bool,
@@ -3444,6 +3150,15 @@ impl GitClientApp {
             return;
         };
         if ev.state != ElementState::Pressed {
+            return;
+        }
+
+        // The confirmation sheet holds the keyboard: Escape cancels it.
+        if self.confirm.is_some() {
+            if matches!(&ev.logical_key, Key::Named(NamedKey::Escape)) {
+                self.confirm = None;
+            }
+            *handled = true;
             return;
         }
 
@@ -3464,6 +3179,9 @@ impl GitClientApp {
                     let input: &mut TextInput = match field {
                         Field::Commit => &mut self.commit_input,
                         Field::Branch => &mut self.branch_input,
+                        Field::WorktreeBranch => &mut self.worktree_branch_input,
+                        Field::WorktreePath => &mut self.worktree_path_input,
+                        Field::WorktreeStart => &mut self.worktree_start_input,
                         Field::Open => &mut self.open_input,
                     };
                     if Self::fwd(input, event, 1.0, modifiers, state, path, taffy) {
@@ -3479,86 +3197,78 @@ impl GitClientApp {
             return;
         }
 
-        // Esc dismisses an open overlay flap (Adwaita flap behaviour).
-        if let Key::Named(NamedKey::Escape) = &ev.logical_key
-            && self.layout_mode() == SplitLayout::Overlay
-            && self.flap_open()
+        // The system shortcut that shows and hides the list column.
+        if self.screen.has_list()
+            && self.conventions.command_modifier_down(modifiers.state())
+            && let Key::Character(c) = &ev.logical_key
+            && ui::platform::HostShortcut::resolve(
+                self.conventions,
+                c,
+                modifiers.state().shift_key(),
+            ) == Some(ui::platform::HostShortcut::Sidebar)
         {
-            self.flap.close();
+            self.drawer.toggle();
             *handled = true;
             return;
         }
 
-        if self.layout_mode() == SplitLayout::Overlay && self.flap_open() {
-            match (&ev.logical_key, self.screen) {
-                (Key::Named(NamedKey::ArrowDown), Screen::History) => {
-                    if self.selected_commit + 1 < self.model.commits.len() {
-                        self.selected_commit += 1;
-                        self.detail_scroll = 0.0;
-                    }
-                }
-                (Key::Named(NamedKey::ArrowUp), Screen::History) => {
-                    self.selected_commit = self.selected_commit.saturating_sub(1);
-                    self.detail_scroll = 0.0;
-                }
-                (Key::Named(NamedKey::ArrowDown), Screen::Changes) => {
-                    self.select_next_change(1);
-                }
-                (Key::Named(NamedKey::ArrowUp), Screen::Changes) => {
-                    self.select_next_change(-1);
-                }
-                _ => {}
-            }
+        // Escape dismisses an open drawer.
+        if matches!(&ev.logical_key, Key::Named(NamedKey::Escape)) && self.drawer_is_modal() {
+            self.drawer.close();
             *handled = true;
             return;
         }
 
-        // Global shortcuts: 1/2/3 switch screens.
-        if let Key::Character(s) = &ev.logical_key {
-            match s.as_str() {
-                "1" => {
-                    self.switch_screen(Screen::Changes);
-                    *handled = true;
-                }
-                "2" => {
-                    self.switch_screen(Screen::History);
-                    *handled = true;
-                }
-                "3" => {
-                    self.switch_screen(Screen::Panels);
-                    *handled = true;
-                }
-                "d" => {
-                    self.toggle_diff_layout(state);
-                    *handled = true;
-                }
-                _ => {}
-            }
-        }
-
-        // Arrow navigation in the active list.
-        match (&ev.logical_key, self.screen) {
-            (Key::Named(NamedKey::ArrowDown), Screen::History) => {
-                if self.selected_commit + 1 < self.model.commits.len() {
-                    self.selected_commit += 1;
-                    self.detail_scroll = 0.0;
-                }
+        if !self.drawer_is_modal()
+            && let Key::Character(s) = &ev.logical_key
+        {
+            // 1/2/3 switch screens; d flips the diff layout.
+            let screen = match s.as_str() {
+                "1" => Some(Screen::Changes),
+                "2" => Some(Screen::History),
+                "3" => Some(Screen::Panels),
+                _ => None,
+            };
+            if let Some(screen) = screen {
+                self.switch_screen(screen);
                 *handled = true;
+                return;
             }
-            (Key::Named(NamedKey::ArrowUp), Screen::History) => {
-                self.selected_commit = self.selected_commit.saturating_sub(1);
+            if s.as_str() == "d" {
+                self.toggle_diff_layout();
+                *handled = true;
+                return;
+            }
+        }
+
+        if self.navigate_list(&ev.logical_key) {
+            *handled = true;
+        }
+    }
+
+    /// Arrow keys move the selection in the active list. Returns whether
+    /// `key` did.
+    fn navigate_list(&mut self, key: &Key) -> bool {
+        let step = match key {
+            Key::Named(NamedKey::ArrowDown) => 1,
+            Key::Named(NamedKey::ArrowUp) => -1,
+            _ => return false,
+        };
+        match self.screen {
+            Screen::History => {
+                self.selected_commit = if step > 0 {
+                    (self.selected_commit + 1).min(self.model.commits.len().saturating_sub(1))
+                } else {
+                    self.selected_commit.saturating_sub(1)
+                };
                 self.detail_scroll = 0.0;
-                *handled = true;
+                true
             }
-            (Key::Named(NamedKey::ArrowDown), Screen::Changes) => {
-                self.select_next_change(1);
-                *handled = true;
+            Screen::Changes => {
+                self.select_next_change(step);
+                true
             }
-            (Key::Named(NamedKey::ArrowUp), Screen::Changes) => {
-                self.select_next_change(-1);
-                *handled = true;
-            }
-            _ => {}
+            Screen::Panels => false,
         }
     }
 
@@ -3588,24 +3298,620 @@ impl GitClientApp {
             (ChangeArea::Untracked, next - s - u)
         });
         self.diff_scroll = 0.0;
+        self.diff_hscroll = 0.0;
+    }
+}
+
+/// The view's header row is the window's: it holds the History control the
+/// host offers, so the window draws no History bar above the client.
+impl ui::widget::WindowHeader for GitClientApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        if self.history.control() != control {
+            self.history.set_control(control);
+        }
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn attach_control_actions(
+        &mut self,
+        actions: ui::framework::Actions<crate::resource::GitClient>,
+    ) {
+        self.control_actions = Some(actions);
+    }
+
+    fn effect_for_hit(&self, hit: &Hit) -> Option<(Option<String>, GitClientEffect)> {
+        let effect = match hit {
+            Hit::Screen(Screen::Changes) => GitClientEffect::ShowChanges,
+            Hit::Screen(Screen::History) => GitClientEffect::ShowHistory,
+            Hit::Screen(Screen::Panels) => GitClientEffect::ShowBranches,
+            Hit::DiffLayout(_) => GitClientEffect::DiffLayout,
+            Hit::SyntaxHighlight => GitClientEffect::SyntaxHighlight,
+            Hit::Panel(PanelHit::CreateWorktree) => GitClientEffect::CreateWorktree {
+                path: self.worktree_path_input.value().to_owned(),
+                branch: self.worktree_branch_input.value().to_owned(),
+                start: self.worktree_start_input.value().to_owned(),
+            },
+            Hit::Diff(DiffHit::StageFile | DiffHit::DiscardFile) => {
+                let (area, _) = self.selected_change?;
+                let path = self.current_path()?;
+                let row = crate::actions::change_resource_id(area, &path);
+                let effect = match hit {
+                    Hit::Diff(DiffHit::DiscardFile) => GitClientEffect::DiscardFile { path },
+                    _ if area == ChangeArea::Staged => GitClientEffect::UnstageFile { path },
+                    _ => GitClientEffect::StageFile { path },
+                };
+                return Some((Some(row), effect));
+            }
+            Hit::Change(ChangesHit::StageAll(_)) => GitClientEffect::StageAll,
+            Hit::Change(ChangesHit::UnstageAll(_)) => GitClientEffect::UnstageAll,
+            Hit::Change(ChangesHit::Commit) => GitClientEffect::Commit {
+                message: self.commit_input.value().to_owned(),
+            },
+            _ => return None,
+        };
+        Some((None, effect))
+    }
+
+    fn binding_for_hit(&self, hit: &Hit) -> Option<ui::tilo_actions::ActionBinding<()>> {
+        use ui::tilo_resource::Effect as _;
+        let (row, effect) = self.effect_for_hit(hit)?;
+        if let Some(row) = row {
+            let published = self.working_tree_row(&row)?.into_resource();
+            ui::tilo_actions::ActionBinding::unit_for(&published, effect.id()).ok()
+        } else {
+            self.control_actions.as_ref()?.effect(&effect)
+        }
+    }
+}
+
+impl ui::widget::controls::ActionControls for GitClientApp {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.history.take()
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        self.semantic_entries()
+            .into_iter()
+            .map(
+                |(id, _, _, hit)| match hit.as_ref().and_then(|hit| self.binding_for_hit(hit)) {
+                    Some(binding) => ui::widget::ControlBindingMetadata {
+                        control_id: id,
+                        kind: ui::widget::ControlBindingKind::Action(binding.address().clone()),
+                    },
+                    None => ui::widget::ControlBindingMetadata::semantic(id),
+                },
+            )
+            .collect()
+    }
+}
+
+impl GitClientApp {
+    fn submit(&self, invoke: Result<Invoke<crate::resource::GitClient>, serde_json::Error>) {
+        // A path and the repository's projection always encode.
+        if let (Some(dispatcher), Ok(invoke)) = (&self.dispatcher, invoke) {
+            dispatcher.submit(invoke);
+        }
+    }
+}
+
+impl GitClientApp {
+    fn switch_diff_layout(&mut self) -> Result<(), String> {
+        self.diff_scroll = 0.0;
+        self.change_preferences(Settings::toggle_layout)
+    }
+}
+
+impl GitClientApp {
+    fn change_preferences(&mut self, change: impl FnOnce(&mut Settings)) -> Result<(), String> {
+        change(&mut self.settings);
+        if let Some(preferences) = &self.preferences {
+            preferences
+                .set(self.settings)
+                .map_err(|error| format!("Couldn't save the diff preferences: {error}"))?;
+        }
+        Ok(())
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn follow_preferences(&mut self, preferences: ui::framework::Setting<Settings>) {
+        self.settings = preferences.get();
+        self.preferences = Some(preferences);
+    }
+}
+
+impl GitClientApp {
+    fn adopt_preferences(&mut self) {
+        if let Some(preferences) = &self.preferences {
+            self.settings = preferences.state().with(|stored| *stored);
+        }
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn preference_statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        use ui::framework::EffectStatus;
+        let s = self.settings;
+        vec![
+            EffectStatus::labelled(
+                GitClientEffect::DIFF_LAYOUT,
+                match s.diff_layout {
+                    DiffLayout::Unified => "Diff layout: side-by-side",
+                    DiffLayout::SideBySide => "Diff layout: unified",
+                },
+            ),
+            EffectStatus::labelled(
+                GitClientEffect::SYNTAX_HIGHLIGHT,
+                if s.syntax_highlight {
+                    "Turn off syntax highlighting"
+                } else {
+                    "Turn on syntax highlighting"
+                },
+            ),
+            EffectStatus::labelled(
+                GitClientEffect::SHOW_WHITESPACE,
+                if s.show_whitespace {
+                    "Hide whitespace"
+                } else {
+                    "Show whitespace"
+                },
+            ),
+            EffectStatus::labelled(
+                GitClientEffect::WRAP_LINES,
+                if s.wrap_lines {
+                    "Stop wrapping long lines"
+                } else {
+                    "Wrap long lines"
+                },
+            ),
+        ]
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn attach_dispatcher(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::GitClient>,
+        mode: RunMode,
+        sample: Option<&crate::resource::SampleRepository>,
+    ) {
+        self.dispatcher = Some(dispatcher);
+        self.mode = mode;
+        if let Some(sample) = sample {
+            self.show_model(sample.model.clone(), sample.diffs.clone());
+        }
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn present_state(&mut self, state: &crate::resource::GitClient) {
+        match self.mode {
+            RunMode::Live => {
+                let first = !std::mem::replace(&mut self.presented, true);
+                let repository = state.opened().map(str::to_owned);
+                if !first && self.opened == repository {
+                    return;
+                }
+                self.opened.clone_from(&repository);
+                if let Some(path) = &repository
+                    && !self.bind_repository(std::path::Path::new(path))
+                {
+                    self.last_error = Some(format!("No git repository at {path}"));
+                    self.open_input.set_text(path);
+                }
+            }
+            RunMode::Past => self.show_model(state.shared.clone().into_model(), DiffMap::new()),
+            RunMode::Capture => {}
+        }
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn working_tree_rows(&self) -> Vec<LiveRow> {
+        let mut rows = crate::actions::repository_rows(&self.model);
+        if !self.awaiting_repo {
+            rows.push(crate::actions::working_tree_rows(&self.model));
+            rows.push(crate::actions::worktree_rows(&self.model));
+        }
+        if let Some(job) = &self.remote_job {
+            rows.push(LiveRow::new(
+                "git_client.remote-job",
+                "git_client.job",
+                job.label.clone(),
+            ));
+        }
+        rows
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn working_tree_row(&self, id: &str) -> Option<LiveRow> {
+        crate::actions::repository_row(&self.model, id).or_else(|| {
+            (!self.awaiting_repo)
+                .then(|| {
+                    crate::actions::working_tree_row(&self.model, id)
+                        .or_else(|| crate::actions::worktree_row(&self.model, id))
+                })
+                .flatten()
+        })
+    }
+}
+
+impl GitClientApp {
+    /// Resolve a navigation target against the current repository projection.
+    fn open_effect_view(&mut self, effect: GitClientEffect) -> Result<(), String> {
+        match effect {
+            GitClientEffect::ShowChanges => self.switch_screen(Screen::Changes),
+            GitClientEffect::ShowHistory => self.switch_screen(Screen::History),
+            GitClientEffect::ShowBranches => self.switch_screen(Screen::Panels),
+            GitClientEffect::OpenChange { area, path } => {
+                let area = match area.as_str() {
+                    "staged" => ChangeArea::Staged,
+                    "unstaged" => ChangeArea::Unstaged,
+                    "untracked" => ChangeArea::Untracked,
+                    _ => return Err("unknown change area".into()),
+                };
+                let list = match area {
+                    ChangeArea::Staged => &self.model.staged,
+                    ChangeArea::Unstaged => &self.model.unstaged,
+                    ChangeArea::Untracked => &self.model.untracked,
+                };
+                let index = list
+                    .iter()
+                    .position(|change| change.path == path)
+                    .ok_or_else(|| "changed file no longer exists".to_string())?;
+                self.switch_screen(Screen::Changes);
+                self.selected_change = Some((area, index));
+                self.diff_scroll = 0.0;
+            }
+            GitClientEffect::OpenCommit { id } => {
+                let index = self
+                    .model
+                    .commits
+                    .iter()
+                    .position(|commit| commit.id == id)
+                    .ok_or_else(|| "commit is outside the current history window".to_string())?;
+                self.switch_screen(Screen::History);
+                self.selected_commit = index;
+                self.detail_scroll = 0.0;
+            }
+            _ => return Ok(()),
+        }
+        Ok(())
+    }
+
+    /// Local diff preferences touch neither the repository nor the document.
+    fn apply_diff_preference(&mut self, effect: &GitClientEffect) -> Option<Result<(), String>> {
+        match effect {
+            GitClientEffect::DiffLayout => Some(self.switch_diff_layout()),
+            GitClientEffect::SyntaxHighlight => {
+                Some(self.change_preferences(|s| s.syntax_highlight = !s.syntax_highlight))
+            }
+            GitClientEffect::ShowWhitespace => {
+                Some(self.change_preferences(|s| s.show_whitespace = !s.show_whitespace))
+            }
+            GitClientEffect::WrapLines => {
+                Some(self.change_preferences(|s| s.wrap_lines = !s.wrap_lines))
+            }
+            _ => None,
+        }
+    }
+
+    fn save_stash(&mut self, message: &str) -> Result<(), String> {
+        let path = self
+            .repo()
+            .ok_or_else(|| "stashing requires a real repository".to_string())?;
+        crate::repo::stash_save(&path, message).map_err(|error| error.to_string())?;
+        self.last_error = None;
+        self.reload();
+        Ok(())
+    }
+
+    pub(crate) fn answer_effect(
+        &mut self,
+        effect: GitClientEffect,
+        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+    ) -> EffectAnswer {
+        let preference = self.apply_diff_preference(&effect);
+        if let Some(kept) = preference {
+            return kept.map(|()| Effected::done());
+        }
+        let view = matches!(
+            effect,
+            GitClientEffect::ShowChanges
+                | GitClientEffect::ShowHistory
+                | GitClientEffect::ShowBranches
+                | GitClientEffect::OpenChange { .. }
+                | GitClientEffect::OpenCommit { .. }
+        );
+        if !view && self.repository_busy() {
+            return Err(ui::i18n!("git-remote-busy"));
+        }
+        match effect {
+            GitClientEffect::RunApprovedCheck { check_id } => {
+                let checked = cx.approved_check_reported(&check_id)?;
+                return Ok(cx.spawn(checked, |_app, observed, _cx| observed.map(Effected::value)));
+            }
+            effect @ (GitClientEffect::ShowChanges
+            | GitClientEffect::ShowHistory
+            | GitClientEffect::ShowBranches
+            | GitClientEffect::OpenChange { .. }
+            | GitClientEffect::OpenCommit { .. }) => self.open_effect_view(effect)?,
+            GitClientEffect::StageAll => self.stage_all(),
+            GitClientEffect::UnstageAll => self.unstage_all(),
+            GitClientEffect::StageFile { path } => {
+                let (area, index) = self
+                    .worktree_change(&path)
+                    .ok_or_else(|| "file is no longer unstaged".to_string())?;
+                self.toggle_stage(area, index);
+            }
+            GitClientEffect::UnstageFile { path } => {
+                let index = self
+                    .model
+                    .staged
+                    .iter()
+                    .position(|change| change.path == path)
+                    .ok_or_else(|| "file is no longer staged".to_string())?;
+                self.toggle_stage(ChangeArea::Staged, index);
+            }
+            GitClientEffect::DiscardFile { path } => {
+                let (area, index) = self
+                    .worktree_change(&path)
+                    .ok_or_else(|| "file has no worktree changes".to_string())?;
+                if self.repo_path.is_none() {
+                    return Err("discard is unavailable in the demonstration repository".into());
+                }
+                self.discard_file(area, index);
+            }
+            GitClientEffect::Commit { message } => self.commit_from_effect(&message)?,
+            GitClientEffect::CreateBranch { name } => {
+                if name.trim().is_empty() {
+                    return Err("branch name cannot be empty".into());
+                }
+                if self.repo_path.is_none() {
+                    return Err("branch creation requires a real repository".into());
+                }
+                self.branch_input.set_text(&name);
+                self.create_new_branch();
+            }
+            GitClientEffect::CreateWorktree {
+                path,
+                branch,
+                start,
+            } => {
+                return self.start_effect_worktree(cx, path, branch, start);
+            }
+            GitClientEffect::CheckoutBranch { name } => {
+                self.apply_branch_action(BranchAction::Checkout(name));
+            }
+            GitClientEffect::DeleteBranch { name } => {
+                self.apply_branch_action(BranchAction::Delete(name));
+            }
+            GitClientEffect::ApplyStash { index } => {
+                self.apply_branch_action(BranchAction::StashApply(index));
+            }
+            GitClientEffect::SaveStash { message } => self.save_stash(&message)?,
+            GitClientEffect::Fetch { remote } => {
+                return self.start_effect_remote(RemoteAction::Fetch, remote, cx);
+            }
+            GitClientEffect::Pull { remote } => {
+                return self.start_effect_remote(RemoteAction::Pull, remote, cx);
+            }
+            GitClientEffect::Push { remote } => {
+                return self.start_effect_remote(RemoteAction::Push, remote, cx);
+            }
+            GitClientEffect::DiffLayout
+            | GitClientEffect::SyntaxHighlight
+            | GitClientEffect::ShowWhitespace
+            | GitClientEffect::WrapLines => {}
+        }
+        match &self.last_error {
+            Some(error) if !view => Err(error.clone()),
+            _ => Ok(Effected::done()),
+        }
+    }
+}
+
+impl GitClientApp {
+    fn commit_from_effect(&mut self, message: &str) -> Result<(), String> {
+        if self.model.staged.is_empty() {
+            return Err("there are no staged changes to commit".into());
+        }
+        if message.trim().is_empty() {
+            return Err("commit message cannot be empty".into());
+        }
+        self.commit_input.set_text(message);
+        self.do_commit();
+        Ok(())
+    }
+
+    fn start_effect_worktree(
+        &mut self,
+        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+        path: String,
+        branch: String,
+        start: String,
+    ) -> EffectAnswer {
+        let repository = self.repo().ok_or_else(|| t("git-worktree-host-required"))?;
+        let reply = cx.reply();
+        let label = t("git-worktree-running");
+        reply.progress().report(label.clone(), None, None);
+        let (sender, receiver) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("git-worktree".into())
+            .spawn(move || {
+                let result = crate::repo::create_worktree(
+                    &repository,
+                    std::path::Path::new(&path),
+                    &branch,
+                    &start,
+                )
+                .map_err(|error| format!("{error:#}"));
+                let _ = sender.send(result);
+            })
+            .map_err(|error| error.to_string())?;
+        self.last_error = None;
+        self.remote_job = Some(RemoteJob {
+            receiver,
+            reply: Some(reply),
+            label,
+        });
+        Ok(Effected::Pending)
+    }
+
+    fn start_effect_remote(
+        &mut self,
+        action: RemoteAction,
+        remote: String,
+        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+    ) -> EffectAnswer {
+        let reply = cx.reply();
+        reply
+            .progress()
+            .report(ui::i18n!("git-remote-running"), None, None);
+        self.start_remote(action, Some(remote), Some(reply))?;
+        Ok(Effected::Pending)
+    }
+}
+
+impl GitClientApp {
+    fn worktree_change(&self, path: &str) -> Option<(ChangeArea, usize)> {
+        self.model
+            .unstaged
+            .iter()
+            .position(|change| change.path == path)
+            .map(|index| (ChangeArea::Unstaged, index))
+            .or_else(|| {
+                self.model
+                    .untracked
+                    .iter()
+                    .position(|change| change.path == path)
+                    .map(|index| (ChangeArea::Untracked, index))
+            })
+    }
+}
+
+impl GitClientApp {
+    fn bind_repository(&mut self, path: &std::path::Path) -> bool {
+        let Some((model, diffs)) = crate::repo::load(path) else {
+            return false;
+        };
+        // Anchor actions on the working directory so later opens are stable
+        // even if the CWD changes; fall back to the given path when bare.
+        let anchor = crate::repo::workdir(path).unwrap_or_else(|| path.to_path_buf());
+        self.show_model(model, diffs);
+        self.repo_path = Some(anchor);
+        true
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        match scenario {
+            // The side-by-side diff layout.
+            Some("split") => {
+                if let Err(error) =
+                    self.change_preferences(|s| s.diff_layout = DiffLayout::SideBySide)
+                {
+                    self.last_error = Some(error);
+                }
+            }
+            Some("history") => self.switch_screen(Screen::History),
+            Some("branches") => self.switch_screen(Screen::Panels),
+            // A typed commit summary, so the commit box and its primary
+            // action render enabled.
+            Some("commit") => self
+                .commit_input
+                .set_text("Flush the blur pass before presenting"),
+            // A changed file in the worktree, whose "Discard file" the
+            // scenario's input then presses.
+            Some("discard") => {
+                if !self.model.unstaged.is_empty() {
+                    self.selected_change = Some((ChangeArea::Unstaged, 0));
+                } else if !self.model.untracked.is_empty() {
+                    self.selected_change = Some((ChangeArea::Untracked, 0));
+                }
+                self.diff_scroll = 0.0;
+            }
+            // The narrow window's list column, revealed over its scrim
+            // rather than the closed default a fresh narrow window opens to.
+            Some("narrow") => self.drawer.snap(true),
+            _ => {}
+        }
+    }
+}
+
+impl GitClientApp {
+    fn show_model(&mut self, model: RepoModel, diffs: DiffMap) {
+        self.model = model;
+        self.diffs = diffs;
+        self.graph_layout = graph::layout(&mut self.model.commits);
+        self.model.graph_width = self.graph_layout.lanes;
+        self.selected_change = first_change(&self.model);
+        if self.selected_commit >= self.model.commits.len() {
+            self.selected_commit = 0;
+        }
+        self.diff_scroll = 0.0;
+        self.awaiting_repo = false;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::Widget;
+
+    #[test]
+    fn live_initial_view_stays_empty_until_the_repository_is_explicitly_bound() {
+        let mut app = GitClientApp::new();
+        let mut state = crate::resource::GitClient::default();
+        app.present_state(&state);
+        assert!(app.awaiting_repo);
+        assert!(app.repo_path.is_none());
+        assert!(app.model.branches.is_empty());
+        assert!(app.model.commits.is_empty());
+        let repository = tempfile::tempdir().unwrap();
+        git2::Repository::init(repository.path()).unwrap();
+        state.repository =
+            ui::tilo_resource::Atom(repository.path().to_string_lossy().into_owned());
+        app.present_state(&state);
+        assert!(!app.awaiting_repo);
+        assert_eq!(app.repo_path.as_deref(), Some(repository.path()));
+    }
 
     /// Build an app over the bundled sample, laid out at `w` x 800 with the
     /// flap settled to its mode default so geometry is deterministic.
     fn app_at(w: f64, screen: Screen) -> GitClientApp {
-        let (model, diffs) = crate::sample::model();
-        let mut app = GitClientApp::from_model(model, diffs);
+        let mut app = GitClientApp::from_model(crate::sample::model().0, crate::sample::model().1);
         app.screen = screen;
         app.rect = Rect::new(0.0, 0.0, w, 800.0);
-        app.flap.reconcile(app.layout_mode());
-        // Settle the reveal to the resolved default for this width.
-        app.flap.snap(app.flap_open());
+        app.drawer.resolve(app.rect);
+        app.drawer.snap(app.drawer.is_open());
+        draw_frame(&mut app);
         app
+    }
+
+    fn target(app: &GitClientApp, hit: &Hit) -> Option<Rect> {
+        app.targets
+            .iter()
+            .rev()
+            .find(|target| target.hit == *hit)
+            .map(|target| target.rect)
+    }
+
+    fn press(app: &mut GitClientApp, pos: Point, doc: &mut AutoCommit) {
+        app.pointer = Some(pos);
+        let hit = app
+            .targets
+            .iter()
+            .rev()
+            .find(|t| t.rect.contains(pos))
+            .map(|t| t.hit.clone());
+        if let Some(hit) = hit {
+            app.activate(hit, &mut ui::widget::Edits::lend(doc));
+        }
+        draw_frame(app);
     }
 
     /// Adaptive screen mode: wide Changes docks, narrow master-detail overlays closed,
@@ -3622,32 +3928,26 @@ mod tests {
 
     fn wide_changes_screen_is_docked() {
         let app = app_at(1280.0, Screen::Changes);
-        assert_eq!(app.layout_mode(), SplitLayout::Docked);
-        assert!(app.flap_open(), "docked list column is open by default");
+        assert!(app.drawer.is_docked());
+        assert!(app.drawer.is_open());
     }
 
     fn narrow_master_detail_screen_is_overlay_closed() {
         let app = app_at(680.0, Screen::Changes);
-        assert_eq!(app.layout_mode(), SplitLayout::Overlay);
-        assert!(!app.flap_open(), "narrow overlay flap is closed by default");
+        assert!(app.drawer.is_overlay());
+        assert!(!app.drawer.is_open());
     }
 
     fn breakpoint_boundary_is_inclusive_docked() {
-        assert_eq!(
-            app_at(NARROW_BREAKPOINT, Screen::Changes).layout_mode(),
-            SplitLayout::Docked,
-        );
-        assert_eq!(
-            app_at(NARROW_BREAKPOINT - 1.0, Screen::Changes).layout_mode(),
-            SplitLayout::Overlay,
-        );
+        let boundary = app_at(1280.0, Screen::Changes).drawer.resolved_breakpoint();
+        assert!(app_at(boundary, Screen::Changes).drawer.is_docked());
+        assert!(app_at(boundary - 1.0, Screen::Changes).drawer.is_overlay());
     }
 
     fn panels_screen_never_collapses() {
-        // The full-width dashboard has no list column, so it stays docked even
-        // on a narrow window — no flap, scrim or hamburger.
         let app = app_at(400.0, Screen::Panels);
-        assert_eq!(app.layout_mode(), SplitLayout::Docked);
+        assert!(target(&app, &Hit::SidebarToggle).is_none());
+        assert!(!app.drawer_is_modal());
     }
 
     /// The overlay flap: the hamburger toggles it, a scrim click dismisses it, a click
@@ -3663,138 +3963,89 @@ mod tests {
 
     fn hamburger_click_toggles_overlay_flap() {
         let mut app = app_at(680.0, Screen::Changes);
-        assert!(!app.flap_open());
-        // Simulate the hamburger being drawn this frame, then click it.
-        app.hamburger_rect = Rect::new(12.0, 12.0, 44.0, 44.0);
-        app.handle_click(Point::new(28.0, 28.0), &mut AutoCommit::new());
-        assert!(app.flap_open(), "hamburger summons the overlay flap");
-        app.handle_click(Point::new(28.0, 28.0), &mut AutoCommit::new());
-        assert!(!app.flap_open(), "hamburger dismisses it again");
+        let mut doc = AutoCommit::new();
+        assert!(!app.drawer.is_open());
+        let toggle = target(&app, &Hit::SidebarToggle).unwrap();
+        press(&mut app, toggle.center(), &mut doc);
+        assert!(app.drawer.is_open());
+        press(&mut app, toggle.center(), &mut doc);
+        assert!(!app.drawer.is_open());
     }
 
     fn scrim_click_dismisses_open_overlay_flap() {
         let mut app = app_at(680.0, Screen::Changes);
-        app.flap.snap(true); // open overlay flap
-        assert!(app.flap_open());
-        // Click far to the right of the list column (over the dimmed detail).
-        app.handle_click(Point::new(600.0, 400.0), &mut AutoCommit::new());
-        assert!(!app.flap_open(), "clicking the scrim closes the flap");
+        app.drawer.snap(true);
+        draw_frame(&mut app);
+        assert!(app.drawer.is_open());
+        press(&mut app, Point::new(670.0, 400.0), &mut AutoCommit::new());
+        assert!(!app.drawer.is_open());
     }
 
     fn click_inside_open_flap_does_not_dismiss_it() {
         let mut app = app_at(680.0, Screen::Changes);
-        app.flap.snap(true);
-        // A click within the list column must not be treated as a scrim tap.
-        app.handle_click(Point::new(40.0, 400.0), &mut AutoCommit::new());
-        assert!(
-            app.flap_open(),
-            "clicks on the list column keep the flap open"
+        app.drawer.snap(true);
+        draw_frame(&mut app);
+        let panel = app.drawer.sidebar_rect();
+        press(
+            &mut app,
+            Point::new(panel.x0 + 4.0, panel.y1 - 4.0),
+            &mut AutoCommit::new(),
         );
+        assert!(app.drawer.is_open());
     }
 
     fn open_overlay_hides_and_blocks_background_controls() {
         let mut app = app_at(680.0, Screen::Changes);
-        app.flap.snap(true);
-        app.hamburger_rect = Rect::new(12.0, 12.0, 44.0, 44.0);
-        app.tab_rects = vec![(Screen::History, Rect::new(100.0, 12.0, 180.0, 44.0))];
-        app.settings_seg = Rect::new(450.0, 12.0, 560.0, 44.0);
-        let semantic = app.accessibility_targets();
+        app.drawer.snap(true);
+        draw_frame(&mut app);
+        assert!(app.drawer_is_modal());
+        let header = GitClientApp::header_height(&Theme::dark());
         assert!(
-            semantic
+            app.semantic
                 .iter()
-                .any(|(target, _, _)| target == "git.navigation-toggle")
+                .filter(|t| t.rect.y0 >= header)
+                .all(|t| matches!(t.hit, Hit::Change(_) | Hit::Commit(_))),
+            "covered content controls leave the accessible tree"
         );
         assert!(
-            semantic
-                .iter()
-                .all(|(target, _, _)| target != "git.screen.history" && target != "git.diff-layout"),
-            "obscured app-bar controls must not remain in the screen-reader tree"
+            app.semantic.iter().any(|t| matches!(t.hit, Hit::Screen(_))),
+            "the unoccluded window header remains reachable"
         );
-
-        app.handle_click(Point::new(140.0, 28.0), &mut AutoCommit::new());
-        assert_eq!(app.screen, Screen::Changes, "covered tab click is consumed");
-        assert!(
-            app.flap_open(),
-            "covered app-bar click does not dismiss the drawer"
+        let covered = app.drawer.sidebar_rect();
+        press(
+            &mut app,
+            Point::new(covered.x0 + 4.0, covered.y1 - 4.0),
+            &mut AutoCommit::new(),
         );
+        assert_eq!(app.screen, Screen::Changes);
+        assert!(app.drawer.is_open());
     }
 
     fn crossing_breakpoint_restores_mode_default() {
-        // Open the flap while docked-wide, then narrow past the breakpoint:
-        // the stale preference clears and the overlay default (closed) wins.
         let mut app = app_at(1280.0, Screen::Changes);
-        app.flap.close(); // user collapses the docked column
-        assert!(!app.flap_open());
+        app.drawer.close();
+        assert!(!app.drawer.is_open());
         app.rect = Rect::new(0.0, 0.0, 680.0, 800.0);
-        app.flap.reconcile(app.layout_mode());
-        assert!(!app.flap_open(), "overlay default is closed");
-        // Widen again → back to docked-open default.
+        app.drawer.resolve(app.rect);
+        assert!(app.drawer.is_overlay());
+        assert!(!app.drawer.is_open());
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.flap.reconcile(app.layout_mode());
-        assert!(app.flap_open(), "docked default restores the open column");
+        app.drawer.resolve(app.rect);
+        assert!(app.drawer.is_docked());
+        assert!(
+            !app.drawer.is_open(),
+            "resizing preserves the person's docked choice"
+        );
     }
 
-    /// Semantic parity: the app-bar diff-layout toggle equals the palette action,
-    /// semantic open-repository and text edits reach their inputs, and synthetic
-    /// accessibility controls sit at their drawn rects. Each phase is a former test with its own fresh fixture.
+    /// Semantic parity: semantic open-repository and text edits reach their
+    /// inputs, and synthetic accessibility controls sit at their drawn rects.
+    /// Each phase is a former test with its own fresh fixture.
     #[test]
     fn affordances_and_semantic_controls_reach_the_production_actions() {
-        appbar_diff_layout_toggle_matches_the_palette_action();
         semantic_open_repository_binds_the_entered_repository();
         semantic_text_edits_reach_embedded_repository_commit_and_branch_inputs();
         synthetic_accessibility_controls_are_addressable_at_their_drawn_rects();
-    }
-
-    /// The affordance == `ActionSpec` covenant on the *real* production path:
-    /// the app-bar diff-layout control mutates the shared document, records one
-    /// undo boundary, and dispatches the byte-identical `EncodedAction` the
-    /// Ctrl+K palette would — one source of truth, not two code paths.
-    fn appbar_diff_layout_toggle_matches_the_palette_action() {
-        let (model, diffs) = crate::sample::model();
-        let mut app = GitClientApp::from_model(model, diffs);
-        let mut doc = AutoCommit::new();
-        // First sync seeds the default (unified) preferences into the document.
-        app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(Settings::read_only(&doc).diff_layout, DiffLayout::Unified);
-
-        // The action Ctrl+K would dispatch right now: flip unified → split.
-        let resources = ui::resources::resources(&app, &doc);
-        let spec = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "diff-layout")
-            .unwrap();
-        let palette_action = match &spec.input {
-            tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-            tilo_actions::ActionInput::Prompted { .. }
-            | tilo_actions::ActionInput::Deferred { .. } => {
-                panic!("diff-layout is an immediate action")
-            }
-        };
-
-        // Drive the real app-bar segmented control.
-        app.toggle_diff_layout(&mut doc);
-
-        // It mutated the shared document...
-        assert_eq!(
-            Settings::read_only(&doc).diff_layout,
-            DiffLayout::SideBySide,
-            "the control switched the persisted layout"
-        );
-        // ...recorded exactly one undo boundary bracketing the toggle...
-        assert!(
-            ui::undo::take_committed_action(&mut app).is_some(),
-            "one undo boundary recorded for the control's action"
-        );
-        // ...and dispatched the byte-identical action Ctrl+K would.
-        let dispatched = app
-            .last_dispatched()
-            .expect("the control dispatched an action");
-        assert_eq!(dispatched.type_id, crate::actions::GIT_CLIENT_ACTION_TYPE);
-        assert_eq!(
-            dispatched, &palette_action,
-            "the app-bar control and the Ctrl+K entry build one and the same action"
-        );
     }
 
     /// App-bar geometry: controls stay visible and separate at narrow widths, inside
@@ -3809,44 +4060,45 @@ mod tests {
     }
 
     fn appbar_controls_stay_visible_and_separate_at_narrow_widths() {
-        let mut text = TextRenderer::new();
         let theme = Theme::dark();
-        for width in [320.0, 460.0, 680.0, 1280.0] {
-            for screen in [Screen::Changes, Screen::History, Screen::Panels] {
-                let mut app = app_at(width, screen);
-                let mut scene = Scene::new();
-                app.draw_appbar(&mut PaintCtx::new(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                ));
-                for (_, rect) in &app.tab_rects {
+        let header_h = GitClientApp::header_height(&theme);
+        for width in [320.0, 390.0, 460.0, 480.0, 560.0, 680.0, 800.0, 1280.0] {
+            for screen in Screen::ALL {
+                let app = app_at(width, screen);
+                let header: Vec<&Target> = app
+                    .targets
+                    .iter()
+                    .filter(|t| {
+                        matches!(
+                            t.hit,
+                            Hit::SidebarToggle
+                                | Hit::Screen(_)
+                                | Hit::DiffLayout(_)
+                                | Hit::Remote(_)
+                        )
+                    })
+                    .collect();
+                assert!(
+                    header
+                        .iter()
+                        .filter(|t| matches!(t.hit, Hit::Screen(_)))
+                        .count()
+                        == 3,
+                    "{width}: every screen is reachable"
+                );
+                for (i, a) in header.iter().enumerate() {
                     assert!(
-                        rect.width() + 0.5 >= f64::from(theme.tokens.metrics.min_pointer_target),
-                        "tab target shrank below the theme minimum at {width}px: {rect:?}"
+                        a.rect.x0 >= -0.01 && a.rect.x1 <= width + 0.01 && a.rect.y1 <= header_h,
+                        "{width}: {:?} at {:?} leaves the header",
+                        a.hit,
+                        a.rect
                     );
-                }
-                let mut controls: Vec<Rect> = app.tab_rects.iter().map(|(_, rect)| *rect).collect();
-                controls.extend([app.settings_seg, app.settings_syn]);
-                if app.hamburger_rect.area() > 0.0 {
-                    controls.push(app.hamburger_rect);
-                }
-                for (index, rect) in controls.iter().enumerate() {
-                    assert!(
-                        rect.x0 >= 0.0
-                            && rect.x1 <= width
-                            && rect.y0 >= 0.0
-                            && rect.y1 <= app.appbar_h,
-                        "control {index} is outside the {width}px window: {rect:?}"
-                    );
-                    for other in controls.iter().skip(index + 1) {
+                    for b in header.iter().skip(i + 1) {
                         assert!(
-                            !(rect.x0 < other.x1
-                                && rect.x1 > other.x0
-                                && rect.y0 < other.y1
-                                && rect.y1 > other.y0),
-                            "controls overlap at {width}px: {rect:?} and {other:?}"
+                            a.rect.intersect(b.rect).area() <= 0.01,
+                            "{width}: {:?} overlaps {:?}",
+                            a.hit,
+                            b.hit
                         );
                     }
                 }
@@ -3859,13 +4111,12 @@ mod tests {
         let _repository = git2::Repository::init(directory.path()).unwrap();
         let mut app = GitClientApp::open_empty();
         app.open_input.set_text(directory.path().to_str().unwrap());
-        app.open_button_rect = Rect::new(20.0, 20.0, 180.0, 60.0);
         let mut doc = automerge::AutoCommit::new();
         assert!(Widget::perform_semantic_action(
             &mut app,
             "git.open-repository",
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(!app.test_awaiting_repo());
@@ -3884,7 +4135,7 @@ mod tests {
                 &mut app,
                 target,
                 &ui::a11y::Action::SetValue(text.into()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
         }
@@ -3896,15 +4147,6 @@ mod tests {
 
     fn synthetic_accessibility_controls_are_addressable_at_their_drawn_rects() {
         let mut app = app_at(1_280.0, Screen::Changes);
-        app.tab_rects = vec![
-            (Screen::Changes, Rect::new(20.0, 8.0, 120.0, 40.0)),
-            (Screen::History, Rect::new(124.0, 8.0, 224.0, 40.0)),
-        ];
-        app.settings_seg = Rect::new(1_000.0, 8.0, 1_080.0, 40.0);
-        app.settings_syn = Rect::new(1_084.0, 8.0, 1_160.0, 40.0);
-        app.commit_input
-            .apply_layout_external(Rect::new(360.0, 700.0, 700.0, 736.0));
-
         let node = Widget::accessibility(&app).expect("git client is semantic");
         assert!(!node.children.is_empty());
         let targets: std::collections::HashSet<_> = node
@@ -3915,7 +4157,8 @@ mod tests {
         assert_eq!(targets.len(), node.children.len());
         assert!(targets.contains("git.screen.changes"));
         assert!(targets.contains("git.screen.history"));
-        assert!(targets.contains("git.diff-layout"));
+        assert!(targets.contains("git.diff-layout.unified"));
+        assert!(targets.contains("git.diff-layout.split"));
         assert!(targets.contains("git.syntax-highlight"));
         assert!(targets.contains("git.commit-message"));
         for (index, child) in node.children.iter().enumerate() {
@@ -3930,19 +4173,18 @@ mod tests {
         let before = app.settings.diff_layout;
         assert!(Widget::perform_semantic_action(
             &mut app,
-            "git.diff-layout",
+            "git.diff-layout.split",
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_ne!(app.settings.diff_layout, before);
-        assert!(app.last_dispatched().is_some());
 
         assert!(Widget::perform_semantic_action(
             &mut app,
             "git.commit-message",
             &ui::a11y::Action::Focus,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(app.focus, Some(Field::Commit));
@@ -3965,136 +4207,44 @@ mod tests {
         );
     }
 
-    fn intersects(a: Rect, b: Rect) -> bool {
-        a.area() > 0.0 && b.area() > 0.0 && a.intersect(b).area() > 0.0
-    }
-
-    #[expect(
-        clippy::float_cmp,
-        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
-    )]
     fn appbar_controls_stay_inside_the_window_and_never_overlap() {
-        for width in [390.0, 480.0, 680.0, 800.0, 1280.0] {
-            let mut app = app_at(width, Screen::Changes);
-            draw_frame(&mut app);
-
-            let mut controls: Vec<(&str, Rect)> = Vec::new();
-            for (screen, rect) in &app.tab_rects {
-                controls.push((
-                    match screen {
-                        Screen::Changes => "tab.changes",
-                        Screen::History => "tab.history",
-                        Screen::Panels => "tab.panels",
-                    },
-                    *rect,
-                ));
-            }
-            controls.push(("settings.layout", app.settings_seg));
-            controls.push(("settings.syntax", app.settings_syn));
-            if app.hamburger_rect.area() > 0.0 {
-                controls.push(("hamburger", app.hamburger_rect));
-            }
-            controls.push(("title", app.title_rect));
-            assert_eq!(
-                app.tab_rects.len(),
-                TABS.len(),
-                "{width}: every screen tab is placed"
-            );
-
-            let bar = Rect::new(0.0, 0.0, width, app.appbar_h);
-            for (name, rect) in &controls {
-                assert!(
-                    rect.area() > 0.0,
-                    "{width}: {name} must be painted with a real rect"
-                );
-                assert!(
-                    rect.x0 >= bar.x0 - 0.01 && rect.x1 <= bar.x1 + 0.01,
-                    "{width}: {name} {rect:?} leaves the window horizontally"
-                );
-                assert!(
-                    rect.y0 >= bar.y0 - 0.01 && rect.y1 <= bar.y1 + 0.01,
-                    "{width}: {name} {rect:?} leaves the app bar {bar:?}"
-                );
-            }
-            for (i, (a_name, a)) in controls.iter().enumerate() {
-                for (b_name, b) in controls.iter().skip(i + 1) {
-                    assert!(
-                        !intersects(*a, *b),
-                        "{width}: {a_name} {a:?} overlaps {b_name} {b:?}"
-                    );
-                }
-            }
-            // The title keeps a readable minimum whichever row layout applies.
-            assert!(
-                app.title_rect.width() >= 40.0,
-                "{width}: title block {:?} collapsed",
-                app.title_rect
-            );
-            // A wide window keeps the one-row bar; the wrapped bar is exactly
-            // one extra tab row, so the body never loses more than that.
-            if width >= 1280.0 {
-                assert_eq!(app.appbar_h, APPBAR_H, "{width}: wide bar stays one row");
-            } else {
-                assert!(
-                    app.appbar_h == APPBAR_H || app.appbar_h == APPBAR_H + APPBAR_TAB_ROW_H,
-                    "{width}: unexpected app-bar height {}",
-                    app.appbar_h
-                );
-            }
-        }
+        appbar_controls_stay_visible_and_separate_at_narrow_widths();
     }
 
     fn appbar_controls_share_one_centre_line_per_row() {
-        let mut app = app_at(1280.0, Screen::Changes);
-        draw_frame(&mut app);
-        let row_centre = APPBAR_H / 2.0;
-        for (_, rect) in &app.tab_rects {
-            assert!(
-                (rect.center().y - row_centre).abs() < 0.01,
-                "tab {rect:?} off-centre"
-            );
-            assert!((rect.height() - APPBAR_CONTROL_H).abs() < 0.01);
+        let app = app_at(1280.0, Screen::Changes);
+        let header = GitClientApp::header_height(&Theme::dark());
+        let row = app
+            .targets
+            .iter()
+            .filter(|t| matches!(t.hit, Hit::Screen(_) | Hit::DiffLayout(_) | Hit::Remote(_)))
+            .collect::<Vec<_>>();
+        assert!(!row.is_empty());
+        for t in row {
+            assert!((t.rect.center().y - header / 2.0).abs() < 0.01);
+            assert!(t.rect.height() >= f64::from(Theme::dark().tokens.metrics.min_pointer_target));
         }
-        for rect in [app.settings_seg, app.settings_syn] {
-            assert!(
-                (rect.center().y - row_centre).abs() < 0.01,
-                "{rect:?} off-centre"
-            );
-            assert!((rect.height() - APPBAR_CONTROL_H).abs() < 0.01);
-        }
-        // Equal gutters: the title starts as far from the left edge as the
-        // settings cluster ends from the right edge.
-        assert!((app.title_rect.x0 - APPBAR_GUTTER).abs() < 0.01);
-        assert!((1280.0 - app.settings_syn.x1 - APPBAR_GUTTER).abs() < 0.01);
     }
 
-    #[expect(
-        clippy::float_cmp,
-        reason = "layout reproduces authored whole-pixel sizes and their sums exactly in binary floating point; exact equality is what the test checks"
-    )]
     fn wrapped_appbar_moves_the_body_down_with_it() {
-        let mut app = app_at(480.0, Screen::Changes);
-        draw_frame(&mut app);
-        assert_eq!(
-            app.appbar_h,
-            APPBAR_H + APPBAR_TAB_ROW_H,
-            "480px cannot hold title, tabs and settings on one row"
-        );
-        // Tabs sit on the second row, left aligned on the title gutter.
-        let first_tab = app.tab_rects[0].1;
-        assert!(
-            first_tab.y0 >= APPBAR_H - 0.01,
-            "tabs wrap under the title: {first_tab:?}"
-        );
-        assert!((first_tab.x0 - (APPBAR_GUTTER + 6.0)).abs() < 0.01);
-        // Nothing from the body (diff header row) is painted under the bar:
-        // the hunk buttons the diff emits all start below the measured bar.
-        for button in &app.diff_hunk_buttons {
+        for width in [320.0, 480.0, 1280.0] {
+            let app = app_at(width, Screen::Changes);
+            let header = GitClientApp::header_height(&Theme::dark());
+            let document_actions = app
+                .targets
+                .iter()
+                .filter(|target| matches!(target.hit, Hit::Diff(_)))
+                .collect::<Vec<_>>();
             assert!(
-                button.rect.y0 >= app.appbar_h,
-                "hunk button {:?} paints under the app bar",
-                button.rect
+                !document_actions.is_empty(),
+                "the selected sample file publishes diff actions"
             );
+            for target in document_actions {
+                assert!(
+                    target.rect.y0 >= header,
+                    "document action stays below its header"
+                );
+            }
         }
     }
 }

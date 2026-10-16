@@ -58,11 +58,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -70,20 +66,20 @@
 
 #[cfg(feature = "agents")]
 pub mod agents;
-pub mod antientropy;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app_serving;
-// The relay session client (v2 actions, agent reads, interactive owners)
-// needs the daemon's delivery and join records, so it lives in the daemon
-// crate; `tilo-relay-client` holds only the frame codec.
+#[cfg(not(target_arch = "wasm32"))]
+mod authority_epoch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
-pub mod client;
-pub mod coedit;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compaction;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute;
+#[cfg(not(target_arch = "wasm32"))]
+mod compute_actions;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod compute_content;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute_session;
 #[cfg(not(target_arch = "wasm32"))]
@@ -92,21 +88,70 @@ pub mod compute_transport;
 pub mod compute_worker;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod daemon;
-pub mod framing;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod environment_bridge;
+#[cfg(target_os = "linux")]
+pub mod environment_guest;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod environment_host;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod environment_routing;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod environment_tools;
+#[cfg(not(target_arch = "wasm32"))]
+mod handshake;
+#[cfg(not(target_arch = "wasm32"))]
+mod host_authority;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod legacy_host;
+#[cfg(target_os = "linux")]
+pub mod legacy_route;
+#[cfg(target_os = "linux")]
+pub mod legacy_vm_host;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod member_limits;
+#[cfg(not(target_arch = "wasm32"))]
+mod membership_watch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
+#[cfg(feature = "agents")]
+pub mod moderation;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod offload;
+#[cfg(not(target_arch = "wasm32"))]
+mod offload_content;
+#[cfg(not(target_arch = "wasm32"))]
+mod offload_device;
+#[cfg(not(target_arch = "wasm32"))]
+mod offload_placement;
+#[cfg(not(target_arch = "wasm32"))]
+mod offload_route;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod payloads;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]
 mod persistence;
-pub mod position;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod presence_mailbox;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod public_avatars;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod relay_offers;
+#[cfg(not(target_arch = "wasm32"))]
+mod room_access;
+#[cfg(feature = "agents")]
+pub mod room_bots;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod room_records;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod rooms;
-mod session_carrier;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod surfaces;
+#[cfg(not(target_arch = "wasm32"))]
+mod timing;
 #[cfg(feature = "web")]
 pub mod web;
 #[cfg(not(target_arch = "wasm32"))]
@@ -115,16 +160,22 @@ pub mod workspace;
 mod workspace_io;
 pub mod workspace_join;
 
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 tilo_automerge_isolate::test_worker!();
+#[cfg(all(test, feature = "agents"))]
+tilo_agent_participant::app_worker!();
 
 // The records and wire messages shared with relay clients live in
-// `tilo-relay-protocol`, and the frame codec in `tilo-relay-client`, so
-// clients need not link the daemon. The daemon keeps addressing them here.
+// `tilo-relay-protocol`, the frame codec in `tilo-relay-client`, and the
+// session clients (relay, co-edit, anti-entropy, room administration and
+// workspace join) in `tilo-relay-session`, so clients need not link the
+// daemon. The daemon keeps addressing them here.
 pub use tilo_relay_client::frame;
 pub use tilo_relay_protocol::{
-    auth, certify, config, home_peer, live, mesh, policy, process_lease,
+    auth, certify, config, home_peer, live, mesh, placement, policy, process_lease,
 };
+pub use tilo_relay_session::{antientropy, client, coedit, position};
 
 /// The relay wire messages ([`tilo_relay_protocol::transport`]) together with
 /// the envelope frame codec ([`frame`]), under the path the daemon and its
@@ -143,10 +194,12 @@ pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayC
 #[cfg(not(target_arch = "wasm32"))]
 pub use compute::{
     ComputeContentStore, ComputeError, ComputeExecutionError, ComputeJobLifecycle, ComputeJobPhase,
-    ComputeJobResult, ComputeJobSpec, ComputePackageCatalogue, ComputeResourceLimits,
-    ComputeSandbox, ComputeSandboxInvocation, ComputeWorker, InstalledComputeCatalogue,
-    LauncherComputeSandbox, admit_compute_job,
+    ComputeJobResult, ComputeJobSpec, ComputeOutputSource, ComputePackageCatalogue,
+    ComputeResourceLimits, ComputeSandbox, ComputeSandboxInvocation, ComputeWorker, HeldContent,
+    InstalledComputeCatalogue, LauncherComputeSandbox, admit_compute_job,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use compute_content::{ContentFetchError, content_proof, fetch_job_content, prove_job_input};
 #[cfg(not(target_arch = "wasm32"))]
 pub use compute_session::{ComputeClient, ComputeDelivery, ComputeSessionError};
 #[cfg(not(target_arch = "wasm32"))]
@@ -156,20 +209,23 @@ pub use compute_transport::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use compute_worker::{
-    ComputeWorkerError, FileComputeContentStore, ProductionComputeWorkerConfig,
-    run_production_compute_worker,
+    ComputeAssignment, ComputeWorkerError, FileComputeContentStore, InputStaging, InputTransfer,
+    ProductionComputeWorkerConfig, WorkerEnvironments, WorkerHeldContent, hydrate_job_inputs,
+    run_compute_assignment, run_production_compute_worker, serve_worker_stream,
+    serve_worker_stream_with, spawn_worker_stream,
 };
 pub use config::{CheckpointPrefixRecovery, PeerRelayConfig, RelayConfig, WorkspaceBinding};
 #[cfg(not(target_arch = "wasm32"))]
 pub use daemon::{Relay, RelayError, RelayHandle};
-pub use home_peer::{HomePeerRegistration, valid_home_peer_label};
+pub use home_peer::{HomePeerRegistration, home_peer_registry_path, valid_home_peer_label};
 pub use mesh::{
-    ComputeAccelerator, DeviceMeshProfile, DeviceRole, Placement, PlacementRequest,
-    PowerAvailability, RemoteControlRoute, ReplicationIntent, ReplicationResource,
-    ServerAdvertisement, ServiceCapabilities, Workload, place, route_remote_control,
+    ComputeAccelerator, DeviceMeshProfile, DeviceRole, PowerAvailability, ReplicationIntent,
+    ReplicationResource, ServerAdvertisement, ServiceCapabilities,
 };
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
+#[cfg(not(target_arch = "wasm32"))]
+pub use room_access::Spectators;
 pub use transport::ContentPeerRegistration;
 pub use transport::{ALPN, Envelope};
 
@@ -181,3 +237,6 @@ pub use tilo_relay_protocol::{
     personal_continuity_workspace_id, personal_continuity_workspace_id_matches, room_workspace_id,
     room_workspace_id_matches,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod root_signer;

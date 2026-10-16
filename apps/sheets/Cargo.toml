@@ -18,30 +18,28 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
+tilo-locale = { path = "../../crates/platform/tilo-locale" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The Tilo action model: doc-mutating operations are replayable, undoable actions.
 tilo-actions = { path = "../../crates/collab/actions" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
-# Spreadsheet interchange (.xlsx/.ods) through qdoc's bounded, XXE-hardened
+# Spreadsheet interchange (.xlsx/.ods) through tilo-doc's bounded, XXE-hardened
 # codecs, and its A1 reference helpers.
-qdoc = { path = "../../crates/doc/qdoc" }
-qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["xlsx", "ods"] }
+tilo-doc = { path = "../../crates/doc/tilo-doc" }
+tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["xlsx", "ods"] }
 uuid.workspace = true
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # Builds real-world-shaped .xlsx/.ods fixtures and inspects exported packages.
 zip.workspace = true
-tilo-test-env = { path = "../../crates/dev/test-env" }
 tempfile.workspace = true
 
 [lints]

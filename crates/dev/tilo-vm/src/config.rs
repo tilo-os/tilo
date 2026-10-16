@@ -12,6 +12,9 @@
 //! keep_generations = 5     # gc keeps this many per slot
 //! keep_targets = 2         # gc keeps this many in-VM build dirs
 //!
+//! [remote_builders]        # swap --builder remote, by architecture: a cargo
+//! aarch64 = ["remote-cargo", "--on-builder"]   # drop-in whose `run` runs there
+//!
 //! [vms.dev]
 //! hypervisor = "libvirt"   # libvirt | qemu | utm | hyperv | whpx
 //! ssh = "root@127.0.0.1:2223"
@@ -45,6 +48,13 @@ pub struct Registry {
     /// In-VM build dirs gc keeps (the daemon's default is 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_targets: Option<u32>,
+    /// Remote builders by CPU architecture: the command line of a cargo
+    /// drop-in whose `run` runs the program on a machine of that
+    /// architecture, in this worktree, passing its stdout through.
+    /// `swap --builder remote` uses the one for the machine's architecture,
+    /// and is the default for a device that has one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub remote_builders: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub vms: BTreeMap<String, VmEntry>,
 }
@@ -89,15 +99,16 @@ pub struct VmEntry {
     /// libvirt: virtio-gpu outputs (default one).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heads: Option<u8>,
-    /// libvirt: virgl 3D acceleration, rendered on the host GPU through an
+    /// libvirt or QEMU: virgl 3D acceleration, rendered on the host GPU through an
     /// `egl-headless` display beside the SPICE console.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gl: bool,
-    /// libvirt: the first output's preferred mode, `WIDTHxHEIGHT`; the others
+    /// libvirt or QEMU: the first output's preferred mode, `WIDTHxHEIGHT`; the others
     /// offer the standard modes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<String>,
-    /// Host port forwarded to the guest's SSH port (libvirt, qemu).
+    /// Host port forwarded to the guest's SSH port (libvirt, qemu, whpx).
+    /// Creation records the selected port; older entries default to 2222.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ssh_port: Option<u16>,
     /// libvirt connection URI.
@@ -117,12 +128,46 @@ pub struct VmEntry {
     pub firmware_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware_vars: Option<String>,
+    /// A device's hostname: when its address stops answering, tilo-vm
+    /// finds it again as `<hostname>.local`. Recorded whenever tilo-vm
+    /// reaches it (`vm add`, `vm status`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    /// A device's MAC on the network it was reached on, for `vm wake`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+    /// What can wake a device, as it reported when last reached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<crate::reach::WakeInfo>,
+    /// A device's route over the peer network, for when it is not on this
+    /// network: what its `tilo-device-admin id` reported when last reached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<PeerRoute>,
     /// A host-built kernel the VM boots directly instead of its disk's boot
     /// loader (`tilo-vm swap kernel --direct` on libvirt, or a manually
     /// prepared development bundle on WHPX). Cleared by
     /// `tilo-vm rollback --slot vm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direct_kernel: Option<DirectKernel>,
+}
+
+/// Where a device answers over the peer network (`tilo-vm guide devices`,
+/// "Beyond the LAN").
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerRoute {
+    /// The device id (its device key), hex: the answer must prove it.
+    pub device: String,
+    /// The endpoint id its device-admin route answers on.
+    pub endpoint: String,
+    /// The identity it belongs to, hex.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
+    /// A relay of the owner's own that it uses instead of the public ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
+    /// The public relay it was last seen on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_relay: Option<String>,
 }
 
 /// Direct kernel boot: files on the host, and the command line.
@@ -149,10 +194,19 @@ pub fn registry_path() -> PathBuf {
     if let Some(path) = std::env::var_os("TILO_VM_CONFIG") {
         return PathBuf::from(path);
     }
-    xdg_paths::config_dir()
+    tilo_paths::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("tilo-vm")
         .join("vms.toml")
+}
+
+/// This machine's identity as one of the owner's devices, enrolled to
+/// administer their devices over the peer network: beside the registry.
+pub fn admin_identity_root(registry: &Path) -> PathBuf {
+    registry
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("admin-identity")
 }
 
 impl Registry {
@@ -184,11 +238,13 @@ impl Registry {
             // rename still avoids exposing a partially written TOML document.
             std::fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))
                 .map_err(CliError::io(context.clone()))?;
-            atomic_file::write_regenerable(path, text.as_bytes()).map_err(CliError::io(context))
+            tilo_files::native::atomic::write_regenerable(path, text.as_bytes())
+                .map_err(CliError::io(context))
         }
         #[cfg(not(windows))]
         {
-            atomic_file::write_creating_parent(path, text.as_bytes()).map_err(CliError::io(context))
+            tilo_files::native::atomic::write_creating_parent(path, text.as_bytes())
+                .map_err(CliError::io(context))
         }
     }
 

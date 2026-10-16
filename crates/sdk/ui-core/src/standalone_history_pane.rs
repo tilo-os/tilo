@@ -67,12 +67,17 @@ impl StandaloneHistoryPane {
         let summary_source = Rc::clone(&summary_value);
         Self {
             header: Row::new()
+                .with_justify(taffy::JustifyContent::SpaceBetween)
                 .push(Box::new(
                     Text::new("standalone-history-title").with_heading_level(2),
                 ))
                 .push(Box::new(
-                    Button::new("standalone-history-close", "standalone-history-close", None)
-                        .on_view(move || close_intents.borrow_mut().push_back(QueuedIntent::Close)),
+                    Button::icon_only(
+                        "standalone-history-close",
+                        crate::icons::Icon::X,
+                        &crate::i18n::I18nManager::lookup_plain("standalone-history-close"),
+                    )
+                    .on_view(move || close_intents.borrow_mut().push_back(QueuedIntent::Close)),
                 )),
             timeline: ActivityTimeline::new().on_activate_entry(move |id| {
                 activate_intents
@@ -83,17 +88,13 @@ impl StandaloneHistoryPane {
                 .with_id("standalone-history-summary")
                 .with_live(crate::a11y::Politeness::Polite),
             summary_value,
-            restore: Button::new(
-                "standalone-history-restore",
-                "standalone-history-restore",
-                None,
-            )
-            .on_view(move || {
-                restore_intents
-                    .borrow_mut()
-                    .push_back(QueuedIntent::ReviewRestore);
-            })
-            .with_enabled(false),
+            restore: Button::new("standalone-history-restore", "standalone-history-restore")
+                .on_view(move || {
+                    restore_intents
+                        .borrow_mut()
+                        .push_back(QueuedIntent::ReviewRestore);
+                })
+                .with_enabled(false),
             review: None,
             intents,
             observed_selection: None,
@@ -280,32 +281,23 @@ impl Widget for StandaloneHistoryPane {
             }
             self.child_nodes = vec![header, timeline, summary, restore];
         }
-        let node = taffy.parent_node(
-            Style {
-                flex_direction: taffy::FlexDirection::Column,
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                gap: Size {
-                    width: taffy::LengthPercentage::length(theme.gap_standard),
-                    height: taffy::LengthPercentage::length(theme.gap_standard),
-                },
-                ..Default::default()
+        let style = Style {
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size::from_percent(1.0, 1.0),
+            gap: Size {
+                width: taffy::LengthPercentage::length(theme.gap_standard),
+                height: taffy::LengthPercentage::length(theme.gap_standard),
             },
-            &self.child_nodes,
-        );
+            ..Default::default()
+        };
+        let node = taffy.parent_node(style, &self.child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        let origin = origin + (f64::from(layout.location.x), f64::from(layout.location.y));
-        self.rect = Rect::from_origin_size(
-            origin,
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        let origin = self.rect.origin();
         let nodes = self.child_nodes.clone();
         for (child, node) in self.children_mut().into_iter().zip(nodes) {
             child.apply_layout(taffy, node, origin);
@@ -375,7 +367,7 @@ mod tests {
         HistoryEntry {
             id: HistoryEntryId([id; 16]),
             author: HistoryAuthor::new("Alice", 120.0, "alice"),
-            op_class: collab_types::OpClass::Splice,
+            entry_kind: crate::widget::EntryKind::Text,
             artifact_kind: collab_types::ArtifactKind::Note,
             timestamp: crate::time::SystemTime::UNIX_EPOCH,
             summary: format!("Change {id}"),
@@ -407,7 +399,7 @@ mod tests {
             assert!(pane.timeline.perform_semantic_action(
                 target,
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(

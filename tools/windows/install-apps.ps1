@@ -2,8 +2,8 @@
 # Cap'n Proto, LLVM's llvm-readobj and the pinned Rust/MSVC toolchain must be on PATH.
 [CmdletBinding()]
 param(
-    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'git-client', 'feeds', 'totp', 'passwords', 'typst-editor', 'mail', 'video-player', 'music')]
-    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'image-editor', 'photos', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'git-client', 'feeds', 'totp'),
+    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'photos', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'git-client', 'feeds', 'totp', 'passwords', 'typst-editor', 'mail', 'video-player', 'music')]
+    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'scratchpad', 'file-explorer', 'word-processor', 'terminal', 'pdf-viewer', 'ebook', 'clocks', 'photos', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'git-client', 'feeds', 'totp'),
     [ValidateSet('dev', 'release')]
     [string]$Profile = 'release',
     [ValidateRange(1, 256)]
@@ -76,7 +76,12 @@ New-Item -ItemType Directory -Path $installDirectory -Force | Out-Null
 New-Item -ItemType Directory -Path $menuDirectory -Force | Out-Null
 $fontDirectory = Join-Path $installDirectory 'fonts'
 New-Item -ItemType Directory -Path $fontDirectory -Force | Out-Null
-$fontSource = Join-Path $repository 'crates/sdk/ui-core/assets/fonts'
+$fontMetadata = Join-Path $repository 'crates/sdk/ui-core/assets/fonts'
+$python = if ($env:PYTHON) { $env:PYTHON } elseif (Get-Command python3 -ErrorAction SilentlyContinue) { 'python3' } else { 'python' }
+$fontSource = & $python (Join-Path $repository 'tools/font-catalog.py') root $fontMetadata --scope fixtures
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $fontSource -PathType Container)) {
+    throw 'Could not prepare the pinned offline font catalog.'
+}
 Get-ChildItem -LiteralPath $fontSource -Recurse -File | ForEach-Object {
     $fontTarget = Join-Path $fontDirectory ([IO.Path]::GetRelativePath($fontSource, $_.FullName))
     # Live apps memory-map these shared files. Avoid overwriting unchanged

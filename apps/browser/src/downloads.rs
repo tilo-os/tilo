@@ -1,7 +1,8 @@
 //! Bounded, device-local download history.
 //!
 //! Download bytes and destination capabilities belong to one device, so this
-//! model is intentionally not copied into the collaborative Automerge doc.
+//! model is intentionally not copied into the collaborative Automerge doc: it
+//! is the app's device-local setting, never synced.
 //! Stable engine-issued IDs still make every row addressable by global search,
 //! action history, agents, and the Files hand-off on this device.
 
@@ -10,7 +11,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_DOWNLOADS: usize = 500;
-const MAX_STORE_BYTES: usize = 2 * 1024 * 1024;
+/// What the stored list may take of the app's device-local settings; the
+/// oldest rows give way first.
+const MAX_STORED_BYTES: usize = 192 * 1024;
 const MAX_TEXT_BYTES: usize = 8 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,7 +41,7 @@ pub struct DownloadEntry {
 
 impl DownloadEntry {
     pub fn resource_id(&self) -> String {
-        format!("browser.download.{}", self.id)
+        format!("{}/{}", crate::actions::DOWNLOADS_SCOPE, self.id)
     }
 
     pub fn display_name(&self) -> &str {
@@ -51,37 +54,61 @@ impl DownloadEntry {
     }
 }
 
+/// The download list as stored in the app's device-local settings, kept as
+/// raw rows [`Downloads::load`] validates one by one.
+#[derive(Default, Serialize, Deserialize)]
+pub struct Stored {
+    #[serde(default)]
+    downloads: Vec<serde_json::Value>,
+}
+
+impl ui::storage::SettingsSchema for Stored {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Downloads {
+    /// Where the list is kept. `None` keeps it in memory only: a private
+    /// window, a screenshot.
+    store: Option<ui::storage::Settings<Stored>>,
     entries: Vec<DownloadEntry>,
     revision: u64,
 }
 
 impl Downloads {
-    pub fn load() -> Self {
-        let Some(path) = store_path() else {
-            return Self::default();
-        };
-        std::fs::metadata(&path)
-            .ok()
-            .filter(|metadata| metadata.len() <= MAX_STORE_BYTES as u64)
-            .and_then(|_| std::fs::read_to_string(path).ok())
-            .map_or_else(Self::default, |text| Self::from_json(&text))
+    /// The list kept in `store`, which [`Self::save`] writes back to.
+    pub fn load(store: ui::storage::Settings<Stored>) -> Self {
+        let stored = Self::from_stored(store.get());
+        Self {
+            store: Some(store),
+            ..stored
+        }
     }
 
-    /// Atomically checkpoint bounded download history.
+    /// Checkpoint the bounded download history in the device's settings.
     ///
     /// # Errors
     ///
-    /// Returns an I/O error when the data directory cannot be created or the
-    /// fsync-and-rename persistence sequence cannot complete.
+    /// Returns an I/O error when the settings could not be written.
     pub fn save(&self) -> std::io::Result<()> {
-        let path = store_path().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "no browser data directory")
-        })?;
-        let bytes = serde_json::to_vec_pretty(&self.entries)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        tilo_files::native::atomic::write_creating_parent(&path, &bytes)
+        match &self.store {
+            Some(store) => store.set(&self.stored()),
+            None => Ok(()),
+        }
+    }
+
+    /// The rows to keep, newest last, within [`MAX_STORED_BYTES`].
+    fn stored(&self) -> Stored {
+        let mut rows: Vec<serde_json::Value> = self
+            .entries
+            .iter()
+            .filter_map(|entry| serde_json::to_value(entry).ok())
+            .collect();
+        let mut size: usize = rows.iter().map(|row| row.to_string().len() + 1).sum();
+        while size > MAX_STORED_BYTES && !rows.is_empty() {
+            size -= rows.remove(0).to_string().len() + 1;
+        }
+        Stored { downloads: rows }
     }
 
     pub fn entries(&self) -> &[DownloadEntry] {
@@ -177,12 +204,13 @@ impl Downloads {
         }
     }
 
-    fn from_json(text: &str) -> Self {
-        if text.len() > MAX_STORE_BYTES {
-            return Self::default();
-        }
-        let mut entries: Vec<DownloadEntry> = serde_json::from_str(text).unwrap_or_default();
-        entries.retain(|entry| valid_id(&entry.id) && valid_source(&entry.source_url));
+    fn from_stored(stored: Stored) -> Self {
+        let mut entries: Vec<DownloadEntry> = stored
+            .downloads
+            .into_iter()
+            .filter_map(|row| serde_json::from_value(row).ok())
+            .filter(|entry: &DownloadEntry| valid_id(&entry.id) && valid_source(&entry.source_url))
+            .collect();
         entries.truncate(MAX_DOWNLOADS);
         for entry in &mut entries {
             entry.source_url = bounded(std::mem::take(&mut entry.source_url));
@@ -207,6 +235,7 @@ impl Downloads {
             }
         }
         Self {
+            store: None,
             entries,
             revision: 0,
         }
@@ -215,10 +244,6 @@ impl Downloads {
     fn bump(&mut self) {
         self.revision = self.revision.wrapping_add(1);
     }
-}
-
-fn store_path() -> Option<PathBuf> {
-    tilo_paths::data_dir().map(|dir| dir.join("tilo-browser").join("downloads.json"))
 }
 
 fn valid_id(id: &str) -> bool {
@@ -262,10 +287,6 @@ mod tests {
 
     /// Download store lifecycle, bounds, restore and destinations.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn download_rows_are_bounded_restart_safe_and_truthful() {
         // Phase `lifecycle_is_stable_bounded_and_restart_safe`.
         {
@@ -273,10 +294,9 @@ mod tests {
             downloads.requested("stable-1".into(), "https://example.test/a".into(), "a.bin");
             downloads.destination("stable-1", "/tmp/a.bin".into());
             downloads.progress("stable-1", 50, Some(100), 0.5);
-            let json = serde_json::to_string(downloads.entries()).unwrap();
-            let restored = Downloads::from_json(&json);
+            let restored = Downloads::from_stored(downloads.stored());
             let entry = restored.get("stable-1").unwrap();
-            assert_eq!(entry.resource_id(), "browser.download.stable-1");
+            assert_eq!(entry.resource_id(), "browser.downloads/stable-1");
             assert_eq!(entry.status, DownloadStatus::Failed);
         }
 
@@ -323,8 +343,7 @@ mod tests {
             ));
             downloads.failed("cancelled", "ignored".into(), true);
 
-            let restored =
-                Downloads::from_json(&serde_json::to_string(downloads.entries()).unwrap());
+            let restored = Downloads::from_stored(downloads.stored());
             assert_eq!(
                 restored.get("complete").unwrap().status,
                 DownloadStatus::Completed
@@ -373,5 +392,44 @@ mod tests {
             assert_eq!(entry.status, DownloadStatus::Failed);
             assert!(entry.destination.is_none());
         }
+    }
+
+    #[test]
+    fn the_list_is_a_device_local_setting_that_survives_a_restart_within_its_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = || {
+            ui::storage::Settings::<Stored>::for_app("so.tilo.browser")
+                .in_file(dir.path().join("settings.json"))
+        };
+        assert_eq!(store().scope(), ui::storage::Scope::DeviceLocal);
+
+        let mut downloads = Downloads::load(store());
+        assert!(downloads.requested(
+            "kept".into(),
+            "https://example.test/kept".into(),
+            "kept.bin",
+        ));
+        downloads.finished("kept", "/tmp/kept.bin".into());
+        downloads.save().unwrap();
+        let restored = Downloads::load(store());
+        assert_eq!(
+            restored.get("kept").unwrap().status,
+            DownloadStatus::Completed
+        );
+
+        // A list too large for the device's settings drops its oldest rows.
+        let long = "x".repeat(MAX_TEXT_BYTES - 64);
+        for index in 0..MAX_DOWNLOADS {
+            downloads.requested(
+                format!("big-{index}"),
+                format!("https://example.test/{long}/{index}"),
+                "big.bin",
+            );
+        }
+        let stored = downloads.stored();
+        assert!(serde_json::to_string(&stored).unwrap().len() <= MAX_STORED_BYTES);
+        let kept = Downloads::from_stored(stored);
+        assert!(kept.get("kept").is_none(), "the oldest row gives way first");
+        assert!(kept.get(&format!("big-{}", MAX_DOWNLOADS - 1)).is_some());
     }
 }

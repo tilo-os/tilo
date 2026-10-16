@@ -74,15 +74,6 @@ pub struct PortMapping {
     pub protocol: String,
 }
 
-impl PortMapping {
-    pub fn display(&self) -> String {
-        format!(
-            "{}→{}/{}",
-            self.host_port, self.container_port, self.protocol
-        )
-    }
-}
-
 /// A bind/volume mount of the container.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mount {
@@ -95,6 +86,10 @@ pub struct Mount {
 /// stopped containers report zeros.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stats {
+    /// True only when a telemetry sample was actually read. Missing telemetry
+    /// is not a measured zero (for example after an engine connection drops).
+    #[serde(default)]
+    pub available: bool,
     /// CPU usage as a fraction of one core, 0.0..=N (N = cores).
     pub cpu_percent: f32,
     /// Resident memory in bytes.
@@ -116,6 +111,7 @@ pub struct Stats {
 impl Default for Stats {
     fn default() -> Self {
         Self {
+            available: false,
             cpu_percent: 0.0,
             mem_bytes: 0,
             mem_limit_bytes: 0,
@@ -159,23 +155,15 @@ pub struct Container {
     /// Recent log lines (most recent last). Populated lazily for the
     /// selected container.
     pub logs: Vec<String>,
+    /// A failed log read is separate from a successful empty log.
+    #[serde(default)]
+    pub logs_error: Option<String>,
 }
 
 impl Container {
     /// 12-character short id, podman-style.
     pub fn short_id(&self) -> &str {
         short_id_of(&self.id)
-    }
-
-    /// Matches the free-text search query against name / image / id.
-    pub fn matches(&self, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
-        }
-        let q = query.to_ascii_lowercase();
-        self.name.to_ascii_lowercase().contains(&q)
-            || self.image.to_ascii_lowercase().contains(&q)
-            || self.id.to_ascii_lowercase().contains(&q)
     }
 }
 
@@ -195,20 +183,6 @@ impl Image {
     pub fn reference(&self) -> String {
         format!("{}:{}", self.repository, self.tag)
     }
-
-    pub fn short_id(&self) -> &str {
-        let trimmed = self.id.strip_prefix("sha256:").unwrap_or(&self.id);
-        short_id_of(trimmed)
-    }
-
-    pub fn matches(&self, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
-        }
-        let q = query.to_ascii_lowercase();
-        self.reference().to_ascii_lowercase().contains(&q)
-            || self.id.to_ascii_lowercase().contains(&q)
-    }
 }
 
 /// A distrobox — a tightly host-integrated container, listed separately
@@ -221,16 +195,6 @@ pub struct DistroBox {
     pub status_detail: String,
 }
 
-impl DistroBox {
-    pub fn matches(&self, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
-        }
-        let q = query.to_ascii_lowercase();
-        self.name.to_ascii_lowercase().contains(&q) || self.image.to_ascii_lowercase().contains(&q)
-    }
-}
-
 /// A named podman volume.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Volume {
@@ -241,16 +205,6 @@ pub struct Volume {
     pub created: String,
     /// Number of containers currently mounting this volume.
     pub in_use_by: u32,
-}
-
-impl Volume {
-    pub fn matches(&self, query: &str) -> bool {
-        if query.is_empty() {
-            return true;
-        }
-        let q = query.to_ascii_lowercase();
-        self.name.to_ascii_lowercase().contains(&q) || self.driver.to_ascii_lowercase().contains(&q)
-    }
 }
 
 /// The complete, in-memory snapshot the UI renders from.
@@ -269,20 +223,6 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn running_count(&self) -> usize {
-        self.containers
-            .iter()
-            .filter(|c| c.status.is_running())
-            .count()
-    }
-
-    pub fn stopped_count(&self) -> usize {
-        self.containers
-            .iter()
-            .filter(|c| !c.status.is_running())
-            .count()
-    }
-
     /// Total bytes across all images.
     pub fn image_disk_bytes(&self) -> u64 {
         self.images.iter().map(|i| i.size_bytes).sum()
@@ -291,26 +231,93 @@ impl Engine {
     pub fn find(&self, id: &str) -> Option<&Container> {
         self.containers.iter().find(|c| c.id == id)
     }
-
-    /// Local image references, sorted, for the create-form image combobox.
-    pub fn image_references(&self) -> Vec<String> {
-        let mut refs: Vec<String> = self.images.iter().map(Image::reference).collect();
-        refs.sort();
-        refs.dedup();
-        refs
-    }
-
-    /// Local volume names, sorted, for the create-form volume picker.
-    pub fn volume_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.volumes.iter().map(|v| v.name.clone()).collect();
-        names.sort();
-        names
-    }
 }
 
 // =====================================================================
 // Sample data (for --shots and as a graceful offline fallback)
 // =====================================================================
+
+/// Which top-level section is showing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    Containers,
+    Images,
+    Volumes,
+    Distrobox,
+}
+
+impl Section {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Section::Containers => "containers",
+            Section::Images => "images",
+            Section::Volumes => "volumes",
+            Section::Distrobox => "distrobox",
+        }
+    }
+    /// The section a key names; `None` for any other text.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "containers" => Some(Section::Containers),
+            "images" => Some(Section::Images),
+            "volumes" => Some(Section::Volumes),
+            "distrobox" => Some(Section::Distrobox),
+            _ => None,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Section::Containers => "Containers",
+            Section::Images => "Images",
+            Section::Volumes => "Volumes",
+            Section::Distrobox => "Distrobox",
+        }
+    }
+}
+
+/// Which tab of the container detail view is active.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DetailTab {
+    Logs,
+    Stats,
+    Inspect,
+    Terminal,
+}
+
+impl DetailTab {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DetailTab::Logs => "logs",
+            DetailTab::Stats => "stats",
+            DetailTab::Inspect => "inspect",
+            DetailTab::Terminal => "terminal",
+        }
+    }
+    /// The tab a key names; `None` for any other text.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "logs" => Some(DetailTab::Logs),
+            "stats" => Some(DetailTab::Stats),
+            "inspect" => Some(DetailTab::Inspect),
+            "terminal" => Some(DetailTab::Terminal),
+            _ => None,
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            DetailTab::Logs => "Logs",
+            DetailTab::Stats => "Stats",
+            DetailTab::Inspect => "Inspect",
+            DetailTab::Terminal => "Terminal",
+        }
+    }
+    pub const ALL: [DetailTab; 4] = [
+        DetailTab::Logs,
+        DetailTab::Stats,
+        DetailTab::Inspect,
+        DetailTab::Terminal,
+    ];
+}
 
 /// A populated engine snapshot used when no live podman socket
 /// is reachable (notably the headless `--shots` renderer). Mirrors what a
@@ -321,7 +328,7 @@ pub fn sample_engine() -> Engine {
         images: sample_images(),
         volumes: sample_volumes(),
         distroboxes: sample_distroboxes(),
-        connection: "podman 5.1.1 · rootless · sample data".into(),
+        connection: "Not connected to Podman".into(),
         live: false,
     }
 }
@@ -381,6 +388,7 @@ fn sample_container_web_frontend() -> Container {
             ("maintainer".into(), "NGINX Docker Maintainers".into()),
         ],
         stats: Stats {
+            available: true,
             cpu_percent: 0.07,
             mem_bytes: 18 * 1024 * 1024,
             mem_limit_bytes: 256 * 1024 * 1024,
@@ -390,6 +398,7 @@ fn sample_container_web_frontend() -> Container {
             block_write_bytes: 90_112,
             pids: 5,
         },
+        logs_error: None,
         logs: sample_nginx_logs(),
     }
 }
@@ -398,7 +407,7 @@ fn sample_container_api_server() -> Container {
     Container {
         id: "1b77e0a9c3f54d2e8e0c9a1f6b2d3e4f".into(),
         name: "api-server".into(),
-        image: "registry.example.test/api:2.4.1".into(),
+        image: "ghcr.io/northwind/api:2.4.1".into(),
         status: ContainerStatus::Running,
         status_detail: "Up 4 hours (healthy)".into(),
         command: "/usr/local/bin/api --config /etc/api/config.toml".into(),
@@ -427,6 +436,7 @@ fn sample_container_api_server() -> Container {
         ],
         labels: vec![("io.tilo.cluster".into(), "dev-stack".into())],
         stats: Stats {
+            available: true,
             cpu_percent: 0.23,
             mem_bytes: 142 * 1024 * 1024,
             mem_limit_bytes: 512 * 1024 * 1024,
@@ -436,6 +446,7 @@ fn sample_container_api_server() -> Container {
             block_write_bytes: 2_097_152,
             pids: 14,
         },
+        logs_error: None,
         logs: sample_api_logs(),
     }
 }
@@ -466,6 +477,7 @@ fn sample_container_postgres() -> Container {
         ],
         labels: vec![("io.tilo.cluster".into(), "dev-stack".into())],
         stats: Stats {
+            available: true,
             cpu_percent: 0.04,
             mem_bytes: 96 * 1024 * 1024,
             mem_limit_bytes: 1024 * 1024 * 1024,
@@ -475,6 +487,7 @@ fn sample_container_postgres() -> Container {
             block_write_bytes: 134_217_728,
             pids: 9,
         },
+        logs_error: None,
         logs: sample_postgres_logs(),
     }
 }
@@ -497,6 +510,7 @@ fn sample_container_redis_cache() -> Container {
         env: vec![("TZ".into(), "UTC".into())],
         labels: vec![("io.tilo.cluster".into(), "dev-stack".into())],
         stats: Stats {
+            available: true,
             cpu_percent: 0.01,
             mem_bytes: 6 * 1024 * 1024,
             mem_limit_bytes: 128 * 1024 * 1024,
@@ -506,10 +520,11 @@ fn sample_container_redis_cache() -> Container {
             block_write_bytes: 524_288,
             pids: 4,
         },
+        logs_error: None,
         logs: vec![
-            "1:C 30 Jun 2026 09:14:02.114 * Redis version=7.2.5, bits=64, pid=1, just started"
+            "1:C 30 Jun 2026 06:42:02.114 * Redis version=7.2.5, bits=64, pid=1, just started"
                 .into(),
-            "1:M 30 Jun 2026 09:14:02.116 * Ready to accept connections tcp".into(),
+            "1:M 30 Jun 2026 06:42:02.116 * Ready to accept connections tcp".into(),
         ],
     }
 }
@@ -518,7 +533,7 @@ fn sample_container_build_runner() -> Container {
     Container {
         id: "e0b3a7c9f2d14e6b8c0a3f5d7e9b1c2d".into(),
         name: "build-runner".into(),
-        image: "registry.example.test/ci-runner:latest".into(),
+        image: "ghcr.io/northwind/ci-runner:latest".into(),
         status: ContainerStatus::Exited,
         status_detail: "Exited (0) 2 hours ago".into(),
         command: "/runner/entrypoint.sh".into(),
@@ -535,6 +550,7 @@ fn sample_container_build_runner() -> Container {
         ],
         labels: vec![("io.tilo.cluster".into(), "ci".into())],
         stats: Stats::default(),
+        logs_error: None,
         logs: vec![
             "[runner] job tilo-build#4821 picked up".into(),
             "[runner] cargo build -p shell ... ok (184.2s)".into(),
@@ -575,6 +591,7 @@ fn sample_container_minio() -> Container {
         ],
         labels: vec![],
         stats: Stats::default(),
+        logs_error: None,
         logs: vec![
             "API: http://0.0.0.0:9000".into(),
             "WARNING: Console endpoint is listening on a dynamic port".into(),
@@ -605,6 +622,7 @@ fn sample_container_grafana() -> Container {
         env: vec![("GF_SECURITY_ADMIN_USER".into(), "admin".into())],
         labels: vec![("io.tilo.cluster".into(), "observability".into())],
         stats: Stats {
+            available: true,
             cpu_percent: 0.0,
             mem_bytes: 54 * 1024 * 1024,
             mem_limit_bytes: 256 * 1024 * 1024,
@@ -614,6 +632,7 @@ fn sample_container_grafana() -> Container {
             block_write_bytes: 0,
             pids: 11,
         },
+        logs_error: None,
         logs: vec![
             "logger=settings t=2026-06-28 level=info msg=\"Starting Grafana\" version=11.1.0"
                 .into(),
@@ -634,7 +653,7 @@ fn sample_images() -> Vec<Image> {
         },
         Image {
             id: "sha256:b7e0d2a4c6f81930e5a7c9b1d3f5a7c9".into(),
-            repository: "registry.example.test/api".into(),
+            repository: "ghcr.io/northwind/api".into(),
             tag: "2.4.1".into(),
             size_bytes: 122_683_392,
             created: "3 days ago".into(),
@@ -666,7 +685,7 @@ fn sample_images() -> Vec<Image> {
         },
         Image {
             id: "sha256:f1c4b6d8e0a25374c9e1a3b5d7f9c1e3".into(),
-            repository: "registry.example.test/ci-runner".into(),
+            repository: "ghcr.io/northwind/ci-runner".into(),
             tag: "latest".into(),
             size_bytes: 689_438_720,
             created: "yesterday".into(),
@@ -753,28 +772,28 @@ fn sample_volumes() -> Vec<Volume> {
 fn sample_nginx_logs() -> Vec<String> {
     vec![
         "/docker-entrypoint.sh: Configuration complete; ready for start up".into(),
-        "2026/06/30 09:14:01 [notice] 1#1: using the \"epoll\" event method".into(),
-        "2026/06/30 09:14:01 [notice] 1#1: nginx/1.27.0".into(),
-        "2026/06/30 09:14:01 [notice] 1#1: OS: Linux 7.0.9".into(),
-        "2026/06/30 09:14:01 [notice] 1#1: start worker processes".into(),
-        "10.0.2.14 - - [30/Jun/2026:13:02:11 +0000] \"GET / HTTP/1.1\" 200 1024".into(),
-        "10.0.2.14 - - [30/Jun/2026:13:02:11 +0000] \"GET /app.css HTTP/1.1\" 200 8210".into(),
-        "10.0.2.14 - - [30/Jun/2026:13:02:12 +0000] \"GET /app.js HTTP/1.1\" 200 41200".into(),
-        "10.0.2.31 - - [30/Jun/2026:13:05:44 +0000] \"GET /favicon.ico HTTP/1.1\" 404 153".into(),
-        "10.0.2.14 - - [30/Jun/2026:13:09:02 +0000] \"GET /api/health HTTP/1.1\" 200 17".into(),
+        "2026/06/30 06:42:01 [notice] 1#1: using the \"epoll\" event method".into(),
+        "2026/06/30 06:42:01 [notice] 1#1: nginx/1.27.0".into(),
+        "2026/06/30 06:42:01 [notice] 1#1: OS: Linux 7.0.9".into(),
+        "2026/06/30 06:42:01 [notice] 1#1: start worker processes".into(),
+        "10.0.2.14 - - [30/Jun/2026:10:32:11 +0000] \"GET / HTTP/1.1\" 200 1024".into(),
+        "10.0.2.14 - - [30/Jun/2026:10:32:11 +0000] \"GET /app.css HTTP/1.1\" 200 8210".into(),
+        "10.0.2.14 - - [30/Jun/2026:10:32:12 +0000] \"GET /app.js HTTP/1.1\" 200 41200".into(),
+        "10.0.2.31 - - [30/Jun/2026:10:35:44 +0000] \"GET /favicon.ico HTTP/1.1\" 404 153".into(),
+        "10.0.2.14 - - [30/Jun/2026:10:39:02 +0000] \"GET /api/health HTTP/1.1\" 200 17".into(),
     ]
 }
 
 fn sample_api_logs() -> Vec<String> {
     vec![
-        "2026-06-30T09:14:02Z INFO  api: starting api-server v2.4.1".into(),
-        "2026-06-30T09:14:02Z INFO  api::db: connecting to postgres://db:5432/app".into(),
-        "2026-06-30T09:14:02Z INFO  api::db: pool ready (max=16)".into(),
-        "2026-06-30T09:14:02Z INFO  api: listening on 0.0.0.0:3000".into(),
-        "2026-06-30T13:02:12Z INFO  api::http: GET /api/health 200 0.4ms".into(),
-        "2026-06-30T13:05:01Z INFO  api::http: POST /api/login 200 38ms".into(),
-        "2026-06-30T13:05:01Z WARN  api::auth: 1 failed login for user=guest".into(),
-        "2026-06-30T13:09:02Z INFO  api::http: GET /api/items 200 12ms".into(),
+        "2026-06-30T06:42:02Z INFO  api: starting api-server v2.4.1".into(),
+        "2026-06-30T06:42:02Z INFO  api::db: connecting to postgres://db:5432/app".into(),
+        "2026-06-30T06:42:02Z INFO  api::db: pool ready (max=16)".into(),
+        "2026-06-30T06:42:02Z INFO  api: listening on 0.0.0.0:3000".into(),
+        "2026-06-30T10:32:12Z INFO  api::http: GET /api/health 200 0.4ms".into(),
+        "2026-06-30T10:35:01Z INFO  api::http: POST /api/login 200 38ms".into(),
+        "2026-06-30T10:35:01Z WARN  api::auth: 1 failed login for user=guest".into(),
+        "2026-06-30T10:39:02Z INFO  api::http: GET /api/items 200 12ms".into(),
     ]
 }
 
@@ -782,13 +801,13 @@ fn sample_postgres_logs() -> Vec<String> {
     vec![
         "PostgreSQL Database directory appears to contain a database; Skipping initialization"
             .into(),
-        "2026-06-30 09:14:02.001 UTC [1] LOG:  starting PostgreSQL 16.3".into(),
-        "2026-06-30 09:14:02.004 UTC [1] LOG:  listening on IPv4 address \"0.0.0.0\", port 5432"
+        "2026-06-30 06:42:02.001 UTC [1] LOG:  starting PostgreSQL 16.3".into(),
+        "2026-06-30 06:42:02.004 UTC [1] LOG:  listening on IPv4 address \"0.0.0.0\", port 5432"
             .into(),
-        "2026-06-30 09:14:02.010 UTC [1] LOG:  database system is ready to accept connections"
+        "2026-06-30 06:42:02.010 UTC [1] LOG:  database system is ready to accept connections"
             .into(),
-        "2026-06-30 13:05:01.221 UTC [42] LOG:  checkpoint starting: time".into(),
-        "2026-06-30 13:05:11.882 UTC [42] LOG:  checkpoint complete: wrote 12 buffers".into(),
+        "2026-06-30 10:35:01.221 UTC [42] LOG:  checkpoint starting: time".into(),
+        "2026-06-30 10:35:11.882 UTC [42] LOG:  checkpoint complete: wrote 12 buffers".into(),
     ]
 }
 
@@ -838,17 +857,22 @@ mod tests {
         }
     }
 
-    /// The sample engine is populated and consistent with volumes and references, and containers and volumes are searchable.
+    /// The sample engine is populated and consistent, with named volumes.
     #[test]
-    fn sample_engine_is_consistent_and_searchable() {
+    fn sample_engine_is_consistent() {
         // --- phase: sample_engine_is_populated_and_consistent ---
         {
             let e = sample_engine();
+            let running = e
+                .containers
+                .iter()
+                .filter(|c| c.status.is_running())
+                .count();
+            assert!(running >= 3, "sample has several running containers");
             assert!(
-                e.running_count() >= 3,
-                "sample has several running containers"
+                e.containers.len() - running >= 2,
+                "sample has stopped containers too"
             );
-            assert!(e.stopped_count() >= 2, "sample has stopped containers too");
             assert!(!e.images.is_empty());
             assert!(!e.distroboxes.is_empty());
             // Each running container should carry some logs for the detail view.
@@ -857,49 +881,11 @@ mod tests {
             }
         }
 
-        // --- phase: container_search_matches_name_and_image ---
-        {
-            let e = sample_engine();
-            let nginx = e
-                .containers
-                .iter()
-                .find(|c| c.name == "web-frontend")
-                .unwrap();
-            assert!(nginx.matches("nginx"));
-            assert!(nginx.matches("web"));
-            assert!(!nginx.matches("postgres"));
-            assert!(nginx.matches(""));
-        }
-
-        // --- phase: sample_engine_has_volumes_and_references ---
+        // --- phase: sample_engine_has_volumes ---
         {
             let e = sample_engine();
             assert!(!e.volumes.is_empty(), "sample carries named volumes");
-            // image_references feeds the create combobox dropdown.
-            let refs = e.image_references();
-            assert!(refs.iter().any(|r| r.contains("nginx")), "{refs:?}");
-            // sorted + deduped
-            let mut sorted = refs.clone();
-            sorted.sort();
-            assert_eq!(refs, sorted, "references come back sorted");
-            // volume names feed the volume picker.
-            let names = e.volume_names();
-            assert!(names.contains(&"pgdata".to_string()));
-        }
-
-        // --- phase: volume_search_matches_name ---
-        {
-            let v = Volume {
-                name: "pgdata".into(),
-                driver: "local".into(),
-                mountpoint: "/x".into(),
-                created: "now".into(),
-                in_use_by: 1,
-            };
-            assert!(v.matches("pg"));
-            assert!(v.matches("local"));
-            assert!(!v.matches("redis"));
-            assert!(v.matches(""));
+            assert!(e.volumes.iter().any(|v| v.name == "pgdata"));
         }
     }
 }

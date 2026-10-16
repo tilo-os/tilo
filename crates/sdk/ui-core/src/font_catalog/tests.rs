@@ -3,10 +3,7 @@ use cosmic_text::fontdb::{Query, Style, Weight};
 use cosmic_text::{Attrs, Buffer, Family, Metrics, Shaping};
 
 fn fixture() -> FontCatalog {
-    FontCatalog::controlled_fixture(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
-        "en-US",
-    )
+    FontCatalog::controlled_fixture(crate::font_catalog::checkout_root(), "en-US")
 }
 
 #[test]
@@ -15,11 +12,11 @@ fn fixture() -> FontCatalog {
     reason = "one scenario, one labelled phase per merged case"
 )]
 fn the_controlled_catalog_admits_only_manifest_and_named_host_faces() {
-    // phase: controlled_catalog_has_only_the_twenty_manifest_faces
+    // phase: controlled_catalog_has_only_the_manifest_faces
     {
         let catalog = fixture();
         let fs = catalog.load().unwrap();
-        assert_eq!(fs.db().len(), 20); // 15 single faces plus five TTC faces.
+        assert_eq!(fs.db().len(), 41); // 36 single faces plus five TTC faces.
         let root = catalog.root().canonicalize().unwrap();
         for face in fs.db().faces() {
             match &face.source {
@@ -28,8 +25,8 @@ fn the_controlled_catalog_admits_only_manifest_and_named_host_faces() {
             }
         }
         for (generic, expected) in [
-            (Family::SansSerif, "Noto Sans"),
-            (Family::Serif, "Noto Serif"),
+            (Family::SansSerif, crate::text_render::UI_SANS_FAMILY),
+            (Family::Serif, crate::text_render::UI_SERIF_FAMILY),
             (Family::Monospace, "Noto Sans Mono"),
         ] {
             for weight in [Weight::NORMAL, Weight(600), Weight::BOLD] {
@@ -51,7 +48,16 @@ fn the_controlled_catalog_admits_only_manifest_and_named_host_faces() {
                 );
             }
         }
-        for expected in ["Noto Sans", "Noto Serif"] {
+        for expected in [
+            crate::text_render::UI_SANS_FAMILY,
+            "Noto Sans",
+            "New Computer Modern",
+            "New Computer Modern Book",
+            "Libertinus Serif",
+            "Literata",
+            "EB Garamond",
+            "Source Serif 4 Variable",
+        ] {
             let id = fs
                 .db()
                 .query(&Query {
@@ -130,10 +136,10 @@ fn the_controlled_catalog_admits_only_manifest_and_named_host_faces() {
             .load_with_system(|_| panic!("must not mask missing font"))
             .err()
             .unwrap();
-        assert!(error.to_string().contains("NotoSans[wght].ttf"));
-        let mut bytes = std::fs::read(fixture().root().join("NotoSans[wght].ttf")).unwrap();
+        assert!(error.to_string().contains("TiloSans[wdth,wght].ttf"));
+        let mut bytes = std::fs::read(fixture().root().join("TiloSans[wdth,wght].ttf")).unwrap();
         *bytes.last_mut().unwrap() ^= 1;
-        std::fs::write(root.join("NotoSans[wght].ttf"), bytes).unwrap();
+        std::fs::write(root.join("TiloSans[wdth,wght].ttf"), bytes).unwrap();
         let error = catalog
             .load_with_system(|_| panic!("must not mask corruption"))
             .err()
@@ -241,7 +247,7 @@ fn byte_catalog_preserves_canonical_faces_and_locale() {
 }
 
 #[test]
-fn browser_startup_catalog_requires_only_the_five_core_family_assets() {
+fn browser_startup_catalog_requires_only_the_core_family_assets() {
     let catalog = FontCatalog::product("", "en-US");
     let root = fixture().root().to_path_buf();
     let mut requested = Vec::new();
@@ -254,11 +260,9 @@ fn browser_startup_catalog_requires_only_the_five_core_family_assets() {
     assert_eq!(
         requested,
         [
+            "TiloSans[wdth,wght].ttf",
+            "Onest-Cyrillic[wght].ttf",
             "NotoSans[wght].ttf",
-            "NotoSans-Italic[wght].ttf",
-            "NotoSerif[wght].ttf",
-            "NotoSerif-Italic[wght].ttf",
-            "NotoSansMono[wght].ttf",
         ]
     );
     assert_eq!(
@@ -266,9 +270,9 @@ fn browser_startup_catalog_requires_only_the_five_core_family_assets() {
             .iter()
             .map(|name| std::fs::metadata(root.join(name)).unwrap().len())
             .sum::<u64>(),
-        3_681_672
+        1_118_556
     );
-    assert_eq!(fonts.db().len(), 5);
+    assert_eq!(fonts.db().len(), 3);
 }
 
 #[test]
@@ -302,4 +306,234 @@ fn incremental_browser_asset_install_is_idempotent_and_integrity_checked() {
             .install_browser_asset(&mut fonts, "../font.ttf", vec![1])
             .is_err()
     );
+}
+
+#[test]
+fn a_face_installed_twice_resolves_the_same_whatever_the_discovery_order() {
+    let tmp = tempfile::tempdir().unwrap();
+    let font = std::fs::read(fixture().root().join("NotoSans[wght].ttf")).unwrap();
+    for dir in ["a", "b"] {
+        std::fs::create_dir(tmp.path().join(dir)).unwrap();
+        std::fs::write(tmp.path().join(dir).join("NotoSans.ttf"), &font).unwrap();
+    }
+    for order in [["a", "b"], ["b", "a"]] {
+        let mut db = fontdb::Database::new();
+        for dir in order {
+            db.load_font_file(tmp.path().join(dir).join("NotoSans.ttf"))
+                .unwrap();
+        }
+        drop_duplicate_faces(&mut db);
+        let query = Query {
+            families: &[fontdb::Family::Name("Noto Sans")],
+            ..Query::default()
+        };
+        let id = db.query(&query).unwrap();
+        let face = db.face(id).unwrap();
+        assert_eq!(db.len(), 1);
+        assert!(
+            matches!(&face.source, fontdb::Source::File(path) if path.starts_with(tmp.path().join("a")))
+        );
+    }
+}
+
+/// Only the image's root-owned, read-only catalog skips hashing. A checkout,
+/// an executable's own `fonts/` and any directory this user can write are
+/// verified byte for byte, and a modified font there is refused.
+#[test]
+fn catalog_root_trust_is_verify_for_checkout_and_writable_roots() {
+    let roots = catalog_roots();
+    let checkout = crate::font_catalog::checkout_root();
+    assert!(roots.contains(&checkout));
+    assert_eq!(Trust::of_root(&checkout), Trust::Verify);
+    // The test binary's own `fonts/` sits in the writable build tree.
+    let adjacent = roots.first().unwrap();
+    assert!(adjacent.starts_with(std::env::current_exe().unwrap().parent().unwrap()));
+    assert_eq!(Trust::of_root(adjacent), Trust::Verify);
+
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("manifest.toml"), MANIFEST).unwrap();
+    assert_eq!(Trust::of_root(tmp.path()), Trust::Verify);
+    // Verification goes in manifest order, so the first product file decides.
+    let first = tilo_font_catalog::manifest()
+        .unwrap()
+        .font
+        .iter()
+        .find(|asset| asset.scope == Scope::Product)
+        .unwrap();
+    let mut bytes = std::fs::read(first.path_in(&checkout).unwrap()).unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    std::fs::write(first.path_in(tmp.path()).unwrap(), bytes).unwrap();
+    let error = verify_bundle(&tmp.path().canonicalize().unwrap(), false)
+        .err()
+        .expect("a modified font in a writable root is refused");
+    assert!(error.problem.contains("SHA-256"), "{error}");
+}
+
+/// What a process run from a checkout or a screenshot gets on a machine
+/// without Tilo Sans installed: the product catalog, found past roots that do
+/// not hold one this build accepts, sets UI text in Tilo Sans. The host's own
+/// copy of a catalog family sorts before the catalog's path and must still
+/// not displace the catalog's face.
+#[cfg(unix)]
+#[test]
+fn a_machine_without_tilo_sans_sets_ui_text_in_the_bundled_catalog() {
+    let source = crate::font_catalog::checkout_root();
+    assert_eq!(catalog_roots().last(), Some(&source));
+
+    let tmp = tempfile::tempdir().unwrap();
+    let host = tmp.path().join("a-host");
+    std::fs::create_dir(&host).unwrap();
+    std::fs::copy(source.join("NotoSans[wght].ttf"), host.join("NotoSans.ttf")).unwrap();
+    let stale = tmp.path().join("b-stale");
+    std::fs::create_dir(&stale).unwrap();
+    std::fs::write(stale.join("manifest.toml"), "# another Tilo build\n").unwrap();
+    // The catalog under a path that sorts after the host copy, as /usr does
+    // before a checkout.
+    let catalog = tmp.path().join("c-catalog");
+    std::fs::create_dir(&catalog).unwrap();
+    for entry in std::fs::read_dir(&source).unwrap() {
+        let entry = entry.unwrap().path();
+        std::os::unix::fs::symlink(&entry, catalog.join(entry.file_name().unwrap())).unwrap();
+    }
+
+    let roots = [tmp.path().join("missing"), stale, catalog.clone()];
+    let mut fs = load_first_catalog(&roots, "en-US", |db| {
+        db.load_fonts_dir(&host);
+    })
+    .unwrap();
+    let catalog = catalog.canonicalize().unwrap();
+
+    for (family, expected) in [
+        (Family::SansSerif, crate::text_render::UI_SANS_FAMILY),
+        (Family::Name("Noto Sans"), "Noto Sans"),
+    ] {
+        let id = fs
+            .db()
+            .query(&Query {
+                families: &[family],
+                ..Query::default()
+            })
+            .unwrap();
+        let face = fs.db().face(id).unwrap();
+        assert!(face.families.iter().any(|f| f.0 == expected), "{expected}");
+        assert!(
+            matches!(&face.source, fontdb::Source::File(path) if path.starts_with(&catalog)),
+            "{expected} must come from the catalog: {:?}",
+            face.source
+        );
+    }
+
+    let mut buffer = Buffer::new(&mut fs, Metrics::new(14.0, 20.0));
+    buffer.set_text(
+        "Settings",
+        &Attrs::new().family(Family::SansSerif),
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(&mut fs, false);
+    let glyphs: Vec<_> = buffer.layout_runs().flat_map(|run| run.glyphs).collect();
+    assert_eq!(glyphs.len(), "Settings".len());
+    for glyph in glyphs {
+        assert!(
+            fs.db()
+                .face(glyph.font_id)
+                .unwrap()
+                .families
+                .iter()
+                .any(|f| f.0 == crate::text_render::UI_SANS_FAMILY)
+        );
+    }
+}
+
+/// Every New Computer Modern file names itself `NewComputerModern` at weight
+/// 400; the catalog sets each cut under its own family so text can ask for
+/// one, and shares the Bold among them.
+#[test]
+fn new_computer_modern_cuts_are_their_own_families() {
+    let fs = fixture().load().unwrap();
+    let face_of = |family: &str, weight: u16, style: Style| {
+        let id = fs
+            .db()
+            .query(&Query {
+                families: &[Family::Name(family)],
+                weight: Weight(weight),
+                style,
+                ..Query::default()
+            })
+            .unwrap_or_else(|| panic!("{family} {weight} {style:?}"));
+        fs.db().face(id).unwrap().post_script_name.clone()
+    };
+    for (family, weight, style, expected) in [
+        (
+            "New Computer Modern Book",
+            400,
+            Style::Normal,
+            "NewCM10-Book",
+        ),
+        (
+            "New Computer Modern Book",
+            400,
+            Style::Italic,
+            "NewCM10-BookItalic",
+        ),
+        (
+            "New Computer Modern Book",
+            700,
+            Style::Normal,
+            "NewCM10-Bold",
+        ),
+        ("New Computer Modern", 400, Style::Normal, "NewCM10-Regular"),
+        ("New Computer Modern", 400, Style::Italic, "NewCM10-Italic"),
+        (
+            "New Computer Modern",
+            600,
+            Style::Italic,
+            "NewCM10-BoldItalic",
+        ),
+        ("New Computer Modern 08", 400, Style::Normal, "NewCM08-Book"),
+        ("New Computer Modern 08", 700, Style::Normal, "NewCM10-Bold"),
+        (
+            "Libertinus Serif Display",
+            400,
+            Style::Normal,
+            "LibertinusSerifDisplay-Regular",
+        ),
+    ] {
+        assert_eq!(
+            face_of(family, weight, style),
+            expected,
+            "{family} {weight} {style:?}"
+        );
+    }
+    assert!(
+        fs.db().faces().all(|face| face
+            .families
+            .iter()
+            .all(|(name, _)| name != "NewComputerModern")),
+        "the files' shared family name is never queryable"
+    );
+}
+
+#[test]
+fn a_browser_fetches_the_cuts_a_reading_style_can_take() {
+    let catalog = FontCatalog::product("", "en-US");
+    let root = fixture().root().to_path_buf();
+    let fonts = catalog
+        .load_browser_startup_bytes(|name| std::fs::read(root.join(name)).ok())
+        .unwrap();
+    let mut renderer = crate::TextRenderer::with_browser_font_system(fonts);
+    let reading = crate::tokens::Typography::default().style(crate::tokens::TextRole::Reading);
+    // Body text: the page starts with the UI face alone, so it fetches Book
+    // and the 8 pt cut its footnotes take.
+    let cuts = ["NewCM08-Book.otf", "NewCM10-Book.otf"];
+    renderer.measure_style("Chapter", None, &reading);
+    assert_eq!(renderer.take_browser_font_demands(), cuts);
+    // A browser serves the standalone catalog, which has no Regular cut:
+    // Book sets a title too. A UI role in a startup face adds nothing.
+    let title = reading.clone().with_content_size(48.0);
+    renderer.measure_style("Chapter", None, &title);
+    assert_eq!(renderer.take_browser_font_demands(), cuts);
+    let body = crate::tokens::Typography::default().style(crate::tokens::TextRole::Body);
+    renderer.measure_style("Settings", None, &body.strong());
+    assert!(renderer.take_browser_font_demands().is_empty());
 }

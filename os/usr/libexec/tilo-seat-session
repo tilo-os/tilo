@@ -1,0 +1,189 @@
+#!/bin/bash
+# Run one board session for ACCOUNT that follows the display.
+#
+#   tilo-seat-session ACCOUNT SESSION_BIN
+#
+# With no display sink connected, SESSION_BIN runs with --backend headless as
+# a unit of the account's lingering user manager. When a sink connects, that
+# unit is stopped and SESSION_BIN runs with --backend drm as a PAM login on
+# seat0 and VT 1, with the properties tilo-vm-session@.service gives a seat0
+# slot. When the last sink disconnects, the session goes back to headless.
+# The compositor never changes backends itself, and the next session starts
+# only after the previous one is gone.
+#
+# A session that ends without a display change ends this process with its
+# status; the board unit's Restart= starts a fresh one. A drm session that
+# ends while the sink is still connected is not retried until the sink is
+# unplugged: the board stays headless, and reachable, meanwhile.
+set -euo pipefail
+
+if [ "$#" -ne 2 ]; then
+  printf '%s\n' 'usage: tilo-seat-session ACCOUNT SESSION_BIN' >&2
+  exit 2
+fi
+account=$1
+session_bin=$2
+case "$account" in
+  ''|-*|*[!A-Za-z0-9._-]*)
+    printf 'tilo-seat-session: refusing account %s\n' "$account" >&2
+    exit 1
+    ;;
+esac
+case "$session_bin" in
+  /*) ;;
+  *)
+    printf 'tilo-seat-session: SESSION_BIN must be absolute: %s\n' "$session_bin" >&2
+    exit 1
+    ;;
+esac
+
+getent_bin=${TILO_SEAT_GETENT:-/usr/bin/getent}
+id_bin=${TILO_SEAT_ID:-/usr/bin/id}
+install_bin=${TILO_SEAT_INSTALL:-/usr/bin/install}
+runuser_bin=${TILO_SEAT_RUNUSER:-/usr/sbin/runuser}
+systemd_run=${TILO_SEAT_SYSTEMD_RUN:-/usr/bin/systemd-run}
+systemctl_bin=${TILO_SEAT_SYSTEMCTL:-/usr/bin/systemctl}
+display_present=${TILO_DISPLAY_PRESENT:-/usr/libexec/tilo-display-present}
+poll_sec=${TILO_SEAT_POLL_SEC:-1}
+headless_unit=tilo-board-session
+drm_unit=tilo-board-drm-session
+
+home=$("$getent_bin" passwd "$account" | cut -d: -f6 || true)
+case "$home" in
+  /var/home/"$account"|/home/"$account") ;;
+  *)
+    printf 'tilo-seat-session: refusing home %s of %s\n' "${home:-<none>}" "$account" >&2
+    exit 1
+    ;;
+esac
+uid=$("$id_bin" -u "$account")
+gid=$("$id_bin" -g "$account")
+
+# The user manager sets no XDG base directories. Without XDG_STATE_HOME the
+# compositor keeps collaboration history in memory only. Created as the
+# account, not as root: `install -d` follows a symlinked `.local` or
+# `.config`, and this runs again on every restart of a session the account
+# controls, so a root `install -o "$uid"` here would chown wherever the
+# account pointed the link.
+"$runuser_bin" -u "$account" -- "$install_bin" -d -m 0700 \
+  "$home/.local/state" "$home/.local/share" "$home/.config"
+session_env=(
+  --setenv=XDG_STATE_HOME="$home/.local/state"
+  --setenv=XDG_DATA_HOME="$home/.local/share"
+  --setenv=XDG_CONFIG_HOME="$home/.config"
+  --setenv=TILO_BOARD_SESSION=1
+  --setenv=TILO_TEST_CONTROL="/run/user/$uid/tilo-session/test-control.sock"
+)
+
+run_pid=
+current=
+drm_refused=0
+
+# Sets $now. Runs in this shell, not a command substitution, so that
+# unplugging the display clears drm_refused.
+decide_backend() {
+  if "$display_present"; then
+    if [ "$drm_refused" = 1 ]; then now=headless; else now=drm; fi
+  else
+    drm_refused=0
+    now=headless
+  fi
+}
+
+# kill -0 succeeds on a zombie; the state field after the command is Z then.
+child_running() {
+  [ -n "$run_pid" ] && kill -0 "$run_pid" 2>/dev/null || return 1
+  local stat
+  stat=$(cat "/proc/$run_pid/stat" 2>/dev/null || true)
+  stat=${stat##*) }
+  [ "${stat%% *}" != Z ]
+}
+
+start_backend() {
+  current=$1
+  if [ "$current" = drm ]; then
+    # The PAM login takes VT 1, which the console getty holds while the
+    # board is headless.
+    "$systemctl_bin" stop getty@tty1.service || true
+    "$systemd_run" --quiet --wait --collect --unit="$drm_unit" \
+      --uid="$account" \
+      --property=PAMName=greetd \
+      --property=CapabilityBoundingSet=~CAP_WAKE_ALARM \
+      --property=SELinuxContext=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 \
+      --property=TTYPath=/dev/tty1 \
+      --property=TTYReset=yes \
+      --property=TTYVHangup=yes \
+      --property=TTYVTDisallocate=yes \
+      --setenv=XDG_SEAT=seat0 \
+      --setenv=XDG_VTNR=1 \
+      --setenv=XDG_SESSION_TYPE=wayland \
+      --setenv=XDG_SESSION_CLASS=user \
+      --setenv=XDG_SESSION_DESKTOP=tilo \
+      --setenv=LIBSEAT_BACKEND=logind \
+      "${session_env[@]}" \
+      -- "$session_bin" --backend drm &
+  else
+    "$systemd_run" --quiet --wait --collect --unit="$headless_unit" \
+      --machine="$account@" --user \
+      "${session_env[@]}" \
+      -- "$session_bin" --backend headless &
+  fi
+  run_pid=$!
+}
+
+stop_backend() {
+  [ -n "$run_pid" ] || return 0
+  if [ "$current" = drm ]; then
+    "$systemctl_bin" stop "$drm_unit.service" || true
+  else
+    "$systemctl_bin" --user --machine="$account@" stop "$headless_unit.service" || true
+  fi
+  local i=0
+  while child_running && [ "$i" -lt 50 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if child_running; then
+    kill -KILL "$run_pid" 2>/dev/null || true
+  fi
+  wait "$run_pid" 2>/dev/null || true
+  run_pid=
+  if [ "$current" = drm ]; then
+    "$systemctl_bin" start getty@tty1.service || true
+  fi
+}
+
+trap 'trap - TERM INT; stop_backend; exit 0' TERM INT
+
+decide_backend
+start_backend "$now"
+while :; do
+  if ! child_running; then
+    status=0
+    wait "$run_pid" || status=$?
+    run_pid=
+    decide_backend
+    if [ "$current" = drm ] && [ "$now" = drm ]; then
+      printf 'tilo-seat-session: the drm session ended (status %s) with the display connected; staying headless until it is reconnected\n' "$status" >&2
+      "$systemctl_bin" start getty@tty1.service || true
+      drm_refused=1
+      start_backend headless
+      continue
+    fi
+    if [ "$now" != "$current" ]; then
+      start_backend "$now"
+      continue
+    fi
+    exit "$status"
+  fi
+  decide_backend
+  if [ "$now" != "$current" ]; then
+    stop_backend
+    start_backend "$now"
+    continue
+  fi
+  # Polling sysfs is enough: a connector's status changes at most a few
+  # times a minute, and the read does not force a probe.
+  sleep "$poll_sec" &
+  wait $! || true
+done

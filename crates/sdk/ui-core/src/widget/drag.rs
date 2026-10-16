@@ -11,19 +11,10 @@
 //! understanding it.
 //!
 //! The reflow math assumes a **uniform** list (one extent + fixed gap per
-//! item) — true of every current adopter. A non-uniform list can still drive
-//! the insertion index via its own [`ListMetrics`], but the whole-slot
-//! reflow shift only makes sense for uniform slots.
+//! item) — true of every current adopter.
 
+use crate::num::f64_of_usize;
 use vello::kurbo::{Point, Rect, Size};
-
-/// Lossless `usize -> f64` widening for list-reflow geometry. Item/slot
-/// counts are bounded far below `u32::MAX`, so routing through `u32`
-/// (which `f64` represents exactly) avoids the precision loss a direct
-/// cast risks.
-fn usize_to_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
 
 /// Which way a reorderable list runs. The controller pins the *cross* axis
 /// while dragging so the ghost slides only along the list.
@@ -70,30 +61,7 @@ impl ListMetrics {
     /// Leading-edge coordinate of slot boundary `i` (`0..=count`): boundary
     /// `0` sits before the first item, boundary `count` after the last.
     pub fn slot_lead(&self, i: usize) -> f64 {
-        self.origin + usize_to_f64(i) * self.pitch()
-    }
-
-    /// The insertion **boundary** (`0..=count`) nearest `axis_coord` —
-    /// snaps to the closest seam by rounding, so the gap flips at the
-    /// midpoint of each slot.
-    pub fn insertion_at(&self, axis_coord: f64) -> usize {
-        if self.count == 0 || self.pitch() <= 0.0 {
-            return 0;
-        }
-        let rel = (axis_coord - self.origin) / self.pitch();
-        let boundary = rel.round().max(0.0);
-        // `boundary` is non-negative by construction and the result is
-        // immediately clamped to `self.count` below, so this cast cannot
-        // misread a sign or lose a bit that matters — an out-of-range
-        // `boundary` just saturates and is then capped by `.min`.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "boundary is non-negative and the result is immediately clamped to \
-                      self.count below"
-        )]
-        let idx = boundary as usize;
-        idx.min(self.count)
+        self.origin + f64_of_usize(i) * self.pitch()
     }
 }
 
@@ -138,8 +106,8 @@ fn target_for<Id>(axis: Axis, s: &Session<Id>, m: &ListMetrics) -> usize {
     let ghost_lead = axis_coord(axis, s.current) - s.grab_offset;
     let orig_lead = m.slot_lead(s.from);
     let delta = ((ghost_lead - orig_lead) / m.pitch()).round();
-    let max_index = usize_to_f64(m.count.saturating_sub(1));
-    let target = (usize_to_f64(s.from) + delta).clamp(0.0, max_index);
+    let max_index = f64_of_usize(m.count.saturating_sub(1));
+    let target = (f64_of_usize(s.from) + delta).clamp(0.0, max_index);
     // `target` is clamped into `[0.0, max_index]` immediately above (and
     // `max_index` itself came from a `usize` via the lossless helper), so
     // this cast is exact.
@@ -192,13 +160,6 @@ impl<Id: Clone> DragController<Id> {
         Self::new(Axis::Horizontal)
     }
 
-    /// Override the drag-start threshold (default [`REORDER_THRESHOLD_PX`]).
-    #[must_use]
-    pub fn with_threshold(mut self, px: f64) -> Self {
-        self.threshold = px;
-        self
-    }
-
     pub fn axis(&self) -> Axis {
         self.axis
     }
@@ -239,10 +200,9 @@ impl<Id: Clone> DragController<Id> {
             return false;
         };
         s.current = cursor;
-        let mut changed = false;
-        if !s.active && s.start.distance(cursor) >= threshold {
+        let mut changed = !s.active && s.start.distance(cursor) >= threshold;
+        if changed {
             s.active = true;
-            changed = true;
         }
         if s.active {
             let to = target_for(axis, s, metrics);
@@ -300,12 +260,6 @@ impl<Id: Clone> DragController<Id> {
         self.session.as_ref().is_some_and(|s| s.active)
     }
 
-    /// Same as [`is_pending`](DragController::is_pending) — the drag wants
-    /// exclusive pointer capture for as long as a press is latched.
-    pub fn wants_capture(&self) -> bool {
-        self.is_pending()
-    }
-
     /// The original index of the item being dragged, once the drag is active.
     pub fn from_index(&self) -> Option<usize> {
         self.session.as_ref().filter(|s| s.active).map(|s| s.from)
@@ -354,7 +308,7 @@ impl<Id: Clone> DragController<Id> {
         } else {
             collapsed.saturating_add(1)
         };
-        (usize_to_f64(final_i) - usize_to_f64(index)) * metrics.pitch()
+        (f64_of_usize(final_i) - f64_of_usize(index)) * metrics.pitch()
     }
 
     /// The leading-edge coordinate of the floating ghost along the axis
@@ -404,21 +358,6 @@ mod tests {
 
     #[test]
     fn insertion_snaps_to_seams_with_an_own_slot_dead_zone() {
-        fn insertion_snaps_to_nearest_seam() {
-            let m = m4();
-            // Right at the top → before item 0.
-            assert_eq!(m.insertion_at(100.0), 0);
-            // Just past the middle of slot 0 (100..160, midpoint of pitch 68 = 134)
-            // rounds up to seam 1.
-            assert_eq!(m.insertion_at(140.0), 1);
-            // Deep in slot 2 rounds to its trailing seam.
-            assert_eq!(m.insertion_at(250.0), 2);
-            // Far below the list clamps to the final boundary.
-            assert_eq!(m.insertion_at(10_000.0), 4);
-            // Above the list clamps to 0.
-            assert_eq!(m.insertion_at(-500.0), 0);
-        }
-
         fn nudge_within_own_slot_is_a_dead_zone_no_gap_no_reflow() {
             let m = m4();
             let mut c = DragController::<u32>::vertical();
@@ -481,7 +420,6 @@ mod tests {
             );
         }
 
-        insertion_snaps_to_nearest_seam();
         nudge_within_own_slot_is_a_dead_zone_no_gap_no_reflow();
         gap_opens_only_once_the_ghost_crosses_into_a_neighbour();
         insertion_equals_the_committed_destination();

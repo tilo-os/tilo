@@ -28,37 +28,14 @@ pub(in crate::state) fn validate(
     // owned fields. Counting writes neither allocates nor copies payloads.
     let mut measured = 0usize;
     for (_, message, _) in pending {
-        let size =
-            postcard::serialize_with_flavor(message, Count(0)).map_err(PendingError::Encoding)?;
+        let size = crate::postcard_sink::encoded_len(message, usize::MAX)
+            .map_err(PendingError::Encoding)?;
         measured = measured.checked_add(size).ok_or(PendingError::Bytes)?;
     }
     if measured != declared || declared > 4 * 1024 * 1024 {
         return Err(PendingError::Bytes);
     }
     Ok(())
-}
-
-struct Count(usize);
-impl postcard::ser_flavors::Flavor for Count {
-    type Output = usize;
-    fn try_push(&mut self, _: u8) -> postcard::Result<()> {
-        self.add(1)
-    }
-    fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-        self.add(bytes.len())
-    }
-    fn finalize(self) -> postcard::Result<usize> {
-        Ok(self.0)
-    }
-}
-impl Count {
-    fn add(&mut self, bytes: usize) -> postcard::Result<()> {
-        self.0 = self
-            .0
-            .checked_add(bytes)
-            .ok_or(postcard::Error::SerializeBufferFull)?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]

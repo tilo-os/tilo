@@ -1,23 +1,26 @@
 # Shared document fixtures
 
-These files are the canonical binary fixtures for document crates and their
-cross-domain consumers. Keep one copy here rather than embedding identical
-office packages in each consuming crate.
+These are the canonical frozen document inputs for document crates and their
+cross-domain consumers. Original archives live in the verified artifact cache;
+`artifacts.json` pins one immutable copy of each input. See [the originals and
+offline preparation](artifact-README.md).
 
 - `sample.docx` and `sample.odt` are genuine office packages with the same
   heading, styled runs, list, table, and metadata structure.
 - `xxe.docx` and `xxe.odt` exercise external-entity rejection.
 - `zipbomb.docx` exercises decompression and package-size limits.
 
-Tests should reference these files with `include_bytes!`, so they remain
-hermetic and do not depend on the process working directory.
+Build scripts prepare the original bytes in `OUT_DIR`; tests embed them with
+`include_bytes!`, so their runtime remains hermetic and independent of the
+process working directory. Generation produces review candidates under `target/`;
+publish and verify new originals before changing their pins.
 
 ## LibreOffice-authored fidelity fixtures
 
 Written by LibreOffice (26.8, flatpak `org.libreoffice.LibreOffice`) from the flat-ODF
 sources in `src/`, converted with `soffice --headless --convert-to docx|odt`; run
 `src/regenerate.sh` to rebuild them all, and `src/regenerate.sh --check FILE…` to have
-LibreOffice re-open exported files. `qdoc-codecs`' `tests/office_fidelity.rs` imports, edits
+LibreOffice re-open exported files. `tilo-doc-codecs`' `tests/office_fidelity.rs` imports, edits
 and exports each one and checks that what the model does not represent survives.
 
 - `lo-structure.docx`, `lo-structure.odt` — from `src/structure.fodt`: headings, custom

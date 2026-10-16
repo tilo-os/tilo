@@ -10,19 +10,21 @@
 //! the document, decides when to commit, and stamps history.
 //!
 //! Shape: `{ active: uint, workspaces: [ { id, name, room, owner?,
-//! capabilities: {id → json}, permission_profiles_v1: {key → json},
+//! members: {person → json role}, grants: {id → json}, sandbox: {id → json},
+//! presets_v1: {key → json},
 //! tasks_v1: {id → json}, effect_receipts_v1: {invocation → json},
 //! automations_v1: {shortcut id → json},
 //! strips: [ { id, window_groups: [ { id, tabs: [ { id, title, tile_json } ] } ] } ] } ] }`.
 //! Geometry and maximization are presentation state and never written.
 
 use std::collections::HashSet;
+use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 
 use automerge::{
-    AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
+    AutoCommit, ObjId, ObjType, Prop, ROOT, ReadDoc, ScalarValue, transaction::Transactable,
 };
-use collab_types::PermissionProfile;
 use collab_types::caps::CapOverride;
+use tilo_action_policy::{Grant, GrantId, Preset, Role, RoomPolicy, Subject};
 
 use crate::app::AppKind;
 use crate::ids::{GroupId, RoomId, StripId, TabId, WorkspaceId};
@@ -36,16 +38,18 @@ use crate::workspace::{UserId, Workspace};
 
 const WORKSPACES_KEY: &str = "workspaces";
 const ACTIVE_KEY: &str = "active";
-const CAPABILITIES_KEY: &str = "capabilities";
-const PERMISSION_PROFILES_KEY: &str = "permission_profiles_v1";
+const MEMBERS_KEY: &str = "members";
+const GRANTS_KEY: &str = "grants";
+const SANDBOX_KEY: &str = "sandbox";
+const PRESETS_KEY: &str = "presets_v1";
 const TASKS_KEY: &str = "tasks_v1";
 const STRIPS_KEY: &str = "strips";
 const GROUPS_KEY: &str = "window_groups";
 const TABS_KEY: &str = "tabs";
 
-/// The map key a permission profile is stored under: a digest of its
+/// The map key a named grant set is stored under: a digest of its
 /// case-folded name, so two spellings of one name share a slot.
-pub fn permission_profile_key(name: &str) -> String {
+pub fn preset_key(name: &str) -> String {
     blake3::hash(name.trim().to_lowercase().as_bytes())
         .to_hex()
         .to_string()
@@ -53,36 +57,6 @@ pub fn permission_profile_key(name: &str) -> String {
 
 fn obj(doc: &AutoCommit, parent: &ObjId, prop: impl Into<Prop>) -> Option<ObjId> {
     doc.get(parent, prop).ok().flatten().map(|(_, id)| id)
-}
-
-fn uint(doc: &AutoCommit, parent: &ObjId, prop: impl Into<Prop>) -> Option<u64> {
-    match doc.get(parent, prop).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Uint(v) => Some(*v),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn text(doc: &AutoCommit, parent: &ObjId, prop: impl Into<Prop>) -> Option<String> {
-    match doc.get(parent, prop).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Str(v) => Some(v.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn bytes(doc: &AutoCommit, parent: &ObjId, prop: impl Into<Prop>) -> Option<Vec<u8>> {
-    match doc.get(parent, prop).ok().flatten() {
-        Some((Value::Scalar(s), _)) => match s.as_ref() {
-            ScalarValue::Bytes(b) => Some(b.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 fn map_or_create(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
@@ -100,7 +74,7 @@ fn workspace_entries(doc: &AutoCommit) -> Vec<(u64, ObjId)> {
     (0..doc.length(&list))
         .filter_map(|i| {
             let entry = obj(doc, &list, i)?;
-            Some((uint(doc, &entry, "id")?, entry))
+            Some((doc.uint_at(&entry, "id")?, entry))
         })
         .collect()
 }
@@ -116,7 +90,7 @@ fn strip_entries(doc: &AutoCommit) -> Vec<(u64, ObjId, Option<ObjId>)> {
             let Some(entry) = obj(doc, &strips, i) else {
                 continue;
             };
-            let Some(id) = uint(doc, &entry, "id") else {
+            let Some(id) = doc.uint_at(&entry, "id") else {
                 continue;
             };
             let groups = obj(doc, &entry, GROUPS_KEY);
@@ -137,7 +111,7 @@ fn strip_groups(doc: &AutoCommit, strip_id: StripId) -> Option<ObjId> {
 /// Position of the group `group_id` in a `window_groups` list.
 fn group_index(doc: &AutoCommit, groups: &ObjId, group_id: GroupId) -> Option<usize> {
     (0..doc.length(groups)).find(|&i| {
-        obj(doc, groups, i).is_some_and(|entry| uint(doc, &entry, "id") == Some(group_id))
+        obj(doc, groups, i).is_some_and(|entry| doc.uint_at(&entry, "id") == Some(group_id))
     })
 }
 
@@ -147,7 +121,7 @@ fn tab_in_strip(doc: &AutoCommit, strip_id: StripId, tab_id: TabId) -> Option<(O
     (0..doc.length(&groups)).find_map(|g| {
         let tabs = obj(doc, &obj(doc, &groups, g)?, TABS_KEY)?;
         let idx = (0..doc.length(&tabs))
-            .find(|&i| obj(doc, &tabs, i).is_some_and(|t| uint(doc, &t, "id") == Some(tab_id)))?;
+            .find(|&i| obj(doc, &tabs, i).is_some_and(|t| doc.uint_at(&t, "id") == Some(tab_id)))?;
         Some((tabs, idx))
     })
 }
@@ -196,14 +170,6 @@ fn child_object(doc: &mut AutoCommit, parent: &ObjId, key: &str, kind: ObjType) 
     }
 }
 
-/// Writing an unchanged value is still an operation, and every operation is
-/// a history row; these write only a value that differs.
-fn put_text_if_changed(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: &str) {
-    if text(doc, parent, key).as_deref() != Some(value) {
-        let _ = doc.put(parent, key, value.to_string());
-    }
-}
-
 /// Compared as JSON values rather than bytes: a map inside `value`
 /// serialises in a different order once it has been read back, and that is
 /// not a change. `false` when `value` does not serialise.
@@ -216,7 +182,8 @@ fn put_json_if_changed<T: serde::Serialize>(
     let Ok(wanted) = serde_json::to_value(value) else {
         return false;
     };
-    let current = bytes(doc, parent, key)
+    let current = doc
+        .bytes_at(parent, key)
         .and_then(|blob| serde_json::from_slice::<serde_json::Value>(&blob).ok());
     if current.as_ref() != Some(&wanted)
         && let Ok(blob) = serde_json::to_vec(value)
@@ -256,7 +223,7 @@ fn sync_blob_map<T: serde::Serialize>(
 }
 
 fn entry_id(doc: &AutoCommit, list: &ObjId, index: usize) -> Option<u64> {
-    obj(doc, list, index).and_then(|entry| uint(doc, &entry, "id"))
+    obj(doc, list, index).and_then(|entry| doc.uint_at(&entry, "id"))
 }
 
 /// Make the list of id-keyed map entries `list` match `items`, in order.
@@ -308,7 +275,7 @@ fn sync_list<T>(
 }
 
 fn write_tab(doc: &mut AutoCommit, entry: &ObjId, tab: &Tab) {
-    put_text_if_changed(doc, entry, "title", &tab.title);
+    let _ = doc.put_str_if_changed(entry, "title", &tab.title);
     put_json_if_changed(doc, entry, "tile_json", &tab.tile);
 }
 
@@ -331,27 +298,47 @@ fn write_strip(doc: &mut AutoCommit, entry: &ObjId, strip: &Strip) {
 }
 
 fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
-    put_text_if_changed(doc, entry, "name", &ws.name);
+    let _ = doc.put_str_if_changed(entry, "name", &ws.name);
     // Room identity travels with the workspace: a reader hydrating from
     // this document must land in this room, not mint its own.
-    put_text_if_changed(doc, entry, "room", &ws.room.to_string());
-    match &ws.owner {
-        Some(owner) => put_text_if_changed(doc, entry, "owner", owner),
+    let _ = doc.put_str_if_changed(entry, "room", &ws.room.to_string());
+    match ws.owner() {
+        Some(owner) => {
+            let _ = doc.put_str_if_changed(entry, "owner", owner);
+        }
         None => delete_if_present(doc, entry, "owner"),
     }
     sync_blob_map(
         doc,
         entry,
-        CAPABILITIES_KEY,
-        ws.capabilities.iter().map(|cap| (cap.id.clone(), cap)),
+        MEMBERS_KEY,
+        ws.policy
+            .members
+            .iter()
+            .map(|(person, role)| (person.clone(), role)),
     );
     sync_blob_map(
         doc,
         entry,
-        PERMISSION_PROFILES_KEY,
-        ws.permission_profiles
+        GRANTS_KEY,
+        ws.policy
+            .grants
             .iter()
-            .map(|profile| (permission_profile_key(&profile.name), profile)),
+            .map(|grant| (grant.id.as_str().to_owned(), grant)),
+    );
+    sync_blob_map(
+        doc,
+        entry,
+        SANDBOX_KEY,
+        ws.sandbox.iter().map(|cap| (cap.id.clone(), cap)),
+    );
+    sync_blob_map(
+        doc,
+        entry,
+        PRESETS_KEY,
+        ws.presets
+            .iter()
+            .map(|preset| (preset_key(&preset.name), preset)),
     );
     sync_blob_map(
         doc,
@@ -399,7 +386,7 @@ fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
 /// an entry the tree no longer holds is deleted. Best-effort: a write that
 /// fails skips the entries nested under it rather than aborting.
 pub fn seed(doc: &mut AutoCommit, desktop: &DesktopTree) {
-    if uint(doc, &ROOT, ACTIVE_KEY) != Some(desktop.active.raw()) {
+    if doc.uint_at(&ROOT, ACTIVE_KEY) != Some(desktop.active.raw()) {
         let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(desktop.active.raw()));
     }
     let Some(list) = child_object(doc, &ROOT, WORKSPACES_KEY, ObjType::List) else {
@@ -422,28 +409,75 @@ fn read_blob_map<T: serde::de::DeserializeOwned>(
     let map = obj(doc, parent, key)?;
     Some(
         doc.keys(&map)
-            .filter_map(|k| serde_json::from_slice(&bytes(doc, &map, k.as_str())?).ok())
+            .filter_map(|k| serde_json::from_slice(&doc.bytes_at(&map, k.as_str())?).ok())
             .collect(),
     )
 }
 
-/// A workspace's owner and capabilities as the document records them.
-/// Capabilities absent from the document are absent from the answer — what
-/// makes a revocation take effect.
-fn read_capabilities(
+/// A map of JSON blobs keyed by string, with the keys.
+fn read_keyed_blob_map<T: serde::de::DeserializeOwned>(
     doc: &AutoCommit,
-    entry: &ObjId,
-) -> Option<(Option<UserId>, Vec<CapOverride>)> {
-    let owner = text(doc, entry, "owner");
-    let caps = read_blob_map(doc, entry, CAPABILITIES_KEY)?;
-    Some((owner, caps))
+    parent: &ObjId,
+    key: &str,
+) -> Option<Vec<(String, T)>> {
+    let map = obj(doc, parent, key)?;
+    Some(
+        doc.keys(&map)
+            .filter_map(|k| {
+                let value = serde_json::from_slice(&doc.bytes_at(&map, k.as_str())?).ok()?;
+                Some((k, value))
+            })
+            .collect(),
+    )
 }
 
-fn read_permission_profiles(doc: &AutoCommit, entry: &ObjId) -> Option<Vec<PermissionProfile>> {
-    let mut profiles: Vec<PermissionProfile> = read_blob_map(doc, entry, PERMISSION_PROFILES_KEY)?;
-    profiles.retain(|profile| profile.validate().is_ok());
-    profiles.sort_by_key(|profile| profile.name.to_lowercase());
-    Some(profiles)
+/// A workspace's owner, members and grants as the document records them.
+/// An absent grants map leaves a freshly created room's default grants intact;
+/// an existing empty map records a deliberate removal of every grant.
+type StoredPolicy = (Option<UserId>, Vec<(String, Role)>, Option<Vec<Grant>>);
+
+/// Read policy fields independently: a new room has an owner before its
+/// grants map exists, while an explicit empty grants map revokes all grants.
+fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
+    let owner = doc.str_at(entry, "owner");
+    let members = read_keyed_blob_map(doc, entry, MEMBERS_KEY).unwrap_or_default();
+    let grants = read_blob_map(doc, entry, GRANTS_KEY).map(|mut grants: Vec<Grant>| {
+        // Map keys are lexical, but the default role grants have a deliberate
+        // order in `room_role_grants`: by role as `Role::ALL` lists them, then
+        // by the index in their `role:<role>:<index>` id. Rebuild that order
+        // (index 10 after 9, not after 1) before exposing the policy to the
+        // live tree.
+        fn role_order(grant: &Grant) -> usize {
+            match grant.subject {
+                Subject::Role(role) => Role::ALL
+                    .iter()
+                    .position(|r| *r == role)
+                    .unwrap_or(Role::ALL.len()),
+                _ => Role::ALL.len(),
+            }
+        }
+        fn role_index(grant: &Grant) -> Option<u64> {
+            match grant.subject {
+                Subject::Role(_) => grant.id.0.rsplit(':').next()?.parse().ok(),
+                _ => None,
+            }
+        }
+        grants.sort_by(|left, right| {
+            role_order(left)
+                .cmp(&role_order(right))
+                .then_with(|| role_index(left).cmp(&role_index(right)))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        grants
+    });
+    (owner, members, grants)
+}
+
+fn read_presets(doc: &AutoCommit, entry: &ObjId) -> Option<Vec<Preset>> {
+    let mut presets: Vec<Preset> = read_blob_map(doc, entry, PRESETS_KEY)?;
+    presets.retain(|preset| preset.validate().is_ok());
+    crate::grants::sort_presets(&mut presets);
+    Some(presets)
 }
 
 fn read_tasks(doc: &AutoCommit, entry: &ObjId) -> Vec<WorkspaceTask> {
@@ -481,14 +515,14 @@ fn tile_from_blob(blob: &[u8], title: &str) -> TileContent {
 }
 
 /// Refresh `desktop` from `doc`. The active workspace, names, rooms,
-/// ownership, capabilities, profiles, tasks, receipts and shortcuts come from the
+/// ownership, members, grants, sandbox, grant sets, tasks, receipts and shortcuts come from the
 /// document; `active_strip`, `active_group` and presence stay as the tree
 /// had them. Each workspace keeps its existing strips by id, then the
 /// document's topology and tabs are folded in: width and maximization stay
 /// on the matching local group, and a group seen for the first time gets
 /// local defaults.
 pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
-    if let Some(raw) = uint(doc, &ROOT, ACTIVE_KEY) {
+    if let Some(raw) = doc.uint_at(&ROOT, ACTIVE_KEY) {
         desktop.active = WorkspaceId::from(raw);
     }
     if obj(doc, &ROOT, WORKSPACES_KEY).is_none() {
@@ -497,7 +531,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
     let entries = workspace_entries(doc);
     let mut rebuilt: Vec<Workspace> = Vec::with_capacity(entries.len());
     for (id_raw, entry) in &entries {
-        let name = text(doc, entry, "name").unwrap_or_default();
+        let name = doc.str_at(entry, "name").unwrap_or_default();
         let ws_id = WorkspaceId::from(*id_raw);
         let mut ws = match desktop.workspaces.iter().position(|w| w.id == ws_id) {
             Some(existing) => {
@@ -508,20 +542,31 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             None => Workspace::new(ws_id, name),
         };
         // Absent or unparseable keeps the tree's.
-        if let Some(room) = text(doc, entry, "room")
+        if let Some(room) = doc
+            .str_at(entry, "room")
             .and_then(|v| RoomId::parse(v.as_str()))
             .filter(|r| !r.is_nil())
         {
-            ws.room = room;
+            ws.set_room(room);
         }
-        if let Some((owner, caps)) = read_capabilities(doc, entry) {
-            if owner.is_some() {
-                ws.owner = owner;
-            }
-            ws.capabilities = caps;
+        let (owner, members, grants) = read_policy(doc, entry);
+        if let Some(owner) = owner {
+            ws.policy.owner = Some(owner);
         }
-        if let Some(profiles) = read_permission_profiles(doc, entry) {
-            ws.permission_profiles = profiles;
+        ws.policy.members = members.into_iter().collect();
+        if let Some(grants) = grants {
+            ws.policy.grants = grants;
+        } else {
+            // Old appended entries had no grants map. Reconstruct their
+            // canonical defaults even when this tree reuses a cached room.
+            ws.policy.grants =
+                RoomPolicy::unowned(ws.room.to_string(), &Subject::Role(Role::Owner)).grants;
+        }
+        if let Some(sandbox) = read_blob_map(doc, entry, SANDBOX_KEY) {
+            ws.sandbox = sandbox;
+        }
+        if let Some(presets) = read_presets(doc, entry) {
+            ws.presets = presets;
         }
         ws.tasks = read_tasks(doc, entry);
         ws.effect_receipts = read_effect_receipts(doc, entry);
@@ -540,7 +585,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
             let Some(strip_entry) = obj(doc, &strips, strip_pos) else {
                 continue;
             };
-            let Some(strip_id) = uint(doc, &strip_entry, "id").map(StripId::from) else {
+            let Some(strip_id) = doc.uint_at(&strip_entry, "id").map(StripId::from) else {
                 continue;
             };
             let Some(groups) = obj(doc, &strip_entry, GROUPS_KEY) else {
@@ -550,7 +595,7 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
                 let Some(group_entry) = obj(doc, &groups, group_pos) else {
                     continue;
                 };
-                let Some(group_id) = uint(doc, &group_entry, "id") else {
+                let Some(group_id) = doc.uint_at(&group_entry, "id") else {
                     continue;
                 };
                 let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.id == ws_id) else {
@@ -578,9 +623,9 @@ fn group_tabs(doc: &AutoCommit, group_entry: &ObjId) -> Vec<(u64, String, Vec<u8
     (0..doc.length(&tabs))
         .filter_map(|i| {
             let entry = obj(doc, &tabs, i)?;
-            let id = uint(doc, &entry, "id")?;
-            let title = text(doc, &entry, "title").unwrap_or_default();
-            let blob = bytes(doc, &entry, "tile_json").unwrap_or_default();
+            let id = doc.uint_at(&entry, "id")?;
+            let title = doc.str_at(&entry, "title").unwrap_or_default();
+            let blob = doc.bytes_at(&entry, "tile_json").unwrap_or_default();
             Some((id, title, blob))
         })
         .collect()
@@ -603,6 +648,7 @@ fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[(u64, String, Ve
             active_tab,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         return;
     };
@@ -638,11 +684,11 @@ fn workspace_entry(doc: &AutoCommit, workspace_id: WorkspaceId) -> Option<ObjId>
         .map(|(_, entry)| entry)
 }
 
-/// Append a new workspace entry — id, name and room only; its strips reach
-/// the document through later edits or the next [`seed`]. The room goes in
-/// with the workspace, so a reader learns the identity in the same change
-/// that tells it the workspace exists. Creates the list for an unseeded
-/// document.
+/// Append a new workspace entry with its room's default grants. Its strips
+/// reach the document through later edits or the next [`seed`]. The room and
+/// its initial authority travel in the same change that creates the entry,
+/// so a later grant revocation can remove a real document key. Creates the
+/// list for an unseeded document.
 pub fn append_workspace(
     doc: &mut AutoCommit,
     workspace_id: WorkspaceId,
@@ -661,12 +707,38 @@ pub fn append_workspace(
     let _ = doc.put(&entry, "id", ScalarValue::Uint(workspace_id.raw()));
     let _ = doc.put(&entry, "name", name.to_string());
     let _ = doc.put(&entry, "room", room.to_string());
+    let mut workspace = Workspace::new(workspace_id, name);
+    workspace.set_room(room);
+    sync_blob_map(
+        doc,
+        &entry,
+        GRANTS_KEY,
+        workspace
+            .policy
+            .grants
+            .iter()
+            .map(|grant| (grant.id.as_str().to_owned(), grant)),
+    );
     true
 }
 
 /// Record which workspace is showing.
 pub fn set_active(doc: &mut AutoCommit, workspace_id: WorkspaceId) {
     let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(workspace_id.raw()));
+}
+
+/// Whether `change` did nothing but record which workspace is showing, as
+/// [`set_active`] does on every workspace switch: one operation, putting the
+/// root key. Every workspace's content is as the changes before it left it.
+pub fn only_sets_active(change: &automerge::Change) -> bool {
+    use automerge::legacy::{Key, ObjectId, OpType};
+    change.len() == 1
+        && change.decode().operations.first().is_some_and(|op| {
+            op.obj == ObjectId::Root
+                && !op.insert
+                && matches!(op.action, OpType::Put(_))
+                && matches!(&op.key, Key::Map(key) if key == ACTIVE_KEY)
+        })
 }
 
 /// Record a workspace's room. `false` when the document does not hold the
@@ -700,36 +772,57 @@ fn upsert_blob(
     doc.put(&map, key, ScalarValue::Bytes(blob)).is_ok()
 }
 
-/// Record a capability. Capabilities are a map keyed by id rather than a
-/// list: deleting a map key merges concurrently, while deleting list index
-/// 3 on two peers removes two different capabilities.
-pub fn insert_capability(
-    doc: &mut AutoCommit,
-    workspace_id: WorkspaceId,
-    cap: &CapOverride,
-) -> bool {
-    upsert_blob(doc, workspace_id, CAPABILITIES_KEY, &cap.id, cap)
-}
-
-/// Delete a capability, so a revocation is not only local.
-pub fn revoke_capability(doc: &mut AutoCommit, workspace_id: WorkspaceId, cap_id: &str) -> bool {
+fn delete_blob(doc: &mut AutoCommit, workspace_id: WorkspaceId, map_key: &str, key: &str) -> bool {
     let Some(entry) = workspace_entry(doc, workspace_id) else {
         return false;
     };
-    let Some(caps) = obj(doc, &entry, CAPABILITIES_KEY) else {
+    let Some(map) = obj(doc, &entry, map_key) else {
         return false;
     };
-    doc.delete(&caps, cap_id).is_ok()
+    doc.delete(&map, key).is_ok()
 }
 
-/// Record a reusable permission profile under its name's key.
-pub fn upsert_permission_profile(
+/// Record a grant. Grants are a map keyed by id rather than a list:
+/// deleting a map key merges concurrently, while deleting list index 3 on
+/// two peers removes two different grants.
+pub fn insert_grant(doc: &mut AutoCommit, workspace_id: WorkspaceId, grant: &Grant) -> bool {
+    upsert_blob(doc, workspace_id, GRANTS_KEY, grant.id.as_str(), grant)
+}
+
+/// Delete a grant, so a revocation is not only local.
+pub fn revoke_grant(doc: &mut AutoCommit, workspace_id: WorkspaceId, id: &GrantId) -> bool {
+    delete_blob(doc, workspace_id, GRANTS_KEY, id.as_str())
+}
+
+/// Record a member's role.
+pub fn set_member(
     doc: &mut AutoCommit,
     workspace_id: WorkspaceId,
-    profile: &PermissionProfile,
+    person: &str,
+    role: Role,
 ) -> bool {
-    let key = permission_profile_key(&profile.name);
-    upsert_blob(doc, workspace_id, PERMISSION_PROFILES_KEY, &key, profile)
+    upsert_blob(doc, workspace_id, MEMBERS_KEY, person, &role)
+}
+
+/// Remove a member.
+pub fn remove_member(doc: &mut AutoCommit, workspace_id: WorkspaceId, person: &str) -> bool {
+    delete_blob(doc, workspace_id, MEMBERS_KEY, person)
+}
+
+/// Record a sandbox capability.
+pub fn insert_sandbox(doc: &mut AutoCommit, workspace_id: WorkspaceId, cap: &CapOverride) -> bool {
+    upsert_blob(doc, workspace_id, SANDBOX_KEY, &cap.id, cap)
+}
+
+/// Delete a sandbox capability.
+pub fn revoke_sandbox(doc: &mut AutoCommit, workspace_id: WorkspaceId, cap_id: &str) -> bool {
+    delete_blob(doc, workspace_id, SANDBOX_KEY, cap_id)
+}
+
+/// Record a named grant set under its name's key.
+pub fn upsert_preset(doc: &mut AutoCommit, workspace_id: WorkspaceId, preset: &Preset) -> bool {
+    let key = preset_key(&preset.name);
+    upsert_blob(doc, workspace_id, PRESETS_KEY, &key, preset)
 }
 
 /// Record a task under its id.
@@ -817,13 +910,28 @@ pub fn apply_tab_move(
     dst_strip: StripId,
     moved: &TabMove,
 ) -> bool {
-    let before = doc.clone();
-    if try_apply_tab_move(doc, src_strip, dst_strip, moved).is_some() {
-        true
-    } else {
-        *doc = before;
-        false
+    all_or_nothing(doc, |doc| {
+        try_apply_tab_move(doc, src_strip, dst_strip, moved)
+    })
+}
+
+/// Run `edit`, leaving `doc` as it was when it gives up: its operations are
+/// rolled back when they are the only uncommitted ones, else `doc` is
+/// restored from a copy.
+fn all_or_nothing(doc: &mut AutoCommit, edit: impl FnOnce(&mut AutoCommit) -> Option<()>) -> bool {
+    if doc.pending_ops() == 0 {
+        let done = edit(doc).is_some();
+        if !done {
+            doc.rollback();
+        }
+        return done;
     }
+    let before = doc.clone();
+    let done = edit(doc).is_some();
+    if !done {
+        *doc = before;
+    }
+    done
 }
 
 fn try_apply_tab_move(
@@ -897,8 +1005,7 @@ pub fn move_group(
     group: &WindowGroup,
     index: usize,
 ) -> bool {
-    let before = doc.clone();
-    let moved = (|| {
+    all_or_nothing(doc, |doc| {
         let (_, strip_entry, _) = strip_entries(doc)
             .into_iter()
             .find(|(id, _, _)| *id == strip_id.raw())?;
@@ -908,11 +1015,7 @@ pub fn move_group(
         let index = index.min(doc.length(&groups));
         insert_group(doc, &groups, index, group);
         Some(())
-    })();
-    if moved.is_none() {
-        *doc = before;
-    }
-    moved.is_some()
+    })
 }
 
 /// Replace one strip's group list with `groups`, leaving the rest of the

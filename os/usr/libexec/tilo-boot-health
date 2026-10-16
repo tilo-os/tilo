@@ -14,8 +14,26 @@
 #
 # ## What counts as healthy, and why it is not the same test the floor uses
 #
-# `greetd` is active, i.e. the machine reached the point where a person can log
-# in. That is the smallest claim that is worth anything to the user, and it is the
+# The machine reached the point where a person can log in, and stayed there:
+#
+#   * greetd is active;
+#   * something a person can use is on the screen: the greeter running now has
+#     presented a frame (tilo-greeter's own startup record, which its first
+#     presented frame completes), or a person is already signed in through
+#     greetd (the autologin of a first boot);
+#   * and it holds: for SETTLE seconds greetd is not restarted and the greeter
+#     keeps presenting.
+#
+# `greetd is active` alone is not that point. greetd has Restart=, so it is
+# active between restarts, and a greeter that cannot draw (a broken GPU driver,
+# cage or tilo-greeter) exits, takes greetd with it and is back a few seconds
+# later, for ever. Judged by is-active alone, such a boot was blessed on its
+# first attempt, kept no try counter, and the machine never fell back: a black
+# or flickering screen for good. Restarts before the greeter first presents are
+# not held against the boot (a slow display probe can cost one); restarts after
+# it are, for the whole settle window.
+#
+# That is the smallest claim that is worth anything to the user, and it is the
 # one the desktop actually depends on.
 #
 # It is deliberately NOT `systemctl is-system-running` = running, which
@@ -35,45 +53,197 @@ warn() { printf 'tilo-boot-health: WARNING: %s\n' "$*" >&2; }
 # boot-complete transaction runs as soon as the default target settles, so
 # polling is the only correct shape — ordering After=greetd.service would make a
 # hung greetd hang the assessment instead of failing it.
-DEADLINE="${TILO_BOOT_HEALTH_TIMEOUT:-90}"
+DEADLINE="${TILO_BOOT_HEALTH_TIMEOUT:-}"
+# How long the greeter has to keep presenting, with greetd never restarted,
+# before the boot counts: longer than one crash cycle of a greeter that cannot
+# draw. wlroots waits 10 s for a display device before cage gives up, so such a
+# greetd is back every ~11 s.
+SETTLE="${TILO_BOOT_HEALTH_SETTLE:-20}"
+POLL="${TILO_BOOT_HEALTH_POLL:-2}"
+# tilo-greeter's startup record; /usr/libexec/tilo-cage-session points the
+# greeter at it. Each greeter process replaces the file from its first mark on,
+# so it tells what the greeter running now has done, never what an earlier one
+# did. /run is visible here; the greeter's /tmp is not (PrivateTmp=).
+GREETER_RECORD="${TILO_BOOT_HEALTH_GREETER_RECORD:-/run/tilo-greeter/startup-metrics.json}"
 
 # A machine with no greeter is not a broken desktop, it is a different machine —
 # the probe image the boot chain is tested on, an installer medium, a headless
 # build. Assessing it against a unit it does not have would fail every boot for a
 # reason that has nothing to do with health. TILO_BOOT_HEALTH_UNIT names what to
 # wait for, so a machine that is not the desktop can say what its own liveness is.
+#
+# An always-on board (os/dev/install-board-layer.sh) masks greetd; its liveness
+# is its board session for the account the disk was made with. That session
+# waits for the user manager, Wi-Fi and the first clock sync before it is
+# active, about five minutes at worst, so the board is allowed two such
+# attempts. A board with no account yet is judged by multi-user.target.
+board_marker="${TILO_BOOT_HEALTH_BOARD_MARKER:-/usr/share/tilo/board-headless-session}"
+board_wants="${TILO_BOOT_HEALTH_WANTS:-/etc/systemd/system/multi-user.target.wants}"
+if [ -z "${TILO_BOOT_HEALTH_UNIT:-}" ] && [ -f "$board_marker" ]; then
+  TILO_BOOT_HEALTH_UNIT=multi-user.target
+  for link in "$board_wants"/tilo-board-headless-session@*.service; do
+    [ -L "$link" ] || continue
+    TILO_BOOT_HEALTH_UNIT="${link##*/}"
+    DEADLINE="${DEADLINE:-660}"
+    break
+  done
+fi
 UNIT="${TILO_BOOT_HEALTH_UNIT:-greetd.service}"
 if ! systemctl cat "$UNIT" >/dev/null 2>&1; then
   log "$UNIT is not installed on this machine — using multi-user.target instead"
   UNIT="multi-user.target"
 fi
+# The greeter's wait is for its first presented frame, which on a machine that
+# renders in software takes tens of seconds, not the instant greetd takes to
+# become active. A longer wait costs a broken boot nothing: its try was spent
+# when the boot loader chose the entry and only a verdict of good returns it, so
+# a machine power-cycled before the verdict has failed its boot all the same.
+if [ "$UNIT" = greetd.service ]; then
+  DEADLINE="${DEADLINE:-180}"
+else
+  DEADLINE="${DEADLINE:-90}"
+fi
+
+report_failed_units() {
+  local failed
+  failed="$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l)"
+  if [ "${failed:-0}" -gt 0 ]; then
+    warn "$failed unit(s) failed on this boot; the session came up regardless, so"
+    warn "this generation is not condemned. They are:"
+    systemctl --failed --no-legend --plain 2>/dev/null | sed 's/^/tilo-boot-health:   /' >&2
+  fi
+}
+
+# A unit that has actually failed will not become active by waiting.
+judge_failed() {
+  warn "$UNIT FAILED. This boot does not count as a success, so the boot loader"
+  warn "entry keeps its decremented try counter and the previous deployment"
+  warn "becomes the default once the tries run out."
+  systemctl status --no-pager --lines=20 "$UNIT" 2>&1 | sed 's/^/tilo-boot-health:   /' >&2
+  exit 1
+}
+
+final_state() {
+  systemctl status --no-pager --lines=20 "$UNIT" 2>&1 | sed 's/^/tilo-boot-health:   /' >&2
+  systemctl --failed --no-legend --plain 2>/dev/null | sed 's/^/tilo-boot-health:   failed: /' >&2
+}
+
+# A virtual machine made without any display device (the headless dev VMs under
+# UTM, Hyper-V or WHPX, reached over SSH) has no screen for a greeter to present
+# on; its greeter crash-loops on every boot of every generation, so asking for
+# one would fail them all and walk the machine back through its deployments.
+# Such a machine keeps the plain verdict, greetd active. Real hardware gets no
+# such pass: there, no display device at all is what a broken GPU driver looks
+# like, and exactly what this check has to catch.
+plain=no
+if [ "$UNIT" != greetd.service ]; then
+  plain=yes
+else
+  drm_sysfs="${TILO_DRM_SYSFS:-/sys/class/drm}"
+  displays="$(find "$drm_sysfs" -maxdepth 1 -name 'card[0-9]*' 2>/dev/null | wc -l)"
+  virtualization="$(systemctl show -p Virtualization --value 2>/dev/null)"
+  if [ "${displays:-0}" -eq 0 ] && [ -n "$virtualization" ] && [ "$virtualization" != none ]; then
+    log "this is a $virtualization virtual machine with no display device, so no greeter can"
+    log "present here; judging it by greetd being active"
+    plain=yes
+  fi
+fi
 
 end=$(( $(date +%s) + DEADLINE ))
-while :; do
-  if systemctl is-active --quiet "$UNIT"; then
-    log "$UNIT is active — this boot is good"
-    failed="$(systemctl --failed --no-legend --plain 2>/dev/null | wc -l)"
-    if [ "${failed:-0}" -gt 0 ]; then
-      warn "$failed unit(s) failed on this boot; the session came up regardless, so"
-      warn "this generation is not condemned. They are:"
-      systemctl --failed --no-legend --plain 2>/dev/null | sed 's/^/tilo-boot-health:   /' >&2
+
+if [ "$plain" = yes ]; then
+  while :; do
+    if systemctl is-active --quiet "$UNIT"; then
+      log "$UNIT is active — this boot is good"
+      report_failed_units
+      exit 0
     fi
-    exit 0
+    systemctl is-failed --quiet "$UNIT" && judge_failed
+    [ "$(date +%s)" -ge "$end" ] && break
+    sleep "$POLL"
+  done
+  warn "$UNIT did not become active within ${DEADLINE}s. This boot does not count as"
+  warn "a success. State was:"
+  final_state
+  exit 1
+fi
+
+greetd_restarts() {
+  systemctl show -p NRestarts --value greetd.service 2>/dev/null
+}
+# Either value changing means the greeter that was presenting is gone: systemd
+# restarted greetd, or something else replaced its main process.
+greetd_generation() {
+  systemctl show -p NRestarts -p MainPID --value greetd.service 2>/dev/null | tr '\n' ' '
+}
+
+# Sets `presenting_by` to what is on the screen.
+greeter_presenting() {
+  if [ -r "$GREETER_RECORD" ] && grep -q '"first-frame-presented"' "$GREETER_RECORD"; then
+    presenting_by="its greeter has presented a frame"
+    return 0
   fi
-  # A unit that has actually failed will not become active by waiting.
-  if systemctl is-failed --quiet "$UNIT"; then
-    warn "$UNIT FAILED. This boot does not count as a success, so the boot loader"
-    warn "entry keeps its decremented try counter and the previous deployment"
-    warn "becomes the default once the tries run out."
-    systemctl status --no-pager --lines=20 "$UNIT" 2>&1 | sed 's/^/tilo-boot-health:   /' >&2
-    exit 1
+  local session
+  for session in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{ print $1 }'); do
+    [ "$(loginctl show-session "$session" -p Service --value 2>/dev/null)" = greetd ] || continue
+    [ "$(loginctl show-session "$session" -p Class --value 2>/dev/null)" = user ] || continue
+    presenting_by="session $session is signed in through it"
+    return 0
+  done
+  return 1
+}
+
+# A settle window opens when greetd is active and something is presenting, and
+# closes the moment either stops or greetd's generation moves. A window that
+# stays open for SETTLE seconds makes a good boot. A window may open up to the
+# deadline and then runs its full length; none opens after it, so a greeter
+# that keeps coming and going is judged by the deadline.
+window_start=""
+window_generation=""
+presented=no
+while :; do
+  now="$(date +%s)"
+  if systemctl is-active --quiet greetd.service && greeter_presenting; then
+    presented=yes
+    generation="$(greetd_generation)"
+    if [ -n "$window_start" ] && [ "$generation" = "$window_generation" ]; then
+      if [ $(( now - window_start )) -ge "$SETTLE" ]; then
+        log "greetd held its greeter for ${SETTLE}s without a restart — this boot is good"
+        report_failed_units
+        exit 0
+      fi
+    else
+      if [ -n "$window_start" ]; then
+        warn "greetd was restarted while its greeter was presenting"
+      fi
+      window_start=""
+      [ "$now" -ge "$end" ] && break
+      window_start="$now"
+      window_generation="$generation"
+      log "greetd is active and $presenting_by (restarts so far: $(greetd_restarts)); waiting ${SETTLE}s for it to hold"
+    fi
+  else
+    if [ -n "$window_start" ]; then
+      warn "the greeter stopped presenting $(( now - window_start ))s into the ${SETTLE}s wait"
+    fi
+    window_start=""
+    systemctl is-failed --quiet greetd.service && judge_failed
+    [ "$now" -ge "$end" ] && break
   fi
-  [ "$(date +%s)" -ge "$end" ] && break
-  sleep 2
+  sleep "$POLL"
 done
 
-warn "$UNIT did not become active within ${DEADLINE}s. This boot does not count as"
-warn "a success. State was:"
-systemctl status --no-pager --lines=20 "$UNIT" 2>&1 | sed 's/^/tilo-boot-health:   /' >&2
-systemctl --failed --no-legend --plain 2>/dev/null | sed 's/^/tilo-boot-health:   failed: /' >&2
+if [ "$presented" = yes ]; then
+  warn "the greeter did not hold for ${SETTLE}s within ${DEADLINE}s: it went away again"
+  warn "after presenting (greetd restarts: $(greetd_restarts)), so the screen keeps going"
+  warn "black. This boot does not count as a success. State was:"
+elif systemctl is-active --quiet greetd.service; then
+  warn "greetd is active, but no greeter presented a frame within ${DEADLINE}s (greetd"
+  warn "restarts: $(greetd_restarts)): there is nothing on the screen to log in at. This"
+  warn "boot does not count as a success. State was:"
+else
+  warn "greetd.service did not become active within ${DEADLINE}s. This boot does not"
+  warn "count as a success. State was:"
+fi
+final_state
 exit 1

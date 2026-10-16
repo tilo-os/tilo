@@ -55,6 +55,10 @@ impl ShellLayer for EmojiPicker {
         );
     }
 
+    fn is_animating(&self, _now: Instant) -> bool {
+        self.needs_animation_frame()
+    }
+
     fn accessibility(&self, _geometry: LayerGeometry<'_>) -> Option<AccessNode> {
         Self::accessibility(self)
     }

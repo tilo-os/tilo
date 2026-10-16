@@ -13,7 +13,7 @@ ROOT = Path(__file__).parents[2]
 spec = importlib.util.spec_from_file_location('native_resume', ROOT / 'os/dev/native_resume.py')
 resume = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(resume)
-REQUIRED = ('shell fs terminal file-explorer settings tilo-model-manager tilo-model-gateway tilo-relay '
+REQUIRED = ('shell fs tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-relay '
  'tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-greeter tilo-installer tilo-runtime-bundle '
  'tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust '
  'tilo-device-key-init tilo tilo-app-package tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager '

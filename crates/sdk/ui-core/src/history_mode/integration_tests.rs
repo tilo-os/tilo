@@ -6,7 +6,7 @@ use crate::application_test_support::{
 use crate::widget::{AppModel, ModelPath};
 use crate::{
     State,
-    headless::Driver,
+    headless::FrameHarness,
     widget::{BoundAppWidget, Widget},
 };
 use automerge::{ROOT, transaction::Transactable};
@@ -52,7 +52,7 @@ fn managed_components_bind_shared_history_to_their_real_owner() {
                 )
             })
             .unwrap();
-        let root = Box::new(BoundAppWidget { component });
+        let root = Box::new(BoundAppWidget::new(component));
         let source =
             HistorySourceRegistration::owned("document", APP, root.history_owner().unwrap())
                 .unwrap();
@@ -60,9 +60,12 @@ fn managed_components_bind_shared_history_to_their_real_owner() {
         let mut state = State::new();
         state.doc.put(ROOT, "body", "unrelated outer").unwrap();
         state.commit_action(None, None);
-        let mut driver =
-            Driver::from_managed_root(state, ManagedRoot::new(root, registration), (900, 650))
-                .expect("the registered actual bound owner must be admitted");
+        let mut driver = FrameHarness::from_managed_root(
+            state,
+            ManagedRoot::new(root, registration),
+            (900, 650),
+        )
+        .expect("the registered actual bound owner must be admitted");
         driver.click_named("history-open").unwrap();
         driver
             .perform_semantic_named(
@@ -82,7 +85,7 @@ fn managed_components_bind_shared_history_to_their_real_owner() {
     // phase: managed_component_bundle_automatically_installs_shared_history_in_frame_runner
     {
         let (_host, component) = component_with_history();
-        let mut driver = Driver::from_component(
+        let mut driver = FrameHarness::from_component(
             component,
             (900, 650),
             crate::application::ComponentRunnerInputs {
@@ -102,7 +105,7 @@ fn managed_components_bind_shared_history_to_their_real_owner() {
     {
         let (_host, component) = component_with_history();
         let root = crate::widget::TileHost::from_component(component);
-        let mut driver = Driver::new(State::new(), Box::new(root), (900, 650));
+        let mut driver = FrameHarness::new(State::new(), Box::new(root), (900, 650));
         assert!(
             driver.targets().contains_key("history-open"),
             "a managed tile retains the component's History bundle"
@@ -149,7 +152,7 @@ fn managed_review_confirmation_rechecks_authority_and_freshness() {
             ),
         };
         let registration = HistoryRegistration::new(&RESTORABLE, vec![source]).unwrap();
-        let mut driver = Driver::from_managed_root(
+        let mut driver = FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
             (900, 650),
@@ -182,7 +185,9 @@ fn managed_review_confirmation_rechecks_authority_and_freshness() {
         driver.key("Escape");
         assert_eq!(driver.state_mut().doc.base_heads(), before);
         driver.click_named("history-restore").unwrap();
-        driver.key("Enter");
+        driver
+            .click_named("history-restore-review.primary")
+            .unwrap();
         assert_eq!(
             crate::state::owned_restore_tests::value(&driver.state_mut().doc),
             "old"
@@ -199,24 +204,15 @@ fn managed_review_confirmation_rechecks_authority_and_freshness() {
         use crate::permissions::*;
         for case in ["expiry", "replacement", "actor"] {
             let mut driver = review_driver();
-            driver.set_permission_ctx(grant(
-                LOCAL_USER,
-                Scope::App(RESTORABLE.app_id.into()),
-                Expiry::AtUnix(150),
-            ));
+            driver.set_permission_ctx(grant(LOCAL_USER, RESTORABLE.app_id, Some(150)));
             driver.click_named("history-restore").unwrap();
             let before = driver.state_mut().doc.base_heads();
             match case {
                 "expiry" => NOW.set(200),
-                "replacement" => driver.set_permission_ctx(PermissionContext::from_capabilities(
-                    Actor::person(None, LOCAL_USER),
-                    vec![],
-                )),
-                _ => driver.set_permission_ctx(grant(
-                    "another-person",
-                    Scope::App(RESTORABLE.app_id.into()),
-                    Expiry::Never,
-                )),
+                "replacement" => driver.set_permission_ctx(
+                    crate::permissions::PermissionContext::stranger(LOCAL_USER),
+                ),
+                _ => driver.set_permission_ctx(grant("another-person", RESTORABLE.app_id, None)),
             }
             let confirm = driver
                 .a11y_node_named("Restore version")
@@ -254,16 +250,22 @@ fn managed_review_confirmation_rechecks_authority_and_freshness() {
             .unwrap();
         driver.state_mut().commit_action(None, None);
         let before = driver.state_mut().doc.base_heads();
-        driver.key("Enter");
+        driver
+            .click_named("history-restore-review.primary")
+            .unwrap();
         assert_eq!(driver.state_mut().doc.base_heads(), before);
         assert!(driver.a11y_node_named("Refresh review").is_some());
-        driver.key("Enter");
+        driver
+            .click_named("history-restore-review.primary")
+            .unwrap();
         assert_eq!(
             driver.state_mut().doc.base_heads(),
             before,
             "refresh itself does not write"
         );
-        driver.key("Enter");
+        driver
+            .click_named("history-restore-review.primary")
+            .unwrap();
         assert_eq!(
             crate::state::owned_restore_tests::value(&driver.state_mut().doc),
             "old"
@@ -276,7 +278,7 @@ thread_local! { static NOW: std::cell::Cell<u64> = const { std::cell::Cell::new(
 fn current_time() -> Option<u64> {
     Some(NOW.get())
 }
-fn review_driver() -> Driver {
+fn review_driver() -> FrameHarness {
     NOW.set(100);
     let mut state = State::new();
     state.doc.put(ROOT, "body", "old").unwrap();
@@ -294,7 +296,7 @@ fn review_driver() -> Driver {
         ),
     };
     let registration = HistoryRegistration::new(&RESTORABLE, vec![source]).unwrap();
-    let mut driver = Driver::from_managed_root(
+    let mut driver = FrameHarness::from_managed_root(
         state,
         ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
         (900, 650),
@@ -336,7 +338,8 @@ fn managed_review_dialog_drains_and_returns_to_retained_preview() {
     );
     assert!(
         !driver.frame_output().needs_redraw,
-        "review dialog stayed dirty after draw"
+        "review dialog stayed dirty after draw: {:?}",
+        driver.frame_requesters()
     );
     assert!(!driver.poll_frame().unwrap());
 
@@ -349,20 +352,15 @@ fn managed_review_dialog_drains_and_returns_to_retained_preview() {
     );
     assert!(!driver.poll_frame().unwrap());
 }
-fn grant(
-    actor: &str,
-    scope: crate::permissions::Scope,
-    expiry: crate::permissions::Expiry,
-) -> crate::permissions::PermissionContext {
+fn grant(actor: &str, app: &str, until: Option<u64>) -> crate::permissions::PermissionContext {
     use crate::permissions::*;
-    let mut cap = CapOverride::new(
-        Subject::Principal(Principal::Person(actor.into())),
-        scope,
-        Effect::Grant,
-        Verb::Write,
-    );
-    cap.expiry = expiry;
-    PermissionContext::from_capabilities(Actor::person(None, actor), vec![cap]).at_unix_time(100)
+    PermissionContext::granted(
+        actor,
+        &TreePath::root().app(app),
+        policy::KindSet::ALL,
+        until,
+    )
+    .at_unix_time(100)
 }
 
 #[derive(Default)]
@@ -392,14 +390,14 @@ fn historical_media_uses_only_the_selected_snapshot_in_every_registration() {
         state.commit_action(None, None);
         state.doc.put(ROOT, "body", "live").unwrap();
         state.commit_action(None, None);
-        let mut driver = Driver::from_managed_root(
+        let mut driver = FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
             (900, 650),
         )
         .unwrap();
         driver.click_named("history-open").unwrap();
-        let select = |driver: &mut Driver, hash: automerge::ChangeHash| {
+        let select = |driver: &mut FrameHarness, hash: automerge::ChangeHash| {
             let target = format!(
                 "timeline-entry:{}",
                 crate::widget::history_group::hex16(&crate::history_source::entry_id_from_hash(
@@ -484,7 +482,7 @@ fn historical_media_uses_only_the_selected_snapshot_in_every_registration() {
         .unwrap()
         .with_asset_source("media", provider.clone())
         .unwrap();
-        let mut driver = Driver::from_managed_root(
+        let mut driver = FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
             (900, 650),
@@ -545,7 +543,7 @@ fn historical_media_uses_only_the_selected_snapshot_in_every_registration() {
                 .with_asset_source("document", provider.clone())
                 .unwrap(),
         );
-        let mut driver = Driver::from_component(
+        let mut driver = FrameHarness::from_component(
             component,
             (900, 650),
             crate::application::ComponentRunnerInputs {
@@ -594,7 +592,7 @@ fn historical_media_uses_only_the_selected_snapshot_in_every_registration() {
             uuid::Uuid::new_v4(),
         )
         .unwrap();
-        let driver = Driver::from_managed_root(
+        let driver = FrameHarness::from_managed_root(
             state,
             ManagedRoot::new(Box::new(crate::widget::Column::new()), registration),
             (900, 650),
@@ -627,7 +625,7 @@ fn historical_media_uses_only_the_selected_snapshot_in_every_registration() {
         component
             .register_document_history(&AUTOMATIC_MEDIA_DEFINITION)
             .unwrap();
-        let driver = Driver::from_component(
+        let driver = FrameHarness::from_component(
             component,
             (900, 650),
             crate::application::ComponentRunnerInputs {
@@ -675,7 +673,7 @@ fn historical_media_uses_only_the_selected_snapshot_in_every_registration() {
         tile.register_document_history(&AUTOMATIC_MEDIA_DEFINITION)
             .unwrap();
         check_automatic_media(
-            Driver::new(State::new(), Box::new(tile), (900, 650)),
+            FrameHarness::new(State::new(), Box::new(tile), (900, 650)),
             selected,
         );
     }
@@ -769,7 +767,7 @@ struct LegacyTiles {
     store: crate::record::RecordStore,
     first: crate::record::RecordCheckout,
     second: crate::record::RecordCheckout,
-    driver: Driver,
+    driver: FrameHarness,
 }
 impl LegacyTiles {
     fn new() -> Self {
@@ -798,7 +796,7 @@ impl LegacyTiles {
         let mut state = State::new();
         state.doc.put(ROOT, "body", "outer").unwrap();
         state.commit_action(None, None);
-        let driver = Driver::new(state, root, (1200, 650));
+        let driver = FrameHarness::new(state, root, (1200, 650));
         Self {
             _directory: directory,
             _owners: owners,
@@ -967,10 +965,7 @@ fn tiled_history_keeps_pending_owners_and_checks_current_authority() {
         );
         fixture
             .driver
-            .set_permission_ctx(PermissionContext::from_capabilities(
-                Actor::person(None, LOCAL_USER),
-                vec![],
-            ));
+            .set_permission_ctx(crate::permissions::PermissionContext::stranger(LOCAL_USER));
         assert!(
             fixture
                 .driver
@@ -993,7 +988,7 @@ fn tiled_history_keeps_pending_owners_and_checks_current_authority() {
     }
 }
 
-pub(crate) struct TileEditor<T: Widget = crate::widget::TextInput>(pub(crate) T);
+pub(crate) struct TileEditor<T: Widget = crate::testing::OwnedText>(pub(crate) T);
 crate::testing::test_app_widget!(impl [T: Widget + 'static] TileEditor<T>, "Tile editor");
 impl<T: Widget + 'static> Widget for TileEditor<T> {
     crate::provides!(dyn crate::record::capability::RecordScoped);
@@ -1008,7 +1003,7 @@ impl<T: Widget + 'static> Widget for TileEditor<T> {
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         vec![&mut self.0]
     }
-    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         self.0.update(doc, path)
     }
     fn has_separate_document_owner(&self) -> bool {
@@ -1017,10 +1012,14 @@ impl<T: Widget + 'static> Widget for TileEditor<T> {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut automerge::AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        self.0.start_operation(op, doc, path)
+        self.0.start_operation(
+            op,
+            &mut crate::widget::Edits::lend(doc.document_mut()),
+            path,
+        )
     }
     fn build_layout(
         &mut self,
@@ -1031,10 +1030,7 @@ impl<T: Widget + 'static> Widget for TileEditor<T> {
         let child = self.0.build_layout(tree, theme, nodes);
         tree.new_with_children(
             taffy::Style {
-                size: taffy::Size {
-                    width: taffy::Dimension::length(500.0),
-                    height: taffy::Dimension::length(40.0),
-                },
+                size: taffy::Size::from_lengths(500.0, 40.0),
                 ..Default::default()
             },
             &[child],
@@ -1047,14 +1043,10 @@ impl<T: Widget + 'static> Widget for TileEditor<T> {
         node: taffy::NodeId,
         origin: vello::kurbo::Point,
     ) {
-        let layout = tree.layout(node).unwrap();
         self.0.apply_layout(
             tree,
             tree.children(node).unwrap()[0],
-            vello::kurbo::Point::new(
-                origin.x + f64::from(layout.location.x),
-                origin.y + f64::from(layout.location.y),
-            ),
+            crate::widget::layout_rect(tree, node, origin).origin(),
         );
     }
     fn handle_event(
@@ -1081,12 +1073,14 @@ pub(crate) fn legacy_tiles_root(
     second: &crate::record::RecordCheckout,
 ) -> Box<dyn Widget> {
     let tile = |checkout: &crate::record::RecordCheckout, name: &str| {
-        let mut tile =
-            crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(TileEditor(
-                crate::widget::TextInput::from_document_string("body")
+        let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
+            TileEditor(crate::testing::OwnedText::new(
+                "body",
+                crate::widget::TextInput::local()
                     .with_id(name)
                     .with_accessible_name(name),
-            ))));
+            )),
+        )));
         tile.bind_record(store.clone(), checkout.clone());
         tile
     };
@@ -1129,15 +1123,16 @@ fn legacy_admission_refuses_busy_rebound_dropped_or_replaced_owners() {
                 .unwrap();
         }
         let content = || {
-            crate::widget::TileContent::App(Box::new(TileEditor(
-                crate::widget::TextInput::from_document_string("body").with_id("legacy-leaf"),
-            )))
+            crate::widget::TileContent::App(Box::new(TileEditor(crate::testing::OwnedText::new(
+                "body",
+                crate::widget::TextInput::local().with_id("legacy-leaf"),
+            ))))
         };
         let mut tile = crate::widget::TileHost::new(content());
         tile.bind_record(a.clone(), checkout.clone());
         let mut outer = automerge::AutoCommit::new();
         outer.put(ROOT, "outer", "pending").unwrap();
-        tile.sync(&mut outer, &ROOT);
+        tile.sync(&outer, &ROOT);
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = std::collections::HashMap::new();
         let root = tile.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
@@ -1236,14 +1231,14 @@ fn legacy_admission_refuses_busy_rebound_dropped_or_replaced_owners() {
                 .unwrap();
         }
         let mut tile = Box::new(crate::widget::TileHost::new(
-            crate::widget::TileContent::App(Box::new(TileEditor(
-                crate::widget::TextInput::from_document_string("body")
-                    .with_accessible_name("owned editor"),
-            ))),
+            crate::widget::TileContent::App(Box::new(TileEditor(crate::testing::OwnedText::new(
+                "body",
+                crate::widget::TextInput::local().with_accessible_name("owned editor"),
+            )))),
         ));
         tile.bind_record(a.clone(), checkout.clone());
         let pointer = std::ptr::from_mut(tile.as_mut());
-        let mut driver = Driver::new(State::new(), tile, (900, 650));
+        let mut driver = FrameHarness::new(State::new(), tile, (900, 650));
         let old = driver.a11y_node_named("owned editor").unwrap();
         driver.relayout();
         assert_eq!(driver.a11y_node_named("owned editor"), Some(old));
@@ -1370,14 +1365,14 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
             let mut state = State::new();
             state.doc.put(ROOT, "body", "outer").unwrap();
             state.commit_action(None, None);
-            let mut driver = Driver::new(state, Box::new(tile), (900, 650));
+            let mut driver = FrameHarness::new(state, Box::new(tile), (900, 650));
             let principal = Subject::Principal(Principal::Person(LOCAL_USER.into()));
-            let mut capabilities = vec![CapOverride::new(
-                principal.clone(),
-                Scope::App(RESTORABLE.app_id.into()),
-                Effect::Grant,
-                Verb::Write,
-            )];
+            let mut permissions = PermissionContext::granted(
+                LOCAL_USER,
+                &TreePath::root().app(RESTORABLE.app_id),
+                policy::KindSet::ALL,
+                None,
+            );
             let extra = match case {
                 "file matching path" => Some(Scope::FsPath(path.to_string_lossy().into_owned())),
                 "file foreign path" => Some(Scope::FsPath(
@@ -1391,17 +1386,14 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
                 _ => None,
             };
             if let Some(scope) = extra {
-                capabilities.push(CapOverride::new(
+                permissions = permissions.granting(CapOverride::new(
                     principal,
                     scope,
                     Effect::Grant,
-                    Verb::Write,
+                    Access::Write,
                 ));
             }
-            driver.set_permission_ctx(PermissionContext::from_capabilities(
-                Actor::person(None, LOCAL_USER),
-                capabilities,
-            ));
+            driver.set_permission_ctx(permissions);
             let before = store
                 .with_history(&checkout.id, |doc, history| {
                     (doc.base_heads(), history.revision())
@@ -1450,7 +1442,7 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
                         );
                         assert_eq!(history.revision(), before.1 + 1);
                         assert_eq!(
-                            history.peek_last_undo().unwrap().author,
+                            history.peek_last_undo(doc).unwrap().author,
                             Some(crate::collaboration::local_user_id())
                         );
                         assert!(
@@ -1458,6 +1450,7 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
                                 .undo_as(
                                     doc,
                                     Some(&crate::collaboration::local_user_id()),
+                                    None,
                                     None,
                                     None
                                 )
@@ -1528,7 +1521,7 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
         )));
         tile.bind_record(store.clone(), first.clone());
         tile.register_document_history(&RESTORABLE).unwrap();
-        let mut driver = Driver::new(State::new(), Box::new(tile), (900, 650));
+        let mut driver = FrameHarness::new(State::new(), Box::new(tile), (900, 650));
         store
             .with_action_state(&other.id, |doc, _, _| {
                 doc.put(ROOT, "body", "unrelated unfinished edit").unwrap();
@@ -1594,7 +1587,7 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
         use crate::permissions::*;
         let mut fixture = TopLegacyFixture::new();
         let tile_pointer = std::ptr::from_mut(fixture.tile.as_mut());
-        let mut driver = Driver::from_managed_root(
+        let mut driver = FrameHarness::from_managed_root(
             State::new(),
             ManagedRoot::new(fixture.tile, fixture.registration),
             (900, 650),
@@ -1638,10 +1631,7 @@ fn legacy_restores_use_the_actual_owner_and_preserve_custody() {
                 .unwrap(),
             before + 1
         );
-        driver.set_permission_ctx(PermissionContext::from_capabilities(
-            Actor::person(None, LOCAL_USER),
-            vec![],
-        ));
+        driver.set_permission_ctx(crate::permissions::PermissionContext::stranger(LOCAL_USER));
         assert!(
             driver
                 .perform_a11y_action(target, &crate::a11y::Action::SetValue("denied".into()))
@@ -1749,11 +1739,12 @@ impl TopLegacyFixture {
                 .unwrap();
         }
         let mut tile = Box::new(crate::widget::TileHost::new(
-            crate::widget::TileContent::App(Box::new(TileEditor(
-                crate::widget::TextInput::from_document_string("body")
+            crate::widget::TileContent::App(Box::new(TileEditor(crate::testing::OwnedText::new(
+                "body",
+                crate::widget::TextInput::local()
                     .with_id("owned-editor")
                     .with_accessible_name("owned editor"),
-            ))),
+            )))),
         ));
         tile.bind_record(store.clone(), checkout.clone());
         let source = HistorySourceRegistration::owned(
@@ -1810,7 +1801,7 @@ static AUTOMATIC_MEDIA_DEFINITION: HistoryDefinition = HistoryDefinition {
         },
     }],
 };
-fn check_automatic_media(mut driver: Driver, selected: automerge::ChangeHash) {
+fn check_automatic_media(mut driver: FrameHarness, selected: automerge::ChangeHash) {
     use automerge::ReadDoc;
     let source = AUTOMATIC_MEDIA.with(|slot| slot.borrow_mut().take().unwrap());
     assert!(
@@ -1884,6 +1875,21 @@ struct RetainedLifecycleHandles {
     wrong_owner: std::rc::Rc<std::cell::Cell<usize>>,
     intent: std::rc::Rc<std::cell::RefCell<Option<crate::record::RecordCheckout>>>,
     last_owner: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    accepted: Accepted,
+}
+
+/// The results an owner accepted, each with the owner of the document it was
+/// handed when it did.
+type Accepted = std::rc::Rc<std::cell::RefCell<Vec<(String, String)>>>;
+
+/// `(owner, value)` for each result accepted so far.
+fn accepted(accepted: &Accepted) -> Vec<(String, String)> {
+    accepted.borrow().clone()
+}
+
+/// One accepted result: `value` under `owner`.
+fn one(owner: &str, value: &str) -> Vec<(String, String)> {
+    vec![(owner.to_owned(), value.to_owned())]
 }
 
 struct QueuedLifecycleResult {
@@ -1891,10 +1897,6 @@ struct QueuedLifecycleResult {
     value: String,
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "the fixture tracks independent lifecycle and owner-policy states"
-)]
 struct RetainedLifecycleProbe {
     id: &'static str,
     expected_owner: &'static str,
@@ -1903,7 +1905,6 @@ struct RetainedLifecycleProbe {
     text: crate::widget::Text,
     handles: RetainedLifecycleHandles,
     ready: bool,
-    dirty: bool,
     observed: String,
 }
 
@@ -1968,15 +1969,6 @@ fn stored_body(
         .unwrap()
 }
 
-fn stored_revision(
-    store: &crate::record::RecordStore,
-    checkout: &crate::record::RecordCheckout,
-) -> u64 {
-    store
-        .with_history(&checkout.id, |_, history| history.revision())
-        .unwrap()
-}
-
 /// Admits one retained-lifecycle operation and asserts the owner accepted it.
 fn admit(
     tile: &mut crate::widget::TileHost,
@@ -1991,7 +1983,7 @@ fn admit(
                 RETAINED_LIFECYCLE_OPERATION,
                 &[]
             ),
-            doc,
+            &mut crate::widget::Edits::lend(doc),
             &ROOT
         )
         .unwrap(),
@@ -2059,6 +2051,7 @@ fn retained_lifecycle_probe_with_owner_policy(
         wrong_owner: std::rc::Rc::new(std::cell::Cell::new(0)),
         intent: std::rc::Rc::new(std::cell::RefCell::new(None)),
         last_owner: std::rc::Rc::new(std::cell::RefCell::new(None)),
+        accepted: Accepted::default(),
     };
     (
         RetainedLifecycleProbe {
@@ -2069,7 +2062,6 @@ fn retained_lifecycle_probe_with_owner_policy(
             text: crate::widget::Text::new("Retained lifecycle"),
             handles: handles.clone(),
             ready: false,
-            dirty: false,
             observed: String::new(),
         },
         handles,
@@ -2086,8 +2078,7 @@ impl Widget for RetainedLifecycleProbe {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
-        dyn crate::record::capability::RecordScoped,
-        dyn crate::undo::UndoPoints
+        dyn crate::record::capability::RecordScoped
     );
 
     crate::testing::delegate_widget_methods!(text: apply_layout, draw, get_rect);
@@ -2097,14 +2088,21 @@ impl Widget for RetainedLifecycleProbe {
     fn test_id(&self) -> Option<&str> {
         Some(self.id)
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         use automerge::ReadDoc;
-        let (doc, path) = crate::doc::document(doc, path);
+        let (doc, path) = crate::doc::document_ref(doc, path);
         increment(&self.handles.syncs);
-        self.observed = doc
-            .get(path, "body")
-            .unwrap()
-            .and_then(|(value, _)| value.as_str().map(str::to_owned))
+        self.observed = self
+            .handles
+            .accepted
+            .borrow()
+            .last()
+            .map(|(_, value)| value.clone())
+            .or_else(|| {
+                doc.get(path, "body")
+                    .unwrap()
+                    .and_then(|(value, _)| value.as_str().map(str::to_owned))
+            })
             .unwrap_or_default();
         let Some(result) = self.handles.queued.borrow_mut().take() else {
             return;
@@ -2121,15 +2119,15 @@ impl Widget for RetainedLifecycleProbe {
             *self.handles.queued.borrow_mut() = Some(result);
             return;
         }
-        doc.put(path, "body", result.value.as_str()).unwrap();
-        doc.put(path, "accepted-owner", self.expected_owner)
-            .unwrap();
+        self.handles
+            .accepted
+            .borrow_mut()
+            .push((actual_owner.unwrap_or_default(), result.value.clone()));
         self.observed = result.value;
         increment(&self.handles.accepts);
         self.ready = true;
-        self.dirty = true;
     }
-    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
+    fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         increment(&self.handles.updates);
         false
     }
@@ -2160,7 +2158,10 @@ impl Widget for RetainedLifecycleProbe {
     ) {
         increment(&self.handles.events);
         if let Some(value) = self.handles.event_value.borrow().as_deref() {
-            ctx.state.put(ctx.path, "body", value).unwrap();
+            ctx.state
+                .document_mut()
+                .put(ctx.path, "body", value)
+                .unwrap();
         }
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -2169,11 +2170,11 @@ impl Widget for RetainedLifecycleProbe {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut automerge::AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         use automerge::ReadDoc;
-        let Some(crate::widget::OperationRequest {
+        let Some(crate::host_operation::OperationRequest {
             invocation,
             type_id,
             ..
@@ -2223,15 +2224,6 @@ impl Widget for RetainedLifecycleProbe {
     }
 }
 
-impl crate::undo::UndoPoints for RetainedLifecycleProbe {
-    fn needs_commit(&self) -> bool {
-        self.dirty
-    }
-    fn on_commit(&mut self) {
-        self.dirty = false;
-    }
-}
-
 impl crate::record::capability::RecordScoped for RetainedLifecycleProbe {
     fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
         self.handles.intent.borrow().clone()
@@ -2260,8 +2252,8 @@ struct ReleasableLifecycleHandles {
     refuse_release: std::rc::Rc<std::cell::Cell<bool>>,
     accepts: std::rc::Rc<std::cell::Cell<usize>>,
     completions: std::rc::Rc<std::cell::Cell<usize>>,
-    commits: std::rc::Rc<std::cell::Cell<usize>>,
     last_owner: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+    accepted: Accepted,
     terminal_update: std::rc::Rc<std::cell::RefCell<Option<tilo_actions::InvocationUpdate>>>,
 }
 
@@ -2270,7 +2262,6 @@ struct ReleasableLifecycleProbe {
     receiver: Option<std::sync::mpsc::Receiver<QueuedLifecycleResult>>,
     handles: ReleasableLifecycleHandles,
     ready: bool,
-    dirty: bool,
 }
 
 fn releasable_lifecycle_probe() -> (ReleasableLifecycleProbe, ReleasableLifecycleHandles) {
@@ -2284,8 +2275,8 @@ fn releasable_lifecycle_probe() -> (ReleasableLifecycleProbe, ReleasableLifecycl
         refuse_release: std::rc::Rc::new(std::cell::Cell::new(false)),
         accepts: std::rc::Rc::new(std::cell::Cell::new(0)),
         completions: std::rc::Rc::new(std::cell::Cell::new(0)),
-        commits: std::rc::Rc::new(std::cell::Cell::new(0)),
         last_owner: std::rc::Rc::new(std::cell::RefCell::new(None)),
+        accepted: Accepted::default(),
         terminal_update: std::rc::Rc::new(std::cell::RefCell::new(None)),
     };
     (
@@ -2294,7 +2285,6 @@ fn releasable_lifecycle_probe() -> (ReleasableLifecycleProbe, ReleasableLifecycl
             receiver: Some(receiver),
             handles: handles.clone(),
             ready: false,
-            dirty: false,
         },
         handles,
     )
@@ -2307,23 +2297,20 @@ crate::testing::test_app_widget!(
 );
 
 impl Widget for ReleasableLifecycleProbe {
-    crate::provides!(
-        dyn crate::record::capability::RecordScoped,
-        dyn crate::undo::UndoPoints
-    );
+    crate::provides!(dyn crate::record::capability::RecordScoped);
 
     crate::testing::delegate_widget_methods!(text: apply_layout, draw, get_rect);
     fn name(&self) -> &'static str {
         "ReleasableLifecycleProbe"
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         use automerge::ReadDoc;
-        let (doc, path) = crate::doc::document(doc, path);
-        self.handles.last_owner.replace(
-            doc.get(path, "owner")
-                .unwrap()
-                .and_then(|(value, _)| value.as_str().map(str::to_owned)),
-        );
+        let (doc, path) = crate::doc::document_ref(doc, path);
+        let owner = doc
+            .get(path, "owner")
+            .unwrap()
+            .and_then(|(value, _)| value.as_str().map(str::to_owned));
+        self.handles.last_owner.replace(owner.clone());
         let result = self
             .receiver
             .as_ref()
@@ -2332,12 +2319,14 @@ impl Widget for ReleasableLifecycleProbe {
         if self.handles.admitted.get() != Some(result.invocation) {
             return;
         }
-        doc.put(path, "body", result.value).unwrap();
+        self.handles
+            .accepted
+            .borrow_mut()
+            .push((owner.unwrap_or_default(), result.value));
         self.ready = true;
-        self.dirty = true;
         increment(&self.handles.accepts);
     }
-    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
+    fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         false
     }
     fn build_layout(
@@ -2353,10 +2342,10 @@ impl Widget for ReleasableLifecycleProbe {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        _: &mut automerge::AutoCommit,
+        _: &mut crate::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest {
+        let Some(crate::host_operation::OperationRequest {
             invocation,
             type_id,
             ..
@@ -2398,16 +2387,6 @@ impl Widget for ReleasableLifecycleProbe {
             invocation,
             output: tilo_actions::ActionOutput::default(),
         })
-    }
-}
-
-impl crate::undo::UndoPoints for ReleasableLifecycleProbe {
-    fn needs_commit(&self) -> bool {
-        self.dirty
-    }
-    fn on_commit(&mut self) {
-        self.dirty = false;
-        increment(&self.handles.commits);
     }
 }
 
@@ -2476,7 +2455,7 @@ fn hidden_legacy_tile_continues_exact_owner_lifecycle_and_settles_once() {
     outer.doc.put(ROOT, "owner", "outer").unwrap();
     outer.doc.put(ROOT, "body", "outer").unwrap();
     outer.commit_action(None, None);
-    let mut driver = Driver::new(outer, Box::new(root), (1200, 650));
+    let mut driver = FrameHarness::new(outer, Box::new(root), (1200, 650));
 
     first_handles.emitter.borrow_mut().emit(()).unwrap();
     driver.key("x");
@@ -2510,7 +2489,6 @@ fn hidden_legacy_tile_continues_exact_owner_lifecycle_and_settles_once() {
     let sibling_syncs = second_handles.syncs.get();
     let sibling_updates = second_handles.updates.get();
     let hidden_events = first_handles.events.get();
-    let history_revision = stored_revision(&store, &first);
     *first_handles.queued.borrow_mut() = Some(QueuedLifecycleResult {
         invocation,
         value: "picker result".into(),
@@ -2526,9 +2504,9 @@ fn hidden_legacy_tile_continues_exact_owner_lifecycle_and_settles_once() {
     driver.relayout();
 
     assert_eq!(
-        stored_body(&store, &first),
-        "picker result",
-        "the queued result must be accepted by the retained live root"
+        accepted(&first_handles.accepted),
+        one("first", "picker result"),
+        "the queued result must be accepted by the retained live root, on its owner"
     );
     assert_eq!(first_handles.accepts.get(), 1);
     assert_eq!(first_handles.completions.get(), 1);
@@ -2552,11 +2530,6 @@ fn hidden_legacy_tile_continues_exact_owner_lifecycle_and_settles_once() {
     assert_eq!(
         crate::state::owned_restore_tests::value(&driver.state_mut().doc),
         "outer"
-    );
-    assert_eq!(
-        stored_revision(&store, &first),
-        history_revision + 1,
-        "the legitimate result is one authored undo step on its actual owner"
     );
 
     let deadline = tilo_test_env::hang_deadline();
@@ -2611,7 +2584,7 @@ fn nested_hidden_tile_and_component_sibling_keep_single_lifecycle_cadence() {
     let mut outer = State::new();
     outer.doc.put(ROOT, "body", "outer").unwrap();
     outer.commit_action(None, None);
-    let mut driver = Driver::new(outer, Box::new(root), (1200, 650));
+    let mut driver = FrameHarness::new(outer, Box::new(root), (1200, 650));
 
     let nested_live = (nested_handles.updates.get(), nested_handles.syncs.get());
     let component_live = (
@@ -2676,7 +2649,7 @@ fn hidden_canonical_component_updates_once_per_ordinary_host_pass() {
     component.root = Some(Box::new(probe));
     component.register_document_history(&BOUND).unwrap();
     let root = crate::widget::TileHost::from_component(component);
-    let mut driver = Driver::new(State::new(), Box::new(root), (900, 650));
+    let mut driver = FrameHarness::new(State::new(), Box::new(root), (900, 650));
 
     let live = (handles.updates.get(), handles.syncs.get());
     driver.relayout();
@@ -2701,17 +2674,17 @@ fn framework_input_frame_still_suppresses_tile_lifecycle() {
         TileEditor(crate::widget::Column::new().push(Box::new(probe))),
     )));
     tile.bind_record(store, checkout);
-    let mut outer = automerge::AutoCommit::new();
+    let outer = automerge::AutoCommit::new();
     let flag = std::rc::Rc::new(std::cell::Cell::new(false));
     {
         let _frame = crate::history_mode::frame::FrameworkInputFrame::new(&flag, true);
-        assert!(!tile.update(&mut outer, &ROOT));
-        tile.sync(&mut outer, &ROOT);
+        assert!(!tile.update(&outer, &ROOT));
+        tile.sync(&outer, &ROOT);
     }
     assert_eq!(handles.updates.get(), 0);
     assert_eq!(handles.syncs.get(), 0);
-    assert!(!tile.update(&mut outer, &ROOT));
-    tile.sync(&mut outer, &ROOT);
+    assert!(!tile.update(&outer, &ROOT));
+    tile.sync(&outer, &ROOT);
     assert_eq!(handles.updates.get(), 1);
     assert_eq!(handles.syncs.get(), 1);
 }
@@ -2731,7 +2704,7 @@ fn closed_hidden_owner_never_receives_queued_lifecycle_result() {
     let mut outer = automerge::AutoCommit::new();
     admit(&mut tile, invocation, &mut outer);
     let tile_pointer = std::ptr::from_mut(tile.as_mut());
-    let mut driver = Driver::new(State::new(), tile, (900, 650));
+    let mut driver = FrameHarness::new(State::new(), tile, (900, 650));
     driver.click_named("history-open").unwrap();
     *handles.queued.borrow_mut() = Some(QueuedLifecycleResult {
         invocation,
@@ -2739,23 +2712,20 @@ fn closed_hidden_owner_never_receives_queued_lifecycle_result() {
     });
     let syncs = handles.syncs.get();
     let updates = handles.updates.get();
-    let revision = stored_revision(&store, &checkout);
 
     // SAFETY: the driver exclusively owns this retained box and no node/widget
     // references are borrowed across the close or following lifecycle pass.
     let _ = unsafe { crate::component_lifecycle::close_components(&mut (*tile_pointer)) };
     driver.relayout();
 
-    assert_eq!(
-        stored_body(&store, &checkout),
-        "before close",
+    assert!(
+        accepted(&handles.accepted).is_empty(),
         "a closed retained root must never receive its former owner's document"
     );
     assert_eq!(handles.accepts.get(), 0);
     assert_eq!(handles.syncs.get(), syncs);
     assert_eq!(handles.updates.get(), updates);
     assert!(handles.queued.borrow().is_some());
-    assert_eq!(stored_revision(&store, &checkout), revision);
     let update = unsafe {
         (*tile_pointer)
             .poll_resource_operation(invocation, false, &automerge::AutoCommit::new(), &ROOT)
@@ -2798,7 +2768,7 @@ fn rebound_owner_cannot_inherit_retained_result_or_invocation() {
     state.commit_action(None, None);
     admit(&mut tile, invocation, &mut state.doc);
     let tile_pointer = std::ptr::from_mut(tile.as_mut());
-    let mut driver = Driver::new(state, tile, (900, 650));
+    let mut driver = FrameHarness::new(state, tile, (900, 650));
     driver.click_named("history-open").unwrap();
     *handles.queued.borrow_mut() = Some(QueuedLifecycleResult {
         invocation,
@@ -2820,6 +2790,12 @@ fn rebound_owner_cannot_inherit_retained_result_or_invocation() {
         "second",
         "the replacement owner must never be loaned to opaque work admitted by the old owner"
     );
+    assert!(
+        accepted(&handles.accepted)
+            .iter()
+            .all(|(owner, _)| owner == "first"),
+        "every queued result stays with the owner that admitted it"
+    );
     let update = unsafe {
         (*tile_pointer)
             .poll_resource_operation(invocation, false, &driver.state_mut().doc, &ROOT)
@@ -2835,7 +2811,10 @@ fn rebound_owner_cannot_inherit_retained_result_or_invocation() {
     assert_eq!(handles.completions.get(), 1);
     assert_eq!(handles.wrong_owner.get(), 0);
     assert!(handles.queued.borrow().is_none());
-    assert_eq!(stored_body(&first, &checkout), "must stay with first");
+    assert_eq!(
+        accepted(&handles.accepted),
+        one("first", "must stay with first")
+    );
     assert_eq!(
         crate::state::owned_restore_tests::value(&driver.state_mut().doc),
         "outer"
@@ -2858,7 +2837,7 @@ fn history_open_record_intent_cannot_loan_new_owner_to_unfenced_retained_result(
     admit(&mut tile, invocation, &mut outer);
     let mut tile = Box::new(tile);
     let tile_pointer = std::ptr::from_mut(tile.as_mut());
-    let mut driver = Driver::new(State::new(), tile, (900, 650));
+    let mut driver = FrameHarness::new(State::new(), tile, (900, 650));
     driver.click_named("history-open").unwrap();
     *handles.queued.borrow_mut() = Some(QueuedLifecycleResult {
         invocation,
@@ -2868,15 +2847,13 @@ fn history_open_record_intent_cannot_loan_new_owner_to_unfenced_retained_result(
 
     driver.relayout();
 
-    assert_eq!(
-        stored_body(&store, &second),
-        "second",
+    assert!(
+        accepted(&handles.accepted).is_empty(),
         "an ordinary record intent must not expose its new owner to opaque old-owner work"
     );
     assert!(unsafe { (*tile_pointer).record_transition_error().is_some() });
     assert_eq!(handles.accepts.get(), 0);
     assert!(handles.queued.borrow().is_some());
-    assert_eq!(stored_body(&store, &first), "first");
 }
 
 #[test]
@@ -2890,7 +2867,7 @@ fn live_record_intent_without_owner_bound_work_still_switches_normally() {
     let (probe, handles) = retained_lifecycle_probe("ordinary-intent", "first");
     let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(probe)));
     tile.bind_record(store, first);
-    let mut driver = Driver::new(State::new(), Box::new(tile), (900, 650));
+    let mut driver = FrameHarness::new(State::new(), Box::new(tile), (900, 650));
 
     handles.intent.replace(Some(second));
     *handles.queued.borrow_mut() = Some(QueuedLifecycleResult {
@@ -2921,26 +2898,22 @@ fn refused_transition_does_not_repoll_an_undrained_stream_update() {
         invocation,
         value: "stream ready".into(),
     });
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     handles.intent.replace(Some(second));
     for _ in 0..5 {
-        tile.sync(&mut outer, &ROOT);
-        tile.update(&mut outer, &ROOT);
+        tile.sync(&outer, &ROOT);
+        tile.update(&outer, &ROOT);
     }
     assert_eq!(handles.polls.get(), 1);
     assert!(matches!(
         tile.poll_resource_operation(invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Item { sequence: 1, .. })
     ));
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert_eq!(handles.polls.get(), 2);
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "The test keeps old-owner release and new-owner admission in one ordered lifecycle."
-)]
 fn direct_admission_releases_old_receiver_before_new_owner_and_accepts_fresh_work() {
     let (_directory, _owners, store) = lifecycle_store("release-direct");
     let first = note(723);
@@ -2951,27 +2924,27 @@ fn direct_admission_releases_old_receiver_before_new_owner_and_accepts_fresh_wor
     let (probe, handles) = releasable_lifecycle_probe();
     let mut tile = bound_tile(probe, &store, &first);
     let mut outer = automerge::AutoCommit::new();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     let old_invocation = tilo_actions::InvocationId::new();
     admit(&mut tile, old_invocation, &mut outer);
     let old_sender = handles.sender.borrow().clone();
-    let first_revision = stored_revision(&store, &first);
-    let second_revision = stored_revision(&store, &second);
     old_sender
         .send(QueuedLifecycleResult {
             invocation: old_invocation,
             value: "completed first result".into(),
         })
         .unwrap();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     handles.intent.replace(Some(second.clone()));
 
     let fresh_invocation = tilo_actions::InvocationId::new();
     admit(&mut tile, fresh_invocation, &mut outer);
     assert_eq!(handles.releases.get(), 1);
-    assert_eq!(handles.commits.get(), 1);
-    assert_eq!(stored_revision(&store, &first), first_revision + 1);
-    assert_eq!(stored_revision(&store, &second), second_revision);
+    assert_eq!(
+        accepted(&handles.accepted),
+        one("first", "completed first result"),
+        "the old owner took its result before it was released"
+    );
     assert!(
         old_sender
             .send(QueuedLifecycleResult {
@@ -2981,10 +2954,10 @@ fn direct_admission_releases_old_receiver_before_new_owner_and_accepts_fresh_wor
             .is_err()
     );
     for _ in 0..3 {
-        tile.sync(&mut outer, &ROOT);
-        tile.update(&mut outer, &ROOT);
+        tile.sync(&outer, &ROOT);
+        tile.update(&outer, &ROOT);
     }
-    assert_eq!(stored_body(&store, &second), "second");
+    assert_eq!(accepted(&handles.accepted).len(), 1);
     let old_update = tile
         .poll_resource_operation(old_invocation, false, &outer, &ROOT)
         .unwrap();
@@ -2997,7 +2970,6 @@ fn direct_admission_releases_old_receiver_before_new_owner_and_accepts_fresh_wor
         tile.poll_resource_operation(old_invocation, false, &outer, &ROOT)
             .is_none()
     );
-    assert_eq!(stored_body(&store, &first), "completed first result");
 
     handles
         .sender
@@ -3007,8 +2979,11 @@ fn direct_admission_releases_old_receiver_before_new_owner_and_accepts_fresh_wor
             value: "fresh second result".into(),
         })
         .unwrap();
-    tile.sync(&mut outer, &ROOT);
-    assert_eq!(stored_body(&store, &second), "fresh second result");
+    tile.sync(&outer, &ROOT);
+    assert_eq!(
+        accepted(&handles.accepted).last(),
+        Some(&("second".to_owned(), "fresh second result".to_owned()))
+    );
     assert!(matches!(
         tile.poll_resource_operation(fresh_invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Succeeded { invocation, .. })
@@ -3029,7 +3004,7 @@ fn recovered_missing_target_still_releases_after_terminal_invocation_map_removal
     let (probe, handles) = releasable_lifecycle_probe();
     let mut tile = bound_tile(probe, &store, &first);
     let mut outer = automerge::AutoCommit::new();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     let invocation = tilo_actions::InvocationId::new();
     admit(&mut tile, invocation, &mut outer);
     handles
@@ -3040,7 +3015,7 @@ fn recovered_missing_target_still_releases_after_terminal_invocation_map_removal
             value: "completed on first".into(),
         })
         .unwrap();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert!(matches!(
         tile.poll_resource_operation(invocation, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Succeeded { .. })
@@ -3051,7 +3026,7 @@ fn recovered_missing_target_still_releases_after_terminal_invocation_map_removal
     assert!(tile.record_transition_error().is_some());
     assert!(tile.history_owner().is_some());
     seed_note(&store, &second, "second", "second");
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert_eq!(handles.releases.get(), 1);
     assert!(tile.record_transition_error().is_none());
     assert!(
@@ -3063,10 +3038,13 @@ fn recovered_missing_target_still_releases_after_terminal_invocation_map_removal
             .is_err()
     );
     for _ in 0..3 {
-        tile.sync(&mut outer, &ROOT);
+        tile.sync(&outer, &ROOT);
     }
-    assert_eq!(stored_body(&store, &second), "second");
-    assert_eq!(stored_body(&store, &first), "completed on first");
+    assert_eq!(
+        accepted(&handles.accepted),
+        one("first", "completed on first"),
+        "the late result reaches nobody"
+    );
 }
 
 #[test]
@@ -3080,7 +3058,7 @@ fn unavailable_old_record_loan_blocks_release_without_acknowledging_commit() {
     let (probe, handles) = releasable_lifecycle_probe();
     let mut tile = bound_tile(probe, &store, &first);
     let mut outer = automerge::AutoCommit::new();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     let invocation = tilo_actions::InvocationId::new();
     admit(&mut tile, invocation, &mut outer);
     handles
@@ -3091,7 +3069,7 @@ fn unavailable_old_record_loan_blocks_release_without_acknowledging_commit() {
             value: "pending old commit".into(),
         })
         .unwrap();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
 
     store
         .with(&first.id, |_| {
@@ -3099,15 +3077,15 @@ fn unavailable_old_record_loan_blocks_release_without_acknowledging_commit() {
         })
         .unwrap();
     assert!(tile.record_transition_error().is_some());
-    assert_eq!(handles.commits.get(), 0);
     assert_eq!(handles.releases.get(), 0);
-    assert_eq!(stored_body(&store, &second), "second");
 
     tile.bind_record(store.clone(), second);
     assert!(tile.record_transition_error().is_none());
-    assert_eq!(handles.commits.get(), 1);
     assert_eq!(handles.releases.get(), 1);
-    assert_eq!(stored_body(&store, &first), "pending old commit");
+    assert_eq!(
+        accepted(&handles.accepted),
+        one("first", "pending old commit")
+    );
 }
 
 #[test]
@@ -3134,7 +3112,7 @@ fn renewed_same_id_custody_releases_terminally_polled_old_queue_before_sync() {
             current.id.clone(),
             crate::record::RecordKind::new("wrong-kind"),
         )));
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert!(tile.record_transition_error().is_some() || tile.history_owner().is_none());
     assert!(matches!(
         tile.poll_resource_operation(invocation, false, &outer, &ROOT),
@@ -3144,11 +3122,10 @@ fn renewed_same_id_custody_releases_terminally_polled_old_queue_before_sync() {
 
     handles.intent.replace(Some(current.clone()));
     let _ = tile.content_mut();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
 
-    assert_eq!(
-        stored_body(&store, &current),
-        "current",
+    assert!(
+        accepted(&handles.accepted).is_empty(),
         "a renewed lifetime with the same record spelling must release the old queue first"
     );
     assert_eq!(handles.releases.get(), 1);
@@ -3173,7 +3150,7 @@ fn renewed_lifetime_blocks_recovery_event_before_old_custody_release() {
     ));
     tile.bind_record(store.clone(), current.clone());
     let tile_pointer = std::ptr::from_mut(tile.as_mut());
-    let mut driver = Driver::new(State::new(), tile, (700, 480));
+    let mut driver = FrameHarness::new(State::new(), tile, (700, 480));
     let invocation = tilo_actions::InvocationId::new();
     assert!(matches!(
         unsafe {
@@ -3184,7 +3161,7 @@ fn renewed_lifetime_blocks_recovery_event_before_old_custody_release() {
                     RETAINED_LIFECYCLE_OPERATION,
                     &[],
                 ),
-                &mut driver.state_mut().doc,
+                &mut crate::widget::Edits::lend(&mut driver.state_mut().doc),
                 &ROOT,
             )
         }
@@ -3235,14 +3212,13 @@ fn explicit_current_bind_cancels_missing_target_without_later_replay() {
         })
         .unwrap();
     for _ in 0..3 {
-        tile.sync(&mut outer, &ROOT);
-        tile.update(&mut outer, &ROOT);
+        tile.sync(&outer, &ROOT);
+        tile.update(&outer, &ROOT);
     }
 
-    assert_eq!(stored_body(&store, &current), "current owner result");
     assert_eq!(
-        stored_body(&store, &abandoned),
-        "abandoned",
+        accepted(&handles.accepted),
+        one("current", "current owner result"),
         "later target availability must not replay the superseded bind"
     );
     assert_eq!(handles.releases.get(), 0);
@@ -3285,7 +3261,7 @@ fn refused_history_transition_is_accessible_and_back_to_live_remains_interactive
     let mut tile = Box::new(tile);
     let tile_pointer = std::ptr::from_mut(tile.as_mut());
     let root = crate::widget::Row::new().push(tile);
-    let mut driver = Driver::new(State::new(), Box::new(root), (900, 650));
+    let mut driver = FrameHarness::new(State::new(), Box::new(root), (900, 650));
     driver.click_named("history-open").unwrap();
     let target = format!(
         "timeline-entry:{}",
@@ -3468,7 +3444,7 @@ fn pending_missing_target_retries_after_cached_item_is_delivered() {
             sequence: 1,
             value: serde_json::json!("first"),
         });
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert!(tile.record_transition_error().is_some());
     assert!(matches!(
         tile.poll_resource_operation(invocation, false, &outer, &ROOT),
@@ -3486,7 +3462,7 @@ fn pending_missing_target_retries_after_cached_item_is_delivered() {
             message: Some("after item".into()),
         });
 
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
 
     assert_eq!(
         handles.last_owner.borrow().as_deref(),
@@ -3546,12 +3522,11 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
     let (probe, handles) = releasable_lifecycle_probe();
     let mut tile = bound_tile(probe, &old_store, &old);
     let mut outer = automerge::AutoCommit::new();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     let invocation = tilo_actions::InvocationId::new();
     admit(&mut tile, invocation, &mut outer);
     let old_owner = tile.history_owner().unwrap();
     old_owner.validate().unwrap();
-    let old_revision = stored_revision(&old_store, &old);
     let old_sender = handles.sender.borrow().clone();
     old_sender
         .send(QueuedLifecycleResult {
@@ -3559,8 +3534,8 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
             value: "old draft".into(),
         })
         .unwrap();
-    tile.sync(&mut outer, &ROOT);
-    assert_eq!(handles.commits.get(), 0);
+    tile.sync(&outer, &ROOT);
+    assert_eq!(accepted(&handles.accepted), one("old", "old draft"));
 
     handles
         .terminal_update
@@ -3607,7 +3582,6 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
             tile.record_transition_error(),
             Some("draft release temporarily refused")
         );
-        assert_eq!(handles.commits.get(), 1);
         handles.refuse_release.set(false);
     } else {
         // Only A's store is borrowed: C admission and the empty retained-update
@@ -3621,13 +3595,12 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
             tile.record_transition_error(),
             Some("record is reserved or already initialized")
         );
-        assert_eq!(handles.commits.get(), 0);
     }
     assert_eq!(handles.releases.get(), 0);
 
     for _ in 0..3 {
-        tile.sync(&mut outer, &ROOT);
-        tile.update(&mut outer, &ROOT);
+        tile.sync(&outer, &ROOT);
+        tile.update(&outer, &ROOT);
         assert_eq!(
             handles.last_owner.borrow().as_deref(),
             Some("old"),
@@ -3638,7 +3611,6 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
         old_owner.validate().unwrap();
         assert!(retained_owner.same_owner(&old_owner));
         for (store, checkout, body) in [
-            (&old_store, &old, "old draft"),
             (&obsolete_store, &obsolete, "obsolete"),
             (&latest_store, &latest, "latest"),
         ] {
@@ -3650,11 +3622,10 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
         );
     }
     assert_eq!(handles.releases.get(), 0);
-    assert_eq!(handles.commits.get(), 1);
 
     tile.bind_record(latest_store.clone(), latest.clone());
     assert!(tile.record_transition_error().is_none());
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert_eq!(handles.last_owner.borrow().as_deref(), Some("latest"));
     let latest_owner = tile.history_owner().unwrap();
     latest_owner.validate().unwrap();
@@ -3662,8 +3633,6 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
     assert!(owner_store.same_owner(&latest_store));
     assert_eq!(owner_checkout, &latest);
     assert_eq!(handles.releases.get(), 1);
-    assert_eq!(handles.commits.get(), 1);
-    assert_eq!(stored_revision(&old_store, &old), old_revision + 1);
     assert!(
         old_sender
             .send(QueuedLifecycleResult {
@@ -3683,7 +3652,7 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
             value: "fresh latest result".into(),
         })
         .unwrap();
-    tile.sync(&mut outer, &ROOT);
+    tile.sync(&outer, &ROOT);
     assert!(matches!(
         tile.poll_resource_operation(fresh, false, &outer, &ROOT),
         Some(tilo_actions::InvocationUpdate::Succeeded { invocation: observed, .. }) if observed == fresh
@@ -3692,13 +3661,14 @@ fn assert_newer_refused_bind_supersedes_queued_target(refuse_release: bool) {
         tile.poll_resource_operation(fresh, false, &outer, &ROOT)
             .is_none()
     );
-    for (store, checkout, body) in [
-        (&old_store, &old, "old draft"),
-        (&obsolete_store, &obsolete, "obsolete"),
-        (&latest_store, &latest, "fresh latest result"),
-    ] {
-        assert_eq!(stored_body(store, checkout), body);
-    }
+    assert_eq!(
+        accepted(&handles.accepted),
+        [
+            one("old", "old draft"),
+            one("latest", "fresh latest result")
+        ]
+        .concat()
+    );
 }
 #[path = "readiness_tests.rs"]
 mod readiness_tests;

@@ -1,0 +1,10 @@
+# The app-paint ratchet for apps-canvas: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/canvas/src/panels/gradient.rs raw_paint 1
+apps/canvas/src/panels/well.rs raw_paint 1
+apps/canvas/src/preview.rs raw_paint 2
+apps/canvas/src/render.rs raw_paint 32
+apps/canvas/src/surface.rs literal_alpha 8
+apps/canvas/src/surface.rs raw_paint 27
+apps/canvas/src/thumb.rs raw_paint 3

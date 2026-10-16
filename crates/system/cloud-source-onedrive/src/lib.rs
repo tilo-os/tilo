@@ -39,9 +39,8 @@
 )]
 
 use std::collections::HashMap;
-use std::io::Read;
 use std::ops::Range;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use cloud_source::{
     Capabilities, Change, ChangeFeed, ChangePage, CloudSource, CredentialSource, Cursor, Download,
@@ -62,7 +61,8 @@ pub mod time;
 mod upload;
 
 use graph::{Drive, DriveItem, DriveType, Page, Permission, Version};
-use http::{Auth, Exact, Http};
+use http::{Auth, Http};
+use tilo_lock::MutexRecover as _;
 
 /// Microsoft Graph v1.0.
 pub const GRAPH_API: &str = "https://graph.microsoft.com/v1.0/";
@@ -315,7 +315,7 @@ impl OneDriveSource {
     }
 
     fn lock_scope(&self) -> std::sync::MutexGuard<'_, HashMap<String, bool>> {
-        self.scope.lock().unwrap_or_else(PoisonError::into_inner)
+        self.scope.lock_recover()
     }
 
     /// Whether `folder` is the mount root or lies below it.
@@ -474,48 +474,29 @@ impl OneDriveSource {
             );
         }
         let response = self.http.send(request, Auth::Preauthenticated)?;
-        let partial = response.status() == StatusCode::PARTIAL_CONTENT;
-        let content_range = response
-            .headers()
-            .get(reqwest::header::CONTENT_RANGE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(paths::parse_content_range);
-        let declared = response.content_length();
-        let total = if partial {
-            content_range
-                .as_ref()
-                .and_then(|(_, total)| *total)
-                .or(size)
-        } else {
-            declared.or(size)
+        let served = cloud_source::http::Served {
+            partial: response.status() == StatusCode::PARTIAL_CONTENT,
+            content_range: response
+                .headers()
+                .get(reqwest::header::CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(cloud_source::http::parse_content_range),
+            declared: response.content_length(),
         };
-        let mut body: Box<dyn Read + Send> = Box::new(response);
-        let range = match wanted {
-            None => 0..total.ok_or(Error::InvalidResponse("download length"))?,
-            Some(wanted) => {
-                if partial {
-                    let (got, _) = content_range.ok_or(Error::InvalidResponse("content-range"))?;
-                    if got.start != wanted.start || got.end < wanted.end {
-                        return Err(Error::InvalidResponse("content-range"));
-                    }
-                } else {
-                    // The range was ignored and the whole body sent: skip
-                    // to the start, as Graph documents it may.
-                    let skipped =
-                        std::io::copy(&mut (&mut body).take(wanted.start), &mut std::io::sink())?;
-                    if skipped != wanted.start {
-                        return Err(Error::InvalidResponse("short body"));
-                    }
-                }
-                wanted
+        let total = served.total().or(size);
+        // A whole body is read to its declared length, else to the item's
+        // size; Graph may also ignore the range and send the whole body.
+        let wanted = match wanted {
+            None if served.declared.is_none() => {
+                Some(0..total.ok_or(Error::InvalidResponse("download length"))?)
             }
+            wanted => wanted,
         };
-        let len = range.end.saturating_sub(range.start);
+        let download = cloud_source::http::ranged_body(Box::new(response), wanted, served)?;
         Ok(Download {
-            body: Box::new(Exact::new(body, len)),
-            range,
             total,
             revision,
+            ..download
         })
     }
 
@@ -786,17 +767,20 @@ impl CloudSource for OneDriveSource {
             return Err(self.http.error(http::failure(response), Auth::Bearer));
         }
         // Served directly: the whole body, cut to the range here.
-        let total = response.content_length();
-        let mut body: Box<dyn Read + Send> = Box::new(response);
-        let total = total.ok_or(Error::InvalidResponse("download length"))?;
-        let range = range.map_or(0..total, |r| r.start.min(total)..r.end.min(total));
-        std::io::copy(&mut (&mut body).take(range.start), &mut std::io::sink())?;
-        let len = range.end.saturating_sub(range.start);
+        let total = response
+            .content_length()
+            .ok_or(Error::InvalidResponse("download length"))?;
+        let range = range.map(|r| r.start.min(total)..r.end.min(total));
+        let served = cloud_source::http::Served {
+            partial: false,
+            content_range: None,
+            declared: Some(total),
+        };
+        let download = cloud_source::http::ranged_body(Box::new(response), range, served)?;
         Ok(Download {
-            body: Box::new(Exact::new(body, len)),
-            range,
             total: Some(total),
             revision: None,
+            ..download
         })
     }
 

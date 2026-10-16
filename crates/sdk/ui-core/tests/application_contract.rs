@@ -10,10 +10,6 @@ use tilo_ui::launch::LaunchError;
 use tilo_ui::record::RecordId;
 use tilo_ui::view::{FocusView, ThawError, View};
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
-)]
 #[test]
 fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
     // Case `new_instances_are_distinct_and_catalogue_never_fabricates_apps`.
@@ -61,18 +57,15 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
 
     // Case `permission_revocation_between_prepare_and_factory_is_enforced`.
     {
-        use tilo_ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
         let host = ProbeHost::new();
         let mut definition = definition(probe_factory);
         definition.required.push(denied_scope());
         let authority = permissions();
-        *authority.borrow_mut() = PermissionContext::from_capabilities(
-            Actor::person(None, "probe-author"),
-            vec![CapOverride::grant(
-                Subject::person("probe-author"),
-                Scope::Workspace,
-                Verb::Admin,
-            )],
+        *authority.borrow_mut() = tilo_ui::permissions::PermissionContext::granted(
+            "probe-author",
+            &tilo_ui::permissions::TreePath::root(),
+            tilo_ui::permissions::policy::KindSet::ALL,
+            None,
         );
         let context = HostContext::prepare(
             &definition,
@@ -879,7 +872,6 @@ fn envelope(device: &str, room: &str, scroll: f64) -> SavedInstanceView {
     reason = "fault matrix keeps last-owner transfer, pending-history comparison and repair in one auditable scenario"
 )]
 fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
-    use tilo_ui::permissions::{Actor, CapOverride, PermissionContext, Scope, Subject, Verb};
     for case in ["definition", "target", "foreign", "malformed", "revoked"] {
         let host = ProbeHost::new();
         let mut component =
@@ -921,7 +913,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             })
             .unwrap();
         let snapshot = |doc: &mut automerge::AutoCommit, history: &mut tilo_ui::state::UndoLog| {
-            let last = history.peek_last_undo().unwrap();
+            let last = history.peek_last_undo(doc).unwrap();
             (
                 doc.pending_ops(),
                 doc.base_heads(),
@@ -930,7 +922,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
                 last.before.clone(),
                 last.after.clone(),
                 last.widget_metadata.clone(),
-                last.author.clone(),
+                last.author,
             )
         };
         let before = host.records.with_history(&checkout.id, snapshot).unwrap();
@@ -940,13 +932,11 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         let authority = permissions();
         if case == "revoked" {
             definition.required.push(denied_scope());
-            *authority.borrow_mut() = PermissionContext::from_capabilities(
-                Actor::person(None, "probe-author"),
-                vec![CapOverride::grant(
-                    Subject::person("probe-author"),
-                    Scope::Workspace,
-                    Verb::Admin,
-                )],
+            *authority.borrow_mut() = tilo_ui::permissions::PermissionContext::granted(
+                "probe-author",
+                &tilo_ui::permissions::TreePath::root(),
+                tilo_ui::permissions::policy::KindSet::ALL,
+                None,
             );
         }
         let target = existing(&checkout);
@@ -1013,13 +1003,11 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         assert!(records.durability_error(&record.id).is_some());
         assert_eq!(calls(), 1);
         definition.app_id = APP;
-        *authority.borrow_mut() = PermissionContext::from_capabilities(
-            Actor::person(None, "probe-author"),
-            vec![CapOverride::grant(
-                Subject::person("probe-author"),
-                Scope::Workspace,
-                Verb::Admin,
-            )],
+        *authority.borrow_mut() = tilo_ui::permissions::PermissionContext::granted(
+            "probe-author",
+            &tilo_ui::permissions::TreePath::root(),
+            tilo_ui::permissions::policy::KindSet::ALL,
+            None,
         );
         let target = existing(&record);
         let context = HostContext::prepare(
@@ -1111,9 +1099,9 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
         let inspect = host.temp.path().join("output/inspect.json");
         let targets = host.temp.path().join("output/targets.json");
         let spec = tilo_ui::headless::Spec {
-            dump: Some(dump.clone()),
-            inspect: Some(inspect.clone()),
-            targets: Some(targets.clone()),
+            dump: Some(dump.to_str().unwrap().to_owned()),
+            inspect: Some(inspect.to_str().unwrap().to_owned()),
+            targets: Some(targets.to_str().unwrap().to_owned()),
             ..Default::default()
         };
         assert_eq!(
@@ -1152,9 +1140,13 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
                     .err()
                     .unwrap()
             } else {
-                tilo_ui::headless::Driver::from_component(component, (320, 180), runner_inputs())
-                    .err()
-                    .unwrap()
+                tilo_ui::headless::FrameHarness::from_component(
+                    component,
+                    (320, 180),
+                    runner_inputs(),
+                )
+                .err()
+                .unwrap()
             };
             let LaunchError::ComponentSetup {
                 record, recovery, ..
@@ -1191,7 +1183,7 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
             std::fs::create_dir_all(&output).unwrap();
             let spec = if output_failure {
                 tilo_ui::headless::Spec {
-                    dump: Some(output),
+                    dump: Some(output.to_str().unwrap().to_owned()),
                     ..Default::default()
                 }
             } else {
@@ -1270,12 +1262,10 @@ mod save_status_fixture {
     thread_local! {
         static STORE: RefCell<Option<RecordStore>> = const { RefCell::new(None) };
         static DELIVERED: RefCell<Vec<RecordSaveStatus>> = const { RefCell::new(Vec::new()) };
-        static TYPE_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
     struct StatusRoot {
         records: RecordStore,
         checkout: RecordCheckout,
-        edits: u64,
     }
     impl Widget for StatusRoot {
         fn build_layout(
@@ -1286,38 +1276,16 @@ mod save_status_fixture {
         ) -> taffy::NodeId {
             tree.new_leaf(taffy::Style::default()).unwrap()
         }
-        fn apply_layout(
-            &mut self,
-            _: &taffy::TaffyTree<()>,
-            _: taffy::NodeId,
-            _: vello::kurbo::Point,
-        ) {
-        }
-        fn draw(
-            &mut self,
-            _: &mut vello::Scene,
-            _: vello::kurbo::Affine,
-            _: &mut tilo_ui::TextRenderer,
-            _: &tilo_ui::Theme,
-            _: &tilo_ui::presence::PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Status"
         }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
-        }
-        fn sync(&mut self, doc: &mut tilo_ui::widget::AppModel, path: &tilo_ui::widget::ModelPath) {
-            let (doc, _) = tilo_ui::doc::document(doc, path);
+        fn settle(&mut self, _: &mut tilo_ui::widget::Edits<'_>, _: &automerge::ObjId) {
+            // Only settlement holds an exclusive record loan; sync/update
+            // are immutable projections and may share durability reads.
             assert!(matches!(
                 self.records.save_status(&self.checkout.id),
                 Err(RecordOpenError::Busy)
             ));
-            if TYPE_PENDING.replace(false) {
-                self.edits = self.edits.checked_add(1).unwrap();
-                doc.put(ROOT, "pending", self.edits).unwrap();
-            }
         }
     }
     impl AppWidget for StatusRoot {
@@ -1329,9 +1297,6 @@ mod save_status_fixture {
         }
         fn app_icon(&self) -> IconDescriptor {
             IconDescriptor::Named("status".into())
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
         fn record_save_status(&mut self, status: RecordSaveStatus) {
             assert_eq!(self.records.save_status(&self.checkout.id).unwrap(), status);
@@ -1351,7 +1316,6 @@ mod save_status_fixture {
         let root = StatusRoot {
             records: STORE.with(|store| store.borrow().as_ref().unwrap().clone()),
             checkout: context.record().clone(),
-            edits: 0,
         };
         Ok(tilo_ui::application::AppComponent::new(
             context,
@@ -1364,7 +1328,6 @@ mod save_status_fixture {
         fn drop(&mut self) {
             STORE.with(|store| *store.borrow_mut() = None);
             DELIVERED.with(|seen| seen.borrow_mut().clear());
-            TYPE_PENDING.set(false);
         }
     }
     struct Obstruction {
@@ -1393,8 +1356,20 @@ mod save_status_fixture {
         checkout: RecordCheckout,
         _clear: ClearStatusFixture,
         host: ProbeHost,
+        edits: u64,
     }
     impl Fixture {
+        /// An edit the record's owner made and has not committed yet.
+        fn type_pending(&mut self) {
+            self.edits = self.edits.checked_add(1).unwrap();
+            let edits = self.edits;
+            self.host
+                .records
+                .with(&self.checkout.id, |doc| {
+                    doc.put(ROOT, "pending", edits).unwrap();
+                })
+                .unwrap();
+        }
         pub(super) fn new() -> Self {
             let host = ProbeHost::new();
             let clear = ClearStatusFixture;
@@ -1409,7 +1384,9 @@ mod save_status_fixture {
             host.records.try_flush().unwrap();
             let mut tile = TileHost::from_component(component);
             let mut outer = automerge::AutoCommit::new();
-            tile.sync(&mut outer, &ROOT);
+            tile.settle(&mut tilo_ui::widget::Edits::lend(&mut outer), &ROOT);
+            tile.update(&outer, &ROOT);
+            tile.sync(&outer, &ROOT);
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().clone()),
                 vec![RecordSaveStatus::Saved]
@@ -1420,7 +1397,14 @@ mod save_status_fixture {
                 checkout,
                 _clear: clear,
                 host,
+                edits: 0,
             }
+        }
+        fn pump(&mut self) {
+            self.tile
+                .settle(&mut tilo_ui::widget::Edits::lend(&mut self.outer), &ROOT);
+            self.tile.update(&self.outer, &ROOT);
+            self.tile.sync(&self.outer, &ROOT);
         }
         fn path(&self) -> std::path::PathBuf {
             app_state::DocStore::room_record_dir_at(
@@ -1433,8 +1417,8 @@ mod save_status_fixture {
             .join(app_state::DOCUMENT_FILE)
         }
         pub(super) fn pending_and_visible_checkpoint(&mut self) {
-            TYPE_PENDING.set(true);
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.type_pending();
+            self.pump();
             let before = self
                 .host
                 .records
@@ -1443,7 +1427,7 @@ mod save_status_fixture {
                 })
                 .unwrap();
             for _ in 0..3 {
-                self.tile.sync(&mut self.outer, &ROOT);
+                self.pump();
             }
             assert_eq!(
                 self.host
@@ -1468,8 +1452,8 @@ mod save_status_fixture {
                 .records
                 .read(&self.checkout.id, Transactable::base_heads)
                 .unwrap();
-            TYPE_PENDING.set(true);
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.type_pending();
+            self.pump();
             let pending = self
                 .host
                 .records
@@ -1494,7 +1478,7 @@ mod save_status_fixture {
                 );
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.pump();
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Saving)
@@ -1509,12 +1493,25 @@ mod save_status_fixture {
                     .unwrap(),
                 pending
             );
+            // While the record is being written nothing else wakes the window,
+            // so the component asks to sync again on its own.
+            let _ = self.tile.take_structure_dirty();
+            assert!(
+                self.tile.next_wake_deadline().is_some(),
+                "a component showing Saving… must resample its durability"
+            );
             self.host.records.try_flush().unwrap();
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.pump();
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Saved)
             );
+            // The change is presented, and the resampling stops once saved.
+            assert!(
+                self.tile.take_structure_dirty(),
+                "the window must present the record becoming durable"
+            );
+            assert!(self.tile.next_wake_deadline().is_none());
         }
         pub(super) fn sticky_failure_and_recovery(&mut self) {
             let path = self.path();
@@ -1527,11 +1524,11 @@ mod save_status_fixture {
                 active: true,
             };
             std::fs::create_dir(&obstruction.path).unwrap();
-            TYPE_PENDING.set(true);
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.type_pending();
+            self.pump();
             assert!(self.host.records.try_flush().is_err());
             for _ in 0..3 {
-                self.tile.sync(&mut self.outer, &ROOT);
+                self.pump();
                 assert!(matches!(
                     DELIVERED.with(|seen| seen.borrow().last().cloned()),
                     Some(RecordSaveStatus::Failed(_))
@@ -1539,13 +1536,13 @@ mod save_status_fixture {
             }
             assert_eq!(std::fs::read(&obstruction.retained).unwrap(), original);
             obstruction.restore();
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.pump();
             assert!(matches!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Failed(_))
             ));
             self.host.records.try_flush().unwrap();
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.pump();
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Saved)
@@ -1558,7 +1555,7 @@ mod save_status_fixture {
                 && report.view_error.is_none()
                 && report.teardown_error.is_none()));
             let delivered = DELIVERED.with(|seen| seen.borrow().len());
-            self.tile.sync(&mut self.outer, &ROOT);
+            self.pump();
             assert_eq!(DELIVERED.with(|seen| seen.borrow().len()), delivered);
             STORE.with(|store| *store.borrow_mut() = None);
         }
@@ -1604,27 +1601,8 @@ mod paired_local {
         ) -> taffy::NodeId {
             tree.new_leaf(taffy::Style::default()).unwrap()
         }
-        fn apply_layout(
-            &mut self,
-            _: &taffy::TaffyTree<()>,
-            _: taffy::NodeId,
-            _: vello::kurbo::Point,
-        ) {
-        }
-        fn draw(
-            &mut self,
-            _: &mut vello::Scene,
-            _: vello::kurbo::Affine,
-            _: &mut tilo_ui::TextRenderer,
-            _: &tilo_ui::Theme,
-            _: &tilo_ui::presence::PresenceCtx,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Local pair"
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
         }
         fn is_focusable(&self) -> bool {
             true
@@ -1671,9 +1649,6 @@ mod paired_local {
         }
         fn app_icon(&self) -> IconDescriptor {
             IconDescriptor::Glyph("")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
         }
         fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError> {
             let mut state = self.0.borrow_mut();
@@ -1751,10 +1726,6 @@ mod paired_local {
         STATE.with(|slot| *slot.borrow_mut() = state.clone());
         (host, definition(factory), state)
     }
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
-    )]
     #[test]
     fn paired_local_views_bracket_restore_and_keep_complete_pairs_on_failure() {
         // Case `second_capture_failure_retains_complete_previous_pair_during_owned_close`.

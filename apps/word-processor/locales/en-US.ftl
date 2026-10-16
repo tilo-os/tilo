@@ -1,47 +1,44 @@
 # Word processor — source locale (en-US).
 #
-# Keys are grouped by UI surface. Single-glyph icon faces (B/I/U, ✓/✗, arrows)
+# Keys are grouped by UI surface. Single-letter toolbar faces (B/I/U)
 # stay as literals in code and are NOT keyed here. Interpolating messages use
 # Fluent placeables ({ $name }); see editor/src/i18n.rs (t_args).
 
 ## Toolbar button faces (the terse, visible labels)
-toolbar-new = New ▾
-toolbar-body = Body
-toolbar-list = • List
-toolbar-table = ⊞ Table
-toolbar-image = 🖼 Image
+toolbar-new = New
+toolbar-table = Table
 toolbar-link = Link
 toolbar-styles = Styles
 toolbar-ruler = Ruler
-toolbar-outline = Outline
-toolbar-toc = TOC
-toolbar-row-add = +Row
-toolbar-row-del = −Row
-toolbar-col-add = +Col
-toolbar-col-del = −Col
+toolbar-toc = Contents
+toolbar-row-add = Add row
+toolbar-row-del = Delete row
+toolbar-col-add = Add column
+toolbar-col-del = Delete column
+toolbar-bold = Bold
+toolbar-italic = Italic
+toolbar-underline = Underline
+toolbar-strikethrough = Strikethrough
+toolbar-superscript = Superscript
+toolbar-subscript = Subscript
+toolbar-size-down = Smaller
+toolbar-size-up = Larger
+toolbar-image = Image
+toolbar-table-delete = Delete table
 
 ## Toolbar accessibility names / tooltips (spelled-out for screen readers)
 a11y-group-formatting = Formatting
-a11y-zoom-out = Zoom out
-a11y-zoom-out-description = Reduce the page scale by 10 percent
-a11y-zoom-reset = Reset zoom
-a11y-zoom-reset-description = Return the page scale to 100 percent
-a11y-zoom-in = Zoom in
-a11y-zoom-in-description = Increase the page scale by 10 percent
 a11y-bold = Bold
 a11y-italic = Italic
 a11y-underline = Underline
 a11y-strikethrough = Strikethrough
 a11y-superscript = Superscript
 a11y-subscript = Subscript
-a11y-heading1 = Heading 1
-a11y-heading2 = Heading 2
 a11y-body-text = Body text
 a11y-bulleted-list = Bulleted list
 a11y-align-left = Align left
 a11y-align-center = Align center
 a11y-align-right = Align right
-a11y-justify = Justify
 a11y-line-spacing = Line spacing
 a11y-font = Font
 a11y-size-up = Increase font size
@@ -60,45 +57,18 @@ a11y-ruler = Ruler
 a11y-document-outline = Document outline
 a11y-insert-toc = Insert table of contents
 a11y-new-from-template = New from template
-a11y-text-color = Text color #{ $hex }
-a11y-text-color-default = Default text color
+a11y-text-color = Text colour #{ $hex }
+a11y-text-color-default = Default text colour
 a11y-highlight = Highlight #{ $hex }
 a11y-highlight-clear = Clear highlight
 
-## Crash-recovery banner
-recovery-banner = Recovered unsaved changes from a previous session.
-recovery-restore = Restore
-recovery-discard = Discard
 
 ## Status bar
-status-count = { $words } { $words ->
-        [one] word
-       *[other] words
-    }    { $chars } { $chars ->
-        [one] character
-       *[other] characters
-    }
 status-untitled = Untitled
-format-odt = ODF Text
-format-docx = Word Document
-format-markdown = Markdown
-format-pdf = PDF
-format-html = HTML
-format-rtf = Rich Text
-format-epub = EPUB
 
 ## Header / footer edit-mode tabs
 band-header = Header
 band-footer = Footer
-
-## Find / find-and-replace bar
-find-find = Find
-find-replace-with = Replace with
-find-bad-pattern = Bad pattern
-find-no-results = No results
-find-count = { $cur } / { $total }
-find-replace = Replace
-find-replace-all = All
 
 ## Review — context-menu rows
 review-accept-insertion = Accept insertion
@@ -107,18 +77,16 @@ review-accept-deletion = Accept deletion
 review-reject-deletion = Reject deletion
 review-resolve-comment = Resolve comment
 review-reply = Reply
-review-thread = Comment thread
 review-thread-unavailable = That comment is no longer available
-review-reply-placeholder = Write a reply…
+review-reply-placeholder = Write a reply
 review-send-reply = Send
 review-cancel-reply = Cancel
-review-you = You
 review-accept-all = Accept all changes
 review-reject-all = Reject all changes
 
 ## Review / comment margin cards
 review-comment = Comment
-review-resolve = ✓ Resolve
+review-resolve = Resolve
 review-insertion = Insertion
 review-deletion = Deletion
 
@@ -127,14 +95,14 @@ menu-add-to-dictionary = Add to dictionary
 menu-cut = Cut
 menu-copy = Copy
 menu-paste = Paste
-menu-select-all = Select All
+menu-select-all = Select all
 
-## Templates (New ▾ menu)
+## Templates (the New menu)
 template-blank = Blank
 template-letter = Letter
 template-report = Report
 template-resume = Resume
-template-meeting-notes = Meeting Notes
+template-meeting-notes = Meeting notes
 
 ## Built-in style display names (localized). Blocks store a stable English name
 ## for export interop; these are what the picker + style header actually show.
@@ -142,37 +110,37 @@ style-body = Body
 style-heading1 = Heading 1
 style-heading2 = Heading 2
 style-heading3 = Heading 3
-style-list = List Item
+style-list = List item
 style-quote = Quote
 
 ## Paragraph panel
-panel-this-paragraph = THIS PARAGRAPH
+panel-this-paragraph = This paragraph
 panel-line-spacing = Line spacing
-panel-style = PARAGRAPH STYLE
+panel-style = Paragraph style
 # Caption under the style name — makes the preset-vs-direct distinction explicit:
 # the toolbar formats the selection; this section edits the shared style.
-panel-style-hint = Changes every "{ $name }" paragraph
+panel-style-hint = Edits below change every paragraph in this style.
 panel-caret-hint = Place the caret in a paragraph
-panel-paragraph-styles = PARAGRAPH STYLES
-panel-style-properties = STYLE PROPERTIES
+panel-paragraph-styles = Paragraph styles
+panel-style-properties = Style properties
 panel-font = Font
 panel-font-serif = Serif
 panel-font-mono = Mono
 panel-font-sans = Sans
-panel-weight = Weight
+panel-weight = Emphasis
 panel-bold = Bold
 panel-italic = Italic
 panel-colour = Colour
-panel-colour-custom = Custom…
-panel-align = Align
-panel-new-style = + New style from this
+panel-colour-custom = Custom colour
+panel-align = Alignment
+panel-new-style = New style from this paragraph
 panel-num-size = Size
 panel-num-space-before = Space before
 panel-num-space-after = Space after
 panel-num-indent = Indent
 
 ## Image inspector (styles panel, when an image is selected)
-panel-image = IMAGE
+panel-image = Image
 panel-image-size = Size
 panel-image-width = Width
 panel-image-flip = Flip
@@ -181,9 +149,10 @@ panel-image-flip-v = Vertical
 panel-image-smaller = Smaller
 panel-image-larger = Larger
 panel-image-crop = Crop
-panel-image-crop-inset = Crop 5%
+panel-image-crop-inset = Crop edges
 panel-image-crop-reset = Reset
 panel-image-position = Position
+panel-image-inline = In line
 panel-image-free = Free
 panel-image-wrap-left = Left
 panel-image-wrap-right = Right
@@ -193,41 +162,30 @@ style-menu-delete = Delete style
 style-menu-duplicate = Duplicate style
 
 ## Transient toasts (confirmation cues)
-toast-toc-updated = Table of contents updated ({ $n } { $n ->
-        [one] entry
-       *[other] entries
-    })
 toast-toc-empty = Add headings first — a table of contents lists them
-toast-style-deleted = Style deleted
-toast-style-duplicated = Style duplicated
-toast-saved = Document saved
+saved-file = Saved { $file }
 toast-save-failed = Could not save the document
 toast-open-failed = Could not open the document. Your current document is unchanged.
 toast-view-only = This document is open to view only.
-unsaved-title = Save changes?
-unsaved-body = Save this document before replacing it.
-unsaved-save = Save
-unsaved-discard = Discard changes
-unsaved-cancel = Cancel
-unsaved-close = Close
 toast-file-dialog-failed = Could not open the file chooser
 
 ## Outline / navigation pane
-outline-header = OUTLINE
+outline-header = Outline
 outline-empty = No headings yet
-outline-untitled = (untitled)
+outline-untitled = Untitled heading
 
 ## Page layout (ruler) bottom bar
 layout-margins = Margins
 layout-spacing = Spacing
-layout-none-hint = Page layout — pick Margins or Spacing, then drag on the page
-layout-margins-readout = margins  L { $l }  T { $t }  R { $r }  B { $b }   ·   drag = opposite pair · Shift = one side · Ctrl = all proportional
-layout-spacing-readout = { $name } spacing  { $px } px   ·   drag the handle — every "{ $name }" block follows
+layout-margins-readout = Left { $l } px   Top { $t } px   Right { $r } px   Bottom { $b } px
+layout-spacing-readout = { $name } paragraphs: { $px } px after
 
 ## Canvas
 a11y-document-editor = Document editor
 a11y-group-review = Review suggestions
 a11y-group-image-placement = Image position
+a11y-image-inline = Image in line with text
+a11y-image-inline-description = Keep the image in the text flow, between paragraphs
 a11y-image-free-position = Free image position
 a11y-image-free-position-description = Place the image freely on the page without wrapping text
 a11y-image-wrap-left = Image left with text wrap
@@ -238,13 +196,11 @@ page-indicator = Page { $n }
 # On-page placeholders (a missing/undecodable image; an embedded object we render
 # as a fidelity box rather than its content).
 canvas-image-missing = image
-canvas-embedded-content = ⟦ embedded content ⟧
+canvas-embedded-content = Embedded content
 canvas-empty-placeholder = Start writing…
-toolbar-history = History
-toolbar-more = More ▾
-toolbar-text-color = Text color…
-toolbar-highlight = Highlight…
-picker-text-color = Text color
+toolbar-text-color = Colour
+toolbar-highlight = Highlight
+picker-text-color = Text colour
 picker-highlight = Highlight
 a11y-text-colour-name = { $colour } text
 a11y-highlight-name = { $colour } highlight
@@ -259,7 +215,6 @@ color-yellow = yellow
 color-cyan = cyan
 color-pink = pink
 color-orange = orange
-a11y-more-tools = More formatting and document tools
 a11y-version-history = Version history
 panel-close = Close
 
@@ -268,3 +223,69 @@ file-choice-title = Choose the document to open
 file-choice-body = This file differs from the workspace document. Keep the workspace version, or import the selected file into its history.
 file-choice-keep = Keep workspace version
 file-choice-use = Use selected file
+
+## Inspector and status band
+status-words = { $words } { $words ->
+        [one] word
+       *[other] words
+    }
+status-chars = { $chars } { $chars ->
+        [one] character
+       *[other] characters
+    }
+a11y-zoom = Zoom
+line-spacing-single = Single
+line-spacing-double = Double
+panel-align-left = Left
+panel-align-center = Centre
+panel-align-right = Right
+panel-align-justify = Justify
+a11y-more-tools = More formatting and document tools
+
+## History: what each change did, by field and by verb
+word-processor-document-body = { $op ->
+    [splice] Edited the text
+    [mark] { $on ->
+        [true] Made { $characters } characters { $mark ->
+            [strong] bold
+            [em] italic
+            [underline] underlined
+            [strike] struck through
+           *[other] { $mark }
+        }
+       *[false] Removed { $mark } from { $characters } characters
+    }
+    [set] { $kind ->
+        [heading] Made a heading of level { $level }
+        [list_item] Made a list
+        [paragraph] Made a body paragraph
+       *[other] Changed the paragraph style
+    }
+    [insert] { $object ->
+        [table] Inserted a table
+        [image] Inserted an image
+        [page-break] Inserted a page break
+       *[other] Inserted into the text
+    }
+    [remove] Removed { $blocks } objects
+    [replace] Replaced the whole text
+   *[other] Edited the text
+}
+word-processor-append-paragraph = Added a paragraph
+word-processor-insert-table = Inserted a table of { $rows } by { $columns }
+word-processor-add-row = Added a row to a table
+word-processor-add-column = Added a column to a table
+word-processor-delete-row = Deleted a row of a table
+word-processor-delete-column = Deleted a column of a table
+word-processor-delete-table = Deleted a table
+word-processor-delete-image = Deleted an image
+word-processor-accept-change = Accepted a change
+word-processor-reject-change = Rejected a change
+word-processor-accept-all-changes = Accepted every change
+word-processor-reject-all-changes = Rejected every change
+word-processor-add-comment = Commented: { $text }
+word-processor-reply-to-comment = Replied: { $text }
+word-processor-resolve-comment = Resolved a comment
+word-processor-set-page-margins = Changed the page margins
+word-processor-generate-toc = Added a table of contents
+word-processor-note-file-written = Saved to its file

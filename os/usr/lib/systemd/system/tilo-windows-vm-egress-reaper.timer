@@ -1,12 +1,15 @@
 [Unit]
-Description=Reap expired Tilo Windows egress leases
+Description=Refresh Tilo Windows appliance status and reap expired egress leases
+Documentation=file:///usr/share/doc/tilo/windows-vm.md
 ConditionKernelCommandLine=!tilo.install
+# Nothing to refresh or reap until an appliance is provisioned. This timer is
+# not enabled on its own: tilo-windows-vm-egress-reaper.path starts it when the
+# domain identity appears, so a machine that never provisioned Windows never
+# wakes for it. Lease expiry does not depend on this period:
+# tilo-windows-vm-egress-lease.path runs the reaper until the last lease is gone.
+ConditionPathExists=/var/lib/tilo/windows/domain.uuid
 
 [Timer]
 OnBootSec=30s
 OnUnitActiveSec=30s
 AccuracySec=5s
-Persistent=true
-
-[Install]
-WantedBy=timers.target

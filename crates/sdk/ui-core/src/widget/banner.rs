@@ -1,43 +1,91 @@
 //! `Banner` — an inline, semantic alert strip. Unlike a [`super::toast::Toast`]
-//! (transient, top-right, auto-expiring) a banner is a *persistent* in-flow
-//! message the user dismisses or resolves: "You're offline — changes will sync
-//! when you reconnect", "Saved", "This file has unsaved changes".
+//! (transient, auto-expiring) a banner is a *persistent* in-flow message the
+//! person resolves or dismisses: "You're offline — changes will sync when you
+//! reconnect", "This file has unsaved changes", "You're in a private window".
 //!
-//! Four severities ([`BannerKind`]) map onto the semantic colour ramp so the
-//! tint, border, and default leading icon all stay OS-controlled. A banner
-//! carries a **title** plus an optional secondary **message**, and can be made
-//! dismissible — the little "×" surfaces its click through
-//! [`Banner::take_dismissed`], the toolkit's drain channel, so a CRDT-native
-//! host can react without a callback.
+//! A [`BannerKind`] decides the leading icon and its colour; the well, the
+//! ink and the buttons come from the theme. A banner carries a **title**, an
+//! optional secondary **message**, up to two actions laid out inside its box
+//! at the trailing edge (they wrap under the message when the banner is
+//! narrow), and an optional dismiss control. The actions and the dismiss
+//! control are real [`Button`]s: focusable, named, and published as actions,
+//! so an app never places its own buttons beside a banner.
+//!
+//! [`Banner::paint`] and [`Banner::height`] draw the same banner for a host
+//! that paints into a `Scene`, and hand back where its buttons are.
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
-use taffy::style_helpers::{length, percent};
-use taffy::{NodeId, Style, TaffyTree};
+use automerge::ObjId;
+use taffy::style_helpers::{auto, length, percent};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::Color;
 
-use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
+use crate::local_state::LocalBinding;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
-use crate::widget::data_table::renderer_type_size;
+use crate::tokens::TextRole;
+use crate::widget::control_size::ControlSize;
+use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget, layout_rect};
 
-const PAD_X: f64 = 14.0;
-const PAD_Y: f64 = 12.0;
-const ICON_D: f64 = 18.0;
-const ACCENT_BAR_W: f64 = 4.0;
-const DISMISS_D: f64 = 18.0;
-const GAP: f64 = 10.0;
+/// The banner's metrics, from the theme.
+#[derive(Clone, Copy, Debug)]
+struct Metrics {
+    pad_x: f64,
+    pad_y: f64,
+    icon: f64,
+    dismiss: f64,
+    /// Between the icon and the text, and before the trailing controls.
+    gap: f64,
+    /// Between the message and actions that wrapped under it.
+    row_gap: f64,
+    /// Between two actions.
+    related: f64,
+    min_height: f64,
+    /// The narrowest the text may get before the actions wrap under it.
+    text_basis: f64,
+}
+
+impl Metrics {
+    fn of(theme: &Theme) -> Self {
+        let t = &theme.tokens;
+        Self {
+            pad_x: f64::from(t.spacing.s4),
+            pad_y: f64::from(t.spacing.s3),
+            icon: f64::from(t.metrics.icon_md),
+            dismiss: ButtonFace::height(ControlSize::Small, theme),
+            gap: f64::from(t.spacing.s3),
+            row_gap: f64::from(t.spacing.s2),
+            related: f64::from(t.spacing.rhythm.related),
+            min_height: f64::from(t.metrics.panel_row_height),
+            text_basis: f64::from(theme.text(TextRole::Body).line_height_px()) * 12.0,
+        }
+    }
+}
+
+fn title_style(theme: &Theme) -> TextStyle {
+    theme.text(TextRole::Body).strong()
+}
+
+fn message_style(theme: &Theme) -> TextStyle {
+    theme.text(TextRole::Caption)
+}
+
+/// The ground a banner stands on: a raised well in the content.
+fn well(theme: &Theme) -> Color {
+    theme.tokens.colors.surfaces.raised
+}
 
 /// What an immediate-mode [`Banner::paint`] shows: severity, leading icon,
-/// title, optional secondary message and whether the "×" is offered.
+/// title, optional message, up to two actions and whether it offers a
+/// dismiss control.
 #[derive(Clone, Copy, Debug)]
 pub struct BannerContent<'a> {
     pub kind: BannerKind,
@@ -45,6 +93,10 @@ pub struct BannerContent<'a> {
     pub title: &'a str,
     pub message: Option<&'a str>,
     pub dismissible: bool,
+    /// The banner's one main action ("Try again", "Restore").
+    pub action: Option<&'a str>,
+    /// A second action, before the main one ("Discard").
+    pub secondary_action: Option<&'a str>,
 }
 
 impl<'a> BannerContent<'a> {
@@ -56,6 +108,8 @@ impl<'a> BannerContent<'a> {
             title,
             message: None,
             dismissible: false,
+            action: None,
+            secondary_action: None,
         }
     }
 
@@ -76,123 +130,306 @@ impl<'a> BannerContent<'a> {
         self.dismissible = dismissible;
         self
     }
+
+    /// The banner's main action, at its trailing edge.
+    #[must_use]
+    pub fn action(mut self, label: &'a str) -> Self {
+        self.action = Some(label);
+        self
+    }
+
+    /// A second action, before the main one.
+    #[must_use]
+    pub fn secondary_action(mut self, label: &'a str) -> Self {
+        self.secondary_action = Some(label);
+        self
+    }
 }
 
-/// Shared visual paint for a banner filling `rect`. Used by both the retained
-/// [`Banner`] widget and the immediate-mode [`Banner::paint`] entry point.
-/// Returns the dismiss "×" rect when `dismissible`, else `Rect::ZERO`.
+/// Where [`Banner::paint`] put the banner and its controls, for the caller's
+/// hit-testing.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BannerHit {
+    /// The banner's box.
+    pub rect: Rect,
+    /// The main action's face, when the banner has one.
+    pub action: Option<Rect>,
+    /// The second action's face, when the banner has one.
+    pub secondary_action: Option<Rect>,
+    /// The dismiss control's face, when the banner is dismissible.
+    pub dismiss: Option<Rect>,
+}
+
+/// The face of a banner's action: the main one a secondary control, the
+/// other a plain one, both small.
+fn action_face(rect: Rect, label: &str, primary: bool) -> ButtonFace<'_> {
+    ButtonFace::new(rect, label)
+        .role(if primary {
+            ButtonRole::Secondary
+        } else {
+            ButtonRole::Plain
+        })
+        .control_size(ControlSize::Small)
+}
+
+/// One banner geometry, shared by the retained widget's measure and the
+/// immediate painter. Coordinates are relative to the banner's top-left.
+#[derive(Clone, Copy, Debug)]
+struct Geometry {
+    height: f64,
+    icon: Rect,
+    text: Point,
+    text_width: f32,
+    title_h: f64,
+    action: Option<Rect>,
+    secondary_action: Option<Rect>,
+    dismiss: Option<Rect>,
+}
+
+fn geometry(
+    content: &BannerContent<'_>,
+    width: f64,
+    text: &mut TextRenderer,
+    theme: &Theme,
+) -> Geometry {
+    let secondary = content
+        .secondary_action
+        .map(|label| action_face(Rect::ZERO, label, false).intrinsic_width(text, theme));
+    let main = content
+        .action
+        .map(|label| action_face(Rect::ZERO, label, true).intrinsic_width(text, theme));
+    geometry_with(content, [secondary, main], width, text, theme)
+}
+
+/// [`geometry`] with the actions' widths given: `[secondary, main]`. The
+/// retained banner measures its own buttons.
+fn geometry_with(
+    content: &BannerContent<'_>,
+    actions: [Option<f64>; 2],
+    width: f64,
+    text: &mut TextRenderer,
+    theme: &Theme,
+) -> Geometry {
+    let m = Metrics::of(theme);
+    let control_h = ButtonFace::height(ControlSize::Small, theme);
+    let trailing = if content.dismissible {
+        m.dismiss + m.gap
+    } else {
+        0.0
+    };
+    // The body: everything between the padding and the dismiss column.
+    let body_x0 = m.pad_x;
+    let body_x1 = (width - m.pad_x - trailing).max(body_x0 + 1.0);
+    let body_w = body_x1 - body_x0;
+    let widths: Vec<f64> = actions.iter().flatten().copied().collect();
+    let actions_w = widths.iter().sum::<f64>()
+        + m.related * crate::num::f64_of_usize(widths.len().saturating_sub(1));
+    let leading = m.icon + m.gap;
+    let beside = widths.is_empty() || body_w >= leading + m.text_basis + m.gap + actions_w;
+    let text_w = if widths.is_empty() || !beside {
+        body_w - leading
+    } else {
+        body_w - leading - m.gap - actions_w
+    }
+    .max(1.0);
+    let text_width = crate::num::f32_of_f64(text_w);
+    let title_h = f64::from(
+        text.measure_style(content.title, Some(text_width), &title_style(theme))
+            .1,
+    );
+    let message_h = content.message.map_or(0.0, |message| {
+        f64::from(theme.tokens.spacing.s1)
+            + f64::from(
+                text.measure_style(message, Some(text_width), &message_style(theme))
+                    .1,
+            )
+    });
+    let text_h = (title_h + message_h).max(m.icon);
+    let (line_h, actions_y) = if widths.is_empty() {
+        (text_h, 0.0)
+    } else if beside {
+        (text_h.max(control_h), 0.0)
+    } else {
+        (text_h + m.row_gap + control_h, text_h + m.row_gap)
+    };
+    let natural = line_h + 2.0 * m.pad_y;
+    let height = natural.max(m.min_height);
+    let top = (height - line_h) / 2.0;
+    let text_top = if beside {
+        top + (line_h - text_h) / 2.0
+    } else {
+        top
+    };
+    let icon = Rect::from_center_size(
+        Point::new(body_x0 + m.icon / 2.0, text_top + text_h / 2.0),
+        (m.icon, m.icon),
+    );
+    let text_origin = Point::new(
+        body_x0 + leading,
+        text_top + (text_h - (title_h + message_h)) / 2.0,
+    );
+    // Actions are laid out from the trailing edge back: the main action
+    // last, so it sits at the edge.
+    let actions_top = if beside {
+        top + (line_h - control_h) / 2.0
+    } else {
+        top + actions_y
+    };
+    let mut x = body_x1;
+    let mut rects = Vec::new();
+    for w in widths.iter().rev() {
+        rects.push(Rect::new(x - w, actions_top, x, actions_top + control_h));
+        x -= w + m.related;
+    }
+    let (action, secondary_action) = match (actions[1], actions[0]) {
+        (Some(_), Some(_)) => (rects.first().copied(), rects.get(1).copied()),
+        (Some(_), None) => (rects.first().copied(), None),
+        (None, Some(_)) => (None, rects.first().copied()),
+        (None, None) => (None, None),
+    };
+    let dismiss = content.dismissible.then(|| {
+        let x1 = width - m.pad_x;
+        // The dismiss control centres on the first line of the banner.
+        let cy = if beside {
+            height / 2.0
+        } else {
+            text_top + title_h.max(m.icon) / 2.0
+        };
+        Rect::new(
+            x1 - m.dismiss,
+            cy - m.dismiss / 2.0,
+            x1,
+            cy + m.dismiss / 2.0,
+        )
+    });
+    Geometry {
+        height,
+        icon,
+        text: text_origin,
+        text_width,
+        title_h,
+        action,
+        secondary_action,
+        dismiss,
+    }
+}
+
+/// Paint the banner's well into `rect`.
+fn paint_well(ctx: &mut PaintCtx<'_>, rect: Rect) {
+    let theme = ctx.theme;
+    let radius = f64::from(theme.tokens.radii.control);
+    let well = well(theme);
+    ctx.fill_round(rect, radius, well);
+    ctx.stroke_round(rect, radius, crate::surface::edge_on(well), 1.0);
+}
+
+/// Where the body's icon and text go, in absolute coordinates.
+#[derive(Clone, Copy, Debug)]
+struct BodyPlace {
+    icon: Rect,
+    text: Point,
+    text_width: f32,
+    title_h: f64,
+}
+
+/// Paint the icon, title and message of `content` at `place`.
+fn paint_body(ctx: &mut PaintCtx<'_>, content: &BannerContent<'_>, place: BodyPlace) {
+    let BodyPlace {
+        icon: icon_rect,
+        text,
+        text_width,
+        title_h,
+    } = place;
+    let (kind, icon, title, message) = (content.kind, content.icon, content.title, content.message);
+    let theme = ctx.theme;
+    let on_well = theme.on_ground(well(theme));
+    icon.draw(ctx.scene, ctx.transform, icon_rect, kind.icon_ink(&on_well));
+    ctx.text(
+        title,
+        &title_style(theme),
+        on_well.text_primary,
+        text,
+        Some(text_width),
+    );
+    if let Some(message) = message {
+        let y = text.y + title_h + f64::from(theme.tokens.spacing.s1);
+        ctx.text(
+            message,
+            &message_style(theme),
+            on_well.text_dim,
+            Point::new(text.x, y),
+            Some(text_width),
+        );
+    }
+}
+
 fn paint_banner(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
     content: &BannerContent<'_>,
     hover: Point,
-) -> Rect {
+) -> BannerHit {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
-        return Rect::ZERO;
+        return BannerHit::default();
     }
-    let BannerContent {
-        kind,
-        icon,
-        title,
-        message,
-        dismissible,
-    } = *content;
-    let theme = ctx.theme;
-    let transform = ctx.transform;
-    let accent = kind.color(theme);
-    let radius = f64::from(theme.tokens.radii.md);
-
-    ctx.fill_round(rect, radius, accent.with_alpha_factor(0.13));
-    ctx.stroke_round(rect, radius, accent.with_alpha_factor(0.4), 1.0);
-
-    let bar = RoundedRect::new(
-        rect.x0,
-        rect.y0,
-        rect.x0 + ACCENT_BAR_W,
-        rect.y1,
-        (radius, 0.0, 0.0, radius),
+    let theme = ctx.theme.clone();
+    let mut g = geometry(content, rect.width(), ctx.text, &theme);
+    // A taller rect than the banner needs centres the content in it.
+    let dy = ((rect.height() - g.height) / 2.0).max(0.0);
+    let origin = rect.origin().to_vec2() + vello::kurbo::Vec2::new(0.0, dy);
+    let shift = |r: Rect| r + origin;
+    g.icon = shift(g.icon);
+    g.text += origin;
+    paint_well(ctx, rect);
+    paint_body(
+        ctx,
+        content,
+        BodyPlace {
+            icon: g.icon,
+            text: g.text,
+            text_width: g.text_width,
+            title_h: g.title_h,
+        },
     );
-    ctx.scene.fill(Fill::NonZero, transform, accent, None, &bar);
-
-    let icon_x = rect.x0 + PAD_X;
-    let icon_cy = rect.center().y;
-    let icon_rect =
-        Rect::from_center_size(Point::new(icon_x + ICON_D / 2.0, icon_cy), (ICON_D, ICON_D));
-    icon.draw_with_stroke(ctx.scene, transform, icon_rect, accent, 1.6);
-
-    let text_x = icon_rect.x1 + GAP;
-    let title_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.base);
-    let msg_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.sm);
-    let title_style = TextStyle::new(title_size);
-    let message_style = TextStyle::new(msg_size);
-    let text_width = banner_text_width(rect, dismissible);
-    let (_, title_h) = ctx
-        .text
-        .measure_style(title, Some(text_width), &title_style);
-    let message_h = message.map_or(0.0, |msg| {
-        ctx.text
-            .measure_style(msg, Some(text_width), &message_style)
-            .1
-    });
-    let gap = f64::from(theme.tokens.spacing.s1);
-    let total_text_h = f64::from(title_h + message_h) + if message.is_some() { gap } else { 0.0 };
-    let mut ty = rect.center().y - total_text_h / 2.0;
-    ctx.text(
-        title,
-        &title_style,
-        theme.text_primary,
-        Point::new(text_x, ty),
-        Some(text_width),
-    );
-    ty += f64::from(title_h) + gap;
-    if let Some(msg) = message {
-        ctx.text(
-            msg,
-            &message_style,
-            theme.text_dim,
-            Point::new(text_x, ty),
-            Some(text_width),
-        );
-    }
-
-    if dismissible {
-        let dx = rect.x1 - PAD_X - DISMISS_D;
-        let dr = Rect::from_center_size(
-            Point::new(dx + DISMISS_D / 2.0, rect.center().y),
-            (DISMISS_D, DISMISS_D),
-        );
-        let hovered = dr.contains(hover);
-        let col = if hovered {
-            theme.text_primary
-        } else {
-            theme.text_dim
-        };
-        Icon::X.draw_with_stroke(ctx.scene, transform, dr, col, 1.6);
-        dr
-    } else {
-        Rect::ZERO
-    }
-}
-
-fn banner_text_width(rect: Rect, dismissible: bool) -> f32 {
-    let trailing = if dismissible {
-        PAD_X + DISMISS_D + GAP
-    } else {
-        PAD_X
+    let on_well = theme.on_ground(well(&theme));
+    let mut hit = BannerHit {
+        rect,
+        ..BannerHit::default()
     };
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "banner geometry is an ordinary logical-pixel value"
-    )]
-    {
-        (rect.width() - PAD_X - ICON_D - GAP - trailing).max(1.0) as f32
+    for (label, face_rect, primary) in [
+        (content.secondary_action, g.secondary_action, false),
+        (content.action, g.action, true),
+    ] {
+        if let (Some(label), Some(face_rect)) = (label, face_rect) {
+            let face_rect = shift(face_rect);
+            let face = action_face(face_rect, label, primary);
+            let hovered = face.contains(&on_well, hover);
+            let face = face.hovered(hovered);
+            crate::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, &on_well, &face);
+            if primary {
+                hit.action = Some(face_rect);
+            } else {
+                hit.secondary_action = Some(face_rect);
+            }
+        }
     }
+    if let Some(dismiss) = g.dismiss {
+        let dismiss = shift(dismiss);
+        let face = ButtonFace::icon_only(dismiss, Icon::X, "Dismiss")
+            .control_size(ControlSize::Small)
+            .hovered(dismiss.contains(hover));
+        crate::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, &on_well, &face);
+        hit.dismiss = Some(dismiss);
+    }
+    hit
 }
 
-/// Severity of a [`Banner`]. Selects the semantic colour and the default
-/// leading icon.
+/// Severity of a [`Banner`]. Selects the icon and its colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BannerKind {
+    /// A notice where nothing is wrong (a private window, a read-only
+    /// document): primary ink, no hue.
+    Neutral,
     Info,
     Success,
     Warning,
@@ -200,9 +437,12 @@ pub enum BannerKind {
 }
 
 impl BannerKind {
+    /// The status colour of this severity; primary ink for
+    /// [`BannerKind::Neutral`].
     pub fn color(self, theme: &Theme) -> Color {
         let s = &theme.tokens.colors.semantic;
         match self {
+            BannerKind::Neutral => theme.text_primary,
             BannerKind::Info => s.info,
             BannerKind::Success => s.success,
             BannerKind::Warning => s.warning,
@@ -210,56 +450,298 @@ impl BannerKind {
         }
     }
 
+    /// The icon ink on `on_well`, the theme resolved for the banner's well.
+    fn icon_ink(self, on_well: &Theme) -> Color {
+        self.color(on_well)
+    }
+
     /// The default leading icon for this severity (overridable via
     /// [`Banner::with_icon`]).
     pub fn default_icon(self) -> Icon {
         match self {
-            BannerKind::Info | BannerKind::Warning => Icon::Info,
+            BannerKind::Neutral | BannerKind::Info => Icon::Info,
+            BannerKind::Warning => Icon::TriangleAlert,
             BannerKind::Success => Icon::Check,
             BannerKind::Error => Icon::Ban,
         }
     }
+
+    fn politeness(self) -> crate::a11y::Politeness {
+        match self {
+            BannerKind::Error | BannerKind::Warning => crate::a11y::Politeness::Assertive,
+            _ => crate::a11y::Politeness::Polite,
+        }
+    }
 }
 
-/// An inline semantic alert with a title, optional message, and optional
-/// dismiss affordance.
-pub struct Banner {
-    kind: BannerKind,
-    title: String,
-    message: Option<String>,
-    icon: Option<Icon>,
-    dismissible: bool,
-    /// Persistent "the user closed this" state — collapses the banner. Stays
-    /// set so the widget stops painting until the host removes it from its
-    /// model.
-    dismissed: bool,
-    /// One-shot drain signal for [`take_dismissed`](Banner::take_dismissed),
-    /// separate from `dismissed` so reading the signal doesn't un-collapse
-    /// the banner.
-    dismiss_fired: bool,
-    rect: Rect,
-    dismiss_rect: Rect,
-    last_cursor: Point,
-    layout_theme: Theme,
+/// What a state-bound banner shows ([`Banner::from_state`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BannerNotice {
+    pub kind: BannerKind,
+    pub title: String,
+    pub message: Option<String>,
+    pub icon: Option<Icon>,
 }
 
-impl Banner {
+impl BannerNotice {
     pub fn new(kind: BannerKind, title: impl Into<String>) -> Self {
         Self {
             kind,
             title: title.into(),
             message: None,
             icon: None,
-            dismissible: false,
-            dismissed: false,
-            dismiss_fired: false,
-            rect: Rect::ZERO,
-            dismiss_rect: Rect::ZERO,
-            last_cursor: Point::ZERO,
-            layout_theme: Theme::dark(),
+        }
+    }
+    pub fn neutral(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Neutral, title)
+    }
+    pub fn info(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Info, title)
+    }
+    pub fn success(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Success, title)
+    }
+    pub fn warning(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Warning, title)
+    }
+    pub fn error(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Error, title)
+    }
+    #[must_use]
+    pub fn message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+    #[must_use]
+    pub fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Retained parts: the body, a measured leaf with the banner's whole geometry.
+// ---------------------------------------------------------------------------
+
+/// The well, icon, title and message: a measured leaf as tall as the whole
+/// banner at its width, laid out by the same geometry as the immediate
+/// painter, so the banner's buttons go where [`Banner::paint`] puts them.
+struct BannerBody {
+    notice: BannerNotice,
+    /// The measured widths of the banner's buttons: `[secondary, main]`.
+    actions: [Option<f64>; 2],
+    dismissible: bool,
+    rect: Rect,
+    theme: Theme,
+    dirty: bool,
+    layout_dirty: bool,
+}
+
+impl BannerBody {
+    fn content(&self) -> BannerContent<'_> {
+        let n = &self.notice;
+        BannerContent::new(n.kind, &n.title)
+            .with_icon(n.icon.unwrap_or_else(|| n.kind.default_icon()))
+            .with_message(n.message.as_deref())
+            .dismissible(self.dismissible)
+    }
+
+    fn geometry(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> Geometry {
+        geometry_with(&self.content(), self.actions, width, text, theme)
+    }
+}
+
+impl Widget for BannerBody {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.theme = theme.clone();
+        let style = Style {
+            size: Size {
+                width: percent(1.0_f32),
+                height: auto(),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        text: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        let m = Metrics::of(&self.theme);
+        let width = known.width.unwrap_or(match available.width {
+            taffy::AvailableSpace::Definite(width) => width,
+            taffy::AvailableSpace::MinContent => {
+                crate::num::f32_of_f64(m.icon + m.gap + 2.0 * m.pad_x)
+            }
+            taffy::AvailableSpace::MaxContent => {
+                crate::num::f32_of_f64(m.icon + m.gap + m.text_basis + 2.0 * m.pad_x)
+            }
+        });
+        let theme = self.theme.clone();
+        let g = self.geometry(text, &theme, f64::from(width));
+        taffy::Size {
+            width,
+            height: crate::num::f32_of_f64(g.height.ceil()),
         }
     }
 
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let rect = layout_rect(taffy, node, origin);
+        if rect != self.rect {
+            self.rect = rect;
+            self.dirty = true;
+        }
+        self.layout_dirty = false;
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let mut ctx = PaintCtx::new(scene, transform, text, theme);
+        paint_well(&mut ctx, self.rect);
+        let g = self.geometry(ctx.text, theme, self.rect.width());
+        let dy = ((self.rect.height() - g.height) / 2.0).max(0.0);
+        let origin = self.rect.origin().to_vec2() + vello::kurbo::Vec2::new(0.0, dy);
+        let content = self.content();
+        paint_body(
+            &mut ctx,
+            &content,
+            BodyPlace {
+                icon: g.icon + origin,
+                text: g.text + origin,
+                text_width: g.text_width,
+                title_h: g.title_h,
+            },
+        );
+    }
+
+    fn name(&self) -> &'static str {
+        "BannerBody"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    crate::redraw_flag!();
+
+    fn is_layout_dirty(&self) -> bool {
+        self.layout_dirty || self.rect == Rect::ZERO
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Banner — retained.
+// ---------------------------------------------------------------------------
+
+/// An inline semantic alert with a title, an optional message, up to two
+/// actions and an optional dismiss control.
+pub struct Banner {
+    body: BannerBody,
+    secondary: Option<Button>,
+    action: Option<Button>,
+    dismiss: Option<Button>,
+    id: Option<String>,
+    /// Absent: the banner collapses, and with it its gap in the parent.
+    shown: bool,
+    source: Option<LocalBinding<Option<BannerNotice>>>,
+    /// Persistent "the person closed this" state; collapses the banner until
+    /// the host shows another notice.
+    dismissed: bool,
+    /// One-shot drain signal for [`take_dismissed`](Banner::take_dismissed).
+    dismiss_fired: bool,
+    /// Set by the dismiss control's action; read on the next sync.
+    dismiss_requested: Rc<Cell<bool>>,
+    on_dismiss: Option<Box<dyn FnMut()>>,
+    /// The body's node, then one per button, in [`Widget::children`] order.
+    nodes: Vec<NodeId>,
+    rect: Rect,
+    layout_dirty: bool,
+    dirty: bool,
+}
+
+impl Banner {
+    /// Show or hide this node with the banner. True when the style changed.
+    fn style_visibility(&self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let display = if self.visible() {
+            taffy::Display::Flex
+        } else {
+            taffy::Display::None
+        };
+        let Ok(current) = taffy.style(node) else {
+            return false;
+        };
+        if current.display == display {
+            return false;
+        }
+        let mut style = current.clone();
+        style.display = display;
+        taffy.set_style(node, style).is_ok()
+    }
+
+    pub fn new(kind: BannerKind, title: impl Into<String>) -> Self {
+        Self::from_notice(Some(BannerNotice::new(kind, title)))
+    }
+
+    fn from_notice(notice: Option<BannerNotice>) -> Self {
+        let shown = notice.is_some();
+        Self {
+            body: BannerBody {
+                notice: notice.unwrap_or_else(|| BannerNotice::neutral("")),
+                actions: [None, None],
+                dismissible: false,
+                rect: Rect::ZERO,
+                theme: Theme::dark(),
+                dirty: true,
+                layout_dirty: true,
+            },
+            secondary: None,
+            action: None,
+            dismiss: None,
+            id: None,
+            shown,
+            source: None,
+            dismissed: false,
+            dismiss_fired: false,
+            dismiss_requested: Rc::new(Cell::new(false)),
+            on_dismiss: None,
+            nodes: Vec::new(),
+            rect: Rect::ZERO,
+            layout_dirty: true,
+            dirty: true,
+        }
+    }
+
+    /// A banner bound to `state`: it shows the notice while there is one and
+    /// collapses, with its gap, while the state holds `None`. A new notice
+    /// clears an earlier dismissal.
+    pub fn from_state(state: &crate::LocalState<Option<BannerNotice>>) -> Self {
+        let (notice, binding) = LocalBinding::new(state);
+        let mut banner = Self::from_notice(notice);
+        banner.source = Some(binding);
+        banner
+    }
+
+    pub fn neutral(title: impl Into<String>) -> Self {
+        Self::new(BannerKind::Neutral, title)
+    }
     pub fn info(title: impl Into<String>) -> Self {
         Self::new(BannerKind::Info, title)
     }
@@ -275,186 +757,414 @@ impl Banner {
 
     #[must_use]
     pub fn with_message(mut self, message: impl Into<String>) -> Self {
-        self.message = Some(message.into());
+        self.body.notice.message = Some(message.into());
         self
     }
 
     #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
-        self.icon = Some(icon);
+        self.body.notice.icon = Some(icon);
         self
     }
 
-    /// Show a trailing "×" the user can click to dismiss.
+    /// Name the banner for tests, scenarios and inspection. Its dismiss
+    /// control is `<id>.dismiss`.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        if self.dismiss.is_some() {
+            self = self.dismissible();
+        }
+        self
+    }
+
+    /// The banner's main action, inside its box at the trailing edge. The
+    /// banner sizes it; the button keeps its role.
+    #[must_use]
+    pub fn with_action(mut self, button: Button) -> Self {
+        self.action = Some(button.control_size(ControlSize::Small));
+        self
+    }
+
+    /// A second action, before the main one.
+    #[must_use]
+    pub fn with_secondary_action(mut self, button: Button) -> Self {
+        self.secondary = Some(button.control_size(ControlSize::Small));
+        self
+    }
+
+    /// Offer a dismiss control at the trailing edge: a focusable icon button
+    /// named "Dismiss".
     #[must_use]
     pub fn dismissible(mut self) -> Self {
-        self.dismissible = true;
+        let id = format!("{}.dismiss", self.id.as_deref().unwrap_or("banner"));
+        let requested = Rc::clone(&self.dismiss_requested);
+        self.dismiss = Some(
+            Button::icon_only(&id, Icon::X, "Dismiss")
+                .control_size(ControlSize::Small)
+                .on_view(move || requested.set(true)),
+        );
+        self.body.dismissible = true;
         self
     }
 
-    /// Drain the "user clicked ×" signal (fires once). The host removes the
-    /// banner from its own model in response. Draining this does **not**
-    /// un-collapse the banner — [`is_dismissed`](Self::is_dismissed) stays
-    /// `true`.
+    /// Run `f` once when the person dismisses the banner. Implies
+    /// [`Self::dismissible`].
+    #[must_use]
+    pub fn on_dismiss(mut self, f: impl FnMut() + 'static) -> Self {
+        if self.dismiss.is_none() {
+            self = self.dismissible();
+        }
+        self.on_dismiss = Some(Box::new(f));
+        self
+    }
+
+    /// Drain the "the person dismissed this" signal (fires once). Draining
+    /// does **not** show the banner again; [`is_dismissed`](Self::is_dismissed)
+    /// stays `true`.
     pub fn take_dismissed(&mut self) -> bool {
         std::mem::take(&mut self.dismiss_fired)
     }
 
-    /// Whether this banner has been dismissed (and now collapses to nothing).
+    /// Whether this banner has been dismissed (and now collapses).
     pub fn is_dismissed(&self) -> bool {
         self.dismissed
     }
 
+    /// Whether the banner shows: it has a notice and was not dismissed.
+    pub fn is_shown(&self) -> bool {
+        self.shown && !self.dismissed
+    }
+
     /// The effective leading icon (override or severity default).
     pub fn icon(&self) -> Icon {
-        self.icon.unwrap_or_else(|| self.kind.default_icon())
+        let notice = &self.body.notice;
+        notice.icon.unwrap_or_else(|| notice.kind.default_icon())
+    }
+
+    /// Replace what the banner says. `None` collapses it.
+    pub fn set_notice(&mut self, notice: Option<BannerNotice>) {
+        match notice {
+            Some(notice) => {
+                if !self.shown || self.dismissed || self.body.notice != notice {
+                    self.body.notice = notice;
+                    self.shown = true;
+                    self.dismissed = false;
+                    self.changed();
+                }
+            }
+            None => {
+                if self.shown {
+                    self.shown = false;
+                    self.changed();
+                }
+            }
+        }
+    }
+
+    fn changed(&mut self) {
+        self.layout_dirty = true;
+        self.dirty = true;
+        self.body.layout_dirty = true;
+        self.body.dirty = true;
+    }
+
+    fn dismiss_now(&mut self) {
+        if self.dismissed {
+            return;
+        }
+        self.dismissed = true;
+        self.dismiss_fired = true;
+        if let Some(f) = &mut self.on_dismiss {
+            f();
+        }
+        self.changed();
     }
 
     /// Immediate-mode paint of a banner filling `rect`, for apps that render
-    /// straight to a `Scene`. Returns the dismiss "×" rect (or `Rect::ZERO`
-    /// when not dismissible) so the caller can hit-test it against its own
-    /// pointer state; pass `hover` for the ×-hover tint.
+    /// straight to a `Scene`. Size `rect` with [`Self::height`]. Returns where
+    /// the banner and its controls are so the caller can hit-test them; pass
+    /// `hover` for the pointer's hover state.
     pub fn paint(
         ctx: &mut PaintCtx<'_>,
         rect: Rect,
         content: &BannerContent<'_>,
         hover: Point,
-    ) -> Rect {
+    ) -> BannerHit {
         paint_banner(ctx, rect, content, hover)
     }
 
-    /// Intrinsic content height for the current title/message, in logical px.
-    fn content_height(&self, theme: &Theme, text_renderer: &mut TextRenderer, width: f32) -> f64 {
-        let rect = Rect::new(0.0, 0.0, f64::from(width.max(1.0)), 1.0);
-        let text_width = banner_text_width(rect, self.dismissible);
-        let title_style =
-            text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.base));
-        let (_, title_h) = text_renderer.measure_style(&self.title, Some(text_width), &title_style);
-        let message_h = self.message.as_ref().map_or(0.0, |message| {
-            let style = text_renderer
-                .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
-            text_renderer
-                .measure_style(message, Some(text_width), &style)
-                .1
-        });
-        let gap = if self.message.is_some() {
-            f64::from(theme.tokens.spacing.s1)
-        } else {
-            0.0
+    /// Where [`Self::paint`] would put the banner's controls in `rect`,
+    /// without painting: for a host that hit-tests before it paints.
+    pub fn layout(
+        content: &BannerContent<'_>,
+        rect: Rect,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> BannerHit {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return BannerHit::default();
+        }
+        let g = geometry(content, rect.width(), text, theme);
+        let dy = ((rect.height() - g.height) / 2.0).max(0.0);
+        let origin = rect.origin().to_vec2() + vello::kurbo::Vec2::new(0.0, dy);
+        BannerHit {
+            rect,
+            action: g.action.map(|r| r + origin),
+            secondary_action: g.secondary_action.map(|r| r + origin),
+            dismiss: g.dismiss.map(|r| r + origin),
+        }
+    }
+
+    /// The height a banner with `content` takes at `width`: its text, and
+    /// its actions beside or under it, never below a panel row.
+    pub fn height(
+        content: &BannerContent<'_>,
+        width: f64,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> f64 {
+        geometry(content, width, text, theme).height.ceil()
+    }
+
+    fn poll_source(&mut self) {
+        if let Some(notice) = self.source.as_mut().and_then(LocalBinding::poll) {
+            self.set_notice(notice);
+        }
+    }
+
+    fn visible(&self) -> bool {
+        self.shown && !self.dismissed
+    }
+
+    /// The banner's buttons in child order: secondary, main, dismiss.
+    fn buttons_mut(&mut self) -> impl Iterator<Item = &mut Button> {
+        [&mut self.secondary, &mut self.action, &mut self.dismiss]
+            .into_iter()
+            .flatten()
+    }
+
+    /// Put every button where the body's geometry says, for the body laid
+    /// out at `self.body.rect`.
+    fn place_buttons(&mut self, text: &mut TextRenderer, theme: &Theme) {
+        let rect = self.body.rect;
+        if rect.width() <= 0.0 {
+            return;
+        }
+        let g = self.body.geometry(text, theme, rect.width());
+        let dy = ((rect.height() - g.height) / 2.0).max(0.0);
+        let origin = rect.origin().to_vec2() + vello::kurbo::Vec2::new(0.0, dy);
+        let place = |button: &mut Option<Button>, at: Option<Rect>| {
+            if let (Some(button), Some(at)) = (button, at) {
+                button.apply_layout_external(at + origin);
+            }
         };
-        (f64::from(title_h + message_h) + gap + PAD_Y * 2.0).max(44.0)
+        place(&mut self.secondary, g.secondary_action);
+        place(&mut self.action, g.action);
+        place(&mut self.dismiss, g.dismiss);
     }
 }
 
+/// A button's width as it measures itself.
+fn button_width(button: &mut Button, text: &mut TextRenderer) -> f64 {
+    let size = Widget::measure(
+        button,
+        taffy::Size {
+            width: None,
+            height: None,
+        },
+        taffy::Size {
+            width: taffy::AvailableSpace::MaxContent,
+            height: taffy::AvailableSpace::MaxContent,
+        },
+        text,
+    );
+    f64::from(size.width)
+}
+
 impl Widget for Banner {
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "content_height is a small, bounded pixel value built from theme typography \
-                  constants; f32 precision loss is immaterial for widget layout"
-    )]
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+        let before = self.visible();
+        self.poll_source();
+        let mut changed = false;
+        for button in self.buttons_mut() {
+            changed |= button.update(state, path);
+        }
+        if self.dismiss_requested.take() {
+            self.dismiss_now();
+        }
+        changed |= before != self.visible();
+        changed
+    }
+
+    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        self.poll_source();
+        if self.dismiss_requested.take() {
+            self.dismiss_now();
+        }
+        for button in self.buttons_mut() {
+            button.sync(state, path);
+        }
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.layout_theme = theme.clone();
-        let node = taffy.leaf_node(Style {
-            flex_shrink: 0.0,
-            size: taffy::Size {
-                width: percent(1.0_f32),
-                height: if self.dismissed {
-                    length(0.0_f32)
-                } else {
-                    taffy::Dimension::auto()
-                },
-            },
-            ..Default::default()
-        });
+        let mut nodes = vec![self.body.build_layout(taffy, theme, node_map)];
+        let mut buttons = Vec::new();
+        for button in self.buttons_mut() {
+            buttons.push(button.build_layout(taffy, theme, node_map));
+        }
+        // The buttons are placed by the banner's geometry, out of the flow.
+        for &node in &buttons {
+            if let Ok(style) = taffy.style(node) {
+                let mut style = style.clone();
+                style.position = taffy::Position::Absolute;
+                style.size = Size {
+                    width: length(0.0_f32),
+                    height: length(0.0_f32),
+                };
+                let _ = taffy.set_style(node, style);
+            }
+        }
+        nodes.extend(buttons);
+        let node = taffy.parent_node(self.style(), &nodes);
+        self.nodes = nodes;
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
-    fn measure(
+    fn adjust_layout_style(
         &mut self,
-        known: taffy::Size<Option<f32>>,
-        available: taffy::Size<taffy::AvailableSpace>,
-        tr: &mut TextRenderer,
-    ) -> taffy::Size<f32> {
-        let width = known.width.unwrap_or(match available.width {
-            taffy::AvailableSpace::Definite(width) => width,
-            taffy::AvailableSpace::MinContent => 1.0,
-            taffy::AvailableSpace::MaxContent => 320.0,
-        });
-        let h = if self.dismissed {
-            0.0
-        } else {
-            self.content_height(&self.layout_theme, tr, width) as f32
-        };
-        taffy::Size { width, height: h }
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        let mut changed = self.style_visibility(taffy, node);
+        // The body's height depends on the buttons' widths: measure them.
+        let widths = [
+            self.secondary.as_mut().map(|b| button_width(b, text)),
+            self.action.as_mut().map(|b| button_width(b, text)),
+        ];
+        if widths != self.body.actions {
+            self.body.actions = widths;
+            if let Some(&body) = self.nodes.first() {
+                let _ = taffy.mark_dirty(body);
+            }
+            changed = true;
+        }
+        changed
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        let rect = if self.visible() {
+            layout_rect(taffy, node, origin)
+        } else {
+            Rect::ZERO
+        };
+        if rect != self.rect {
+            self.rect = rect;
+            self.dirty = true;
+        }
+        self.layout_dirty = false;
+        let origin = self.rect.origin();
+        if let Some(&body) = self.nodes.first() {
+            self.body.apply_layout(taffy, body, origin);
+        }
     }
 
     fn draw(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        text_renderer: &mut TextRenderer,
+        text: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
-        if self.dismissed {
-            self.dismiss_rect = Rect::ZERO;
+        if !self.visible() || self.rect.width() <= 0.0 {
             return;
         }
-        let content = BannerContent::new(self.kind, &self.title)
-            .with_icon(self.icon())
-            .with_message(self.message.as_deref())
-            .dismissible(self.dismissible);
-        self.dismiss_rect = paint_banner(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            self.rect,
-            &content,
-            self.last_cursor,
-        );
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if self.dismissible
-                && !self.dismissed
-                && self.dismiss_rect.contains(self.last_cursor) =>
-            {
-                self.dismissed = true;
-                self.dismiss_fired = true;
-                *ctx.handled = true;
-            }
-            _ => {}
+        self.place_buttons(text, theme);
+        self.body.draw(scene, transform, text, theme, presence);
+        let on_well = theme.on_ground(well(theme));
+        for button in self.buttons_mut() {
+            button.draw(scene, transform, text, &on_well, presence);
         }
     }
 
-    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.dismissible && self.dismiss_rect.contains(point) {
-            Some(winit::window::CursorIcon::Pointer)
-        } else {
-            None
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) {
+        if !self.visible() {
+            return;
+        }
+        let nodes: Vec<NodeId> = self.nodes.iter().skip(1).copied().collect();
+        for (button, node) in self.buttons_mut().zip(nodes) {
+            button.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
+                return;
+            }
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        let mut out: Vec<&dyn Widget> = vec![&self.body];
+        for button in [&self.secondary, &self.action, &self.dismiss]
+            .into_iter()
+            .flatten()
+        {
+            out.push(button);
+        }
+        out
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.body];
+        for button in [&mut self.secondary, &mut self.action, &mut self.dismiss]
+            .into_iter()
+            .flatten()
+        {
+            out.push(button);
+        }
+        out
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let started = crate::widget::start_in_children(self, op, doc, path)?;
+        if self.dismiss_requested.take() {
+            self.dismiss_now();
+        }
+        Ok(started)
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.layout_dirty || self.body.is_layout_dirty()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+            || self.body.needs_redraw()
+            || [&self.secondary, &self.action, &self.dismiss]
+                .into_iter()
+                .flatten()
+                .any(Widget::needs_redraw)
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+        self.body.mark_drawn();
+        for button in self.buttons_mut() {
+            button.mark_drawn();
         }
     }
 
@@ -462,274 +1172,57 @@ impl Widget for Banner {
         "Banner"
     }
 
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Politeness, Role};
-        if self.dismissed {
+        use crate::a11y::{AccessNode, Role};
+        if !self.visible() {
             return None;
         }
-        // A banner is a live status region — the reader announces it when it
-        // appears. Errors/warnings are assertive; info/success are polite.
-        let politeness = match self.kind {
-            BannerKind::Error | BannerKind::Warning => Politeness::Assertive,
-            _ => Politeness::Polite,
-        };
+        // A banner is a live status region: the reader announces it when it
+        // appears. Errors and warnings are assertive; the rest polite.
+        let notice = &self.body.notice;
         let mut node = AccessNode::new(Role::Group)
-            .with_name(self.title.clone())
-            .with_live(politeness);
-        if let Some(msg) = &self.message {
-            node = node.with_description(msg.clone());
+            .with_name(notice.title.clone())
+            .with_live(notice.kind.politeness());
+        if let Some(id) = &self.id {
+            node = node.with_semantic_key(id.clone());
+        }
+        if let Some(message) = &notice.message {
+            node = node.with_description(message.clone());
         }
         Some(node)
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use automerge::AutoCommit;
-    use taffy::prelude::TaffyMaxContent;
-    use vello_encoding::DrawTag;
-
-    #[test]
-    fn banner_kind_icon_and_message_drive_paint_and_height() {
-        fn retained_measure_uses_the_active_text_scale() {
-            let mut banner = Banner::info("A title").with_message("Supporting detail");
-            let mut taffy = TaffyTree::new();
-            let mut map = HashMap::new();
-            banner.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
-            let mut text = TextRenderer::new();
-            let measured = banner.measure(
-                taffy::Size {
-                    width: Some(320.0),
-                    height: None,
-                },
-                taffy::Size::MAX_CONTENT,
-                &mut text,
-            );
-            let default_height = Banner::info("A title")
-                .with_message("Supporting detail")
-                .content_height(&Theme::dark(), &mut text, 320.0);
-            assert!(f64::from(measured.height) > default_height);
-        }
-
-        fn kind_maps_to_semantic_color_and_icon() {
-            let theme = Theme::dark();
-            assert_eq!(
-                BannerKind::Error.color(&theme),
-                theme.tokens.colors.semantic.danger
-            );
-            assert_eq!(
-                BannerKind::Success.color(&theme),
-                theme.tokens.colors.semantic.success
-            );
-            assert_eq!(
-                BannerKind::Warning.color(&theme),
-                theme.tokens.colors.semantic.warning
-            );
-            assert_eq!(
-                BannerKind::Info.color(&theme),
-                theme.tokens.colors.semantic.info
-            );
-            assert_eq!(BannerKind::Success.default_icon(), Icon::Check);
-        }
-
-        fn icon_override_wins() {
-            let b = Banner::info("Heads up").with_icon(Icon::Bell);
-            assert_eq!(b.icon(), Icon::Bell);
-            let d = Banner::info("Heads up");
-            assert_eq!(d.icon(), Icon::Info, "defaults to the severity icon");
-        }
-
-        fn message_makes_the_banner_taller() {
-            let theme = Theme::dark();
-            let mut text = TextRenderer::new();
-            let short = Banner::info("One line").content_height(&theme, &mut text, 500.0);
-            let tall = Banner::info("One line")
-                .with_message("Plus a detail line")
-                .content_height(&theme, &mut text, 500.0);
-            assert!(tall > short, "a message adds a second line of height");
-        }
-
-        fn long_message_wraps_and_grows_to_its_painted_height() {
-            let theme = Theme::dark();
-            let mut text = TextRenderer::new();
-            let message = "Tilo found your identity metadata, but its private key is unavailable from the desktop keyring. Unlock the keyring and retry.";
-            let banner =
-                Banner::warning("Your existing identity needs recovery").with_message(message);
-            let width = 700.0;
-            let height = banner.content_height(&theme, &mut text, width);
-            let text_width =
-                banner_text_width(Rect::new(0.0, 0.0, f64::from(width), height), false);
-            let (_, message_height) =
-                text.measure(message, theme.tokens.typography.scale.sm, Some(text_width));
-
-            assert!(
-                message_height > theme.tokens.typography.scale.sm * 1.25,
-                "the recovery copy must wrap instead of escaping the banner"
-            );
-            assert!(
-                height >= f64::from(message_height) + PAD_Y * 2.0,
-                "the banner must reserve the same wrapped height that it paints"
-            );
-        }
-
-        fn draws_accent_bar_and_text() {
-            let mut b = Banner::error("Upload failed")
-                .with_message("Check your connection")
-                .dismissible();
-            lay_out(&mut b, 500.0, 200.0);
-            let scene = draw(&mut b);
-            let fills = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-            assert!(
-                fills > 4,
-                "surface + border + bar + icon + text ⇒ many fills, got {fills}"
-            );
-        }
-
-        retained_measure_uses_the_active_text_scale();
-        kind_maps_to_semantic_color_and_icon();
-        icon_override_wins();
-        message_makes_the_banner_taller();
-        long_message_wraps_and_grows_to_its_painted_height();
-        draws_accent_bar_and_text();
-    }
-
-    fn lay_out(w: &mut dyn Widget, vw: f32, vh: f32) {
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut tr = TextRenderer::new();
-        let node = w.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout_with_measure(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(vw),
-                    height: taffy::AvailableSpace::Definite(vh),
-                },
-                |k, a, id, _, _| {
-                    node_map.get(&id).map_or(taffy::Size::ZERO, |&p| unsafe {
-                        (*p).measure(k, a, &mut tr)
-                    })
-                },
-            )
-            .unwrap();
-        w.apply_layout(&taffy, node, Point::ZERO);
-    }
-
-    fn draw(w: &mut dyn Widget) -> Scene {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        scene
-    }
-
-    fn synth() -> winit::event::DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
-    fn cursor(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: synth(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
-    }
-    fn press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut ft = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        w.handle_event(
-            e,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut ft,
-                node_id: node,
-                taffy: &taffy,
+impl Banner {
+    fn style(&self) -> Style {
+        Style {
+            display: if self.visible() {
+                taffy::Display::Flex
+            } else {
+                taffy::Display::None
             },
-        );
-        handled
-    }
-
-    #[test]
-    fn banner_dismissal_and_live_region_semantics() {
-        fn dismiss_click_fires_once_and_collapses() {
-            let mut b = Banner::warning("Offline")
-                .with_message("Changes will sync later")
-                .dismissible();
-            lay_out(&mut b, 500.0, 200.0);
-            let _ = draw(&mut b);
-            let target = b.dismiss_rect.center();
-            assert!(target.x > 0.0, "dismiss rect resolves after draw");
-            dispatch(&mut b, &cursor(target));
-            assert!(dispatch(&mut b, &press()), "clicking × is consumed");
-            assert!(b.take_dismissed(), "dismiss signal fires");
-            assert!(!b.take_dismissed(), "dismiss signal drains after one read");
-            assert!(b.is_dismissed());
-            let scene = draw(&mut b);
-            let fills = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-            assert_eq!(fills, 0, "a dismissed banner paints nothing");
+            flex_direction: taffy::FlexDirection::Column,
+            flex_shrink: 0.0,
+            size: Size {
+                width: percent(1.0_f32),
+                height: auto(),
+            },
+            min_size: Size {
+                width: length(0.0_f32),
+                height: auto(),
+            },
+            ..Default::default()
         }
-
-        fn non_dismissible_has_no_close_target() {
-            let mut b = Banner::success("Saved");
-            lay_out(&mut b, 500.0, 200.0);
-            let _ = draw(&mut b);
-            assert_eq!(b.dismiss_rect, Rect::ZERO, "no × when not dismissible");
-            let center = b.get_rect().center();
-            dispatch(&mut b, &cursor(center));
-            assert!(!dispatch(&mut b, &press()), "a body click is not consumed");
-            assert!(!b.take_dismissed());
-        }
-
-        fn accessibility_is_live_region_with_severity_politeness() {
-            use crate::a11y::{Politeness, Role};
-            let err = Banner::error("Boom").with_message("details");
-            let node = Widget::accessibility(&err).expect("banner exposes a11y");
-            assert_eq!(node.role, Role::Group);
-            assert_eq!(node.name.as_deref(), Some("Boom"));
-            assert_eq!(
-                node.live,
-                Some(Politeness::Assertive),
-                "errors announce assertively"
-            );
-            let info = Banner::info("FYI");
-            assert_eq!(
-                Widget::accessibility(&info).unwrap().live,
-                Some(Politeness::Polite)
-            );
-        }
-
-        dismiss_click_fires_once_and_collapses();
-        non_dismissible_has_no_close_target();
-        accessibility_is_live_region_with_severity_politeness();
     }
 }
+
+#[cfg(test)]
+mod tests;

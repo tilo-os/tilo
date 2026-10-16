@@ -28,7 +28,7 @@ hex.workspace = true
 # crate keys its groups by.
 collab-types = { version = "0.1.0", path = "../collab-types" }
 # Crash-safe, owner-only state replacement.
-tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 
 # OpenMLS. Pin the minor version so an upstream API change receives an
 # explicit review before it changes this crate's public surface.
@@ -72,6 +72,8 @@ collab-types = { path = "../collab-types" }
 # `SigningKey` type. Same major version tilo-collab-types is on.
 ed25519-dalek = { workspace = true, features = ["serde"] }
 tempfile.workspace = true
+# Drives the steward's asynchronous calls.
+pollster.workspace = true
 
 [[test]]
 name = "it"

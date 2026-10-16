@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "production_catalogue": false,
+  "status": "Pinned CPU source and remote public-audio inference qualified; not installed, published or connected to a microphone",
+  "model": {
+    "repository": "ggerganov/whisper.cpp",
+    "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+    "file": "ggml-tiny.bin",
+    "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin",
+    "sha256": "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+    "size_bytes": 77691713,
+    "artifact_format": "whisper_ggml",
+    "license_id": "MIT",
+    "model_card_url": "https://huggingface.co/ggerganov/whisper.cpp/blob/5359861c739e955e79d9a303bcbc70fb988958b1/README.md",
+    "speech_recognition": true,
+    "multilingual": true,
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "translate": false
+  },
+  "binding_review": {
+    "whisper_rs": {
+      "version": "0.16.0",
+      "sha256": "2088172d00f936c348d6a72f488dc2660ab3f507263a195df308a3c2383229f6",
+      "archive_url": "https://static.crates.io/crates/whisper-rs/whisper-rs-0.16.0.crate",
+      "license_id": "Unlicense",
+      "adopted": false,
+      "cancellation_review": "set_abort_callback_safe erases F into a boxed trait object then its trampoline casts the userdata back to F; ownership is not retained. Do not call this helper."
+    },
+    "whisper_rs_sys": {
+      "version": "0.15.0",
+      "sha256": "6986c0fe081241d391f09b9a071fbcbb59720c3563628c3c829057cf69f2a56f",
+      "archive_url": "https://static.crates.io/crates/whisper-rs-sys/whisper-rs-sys-0.15.0.crate",
+      "adopted": false,
+      "build_review": "Only unchanged MIT C++ source from this exact archive is carried. Neither the Rust sys binding nor its build script is adopted. Dedicated CMake and six-parameter bridge control the CPU floor and own-process cancellation."
+    }
+  },
+  "release_gates": [
+    "Retain the full MIT copyright and licence notices before redistributing converted weights.",
+    "Extend the existing protected U2-Net-only release job after review; do not create a trust key.",
+    "Publish exact receipt-checked weights/licence and deliver the reviewed signed catalogue through the normal image lifecycle.",
+    "Audit the engine ABI, portable x86-64/Arm64 baseline, bounded cancellation and process isolation; benchmark before choosing a default."
+  ],
+  "engine": {
+    "version": "1.8.3",
+    "receipt": "crates/agent/local-model-service/native/upstream/whisper.cpp-receipt.json",
+    "native_cpu": false,
+    "gpu": false,
+    "threads": 2,
+    "rust_callbacks": false,
+    "sandbox": "full Landlock and shared parser seccomp before native loading",
+    "worker_process": true
+  },
+  "qualification": {
+    "command": "On the build machine, use any cargo drop-in: run --locked -p local-model-service --example speech_qualify",
+    "sample_url": "https://raw.githubusercontent.com/ggml-org/whisper.cpp/2eeeba56e9edd762b4b38467bab96c2517163158/samples/jfk.wav",
+    "sample_sha256": "59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e",
+    "samples": 176000,
+    "load_ms": 1441,
+    "partial_decode_ms": 524,
+    "final_decode_ms": 546,
+    "passed": [
+      "partial",
+      "final",
+      "English auto-language",
+      "independent repeated decode",
+      "silence",
+      "language vocabulary bounds",
+      "production handler in owned child",
+      "signed installed-object fixture",
+      "private Ready/draft/final pipes",
+      "busy cancellation and reaping",
+      "new session after cancellation"
+    ],
+    "limits": [
+      "Builder timings do not establish older-device performance.",
+      "Non-English quality and microphone latency are unmeasured.",
+      "The installed CLI correctly refuses elevated developer overrides. Its positive --worker fixture journey still needs an unprivileged runtime; --worker-core validates the same production handler and process limits in an uninstalled qualification child."
+    ],
+    "worker_core_command": "On the build machine, use any cargo drop-in: run --locked -p local-model-service --example speech_qualify -- --worker-core"
+  },
+  "artifact_validation": {
+    "verified_on": "2026-10-06",
+    "environment": "connected remote build machine",
+    "directory": "/tmp/tilo-dictation-review-ce8",
+    "model_size_bytes": 77691713,
+    "model_sha256": "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+    "license_size_bytes": 1063,
+    "license_sha256": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d",
+    "provenance_sha256": "bd78051261f7c46309e4a52c8d3a8fdb6a31f6bd2c67e3fd17060c258b3b17e3",
+    "installed": false,
+    "signed": false,
+    "published": false,
+    "microphone_accessed": false
+  }
+}

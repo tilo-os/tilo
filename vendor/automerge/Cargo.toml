@@ -9,6 +9,11 @@
 # will likely look very different (and much more reasonable).
 # See Cargo.toml.orig for the original contents.
 
+# Its own workspace, so its tests run from this directory however the
+# checkout is nested (tools/ci/test-vendored-crates.sh); Tilo's workspace
+# builds it as a path dependency either way.
+[workspace]
+
 [package]
 edition = "2021"
 rust-version = "1.90.0"
@@ -157,6 +162,12 @@ optional = true
 version = "^0.3.55"
 features = ["console"]
 optional = true
+
+# Upstream's `path = "../automerge-test"`, which crates.io publication drops;
+# tests/test.rs needs it.
+[dev-dependencies.automerge-test]
+version = "0.12.0"
+path = "../automerge-test"
 
 [dev-dependencies.maplit]
 version = "^1.0"

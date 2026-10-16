@@ -13,16 +13,18 @@
 //! ergonomic in-memory shapes the rest of the app works with — [`Account`]
 //! (an [`AccountConfig`] plus per-account sidebar state) and [`AccountStore`]
 //! (the list plus the active index) — and hydrates them from the shared store
-//! and vault ([`AccountStore::load`]). The type-specific connection settings
+//! and vault ([`AccountStore::load_in`]). The type-specific connection settings
 //! ([`AccountConfig`]) are serialised into each shared account's opaque
 //! `config`; the password is read back from the vault, never from the JSON.
 
 use std::path::Path;
 
+use accounts::person::PersonAccounts;
 use accounts::{
     Account as StoredAccount, AccountId, AccountStore as SharedStore, AccountTypeId, SecretVault,
 };
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{Id, Invoke};
 
 use crate::model::{AccountConfig, Folder};
 
@@ -40,8 +42,9 @@ pub struct Account {
     /// and the transport layer consumes.
     pub config: AccountConfig,
     /// Whether this account's folder list is collapsed in the sidebar.
-    /// Per-account so a user can keep work expanded and personal collapsed.
-    #[serde(default)]
+    /// Per-account so a user can keep work expanded and personal collapsed;
+    /// kept in the person's Mail preferences, not the shared account store.
+    #[serde(skip)]
     pub collapsed: bool,
     /// A short accent hint (0..8) used to tint the account's avatar disc so
     /// multiple accounts are visually distinct at a glance.
@@ -64,28 +67,20 @@ impl Account {
         }
     }
 
-    /// Display label for the account header: the display name, falling back to
-    /// the email, falling back to a generic placeholder.
-    pub fn label(&self) -> &str {
-        if !self.config.display_name.is_empty() {
-            &self.config.display_name
-        } else if !self.config.email.is_empty() {
-            &self.config.email
-        } else {
-            "New account"
-        }
-    }
-
     /// The opaque, secret-free config payload persisted into a shared
     /// [`StoredAccount`]. The password is `#[serde(skip)]` on [`AccountConfig`],
     /// so it never reaches this JSON — it lives only in the vault.
     fn to_stored(&self) -> StoredAccount {
-        let mut stored = StoredAccount::new(AccountId::from(self.id.clone()), TYPE_ID);
-        stored.display_name = self.label().to_string();
+        let type_id = if self.config.import_pending {
+            accounts::thunderbird::PENDING_TYPE
+        } else {
+            TYPE_ID
+        };
+        let mut stored = StoredAccount::new(AccountId::from(self.id.clone()), type_id);
+        stored.display_name = self.config.label().to_string();
         stored.tint = self.tint;
         stored.set_config(&StoredConfig {
             config: self.config.clone(),
-            collapsed: self.collapsed,
         });
         stored
     }
@@ -96,13 +91,16 @@ impl Account {
     fn from_stored(stored: &StoredAccount, vault: &SecretVault) -> Option<Self> {
         let payload = stored.config_as::<StoredConfig>()?;
         let mut config = payload.config;
-        if let Some(secret) = vault.get(&stored.id) {
+        config.import_pending |= stored.type_id.as_str() == accounts::thunderbird::PENDING_TYPE;
+        if !config.import_pending
+            && let Some(secret) = vault.get(&stored.id)
+        {
             config.password = secret.password;
         }
         Some(Self {
             id: stored.id.to_string(),
             config,
-            collapsed: payload.collapsed,
+            collapsed: false,
             tint: stored.tint,
         })
     }
@@ -110,14 +108,11 @@ impl Account {
 
 /// The opaque config payload a mail [`Account`] serialises into a shared
 /// [`StoredAccount`]. The `#[serde(skip)]` password on [`AccountConfig`] keeps
-/// the credential out of this JSON by construction; `collapsed` (per-account
-/// UI state) rides along so it survives a reload.
+/// the credential out of this JSON by construction.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct StoredConfig {
     #[serde(flatten)]
     config: AccountConfig,
-    #[serde(default)]
-    collapsed: bool,
 }
 
 /// Mail's in-memory account list: the accounts plus which one is shown.
@@ -140,13 +135,6 @@ impl AccountStore {
         }
     }
 
-    /// Load the mail accounts from the shared canonical store, hydrating each
-    /// password from the secret vault. An empty store when nothing is
-    /// configured — never an error.
-    pub fn load() -> Self {
-        Self::from_shared(&SharedStore::load(), &SecretVault::open())
-    }
-
     /// Load under an explicit config root — the seam tests use, so they never
     /// touch the real user config directory.
     pub fn load_in(config_root: &Path) -> Self {
@@ -156,11 +144,17 @@ impl AccountStore {
         )
     }
 
+    /// The mail accounts `shared` holds, each password from `vault`.
+    pub fn from_store(shared: &SharedStore, vault: &SecretVault) -> Self {
+        Self::from_shared(shared, vault)
+    }
+
     fn from_shared(shared: &SharedStore, vault: &SecretVault) -> Self {
         let ty = AccountTypeId::from(TYPE_ID);
         let accounts: Vec<Account> = shared
             .list(&ty)
             .into_iter()
+            .chain(shared.list(&accounts::thunderbird::PENDING_TYPE.into()))
             .filter_map(|stored| Account::from_stored(stored, vault))
             .collect();
         // Map the shared store's active-id back to Mail's active-index.
@@ -169,22 +163,6 @@ impl AccountStore {
             .and_then(|id| accounts.iter().position(|a| a.id == id.as_str()))
             .unwrap_or(0);
         Self { accounts, active }
-    }
-
-    /// Persist to the default Tilo config root
-    /// (`$XDG_CONFIG_HOME/tilo/accounts/`). The in-app account add/edit/remove
-    /// flow calls this so accounts survive a restart; a no-op (Ok) when the
-    /// config root can't be resolved (read-only environment / `--shots`).
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err` if writing the shared account store or the secret vault
-    /// fails (see [`AccountStore::persist_in`]).
-    pub fn persist(&self) -> std::io::Result<()> {
-        match accounts::config_root() {
-            Some(root) => self.persist_in(&root),
-            None => Ok(()),
-        }
     }
 
     /// Write these accounts into the shared store + vault under an explicit
@@ -220,6 +198,9 @@ impl AccountStore {
         for acct in &self.accounts {
             let id = AccountId::from(acct.id.clone());
             shared.upsert(acct.to_stored());
+            if acct.config.import_pending {
+                continue;
+            }
             // Keep an existing sealed OAuth token intact: an OAuth account has
             // no password, and its token was sealed by the sign-in flow — do
             // not clobber it. Only manage the password secret here.
@@ -239,6 +220,73 @@ impl AccountStore {
         }
         vault.try_save().map_err(std::io::Error::other)?;
         shared.save_in(config_root)
+    }
+
+    /// The edits that make the person's accounts hold these mail accounts:
+    /// each new or changed one saved, each mail account the person has that
+    /// Mail no longer holds removed, and the shown one active. With them, the
+    /// ids removed, whose secrets go too.
+    pub fn edits_for(
+        &self,
+        person: &PersonAccounts,
+    ) -> (Vec<Invoke<PersonAccounts>>, Vec<AccountId>) {
+        let ty = AccountTypeId::from(TYPE_ID);
+        let held = person.store();
+        let mut edits = Vec::new();
+        let mut removed = Vec::new();
+        for stale in held.list(&ty) {
+            if !self.accounts.iter().any(|a| a.id == stale.id.as_str()) {
+                edits.push(PersonAccounts::REMOVE_ACCOUNT.with(Id::from_raw(stale.id.0.clone())));
+                removed.push(stale.id.clone());
+            }
+        }
+        for account in &self.accounts {
+            let stored = account.to_stored();
+            if held.get(&stored.id) != Some(&stored) {
+                edits.push(PersonAccounts::saving(&stored));
+            }
+        }
+        if let Some(active) = self.accounts.get(self.active)
+            && held.active_id(&ty).map(AccountId::as_str) != Some(active.id.as_str())
+        {
+            edits.push(PersonAccounts::SET_ACTIVE_ACCOUNT.with(Id::from_raw(active.id.clone())));
+        }
+        (edits, removed)
+    }
+
+    /// Keep this device's secrets of these mail accounts under `config_root`:
+    /// each password, an OAuth account's sealed token left as it is, and the
+    /// secrets of the `removed` accounts dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the vault cannot be saved.
+    pub fn keep_secrets_in(
+        &self,
+        config_root: &Path,
+        removed: &[AccountId],
+    ) -> std::io::Result<()> {
+        let mut vault = SecretVault::open_in(config_root);
+        for id in removed {
+            vault.remove(id);
+        }
+        for acct in &self.accounts {
+            if acct.config.import_pending {
+                continue;
+            }
+            let id = AccountId::from(acct.id.clone());
+            if acct.config.password.is_empty() {
+                if acct.config.auth != crate::model::AuthMethod::OAuth {
+                    vault.remove(&id);
+                }
+            } else {
+                vault.put(
+                    &id,
+                    &accounts::Secret::password(acct.config.password.clone()),
+                );
+            }
+        }
+        vault.try_save().map_err(std::io::Error::other)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -327,10 +375,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn account_store_upserts_clamps_and_round_trips_the_shared_store() {
         // Phase `upsert_replaces_by_id_not_appends`.
         {
@@ -392,10 +436,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn account_secrets_live_in_the_vault_and_a_damaged_vault_blocks_changes() {
         // Phase `removed_account_secret_is_purged_from_the_vault`.
         {
@@ -508,4 +548,93 @@ mod tests {
             );
         }
     }
+
+    /// A mail account Settings saved in the person's accounts record reads
+    /// back in Mail as it was, its password from this device's vault and
+    /// never from the record.
+    #[test]
+    fn a_mail_account_from_the_persons_record_reads_back_with_the_devices_password() {
+        use accounts::person::PersonAccounts;
+        let root = temp_root();
+        let config = AccountConfig {
+            display_name: "Work".into(),
+            email: "me@work.example".into(),
+            password: "kept-on-the-device".into(),
+            ..AccountConfig::default()
+        };
+        let account = Account::new(config.clone());
+        let mut vault = SecretVault::open_in(&root);
+        vault.put(
+            &AccountId::from(account.id.clone()),
+            &accounts::Secret::password(config.password),
+        );
+        vault.save();
+        let mut replica = ui::tilo_resource::Replica::<PersonAccounts>::new();
+        replica
+            .apply(PersonAccounts::saving(&account.to_stored()))
+            .unwrap();
+        let person = replica.state().unwrap();
+        let shown = AccountStore::from_store(&person.store(), &SecretVault::open_in(&root));
+        assert_eq!(shown.accounts, vec![account]);
+        assert!(
+            !format!("{person:?}").contains("kept-on-the-device"),
+            "the password never enters the record"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Mail's own setup sheet keeps its accounts through the person's
+    /// record: adding saves the account and makes it active, removing it
+    /// removes it from the record and drops its secret.
+    #[test]
+    fn the_setup_sheets_edits_become_the_persons_account_edits() {
+        use accounts::person::PersonAccounts;
+        let root = temp_root();
+        let mut replica = ui::tilo_resource::Replica::<PersonAccounts>::new();
+        let mut store = AccountStore::single(AccountConfig {
+            display_name: "Work".into(),
+            email: "me@work.example".into(),
+            password: "secret-1".into(),
+            ..AccountConfig::default()
+        });
+        let (edits, removed) = store.edits_for(&replica.state().unwrap());
+        assert!(removed.is_empty());
+        for edit in edits {
+            replica.apply(edit).unwrap();
+        }
+        store.keep_secrets_in(&root, &removed).unwrap();
+        let person = replica.state().unwrap().store();
+        assert_eq!(
+            person
+                .active(&AccountTypeId::from(TYPE_ID))
+                .map(|a| a.id.as_str()),
+            Some("me@work.example")
+        );
+        assert_eq!(
+            SecretVault::open_in(&root)
+                .get(&AccountId::from("me@work.example"))
+                .map(|secret| secret.password),
+            Some("secret-1".to_owned())
+        );
+        let (again, _) = store.edits_for(&replica.state().unwrap());
+        assert!(again.is_empty(), "nothing changed, nothing to edit");
+
+        store.accounts.clear();
+        let (edits, removed) = store.edits_for(&replica.state().unwrap());
+        assert_eq!(removed, vec![AccountId::from("me@work.example")]);
+        for edit in edits {
+            replica.apply(edit).unwrap();
+        }
+        store.keep_secrets_in(&root, &removed).unwrap();
+        assert!(replica.state().unwrap().accounts.is_empty());
+        assert!(
+            SecretVault::open_in(&root)
+                .get(&AccountId::from("me@work.example"))
+                .is_none()
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
 }
+
+#[cfg(test)]
+mod import_tests;

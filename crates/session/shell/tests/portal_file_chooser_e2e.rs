@@ -9,12 +9,8 @@
 //! pump by hand, as the compositor's tick would.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -39,35 +35,19 @@ const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
 const WS: u64 = 1;
 const APP: &str = "org.example.editor";
 
-fn synth_device() -> winit::event::DeviceId {
-    // SAFETY: `DeviceId` is opaque; the same pattern the other shell
-    // integration tests use to synthesise input.
-    unsafe { std::mem::zeroed() }
-}
-
 fn cursor_at(p: vello::kurbo::Point) -> winit::event::WindowEvent {
-    winit::event::WindowEvent::CursorMoved {
-        device_id: synth_device(),
-        position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
-fn left_press() -> winit::event::WindowEvent {
-    winit::event::WindowEvent::MouseInput {
-        device_id: synth_device(),
-        state: winit::event::ElementState::Pressed,
-        button: winit::event::MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_press;
 
-/// winit 0.30 exposes no `KeyEvent` constructor (`platform_specific` is
-/// `pub(crate)`), so zero-init and overwrite the fields the shell reads.
 fn key_press(ch: char) -> winit::event::WindowEvent {
     use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey, SmolStr};
-    // SAFETY: every public field of `KeyEvent` has a valid all-zero bit
-    // pattern (`Option` → `None`, the enums' first variants, `bool` →
-    // `false`) and the fields the shell reads are overwritten below.
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+    let mut ev = ui::synthetic_input::key_event(
+        winit::keyboard::Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
+        None,
+        winit::event::ElementState::Pressed,
+    );
     let s = SmolStr::new(ch.to_string());
     ev.logical_key = Key::Character(s.clone());
     ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
@@ -75,57 +55,27 @@ fn key_press(ch: char) -> winit::event::WindowEvent {
     ev.state = winit::event::ElementState::Pressed;
     ev.repeat = false;
     ev.text = Some(s);
-    winit::event::WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ev)
 }
 
 fn key_named(named: winit::keyboard::NamedKey) -> winit::event::WindowEvent {
-    use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
-    // SAFETY: see `key_press`; the host only reads the overwritten fields.
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(named);
-    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = winit::event::ElementState::Pressed;
-    ev.repeat = false;
-    winit::event::WindowEvent::KeyboardInput {
-        device_id: synth_device(),
-        event: ev,
-        is_synthetic: false,
-    }
+    use winit::keyboard::Key;
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        Key::Named(named),
+        None,
+        winit::event::ElementState::Pressed,
+    ))
 }
 
 /// Goes through the host's own `handle_event` — the modal intercept the
 /// compositor installs, not the widget in isolation.
 fn dispatch(host: &mut ShellOverlayHost, event: &winit::event::WindowEvent) {
-    use ui::Widget;
-    let mut tree = taffy::TaffyTree::<()>::new();
-    let node = tree.new_leaf(taffy::Style::default()).unwrap();
-    let mut handled = false;
-    let mut focus_target = None;
-    let mut doc = automerge::AutoCommit::new();
-    let root = automerge::ROOT;
-    host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: &mut doc,
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: node,
-            taffy: &tree,
-        },
-    );
+    ui::testing::dispatch(host, event);
 }
 
 fn click_at(host: &mut ShellOverlayHost, p: vello::kurbo::Point) {
     dispatch(host, &cursor_at(p));
-    dispatch(host, &left_press());
+    dispatch(host, &mouse_press());
 }
 
 fn host_with_portal(
@@ -148,6 +98,7 @@ fn host_with_portal(
     inputs.picker_scope = Some(portal::PickerScope {
         initial_dir: picker_root.to_path_buf(),
         roots: vec![picker_root.to_path_buf()],
+        home: None,
     });
     let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_inputs(
         handle.clone(),

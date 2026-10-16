@@ -18,7 +18,9 @@ fail-fast = false
 # Timing-sensitive tests pin their clock or wait on the production signal;
 # a retry would record that race as FLAKY and let the shard pass.
 retries = 0
-status-level = "slow"
+# Name leaked subprocess handles as well as slow and failed tests. JUnit's
+# passing test records do not identify leaks, and ordinary passes stay quiet.
+status-level = "leak"
 final-status-level = "flaky"
 
 [profile.ci.junit]
@@ -33,6 +35,7 @@ path = "junit.xml"
 # follow, so a run ends on short tests.
 [test-groups]
 compositor = { max-threads = 2 }
+desktop-smoke = { max-threads = 1 }
 gpu-golden = { max-threads = 1 }
 agent-collaboration = { max-threads = 1 }
 imager-durable-disk = { max-threads = 2 }
@@ -49,18 +52,27 @@ filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or t
 test-group = "compositor"
 priority = 90
 
+# The desktop smoke gate: one at a time, so the load variant's busy threads
+# never starve the quiet one, and a hang bound of two minutes, since a healthy
+# run takes well under one. A frozen compositor is reported by the test itself
+# within half a second; this only bounds a test that cannot even do that.
+# Its idle reading (CPU by thread, and what woke the compositor's loop) is
+# printed on a pass too, so a drift toward the bound shows in every CI log
+# before a run crosses it.
+[[profile.default.overrides]]
+filter = 'binary(it) and test(desktop_smoke::)'
+test-group = "desktop-smoke"
+priority = 95
+slow-timeout = { period = "60s", terminate-after = 2 }
+success-output = "final"
+
 # Not started with the pool-wide and longest tests: each suite's first route
 # join runs under the SDK's 4.5 s primary-route deadline, which the opening
 # burst of a whole-workspace shard (every slot starting a process at once)
 # exceeds.
 [[profile.default.overrides]]
-filter = 'package(agent) and binary(it) and (test(presence_semantics::) or test(relay_roundtrip::) or test(discovered_operations::) or test(concurrent_edit::))'
+filter = 'package(agent) and binary(it) and test(presence_semantics::)'
 test-group = "agent-collaboration"
-
-[[profile.default.overrides]]
-filter = 'package(shell) and binary(it) and test(flatpak_share_e2e::session_delivers_30_frames_in_3_seconds_at_bounded_latency)'
-threads-required = "num-cpus"
-priority = 100
 
 [[profile.default.overrides]]
 filter = 'package(shell) and (test(shell::frame::retained_tests::native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle) or test(shell::frame::retained_tests::native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense) or test(shell::frame::retained_tests::workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels) or test(native_4k_framebuilder_actions_match_current_staging_for_one_and_two_targets) or test(native_4k_retained_pixels_match_dense_oracle_for_benchmark_actions))'
@@ -72,8 +84,30 @@ filter = 'package(shell) and test(shell::render::paint::tests::gpu_target_)'
 threads-required = "num-cpus"
 priority = 100
 
+# Loopback peer-sync latency budgets (a 50 ms p95, a drag's 100 ms p99) are
+# wall-clock; sharing the runner with the parallel suite measures scheduler
+# contention instead of the push path, so they run with the pool to themselves.
+# The legacy-window integration also exercises the running decoder's 150 ms
+# picture wait; sharing the pool can turn a late valid picture into no output
+# for that call. Keep its frame, keyframe and audience assertions unchanged.
+# The switch-back CPU budget (33.4 ms of thread CPU, 19.5-19.9 ms measured)
+# reached 33.4-36.3 ms with the parallel suite's cache and SMT contention
+# (runs 104887, 104910); it is measured with the pool to itself too.
 [[profile.default.overrides]]
-filter = '(package(notes) and binary(it) and (test(screenshot_critique::) or test(capture_runtime::))) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
+filter = 'package(shell) and binary(it) and (test(=peer_sync_test::warm_exact_target_input_stays_below_the_interactive_p95_budget) or test(=peer_sync_test::a_pushed_tab_change_reaches_the_other_device_within_the_interactive_budget) or test(=peer_sync_test::a_document_edit_reaches_the_other_device_within_the_interactive_budget) or test(=peer_sync_test::a_drag_reaches_the_other_desktop_paced_with_its_resting_position) or test(=legacy_window_between_devices::a_legacy_window_streams_between_two_devices) or test(=workspace_switch_cost::switching_back_to_a_workspace_with_apps_stays_within_its_cpu_budget))'
+threads-required = "num-cpus"
+priority = 100
+
+# These four mounted Code journeys fsync a growing retained selection. Under
+# concurrent native journeys, the owner queue passed four seconds and a real
+# checkpoint refresh hit its existing deadline; serial focused runs pass.
+[[profile.default.overrides]]
+filter = 'package(shell) and test(/^network::invite::exchange_tests::mounted_code::/)'
+threads-required = "num-cpus"
+priority = 100
+
+[[profile.default.overrides]]
+filter = '(package(notes) and binary(it) and (test(scenarios::) or test(capture_runtime::))) or (package(shell) and binary(it) and test(foreign_surface_compositing::))'
 threads-required = "num-cpus"
 priority = 100
 
@@ -101,5 +135,5 @@ filter = 'package(tilo-browser-peer) and (binary(compaction) or binary(backpress
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]
-filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or binary(collab_release_matrix))) or (package(shell) and (test(=shell::collab_history::tests::history_outlives_the_memory_window_and_a_restart) or binary(shots))) or (package(tilo-media) and test(/^real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(notes) and binary(it) and test(/^canonical_import::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(patch_log_memory)) or (package(tilo-relay) and (binary(held_memory) or test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(tilo-app-state) and test(/^fs_store::tests::/))'
+filter = '(package(tilo-fs) and (test(/^fs::checked_restore::tests::/) or binary(collab_release_matrix))) or (package(shell) and (test(=shell::collab_history::tests::history_outlives_the_memory_window_and_a_restart) or binary(shots))) or (package(tilo-media) and test(/^real::/)) or (package(imager) and test(/^setup::staging::fake::tests::/)) or (package(scratchpad) and binary(native_proof)) or (package(tilo-rollback) and binary(mechanism)) or (package(tilo-automerge) and binary(patch_log_memory)) or (package(tilo-relay) and (binary(held_memory) or test(/^daemon::tests::/) or test(=store::replay::tests::bounded_snapshot_pins_orders_counts_and_hydrates_only_its_batch) or test(=store::shell_selection::tests::projected_checkpoint_prefix_exposes_the_route_count_cutoff) or test(=peer::private_transport_tests::thirty_four_route_prefix_uses_one_all_original_selection_then_converges))) or (package(tilo-ui) and (binary(held-memory) or test(/^incremental_render_regressions::/) or test(/^app::large_document_tests::/) or test(/^app::semantic_tree_app_tests::/) or test(/^presence::render::tests::/))) or (package(video-editor) and (test(/^export::tests::/) or test(/^shot::tests::/))) or (package(tilo-app-state) and test(/^fs_store::tests::/))'
 priority = 50

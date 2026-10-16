@@ -25,6 +25,7 @@ use std::pin::Pin;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use tilo_actions::ActionKey;
 use tilo_actions::context::{ActionContext, ActionFacet};
 use tilo_actions::contract::{ConfirmationPolicy, ResultSpec};
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
@@ -37,16 +38,14 @@ use tilo_actions::remote::{
 use uuid::Uuid;
 
 use crate::catalog::{ResourceTarget, find_row};
-use crate::grant::grant_permits;
+use crate::grant::{StepGrant, grant_answer, step_node};
 use crate::path::StepPath;
-use crate::shortcut::{
-    AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind, UnattendedConsent,
-};
+use crate::shortcut::{AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind};
 use crate::template::{self, Piece, render_value};
 use crate::{
-    AGENT_APP_ID, AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, TriggerSpec,
-    shortcut_id_of,
+    AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, TriggerSpec, shortcut_id_of,
 };
+use tilo_action_policy::Answer;
 
 /// How many catalogue pages the interpreter reads looking for one action.
 const MAX_CATALOGUE_PAGES: usize = 32;
@@ -56,7 +55,7 @@ const REDACTED: &str = "[redacted]";
 
 /// Identity of one run. Reusing it reuses every invocation id the run
 /// derives, which is what makes re-running it safe.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct RunId(pub Uuid);
 
 impl RunId {
@@ -71,6 +70,9 @@ impl Default for RunId {
         Self::new()
     }
 }
+
+/// The facet naming the step path of a run's change.
+pub const STEP_FACET: &str = "step";
 
 /// The invocation id of the step at `path` in run `run`.
 #[must_use]
@@ -99,7 +101,7 @@ pub enum RunMode {
 }
 
 /// What started a run.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RunTrigger {
     /// A person ran it.
     Manual,
@@ -129,12 +131,8 @@ pub struct RunRequest<'a> {
     pub trigger: RunTrigger,
     /// Values for the shortcut's declared inputs.
     pub inputs: Map<String, Value>,
-    /// Confirmations given in advance that an unattended run may use in
-    /// place of a person: only a step resolving to exactly one of these
-    /// actions proceeds past its confirmation. The host passes the
-    /// shortcut's [`consents`](Shortcut::consents) only to a run their
-    /// giver started.
-    pub consents: Vec<UnattendedConsent>,
+    /// The bot run this run continues, recorded on every change it makes.
+    pub caused_by: Option<tilo_actions::context::Cause>,
 }
 
 /// An action that needs the person's confirmation before it runs.
@@ -168,8 +166,10 @@ pub trait RunHooks: Sync {
     fn ask(&self, request: AskRequest) -> Pending<Option<Value>>;
 
     /// Resolve when the running invocation `invocation` is worth observing
-    /// again (the host pushed an update, or a poll interval passed).
-    /// Abandoning the answer stops the run.
+    /// again — after a poll interval. Only called for a host whose
+    /// [`ActionHost::next_change`](tilo_actions::remote::ActionHost::next_change)
+    /// cannot tell when the invocation changes. Abandoning the answer stops
+    /// the run.
     fn settle(&self, invocation: InvocationId) -> Pending<()>;
 }
 
@@ -189,6 +189,10 @@ pub enum StepFailure {
     },
     #[error("the shortcut's grant does not cover `{action}` on `{app_id}`")]
     OutsideGrant { app_id: String, action: String },
+    #[error(
+        "the shortcut's grant asks before `{action}` on `{app_id}`, and nobody is present to answer"
+    )]
+    AsksFirst { app_id: String, action: String },
     #[error("the action is unavailable: {reason}")]
     Unavailable { code: String, reason: String },
     #[error("the action needs confirmation, and nobody is present to give it")]
@@ -290,7 +294,7 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         mode,
         trigger,
         inputs,
-        consents,
+        caused_by,
     } = request;
     let mut report = RunReport {
         run,
@@ -322,10 +326,10 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         mode,
         trigger: report.trigger.clone(),
         inputs,
-        consents,
         vars: BTreeMap::new(),
         outputs: BTreeMap::new(),
         records: Vec::new(),
+        caused_by,
     };
     let finished = runner.block(&shortcut.steps, StepPath::root()).await;
     let finished = finished.and_then(|()| match &shortcut.output {
@@ -354,10 +358,10 @@ struct Runner<'a, H, K> {
     mode: RunMode,
     trigger: String,
     inputs: Map<String, Value>,
-    consents: Vec<UnattendedConsent>,
     vars: BTreeMap<String, Value>,
     outputs: BTreeMap<String, Value>,
     records: Vec<StepRecord>,
+    caused_by: Option<tilo_actions::context::Cause>,
 }
 
 /// A step's result before it is recorded.
@@ -417,14 +421,12 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     async fn step(&mut self, step: &'a Step, path: StepPath) -> Result<(), Stop> {
         match &step.kind {
             StepKind::Invoke {
-                app_id,
-                resource,
                 action,
+                resource,
                 args,
+                ..
             } => {
-                let done = self
-                    .invoke(step, &path, app_id, resource, action, args)
-                    .await;
+                let done = self.invoke(step, &path, action, resource, args).await;
                 self.record(step, &path, done)
             }
             StepKind::Ai { transform, input } => {
@@ -439,9 +441,8 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     .invoke(
                         step,
                         &path,
-                        AGENT_APP_ID,
+                        &transform.key(),
                         &Selector::FirstOfKind(AGENT_TRANSFORM_KIND.into()),
-                        transform.action(),
                         &transform.arguments(input),
                     )
                     .await;
@@ -543,15 +544,11 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         &self,
         step: &Step,
         path: &StepPath,
-        app_id: &str,
+        key: &ActionKey,
         selector: &Selector,
-        action: &str,
         args: &BTreeMap<String, Binding>,
     ) -> Done {
-        let prepared = match self
-            .prepare(step, path, app_id, selector, action, args)
-            .await
-        {
+        let prepared = match self.prepare(step, path, key, selector, args).await {
             Ok(prepared) => prepared,
             Err(failure) => return Done::local(Err(failure)),
         };
@@ -569,17 +566,33 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         }
     }
 
+    /// The appearance `binding` evaluates to, in the exact form a door
+    /// admits: a value that breaks a rule fails the step rather than being
+    /// cleaned up, so what readers see is what the program asked for.
+    fn appearance(&self, binding: &Binding) -> Result<tilo_actions::Appearance, StepFailure> {
+        let refused = |reason: String| StepFailure::Arguments { reason };
+        let value = self
+            .evaluate(binding)?
+            .ok_or_else(|| refused("the appearance binding has no value".into()))?;
+        let appearance: tilo_actions::Appearance = serde_json::from_value(value)
+            .map_err(|error| refused(format!("the appearance is malformed: {error}")))?;
+        appearance
+            .validate()
+            .map_err(|error| refused(format!("the appearance is refused: {error}")))?;
+        Ok(appearance)
+    }
+
     /// Everything up to the invocation itself: resolve the target, check the
     /// grant, bind the arguments and obtain any confirmation.
     async fn prepare(
         &self,
         step: &Step,
         path: &StepPath,
-        app_id: &str,
+        key: &ActionKey,
         selector: &Selector,
-        action: &str,
         args: &BTreeMap<String, Binding>,
     ) -> Result<Prepared, StepFailure> {
+        let (app_id, action) = (key.app.as_str(), key.action.as_str());
         let resource = match selector {
             Selector::Fixed(id) => Some(id.clone()),
             Selector::FirstOfKind(_) => None,
@@ -606,7 +619,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             (None, Selector::FirstOfKind(kind)) => ResourceTarget::Kind(kind),
             (None, _) => ResourceTarget::Any,
         };
-        let row = self.find(app_id, target, action).await?;
+        let row = self.find(key, target).await?;
         let Some(descriptor) = row.action.as_ref() else {
             return Err(StepFailure::Unresolved {
                 app_id: app_id.to_string(),
@@ -614,17 +627,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 reason: "the row offers no action".into(),
             });
         };
-        if !grant_permits(
-            &self.shortcut.grant,
-            app_id,
-            action,
-            descriptor.contract.permission,
-        ) {
-            return Err(StepFailure::OutsideGrant {
-                app_id: app_id.to_string(),
-                action: action.to_string(),
-            });
-        }
+        let granted = self.granted(app_id, action, descriptor)?;
         if let tilo_actions::contract::Availability::Unavailable { code, reason } =
             &descriptor.contract.availability
         {
@@ -635,7 +638,17 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         }
         let mut supplied = Map::new();
         for (name, binding) in args {
-            if let Some(value) = self.evaluate(binding)? {
+            let Some(value) = self.evaluate(binding)? else {
+                continue;
+            };
+            // A null bound to an optional parameter that takes no null means
+            // "not given", as when a loop item has no parent to answer.
+            let omitted = value.is_null()
+                && descriptor
+                    .params
+                    .iter()
+                    .any(|p| p.name.as_ref() == name.as_str() && !p.required && !p.nullable);
+            if !omitted {
                 supplied.insert(name.clone(), value);
             }
         }
@@ -644,12 +657,20 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 reason: error.to_string(),
             }
         })?;
+        let appearance = match &step.kind {
+            StepKind::Invoke {
+                appearance: Some(binding),
+                ..
+            } => Some(self.appearance(binding)?),
+            _ => None,
+        };
         let confirmation = self
-            .confirmation(step, path, app_id, descriptor, &bound)
+            .confirmation(step, path, app_id, descriptor, &bound, &granted)
             .await?;
-        let context = self.context(app_id, &row, descriptor);
+        let context = self.context(app_id, &row, descriptor, path);
         Ok(Prepared {
             request: InvokeRequest {
+                on_behalf_of: None,
                 invocation: invocation_id(self.run, path),
                 target: tilo_actions::remote::RemoteActionTarget {
                     provider: row.provider.clone(),
@@ -669,9 +690,34 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 // after the catalogue moved on; the host re-resolves the
                 // target itself.
                 revision: None,
+                wait_ms: None,
+                appearance,
             },
             result: descriptor.contract.result.clone(),
         })
+    }
+
+    /// What the shortcut's grant answers for the step: a refusal, or an
+    /// answer the step may proceed under.
+    fn granted(
+        &self,
+        app_id: &str,
+        action: &str,
+        descriptor: &ActionDescriptor,
+    ) -> Result<StepGrant, StepFailure> {
+        let node = step_node(
+            self.caller.room(),
+            app_id,
+            &descriptor.resource_kind,
+            &descriptor.address,
+        );
+        let granted = grant_answer(&self.shortcut.grant, &node, descriptor.contract.kind);
+        let (app_id, action) = (app_id.to_string(), action.to_string());
+        match (granted.answer, self.mode) {
+            (Answer::Deny, _) => Err(StepFailure::OutsideGrant { app_id, action }),
+            (Answer::Ask, RunMode::Unattended) => Err(StepFailure::AsksFirst { app_id, action }),
+            _ => Ok(granted),
+        }
     }
 
     async fn confirmation(
@@ -681,17 +727,29 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         app_id: &str,
         descriptor: &ActionDescriptor,
         bound: &ActionArgs,
+        granted: &StepGrant,
     ) -> Result<Option<Confirmation>, StepFailure> {
-        let policy = descriptor.contract.advertised_confirmation();
+        let argument = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::Value::Object(bound.to_json())
+        );
+        let policy = match descriptor
+            .contract
+            .confirmation_for_argument(Some(&argument))
+        {
+            ConfirmationPolicy::None if granted.answer == Answer::Ask => {
+                ConfirmationPolicy::Confirm
+            }
+            policy => policy,
+        };
         if policy == ConfirmationPolicy::None {
             return Ok(None);
         }
         if self.mode == RunMode::Unattended {
-            if !self
-                .consents
-                .iter()
-                .any(|consent| consent.covers(app_id, &descriptor.address))
-            {
+            // Only a rule that names this exact action consents in advance
+            // for a run nobody is present at.
+            if !granted.names_action {
                 return Err(StepFailure::ConfirmationRequired);
             }
             return Ok(Some(match policy {
@@ -728,9 +786,9 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         app_id: &str,
         row: &CatalogueRow,
         descriptor: &ActionDescriptor,
+        path: &StepPath,
     ) -> ActionContext {
         ActionContext::for_resource(
-            descriptor.action_label.clone(),
             row.resource.id.clone(),
             row.resource.kind.clone(),
             row.resource.label.clone(),
@@ -745,24 +803,35 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         .with_facet(ActionFacet::new("kind", "shortcut"))
         .with_facet(ActionFacet::new("trigger", self.trigger.clone()))
         .with_facet(ActionFacet::new("shortcut", self.shortcut.id.clone()))
+        // With the run's group, names the step a change was: a host that
+        // restarted mid-run finds the steps already taken in history.
+        .with_facet(ActionFacet::new(STEP_FACET, path.as_str()))
+        .with_caused_by(self.caused_by.clone())
+        .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new(
+                app_id,
+                row.resource.kind.clone(),
+                descriptor.address.action.clone(),
+            ),
+            [],
+        )))
     }
 
     /// The row offering `action` on `app_id` at `target`, fetched now so the
     /// run acts on what the person is offered at this moment.
     async fn find(
         &self,
-        app_id: &str,
+        key: &ActionKey,
         target: ResourceTarget<'_>,
-        action: &str,
     ) -> Result<CatalogueRow, StepFailure> {
         let unresolved = |reason: String| StepFailure::Unresolved {
-            app_id: app_id.to_string(),
-            action: action.to_string(),
+            app_id: key.app.clone(),
+            action: key.action.clone(),
             reason,
         };
         let mut query = CatalogueQuery {
             target: match target {
-                ResourceTarget::Id(id) => Some(ActionAddress::new(id, action)),
+                ResourceTarget::Id(id) => Some(ActionAddress::new(id, key.action.as_str())),
                 ResourceTarget::Kind(_) | ResourceTarget::Any => None,
             },
             max_results: MAX_CATALOGUE_PAGE,
@@ -777,7 +846,7 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 .map_err(|error| StepFailure::Host {
                     error: Box::new(error),
                 })?;
-            if let Some(row) = find_row(&page.rows, app_id, target, action) {
+            if let Some(row) = find_row(&page.rows, key, target) {
                 return Ok(row.clone());
             }
             if page.exhausted || page.next_cursor.is_empty() {
@@ -827,10 +896,16 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                     return Err(StepFailure::Cancelled { message });
                 }
                 ReceiptStatus::Accepted => {
-                    self.hooks.settle(id).await.ok_or(StepFailure::Abandoned)?;
+                    // Wake when the host says the invocation may have moved;
+                    // only a host that cannot tell falls back to the hooks'
+                    // poll interval.
+                    match self.host.next_change(&self.caller, &id) {
+                        Some(change) => change.await.ok_or(StepFailure::Abandoned)?,
+                        None => self.hooks.settle(id).await.ok_or(StepFailure::Abandoned)?,
+                    }
                     self.host
                         .observe(&self.caller, &id)
-                        .ok_or(StepFailure::Host {
+                        .ok_or_else(|| StepFailure::Host {
                             error: Box::new(ActionHostError::UnknownInvocation),
                         })?
                         .receipt()
@@ -871,22 +946,34 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         match binding {
             Binding::Literal(value) => Ok(Some(value.clone())),
             Binding::Input(name) => {
+                let (name, pointer) = Binding::named_part(name);
                 if !self
                     .shortcut
                     .inputs
                     .iter()
-                    .any(|input| input.name.as_ref() == name.as_str())
+                    .any(|input| input.name.as_ref() == name)
                 {
                     return Err(missing(format!("there is no input `{name}`")));
                 }
-                Ok(self.inputs.get(name).cloned())
+                match self.inputs.get(name) {
+                    None => Ok(None),
+                    Some(value) => value.pointer(&pointer).cloned().map(Some).ok_or_else(|| {
+                        missing(format!("input `{name}` has no value at `{pointer}`"))
+                    }),
+                }
             }
-            Binding::Var(name) => self
-                .vars
-                .get(name)
-                .cloned()
-                .map(Some)
-                .ok_or_else(|| missing(format!("variable `{name}` is not set"))),
+            Binding::Var(name) => {
+                let (name, pointer) = Binding::named_part(name);
+                self.vars
+                    .get(name)
+                    .ok_or_else(|| missing(format!("variable `{name}` is not set")))?
+                    .pointer(&pointer)
+                    .cloned()
+                    .map(Some)
+                    .ok_or_else(|| {
+                        missing(format!("variable `{name}` has no value at `{pointer}`"))
+                    })
+            }
             Binding::StepOutput { step, pointer } => self
                 .outputs
                 .get(step)
@@ -919,9 +1006,11 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
     fn is_secret(&self, binding: &Binding) -> bool {
         match binding {
             Binding::Input(name) => {
-                self.shortcut.inputs.iter().any(|input| {
-                    input.name.as_ref() == name.as_str() && input.ty == ParamType::Secret
-                })
+                let (name, _) = Binding::named_part(name);
+                self.shortcut
+                    .inputs
+                    .iter()
+                    .any(|input| input.name.as_ref() == name && input.ty == ParamType::Secret)
             }
             Binding::StepOutput { step, .. } => self.records.iter().any(|record| {
                 record.step == *step
@@ -951,12 +1040,14 @@ struct Prepared {
 }
 
 /// The value a later step refers to: the JSON result, or the address of the
-/// resource the action returned.
+/// resource the action returned or, for a verb, of the item it created.
 fn result_value(result: &ResultSpec, output: ActionOutput) -> Option<Value> {
     match result {
         ResultSpec::Json { .. } => output.value,
-        ResultSpec::Resource { .. } => output.resources.into_iter().next().map(Value::String),
-        ResultSpec::None | ResultSpec::Job => None,
+        ResultSpec::Resource { .. } | ResultSpec::None => {
+            output.resources.into_iter().next().map(Value::String)
+        }
+        ResultSpec::Job => None,
     }
 }
 

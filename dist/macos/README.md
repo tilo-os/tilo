@@ -1,5 +1,9 @@
 # Tilo for macOS
 
+For a catalog-driven collection of standalone native SDK apps, see
+[the collection script](collection.md). It plans by default and separates build,
+sign, package, verify and explicitly authorized notarization stages.
+
 `Tilo.app` is how the standalone per-user runtime reaches a stock Mac. Its
 visible app is the Store (`so.tilo.store`: registry search and install),
 branded Tilo; beside it is `tilo-runtime`, which every SDK app attaches to.
@@ -74,17 +78,15 @@ for the apps it confines after the person allows each one. Tilo is not App Sandb
 unsigned executable memory, and it loads no third-party dylibs. The file
 explains each key it leaves out.
 
-In CI, `.forgejo/workflows/release-runtime-macos.yml` is manual-dispatch
-only, on `imager-macos-aarch64`. With `sign` unset it builds, verifies and
-uploads an ad-hoc build. With `sign` set, dispatched on a protected
-`runtime-vMAJOR.MINOR.PATCH` tag, it gets a signing identity and notary
-keychain profile from the imager's macOS credential broker, through the same
-`apps/imager/packaging/acquire-release-credentials.sh` lease validation, and
-checks `IMAGER_MAC_TEAM_ID` and `IMAGER_MAC_CERT_SHA256`. The broker's
-server-side claim policy currently admits only `release-imager.yml` on
-`imager-v*` tags (`docs/imager-release-operations.md`). Signed runtime
-builds need that policy to also admit `release-runtime-macos.yml` on
-protected `runtime-v*` tags.
+On t, `t dispatch runtime-macos-app` (or `t test runtime-macos-app`) builds
+the ad-hoc-signed universal bundle on t's Mac, verifies its DMG with
+`verify-app.sh` and keeps the DMG, zip and cask as outputs (`t outputs
+runtime-macos-app`). It holds no credentials. Developer ID signing and
+notarization are not wired into t yet: they need the signing identity and
+notary credentials on a Mac that takes only release jobs, and `build-app.sh`
+split so a check without them builds and a separate one, holding them, signs
+the built bundle and its DMG. Until then signed builds are made by hand with
+`TILO_MAC_SIGNING_IDENTITY` and a notary keychain profile, as above.
 
 ## Updates
 

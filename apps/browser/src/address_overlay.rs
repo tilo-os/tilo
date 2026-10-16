@@ -2,10 +2,10 @@
 //!
 //! A leaf `ui` widget the browser chrome positions directly under the
 //! address [`ui::widget::TextInput`]. It renders the ranked
-//! [`HistoryEntry`] rows produced by
-//! [`History::suggest`](crate::history::History::suggest) — each row shows
-//! the page title in primary text with the URL dimmed beneath it — and
-//! highlights the current selection.
+//! [`Row`]s produced by
+//! [`build_rows`](crate::omnibox::build_rows) as a floating panel
+//! of list rows — each row shows the page title with its URL beneath it —
+//! and lifts the current selection.
 //!
 //! Two integration styles are supported, and the browser uses both:
 //!  * **Imperative** (primary): the chrome owns the address bar's key
@@ -22,34 +22,25 @@
 //! the toolkit's `Dropdown` uses. `draw` itself is a no-op.
 
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
+use ui::widget::TaffyTreeExt;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextStyle};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{Interaction, ListRowFace, Widget};
 
-use crate::history::HistoryEntry;
-
-/// Height of one two-line suggestion row (title + dimmed URL).
-const ROW_H: f64 = 46.0;
-/// Vertical inset above the first / below the last row.
-const PAD: f64 = 6.0;
-/// Horizontal text inset inside a row.
-const ROW_PAD_X: f64 = 12.0;
-/// Fallback panel width when the chrome hasn't supplied one.
-const DEFAULT_WIDTH: f32 = 480.0;
-/// Width of the accent bar drawn down the left of the selected row.
-const SEL_BAR_W: f64 = 3.0;
+use crate::omnibox::{Row, RowKind};
 
 /// Address-bar suggestion dropdown. See the module docs.
 pub struct AddressSuggestions {
     /// Ranked suggestions, best first (as returned by `History::suggest`).
-    items: Vec<HistoryEntry>,
+    items: Vec<Row>,
     /// Index of the highlighted row. Always valid when `items` is
     /// non-empty (clamped on every mutation); meaningless when empty.
     selected: usize,
@@ -57,7 +48,7 @@ pub struct AddressSuggestions {
     hovered: Option<usize>,
     /// Entry the user committed via Enter/click, drained by
     /// [`Self::take_chosen`].
-    chosen: Option<HistoryEntry>,
+    chosen: Option<Row>,
     /// Panel rect in logical coordinates.
     rect: Rect,
     /// Caller-supplied top-left anchor (under the address bar). When set
@@ -67,10 +58,12 @@ pub struct AddressSuggestions {
     width: f32,
     /// Last cursor position (mouse-move carries it; mouse-press doesn't).
     last_cursor: Point,
-    /// Current UI text scale. The overlay is painted outside the normal
-    /// widget tree, so it must retain this to give scaled two-line rows their
-    /// matching hit targets and avoid overlapping text.
-    text_scale: f32,
+    /// The theme the rows are measured in. The overlay is painted outside the
+    /// normal widget tree, so it keeps the theme to give its rows their
+    /// matching hit targets at every text scale.
+    theme: Theme,
+    /// Height of one two-line suggestion row in `theme`.
+    row_h: f64,
 }
 
 impl Default for AddressSuggestions {
@@ -89,15 +82,16 @@ impl AddressSuggestions {
             chosen: None,
             rect: Rect::ZERO,
             anchor: None,
-            width: DEFAULT_WIDTH,
+            width: Theme::dark().tokens.metrics.panel_width_sheet,
             last_cursor: Point::ZERO,
-            text_scale: 1.0,
+            row_h: measured_row_height(&Theme::dark()),
+            theme: Theme::dark(),
         }
     }
 
     /// Replace the suggestion list. Resets the highlight to the first row
     /// (the best-ranked suggestion) and clears any stale hover.
-    pub fn set_suggestions(&mut self, items: Vec<HistoryEntry>) {
+    pub fn set_suggestions(&mut self, items: Vec<Row>) {
         self.items = items;
         self.selected = 0;
         self.hovered = None;
@@ -116,7 +110,7 @@ impl AddressSuggestions {
     }
 
     /// The suggestions currently displayed, best first.
-    pub fn items(&self) -> &[HistoryEntry] {
+    pub fn items(&self) -> &[Row] {
         &self.items
     }
 
@@ -131,7 +125,7 @@ impl AddressSuggestions {
 
     /// The highlighted entry, or `None` when there are no suggestions.
     /// The chrome reads this on Enter to navigate to the picked page.
-    pub fn selected(&self) -> Option<&HistoryEntry> {
+    pub fn selected(&self) -> Option<&Row> {
         self.items.get(self.selected)
     }
 
@@ -160,15 +154,16 @@ impl AddressSuggestions {
         self.relayout(top_left);
     }
 
-    /// Match the live theme's text scale. At accessibility scales a fixed
-    /// 46px row made the title and URL collide while pointer hit testing
-    /// still assumed unscaled geometry.
-    pub fn set_text_scale(&mut self, scale: f32) {
-        let scale = scale.clamp(1.0, 2.0);
-        if (self.text_scale - scale).abs() <= f32::EPSILON {
+    /// Measure the rows in the live theme. Rows are as tall as their text,
+    /// so pointer hit testing follows them at every text scale.
+    pub fn set_theme(&mut self, theme: &Theme) {
+        if self.theme.text_scale.to_bits() == theme.text_scale.to_bits()
+            && self.theme.ui_scale.to_bits() == theme.ui_scale.to_bits()
+        {
             return;
         }
-        self.text_scale = scale;
+        self.theme = theme.clone();
+        self.row_h = measured_row_height(theme);
         if let Some(anchor) = self.anchor {
             self.relayout(anchor);
         }
@@ -176,7 +171,7 @@ impl AddressSuggestions {
 
     /// Take the entry the user committed via Enter or a row click, if any.
     /// Returns `Some` exactly once per commit, then `None`.
-    pub fn take_chosen(&mut self) -> Option<HistoryEntry> {
+    pub fn take_chosen(&mut self) -> Option<Row> {
         self.chosen.take()
     }
 
@@ -197,7 +192,7 @@ impl AddressSuggestions {
         let Some(index) = self
             .items
             .iter()
-            .position(|entry| blake3::hash(entry.url.as_bytes()).to_hex().as_str() == hash)
+            .position(|entry| blake3::hash(row_key(entry).as_bytes()).to_hex().as_str() == hash)
         else {
             return false;
         };
@@ -215,17 +210,22 @@ impl AddressSuggestions {
         }
     }
 
+    /// Inset of the rows inside the panel.
+    fn pad(&self) -> f64 {
+        f64::from(self.theme.tokens.spacing.s2)
+    }
+
     /// Total panel height for the current item count (0 when hidden).
     fn panel_height(&self) -> f64 {
         if self.items.is_empty() {
             0.0
         } else {
-            PAD * 2.0 + self.items.len() as f64 * self.row_height()
+            self.pad() * 2.0 + self.items.len() as f64 * self.row_height()
         }
     }
 
     fn row_height(&self) -> f64 {
-        ROW_H * f64::from(self.text_scale)
+        self.row_h
     }
 
     /// Recompute `self.rect` from the anchor (or a fallback origin) and the
@@ -245,7 +245,7 @@ impl AddressSuggestions {
         if self.items.is_empty() || !self.rect.contains(point) {
             return None;
         }
-        let rel = point.y - (self.rect.y0 + PAD);
+        let rel = point.y - (self.rect.y0 + self.pad());
         if rel < 0.0 {
             return None;
         }
@@ -265,114 +265,79 @@ impl AddressSuggestions {
         if self.items.is_empty() {
             return;
         }
-
-        // Panel surface — translucent so the page shows through faintly
-        // (a frosted dropdown, per the requested look).
-        let panel = RoundedRect::from_rect(self.rect, theme.radius_standard);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised.with_alpha(0.85),
-            None,
-            &panel,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &panel,
-        );
-
-        // Theme type sizes already carry the text scale; `renderer_input_style`
-        // hands them to the renderer so the scale is applied exactly once.
-        // Drawing the resolved size through the legacy size API scaled it a
-        // second time on the live desktop at large text.
-        let title_style =
-            text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
-        let url_style =
-            text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.xs));
-        let line_gap = f64::from(theme.tokens.spacing.s1);
-        let text_max = (f64::from(self.width) - ROW_PAD_X * 2.0).max(0.0) as f32;
-
-        let row_height = self.row_height();
+        // A floating panel: its own material and shadow, its rows inked and
+        // lifted for that ground.
+        ui::widget::floating_surface::paint(scene, transform, self.rect, theme);
+        let on_panel = theme.on_ground(ui::chrome::panel_ground(theme));
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, &on_panel);
+        let pad = self.pad();
         for (idx, entry) in self.items.iter().enumerate() {
-            let row_top = self.rect.y0 + PAD + idx as f64 * row_height;
-            let is_selected = idx == self.selected;
-            let is_hovered = self.hovered == Some(idx);
-
-            // Selection / hover background + accent bar. Selection wins.
-            if is_selected || is_hovered {
-                let fill = if is_selected {
-                    theme.bg_active
-                } else {
-                    theme.bg_hover
-                };
-                let row_rect = Rect::new(
-                    self.rect.x0 + 3.0,
-                    row_top + 1.0,
-                    self.rect.x1 - 3.0,
-                    row_top + row_height - 1.0,
-                );
-                let shape = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.sm));
-                scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-                if is_selected {
-                    let bar = Rect::new(
-                        self.rect.x0 + 3.0,
-                        row_top + 6.0,
-                        self.rect.x0 + 3.0 + SEL_BAR_W,
-                        row_top + row_height - 6.0,
-                    );
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        theme.accent_primary,
-                        None,
-                        &bar,
-                    );
-                }
-            }
-
-            // Title (primary) then URL (dimmed) — fall back to the URL as
-            // the title when a page has no title yet.
-            let title = if entry.title.trim().is_empty() {
-                entry.url.as_str()
-            } else {
-                entry.title.as_str()
+            let row_top = self.rect.y0 + pad + idx as f64 * self.row_height();
+            let rect = Rect::new(
+                self.rect.x0 + pad,
+                row_top,
+                self.rect.x1 - pad,
+                row_top + self.row_height(),
+            );
+            let face = ListRowFace::new(&entry.title)
+                .leading(ui::widget::RowLeading::Icon(kind_icon(entry.kind)))
+                .selected(idx == self.selected)
+                .interaction(Interaction {
+                    hovered: self.hovered == Some(idx),
+                    ..Interaction::default()
+                });
+            let visits = visit_label(entry.visits);
+            let face = match entry.kind {
+                RowKind::History => face.secondary(&entry.detail).meta(&visits),
+                RowKind::Go => face.secondary("Open this address"),
+                RowKind::Search => face.secondary("Search the web"),
+                RowKind::Suggestion => face,
             };
-            let x = self.rect.x0 + ROW_PAD_X;
-            // One line each, elided to the row's width: a long title used to
-            // wrap under the width limit, and a wrapped title has no place to
-            // go in a row this tall except over its own URL line. Both lines
-            // are then measured with the styles they are drawn with and
-            // centred as one block in the row, so the pair sits in the same
-            // place in a 46px row and in the taller rows a text scale buys. A
-            // fixed 8px top with a size-derived second line left the block
-            // high in the row at every scale above 1.
-            let title = text_renderer.elide_to_width(title, title_style.size, text_max);
-            let url = text_renderer.elide_to_width(&entry.url, url_style.size, text_max);
-            let (_, title_h) = text_renderer.measure_style(&title, None, &title_style);
-            let (_, url_h) = text_renderer.measure_style(&url, None, &url_style);
-            let block_h = f64::from(title_h) + line_gap + f64::from(url_h);
-            let block_top = row_top + ((row_height - block_h) / 2.0).max(0.0);
-            text_renderer.draw_style(
-                scene,
-                &title,
-                theme.text_primary,
-                transform * Affine::translate((x, block_top)),
-                None,
-                &title_style,
-            );
-            text_renderer.draw_style(
-                scene,
-                &url,
-                theme.text_dim,
-                transform * Affine::translate((x, block_top + f64::from(title_h) + line_gap)),
-                None,
-                &url_style,
-            );
+            face.paint(&mut ctx, rect);
         }
     }
+}
+
+fn kind_icon(kind: RowKind) -> ui::icons::Icon {
+    use ui::icons::Icon;
+    match kind {
+        RowKind::Go => Icon::ArrowRight,
+        RowKind::Search | RowKind::Suggestion => Icon::Search,
+        RowKind::History => Icon::History,
+    }
+}
+
+fn visit_label(visits: u32) -> String {
+    if visits > 1 {
+        format!("{visits} visits")
+    } else {
+        String::new()
+    }
+}
+
+/// Stable identity of a row across relayouts: what it is and what it opens.
+fn row_key(row: &Row) -> String {
+    match row.kind {
+        RowKind::History => row.url.clone(),
+        kind => format!("{kind:?}:{}", row.url),
+    }
+}
+
+fn describe(row: &Row) -> String {
+    match row.kind {
+        RowKind::History => row.detail.clone(),
+        RowKind::Go => format!("Open {}", row.detail),
+        RowKind::Search | RowKind::Suggestion => format!("Search for {}", row.title),
+    }
+}
+
+/// The height of one two-line suggestion row in `theme`.
+fn measured_row_height(theme: &Theme) -> f64 {
+    ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+        ListRowFace::new("Title")
+            .secondary("https://example.test")
+            .height(text, theme)
+    })
 }
 
 impl Widget for AddressSuggestions {
@@ -387,21 +352,11 @@ impl Widget for AddressSuggestions {
         // `ui::widget::TaffyTreeExt`'s doc comment), and `Widget::build_layout`
         // returns a bare `NodeId` across every implementor, so there is
         // nowhere to surface a theoretical error.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "taffy::TaffyTree::new_leaf cannot return Err; see ui::widget::TaffyTreeExt"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::length(self.width),
-                    height: Dimension::length(self.panel_height() as f32),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size::from_lengths(self.width, self.panel_height() as f32),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -418,19 +373,6 @@ impl Widget for AddressSuggestions {
         self.relayout(taffy_origin);
     }
 
-    /// The panel is a floating overlay — nothing paints in the normal
-    /// pass; the real drawing happens in [`Widget::draw_overlay`] so it
-    /// composites above the page surface.
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
-
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -439,7 +381,7 @@ impl Widget for AddressSuggestions {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        self.set_text_scale(theme.text_scale);
+        self.set_theme(theme);
         self.render(scene, transform, text_renderer, theme);
     }
 
@@ -449,8 +391,7 @@ impl Widget for AddressSuggestions {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = ctx.logical(position);
                 self.hovered = self.row_at(self.last_cursor);
             }
             WindowEvent::MouseInput {
@@ -509,19 +450,15 @@ impl Widget for AddressSuggestions {
             .iter()
             .enumerate()
             .map(|(index, entry)| {
-                let title = if entry.title.trim().is_empty() {
-                    entry.url.as_str()
-                } else {
-                    entry.title.as_str()
-                };
-                let row_top = self.rect.y0 + PAD + index as f64 * self.row_height();
+                let title = entry.title.as_str();
+                let row_top = self.rect.y0 + self.pad() + index as f64 * self.row_height();
                 AccessNode::new(Role::ListItem)
                     .with_action_target(format!(
                         "browser.address-suggestion:{}",
-                        blake3::hash(entry.url.as_bytes()).to_hex()
+                        blake3::hash(row_key(entry).as_bytes()).to_hex()
                     ))
                     .with_name(title)
-                    .with_description(entry.url.clone())
+                    .with_description(describe(entry))
                     .with_bounds(Rect::new(
                         self.rect.x0,
                         row_top,
@@ -529,12 +466,12 @@ impl Widget for AddressSuggestions {
                         row_top + self.row_height(),
                     ))
                     .with_position(index.saturating_add(1), self.items.len())
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: index == self.selected,
-                        selected: index == self.selected,
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(index == self.selected)
+                            .selected(index == self.selected),
+                    )
             })
             .collect();
         Some(
@@ -555,7 +492,7 @@ impl Widget for AddressSuggestions {
             return None;
         };
         (*index < self.items.len()).then(|| {
-            let top = self.rect.y0 + PAD + *index as f64 * self.row_height();
+            let top = self.rect.y0 + self.pad() + *index as f64 * self.row_height();
             Rect::new(self.rect.x0, top, self.rect.x1, top + self.row_height())
         })
     }
@@ -586,18 +523,18 @@ impl Widget for AddressSuggestions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
 
-    fn entry(url: &str, title: &str) -> HistoryEntry {
-        HistoryEntry {
-            url: url.to_string(),
+    fn entry(url: &str, title: &str) -> Row {
+        Row {
+            kind: RowKind::History,
             title: title.to_string(),
-            last_visit: 0,
-            visit_count: 1,
+            detail: url.to_string(),
+            url: url.to_string(),
+            visits: 1,
         }
     }
 
-    fn three() -> Vec<HistoryEntry> {
+    fn three() -> Vec<Row> {
         vec![
             entry("https://a.test", "Alpha"),
             entry("https://b.test", "Beta"),
@@ -675,10 +612,6 @@ mod tests {
 
     /// Rendering, sizing and accessibility of suggestion rows.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn suggestion_rows_render_and_expose_stable_accessible_targets() {
         // Phase `accessibility_target_uses_the_stable_row_identity`.
         {
@@ -715,12 +648,12 @@ mod tests {
             w.set_anchor(Point::new(20.0, 40.0), 320.0);
             let normal_height = w.rect.height();
 
-            w.set_text_scale(1.5);
+            w.set_theme(&Theme::dark().with_text_scale(1.5));
             assert!(w.rect.height() > normal_height);
             assert_eq!(
-                w.row_at(Point::new(40.0, w.rect.y0 + PAD + w.row_height() + 1.0)),
+                w.row_at(Point::new(40.0, w.rect.y0 + w.pad() + w.row_height() + 1.0)),
                 Some(1),
-                "hit testing follows the larger visual row rather than the old 46px grid"
+                "hit testing follows the larger visual row"
             );
         }
 
@@ -774,53 +707,17 @@ mod tests {
 
     /// Keyboard, Escape and pointer input on the overlay.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn keyboard_escape_and_mouse_choose_or_dismiss_suggestions() {
         // Phase `keyboard_moves_selection_and_enter_chooses`.
         {
             let mut w = AddressSuggestions::new();
             w.set_suggestions(three());
 
-            let mut taffy = TaffyTree::<()>::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
-
-            let mut send = |w: &mut AddressSuggestions, named: NamedKey| -> bool {
-                let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-                ev.logical_key = Key::Named(named);
-                ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                    winit::keyboard::NativeKeyCode::Unidentified,
-                );
-                ev.location = winit::keyboard::KeyLocation::Standard;
-                ev.state = ElementState::Pressed;
-                ev.repeat = false;
-                ev.text = None;
-                let event = WindowEvent::KeyboardInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    event: ev,
-                    is_synthetic: false,
-                };
-                let mut handled = false;
-                let mut focus = None;
-                w.handle_event(
-                    &event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: &mut doc,
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
-                handled
+            let send = |w: &mut AddressSuggestions, named: NamedKey| -> bool {
+                let ev =
+                    ui::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
+                let event = ui::synthetic_input::keyboard_input(ev);
+                ui::testing::dispatch(w, &event)
             };
 
             assert!(send(&mut w, NamedKey::ArrowDown));
@@ -841,41 +738,14 @@ mod tests {
         {
             let mut w = AddressSuggestions::new();
             w.set_suggestions(three());
-            let mut taffy = TaffyTree::<()>::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
 
-            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Named(NamedKey::Escape);
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
+            let ev = ui::synthetic_input::key_event(
+                Key::Named(NamedKey::Escape),
+                None,
+                ElementState::Pressed,
             );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = None;
-            let event = WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: ev,
-                is_synthetic: false,
-            };
-            let mut handled = false;
-            let mut focus = None;
-            w.handle_event(
-                &event,
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: &mut doc,
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            let event = ui::synthetic_input::keyboard_input(ev);
+            let handled = ui::testing::dispatch(&mut w, &event);
             assert!(handled);
             assert!(!w.is_visible(), "Escape clears the overlay");
         }
@@ -887,48 +757,14 @@ mod tests {
             w.set_anchor(Point::new(50.0, 100.0), 400.0);
             lay_out(&mut w);
 
-            let mut taffy = TaffyTree::<()>::new();
-            let node = taffy.new_leaf(Style::default()).unwrap();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
-
             // Aim at the centre of the second row (idx 1).
             let r = w.get_rect();
-            let row1_y = r.y0 + PAD + ROW_H * 1.5;
-            let mut dispatch = |w: &mut AddressSuggestions, ev: WindowEvent| -> bool {
-                let mut handled = false;
-                let mut focus = None;
-                w.handle_event(
-                    &ev,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: &mut doc,
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
-                handled
-            };
-            dispatch(
+            let row1_y = r.y0 + w.pad() + w.row_height() * 1.5;
+            ui::testing::dispatch(
                 &mut w,
-                WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: winit::dpi::PhysicalPosition::new(r.x0 + 20.0, row1_y),
-                },
+                &ui::synthetic_input::cursor_moved(r.x0 + 20.0, row1_y),
             );
-            let handled = dispatch(
-                &mut w,
-                WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
+            let handled = ui::testing::dispatch(&mut w, &ui::synthetic_input::mouse_press());
             assert!(handled, "a click on a row is consumed");
             assert_eq!(
                 w.selected_index(),

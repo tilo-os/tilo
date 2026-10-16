@@ -1,15 +1,16 @@
 //! Pure data model for the Maps app.
 //!
-//! Durable resources and window-local presentation state live here as plain
-//! serde types. The typed CRDT schema (see [`crate::doc`]) persists only the
-//! collaborative subset: saved/accepted places, history, itineraries and
-//! offline regions. Camera, panel, selection, drafts and ranked caches remain
-//! per-window.
+//! The window's model ([`MapModel`]) holds what a window shows: the shared
+//! workspace's places, searches and plans ([`crate::workspace::Workspace`],
+//! the document) beside its own presentation state. Camera, panel,
+//! selection, drafts and ranked caches remain per-window, and the offline
+//! areas are this device's ([`crate::offline_areas`]).
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Id, Identified, JsonSchema, Model};
 
 /// A WGS-84 geographic coordinate (degrees).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct LatLon {
     pub lat: f64,
     pub lon: f64,
@@ -23,7 +24,8 @@ impl LatLon {
 
 /// Point-of-interest category. Drives the marker colour and the place-card
 /// icon. Kept deliberately small and OSM-flavoured.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum Category {
     Landmark,
     Cafe,
@@ -35,10 +37,29 @@ pub enum Category {
     Hotel,
     Shop,
     Hospital,
+    #[default]
     Other,
 }
 
 impl Category {
+    /// The icon a marker and a place row show for the category.
+    pub fn icon(self) -> ui::icons::Icon {
+        use ui::icons::Icon;
+        match self {
+            Category::Landmark => Icon::Flag,
+            Category::Cafe => Icon::Coffee,
+            Category::Restaurant => Icon::Utensils,
+            Category::Bar => Icon::Beer,
+            Category::Museum => Icon::Landmark,
+            Category::Park => Icon::Trees,
+            Category::Transit => Icon::TrainFront,
+            Category::Hotel => Icon::BedDouble,
+            Category::Shop => Icon::ShoppingBag,
+            Category::Hospital => Icon::Hospital,
+            Category::Other => Icon::MapPin,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Category::Landmark => "Landmark",
@@ -52,23 +73,6 @@ impl Category {
             Category::Shop => "Shop",
             Category::Hospital => "Hospital",
             Category::Other => "Place",
-        }
-    }
-
-    /// A single glyph used as the marker's pictogram.
-    pub fn glyph(self) -> &'static str {
-        match self {
-            Category::Landmark => "★",
-            Category::Cafe => "☕",
-            Category::Restaurant => "🍴",
-            Category::Bar => "🍺",
-            Category::Museum => "🏛",
-            Category::Park => "🌳",
-            Category::Transit => "Ⓜ",
-            Category::Hotel => "🛏",
-            Category::Shop => "🛍",
-            Category::Hospital => "✚",
-            Category::Other => "•",
         }
     }
 
@@ -94,14 +98,29 @@ impl Category {
 
 /// A point of interest. `id` is stable; markers, the place card and the
 /// saved-list all reference it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Place {
+    /// The place's id, as the geocoder or the map names it.
+    #[model(readonly)]
     pub id: String,
+    /// Name
+    #[model(label)]
     pub name: String,
+    /// Category
     pub category: Category,
+    /// Address
     pub address: String,
+    /// Location
+    #[model(readonly)]
     pub pos: LatLon,
+    /// Saved
     pub saved: bool,
+}
+
+impl Identified for Place {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.clone())
+    }
 }
 
 impl Place {
@@ -139,24 +158,23 @@ pub struct Poi {
 }
 
 impl Poi {
-    /// A one-line detail subtitle for the marker/info card: the address if
-    /// present, else the cuisine/kind, else the category label.
-    pub fn subtitle(&self) -> String {
-        if !self.address.is_empty() {
-            self.address.clone()
-        } else if let Some(k) = &self.kind {
-            k.clone()
-        } else {
-            self.category.label().to_string()
-        }
+    /// What the place is, in sentence case: OpenStreetMap's finer kind
+    /// ("Beer garden" for `beer_garden`) when tagged, else the category.
+    pub fn kind_label(&self) -> String {
+        let Some(kind) = self.kind.as_deref().filter(|k| !k.trim().is_empty()) else {
+            return self.category.label().to_string();
+        };
+        ui::format::capitalize_first(&kind.trim().replace(['_', ';'], " "))
     }
 }
 
 /// Travel mode for the directions engine. `Car`/`Bike`/`Foot` route on roads
 /// (OSRM); `Transit` plans a public-transport journey (MOTIS) instead — it is
 /// a mode of Directions, not a separate surface.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
 pub enum TravelMode {
+    #[default]
     Car,
     Transit,
     Bike,
@@ -177,15 +195,6 @@ impl TravelMode {
             TravelMode::Transit => "Transit",
             TravelMode::Bike => "Cycle",
             TravelMode::Foot => "Walk",
-        }
-    }
-
-    pub fn glyph(self) -> &'static str {
-        match self {
-            TravelMode::Car => "🚗",
-            TravelMode::Transit => "🚆",
-            TravelMode::Bike => "🚲",
-            TravelMode::Foot => "🚶",
         }
     }
 
@@ -221,7 +230,7 @@ impl TravelMode {
 }
 
 /// Turn type for a routing step. Maps to OSRM's `maneuver.modifier`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum Maneuver {
     Depart,
     Continue,
@@ -238,20 +247,21 @@ pub enum Maneuver {
 }
 
 impl Maneuver {
-    /// A directional arrow glyph for the step row.
-    pub fn glyph(self) -> &'static str {
+    /// The icon that shows this manoeuvre in a step row and the
+    /// navigation card.
+    pub fn icon(self) -> ui::icons::Icon {
+        use ui::icons::Icon;
         match self {
-            Maneuver::Depart => "◉",
-            Maneuver::Continue | Maneuver::Merge => "↑",
-            Maneuver::SlightLeft => "↖",
-            Maneuver::Left => "←",
-            Maneuver::SharpLeft => "↩",
-            Maneuver::SlightRight => "↗",
-            Maneuver::Right => "→",
-            Maneuver::SharpRight => "↪",
-            Maneuver::Uturn => "⇩",
-            Maneuver::Roundabout => "↻",
-            Maneuver::Arrive => "⚑",
+            Maneuver::Depart | Maneuver::Continue | Maneuver::Merge => Icon::ArrowUp,
+            Maneuver::SlightLeft => Icon::ArrowUpLeft,
+            Maneuver::Left => Icon::CornerUpLeft,
+            Maneuver::SharpLeft => Icon::ArrowDownLeft,
+            Maneuver::SlightRight => Icon::ArrowUpRight,
+            Maneuver::Right => Icon::CornerUpRight,
+            Maneuver::SharpRight => Icon::ArrowDownRight,
+            Maneuver::Uturn => Icon::Undo2,
+            Maneuver::Roundabout => Icon::RotateCw,
+            Maneuver::Arrive => Icon::Flag,
         }
     }
 
@@ -277,7 +287,7 @@ impl Maneuver {
 }
 
 /// One turn-by-turn instruction.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RouteStep {
     pub instruction: String,
     pub distance_m: f64,
@@ -285,7 +295,7 @@ pub struct RouteStep {
 }
 
 /// A computed road route between two points.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Route {
     pub mode: TravelMode,
     pub distance_m: f64,
@@ -298,7 +308,7 @@ pub struct Route {
 }
 
 /// Mode of one public-transport leg.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum TransitMode {
     Walk,
     Bus,
@@ -320,19 +330,7 @@ impl TransitMode {
         }
     }
 
-    pub fn glyph(self) -> &'static str {
-        match self {
-            TransitMode::Walk => "🚶",
-            TransitMode::Bus => "🚌",
-            TransitMode::Tram => "🚊",
-            TransitMode::Subway => "Ⓜ",
-            TransitMode::Rail => "🚆",
-            TransitMode::Ferry => "⛴",
-        }
-    }
-
-    /// Distinct branding hue index hint, resolved against the theme accent
-    /// ramp by the renderer. We avoid hard-coding RGB here.
+    /// The mode a MOTIS leg reports, by its mode name.
     pub fn from_motis(mode: &str) -> TransitMode {
         match mode.to_ascii_uppercase().as_str() {
             "WALK" => TransitMode::Walk,
@@ -349,7 +347,7 @@ impl TransitMode {
 }
 
 /// One leg of a public-transport itinerary.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TransitLeg {
     pub mode: TransitMode,
     /// Line label, e.g. "U3", "58", "S1". Empty for walking legs.
@@ -381,7 +379,7 @@ pub struct TransitLeg {
 }
 
 /// A full door-to-door public-transport journey option.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TransitJourney {
     pub dep: String,
     pub arr: String,
@@ -391,7 +389,7 @@ pub struct TransitJourney {
 }
 
 /// Whether a transit query is anchored to a departure or an arrival time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum TransitTimeMode {
     /// Leave at the chosen time (the default, "leave now").
     Depart,
@@ -402,12 +400,14 @@ pub enum TransitTimeMode {
 /// The depart/arrive anchor for the Transit planner. Defaults to "leave now"
 /// (`Depart` at a zero offset); the user shifts the anchor in ±15-minute
 /// steps and the offset is applied to the wall clock when the query is built.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TransitTime {
     pub mode: TransitTimeMode,
     /// Minutes relative to "now". `0` with `Depart` means "leave now".
     pub offset_min: i32,
 }
+
+tilo_resource::json_model!(TransitTime);
 
 impl Default for TransitTime {
     fn default() -> Self {
@@ -474,7 +474,7 @@ pub struct DownloadedRegion {
     pub tiles: u32,
 }
 
-/// The Maps window state. [`crate::doc::MapsDoc`] persists its explicit
+/// The Maps window state. [`crate::workspace::Workspace`] holds its explicit
 /// collaborative subset rather than serialising this entire struct.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MapModel {
@@ -523,8 +523,9 @@ pub struct MapModel {
     pub zoom: f64,
     /// One-line network/status message for the status bar.
     pub status: String,
-    /// Map areas saved for offline use. The tiles are persisted in the on-disk
-    /// cache; this is the manageable list of what has been downloaded.
+    /// Map areas this device saved for offline use, as its device-local
+    /// setting holds them. The tiles are persisted in the on-disk cache; this
+    /// is the manageable list of what has been downloaded.
     #[serde(default)]
     pub regions: Vec<DownloadedRegion>,
 }

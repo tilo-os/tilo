@@ -30,6 +30,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use tilo_lock::MutexRecover as _;
 
 /// Marks the legacy single-string invocation slot as carrying a canonical
 /// JSON argument object. The record-separator prefix cannot be produced by a
@@ -90,6 +91,34 @@ impl ParamType {
 /// not an assertion: binding does not check it.
 pub const RESOURCE_KIND_ANNOTATION: &str = "resource_kind";
 
+/// Schema annotation marking a parameter as a place inside the resource the
+/// action is on (an item, a caret in it, a range of it); see
+/// [`ActionParam::as_place`].
+pub const PLACE_ANNOTATION: &str = "place";
+
+/// Schema annotation marking a text parameter as the address of content
+/// another action produced (a content hash), not words a caller can say;
+/// see [`ActionParam::as_content`].
+pub const CONTENT_ANNOTATION: &str = "content";
+
+/// The schema of a place inside a resource ([`ActionParam::as_place`]).
+#[must_use]
+pub fn place_schema() -> serde_json::Value {
+    let offset = || serde_json::json!({ "type": "integer", "minimum": 0 });
+    serde_json::json!({
+        "type": "object",
+        PLACE_ANNOTATION: true,
+        "properties": {
+            "item": { "type": "string", "minLength": 1 },
+            "at": offset(),
+            "start": offset(),
+            "end": offset(),
+        },
+        "required": ["item"],
+        "additionalProperties": false,
+    })
+}
+
 /// One typed parameter an action declares.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionParam {
@@ -98,6 +127,7 @@ pub struct ActionParam {
     /// Whether an invocation must supply it. An optional parameter's default
     /// belongs to the action and is stated in `description` — the surface does
     /// not invent one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub required: bool,
     pub description: Str,
     /// When non-empty, the only values this parameter accepts.
@@ -112,10 +142,10 @@ pub struct ActionParam {
     /// ranges, lengths, patterns, formats, item/object schemas, and defaults
     /// without growing a second incompatible validation vocabulary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema: Option<serde_json::Value>,
+    pub schema: Option<std::sync::Arc<serde_json::Value>>,
     /// Explicitly permits JSON null. Optional means omitted; nullable means
     /// present with no value, and callers need to distinguish the two.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub nullable: bool,
 }
 
@@ -190,6 +220,14 @@ impl ActionParam {
 
     #[must_use]
     pub fn with_schema(mut self, schema: serde_json::Value) -> Self {
+        self.schema = Some(std::sync::Arc::new(schema));
+        self
+    }
+
+    /// Retain an immutable schema already shared by the current type generation.
+    /// Wire serialization and strict argument validation are unchanged.
+    #[must_use]
+    pub fn with_shared_schema(mut self, schema: std::sync::Arc<serde_json::Value>) -> Self {
         self.schema = Some(schema);
         self
     }
@@ -201,14 +239,17 @@ impl ActionParam {
     #[must_use]
     pub fn of_resource_kind(mut self, kind: impl Into<String>) -> Self {
         let mut schema = match self.schema.take() {
-            Some(serde_json::Value::Object(schema)) => schema,
+            Some(schema) => match std::sync::Arc::unwrap_or_clone(schema) {
+                serde_json::Value::Object(schema) => schema,
+                _ => serde_json::Map::new(),
+            },
             _ => serde_json::Map::new(),
         };
         schema.insert(
             RESOURCE_KIND_ANNOTATION.into(),
             serde_json::Value::String(kind.into()),
         );
-        self.schema = Some(serde_json::Value::Object(schema));
+        self.schema = Some(std::sync::Arc::new(serde_json::Value::Object(schema)));
         self
     }
 
@@ -224,6 +265,112 @@ impl ActionParam {
             .get(RESOURCE_KIND_ANNOTATION)?
             .as_str()
             .filter(|kind| !kind.is_empty())
+    }
+
+    /// Make this a place inside the resource the action is on: an object
+    /// naming one of its items (`{"item": id}`), a caret in it
+    /// (`{"item": id, "at": n}`) or a range of it
+    /// (`{"item": id, "start": n, "end": n}`). Marked with the
+    /// [`PLACE_ANNOTATION`], so a palette or an agent offers the resource's
+    /// items rather than free text. An action given one acts there instead
+    /// of at the invoker's caret.
+    #[must_use]
+    pub fn as_place(mut self) -> Self {
+        self.ty = ParamType::Object;
+        self.schema = Some(std::sync::Arc::new(place_schema()));
+        self
+    }
+
+    /// [`Self::as_place`], its items being those of the collection `field`
+    /// (a document's paragraphs, `blocks`): the item resources published as
+    /// `<resource>/<field>/<item>`.
+    #[must_use]
+    pub fn as_place_in(mut self, field: &str) -> Self {
+        let mut schema = place_schema();
+        if let Some(object) = schema.as_object_mut() {
+            object.insert(
+                PLACE_ANNOTATION.into(),
+                serde_json::Value::String(field.into()),
+            );
+        }
+        self.ty = ParamType::Object;
+        self.schema = Some(std::sync::Arc::new(schema));
+        self
+    }
+
+    /// Make this text parameter the address of content another action
+    /// produced: a caller chains it from that action's result, never from
+    /// words (marked with the [`CONTENT_ANNOTATION`]).
+    #[must_use]
+    pub fn as_content(mut self) -> Self {
+        self.ty = ParamType::Text;
+        self.schema = Some(std::sync::Arc::new(serde_json::json!({
+            "type": "string",
+            CONTENT_ANNOTATION: true,
+        })));
+        self
+    }
+
+    /// Make this list parameter a list of content addresses, each one
+    /// content another action produced ([`Self::as_content`]), in order.
+    #[must_use]
+    pub fn as_content_list(mut self) -> Self {
+        self.ty = ParamType::Array;
+        self.schema = Some(std::sync::Arc::new(serde_json::json!({
+            "type": "array",
+            "items": { "type": "string", CONTENT_ANNOTATION: true },
+        })));
+        self
+    }
+
+    /// Whether this parameter takes a list of content
+    /// ([`Self::as_content_list`]).
+    #[must_use]
+    pub fn is_content_list(&self) -> bool {
+        self.ty == ParamType::Array
+            && self
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.get("items"))
+                .and_then(|items| items.get(CONTENT_ANNOTATION))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+    }
+
+    /// Whether this parameter takes content another action produced
+    /// ([`Self::as_content`]).
+    #[must_use]
+    pub fn is_content(&self) -> bool {
+        self.ty == ParamType::Text
+            && self
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.get(CONTENT_ANNOTATION))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+    }
+
+    /// Whether this parameter is a place inside the resource
+    /// ([`Self::as_place`]).
+    #[must_use]
+    pub fn is_place(&self) -> bool {
+        self.ty == ParamType::Object
+            && self
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.get(PLACE_ANNOTATION))
+                .is_some_and(|place| place.as_bool() == Some(true) || place.is_string())
+    }
+
+    /// The collection whose items this place parameter names, when it says
+    /// ([`Self::as_place_in`]).
+    #[must_use]
+    pub fn place_field(&self) -> Option<&str> {
+        self.schema
+            .as_ref()?
+            .get(PLACE_ANNOTATION)?
+            .as_str()
+            .filter(|field| !field.is_empty())
     }
 
     #[must_use]
@@ -272,12 +419,48 @@ impl ActionParam {
             }
         }
         if let Some(schema) = &self.schema
-            && let Err(reason) = validate_schema_definition(schema)
+            && let Err(reason) = validate_shared_schema_definition(schema)
         {
             errors.push(format!("invalid schema: {reason}"));
         }
         errors
     }
+}
+
+const VALID_SCHEMA_LIMIT: usize = 64;
+
+thread_local! {
+    static VALID_SCHEMAS: std::cell::RefCell<Vec<std::sync::Weak<serde_json::Value>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Publications reuse immutable type-generation schemas. Remember only successful
+/// structural checks, never argument values, descriptor fields or authority.
+/// Weak identities keep neither the schema tree nor its generation alive and
+/// prevent an allocation at a recycled address from borrowing an old result.
+/// `Arc::make_mut` dissociates these weak identities before changing a schema.
+fn validate_shared_schema_definition(
+    schema: &std::sync::Arc<serde_json::Value>,
+) -> Result<(), String> {
+    let known = VALID_SCHEMAS.with(|schemas| {
+        schemas
+            .borrow()
+            .iter()
+            .any(|validated| std::ptr::eq(validated.as_ptr(), std::sync::Arc::as_ptr(schema)))
+    });
+    if known {
+        return Ok(());
+    }
+    validate_schema_definition(schema)?;
+    VALID_SCHEMAS.with(|schemas| {
+        let mut schemas = schemas.borrow_mut();
+        schemas.retain(|schema| schema.strong_count() != 0);
+        if schemas.len() == VALID_SCHEMA_LIMIT {
+            schemas.remove(0);
+        }
+        schemas.push(std::sync::Arc::downgrade(schema));
+    });
+    Ok(())
 }
 
 /// One bound argument value.
@@ -376,6 +559,31 @@ impl ArgValue {
     }
 }
 
+/// How a value broke its parameter's declared range, as data: what a
+/// failure's [`details`](crate::ActionFailure::details) carry beside its
+/// message, so a caller corrects the call without reading the prose.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ArgViolation {
+    /// Below the schema's `minimum`.
+    Minimum { bound: serde_json::Value },
+    /// Above the schema's `maximum`.
+    Maximum { bound: serde_json::Value },
+}
+
+impl std::fmt::Display for ArgViolation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (side, bound) = match self {
+            Self::Minimum { bound } => ("least", bound),
+            Self::Maximum { bound } => ("most", bound),
+        };
+        match bound.as_f64() {
+            Some(bound) => write!(f, "must be at {side} {bound}"),
+            None => write!(f, "must be at {side} {bound}"),
+        }
+    }
+}
+
 /// Why a set of arguments does not satisfy an action's parameters.
 ///
 /// Each variant names the parameter, because a caller that cannot see the
@@ -384,6 +592,11 @@ impl ArgValue {
 pub enum ArgError {
     Missing {
         name: String,
+    },
+    /// A number outside the range the parameter's schema declares.
+    OutOfRange {
+        name: String,
+        violation: ArgViolation,
     },
     Unknown {
         name: String,
@@ -444,6 +657,9 @@ impl std::fmt::Display for ArgError {
             }
             ArgError::Constraint { name, reason } => {
                 write!(f, "argument `{name}` {reason}")
+            }
+            ArgError::OutOfRange { name, violation } => {
+                write!(f, "argument `{name}` {violation}")
             }
         }
     }
@@ -531,11 +747,21 @@ impl ActionArgs {
                 _ => {}
             }
             if let Some(schema) = &param.schema {
-                validate_schema(&value.to_json(), schema).map_err(|reason| {
+                validate_shared_schema_definition(schema).map_err(|reason| {
                     ArgError::Constraint {
                         name: name.clone(),
                         reason,
                     }
+                })?;
+                check_schema_value(&value.to_json(), schema).map_err(|refusal| match refusal {
+                    SchemaRefusal::Bound(violation) => ArgError::OutOfRange {
+                        name: name.clone(),
+                        violation,
+                    },
+                    SchemaRefusal::Other(reason) => ArgError::Constraint {
+                        name: name.clone(),
+                        reason,
+                    },
                 })?;
             }
             if !param.choices.is_empty() {
@@ -682,6 +908,31 @@ fn looks_like_rfc3339(value: &str) -> bool {
     chrono::DateTime::parse_from_rfc3339(value).is_ok()
 }
 
+/// Distinct schema patterns kept compiled. A directory publishes a handful;
+/// past this the cache starts again rather than growing with whatever a
+/// caller's schemas name.
+const COMPILED_PATTERNS: usize = 64;
+
+/// `pattern` compiled, from the cache when an earlier argument or schema
+/// already compiled it: every validated value used to compile its schema's
+/// pattern again.
+fn schema_pattern(pattern: &str) -> Result<regex_lite::Regex, regex_lite::Error> {
+    static COMPILED: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<String, regex_lite::Regex>>,
+    > = std::sync::LazyLock::new(std::sync::Mutex::default);
+    let mut compiled = COMPILED.lock_recover();
+    if let Some(expression) = compiled.get(pattern) {
+        return Ok(expression.clone());
+    }
+    let expression = regex_lite::Regex::new(pattern)?;
+    if compiled.len() >= COMPILED_PATTERNS {
+        compiled.clear();
+    }
+    compiled.insert(pattern.to_owned(), expression.clone());
+    drop(compiled);
+    Ok(expression)
+}
+
 fn validate_string_schema(
     text: &str,
     schema: &serde_json::Map<String, serde_json::Value>,
@@ -701,7 +952,7 @@ fn validate_string_schema(
         let pattern = pattern
             .as_str()
             .ok_or_else(|| "has a non-string schema pattern".to_string())?;
-        let expression = regex::Regex::new(pattern)
+        let expression = schema_pattern(pattern)
             .map_err(|error| format!("has an invalid schema pattern: {error}"))?;
         if !expression.is_match(text) {
             return Err(format!("must match pattern `{pattern}`"));
@@ -778,19 +1029,64 @@ pub(crate) fn validate_schema(
     value: &serde_json::Value,
     schema: &serde_json::Value,
 ) -> Result<(), String> {
-    // Validation is also called directly, without publication-time checks.
-    // Check the entire definition, including branches the value never visits,
-    // rather than accepting a contract whose assertions we cannot enforce.
+    check_schema(value, schema).map_err(|refusal| refusal.to_string())
+}
+
+/// Why a value failed its schema: a numeric bound its top level declares,
+/// as data, or anything else, in words.
+enum SchemaRefusal {
+    Bound(ArgViolation),
+    Other(String),
+}
+
+impl From<String> for SchemaRefusal {
+    fn from(reason: String) -> Self {
+        Self::Other(reason)
+    }
+}
+
+impl From<ArgViolation> for SchemaRefusal {
+    fn from(violation: ArgViolation) -> Self {
+        Self::Bound(violation)
+    }
+}
+
+impl std::fmt::Display for SchemaRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bound(violation) => violation.fmt(f),
+            Self::Other(reason) => f.write_str(reason),
+        }
+    }
+}
+
+/// [`validate_schema`], keeping a refusal by the top level's own numeric
+/// bound as data. A bound nested inside is refused in words, as part of the
+/// property or item it bounds.
+fn check_schema(
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> Result<(), SchemaRefusal> {
+    // Check even branches the value never visits before enforcing the contract.
     validate_schema_definition(schema)?;
-    validate_schema_value(value, schema)
+    check_schema_value(value, schema)
 }
 
 fn validate_schema_value(
     value: &serde_json::Value,
     schema: &serde_json::Value,
 ) -> Result<(), String> {
+    check_schema_value(value, schema).map_err(|refusal| refusal.to_string())
+}
+
+fn check_schema_value(
+    value: &serde_json::Value,
+    schema: &serde_json::Value,
+) -> Result<(), SchemaRefusal> {
     let Some(schema) = schema.as_object() else {
-        return Err("has a schema that is not an object".into());
+        return Err(SchemaRefusal::Other(
+            "has a schema that is not an object".into(),
+        ));
     };
     if let Some(alternatives) = schema.get("oneOf").and_then(serde_json::Value::as_array) {
         validate_one_of(value, alternatives)?;
@@ -800,7 +1096,8 @@ fn validate_schema_value(
     validate_schema_number(value, schema)?;
     validate_schema_string(value, schema)?;
     validate_schema_array(value, schema)?;
-    validate_schema_object(value, schema)
+    validate_schema_object(value, schema)?;
+    Ok(())
 }
 
 /// Exactly one alternative must accept `value`. When none does, the refusal
@@ -843,7 +1140,8 @@ fn validate_one_of(
 }
 
 /// Whether `value` carries what tells `alternative` apart: the values of its
-/// constant properties (a tag), or else all of its required keys.
+/// constant or enumerated properties (a tag, or one of several), or else all
+/// of its required keys.
 fn selects(value: &serde_json::Value, alternative: &serde_json::Value) -> bool {
     let Some(schema) = alternative.as_object() else {
         return false;
@@ -859,12 +1157,18 @@ fn selects(value: &serde_json::Value, alternative: &serde_json::Value) -> bool {
         .and_then(serde_json::Value::as_object)
         .into_iter()
         .flatten()
-        .filter_map(|(key, property)| Some((key, property.get("const")?)))
+        .filter(|(_, property)| property.get("const").is_some() || property.get("enum").is_some())
         .collect();
     if !tags.is_empty() {
-        return tags
-            .iter()
-            .all(|(key, expected)| object.get(key.as_str()) == Some(*expected));
+        return tags.iter().all(|(key, property)| {
+            object.get(key.as_str()).is_some_and(|given| {
+                property.get("const") == Some(given)
+                    || property
+                        .get("enum")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|names| names.contains(given))
+            })
+        });
     }
     let required = schema
         .get("required")
@@ -957,17 +1261,23 @@ fn validate_schema_equality(
 fn validate_schema_number(
     value: &serde_json::Value,
     schema: &serde_json::Map<String, serde_json::Value>,
-) -> Result<(), String> {
+) -> Result<(), ArgViolation> {
     if let Some(number) = value.as_f64() {
-        if let Some(minimum) = schema.get("minimum").and_then(serde_json::Value::as_f64)
-            && number < minimum
+        if let Some(minimum) = schema
+            .get("minimum")
+            .filter(|minimum| minimum.as_f64().is_some_and(|minimum| number < minimum))
         {
-            return Err(format!("must be at least {minimum}"));
+            return Err(ArgViolation::Minimum {
+                bound: minimum.clone(),
+            });
         }
-        if let Some(maximum) = schema.get("maximum").and_then(serde_json::Value::as_f64)
-            && number > maximum
+        if let Some(maximum) = schema
+            .get("maximum")
+            .filter(|maximum| maximum.as_f64().is_some_and(|maximum| number > maximum))
         {
-            return Err(format!("must be at most {maximum}"));
+            return Err(ArgViolation::Maximum {
+                bound: maximum.clone(),
+            });
         }
     }
     Ok(())
@@ -1010,8 +1320,18 @@ fn validate_schema_array(
         {
             return Err("must contain unique items".into());
         }
+        // `prefixItems` checks the leading items one schema each; `items`
+        // the ones after them (JSON Schema 2020-12).
+        let prefix = schema
+            .get("prefixItems")
+            .and_then(serde_json::Value::as_array)
+            .map_or(&[][..], Vec::as_slice);
+        for (index, (item, item_schema)) in items.iter().zip(prefix).enumerate() {
+            validate_schema_value(item, item_schema)
+                .map_err(|reason| format!("item {index} {reason}"))?;
+        }
         if let Some(item_schema) = schema.get("items") {
-            for (index, item) in items.iter().enumerate() {
+            for (index, item) in items.iter().enumerate().skip(prefix.len()) {
                 validate_schema_value(item, item_schema)
                     .map_err(|reason| format!("item {index} {reason}"))?;
             }
@@ -1058,13 +1378,13 @@ const SCHEMA_ASSERTIONS: &[&str] = &[
     "maxItems",
     "uniqueItems",
     "items",
+    "prefixItems",
     "required",
     "properties",
     "additionalProperties",
     "oneOf",
 ];
 const SCHEMA_ANNOTATIONS: &[&str] = &[
-    RESOURCE_KIND_ANNOTATION,
     "$schema",
     "$id",
     "$comment",
@@ -1075,6 +1395,9 @@ const SCHEMA_ANNOTATIONS: &[&str] = &[
     "deprecated",
     "readOnly",
     "writeOnly",
+    RESOURCE_KIND_ANNOTATION,
+    PLACE_ANNOTATION,
+    CONTENT_ANNOTATION,
 ];
 
 /// Validate the assertion vocabulary itself before a surface is published.
@@ -1131,7 +1454,7 @@ fn validate_schema_definition_strings(
         let pattern = pattern
             .as_str()
             .ok_or_else(|| "schema `pattern` must be a string".to_string())?;
-        regex::Regex::new(pattern)
+        schema_pattern(pattern)
             .map_err(|error| format!("schema has an invalid pattern: {error}"))?;
     }
     if let Some(format) = object.get("format") {
@@ -1182,6 +1505,15 @@ fn validate_schema_definition_collections(
     if let Some(items) = object.get("items") {
         validate_schema_definition(items).map_err(|reason| format!("items {reason}"))?;
     }
+    if let Some(prefix) = object.get("prefixItems") {
+        let prefix = prefix
+            .as_array()
+            .ok_or_else(|| "schema `prefixItems` must be an array".to_string())?;
+        for (index, item) in prefix.iter().enumerate() {
+            validate_schema_definition(item)
+                .map_err(|reason| format!("prefixItems {index} {reason}"))?;
+        }
+    }
     if let Some(alternatives) = object.get("oneOf") {
         let alternatives = alternatives
             .as_array()
@@ -1215,6 +1547,106 @@ fn validate_schema_definition_numbers(
 }
 
 #[cfg(test)]
+mod declaration_reuse_tests {
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use serde_json::json;
+
+    use super::{ActionArgs, ActionParam, ParamType};
+
+    #[test]
+    fn shared_schema_edits_and_descriptor_changes_are_still_refused() {
+        let original = ActionParam::required("body", ParamType::Text, "Body")
+            .with_schema(json!({"type": "string", "minLength": 3}));
+        assert!(original.validate_declaration().is_empty());
+        assert!(
+            ActionArgs::bind_json(
+                std::slice::from_ref(&original),
+                json!({"body": "a"}).as_object().unwrap()
+            )
+            .is_err()
+        );
+        let mut edited = original.clone();
+        assert!(edited.validate_declaration().is_empty());
+        Arc::make_mut(edited.schema.as_mut().unwrap())["minLength"] = json!(-1);
+        assert!(edited.validate_declaration()[0].contains("non-negative integer"));
+        assert!(original.validate_declaration().is_empty());
+        let mut renamed = original.clone();
+        renamed.name = " ".into();
+        assert_eq!(
+            renamed.validate_declaration(),
+            ["parameter name must be non-empty"]
+        );
+        let mut secret = original;
+        secret.ty = ParamType::Secret;
+        secret.choices.push("private".into());
+        assert!(secret.validate_declaration()[0].contains("must not publish possible values"));
+    }
+
+    #[test]
+    fn last_owner_schema_mutation_dissociates_prior_validation() {
+        let mut parameter = ActionParam::required("body", ParamType::Text, "Body")
+            .with_schema(json!({"type": "string"}));
+        assert!(parameter.validate_declaration().is_empty());
+        Arc::make_mut(parameter.schema.as_mut().unwrap())["type"] = json!("unsupported");
+        assert_eq!(
+            parameter.validate_declaration(),
+            ["invalid schema: schema has an unsupported `type`"]
+        );
+        Arc::make_mut(parameter.schema.as_mut().unwrap())["type"] = json!("string");
+        assert!(parameter.validate_declaration().is_empty());
+    }
+
+    #[test]
+    fn retired_generations_are_released_and_new_invalid_schemas_are_refused() {
+        for _ in 0..128 {
+            let schema = Arc::new(json!({"type": "string"}));
+            let retired = Arc::downgrade(&schema);
+            let parameter =
+                ActionParam::required("body", ParamType::Text, "Body").with_shared_schema(schema);
+            assert!(parameter.validate_declaration().is_empty());
+            drop(parameter);
+            assert!(retired.upgrade().is_none());
+            let invalid = ActionParam::required("body", ParamType::Text, "Body")
+                .with_schema(json!({"pattern": "["}));
+            assert!(invalid.validate_declaration()[0].contains("invalid pattern"));
+        }
+    }
+
+    #[test]
+    fn shared_declaration_observes_recursive_publication_work() {
+        let properties: serde_json::Map<String, serde_json::Value> = (0..128)
+            .map(|index| {
+                (
+                    format!("field{index}"),
+                    json!({"type": "array", "items": {"type": "object", "properties": {
+                        "text": {"type": "string", "minLength": 1},
+                        "count": {"type": "integer", "minimum": 0}
+                    }, "additionalProperties": false}}),
+                )
+            })
+            .collect();
+        let parameter = ActionParam::required("request", ParamType::Object, "Request")
+            .with_shared_schema(Arc::new(
+                json!({"type": "object", "properties": properties}),
+            ));
+        let start = Instant::now();
+        for _ in 0..1000 {
+            assert!(
+                std::hint::black_box(&parameter)
+                    .validate_declaration()
+                    .is_empty()
+            );
+        }
+        eprintln!(
+            "ACTION_SCHEMA_DECLARATION_OBSERVATION iterations=1000 fields=128 elapsed_ns={} includes_gpu_or_display=false",
+            start.elapsed().as_nanos()
+        );
+    }
+}
+
+#[cfg(test)]
 mod rich_schema_tests {
     use super::*;
     use serde_json::json;
@@ -1229,6 +1661,162 @@ mod rich_schema_tests {
         resource_datetime_secret_and_nullable_values_round_trip();
         malformed_schema_is_rejected_before_it_describes_values();
         unique_array_items_are_published_and_enforced();
+    }
+
+    #[test]
+    fn shared_schema_preserves_wire_binding_and_copy_on_write() {
+        use crate::{ActionSpec, EncodedAction, ExecutionLocus};
+        use std::sync::Arc;
+
+        let schema = serde_json::json!({"type": "integer", "minimum": 1});
+        let original =
+            ActionParam::required("count", ParamType::Integer, "Count").with_schema(schema.clone());
+        let clone = original.clone();
+        assert!(Arc::ptr_eq(
+            original.schema.as_ref().unwrap(),
+            clone.schema.as_ref().unwrap()
+        ));
+        let expected = serde_json::json!({
+            "name":"count", "ty":"integer", "required":true,
+            "description":"Count", "schema":schema
+        });
+        assert_eq!(serde_json::to_value(&clone).unwrap(), expected);
+        let decoded: ActionParam = serde_json::from_value(expected).unwrap();
+        assert_eq!(decoded, original);
+        let spec = ActionSpec::typed(
+            "count",
+            "Count",
+            "Count",
+            ExecutionLocus::ClientLocal,
+            vec![clone],
+            |args| EncodedAction {
+                type_id: "test.count".into(),
+                payload: serde_json::to_vec(&args.to_json()).unwrap(),
+            },
+        );
+        let valid = serde_json::json!({"count":2});
+        let encoded = spec.build_json(valid.as_object().unwrap()).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&encoded.payload).unwrap(),
+            valid
+        );
+        assert!(
+            spec.build_json(serde_json::json!({"count":0}).as_object().unwrap())
+                .is_err()
+        );
+        assert_eq!(spec.build_text("2"), Some(encoded));
+        assert_eq!(
+            spec.build_text("0").unwrap().type_id,
+            crate::resource::INVALID_ARGUMENTS_TYPE
+        );
+        let mut edited = original.clone();
+        Arc::make_mut(edited.schema.as_mut().unwrap())["minimum"] = serde_json::json!(3);
+        assert_eq!(original.schema.as_ref().unwrap()["minimum"], 1);
+        assert!(ActionArgs::bind_json(&[edited], valid.as_object().unwrap()).is_err());
+        assert!(spec.build_json(valid.as_object().unwrap()).is_ok());
+
+        let resource = ActionParam::required("target", ParamType::Resource, "Target")
+            .with_schema(serde_json::json!({"type":"string"}));
+        let annotated = resource.clone().of_resource_kind("test.page");
+        assert_eq!(resource.resource_kind(), None);
+        assert_eq!(annotated.resource_kind(), Some("test.page"));
+        assert_eq!(
+            resource
+                .schema
+                .as_ref()
+                .unwrap()
+                .get(RESOURCE_KIND_ANNOTATION),
+            None
+        );
+    }
+
+    #[test]
+    fn prefix_items_check_the_leading_items_and_items_the_rest() {
+        let schema = json!({
+            "type": "array",
+            "prefixItems": [{"const": "a"}, {"type": "string"}],
+            "items": {"type": "integer"},
+        });
+        assert!(validate_schema_definition(&schema).is_ok());
+        assert!(validate_schema(&json!(["a", "x", 1, 2]), &schema).is_ok());
+        assert!(validate_schema(&json!(["b", "x"]), &schema).is_err());
+        assert!(validate_schema(&json!(["a", 1]), &schema).is_err());
+        assert!(validate_schema(&json!(["a", "x", "y"]), &schema).is_err());
+        assert!(validate_schema_definition(&json!({"prefixItems": {}})).is_err());
+    }
+
+    /// A number outside its parameter's declared range is refused with the
+    /// bound as data, in the same words as before, and the door's failure
+    /// carries it as `details`. A bound nested in a property stays words.
+    #[test]
+    fn a_maximum_violation_carries_its_bound() {
+        let params = vec![
+            ActionParam::required("pageSize", ParamType::Integer, "Items")
+                .with_schema(json!({"type": "integer", "minimum": 1, "maximum": 64})),
+            ActionParam::optional("scale", ParamType::Number, "Zoom")
+                .with_schema(json!({"type": "number", "minimum": 0.5})),
+            ActionParam::optional("box", ParamType::Object, "Bounds").with_schema(json!({
+                "type": "object",
+                "properties": {"width": {"type": "integer", "maximum": 10}}
+            })),
+        ];
+        let bind = |arguments: serde_json::Value| {
+            ActionArgs::bind_json(&params, arguments.as_object().unwrap())
+        };
+        let refused = bind(json!({"pageSize": 200})).unwrap_err();
+        assert_eq!(
+            refused,
+            ArgError::OutOfRange {
+                name: "pageSize".into(),
+                violation: ArgViolation::Maximum { bound: json!(64) },
+            }
+        );
+        assert_eq!(
+            refused.to_string(),
+            "argument `pageSize` must be at most 64"
+        );
+        let door = crate::DoorError::from(refused);
+        assert_eq!(door.code(), "invalid_arguments");
+        assert_eq!(door.to_string(), "argument `pageSize` must be at most 64");
+        assert_eq!(
+            door.failure_details(),
+            Some(json!({"param": "pageSize", "violation": {"kind": "maximum", "bound": 64}}))
+        );
+
+        let refused = bind(json!({"pageSize": 1, "scale": 0.25})).unwrap_err();
+        assert_eq!(
+            refused,
+            ArgError::OutOfRange {
+                name: "scale".into(),
+                violation: ArgViolation::Minimum { bound: json!(0.5) },
+            }
+        );
+        assert_eq!(refused.to_string(), "argument `scale` must be at least 0.5");
+
+        let nested = bind(json!({"pageSize": 1, "box": {"width": 11}})).unwrap_err();
+        assert!(matches!(nested, ArgError::Constraint { .. }), "{nested:?}");
+        assert_eq!(crate::DoorError::from(nested).failure_details(), None);
+        assert!(bind(json!({"pageSize": 64, "scale": 0.5})).is_ok());
+    }
+
+    #[test]
+    fn a_refusal_names_the_alternative_an_enumerated_tag_selects() {
+        let schema = json!({"oneOf": [
+            {"type": "object", "required": ["action"], "properties": {
+                "action": {"enum": ["draw", "paint"]}, "args": {"type": "object"}
+            }, "additionalProperties": false},
+            {"type": "object", "required": ["action", "args"], "properties": {
+                "action": {"const": "apply"}, "args": {"type": "object", "required": ["action"]}
+            }, "additionalProperties": false},
+        ]});
+        assert!(validate_schema(&json!({"action": "draw", "args": {}}), &schema).is_ok());
+        let refused = validate_schema(&json!({"action": "apply", "args": {}}), &schema);
+        assert_eq!(
+            refused,
+            Err("as `apply`: property `args` must contain property `action`".into())
+        );
+        let refused = validate_schema(&json!({"action": "paint", "args": 3}), &schema).unwrap_err();
+        assert!(refused.contains("property `args`"), "{refused}");
     }
 
     fn structured_arguments_are_typed_and_recursively_validated() {

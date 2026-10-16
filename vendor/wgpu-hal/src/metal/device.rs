@@ -15,13 +15,13 @@ use objc2_metal::{
     MTLCompileOptions, MTLComputePipelineDescriptor, MTLComputePipelineState,
     MTLCounterSampleBufferDescriptor, MTLCounterSet, MTLDepthClipMode, MTLDepthStencilDescriptor,
     MTLDevice, MTLFunction, MTLIndirectAccelerationStructureInstanceDescriptor, MTLLanguageVersion,
-    MTLLibrary, MTLMeshRenderPipelineDescriptor, MTLMutability, MTLPackedFloat3, MTLPackedFloat4x3,
-    MTLPipelineBufferDescriptorArray, MTLPipelineOption, MTLPixelFormat, MTLPrimitiveTopologyClass,
-    MTLRenderPipelineColorAttachmentDescriptorArray, MTLRenderPipelineDescriptor, MTLResource,
-    MTLResourceID, MTLResourceOptions, MTLSamplerAddressMode, MTLSamplerDescriptor,
-    MTLSamplerMipFilter, MTLSamplerState, MTLSize, MTLStencilDescriptor, MTLStorageMode,
-    MTLTexture, MTLTextureDescriptor, MTLTextureType, MTLTriangleFillMode, MTLVertexDescriptor,
-    MTLVertexStepFunction,
+    MTLLibrary, MTLMathMode, MTLMeshRenderPipelineDescriptor, MTLMutability, MTLPackedFloat3,
+    MTLPackedFloat4x3, MTLPipelineBufferDescriptorArray, MTLPipelineOption, MTLPixelFormat,
+    MTLPrimitiveTopologyClass, MTLRenderPipelineColorAttachmentDescriptorArray,
+    MTLRenderPipelineDescriptor, MTLResource, MTLResourceID, MTLResourceOptions,
+    MTLSamplerAddressMode, MTLSamplerDescriptor, MTLSamplerMipFilter, MTLSamplerState, MTLSize,
+    MTLStencilDescriptor, MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureType,
+    MTLTriangleFillMode, MTLVertexDescriptor, MTLVertexStepFunction,
 };
 
 use super::{PassthroughShader, ShaderModuleSource, conv};
@@ -229,6 +229,22 @@ impl super::Device {
 
                 let options = MTLCompileOptions::new();
                 options.setLanguageVersion(self.shared.private_caps.msl_version);
+                // Metal compiles with fast math unless told otherwise, which
+                // lets it reassociate floating-point expressions. Vello's
+                // area coverage is written so that its differences are exact
+                // and a shape rasterises the same at every whole-pixel
+                // offset; reassociated, a partial redraw (a damage region at
+                // another tile offset) comes out a channel step away from a
+                // full render of the same scene. Compile IEEE-safe.
+                if available!(macos = 15.0, ios = 18.0, tvos = 18.0, visionos = 2.0) {
+                    options.setMathMode(MTLMathMode::Safe);
+                } else {
+                    #[allow(
+                        deprecated,
+                        reason = "mathMode needs macOS 15/iOS 18; fastMathEnabled = NO is its predecessor"
+                    )]
+                    options.setFastMathEnabled(false);
+                }
 
                 // https://developer.apple.com/documentation/metal/mtlcompileoptions/preserveinvariance
                 if available!(macos = 11.0, ios = 13.0, tvos = 14.0, visionos = 1.0) {

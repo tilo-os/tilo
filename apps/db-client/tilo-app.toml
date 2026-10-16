@@ -1,7 +1,7 @@
 # Database Client — Tilo application manifest.
 #
 # SQLite supports local files; PostgreSQL and MySQL use real network drivers.
-# The bundled in-memory sample database is limited to the screenshot/demo path.
+# The bundled in-memory sample database is limited to screenshots.
 #
 
 
@@ -24,7 +24,10 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["files.save", "files.paths", "threads"]
+optional = ["files.save", "files.paths", "threads", "secrets"]
+
+[resources]
+kinds = ["db-client.workspace"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

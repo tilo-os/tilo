@@ -14,9 +14,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 #![allow(
@@ -35,12 +32,11 @@ use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 const W: f32 = 1280.0;
@@ -93,6 +89,7 @@ fn strip_tree() -> (WorkspaceTree, StripId, Vec<GroupId>, Vec<[u64; 2]>) {
             active_tab: ids[0],
             width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
             maximized: false,
+            focus_history: Vec::new(),
         })
         .collect();
 
@@ -132,6 +129,8 @@ struct Harness {
     strip: StripId,
     groups: Vec<GroupId>,
     tabs: Vec<[u64; 2]>,
+    outputs: Vec<shell::shell::overlay_host::OutputGeometry>,
+    reduce_motion: bool,
 }
 
 impl Harness {
@@ -183,6 +182,13 @@ impl Harness {
             strip,
             groups,
             tabs,
+            outputs: vec![shell::shell::overlay_host::OutputGeometry::unscaled(
+                0.0,
+                0.0,
+                f64::from(W),
+                f64::from(H),
+            )],
+            reduce_motion: false,
         };
         h.lay_out();
         h
@@ -196,24 +202,16 @@ impl Harness {
         // it the first pass sizes groups against the toolkit's fallback and
         // the desktop rightly refuses to frame a selection on that stale
         // geometry until a second layout settles it.
-        self.host
-            .set_output_geometry(&[shell::shell::overlay_host::OutputGeometry::unscaled(
-                0.0,
-                0.0,
-                f64::from(W),
-                f64::from(H),
-            )]);
-        let theme = Theme::dark();
+        self.host.set_output_geometry(&self.outputs);
+        let mut theme = Theme::dark();
+        theme.reduce_motion = self.reduce_motion;
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let child = self.host.build_layout(&mut taffy, &theme, &mut node_map);
         let root = taffy
             .new_with_children(
                 Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
+                    size: Size::from_lengths(W, H),
                     ..Default::default()
                 },
                 &[child],
@@ -243,25 +241,10 @@ impl Harness {
     }
 
     fn event(&mut self, event: &WindowEvent) -> bool {
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let modifiers = winit::event::Modifiers::default();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        self.host.handle_event(
-            event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.child,
-                taffy: &self.taffy,
-            },
-        );
-        handled
+        ui::testing::Dispatch::new()
+            .layout(&self.taffy, self.child)
+            .send(&mut self.host, event)
+            .handled
     }
 
     /// The per-frame reconcilers this file's subjects ride on, in the order
@@ -288,70 +271,25 @@ impl Harness {
     }
 
     fn click(&mut self, p: Point) {
-        self.event(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(p.x, p.y),
-        });
-        self.event(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
-        self.event(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        });
+        self.event(&ui::synthetic_input::cursor_moved(p.x, p.y));
+        self.event(&ui::synthetic_input::mouse_press());
+        self.event(&ui::synthetic_input::mouse_release());
     }
 
     fn key(&mut self, logical: Key, mods: ModifiersState) {
-        // winit's `KeyEvent` carries a private platform field, so the struct is
-        // zero-initialised and every public field overwritten.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        };
-        let modifiers = Modifiers::from(mods);
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        self.host.handle_event(
-            &event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.child,
-                taffy: &self.taffy,
-            },
-        );
+        let ev = ui::synthetic_input::key_event(logical, None, ElementState::Pressed);
+        let event = ui::synthetic_input::keyboard_input(ev);
+        ui::testing::Dispatch::new()
+            .modifiers(mods)
+            .layout(&self.taffy, self.child)
+            .send(&mut self.host, &event);
     }
 
-    /// A horizontally-dominant wheel event over the strip, the way a
-    /// two-finger sideways swipe arrives.
-    fn scroll_horizontally(&mut self, dx: f32) {
-        self.event(&WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(600.0, 500.0),
-        });
-        self.event(&WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
-            delta: MouseScrollDelta::LineDelta(dx, 0.0),
-            phase: winit::event::TouchPhase::Moved,
-        });
+    /// A horizontally-dominant wheel event over the strip, `rightward`
+    /// lines to the right. winit reports a rightward wheel with negative x.
+    fn scroll_horizontally(&mut self, rightward: f32) {
+        self.event(&ui::synthetic_input::cursor_moved(600.0, 500.0));
+        self.event(&ui::synthetic_input::mouse_wheel(-rightward, 0.0));
     }
 
     fn scroll_x(&self) -> f64 {
@@ -431,6 +369,7 @@ fn two_strip_harness() -> (Harness, StripId, StripId, GroupId, Vec<GroupId>) {
             active_tab: 91,
             width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
             maximized: false,
+            focus_history: Vec::new(),
         }],
     });
     tree.desktop.active_group.insert(lower, resident);
@@ -483,7 +422,12 @@ fn invoke(
         .ok_or_else(|| ActionError::Refused(format!("{id} is not on the action door")))?;
     let args = args.as_object().cloned().unwrap_or_default();
     selected
-        .invoke_json(&mut doc, &root, &h.chrome, &args)
+        .invoke_json(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &root,
+            &h.chrome,
+            &args,
+        )
         .map(drop)
 }
 
@@ -595,10 +539,6 @@ fn window_actions_run_the_operations_their_chords_run() {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn the_plus_chip_opens_an_apps_picker_without_moving_the_wide_strip() {
     // Phase `the_fixture_strip_is_wider_than_its_viewport`.
     // The strip must actually overflow, or nothing below is testing panning.
@@ -913,7 +853,7 @@ fn keyboard_and_swipe_stepping_walks_the_strip_without_wrapping() {
         let by_swipe = {
             let mut h = Harness::new();
             for _ in 0..3 {
-                // Positive dx steps forward, matching the chord's direction.
+                // A rightward wheel steps forward, matching the chord's direction.
                 h.scroll_horizontally(4.0);
                 h.tick();
             }
@@ -975,6 +915,72 @@ fn keyboard_and_swipe_stepping_walks_the_strip_without_wrapping() {
 }
 
 // The rail: the thing that says there is more strip.
+
+/// The ribbon and rail report a position, which matters only while you
+/// move: hidden at rest, they show the moment navigation changes what they
+/// report (a keyboard step, a sideways scroll) and fade out shortly after.
+#[test]
+fn the_position_indicators_show_while_navigating_and_fade_after() {
+    let mut h = Harness::new();
+    let rest = Instant::now();
+    assert_eq!(
+        h.host.strip_indicator_alpha_at(rest, false),
+        0.0,
+        "at rest the indicators stay out of the way"
+    );
+
+    // Step until focus actually moves along the strip (the first press can
+    // only settle keyboard focus on it, which moves nothing).
+    for _ in 0..3 {
+        h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+        h.tick();
+        if h.host.strip_rail_for_tests().focused != 0 {
+            break;
+        }
+    }
+    assert_ne!(
+        h.host.strip_rail_for_tests().focused,
+        0,
+        "fixture: focus moved"
+    );
+    let stepped = Instant::now();
+    assert_eq!(
+        h.host.strip_indicator_alpha_at(stepped, false),
+        1.0,
+        "a keyboard step along the strip shows them at once"
+    );
+    assert_eq!(
+        h.host
+            .strip_indicator_alpha_at(stepped + Duration::from_millis(900), false),
+        1.0,
+        "they stay long enough to read"
+    );
+    assert_eq!(
+        h.host
+            .strip_indicator_alpha_at(stepped + Duration::from_secs(2), false),
+        0.0,
+        "and are gone within two seconds of the last move"
+    );
+
+    // Once gone, a sideways scroll that moves the strip brings them back.
+    let before = (h.host.strip_rail_for_tests().focused, h.scroll_x());
+    for rightward in [-120.0, 120.0] {
+        h.scroll_horizontally(rightward);
+        h.tick();
+        if (h.host.strip_rail_for_tests().focused, h.scroll_x()) != before {
+            break;
+        }
+    }
+    assert_ne!(
+        (h.host.strip_rail_for_tests().focused, h.scroll_x()),
+        before,
+        "fixture: the scroll moved along the strip"
+    );
+    let later = stepped + Duration::from_secs(3);
+    let scrolled = later.max(Instant::now());
+    let moved = h.host.strip_indicator_alpha_at(scrolled, false);
+    assert_eq!(moved, 1.0, "scrolling the strip shows them again");
+}
 
 #[test]
 fn the_rail_maps_the_strip_and_travels_on_click() {
@@ -1069,7 +1075,7 @@ fn every_close_route_commits_the_exact_surface_durably() {
             // intentionally refuse a cache-only mutation because the next peer
             // revision would undo it.
             tree.seed_doc_from_cache();
-            tree.flush_to_disk();
+            tree.queue_save();
         }
 
         let close = h
@@ -1213,7 +1219,7 @@ fn every_close_route_commits_the_exact_surface_durably() {
                 };
             }
             tree.seed_doc_from_cache();
-            tree.flush_to_disk();
+            tree.queue_save();
         }
 
         let first = h.tabs[0][0];
@@ -1441,4 +1447,394 @@ fn magnifier_shortcuts_step_the_zoom_show_it_and_save_it() {
         Some(OsdKind::Magnifier { zoom: 2 }),
         "the toggle comes back at the zoom it left"
     );
+}
+
+#[test]
+fn a_rightward_wheel_steps_forward_like_super_right() {
+    let mut h = Harness::new();
+    let start = h.active_window();
+    // Winit reports a wheel turned rightward with a negative x, as the
+    // libinput backend maps a tilt to the right.
+    assert!(h.event(&ui::synthetic_input::mouse_wheel(-1.0, 0.0)));
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][1]));
+    assert!(h.event(&ui::synthetic_input::mouse_wheel(1.0, 0.0)));
+    assert_eq!(h.active_window(), start, "and leftward steps back");
+}
+
+#[test]
+fn axis_navigation_is_opt_in_and_preserves_tab_selection() {
+    let mut h = Harness::new();
+    assert!(!h.chrome.borrow().axis_navigation_enabled());
+    assert!(h.host.step_focus_along_strip(1));
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][1]));
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    assert!(h.host.step_focus_along_strip(1));
+    assert_eq!(h.active_window(), (h.groups[1], h.tabs[1][0]));
+    assert!(h.host.step_focus_along_strip(-1));
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][1]));
+    h.chrome.borrow_mut().set_axis_navigation_enabled(false);
+    assert!(h.host.step_focus_along_strip(1));
+    assert_eq!(h.active_window(), (h.groups[1], h.tabs[1][0]));
+}
+
+#[test]
+fn axis_navigation_keyboard_and_wheel_gather_without_reordering() {
+    let mut h = Harness::new();
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    h.key(Key::Named(NamedKey::ArrowRight), ModifiersState::SUPER);
+    assert_eq!(h.active_window(), (h.groups[1], h.tabs[1][0]));
+    h.tick();
+    h.scroll_horizontally(1.0);
+    assert_eq!(h.active_window(), (h.groups[2], h.tabs[2][0]));
+    h.tick();
+    let row = h
+        .host
+        .group_row_mut_for_tests(h.strip)
+        .expect("retained strip");
+    let group = row
+        .groups
+        .iter()
+        .find(|g| g.id == h.groups[2])
+        .expect("focused group");
+    let rect = group.get_rect();
+    let (x0, x1) = row.visible_canvas_span();
+    let scroll = row.scroll_x();
+    assert!(rect.x0 >= x0 - scroll - 0.5 && rect.x1 <= x1 - scroll + 0.5);
+    assert_eq!(row.group_ids(), h.groups);
+}
+
+#[test]
+fn axis_gather_reveals_same_focus_after_manual_pan_and_cancels_old_snap() {
+    let mut h = Harness::new();
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    assert!(h.host.step_focus_along_strip(4));
+    h.tick();
+    h.host
+        .group_row_mut_for_tests(h.strip)
+        .expect("retained strip")
+        .pan_to(0.0);
+    h.lay_out();
+    let before = h.active_window();
+    h.chrome.borrow_mut().request_axis_gather();
+    h.host.run_requested_shortcut_actions();
+    h.lay_out();
+    h.lay_out();
+    assert_eq!(h.active_window(), before);
+    assert!(h.scroll_x() > 0.0);
+    let offset = h.scroll_x();
+    h.tick();
+    assert_eq!(h.scroll_x(), offset, "a stale snap must not undo gather");
+}
+
+#[test]
+fn axis_pending_gather_is_cancelled_when_disabled_or_focus_changes() {
+    let mut h = Harness::new();
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    assert!(h.host.step_focus_along_strip(4));
+    h.chrome.borrow_mut().set_axis_navigation_enabled(false);
+    h.host
+        .group_row_mut_for_tests(h.strip)
+        .expect("retained strip")
+        .pan_to(0.0);
+    h.lay_out();
+    assert_eq!(h.scroll_x(), 0.0);
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    h.host.focus_group_on_strip(h.strip, h.groups[0]);
+    h.lay_out();
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
+    assert_eq!(h.scroll_x(), 0.0);
+}
+
+#[test]
+fn axis_navigation_stays_in_focused_display_with_mixed_scaling() {
+    use shell::shell::overlay_host::OutputGeometry;
+    let mut h = Harness::new();
+    let first = OutputGeometry::unscaled(0.0, 0.0, 640.0, 800.0).with_id(10);
+    let mut second = OutputGeometry::unscaled(640.0, 0.0, 640.0, 800.0).with_id(20);
+    second.scale = 1.5;
+    second.scene = Rect::new(640.0, 0.0, 1600.0, 1200.0);
+    h.outputs = vec![first, second];
+    h.lay_out();
+    {
+        let st = h.chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        let workspaces = tree.desktop.workspaces.clone();
+        assert!(
+            tree.desktop
+                .outputs
+                .move_group(&workspaces, h.groups[1], 20)
+        );
+        assert!(
+            tree.desktop
+                .outputs
+                .move_group(&workspaces, h.groups[3], 20)
+        );
+        tree.desktop.outputs.set_focused(10);
+    }
+    h.lay_out();
+    h.lay_out();
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    assert!(h.host.step_focus_along_strip(1));
+    assert_eq!(h.active_window(), (h.groups[2], h.tabs[2][0]));
+    assert!(h.host.step_focus_along_strip(100));
+    assert_eq!(h.active_window(), (h.groups[4], h.tabs[4][0]));
+    assert!(!h.host.step_focus_along_strip(1));
+    h.tick();
+    let st = h.chrome.borrow();
+    assert_eq!(st.tree().desktop.outputs.focused_display(), Some(10));
+    let row = h
+        .host
+        .group_row_mut_for_tests(h.strip)
+        .expect("retained strip");
+    let remote = row.output_pan(20).expect("second display pan");
+    assert_eq!(
+        remote.scroll_x(),
+        0.0,
+        "gather must not pan another display"
+    );
+    let view = row.output_pan(10).expect("focused display pan").viewport();
+    let group = row
+        .groups
+        .iter()
+        .find(|g| g.id == h.groups[4])
+        .expect("focused group");
+    let rect = group.get_rect();
+    assert!(rect.x0 >= view.x0 - 0.5 && rect.x1 <= view.x1 + 0.5);
+}
+
+#[test]
+fn axis_navigation_lock_interrupts_pending_gather_and_focus_steps() {
+    let mut h = Harness::new();
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    assert!(h.host.step_focus_along_strip(4));
+    let selected = h.active_window();
+    h.chrome.borrow_mut().set_session_locked(true);
+    assert!(!h.host.step_focus_along_strip(-1));
+    h.host
+        .group_row_mut_for_tests(h.strip)
+        .expect("retained strip")
+        .pan_to(0.0);
+    h.lay_out();
+    assert_eq!(h.scroll_x(), 0.0);
+    assert_eq!(h.active_window(), selected);
+    h.chrome.borrow_mut().set_session_locked(false);
+    h.lay_out();
+    assert_eq!(h.scroll_x(), 0.0, "unlock must not revive a stale gather");
+}
+
+#[test]
+fn axis_gather_stops_old_snap_when_focus_is_already_visible() {
+    let mut h = Harness::new();
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    h.lay_out();
+    let row = h
+        .host
+        .group_row_mut_for_tests(h.strip)
+        .expect("retained strip");
+    assert!(row.scroll_group_into_view_animated(h.groups[4], Instant::now()));
+    h.chrome.borrow_mut().request_axis_gather();
+    h.host.run_requested_shortcut_actions();
+    h.lay_out();
+    h.tick();
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
+    // Group 0 is already wholly on screen where the old motion left the
+    // strip, so the gather reveals nothing more (a reveal is the least pan
+    // that shows the group) but still cancels the motion toward group 4.
+    let stopped = h.scroll_x();
+    h.tick();
+    h.lay_out();
+    assert_eq!(
+        h.scroll_x(),
+        stopped,
+        "already-visible gather still cancels old motion"
+    );
+}
+
+#[test]
+fn axis_gather_finishes_without_animation_in_reduced_motion() {
+    let mut h = Harness::new();
+    h.reduce_motion = true;
+    h.lay_out();
+    h.chrome.borrow_mut().set_axis_navigation_enabled(true);
+    h.host.run_requested_shortcut_actions();
+    assert!(h.host.step_focus_along_strip(4));
+    h.lay_out();
+    h.lay_out();
+    let offset = h.scroll_x();
+    assert!(offset > 0.0);
+    let row = h
+        .host
+        .group_row_mut_for_tests(h.strip)
+        .expect("retained strip");
+    let group = row
+        .groups
+        .iter()
+        .find(|g| g.id == h.groups[4])
+        .expect("focus");
+    assert!(group.get_rect().x1 <= row.get_rect().x1 + 0.5);
+    h.tick();
+    assert_eq!(
+        h.scroll_x(),
+        offset,
+        "gather must not leave an animation tail"
+    );
+}
+
+#[test]
+fn ctrl_shift_t_restores_the_closed_window_and_its_existing_record() {
+    assert_closed_window_restore(false, false);
+}
+
+#[test]
+fn ctrl_shift_t_restores_the_last_window_with_its_existing_record() {
+    assert_closed_window_restore(true, false);
+}
+
+#[test]
+fn ctrl_shift_t_keeps_closed_windows_in_their_original_workspace() {
+    assert_closed_window_restore(true, true);
+}
+
+fn configure_terminal_group(
+    h: &Harness,
+    tab: u64,
+    binding: &shell::shell::state::LocalAppRecord,
+    last_window: bool,
+) {
+    let chrome = h.chrome.borrow_mut();
+    let mut tree = chrome.tree_mut();
+    let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+    group.tabs.retain(|candidate| candidate.id == tab);
+    group.active_tab = tab;
+    group.tabs[0].tile = TileContent::Foreign {
+        app_id: binding.app_id.clone(),
+        surface_id: 42,
+    };
+    if last_window {
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .retain(|group| group.id == h.groups[0]);
+    }
+    tree.local_app_records.insert(tab, binding.clone());
+    tree.seed_doc_from_cache();
+}
+
+fn assert_closed_window_restore(last_window: bool, other_workspace: bool) {
+    let mut h = Harness::new();
+    let tab = h.tabs[0][0];
+    let room = h.chrome.borrow().tree().desktop.workspaces[0].room;
+    let checkout = shell::shell::tab_documents::scratch_tab_record(tab);
+    let records = h.chrome.borrow().records().clone();
+    let before = records.read(&checkout.id, ui::record::identity);
+    assert_eq!(before, Some(Some(checkout.clone())));
+    let binding = shell::shell::state::LocalAppRecord {
+        room,
+        app_id: "so.tilo.terminal".into(),
+        record_instance: tab,
+    };
+    configure_terminal_group(&h, tab, &binding, last_window);
+    h.lay_out();
+    shell::shell::window_actions::close_tab(&mut h.chrome.borrow_mut(), tab).unwrap();
+    assert!(
+        !h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .any(|group| group.id == h.groups[0])
+    );
+    assert_eq!(
+        records.read(&checkout.id, ui::record::identity),
+        before,
+        "closing a window keeps its old record handle alive"
+    );
+    h.lay_out();
+    if other_workspace {
+        let elsewhere = WorkspaceId::new();
+        let home = h.chrome.borrow().tree().desktop.active;
+        {
+            let chrome = h.chrome.borrow_mut();
+            let mut tree = chrome.tree_mut();
+            tree.desktop
+                .workspaces
+                .push(Workspace::new(elsewhere, "Elsewhere"));
+            tree.desktop.active = elsewhere;
+            tree.seed_doc_from_cache();
+        }
+        h.lay_out();
+        h.key(
+            Key::Character("t".into()),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+        );
+        assert_eq!(h.chrome.borrow().tree().desktop.active, elsewhere);
+        assert!(
+            !h.chrome.borrow().tree().desktop.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .any(|group| group.id == h.groups[0]),
+            "another workspace must not reopen this frame"
+        );
+        h.chrome.borrow_mut().tree_mut().desktop.active = home;
+        h.lay_out();
+    }
+    h.key(
+        Key::Character("t".into()),
+        ModifiersState::CONTROL | ModifiersState::SHIFT,
+    );
+    let chrome = h.chrome.borrow();
+    let tree = chrome.tree();
+    let group = tree.desktop.workspaces[0].strips[0]
+        .window_groups
+        .iter()
+        .find(|group| group.id == h.groups[0])
+        .expect("the closed window is restored");
+    if last_window {
+        assert_eq!(
+            tree.desktop.workspaces[0].strips[0].window_groups.len(),
+            1,
+            "restoring the last window must not add a default duplicate"
+        );
+    }
+    assert_eq!(group.tabs.len(), 1);
+    assert_eq!(group.active_tab, tab);
+    assert!(
+        matches!(&group.tabs[0].tile, TileContent::LocalApp { app_id, .. } if app_id == "so.tilo.terminal")
+    );
+    assert_eq!(tree.local_app_records.get(&tab), Some(&binding));
+    assert_eq!(
+        records.read(&checkout.id, ui::record::identity),
+        before,
+        "restore reuses the existing record rather than creating a default"
+    );
+}
+
+/// With no strip above, Super+Up maximizes the focused group and Super+Down
+/// restores it; otherwise both stay strip navigation.
+#[test]
+fn super_up_on_the_top_strip_maximizes_and_super_down_restores() {
+    let (mut h, upper, lower, _resident, _groups) = two_strip_harness();
+    let maximized = |h: &mut Harness| {
+        h.host
+            .group_row_mut_for_tests(upper)
+            .expect("the upper strip is live")
+            .groups
+            .iter()
+            .any(|group| group.maximized)
+    };
+    assert_eq!(plane(&h).1, upper, "the harness starts on the top strip");
+    assert!(!maximized(&mut h));
+    h.key(Key::Named(NamedKey::ArrowUp), ModifiersState::SUPER);
+    assert!(maximized(&mut h), "Super+Up maximizes on the top strip");
+    assert_eq!(plane(&h).1, upper);
+    h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
+    assert!(!maximized(&mut h), "Super+Down restores a maximized group");
+    assert_eq!(plane(&h).1, upper, "restoring does not change strip");
+    h.key(Key::Named(NamedKey::ArrowDown), ModifiersState::SUPER);
+    assert_eq!(plane(&h).1, lower, "Super+Down is strip navigation again");
 }

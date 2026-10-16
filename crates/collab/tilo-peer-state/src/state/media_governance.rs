@@ -1,8 +1,9 @@
 //! Native governance transactions. Public policy data is never an authority proof.
+use super::facades::{PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut};
 use super::{
-    Actor, BTreeMap, CapDecision, DeviceCert, DurableV4, DurableV5, GovernedIdentity, NeighbourMsg,
-    ROOT, ReadDoc, ResourceRef, RevocationList, Role, Route, SigningKey, StatePeer, SystemTime,
-    Transactable, TransportOrigin, Verb, decide_capability, err, now_ns, now_secs, room,
+    BTreeMap, DeviceCert, DurableV4, DurableV5, GovernedIdentity, NeighbourMsg, ROOT, ReadDoc,
+    RevocationList, Role, Route, SigningKey, StatePeer, SystemTime, Transactable, TransportOrigin,
+    err, now_ns, room,
 };
 use room::media::{self, RoomMediaV1};
 
@@ -20,7 +21,7 @@ impl VerifiedSecurityMetadataOnly {
     ///
     /// Returns an error if any other state changed.
     pub fn validate(&self, before: &StatePeer, after: &StatePeer) -> Result<(), String> {
-        let checked = before.verify_security_metadata_only(after)?;
+        let checked = before.media().verify_security_metadata_only(after)?;
         if checked.before != self.before || checked.after != self.after {
             return Err("verified security metadata proof does not bind this turn".into());
         }
@@ -50,6 +51,164 @@ impl StatePeer {
         }
     }
 
+    fn require_media_governor(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
+        self.require_governance_writer(key, now)?;
+        let member = self.permissions(self.core.authority.device_public_key, now)?;
+        if member.role != Role::Owner
+            || room::governance_of(self.core.room_doc.as_deref())
+                .owner
+                .as_deref()
+                != Some(&hex::encode(self.core.authority.user_public_key))
+        {
+            return Err("media governor is not the structural owner".into());
+        }
+        if !member.allows(
+            &tilo_action_policy::roles::governance_action(
+                &self.core.room,
+                tilo_action_policy::roles::governance::SETTINGS,
+            ),
+            tilo_action_policy::roles::GOVERNANCE_KIND,
+            now,
+        ) {
+            return Err("media governor lacks exact room administration".into());
+        }
+        Ok(())
+    }
+}
+impl StatePeer {
+    /// The enrollment transaction behind
+    /// [`PeerGovernanceMut::admit_certificate_with_workspace_delegation`].
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public API: callers hand over the certificate, through the governance view"
+    )]
+    fn admit_certificate_with_delegation(
+        &mut self,
+        cert: DeviceCert,
+        delegation: crate::join::WorkspaceDelegation,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.require_governance_writer(key, now)?;
+        if cert.user_public_key != self.core.authority.user_public_key
+            || cert != delegation.delegate
+        {
+            return Err("enrollment/delegation certificate mismatch".into());
+        }
+        tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
+        if self.core.revocations.is_revoked(&cert.device_public_key) {
+            return Err("device revoked".into());
+        }
+        if self
+            .core
+            .certificates
+            .get(&cert.device_public_key)
+            .is_some_and(|known| known.as_ref() != &cert)
+        {
+            return Err("certificate conflict".into());
+        }
+        if room::governance_of(self.core.room_doc.as_deref())
+            .owner
+            .as_deref()
+            != Some(&hex::encode(self.core.authority.user_public_key))
+        {
+            return Err("delegation authority is not structural owner".into());
+        }
+        crate::join::verify_workspace_delegation(
+            &delegation,
+            &self.core.authority,
+            &self.core.revocations,
+            now_ns(now),
+        )?;
+        if delegation.room != self.core.room {
+            return Err("delegation room mismatch".into());
+        }
+        let mut doc = self.core.room_doc.clone().ok_or("missing room")?;
+        let before = doc.get_heads();
+        let identities = doc
+            .get(ROOT, "peer_identities_v1")
+            .map_err(err)?
+            .ok_or("missing identities")?
+            .1;
+        let peers = doc
+            .get(ROOT, "peers")
+            .map_err(err)?
+            .ok_or("missing peers")?
+            .1;
+        let rows = room::governance_of(Some(&doc)).identities;
+        let authority_id = hex::encode(self.core.authority.device_public_key);
+        let mut authority: GovernedIdentity =
+            serde_json::from_slice(rows.get(&authority_id).ok_or("missing authority")?)
+                .map_err(err)?;
+        if authority.device_cert != self.core.authority {
+            return Err("governed authority mismatch".into());
+        }
+        let id = hex::encode(cert.device_public_key);
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        if let Some(bytes) = rows.get(&id) {
+            let known: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+            if known.device_cert != cert {
+                return Err("governed certificate conflict".into());
+            }
+        } else {
+            let row = GovernedIdentity {
+                device_cert: cert.clone(),
+                revocations: vec![],
+                admission: None,
+                admissions: vec![],
+                workspace_delegations: vec![],
+                delegate: None,
+            };
+            doc.put(
+                &identities,
+                &id,
+                automerge::ScalarValue::Bytes(serde_json::to_vec(&row).map_err(err)?),
+            )
+            .map_err(err)?;
+            doc.put(&peers, &id, cert.device_label.as_str())
+                .map_err(err)?;
+        }
+        if !authority.workspace_delegations.contains(&delegation) {
+            authority.workspace_delegations.push(delegation);
+            authority
+                .workspace_delegations
+                .sort_by_key(|d| (d.delegate.device_public_key, d.nonce));
+            doc.put(
+                &identities,
+                &authority_id,
+                automerge::ScalarValue::Bytes(serde_json::to_vec(&authority).map_err(err)?),
+            )
+            .map_err(err)?;
+        }
+        doc.commit();
+        if before == doc.get_heads() {
+            return Ok(false);
+        }
+        self.apply_governance_doc(doc, &before, key, now)
+    }
+}
+
+impl PeerGovernanceMut<'_> {
+    /// Host enrollment and its invitation-only delegation share one basis change.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer or the certificate or
+    /// delegation is refused.
+    pub fn admit_certificate_with_workspace_delegation(
+        self,
+        cert: DeviceCert,
+        delegation: crate::join::WorkspaceDelegation,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.peer
+            .admit_certificate_with_delegation(cert, delegation, key, now)
+    }
+}
+impl PeerMediaGovernance<'_> {
     /// Project independently observed verified revocations onto this committed
     /// baseline. Volatile deferred input and every other observed field remain
     /// outside the durable metadata turn. The caller must separately validate
@@ -59,13 +218,15 @@ impl StatePeer {
     ///
     /// Returns an error if the observed revocations cannot be projected onto this baseline.
     pub fn project_verified_security_metadata(
-        &self,
-        observed: &Self,
-    ) -> Result<(Self, VerifiedSecurityMetadataOnly), String> {
-        if self.core.room != observed.core.room || self.core.authority != observed.core.authority {
+        self,
+        observed: &StatePeer,
+    ) -> Result<(StatePeer, VerifiedSecurityMetadataOnly), String> {
+        if self.peer.core.room != observed.core.room
+            || self.peer.core.authority != observed.core.authority
+        {
             return Err("security metadata projection has a different pinned authority".into());
         }
-        let mut projected = self.clone();
+        let mut projected = self.peer.clone();
         for entry in observed.core.revocations.iter() {
             projected
                 .core
@@ -79,18 +240,17 @@ impl StatePeer {
         let proof = self.verify_security_metadata_only(&projected)?;
         Ok((projected, proof))
     }
-
     /// Data publication allows room-first missing Chat; media readiness does not.
     ///
     /// # Errors
     ///
     /// Returns an error if the room media governance is invalid.
-    pub fn validate_media_governance_for_publication(&self) -> Result<(), String> {
-        if let Some(policy) = self.validate_present_media_policy()? {
-            self.validate_media_bindings(&policy, false)?;
+    pub fn validate_media_governance_for_publication(self) -> Result<(), String> {
+        if let Some(policy) = self.peer.validate_present_media_policy()? {
+            self.peer.validate_media_bindings(&policy, false)?;
             let basis = media::security_basis(
-                self.core.room_doc.as_deref().ok_or("missing room")?,
-                &self.revocations(),
+                self.peer.core.room_doc.as_deref().ok_or("missing room")?,
+                &self.peer.revocations(),
             )
             .map_err(err)?;
             if basis != policy.authorization_basis {
@@ -101,7 +261,6 @@ impl StatePeer {
         }
         Ok(())
     }
-
     /// Verify an exact metadata-only delta. No document, receipt, pending input,
     /// coverage, admission, certificate or checkpoint scheduling change is allowed.
     ///
@@ -109,8 +268,8 @@ impl StatePeer {
     ///
     /// Returns an error if `candidate` changes anything other than security metadata.
     pub fn verify_security_metadata_only(
-        &self,
-        candidate: &Self,
+        self,
+        candidate: &StatePeer,
     ) -> Result<VerifiedSecurityMetadataOnly, String> {
         let room = candidate.core.room_doc.as_deref().ok_or("missing room")?;
         let policy = candidate.validate_present_media_policy()?;
@@ -121,15 +280,15 @@ impl StatePeer {
             }
         } else {
             let before_basis = media::security_basis(
-                self.core.room_doc.as_deref().ok_or("missing room")?,
-                &self.revocations(),
+                self.peer.core.room_doc.as_deref().ok_or("missing room")?,
+                &self.peer.revocations(),
             )
             .map_err(err)?;
             if basis == before_basis {
                 return Err("security metadata does not change the verified security basis".into());
             }
         }
-        let mut union = self.core.revocations.clone();
+        let mut union = self.peer.core.revocations.clone();
         for entry in candidate.core.revocations.iter() {
             union.insert(entry.clone()).map_err(err)?;
         }
@@ -139,17 +298,17 @@ impl StatePeer {
             values
         };
         if entries(&union) != entries(&candidate.core.revocations)
-            || entries(&union) == entries(&self.core.revocations)
+            || entries(&union) == entries(&self.peer.core.revocations)
         {
             return Err(
                 "security metadata must strictly extend the verified revocation union".into(),
             );
         }
-        let mut expected = self.clone();
+        let mut expected = self.peer.clone();
         expected.core.revocations = union;
-        let before = self.canonical_security_metadata_state()?;
+        let before = self.peer.canonical_security_metadata_state()?;
         let after = candidate.canonical_security_metadata_state()?;
-        let channels_unchanged = self.core.documents.iter().all(|(route, old)| {
+        let channels_unchanged = self.peer.core.documents.iter().all(|(route, old)| {
             candidate.core.documents.get(route).is_some_and(|new| {
                 let a = &old.channel;
                 let b = &new.channel;
@@ -159,7 +318,9 @@ impl StatePeer {
                     && a.accepted_trust_roots == b.accepted_trust_roots
                     && a.artifacts == b.artifacts
                     && a.artifact_apps == b.artifact_apps
-                    && a.cap_overrides == b.cap_overrides
+                    && a.artifact_records == b.artifact_records
+                    && a.room == b.room
+                    && a.grants == b.grants
                     && a.artifact_classifications == b.artifact_classifications
                     && a.channel_min_clearance == b.channel_min_clearance
                     && a.last_seq_per_author == b.last_seq_per_author
@@ -171,7 +332,7 @@ impl StatePeer {
             })
         });
         if expected.canonical_security_metadata_state()? != after
-            || self.core.checkpoint_times != candidate.core.checkpoint_times
+            || self.peer.core.checkpoint_times != candidate.core.checkpoint_times
             || !channels_unchanged
         {
             return Err("suspended turn changed more than verified security metadata".into());
@@ -181,7 +342,33 @@ impl StatePeer {
             after: *blake3::hash(&after).as_bytes(),
         })
     }
-
+    /// Resolve the exact admitted Chat binding of a call channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the route or channel does not resolve.
+    pub fn resolve_media_binding(
+        self,
+        app: &str,
+        record: &str,
+        channel: &str,
+    ) -> Result<media::ChatCallBindingV1, String> {
+        let document = self
+            .peer
+            .core
+            .documents
+            .get(&Route {
+                app: app.into(),
+                record: record.into(),
+            })
+            .ok_or("exact admitted Chat missing")?;
+        if document.encryption_required {
+            return Err("exact admitted Chat is encrypted".into());
+        }
+        media::resolve_chat_binding(app, record, channel, &*document.doc).map_err(err)
+    }
+}
+impl PeerMediaGovernanceMut<'_> {
     /// Promote verified revocations to an identity row of the same admitted root,
     /// then refresh the existing basis exactly once. Never initializes a policy.
     ///
@@ -190,22 +377,23 @@ impl StatePeer {
     /// Returns an error if `key` is not the governance writer or the policy cannot be
     /// refreshed.
     pub fn reconcile_media_governance(
-        &mut self,
+        self,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
-        let policy = self.validate_present_media_policy()?;
-        let Some(original) = self.core.room_doc.as_deref() else {
+        let policy = self.peer.validate_present_media_policy()?;
+        let Some(original) = self.peer.core.room_doc.as_deref() else {
             return Ok(false);
         };
         // Disabled media adds no new prerequisites to legacy data publication.
         // Explicit Create still requires the strict security basis independently.
-        if policy.is_none() && self.core.revocations.iter().next().is_none() {
+        if policy.is_none() && self.peer.core.revocations.iter().next().is_none() {
             return Ok(false);
         }
-        let computed = media::security_basis(original, &self.revocations()).and_then(|basis| {
-            media::security_basis(original, &[]).map(|governed| (basis, governed))
-        });
+        let computed =
+            media::security_basis(original, &self.peer.revocations()).and_then(|basis| {
+                media::security_basis(original, &[]).map(|governed| (basis, governed))
+            });
         let (basis, governed_basis) = match computed {
             Ok(values) => values,
             Err(_) if policy.is_none() => return Ok(false),
@@ -213,12 +401,12 @@ impl StatePeer {
         };
         if basis == governed_basis {
             if let Some(policy) = &policy {
-                self.validate_media_bindings(policy, false)?;
+                self.peer.validate_media_bindings(policy, false)?;
             }
             return Ok(false);
         }
-        self.require_media_governor(key, now)?;
-        let mut doc = self.core.room_doc.clone().ok_or("missing room")?;
+        self.peer.require_media_governor(key, now)?;
+        let mut doc = self.peer.core.room_doc.clone().ok_or("missing room")?;
         let before = doc.get_heads();
         let identities = doc
             .get(ROOT, "peer_identities_v1")
@@ -226,7 +414,7 @@ impl StatePeer {
             .ok_or("missing identities")?
             .1;
         let mut rows = room::governance_of(Some(&doc))
-            .3
+            .identities
             .into_iter()
             .map(|(id, bytes)| {
                 serde_json::from_slice::<GovernedIdentity>(&bytes)
@@ -234,7 +422,7 @@ impl StatePeer {
                     .map_err(err)
             })
             .collect::<Result<BTreeMap<_, _>, _>>()?;
-        for entry in self.core.revocations.iter() {
+        for entry in self.peer.core.revocations.iter() {
             let target = hex::encode(entry.revoked_device_public_key);
             let id = rows
                 .get(&target)
@@ -269,63 +457,14 @@ impl StatePeer {
         }
         doc.commit();
         // apply_governance_doc stages its receive; failed refresh cannot mutate self.
-        let mut candidate = self.clone();
+        let mut candidate = self.peer.clone();
         candidate.apply_governance_doc(doc, &before, key, now)?;
-        candidate.validate_media_governance_for_publication()?;
-        *self = candidate;
+        candidate
+            .media()
+            .validate_media_governance_for_publication()?;
+        *self.peer = candidate;
         Ok(true)
     }
-
-    fn require_media_governor(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
-        self.require_governance_writer(key, now)?;
-        let (role, caps, person) = self.permissions(self.core.authority.device_public_key, now)?;
-        if role != Role::Owner
-            || room::governance_of(self.core.room_doc.as_deref())
-                .0
-                .as_deref()
-                != Some(&hex::encode(self.core.authority.user_public_key))
-        {
-            return Err("media governor is not the structural owner".into());
-        }
-        let actor = Actor::person(Some(role), &person).in_room(self.core.room.clone());
-        if decide_capability(
-            &actor,
-            &ResourceRef::Room(self.core.room.clone()),
-            Verb::Admin,
-            &caps,
-            Some(now_secs(now)),
-        ) != CapDecision::Allow
-        {
-            return Err("media governor lacks exact room administration".into());
-        }
-        Ok(())
-    }
-
-    /// Resolve the exact admitted Chat binding of a call channel.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the route or channel does not resolve.
-    pub fn resolve_media_binding(
-        &self,
-        app: &str,
-        record: &str,
-        channel: &str,
-    ) -> Result<media::ChatCallBindingV1, String> {
-        let document = self
-            .core
-            .documents
-            .get(&Route {
-                app: app.into(),
-                record: record.into(),
-            })
-            .ok_or("exact admitted Chat missing")?;
-        if document.encryption_required {
-            return Err("exact admitted Chat is encrypted".into());
-        }
-        media::resolve_chat_binding(app, record, channel, &document.doc).map_err(err)
-    }
-
     /// Author a room media policy as the governance writer.
     ///
     /// # Errors
@@ -333,14 +472,16 @@ impl StatePeer {
     /// Returns an error if `key` is not the governance writer or the policy is invalid for
     /// the current room.
     pub fn author_media_policy(
-        &mut self,
+        self,
         policy: &RoomMediaV1,
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<(), String> {
-        self.require_media_governor(key, now)?;
-        self.validate_media_governance_for_publication()?;
-        let mut doc = self.core.room_doc.clone().ok_or("missing room")?;
+        self.peer.require_media_governor(key, now)?;
+        self.peer
+            .media()
+            .validate_media_governance_for_publication()?;
+        let mut doc = self.peer.core.room_doc.clone().ok_or("missing room")?;
         let before = doc.get_heads();
         doc.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),
@@ -353,7 +494,7 @@ impl StatePeer {
         .map_err(err)?;
         doc.commit();
         media::validate_transition(
-            self.core.room_doc.as_deref(),
+            self.peer.core.room_doc.as_deref(),
             &doc,
             media::TransitionMode::Authoring,
         )
@@ -363,131 +504,15 @@ impl StatePeer {
             .into_iter()
             .map(|c| c.raw_bytes().to_vec())
             .collect();
-        self.receive_from(
+        self.peer.receive_from(
             TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
             NeighbourMsg::SyncResp {
-                room: self.core.room.clone(),
+                room: self.peer.core.room.clone(),
                 changes,
             },
             now,
         )?;
         Ok(())
-    }
-
-    /// Host enrollment and its invitation-only delegation share one basis change.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governance writer or the certificate or
-    /// delegation is refused.
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "public API: callers hand over the certificate"
-    )]
-    pub fn admit_certificate_with_workspace_delegation(
-        &mut self,
-        cert: DeviceCert,
-        delegation: crate::join::WorkspaceDelegation,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        self.require_governance_writer(key, now)?;
-        if cert.user_public_key != self.core.authority.user_public_key
-            || cert != delegation.delegate
-        {
-            return Err("enrollment/delegation certificate mismatch".into());
-        }
-        tilo_user_identity::verify_device_cert_at(&cert, now_ns(now)).map_err(err)?;
-        if self.core.revocations.is_revoked(&cert.device_public_key) {
-            return Err("device revoked".into());
-        }
-        if self
-            .core
-            .certificates
-            .get(&cert.device_public_key)
-            .is_some_and(|known| known.as_ref() != &cert)
-        {
-            return Err("certificate conflict".into());
-        }
-        if room::governance_of(self.core.room_doc.as_deref())
-            .0
-            .as_deref()
-            != Some(&hex::encode(self.core.authority.user_public_key))
-        {
-            return Err("delegation authority is not structural owner".into());
-        }
-        crate::join::verify_workspace_delegation(
-            &delegation,
-            &self.core.authority,
-            &self.core.revocations,
-            now_ns(now),
-        )?;
-        if delegation.room != self.core.room {
-            return Err("delegation room mismatch".into());
-        }
-        let mut doc = self.core.room_doc.clone().ok_or("missing room")?;
-        let before = doc.get_heads();
-        let identities = doc
-            .get(ROOT, "peer_identities_v1")
-            .map_err(err)?
-            .ok_or("missing identities")?
-            .1;
-        let peers = doc
-            .get(ROOT, "peers")
-            .map_err(err)?
-            .ok_or("missing peers")?
-            .1;
-        let rows = room::governance_of(Some(&doc)).3;
-        let authority_id = hex::encode(self.core.authority.device_public_key);
-        let mut authority: GovernedIdentity =
-            serde_json::from_slice(rows.get(&authority_id).ok_or("missing authority")?)
-                .map_err(err)?;
-        if authority.device_cert != self.core.authority {
-            return Err("governed authority mismatch".into());
-        }
-        let id = hex::encode(cert.device_public_key);
-        doc.set_actor(automerge::ActorId::from(
-            key.verifying_key().to_bytes().to_vec(),
-        ));
-        if let Some(bytes) = rows.get(&id) {
-            let known: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
-            if known.device_cert != cert {
-                return Err("governed certificate conflict".into());
-            }
-        } else {
-            let row = GovernedIdentity {
-                device_cert: cert.clone(),
-                revocations: vec![],
-                admission: None,
-                admissions: vec![],
-                workspace_delegations: vec![],
-            };
-            doc.put(
-                &identities,
-                &id,
-                automerge::ScalarValue::Bytes(serde_json::to_vec(&row).map_err(err)?),
-            )
-            .map_err(err)?;
-            doc.put(&peers, &id, cert.device_label.as_str())
-                .map_err(err)?;
-        }
-        if !authority.workspace_delegations.contains(&delegation) {
-            authority.workspace_delegations.push(delegation);
-            authority
-                .workspace_delegations
-                .sort_by_key(|d| (d.delegate.device_public_key, d.nonce));
-            doc.put(
-                &identities,
-                &authority_id,
-                automerge::ScalarValue::Bytes(serde_json::to_vec(&authority).map_err(err)?),
-            )
-            .map_err(err)?;
-        }
-        doc.commit();
-        if before == doc.get_heads() {
-            return Ok(false);
-        }
-        self.apply_governance_doc(doc, &before, key, now)
     }
 }
 

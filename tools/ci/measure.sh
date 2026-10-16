@@ -18,7 +18,32 @@ if [ -r "$cgroup_root/memory.events" ]; then
   memory_events_before="$(cat "$cgroup_root/memory.events")"
 fi
 
+# A missing or disappearing metric must not replace the measured exit status.
+read_cpu_metric() {
+  local value
+  if value=$(tr '\n' ' ' 2>/dev/null < "$cgroup_root/$1"); then
+    printf '%s' "$value"
+  else
+    printf 'unavailable'
+  fi
+}
+cpu_stat_before=$(read_cpu_metric cpu.stat)
+pressure_before=()
+for resource in cpu memory io; do
+  pressure_before+=("$(read_cpu_metric "$resource.pressure")")
+done
+
+cache_metrics="$(dirname "${BASH_SOURCE[0]}")/compiler_cache_metrics.py"
+cache_wrapper="${RUSTC_WRAPPER:-}"
+cache_before='{"observed":false,"reason":"disabled"}'
+if [ "${cache_wrapper##*/}" = sccache ]; then
+  cache_before=$(python3 "$cache_metrics" snapshot 2>/dev/null || printf '{"observed":false}')
+fi
+
 status=0
+# Nested ci-run.sh retains streaming, failure summaries and heartbeat behavior,
+# while this wrapper owns the one resource measurement for the command.
+export TILO_CI_MEASURE_ACTIVE=1
 if command -v /usr/bin/time >/dev/null 2>&1; then
   /usr/bin/time -f 'wall_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kib=%M' -o "$timing" "$@" || status=$?
 else
@@ -27,6 +52,34 @@ else
   printf 'wall_seconds=%s\nuser_seconds=unavailable\nsystem_seconds=unavailable\nmax_rss_kib=unavailable\n' \
     "$(( $(date +%s) - start ))" > "$timing"
 fi
+
+cache_delta='{"observed":false,"reason":"disabled"}'
+if [ "${cache_wrapper##*/}" = sccache ]; then
+  # A failed first read cannot yield a delta; do not spend another timeout.
+  if [[ "$cache_before" == '{"observed":true,'* ]]; then
+    cache_after=$(python3 "$cache_metrics" snapshot 2>/dev/null || printf '{"observed":false}')
+    cache_delta=$(python3 "$cache_metrics" delta "$cache_before" "$cache_after" 2>/dev/null || printf '{"observed":false,"reason":"unavailable"}')
+  else
+    cache_delta='{"observed":false,"reason":"unavailable"}'
+  fi
+fi
+printf 'compiler_cache=%s\n' "$cache_delta" >> "$timing"
+
+# Record the actual inner job envelope. Pod/QEMU metrics cannot establish
+# Docker's quota or allowed CPU set, and interactive CRI exec may be unavailable.
+for cpu_file in cpu.max cpuset.cpus.effective; do
+  cpu_value=$(read_cpu_metric "$cpu_file")
+  printf 'cgroup_%s=%s\n' "${cpu_file//./_}" "$cpu_value" >> "$timing"
+done
+printf 'cgroup_cpu_stat_before=%s\n' "$cpu_stat_before" >> "$timing"
+cpu_stat_after=$(read_cpu_metric cpu.stat)
+printf 'cgroup_cpu_stat_after=%s\n' "$cpu_stat_after" >> "$timing"
+index=0
+for resource in cpu memory io; do
+  printf 'cgroup_%s_pressure_before=%s\n' "$resource" "${pressure_before[$index]}" >> "$timing"
+  printf 'cgroup_%s_pressure_after=%s\n' "$resource" "$(read_cpu_metric "$resource.pressure")" >> "$timing"
+  index=$((index + 1))
+done
 
 # The container's peak memory so far, success or not: the headroom job
 # parallelism is tuned against.

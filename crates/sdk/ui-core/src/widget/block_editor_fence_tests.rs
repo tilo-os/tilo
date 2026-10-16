@@ -1,5 +1,6 @@
 use super::*;
-use automerge::{ObjType, ROOT, transaction::Transactable};
+use crate::testing::Dispatch;
+use automerge::ROOT;
 
 #[test]
 fn code_fence_chrome_copy_feedback_and_header_layout() {
@@ -117,34 +118,18 @@ fn code_fence_chrome_copy_feedback_and_header_layout() {
 }
 
 fn send(editor: &mut BlockEditor, doc: &mut AutoCommit, key: Key) {
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.text = match &key {
-        Key::Character(text) => Some(text.clone()),
-        _ => None,
-    };
-    event.logical_key = key;
-    event.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = winit::keyboard::KeyLocation::Standard;
-    event.state = ElementState::Pressed;
-    let mut handled = false;
-    editor.handle_event(
-        &WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
+    let event = crate::synthetic_input::key_event(
+        key.clone(),
+        match &key {
+            Key::Character(text) => Some(text.clone()),
+            _ => None,
         },
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &Modifiers::default(),
-            state: doc,
-            path: &ROOT,
-            handled: &mut handled,
-            focus_target: &mut None,
-            node_id: NodeId::new(0),
-            taffy: &TaffyTree::new(),
-        },
+        ElementState::Pressed,
     );
+    let handled = Dispatch::new()
+        .doc(doc)
+        .send(editor, &crate::synthetic_input::keyboard_input(event))
+        .handled;
     assert!(handled);
     editor.sync(doc, &ROOT);
 }
@@ -157,12 +142,11 @@ fn type_text(editor: &mut BlockEditor, doc: &mut AutoCommit, text: &str) {
 
 #[test]
 fn typed_fences_promote_track_language_and_undo() {
-    fn typed_fence_promotes_immediately_tracks_language_and_persists_body() {
+    fn typed_fence_promotes_immediately_tracks_language_and_emits_body() {
         let mut doc = AutoCommit::new();
-        let list = doc.put_object(ROOT, "blocks", ObjType::List).unwrap();
         let mut editor = BlockEditor::new();
-        editor.bind_blocks(&mut doc, list.clone());
         editor.focus_block(0, CursorPlacement::Start);
+        let code_id = editor.blocks[0].id.clone();
         type_text(&mut editor, &mut doc, "```");
         assert_eq!(editor.blocks[0].kind, BlockKind::CodeBlock { lang: None });
         assert_eq!(editor.blocks[0].text(), "");
@@ -190,11 +174,38 @@ fn typed_fences_promote_track_language_and_undo() {
         assert_eq!(editor.blocks[0].text(), "print('hello')");
         assert_eq!(editor.blocks[1].kind, BlockKind::Paragraph);
         assert_eq!(editor.blocks[1].text(), "After code");
-        let expected = editor.to_markdown();
-        let mut loaded = AutoCommit::load(&doc.save()).unwrap();
-        let mut reopened = BlockEditor::new();
-        reopened.bind_blocks(&mut loaded, list);
-        assert_eq!(reopened.to_markdown(), expected);
+        assert_eq!(editor.blocks[0].id, code_id, "the fence converts in place");
+        let ops = editor.take_edit_ops();
+        assert!(
+            ops.contains(&BlockEditOp::SetKind {
+                block_id: code_id.clone(),
+                kind: "code:python".into(),
+            }),
+            "{ops:?}"
+        );
+        assert!(
+            ops.contains(&BlockEditOp::TextSplice {
+                block_id: code_id.clone(),
+                start: 0,
+                end: 0,
+                text: "print('hello')".into(),
+            }),
+            "{ops:?}"
+        );
+        assert!(
+            ops.contains(&BlockEditOp::Insert {
+                block_id: editor.blocks[1].id.clone(),
+                after: Some(code_id),
+                kind: "paragraph".into(),
+                text: "After code".into(),
+            }),
+            "{ops:?}"
+        );
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, BlockEditOp::Delete { .. })),
+            "{ops:?}"
+        );
     }
 
     fn bare_fence_enter_starts_plain_code_and_backspace_can_undo_opener() {
@@ -217,12 +228,11 @@ fn typed_fences_promote_track_language_and_undo() {
         let mut doc = AutoCommit::new();
         let mut editor = BlockEditor::new();
         editor.focus_block(0, CursorPlacement::Start);
-        editor.set_action_interception(true);
-        editor.begin_action_intercept();
+        editor.begin_edit();
         send(&mut editor, &mut doc, Key::Character("```python".into()));
         assert!(
             editor
-                .take_intercepted_ops()
+                .take_edit_ops()
                 .iter()
                 .any(|op| matches!(op, BlockEditOp::SetKind { kind, .. } if kind == "code:python"))
         );
@@ -234,45 +244,47 @@ fn typed_fences_promote_track_language_and_undo() {
         assert_eq!(editor.blocks[0].text(), "ordinary text");
     }
 
-    fn fence_promotion_and_language_have_real_undo_redo_checkpoints() {
-        let mut state = crate::state::State::new();
-        let list = state.doc.put_object(ROOT, "blocks", ObjType::List).unwrap();
+    fn fence_promotion_and_language_are_undo_checkpoints() {
+        let mut doc = AutoCommit::new();
         let mut editor = BlockEditor::new();
-        editor.bind_blocks(&mut state.doc, list);
         editor.focus_block(0, CursorPlacement::Start);
-        state.commit_action(None, None);
-        type_text(&mut editor, &mut state.doc, "``");
-        state.commit_action(None, None);
-        crate::undo::on_commit(&mut editor);
-        type_text(&mut editor, &mut state.doc, "`");
-        assert!(
-            crate::undo::needs_commit(&editor),
-            "replacing the line must retain its undo checkpoint"
+        let id = editor.blocks[0].id.clone();
+        type_text(&mut editor, &mut doc, "``");
+        editor.take_edit_ops();
+        type_text(&mut editor, &mut doc, "`");
+        assert_eq!(
+            editor.take_edit_ops(),
+            vec![
+                BlockEditOp::SetKind {
+                    block_id: id.clone(),
+                    kind: "code:".into(),
+                },
+                BlockEditOp::TextSplice {
+                    block_id: id.clone(),
+                    start: 0,
+                    end: 2,
+                    text: String::new(),
+                },
+                BlockEditOp::SetCodeGroup {
+                    block_id: id.clone(),
+                    group_id: Some(id.clone()),
+                },
+            ],
+            "the promotion reaches the owner as one checkpoint on the same block, \
+             opening its own code group"
         );
-        state.commit_action(None, None);
-        crate::undo::on_commit(&mut editor);
-        type_text(&mut editor, &mut state.doc, "python");
-        assert!(
-            crate::undo::needs_commit(&editor),
-            "language metadata is an undoable edit"
+        type_text(&mut editor, &mut doc, "python");
+        assert_eq!(
+            editor.take_edit_ops(),
+            vec![BlockEditOp::SetKind {
+                block_id: id,
+                kind: "code:python".into(),
+            }]
         );
-        state.commit_action(None, None);
-        crate::undo::on_commit(&mut editor);
-        assert!(state.undo(None, None).is_some());
-        editor.sync(&mut state.doc, &ROOT);
-        assert_eq!(editor.blocks[0].kind, BlockKind::CodeBlock { lang: None });
-        assert!(state.undo(None, None).is_some());
-        editor.sync(&mut state.doc, &ROOT);
-        assert_eq!(editor.blocks[0].kind, BlockKind::Paragraph);
-        assert_eq!(editor.blocks[0].text(), "``");
-        assert!(state.redo(None, None).is_some());
-        editor.sync(&mut state.doc, &ROOT);
-        assert_eq!(editor.blocks[0].kind, BlockKind::CodeBlock { lang: None });
-        assert_eq!(editor.blocks[0].text(), "");
     }
 
-    typed_fence_promotes_immediately_tracks_language_and_persists_body();
+    typed_fence_promotes_immediately_tracks_language_and_emits_body();
     bare_fence_enter_starts_plain_code_and_backspace_can_undo_opener();
     complete_opener_in_one_input_emits_canonical_kind_and_does_not_eat_body();
-    fence_promotion_and_language_have_real_undo_redo_checkpoints();
+    fence_promotion_and_language_are_undo_checkpoints();
 }

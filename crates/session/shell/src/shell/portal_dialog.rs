@@ -22,9 +22,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, LazyLock, Mutex};
 
+use taffy::{Style, TaffyTree};
 use tokio::sync::oneshot;
+use ui::widget::{EventCtx, TextInput, Widget as _};
 use vello::kurbo::Rect;
-use winit::event::Modifiers;
+use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::PhysicalKey;
 
 use crate::portal::desktop_services::{
@@ -32,6 +34,8 @@ use crate::portal::desktop_services::{
 };
 use crate::shell::app_action_consent::{AppActionConsent, AppActionConsentRequest};
 use crate::shell::i18n::{t, t_args};
+
+pub mod accessibility;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewRequest {
@@ -124,27 +128,9 @@ pub enum AuthenticationDecision {
     Cancelled,
 }
 
-/// How a network-secret field checks its value before the sheet may close.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SecretFieldRule {
-    /// Anything, including nothing when the field is optional.
-    Any,
-    /// A WPA passphrase: 8–63 characters, or 64 hexadecimal digits.
-    WpaPassphrase,
-}
-
-impl SecretFieldRule {
-    fn accepts(self, value: &str) -> bool {
-        match self {
-            Self::Any => true,
-            Self::WpaPassphrase => {
-                let chars = value.chars().count();
-                (8..=63).contains(&chars)
-                    || (chars == 64 && value.chars().all(|c| c.is_ascii_hexdigit()))
-            }
-        }
-    }
-}
+/// How a network-secret field checks its value before the sheet may close;
+/// the secret agent chooses it per field.
+pub use tilo_network_secret_agent::SecretFieldRule;
 
 /// One field of a network-secrets sheet, e.g. a Wi-Fi password or an
 /// 802.1X user name. A masked field never carries a starting value.
@@ -271,6 +257,18 @@ pub enum ShortcutStepDecision {
 }
 
 type ShortcutStepReply = Box<dyn FnOnce(ShortcutStepDecision) + Send>;
+type FieldValidator = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
+/// A compositor-owned review with one empty text field. Uses the shared
+/// question sheet and its accessibility actions; no application owns the
+/// entered answer or can prefill it. Useful for independent peer verification.
+pub struct FieldReviewRequest {
+    pub handle: String,
+    pub app_id: String,
+    pub title: String,
+    pub detail: String,
+    pub confirm_label: String,
+}
 
 /// The person's answer to carrying a window into another workspace
 /// ([`crate::shell::window_transfer`]).
@@ -331,6 +329,7 @@ enum PendingDialog {
     ShortcutStep {
         request: ShortcutStepRequest,
         reply: ShortcutStepReply,
+        validate: Option<FieldValidator>,
     },
     AppChoice {
         request: ApplicationChoiceRequest,
@@ -389,6 +388,27 @@ pub struct PortalDialogQueue {
 }
 
 impl PortalDialogQueue {
+    pub fn enqueue_field_review(
+        &self,
+        request: FieldReviewRequest,
+        validate: impl Fn(&str) -> Result<(), String> + Send + Sync + 'static,
+        reply: impl FnOnce(ShortcutStepDecision) + Send + 'static,
+    ) -> Result<(), String> {
+        self.enqueue_step(
+            ShortcutStepRequest {
+                handle: request.handle,
+                shortcut: friendly_app_name(&request.app_id),
+                title: request.title,
+                detail: request.detail,
+                confirm_label: request.confirm_label,
+                choices: Vec::new(),
+                field: Some(ShortcutStepField { masked: false }),
+            },
+            Some(Arc::new(validate)),
+            reply,
+        )
+    }
+
     pub fn global() -> Self {
         #[cfg(test)]
         crate::shell::test_support::ambient_start("global portal dialog queue");
@@ -426,24 +446,60 @@ impl PortalDialogQueue {
         PortalResult::Success(())
     }
 
-    pub fn enqueue_review(
+    /// Queue the sheet `dialog` builds around a fresh reply channel, unless
+    /// a sheet with the same handle is already live.
+    fn enqueue_reply<T>(
         &self,
-        request: ReviewRequest,
-    ) -> Result<oneshot::Receiver<ReviewDecision>, String> {
+        handle: String,
+        dialog: impl FnOnce(oneshot::Sender<T>) -> PendingDialog,
+    ) -> Result<oneshot::Receiver<T>, String> {
         let (reply, receiver) = oneshot::channel();
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.handle) {
+        if inner.pending.contains_key(&handle) {
             return Err("duplicate live portal request".into());
         }
-        inner.order.push_back(request.handle.clone());
-        inner.pending.insert(
-            request.handle.clone(),
-            PendingDialog::Review { request, reply },
-        );
+        inner.order.push_back(handle.clone());
+        inner.pending.insert(handle, dialog(reply));
         Ok(receiver)
+    }
+
+    /// Take the live sheet under `handle` and let `answer` reply to it. A
+    /// sheet of another kind comes back as `Err` and is put back untouched.
+    fn finish_pending(
+        &self,
+        handle: &str,
+        answer: impl FnOnce(PendingDialog) -> Result<(), PendingDialog>,
+    ) -> bool {
+        let pending = self
+            .inner
+            .lock()
+            .ok()
+            .and_then(|mut inner| inner.pending.remove(handle));
+        let Some(pending) = pending else {
+            return false;
+        };
+        match answer(pending) {
+            Ok(()) => true,
+            Err(other) => {
+                if let Ok(mut inner) = self.inner.lock() {
+                    inner.pending.insert(handle.into(), other);
+                }
+                false
+            }
+        }
+    }
+
+    pub fn enqueue_review(
+        &self,
+        request: ReviewRequest,
+    ) -> Result<oneshot::Receiver<ReviewDecision>, String> {
+        self.enqueue_reply(request.handle.clone(), |reply| PendingDialog::Review {
+            request,
+            reply,
+        })
     }
 
     pub fn enqueue_launcher_review(
@@ -453,20 +509,9 @@ impl PortalDialogQueue {
         if request.name.trim().is_empty() || request.icon_choices.is_empty() {
             return Err("invalid launcher review request".into());
         }
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.review.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.review.handle.clone());
-        inner.pending.insert(
-            request.review.handle.clone(),
-            PendingDialog::LauncherReview { request, reply },
-        );
-        Ok(receiver)
+        self.enqueue_reply(request.review.handle.clone(), |reply| {
+            PendingDialog::LauncherReview { request, reply }
+        })
     }
 
     /// Queue an administrator-authentication sheet. A request with the
@@ -478,41 +523,19 @@ impl PortalDialogQueue {
         if request.identities.is_empty() {
             return Err("no identity can authorise this request".into());
         }
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.handle.clone());
-        inner.pending.insert(
-            request.handle.clone(),
-            PendingDialog::Authentication { request, reply },
-        );
-        Ok(receiver)
+        self.enqueue_reply(request.handle.clone(), |reply| {
+            PendingDialog::Authentication { request, reply }
+        })
     }
 
     fn finish_authentication(&self, handle: &str, decision: AuthenticationDecision) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::Authentication { reply, .. }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::Authentication { reply, .. } => {
                 let _ = reply.send(decision);
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     /// Queue a network-secrets sheet. A masked field's starting value is
@@ -529,41 +552,19 @@ impl PortalDialogQueue {
                 field.initial.clear();
             }
         }
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.handle.clone());
-        inner.pending.insert(
-            request.handle.clone(),
-            PendingDialog::NetworkSecrets { request, reply },
-        );
-        Ok(receiver)
+        self.enqueue_reply(request.handle.clone(), |reply| {
+            PendingDialog::NetworkSecrets { request, reply }
+        })
     }
 
     fn finish_network_secrets(&self, handle: &str, decision: NetworkSecretsDecision) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::NetworkSecrets { reply, .. }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::NetworkSecrets { reply, .. } => {
                 let _ = reply.send(decision);
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     /// A live network-secrets sheet's fields as queued.
@@ -588,25 +589,14 @@ impl PortalDialogQueue {
         if request.devices.is_empty() {
             return Err("USB selection needs at least one device".into());
         }
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.review.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.review.handle.clone());
         let selected = vec![true; request.devices.len()];
-        inner.pending.insert(
-            request.review.handle.clone(),
+        self.enqueue_reply(request.review.handle.clone(), |reply| {
             PendingDialog::UsbDevices {
                 request,
                 selected,
                 reply,
-            },
-        );
-        Ok(receiver)
+            }
+        })
     }
 
     /// Queue the trusted shell editor used by the GlobalShortcuts portal.
@@ -616,20 +606,9 @@ impl PortalDialogQueue {
         &self,
         request: ShortcutBindingRequest,
     ) -> Result<oneshot::Receiver<ShortcutBindingDecision>, String> {
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.handle.clone());
-        inner.pending.insert(
-            request.handle.clone(),
-            PendingDialog::ShortcutBindings { request, reply },
-        );
-        Ok(receiver)
+        self.enqueue_reply(request.handle.clone(), |reply| {
+            PendingDialog::ShortcutBindings { request, reply }
+        })
     }
 
     /// Queue the sheet asking whether one application may use another's
@@ -639,20 +618,10 @@ impl PortalDialogQueue {
         &self,
         request: AppActionConsentRequest,
     ) -> Result<oneshot::Receiver<AppActionConsent>, String> {
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.handle.clone());
-        inner.pending.insert(
-            request.handle.clone(),
-            PendingDialog::ActionGrant { request, reply },
-        );
-        Ok(receiver)
+        self.enqueue_reply(request.handle.clone(), |reply| PendingDialog::ActionGrant {
+            request,
+            reply,
+        })
     }
 
     /// Queue the sheet asking whether, and how, a window crosses into
@@ -665,20 +634,9 @@ impl PortalDialogQueue {
         if request.choices.is_empty() {
             return Err("a transfer sheet needs an answer to offer".into());
         }
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.handle.clone());
-        inner.pending.insert(
-            request.handle.clone(),
-            PendingDialog::WindowTransfer { request, reply },
-        );
-        Ok(receiver)
+        self.enqueue_reply(request.handle.clone(), |reply| {
+            PendingDialog::WindowTransfer { request, reply }
+        })
     }
 
     /// Queue the sheet asking a workspace's owner to accept or decline a
@@ -688,30 +646,14 @@ impl PortalDialogQueue {
         &self,
         request: DocumentImportRequest,
     ) -> Result<oneshot::Receiver<DocumentImportDecision>, String> {
-        let (reply, receiver) = oneshot::channel();
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
-        if inner.pending.contains_key(&request.handle) {
-            return Err("duplicate live portal request".into());
-        }
-        inner.order.push_back(request.handle.clone());
-        inner.pending.insert(
-            request.handle.clone(),
-            PendingDialog::DocumentImport { request, reply },
-        );
-        Ok(receiver)
+        self.enqueue_reply(request.handle.clone(), |reply| {
+            PendingDialog::DocumentImport { request, reply }
+        })
     }
 
     fn finish_window_transfer(&self, handle: &str, choice: Option<usize>) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::WindowTransfer { request, reply }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::WindowTransfer { request, reply } => {
                 let decision = choice.map_or(WindowTransferDecision::Cancelled, |index| {
                     request
                         .choices
@@ -719,45 +661,28 @@ impl PortalDialogQueue {
                         .map_or(WindowTransferDecision::Cancelled, |choice| choice.decision)
                 });
                 let _ = reply.send(decision);
-                true
+                Ok(())
             }
-            Some(PendingDialog::DocumentImport { reply, .. }) => {
+            PendingDialog::DocumentImport { reply, .. } => {
                 let _ = reply.send(match choice {
                     Some(0) => DocumentImportDecision::Accept,
                     Some(1) => DocumentImportDecision::Decline,
                     _ => DocumentImportDecision::Dismissed,
                 });
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     fn finish_action_grant(&self, handle: &str, answer: AppActionConsent) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::ActionGrant { reply, .. }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::ActionGrant { reply, .. } => {
                 let _ = reply.send(answer);
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     /// Queue a sheet for a running shortcut's step; `reply` receives the
@@ -770,6 +695,15 @@ impl PortalDialogQueue {
     pub fn enqueue_shortcut_step(
         &self,
         request: ShortcutStepRequest,
+        reply: impl FnOnce(ShortcutStepDecision) + Send + 'static,
+    ) -> Result<(), String> {
+        self.enqueue_step(request, None, reply)
+    }
+
+    fn enqueue_step(
+        &self,
+        request: ShortcutStepRequest,
+        validate: Option<FieldValidator>,
         reply: impl FnOnce(ShortcutStepDecision) + Send + 'static,
     ) -> Result<(), String> {
         let mut inner = self
@@ -785,30 +719,35 @@ impl PortalDialogQueue {
             PendingDialog::ShortcutStep {
                 request,
                 reply: Box::new(reply),
+                validate,
             },
         );
         Ok(())
     }
 
-    fn finish_shortcut_step(&self, handle: &str, decision: ShortcutStepDecision) -> bool {
-        let pending = self
+    fn validate_field(&self, handle: &str, value: &str) -> Result<(), String> {
+        let inner = self
             .inner
             .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::ShortcutStep { reply, .. }) => {
-                reply(decision);
-                true
-            }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
+            .map_err(|_| "portal controller unavailable")?;
+        match inner.pending.get(handle) {
+            Some(PendingDialog::ShortcutStep {
+                validate: Some(validate),
+                ..
+            }) => validate(value),
+            Some(PendingDialog::ShortcutStep { .. }) => Ok(()),
+            _ => Err("portal request is no longer live".into()),
         }
+    }
+
+    fn finish_shortcut_step(&self, handle: &str, decision: ShortcutStepDecision) -> bool {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::ShortcutStep { reply, .. } => {
+                reply(decision);
+                Ok(())
+            }
+            other => Err(other),
+        })
     }
 
     fn next_handle(&self) -> Option<String> {
@@ -824,7 +763,9 @@ impl PortalDialogQueue {
     fn view(&self, handle: &str) -> Option<DialogView> {
         let inner = self.inner.lock().ok()?;
         match inner.pending.get(handle)? {
-            PendingDialog::ShortcutStep { request, .. } => Some(DialogView::ShortcutStep {
+            PendingDialog::ShortcutStep {
+                request, validate, ..
+            } => Some(DialogView::ShortcutStep {
                 handle: request.handle.clone(),
                 shortcut: request.shortcut.clone(),
                 title: request.title.clone(),
@@ -832,6 +773,7 @@ impl PortalDialogQueue {
                 confirm_label: request.confirm_label.clone(),
                 choices: request.choices.clone(),
                 field: request.field.clone(),
+                field_review: validate.is_some(),
             }),
             PendingDialog::AppChoice { request, .. } => Some(DialogView::AppChoice {
                 handle: request.handle.clone(),
@@ -900,16 +842,27 @@ impl PortalDialogQueue {
             }),
             PendingDialog::ActionGrant { request, .. } => Some(DialogView::ActionGrant {
                 handle: request.handle.clone(),
-                title: t_args(
-                    "portal-grant-title",
-                    &[
-                        ("app", friendly_app_name(&request.app_id).into()),
-                        ("target", friendly_app_name(&request.target_app).into()),
-                    ],
-                ),
-                action: request.action_label.clone(),
+                title: if request.confirming {
+                    t_args(
+                        "portal-confirm-title",
+                        &[("who", friendly_app_name(&request.app_id).into())],
+                    )
+                } else {
+                    t_args(
+                        "portal-grant-title",
+                        &[
+                            ("app", friendly_app_name(&request.app_id).into()),
+                            ("target", friendly_app_name(&request.target_app).into()),
+                        ],
+                    )
+                },
+                // A grant covers this action on this resource only, so the
+                // sheet names both.
+                action: format!("{} · {}", request.resource_label, request.action_label),
                 detail: action_grant_detail(request),
-                choices: AppActionConsent::ALLOWING
+                // Confirming one invocation grants nothing: it is allowed
+                // this once or not at all.
+                choices: action_grant_answers(request)
                     .iter()
                     .map(|answer| crate::shell::app_action_consent::consent_label(*answer))
                     .collect(),
@@ -961,13 +914,8 @@ impl PortalDialogQueue {
     }
 
     fn finish_choice(&self, handle: &str, choice: Option<String>) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::AppChoice { reply, .. }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::AppChoice { reply, .. } => {
                 let result = choice.map_or(PortalResult::Cancelled, |choice| {
                     PortalResult::Success(ApplicationChoice {
                         choice,
@@ -975,16 +923,10 @@ impl PortalDialogQueue {
                     })
                 });
                 let _ = reply.send(result);
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     /// Withdraw any portal sheet by its implementation-side Request path.
@@ -1053,45 +995,23 @@ impl PortalDialogQueue {
     }
 
     fn finish_review(&self, handle: &str, decision: ReviewDecision) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::Review { reply, .. }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::Review { reply, .. } => {
                 let _ = reply.send(decision);
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     fn finish_shortcut_bindings(&self, handle: &str) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::ShortcutBindings { request, reply }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::ShortcutBindings { request, reply } => {
                 let _ = reply.send(ShortcutBindingDecision { rows: request.rows });
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     fn finish_launcher_review(
@@ -1101,13 +1021,8 @@ impl PortalDialogQueue {
         name: String,
         icon_choice: usize,
     ) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::LauncherReview { request, reply }) => {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::LauncherReview { request, reply } => {
                 let _ = reply.send(LauncherReviewDecision {
                     decision,
                     name: if request.editable_name {
@@ -1121,30 +1036,19 @@ impl PortalDialogQueue {
                         0
                     },
                 });
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     fn finish_usb_devices(&self, handle: &str, decision: ReviewDecision) -> bool {
-        let pending = self
-            .inner
-            .lock()
-            .ok()
-            .and_then(|mut inner| inner.pending.remove(handle));
-        match pending {
-            Some(PendingDialog::UsbDevices {
+        self.finish_pending(handle, |pending| match pending {
+            PendingDialog::UsbDevices {
                 request,
                 selected,
                 reply,
-            }) => {
+            } => {
                 let approved = if decision == ReviewDecision::Confirmed {
                     request
                         .devices
@@ -1156,16 +1060,10 @@ impl PortalDialogQueue {
                     Vec::new()
                 };
                 let _ = reply.send(UsbDeviceDecision { decision, approved });
-                true
+                Ok(())
             }
-            Some(other) => {
-                if let Ok(mut inner) = self.inner.lock() {
-                    inner.pending.insert(handle.into(), other);
-                }
-                false
-            }
-            None => false,
-        }
+            other => Err(other),
+        })
     }
 
     fn toggle_usb_device(&self, handle: &str, index: usize) -> bool {
@@ -1282,6 +1180,7 @@ pub enum DialogView {
         confirm_label: String,
         choices: Vec<String>,
         field: Option<ShortcutStepField>,
+        field_review: bool,
     },
     AppChoice {
         handle: String,
@@ -1572,15 +1471,6 @@ pub struct DialogLayout {
     pub remember: Option<Rect>,
 }
 
-/// A network-secrets field as drawn: its label and what shows in it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SecretFieldDisplay {
-    pub label: String,
-    /// The typed value, or bullets for a masked field.
-    pub shown: String,
-    pub focused: bool,
-}
-
 pub struct PortalDialogController {
     queue: PortalDialogQueue,
     active: Option<String>,
@@ -1588,12 +1478,15 @@ pub struct PortalDialogController {
     launcher_name: String,
     launcher_icon: usize,
     launcher_field: usize,
-    /// What has been typed into an authentication sheet. Cleared whenever
-    /// the sheet closes, whichever way.
-    secret: String,
-    /// What has been typed into each field of a network-secrets sheet;
-    /// wiped like `secret`.
-    entries: Vec<String>,
+    /// The authentication sheet's answer field; secret unless PAM echoes.
+    /// Wiped whenever the sheet closes, whichever way.
+    secret: TextInput,
+    /// One field per network-secrets field, masked ones secret; wiped like
+    /// `secret`.
+    entries: Vec<TextInput>,
+    /// A shortcut step's typed answer; secret when the step asks for one.
+    /// Wiped like `secret`.
+    step_field: TextInput,
     /// The focused network-secrets field; one past the last is the
     /// "Remember" row.
     entry_focus: usize,
@@ -1619,8 +1512,9 @@ impl PortalDialogController {
             launcher_name: String::new(),
             launcher_icon: 0,
             launcher_field: 0,
-            secret: String::new(),
+            secret: TextInput::local(),
             entries: Vec::new(),
+            step_field: TextInput::local(),
             entry_focus: 0,
             remember: false,
             entry_error: None,
@@ -1646,8 +1540,22 @@ impl PortalDialogController {
             self.launcher_icon = 0;
             self.launcher_field = 0;
             self.forget_secret();
-            if let Some(DialogView::Authentication { identity, .. }) = self.view() {
-                self.selected = identity;
+            match self.view() {
+                Some(DialogView::Authentication { identity, echo, .. }) => {
+                    self.selected = identity;
+                    self.secret = TextInput::local()
+                        .with_id("portal-authentication-secret")
+                        .with_secret(!echo);
+                }
+                Some(DialogView::ShortcutStep {
+                    field: Some(ShortcutStepField { masked }),
+                    ..
+                }) => {
+                    self.step_field = TextInput::local()
+                        .with_id("portal-shortcut-step-field")
+                        .with_secret(masked);
+                }
+                _ => {}
             }
             if let Some(handle) = self.active.clone() {
                 let (fields, remember) = self.queue.network_fields(&handle);
@@ -1657,7 +1565,18 @@ impl PortalDialogController {
                     .position(|field| field.required && field.initial.is_empty())
                     .or_else(|| fields.iter().position(|field| field.initial.is_empty()))
                     .unwrap_or(0);
-                self.entries = fields.into_iter().map(|field| field.initial).collect();
+                self.entries = fields
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, field)| {
+                        TextInput::local()
+                            .with_id(&format!("portal-network-secret-{index}"))
+                            .with_placeholder(&field.label)
+                            .with_accessible_name(field.label)
+                            .with_secret(field.masked)
+                            .with_initial_value(&field.initial)
+                    })
+                    .collect();
                 self.remember = remember.unwrap_or(false);
             }
             self.launcher_name = self
@@ -1723,13 +1642,22 @@ impl PortalDialogController {
             return false;
         };
         let done = match &view {
-            DialogView::ShortcutStep { choices, .. } => self.queue.finish_shortcut_step(
-                view.handle(),
-                ShortcutStepDecision::Confirmed {
-                    choice: (!choices.is_empty()).then_some(self.selected),
-                    text: std::mem::take(&mut self.launcher_name),
-                },
-            ),
+            DialogView::ShortcutStep { choices, .. } => {
+                if let Err(reason) = self
+                    .queue
+                    .validate_field(view.handle(), self.step_field.value())
+                {
+                    self.entry_error = Some(reason);
+                    return false;
+                }
+                self.queue.finish_shortcut_step(
+                    view.handle(),
+                    ShortcutStepDecision::Confirmed {
+                        choice: (!choices.is_empty()).then_some(self.selected),
+                        text: take_text(&mut self.step_field),
+                    },
+                )
+            }
             DialogView::AppChoice { choices, .. } => choices
                 .get(self.selected)
                 .cloned()
@@ -1765,7 +1693,7 @@ impl PortalDialogController {
                 } else {
                     self.selected
                 };
-                let secret = std::mem::take(&mut self.secret);
+                let secret = take_text(&mut self.secret);
                 self.queue.finish_authentication(
                     view.handle(),
                     AuthenticationDecision::Answered { identity, secret },
@@ -1774,7 +1702,8 @@ impl PortalDialogController {
             DialogView::NetworkSecrets { .. } => {
                 let (fields, _) = self.queue.network_fields(view.handle());
                 let refusal = fields.iter().zip(&self.entries).enumerate().find_map(
-                    |(index, (field, value))| {
+                    |(index, (field, entry))| {
+                        let value = entry.value();
                         if value.is_empty() {
                             field.required.then(|| (index, t("portal-secret-required")))
                         } else if !field.rule.accepts(value) {
@@ -1789,9 +1718,10 @@ impl PortalDialogController {
                     self.entry_error = Some(reason);
                     return false;
                 }
-                let values = std::mem::take(&mut self.entries)
-                    .into_iter()
-                    .map(zeroize::Zeroizing::new)
+                let values = self
+                    .entries
+                    .iter()
+                    .map(|entry| zeroize::Zeroizing::new(entry.value().to_owned()))
                     .collect();
                 let remember = self.remember;
                 self.forget_secret();
@@ -1852,6 +1782,20 @@ impl PortalDialogController {
     }
     pub fn layout(&self, bounds: Rect) -> Option<DialogLayout> {
         let view = self.view()?;
+        // Verified field reviews contain exact file/endpoint/certificate text,
+        // rather than a one-line caption. Never overlap it with the entry.
+        let field_review = matches!(
+            view,
+            DialogView::ShortcutStep {
+                field_review: true,
+                ..
+            }
+        );
+        let extra_detail = if field_review {
+            small_count_as_f64(view.detail().lines().count().saturating_sub(1)) * 24.0
+        } else {
+            0.0
+        };
         let width = bounds.width().min(560.0);
         let row_count = view.selectable_count().min(6);
         let launcher_editor = view.launcher_editor();
@@ -1868,9 +1812,14 @@ impl PortalDialogController {
             _ => (0, 0),
         };
         let height = 190.0
+            + extra_detail
             + small_count_as_f64(
                 row_count + launcher_rows + secret_rows + network_fields + remember_row,
             ) * 48.0;
+        if field_review && (height > bounds.height() || width < 560.0) {
+            // A clipped security review cannot approve anything invisibly.
+            return None;
+        }
         let sheet = Rect::new(
             bounds.center().x - width / 2.0,
             bounds.center().y - height / 2.0,
@@ -1882,21 +1831,21 @@ impl PortalDialogController {
         let row_h = f64::from(ui::tokens::Metrics::BASE.panel_row_height);
         let choices = (0..row_count)
             .map(|i| {
-                let y = sheet.y0 + 118.0 + small_count_as_f64(i) * 48.0;
+                let y = sheet.y0 + (118.0 + extra_detail) + small_count_as_f64(i) * 48.0;
                 Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
             })
             .collect();
         let launcher_name = launcher_editor
             .filter(|editor| editor.editable_name)
             .map(|_| {
-                let y = sheet.y0 + 118.0 + small_count_as_f64(row_count) * 48.0;
+                let y = sheet.y0 + (118.0 + extra_detail) + small_count_as_f64(row_count) * 48.0;
                 Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
             });
         let launcher_icons = launcher_editor
             .filter(|editor| editor.editable_icon)
             .map(|editor| {
                 let y = sheet.y0
-                    + 118.0
+                    + (118.0 + extra_detail)
                     + small_count_as_f64(row_count + usize::from(editor.editable_name)) * 48.0;
                 let count = editor.icon_choices.len().min(3);
                 let gap = 8.0;
@@ -1927,11 +1876,12 @@ impl PortalDialogController {
             sheet.y1 - 20.0,
         );
         let secret = (secret_rows > 0).then(|| {
-            let y = sheet.y0 + 118.0 + small_count_as_f64(row_count) * 48.0;
+            let y = sheet.y0 + (118.0 + extra_detail) + small_count_as_f64(row_count) * 48.0;
             Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
         });
         let field_row = |index: usize| {
-            let y = sheet.y0 + 118.0 + small_count_as_f64(row_count + index) * 48.0;
+            let y =
+                sheet.y0 + (118.0 + extra_detail) + small_count_as_f64(row_count + index) * 48.0;
             Rect::new(sheet.x0 + 24.0, y, sheet.x1 - 24.0, y + row_h)
         };
         let secret_fields = (0..network_fields).map(field_row).collect();
@@ -2061,9 +2011,7 @@ impl PortalDialogController {
         }
         match logical_key {
             Key::Named(NamedKey::Backspace) => {
-                if let Some((index, _)) = self.launcher_name.char_indices().next_back() {
-                    self.launcher_name.truncate(index);
-                }
+                ui::delete_last_grapheme(&mut self.launcher_name);
                 true
             }
             Key::Named(NamedKey::Space) => {
@@ -2085,30 +2033,128 @@ impl PortalDialogController {
         }
     }
 
-    /// Type into an authentication sheet's secret field. Consumes every
-    /// printable key while such a sheet is up.
-    pub fn edit_secret(&mut self, logical_key: &winit::keyboard::Key) -> bool {
+    /// Hand a key or IME event to the sheet's focused text field. The
+    /// "Remember" row takes only Space, which ticks it. Consumes every
+    /// event while a sheet with text entry is up.
+    pub fn edit_secret(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         use winit::keyboard::{Key, NamedKey};
 
         if self.is_network_secrets() {
             if self.entry_focus >= self.entries.len() {
                 // The "Remember" row: Space toggles it, nothing else types.
-                if matches!(logical_key, Key::Named(NamedKey::Space)) {
+                if matches!(
+                    event,
+                    WindowEvent::KeyboardInput {
+                        event: KeyEvent {
+                            logical_key: Key::Named(NamedKey::Space),
+                            state: ElementState::Pressed,
+                            ..
+                        },
+                        ..
+                    }
+                ) {
                     self.remember = !self.remember;
                 }
                 return true;
             }
             self.entry_error = None;
-            let Some(entry) = self.entries.get_mut(self.entry_focus) else {
-                return true;
-            };
-            edit_text(entry, logical_key);
+            let focus = self.entry_focus;
+            for (index, entry) in self.entries.iter_mut().enumerate() {
+                entry.set_focus(index == focus);
+            }
+            if let Some(entry) = self.entries.get_mut(focus) {
+                forward_to_field(entry, event, ctx);
+            }
             return true;
         }
-        if !self.is_authentication() {
+        self.entry_error = None;
+        let Some(field) = self.text_field_mut() else {
             return false;
+        };
+        field.set_focus(true);
+        forward_to_field(field, event, ctx);
+        true
+    }
+
+    /// The single text field of an authentication sheet or a shortcut
+    /// step, when one is up.
+    fn text_field_mut(&mut self) -> Option<&mut TextInput> {
+        match self.view()? {
+            DialogView::Authentication { .. } => Some(&mut self.secret),
+            DialogView::ShortcutStep { field: Some(_), .. } => Some(&mut self.step_field),
+            _ => None,
         }
-        edit_text(&mut self.secret, logical_key)
+    }
+
+    /// Lay the sheet's text fields out in `layout` and mark the focused
+    /// one; returns them for painting and pointer routing.
+    pub fn place_fields(&mut self, layout: &DialogLayout) -> Vec<&mut TextInput> {
+        let Some(view) = self.view() else {
+            return Vec::new();
+        };
+        let mut placed = Vec::new();
+        match view {
+            DialogView::Authentication { .. } => {
+                if let Some(rect) = layout.secret {
+                    self.secret.apply_layout_external(rect);
+                    self.secret.set_focus(true);
+                    placed.push(&mut self.secret);
+                }
+            }
+            DialogView::ShortcutStep { field: Some(_), .. } => {
+                if let Some(rect) = layout.launcher_name {
+                    self.step_field.apply_layout_external(rect);
+                    self.step_field.set_focus(true);
+                    placed.push(&mut self.step_field);
+                }
+            }
+            DialogView::NetworkSecrets { .. } => {
+                let focus = self.entry_focus;
+                for (index, (entry, rect)) in self
+                    .entries
+                    .iter_mut()
+                    .zip(&layout.secret_fields)
+                    .enumerate()
+                {
+                    entry.apply_layout_external(*rect);
+                    entry.set_focus(index == focus);
+                    placed.push(entry);
+                }
+            }
+            _ => {}
+        }
+        placed
+    }
+
+    /// Route a pointer event to the sheet's text fields, for hover, caret
+    /// placement and their show/hide controls; a press on a field focuses
+    /// it first. `true` when a field used the event.
+    pub fn field_pointer_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut EventCtx<'_>,
+        layout: &DialogLayout,
+        point: Option<vello::kurbo::Point>,
+    ) -> bool {
+        if let (
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            },
+            Some(point),
+        ) = (event, point)
+            && let Some(index) = layout
+                .secret_fields
+                .iter()
+                .position(|rect| rect.contains(point))
+        {
+            self.entry_focus = index;
+        }
+        let mut used = false;
+        for field in self.place_fields(layout) {
+            used |= forward_to_field(field, event, ctx);
+        }
+        used
     }
 
     pub fn is_authentication(&self) -> bool {
@@ -2119,31 +2165,17 @@ impl PortalDialogController {
         matches!(self.view(), Some(DialogView::NetworkSecrets { .. }))
     }
 
-    /// Whether the sheet up takes typed secrets, so every key belongs to it.
-    pub fn is_secret_entry(&self) -> bool {
-        self.is_authentication() || self.is_network_secrets()
-    }
-
-    /// The fields of a network-secrets sheet as drawn: masked values as
-    /// bullets.
-    pub fn secret_field_displays(&self) -> Vec<SecretFieldDisplay> {
-        let Some(view) = self.view() else {
-            return Vec::new();
-        };
-        view.secret_fields()
-            .iter()
-            .zip(&self.entries)
-            .enumerate()
-            .map(|(index, (field, value))| SecretFieldDisplay {
-                label: field.label.clone(),
-                shown: if field.masked {
-                    "•".repeat(value.chars().count())
-                } else {
-                    value.clone()
-                },
-                focused: index == self.entry_focus,
-            })
-            .collect()
+    /// Whether the sheet up takes typed text — a secret, or a shortcut
+    /// step's answer — so every key belongs to it.
+    pub fn is_text_entry(&self) -> bool {
+        matches!(
+            self.view(),
+            Some(
+                DialogView::Authentication { .. }
+                    | DialogView::NetworkSecrets { .. }
+                    | DialogView::ShortcutStep { field: Some(_), .. }
+            )
+        )
     }
 
     /// Whether "Remember on this device" is ticked and focused, when the
@@ -2181,9 +2213,9 @@ impl PortalDialogController {
         });
         match &view {
             DialogView::Authentication { echo, .. } => {
-                state["secret_len"] = self.secret.chars().count().into();
+                state["secret_len"] = self.secret.value().chars().count().into();
                 if *echo {
-                    state["secret"] = self.secret.clone().into();
+                    state["secret"] = self.secret.value().into();
                 }
             }
             DialogView::NetworkSecrets {
@@ -2195,7 +2227,8 @@ impl PortalDialogController {
                     .iter()
                     .zip(&self.entries)
                     .enumerate()
-                    .map(|(index, (field, value))| {
+                    .map(|(index, (field, input))| {
+                        let value = input.value();
                         let mut entry = serde_json::json!({
                             "key": field.key,
                             "label": field.label,
@@ -2205,7 +2238,7 @@ impl PortalDialogController {
                             "focused": index == self.entry_focus,
                         });
                         if !field.masked {
-                            entry["value"] = value.clone().into();
+                            entry["value"] = value.into();
                         }
                         entry
                     })
@@ -2217,28 +2250,50 @@ impl PortalDialogController {
                 };
                 state["error"] = self.entry_error.clone().into();
             }
+            DialogView::ShortcutStep {
+                field_review: true, ..
+            } => {
+                state["error"] = self.entry_error.clone().into();
+                state["value"] = self.step_field.value().into();
+            }
             _ => {}
         }
         state
     }
 
-    /// The secret field as drawn: bullets unless the prompt echoes.
-    pub fn secret_display(&self) -> Option<String> {
+    /// The sheet's single text field — an authentication answer or a
+    /// shortcut step's — when one is up.
+    pub fn text_field(&self) -> Option<&TextInput> {
         match self.view()? {
-            DialogView::Authentication { echo: true, .. } => Some(self.secret.clone()),
-            DialogView::Authentication { .. } => Some("•".repeat(self.secret.chars().count())),
+            DialogView::Authentication { .. } => Some(&self.secret),
+            DialogView::ShortcutStep { field: Some(_), .. } => Some(&self.step_field),
             _ => None,
         }
+    }
+
+    /// The network-secrets sheet's fields, in order.
+    pub fn secret_fields(&self) -> &[TextInput] {
+        &self.entries
+    }
+
+    /// Whether the sheet up now asks for a secret: administrator
+    /// authentication, network secrets, or any sheet whose field is a
+    /// secret, such as a shortcut step's masked answer.
+    pub fn holds_secret(&self) -> bool {
+        matches!(
+            self.view(),
+            Some(DialogView::Authentication { .. } | DialogView::NetworkSecrets { .. })
+        ) || self.text_field().is_some_and(TextInput::is_secret)
+            || self.entries.iter().any(TextInput::is_secret)
     }
 
     fn forget_secret(&mut self) {
         // Overwrite before release so the freed allocation does not keep
         // the password.
-        let mut bytes = std::mem::take(&mut self.secret).into_bytes();
-        bytes.iter_mut().for_each(|byte| *byte = 0);
-        std::hint::black_box(&bytes);
-        for entry in std::mem::take(&mut self.entries) {
-            drop(zeroize::Zeroizing::new(entry));
+        wipe(&mut self.secret);
+        wipe(&mut self.step_field);
+        for mut entry in std::mem::take(&mut self.entries) {
+            wipe(&mut entry);
         }
         self.entry_focus = 0;
         self.remember = false;
@@ -2257,20 +2312,6 @@ impl PortalDialogController {
             .then_some(self.launcher_icon)
     }
 
-    /// The editable field's text as the sheet shows it: a secret answer
-    /// is masked.
-    pub fn field_display(&self) -> Option<String> {
-        let view = self.view()?;
-        view.launcher_editor()?;
-        Some(match &view {
-            DialogView::ShortcutStep {
-                field: Some(ShortcutStepField { masked: true }),
-                ..
-            } => "•".repeat(self.launcher_name.chars().count()),
-            _ => self.launcher_name.clone(),
-        })
-    }
-
     pub fn launcher_name_focused(&self) -> bool {
         self.view().is_some_and(|view| {
             view.launcher_editor()
@@ -2279,32 +2320,45 @@ impl PortalDialogController {
     }
 }
 
-/// Apply one key to a secret being typed; `true` when the key was text.
-fn edit_text(buffer: &mut String, logical_key: &winit::keyboard::Key) -> bool {
-    use winit::keyboard::{Key, NamedKey};
-
-    match logical_key {
-        Key::Named(NamedKey::Backspace) => {
-            if let Some((index, _)) = buffer.char_indices().next_back() {
-                buffer.truncate(index);
-            }
-            true
-        }
-        Key::Named(NamedKey::Space) => {
-            if buffer.len() < 512 {
-                buffer.push(' ');
-            }
-            true
-        }
-        Key::Character(text) => {
-            let accepted: String = text.chars().filter(|ch| !ch.is_control()).collect();
-            if buffer.len().saturating_add(accepted.len()) <= 512 {
-                buffer.push_str(&accepted);
-            }
-            true
-        }
-        _ => false,
+/// Give `event` to an embedded field; `true` when the field used it. The
+/// fields are local and never write the document.
+fn forward_to_field(field: &mut TextInput, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+    let mut taffy = TaffyTree::<()>::new();
+    let Ok(node) = taffy.new_leaf(Style::default()) else {
+        return false;
+    };
+    let mut used = false;
+    // The sheet owns focus between its fields; the node is a stand-in that
+    // must never become the frame's focus target.
+    let mut focus_target = None;
+    field.handle_event(
+        event,
+        &mut EventCtx {
+            taffy: &taffy,
+            handled: &mut used,
+            focus_target: &mut focus_target,
+            ..ctx.reborrow(ctx.path, node)
+        },
+    );
+    // The value is read back on confirm; drop the copy this hands out.
+    if let Some(value) = field.take_dirty() {
+        drop(zeroize::Zeroizing::new(value));
     }
+    used
+}
+
+/// The field's value, leaving it wiped.
+fn take_text(field: &mut TextInput) -> String {
+    let value = field.value().to_owned();
+    wipe(field);
+    value
+}
+
+/// Empty `field`, overwriting what it held: a field marked secret zeroes
+/// its text as it lets go of it, so an echoed answer is marked too.
+fn wipe(field: &mut TextInput) {
+    field.set_secret(true);
+    field.set_text("");
 }
 
 fn authentication_detail(request: &AuthenticationRequest) -> String {
@@ -2340,9 +2394,21 @@ fn chooser_detail(request: &ApplicationChoiceRequest) -> String {
         ],
     )
 }
+/// The allowing answers the grant sheet offers for `request`, in order.
+fn action_grant_answers(request: &AppActionConsentRequest) -> &'static [AppActionConsent] {
+    if request.confirming {
+        &AppActionConsent::ALLOWING[..1]
+    } else {
+        &AppActionConsent::ALLOWING
+    }
+}
+
 /// The action's consequences, as the grant sheet states them.
 fn action_grant_detail(request: &AppActionConsentRequest) -> String {
     let risk = crate::shell::app_action_consent::risk_label(request.risk);
+    if request.confirming {
+        return t_args("portal-confirm-detail", &[("risk", risk.into())]);
+    }
     let key = if request.needs_confirmation {
         "portal-grant-detail-confirms"
     } else {
@@ -2538,10 +2604,13 @@ mod tests {
             .expect("layout");
         assert!(layout.secret.is_some());
         for key in ["h", "u", "n", "t"] {
-            assert!(controller.edit_secret(&Key::Character(key.into())));
+            assert!(type_key(&mut controller, Key::Character(key.into())));
         }
-        assert!(controller.edit_secret(&Key::Named(NamedKey::Backspace)));
-        assert_eq!(controller.secret_display().as_deref(), Some("•••"));
+        assert!(type_key(&mut controller, Key::Named(NamedKey::Backspace)));
+        let field = controller.text_field().expect("the answer field");
+        assert!(field.is_secret(), "the answer is a secret field");
+        assert!(!field.is_revealed(), "and starts hidden");
+        assert_eq!(field.value(), "hun");
         assert!(controller.confirm());
         assert_eq!(
             receiver.blocking_recv(),
@@ -2550,7 +2619,99 @@ mod tests {
                 secret: "hun".into()
             })
         );
-        assert_eq!(controller.secret_display(), None);
+        assert!(controller.text_field().is_none());
+        assert!(controller.secret.value().is_empty(), "nothing is kept");
+    }
+
+    #[test]
+    fn every_secret_field_of_a_sheet_is_hidden_with_its_own_reveal() {
+        let layout_bounds = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let queue = PortalDialogQueue::default();
+        let _auth = queue
+            .enqueue_authentication(authentication_request(&["quinn"]))
+            .expect("queued");
+        let mut controller = PortalDialogController::new(queue.clone());
+        assert!(controller.pump());
+        let layout = controller.layout(layout_bounds).expect("layout");
+        let fields = controller.place_fields(&layout);
+        assert_eq!(fields.len(), 1);
+        assert!(fields[0].is_secret() && !fields[0].is_revealed());
+        assert!(fields[0].has_reveal_control());
+        assert!(controller.cancel());
+
+        let mut echo = authentication_request(&["quinn"]);
+        echo.echo = true;
+        let _echo = queue.enqueue_authentication(echo).expect("queued");
+        assert!(controller.pump());
+        assert!(
+            !controller.text_field().expect("field").is_secret(),
+            "an echoed answer is shown as typed"
+        );
+        assert!(controller.cancel());
+
+        let _secrets = queue
+            .enqueue_network_secrets(NetworkSecretsRequest {
+                handle: "nm:1".into(),
+                title: "Network sign-in".into(),
+                detail: String::new(),
+                fields: vec![
+                    SecretFieldSpec {
+                        key: "identity".into(),
+                        label: "User name".into(),
+                        masked: false,
+                        required: true,
+                        initial: "quinn".into(),
+                        rule: SecretFieldRule::Any,
+                    },
+                    SecretFieldSpec {
+                        key: "password".into(),
+                        label: "Password".into(),
+                        masked: true,
+                        required: true,
+                        initial: String::new(),
+                        rule: SecretFieldRule::Any,
+                    },
+                ],
+                remember: None,
+            })
+            .expect("queued");
+        assert!(controller.pump());
+        let [identity, password] = controller.secret_fields() else {
+            panic!("two fields");
+        };
+        assert!(!identity.is_secret());
+        assert_eq!(identity.value(), "quinn");
+        assert!(password.is_secret() && !password.is_revealed());
+        assert!(controller.cancel());
+
+        queue_secret_step(&queue);
+        assert!(controller.pump());
+        let field = controller.text_field().expect("the step's field");
+        assert!(field.is_secret() && !field.is_revealed());
+    }
+
+    fn queue_secret_step(queue: &PortalDialogQueue) {
+        queue
+            .enqueue_shortcut_step(
+                ShortcutStepRequest {
+                    handle: "shortcut:token".into(),
+                    shortcut: "Publish".into(),
+                    title: "Publishing token".into(),
+                    detail: String::new(),
+                    confirm_label: "Continue".into(),
+                    choices: Vec::new(),
+                    field: Some(ShortcutStepField { masked: true }),
+                },
+                |_| {},
+            )
+            .expect("queued");
+    }
+
+    fn type_key(controller: &mut PortalDialogController, key: winit::keyboard::Key) -> bool {
+        let event = ui::synthetic_input::key_input(&key, winit::event::ElementState::Pressed);
+        crate::shell::test_support::with_scratch_event_ctx(|ctx| {
+            controller.edit_secret(&event, ctx)
+        })
     }
 
     #[test]
@@ -2568,7 +2729,7 @@ mod tests {
             ["quinn".to_string(), "root".to_string()]
         );
         assert!(controller.select_next(false));
-        assert!(controller.edit_secret(&Key::Character("x".into())));
+        assert!(type_key(&mut controller, Key::Character("x".into())));
         assert!(controller.cancel());
         assert_eq!(
             receiver.blocking_recv(),
@@ -2580,7 +2741,7 @@ mod tests {
             .expect("queued again");
         assert!(controller.pump());
         assert_eq!(
-            controller.secret_display().as_deref(),
+            controller.text_field().map(TextInput::value),
             Some(""),
             "nothing carried over"
         );
@@ -2801,7 +2962,7 @@ mod tests {
             let mut controller = PortalDialogController::new(queue);
             controller.pump();
             assert!(controller.key(
-                &PhysicalKey::Code(KeyCode::KeyK),
+                &PhysicalKey::Code(KeyCode::Space),
                 Modifiers::from(ModifiersState::SUPER),
             ));
             let view = controller.view().unwrap();

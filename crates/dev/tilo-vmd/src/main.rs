@@ -42,6 +42,19 @@ enum Command {
     Restore {
         #[command(flatten)]
         state: State,
+        /// The booted image (default: from the kernel command line).
+        #[arg(long, hide = true)]
+        booted: Option<String>,
+    },
+    /// Put every slot back on the booted OS image when its layers were made
+    /// for another one, before systemd-sysext merges them (run at boot by
+    /// tilo-vm-reconcile-image.service).
+    ReconcileImage {
+        #[command(flatten)]
+        state: State,
+        /// The booted image (default: from the kernel command line).
+        #[arg(long, hide = true)]
+        booted: Option<String>,
     },
     /// Run one command as a slot sees the system: in its session's mount
     /// namespace, as its user; output streams, and the run is bounded.
@@ -73,6 +86,12 @@ enum Command {
         /// Touchscreen and pen range: the slot's first output's mode.
         #[arg(long, value_parser = parse_extent, requires = "extent")]
         touch_extent: Option<(u32, u32)>,
+    },
+    /// Hold a logind sleep lock until the keep-awake lease in --lease ends
+    /// (run by tilo-vmd itself as tilo-vm-awake.service).
+    AwakeHold {
+        #[arg(long)]
+        lease: PathBuf,
     },
     /// Install distribution packages into the VM's /usr with its package
     /// manager (a transient overlay on bootc images); output streams.
@@ -115,7 +134,10 @@ struct State {
     /// What the VM's base image was built with, for layer ABI checks.
     #[arg(long, default_value = "/usr/share/tilo-vm/base.json")]
     base: PathBuf,
-    /// `record` performs no side effects; for protocol tests only.
+    /// `record` performs no side effects, `record-device` none on a
+    /// machine whose own session runs as tester, and `record-login` none
+    /// on a laptop tester is logged in to through greetd; for protocol
+    /// tests only.
     #[arg(long, value_enum, default_value_t = Backend::Systemd)]
     apply: Backend,
 }
@@ -124,6 +146,8 @@ struct State {
 enum Backend {
     Systemd,
     Record,
+    RecordDevice,
+    RecordLogin,
 }
 
 impl State {
@@ -142,6 +166,8 @@ impl State {
         let backend: Box<dyn Apply> = match self.apply {
             Backend::Systemd => Box::new(SystemdApply::new(&self.root)),
             Backend::Record => Box::new(RecordingApply::default()),
+            Backend::RecordDevice => Box::new(RecordingApply::with_device("tester")),
+            Backend::RecordLogin => Box::new(RecordingApply::with_login("tester")),
         };
         Daemon::new(&self.root, backend, manifest, base)
     }
@@ -197,6 +223,63 @@ fn display_apply(outputs: &[tilo_vm_protocol::OutputSpec], timeout: u64) -> Exit
     }
 }
 
+fn awake_hold(lease: &std::path::Path) -> ExitCode {
+    match tilo_vmd::awake::hold(lease) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("tilo-vmd: could not hold the machine awake: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn reconcile_image(state: &State, booted: Option<String>) -> ExitCode {
+    let Some(booted) = booted else {
+        eprintln!(
+            "tilo-vmd: no composefs= or ostree= on the kernel command line; slots stay as they are"
+        );
+        return ExitCode::SUCCESS;
+    };
+    match state
+        .daemon()
+        .reconcile_image(&booted, tilo_vmd::image::Merge::Pending)
+    {
+        Ok(Some(change)) => {
+            for line in change.describe() {
+                eprintln!("tilo-vmd: {line}");
+            }
+            if change.dropped.is_empty() {
+                eprintln!("tilo-vmd: slots follow {booted}");
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(None) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!(
+                "tilo-vmd: could not put the slots back on the booted image {booted}: {error}"
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn restore(state: &State, booted: Option<String>) -> ExitCode {
+    let issues = state
+        .daemon()
+        .restore(booted.or_else(tilo_vmd::image::running_image).as_deref());
+    for issue in &issues {
+        eprintln!(
+            "tilo-vmd: slot {}: {} ({})",
+            issue.slot, issue.problem, issue.hint
+        );
+    }
+    if issues.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Rpc {
@@ -232,20 +315,10 @@ fn main() -> ExitCode {
                 |job: CiJob| daemon.ci_job(&job),
             ))
         }
-        Command::Restore { state } => {
-            let issues = state.daemon().restore();
-            for issue in &issues {
-                eprintln!(
-                    "tilo-vmd: slot {}: {} ({})",
-                    issue.slot, issue.problem, issue.hint
-                );
-            }
-            if issues.is_empty() {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            }
+        Command::ReconcileImage { state, booted } => {
+            reconcile_image(&state, booted.or_else(tilo_vmd::image::running_image))
         }
+        Command::Restore { state, booted } => restore(&state, booted),
         Command::Exec {
             state,
             slot,
@@ -293,6 +366,7 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Command::AwakeHold { lease } => awake_hold(&lease),
         Command::DisplayApply { outputs, timeout } => display_apply(&outputs, timeout),
         Command::InstallPackages { timeout, packages } => install_packages(&packages, timeout),
     }

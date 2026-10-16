@@ -1,66 +1,36 @@
-//! Mechanical audit that fails if a hard-coded styling literal sneaks into
-//! any widget or shell source file. Every literal must flow through
-//! `theme.*` so the OS can enforce one design language.
+//! Colour, radius and paint audits. A hard-coded styling literal with no
+//! inherited debt fails outright (`forbidden_patterns`); the rest are
+//! ratchets over the toolkit, the shell and every app (`theme_ratchet`,
+//! `app_paint_ratchet`, `chrome_border_ratchet`) whose counts may only fall.
+//! Every value must flow through the theme or a widget so the OS can enforce
+//! one design language.
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
 use regex::Regex;
-use std::collections::BTreeMap;
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
 use crate::support::ratchet::{
-    Counts, is_skipped, ratchet_failures, read_baseline, test_module_spans, write_baseline,
+    Pattern, Ratchet, is_skipped, is_test_file, no_exemptions, repository_root, test_module_spans,
 };
 
-/// Files exempt from the audit:
-///  - theme.rs (the single source of truth for literal color values)
-///  - tokens/** (palette sub-modules — the token origin, not token consumers)
-///  - presence/render.rs (the HSL helper intentionally encodes per-user hue math)
-///  - tests/**, `*_tests.rs`, and `#[cfg(test)]` modules inside a src file
-///    (test fixtures — see `support::ratchet::test_module_spans`). Path-based
-///    test modules extracted beside production code use the `*_tests.rs`
-///    suffix so they stay out of the ratchet the same way inline test bodies do.
-fn is_exempt(path: &Path) -> bool {
-    let s = path.to_string_lossy();
-    let name = path
-        .file_name()
-        .map(|name| name.to_string_lossy())
-        .unwrap_or_default();
-    s.contains("/theme.rs")
-        || s.contains("/tokens/")
-        || s.contains("/presence/render.rs")
-        || s.contains("/tests/")
-        || name == "tests.rs"
-        || name.ends_with("_tests.rs")
-}
-
+/// Files the hard-fail scan skips: the theme's own definitions
+/// ([`is_theme_source`]) and test files (`support::ratchet::is_test_file`).
 fn walk(root: &Path, out: &mut Vec<PathBuf>) {
-    crate::support::ratchet::walk(root, &is_exempt, out);
-}
-
-fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(3)
-        .expect("UI crate lives under crates/sdk in the repository")
-        .to_path_buf()
+    crate::support::ratchet::walk(root, &|p: &Path| is_test_file(p) || is_theme_source(p), out);
 }
 
 /// Hard failures. Each pattern names a constructor that exists in this tree
 /// and currently has zero production hits, so a first hit is a regression,
 /// not inherited debt. peniko colour literals go through `Color::from_rgb8`
-/// / `from_rgba8` and are ratcheted below (`ratcheted_patterns`), not
+/// / `from_rgba8` and are ratcheted below (`theme_ratchet`), not
 /// forbidden here; spacing literals are ratcheted by
 /// `spacing_token_audit.rs`. (An earlier `Padding::all(` pattern named a
 /// type that does not exist and was dropped; the colour pattern once also
@@ -126,7 +96,7 @@ fn audit_patterns_match_exactly_the_shapes_they_name() {
 
     // Case `a_file_gated_to_tests_has_no_production_style_lines`.
     // The `#[cfg(test)]` span finder and the baseline plumbing live in
-    // `support::ratchet`, shared with `spacing_token_audit.rs`. The finder
+    // `support::ratchet`, shared by every ratchet. The finder
     // covers exactly the item the attribute governs — an earlier copy here
     // treated every `#[cfg(test)]` as a braced module, so a `#[cfg(test)]
     // const …;` or `mod tests;` exempted whatever braced production item
@@ -135,36 +105,6 @@ fn audit_patterns_match_exactly_the_shapes_they_name() {
         let source = "#![cfg(test)]\nuse super::*;\nfn fixture() { let ink = Color::WHITE; }\n";
         assert_eq!(test_module_spans(source), vec![(0, 3)]);
         assert!(test_module_spans("fn draw() { let ink = Color::WHITE; }\n").is_empty());
-    }
-
-    // Case `declared_border_pattern_matches_the_shapes_it_names`.
-    // The chrome-edge pattern must match the shapes it names and nothing else.
-    {
-        let (_, re, _) = declared_border_patterns().remove(0);
-        for hit in [
-            "theme.tokens.colors.border_standard,",
-            "let bc = theme.border_standard;",
-            "stroke(&Stroke::new(1.0), t, colors.border_strong, None, &shape);",
-            "c.overlay_border_strong",
-            "colors.neutral[3]",
-        ] {
-            assert!(
-                re.is_match(hit),
-                "{hit:?} is a declared edge and must match"
-            );
-        }
-        for miss in [
-            "theme.border_focus",
-            "Colors::hairline_on(ground, HAIRLINE_ALPHA)",
-            "border_standard: p.border,",
-            "tilo_ui::surface::edge_on(fill)",
-            "let neutral = colors.text_dim;",
-        ] {
-            assert!(
-                !re.is_match(miss),
-                "{miss:?} is not a declared edge and must not match"
-            );
-        }
     }
 }
 
@@ -209,262 +149,321 @@ fn no_hardcoded_style_literals_in_tree() {
 }
 
 // ===========================================================================
-// Escape hatches `no_hardcoded_style_literals_in_tree` cannot see: the real
-// `Color::from_rgb8`/`from_rgba8` constructors, `Color::WHITE`/`Color::BLACK`,
-// and the `surface_white_*`/`border_white_*` tiers HIG §9.5 deprecates.
-//
-// Turning these into hard failures would break hundreds of existing lines, so
-// they're ratcheted instead: `design_token_baseline.txt` records what each
-// file carries today, a file may never carry more, and one that carries
-// fewer lowers its record in the same commit. The number only goes down.
+// Ratchets: what is counted per file and may only fall. See
+// `support::ratchet` for the engine and the shard layout under
+// `tests/baselines/<audit>/<unit>.txt`.
 
-/// Path to the recorded counts, relative to the crate root.
-const BASELINE: &str = "tests/design_token_baseline.txt";
+/// The theme's own definitions state literal values by design.
+fn is_theme_source(path: &Path) -> bool {
+    let s = path.to_string_lossy();
+    s.contains("/theme.rs") || s.contains("/tokens/") || s.contains("/presence/render.rs")
+}
 
-/// Cross-product baseline. The toolkit has had a theme escape-hatch ratchet
-/// for a while; without the same guard around apps and shell chrome, bespoke
-/// colours can keep entering through the much larger product surface.
-const APP_SHELL_BASELINE: &str = "tests/app_shell_design_token_baseline.txt";
-
-/// Patterns that are ratcheted rather than forbidden outright. The key is what
-/// the baseline file names; the message is what a new hit is told to do.
-fn ratcheted_patterns() -> Vec<(&'static str, Regex, &'static str)> {
-    vec![
-        (
-            "literal_color",
+/// Escape hatches the hard-fail set above cannot see: the real
+/// `Color::from_rgb8`/`from_rgba8` constructors, `Color::WHITE`/`BLACK`, and
+/// the `surface_white_*`/`border_white_*` tiers HIG §9.5 deprecates. Counted
+/// in the toolkit, the shell and every app.
+pub fn theme_ratchet() -> Ratchet {
+    Ratchet {
+        name: "theme",
+        roots: &[
+            "crates/sdk/ui-core/src",
+            "crates/session/shell/src",
+            "apps/*/src",
+        ],
+        patterns: vec![
             // The constructor this tree actually calls, with a literal first
             // argument. A variable first argument (`Color::from_rgba8(c.r(), …)`,
             // the re-alpha idiom) is passing real colour through, not stating one.
-            Regex::new(r"Color::from_rgba?8\s*\(\s*(0x)?[0-9]").unwrap(),
-            "literal colour in a draw path — read it from the Theme",
+            Pattern::new(
+                "literal_color",
+                r"Color::from_rgba?8\s*\(\s*(0x)?[0-9]",
+                "literal colour in a draw path — read it from the Theme",
+            ),
+            Pattern::new(
+                "white_or_black",
+                r"Color::(WHITE|BLACK)",
+                "Color::WHITE / Color::BLACK — use the theme's ink or scrim token",
+            ),
+            Pattern::new(
+                "theme_blind_white",
+                r"\b(surface|border)_white_\d+",
+                "surface_white_* / border_white_* declare a strength instead of measuring it \
+                 (HIG §9.5) — use Colors::lift() or Colors::hairline_on()",
+            ),
+        ],
+        exempt: is_theme_source,
+        advice: "Read every colour from the Theme passed to draw.",
+    }
+}
+
+/// Glyphs apps have drawn as icons. Emoji (U+1F300–U+1FAFF) are added to the
+/// class in [`app_paint_ratchet`].
+const ICON_GLYPHS: &str = "✕×⟳↻⌫⇅«»‹›▾▸▴◍◎◷⚓➤⏰";
+
+/// Appearance an app or the shell states for itself instead of taking it
+/// from a widget, a region or a theme token. Genuine content drawing keeps a
+/// painting surface; its counts stay here and shrink as values move onto
+/// tokens.
+pub fn app_paint_ratchet() -> Ratchet {
+    let glyph = format!("[{ICON_GLYPHS}\\x{{1F300}}-\\x{{1FAFF}}]");
+    let glyph_icon = format!(r#""[^"\n]*{glyph}|'{glyph}'"#);
+    Ratchet {
+        name: "app-paint",
+        roots: &["crates/session/shell/src", "apps/*/src"],
+        patterns: vec![
+            Pattern::new(
+                "literal_color_new",
+                r"Color::new\(\s*\[\s*[0-9.]",
+                "literal colour — read it from the Theme (only status, presence and the \
+                 user's own content carry colour)",
+            ),
+            Pattern::new(
+                "ramp_slot",
+                r"\.neutral\[|\baccent\[\d",
+                "colour ramp slot — use the semantic tier (surfaces.*, text tiers, the \
+                 selection lift)",
+            ),
+            Pattern::new(
+                "legacy_alias",
+                r"\.(?:bg_app|bg_primary|bg_hover|bg_active)\b",
+                "removed theme alias — the framework paints the ground; hover and selection \
+                 come from the widget",
+            ),
+            Pattern::new(
+                "desktop_ground",
+                r"surfaces\.(?:base|window_card)\b",
+                "an app painting a ground — the framework owns the window ground; declare a \
+                 region (Content, Sidebar, Inspector) instead",
+            ),
+            Pattern::new(
+                "literal_radius",
+                r"\.to_rounded_rect\(\s*\d|RoundedRect::from_rect\([^;]*,\s*\d+(?:\.\d+)?\s*\)|fill_round\([^,]+,[^,]+,\s*\d|\.radius\(\s*\d",
+                "literal corner radius — widgets take their radius from their role; content \
+                 drawing reads theme.tokens.radii",
+            ),
+            Pattern::new(
+                "literal_alpha",
+                r"with_alpha(?:_factor)?\((?:[^)]*[^\w.])?0?\.\d|multiply_alpha\(\s*0?\.\d",
+                "literal alpha — use the theme's state, scrim or material token",
+            ),
+            Pattern::new(
+                "raw_paint",
+                r"scene\.(?:fill|stroke)\(",
+                "app-painted chrome — compose ui widgets; only content drawing paints, from \
+                 theme values",
+            ),
+            Pattern::new(
+                "glyph_icon",
+                &glyph_icon,
+                "a Unicode glyph or emoji used as an icon — use ui::icons",
+            ),
+            Pattern::new(
+                "transparent_shot",
+                r"render_png\([^)]*TRANSPARENT",
+                "a transparent screenshot — shots render on the framework ground, like the \
+                 live window",
+            ),
+        ],
+        exempt: is_theme_source,
+        advice: "Say what a thing is (a widget, a role, a region) and let the toolkit draw it.",
+    }
+}
+
+/// Declared edges on chrome surfaces (HIG §9.5). `border_standard` is one
+/// fixed colour per theme; stroked on a raised or overlay surface it is three
+/// shades from its ground on the dark preset and vanishes. Chrome derives
+/// its edges (`tilo_ui::surface::{edge_on, card, separator}`,
+/// `chrome::{panel_border, chrome_hairline, selection_tier}`) instead.
+pub fn chrome_border_ratchet() -> Ratchet {
+    Ratchet {
+        name: "chrome-border",
+        roots: &[
+            "crates/sdk/ui-core/src/widget",
+            "crates/sdk/ui-core/src/chrome",
+            "crates/sdk/ui-core/src/surface.rs",
+            "crates/sdk/ui-core/src/status_bubble.rs",
+            "crates/session/shell/src",
+        ],
+        patterns: vec![Pattern::new(
+            "declared_border",
+            r"\.border_standard\b|\.border_strong\b|overlay_border_strong|colors\.neutral\[",
+            "declared border/ramp token on a chrome surface (HIG §9.5) — derive the edge with \
+             tilo_ui::surface::{edge_on, card, separator} or tilo_ui::chrome::{panel_border, \
+             chrome_hairline, selection_tier}",
+        )],
+        exempt: no_exemptions,
+        advice: "Derive chrome edges from the ground they sit on.",
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one table of must-count and must-not-count lines per key"
+)]
+#[test]
+fn ratcheted_colour_patterns_match_exactly_the_shapes_they_name() {
+    let cases: [(Ratchet, &str, &[&str], &[&str]); 12] = [
+        (
+            theme_ratchet(),
+            "literal_color",
+            &[
+                "Color::from_rgb8(12, 120, 220)",
+                "Color::from_rgba8(0x10, 0, 0, 255)",
+            ],
+            &["Color::from_rgba8(c.r(), c.g(), c.b(), 128)"],
         ),
         (
+            theme_ratchet(),
             "white_or_black",
-            Regex::new(r"Color::(WHITE|BLACK)").unwrap(),
-            "Color::WHITE / Color::BLACK — use the theme's on-accent ink or scrim token",
+            &["fill(Color::WHITE)", "Color::BLACK.with_alpha(0.4)"],
+            &["theme.colors.on_accent"],
         ),
         (
+            theme_ratchet(),
             "theme_blind_white",
-            Regex::new(r"\b(surface|border)_white_\d+").unwrap(),
-            "surface_white_* / border_white_* declare a strength instead of measuring it \
-             (HIG §9.5) — use Colors::lift() or Colors::hairline_on()",
+            &["colors.surface_white_8", "c.border_white_12"],
+            &["colors.surface_raised"],
         ),
-    ]
-}
-
-/// Count every ratcheted pattern per file, skipping comments and `#[cfg(test)]`
-/// modules exactly as the audit above does.
-fn ratcheted_counts(files: &[PathBuf], root: &Path) -> Counts {
-    counts_for(files, root, &ratcheted_patterns())
-}
-
-/// The shared counter behind every ratchet in this file: `patterns` per file,
-/// keyed by the path relative to `root`.
-fn counts_for(
-    files: &[PathBuf],
-    root: &Path,
-    patterns: &[(&'static str, Regex, &'static str)],
-) -> Counts {
-    let mut counts: Counts = BTreeMap::new();
-    for f in files {
-        let content = fs::read_to_string(f).unwrap();
-        let skip = test_module_spans(&content);
-        let rel = f
-            .strip_prefix(root)
-            .unwrap_or(f)
-            .to_string_lossy()
-            .replace('\\', "/");
-        for (i, line) in content.lines().enumerate() {
-            if is_skipped(line, i, &skip) {
-                continue;
-            }
-            for (key, re, _) in patterns {
-                if re.is_match(line) {
-                    let hit = counts.entry((rel.clone(), (*key).to_string())).or_insert(0);
-                    *hit = hit.saturating_add(1);
-                }
-            }
+        (
+            app_paint_ratchet(),
+            "literal_color_new",
+            &[
+                "Color::new([0.2, 0.3, 0.4, 1.0])",
+                "Color::new([ .5, 0.0, 0.0, 1.0])",
+            ],
+            &["Color::new([r, g, b, a])", "Color::new(rgba)"],
+        ),
+        (
+            app_paint_ratchet(),
+            "ramp_slot",
+            &["colors.neutral[3]", "palette.accent[5]"],
+            &["colors.neutral_text", "accent[i]", "self.accent_fill"],
+        ),
+        (
+            app_paint_ratchet(),
+            "legacy_alias",
+            &[
+                "theme.bg_app",
+                "theme.bg_hover.with_alpha(a)",
+                "t.bg_primary",
+            ],
+            &["theme.bg_application", "surfaces.content"],
+        ),
+        (
+            app_paint_ratchet(),
+            "desktop_ground",
+            &["c.surfaces.base", "theme.surfaces.window_card"],
+            &["surfaces.base_tint", "surfaces.content", "surfaces.raised"],
+        ),
+        (
+            app_paint_ratchet(),
+            "literal_radius",
+            &[
+                "rect.to_rounded_rect(8.0)",
+                "RoundedRect::from_rect(r, 6.0)",
+                "fill_round(scene, rect, 4.0, ink)",
+                "Button::new(\"x\").radius(12.0)",
+            ],
+            &[
+                "rect.to_rounded_rect(theme.tokens.radii.md)",
+                "RoundedRect::from_rect(r, radius)",
+                "fill_round(scene, rect, radii.sm, ink)",
+            ],
+        ),
+        (
+            app_paint_ratchet(),
+            "literal_alpha",
+            &[
+                "ink.with_alpha(0.5)",
+                "ink.with_alpha(.35)",
+                "ink.with_alpha_factor(x * 0.4)",
+                "ink.multiply_alpha(0.6)",
+            ],
+            &[
+                "ink.with_alpha(theme.alpha.hover)",
+                "ink.with_alpha(1.0)",
+                "ink.with_alpha(12.5 * a)",
+            ],
+        ),
+        (
+            app_paint_ratchet(),
+            "raw_paint",
+            &[
+                "scene.fill(Fill::NonZero, t, ink, None, &rect)",
+                "ctx.scene.stroke(&s, t, ink, None, &line)",
+            ],
+            &[
+                "fill_rect(scene, rect, ink)",
+                "scene.push_layer(blend, 1.0, t, &clip)",
+            ],
+        ),
+        (
+            app_paint_ratchet(),
+            "glyph_icon",
+            &[
+                "Button::new(\"✕\")",
+                "label: \"⟳ Sync\"",
+                "'▾'",
+                "\"🔍 Search\"",
+            ],
+            &["Icon::Close", "\"Close\"", "'a'"],
+        ),
+        (
+            app_paint_ratchet(),
+            "transparent_shot",
+            &["render_png(&mut app, w, h, Color::TRANSPARENT)"],
+            &["render_png(&mut app, w, h, theme.surfaces.content)"],
+        ),
+    ];
+    for (ratchet, key, hits, misses) in cases {
+        let pattern = ratchet.pattern(key);
+        for line in hits {
+            assert!(pattern.hits(line) > 0, "{key} must count {line:?}");
+        }
+        for line in misses {
+            assert_eq!(pattern.hits(line), 0, "{key} must not count {line:?}");
         }
     }
-    counts
+    // The chrome-edge pattern: declared edges hit, derived ones do not.
+    let border = chrome_border_ratchet();
+    let declared = border.pattern("declared_border");
+    for hit in [
+        "theme.tokens.colors.border_standard,",
+        "let bc = theme.border_standard;",
+        "stroke(&Stroke::new(1.0), t, colors.border_strong, None, &shape);",
+        "c.overlay_border_strong",
+        "colors.neutral[3]",
+    ] {
+        assert!(declared.hits(hit) > 0, "{hit:?} is a declared edge");
+    }
+    for miss in [
+        "theme.border_focus",
+        "Colors::hairline_on(ground, HAIRLINE_ALPHA)",
+        "border_standard: p.border,",
+        "tilo_ui::surface::edge_on(fill)",
+        "let neutral = colors.text_dim;",
+    ] {
+        assert_eq!(declared.hits(miss), 0, "{miss:?} is not a declared edge");
+    }
 }
 
-/// What a new hit of `pattern` is told to do.
-fn ratchet_message(pattern: &str) -> String {
-    ratcheted_patterns()
-        .into_iter()
-        .find(|(key, _, _)| *key == pattern)
-        .map(|(_, _, message)| message.to_string())
-        .unwrap_or_default()
-}
-
-const BASELINE_HEADER: &[&str] = &[
-    "Theme escape hatches in app and shell production code.",
-    "Format: <path relative to repository root> <pattern> <count>",
-    "This is a ratchet, not approval: counts may only move down.",
-];
-
-/// The escape hatches the older audit was blind to may not grow, and a file
-/// that has shed some has to say so — the record only moves downward.
+/// Theme escape hatches may not grow in the toolkit, the shell or any app.
 #[test]
 fn theme_escape_hatches_do_not_grow() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut files = Vec::new();
-    walk(&root.join("src"), &mut files);
-    assert!(!files.is_empty(), "audit found no files to scan");
-    files.sort();
-
-    let found = ratcheted_counts(&files, root);
-    let baseline_path = root.join(BASELINE);
-    if std::env::var_os("UPDATE_DESIGN_BASELINE").is_some_and(|value| value == "1") {
-        write_baseline(&baseline_path, BASELINE_HEADER, &found);
-        return;
-    }
-    let baseline = read_baseline(&baseline_path);
-    let (grew, stale) = ratchet_failures(&found, &baseline, &ratchet_message);
-
-    assert!(
-        grew.is_empty(),
-        "{} file(s) gained a hard-coded colour the Theme should own.\n\
-         Read the colour from the Theme instead. If it genuinely cannot be a \
-         token, say why in a comment on the line and raise its count in {BASELINE}.\n{}",
-        grew.len(),
-        grew.join("\n"),
-    );
-    assert!(
-        stale.is_empty(),
-        "{} baseline entr(ies) in {BASELINE} are higher than the tree.\n\
-         The ratchet only moves down — lower these so the progress is kept:\n{}",
-        stale.len(),
-        stale.join("\n"),
-    );
+    theme_ratchet().check();
 }
 
-/// App and shell styling debt may only shrink. Set
-/// `UPDATE_APP_SHELL_DESIGN_BASELINE=1` only after reviewing the initial or
-/// deliberately lowered counts; CI never sets it.
+/// App and shell appearance knobs may not grow.
 #[test]
-fn app_and_shell_theme_escape_hatches_do_not_grow() {
-    let ui_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let repository = repository_root();
-    let mut files = Vec::new();
-    walk(&repository.join("apps"), &mut files);
-    walk(&repository.join("crates/session/shell/src"), &mut files);
-    assert!(
-        !files.is_empty(),
-        "cross-product audit found no files to scan"
-    );
-    files.sort();
-
-    let found = ratcheted_counts(&files, &repository);
-    let baseline_path = ui_root.join(APP_SHELL_BASELINE);
-    if std::env::var_os("UPDATE_APP_SHELL_DESIGN_BASELINE").is_some_and(|value| value == "1") {
-        write_baseline(&baseline_path, BASELINE_HEADER, &found);
-        return;
-    }
-    let baseline = read_baseline(&baseline_path);
-    let (grew, stale) = ratchet_failures(&found, &baseline, &ratchet_message);
-
-    assert!(
-        grew.is_empty(),
-        "{} app/shell file(s) gained theme-blind styling. Use shared Theme tokens.\n{}",
-        grew.len(),
-        grew.join("\n"),
-    );
-    assert!(
-        stale.is_empty(),
-        "{} app/shell baseline entr(ies) are stale. Keep the improvement by lowering {}.\n{}",
-        stale.len(),
-        APP_SHELL_BASELINE,
-        stale.join("\n"),
-    );
+fn app_and_shell_paint_knobs_do_not_grow() {
+    app_paint_ratchet().check();
 }
 
-// ===========================================================================
-// Declared edges on chrome surfaces (HIG §9.5). `border_standard` is one fixed
-// colour per theme; stroked on a raised or overlay surface it is three shades
-// from its ground on the dark preset and vanishes. Chrome derives its edges
-// (`tilo_ui::surface::{edge_on, card, separator}`, `chrome::{panel_border,
-// chrome_hairline, selection_tier}`) instead. Apps are not in this scope: §7
-// allows `border_standard` as a rule on `surfaces.base` in app content.
-
-/// Recorded counts of declared border / ramp tokens in chrome production code.
-const CHROME_BORDER_BASELINE: &str = "tests/chrome_declared_border_baseline.txt";
-
-/// The one ratcheted pattern for chrome edges, in the same shape as
-/// [`ratcheted_patterns`] so the shared counter and baseline plumbing apply.
-fn declared_border_patterns() -> Vec<(&'static str, Regex, &'static str)> {
-    vec![(
-        "declared_border",
-        Regex::new(
-            r"\.border_standard\b|\.border_strong\b|overlay_border_strong|colors\.neutral\[",
-        )
-        .unwrap(),
-        "declared border/ramp token on a chrome surface (HIG §9.5) — derive the edge with \
-         tilo_ui::surface::{edge_on, card, separator} or tilo_ui::chrome::{panel_border, \
-         chrome_hairline, selection_tier}",
-    )]
-}
-
-/// Chrome may not gain a declared edge, and a file that sheds one lowers its
-/// record in the same commit. Refresh with `UPDATE_CHROME_BORDER_BASELINE=1`
-/// only after reviewing that every change is a reduction.
+/// Chrome may not gain a declared edge.
 #[test]
 fn declared_borders_in_chrome_do_not_grow() {
-    let ui_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let repository = repository_root();
-    let mut files = Vec::new();
-    walk(&ui_root.join("src/widget"), &mut files);
-    walk(&ui_root.join("src/chrome"), &mut files);
-    for extra in ["src/surface.rs", "src/status_bubble.rs"] {
-        let path = ui_root.join(extra);
-        if path.is_file() {
-            files.push(path);
-        }
-    }
-    walk(&repository.join("crates/session/shell/src"), &mut files);
-    assert!(
-        !files.is_empty(),
-        "chrome edge audit found no files to scan"
-    );
-    files.sort();
-
-    let patterns = declared_border_patterns();
-    let found = counts_for(&files, &repository, &patterns);
-    let baseline_path = ui_root.join(CHROME_BORDER_BASELINE);
-    if std::env::var_os("UPDATE_CHROME_BORDER_BASELINE").is_some_and(|value| value == "1") {
-        write_baseline(
-            &baseline_path,
-            &[
-                "Declared border / ramp tokens on chrome surfaces (HIG §9.5).",
-                "Format: <path relative to repository root> <pattern> <count>",
-                "This is a ratchet, not approval: counts may only move down.",
-            ],
-            &found,
-        );
-        return;
-    }
-    let baseline = read_baseline(&baseline_path);
-    let message = |pattern: &str| -> String {
-        patterns
-            .iter()
-            .find(|(key, _, _)| *key == pattern)
-            .map(|(_, _, message)| (*message).to_string())
-            .unwrap_or_default()
-    };
-    let (grew, stale) = ratchet_failures(&found, &baseline, &message);
-    assert!(
-        grew.is_empty(),
-        "{} chrome file(s) gained a declared edge.\n{}",
-        grew.len(),
-        grew.join("\n"),
-    );
-    assert!(
-        stale.is_empty(),
-        "{} entr(ies) in {CHROME_BORDER_BASELINE} are higher than the tree; the ratchet only moves down:\n{}",
-        stale.len(),
-        stale.join("\n"),
-    );
+    chrome_border_ratchet().check();
 }
 
 /// The resource app framework's entry points. Each builds its launch from
@@ -512,24 +511,33 @@ fn launchers_build_on_the_shared_launch_specs() {
     // bespoke launcher silently loses that acceptance matrix, so keep the fleet on
     // `LaunchSpec` — directly or through a framework entry point that builds it —
     // unless the binary is itself an automation agent rather than a user-facing
-    // app window.
+    // app window, or a package with no window at all (a `cli` entrypoint).
     {
         let apps = repository_root().join("apps");
+        let cli_entrypoint = Regex::new(r#"(?m)^\[entrypoint\]\s*$[^\[]*?^type\s*=\s*"cli""#)
+            .expect("entrypoint pattern compiles");
         let mut missing = Vec::new();
         for entry in fs::read_dir(&apps)
             .expect("apps directory exists")
             .flatten()
         {
             let app = entry.path();
-            if !app.join("tilo-app.toml").is_file() {
+            let Ok(manifest) = fs::read_to_string(app.join("tilo-app.toml")) else {
                 continue;
-            }
+            };
             let main = app.join("src/main.rs");
-            if !main.is_file() || app.file_name().is_some_and(|name| name == "agent") {
+            if !main.is_file()
+                || app.file_name().is_some_and(|name| name == "agent")
+                || cli_entrypoint.is_match(&manifest)
+            {
                 continue;
             }
             let source = fs::read_to_string(&main).expect("app main is readable");
+            // `launch::run_or_exit` takes only a `&LaunchSpec`, so calling it
+            // is the shared launcher even when the spec comes from a library
+            // function rather than being named here.
             let launched = source.contains("LaunchSpec")
+                || source.contains("launch::run_or_exit(")
                 || FRAMEWORK_LAUNCHERS
                     .iter()
                     .any(|entry| source.contains(entry));

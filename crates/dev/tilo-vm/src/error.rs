@@ -42,6 +42,46 @@ pub fn no_disk_help(local_build: Option<&str>) -> String {
     )
 }
 
+/// How a dial over the peer network failed, from `tilo-device-admin dial`'s
+/// exit status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerFailure {
+    /// No answer: offline, asleep, or no relay in common (2).
+    Unreachable,
+    /// The device refused this machine (3).
+    Refused,
+    /// Another device answered at the recorded endpoint (4).
+    OtherDevice,
+    /// This machine is not enrolled (5).
+    NotEnrolled,
+    /// Anything else.
+    Failed,
+}
+
+impl PeerFailure {
+    pub fn from_exit(code: Option<i32>) -> Self {
+        match code {
+            Some(2) => Self::Unreachable,
+            Some(3) => Self::Refused,
+            Some(4) => Self::OtherDevice,
+            Some(5) => Self::NotEnrolled,
+            _ => Self::Failed,
+        }
+    }
+}
+
+impl std::fmt::Display for PeerFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unreachable => "it did not answer",
+            Self::Refused => "it refused this machine",
+            Self::OtherDevice => "another device answered for it",
+            Self::NotEnrolled => "this machine cannot dial it",
+            Self::Failed => "the dial failed",
+        })
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
     #[error("no VM selected")]
@@ -52,12 +92,41 @@ pub enum CliError {
         registry: String,
         known: Vec<String>,
     },
+    #[error("--target {target} conflicts with target {name}; name one development target")]
+    TargetConflict { target: String, name: String },
     #[error("{path}: {detail}")]
     Config { path: String, detail: String },
     #[error("not inside a git worktree, so there is no default slot")]
     NotInWorktree,
     #[error("branch '{branch}' does not make a usable slot name")]
     SlotName { branch: String },
+    #[error("device '{vm}' does not answer at {address} ({detail}){lookup}: it is asleep or gone")]
+    DeviceAsleep {
+        vm: String,
+        address: String,
+        detail: String,
+        /// What the lookup by name found, e.g. `, and yoga.local does not resolve`.
+        lookup: String,
+        /// Whether a MAC is recorded, so `vm wake` can send its magic packet.
+        wakeable: bool,
+    },
+    #[error("device '{vm}' is not on this network, and {failure} over the peer network: {detail}")]
+    PeerRoute {
+        vm: String,
+        failure: PeerFailure,
+        /// What `tilo-device-admin dial` said.
+        detail: String,
+    },
+    #[error("this machine is not enrolled to administer devices: {detail}")]
+    NotEnrolledAdmin { detail: String },
+    #[error("sent {vm}'s magic packet ({sent}), but it did not answer within {seconds}s")]
+    WakeTimeout {
+        vm: String,
+        sent: String,
+        seconds: u64,
+        /// What the device reported about its wake setting when last reached.
+        wake: Option<String>,
+    },
     #[error("cannot reach VM '{vm}' over SSH: {detail}")]
     Unreachable {
         vm: String,
@@ -80,6 +149,14 @@ pub enum CliError {
         install: String,
         /// Whether the adapter passed the key as a credential at creation.
         credentials: bool,
+    },
+    #[error("{user} on '{vm}' cannot run commands as root without a password (sudo -n: {detail})")]
+    SudoRefused {
+        vm: String,
+        /// `<user>@<host>[:<port>]`, as `vm add-device --ssh` takes it.
+        ssh: String,
+        user: String,
+        detail: String,
     },
     #[error("tilo-vm speaks protocol {client} but the VM's tilo-vmd speaks {daemon}")]
     ProtocolMismatch {
@@ -116,7 +193,7 @@ pub enum CliError {
     },
     #[error("this host is {host} but the VM would be {requested}")]
     ArchMismatch { host: String, requested: String },
-    #[error("{place} has {free} free, below the {floor} floor")]
+    #[error("not enough space on {place}: {free} is free, and tilo-vm keeps at least {floor} free")]
     LowDisk {
         place: String,
         free: String,
@@ -163,7 +240,7 @@ pub enum CliError {
     VmRunning { vm: String },
     #[error("the VM disk {path} already exists")]
     DiskExists { path: String },
-    #[error("{place} has {free} free, but {what} needs {needed}")]
+    #[error("not enough space on {place}: {what} needs {needed}, {free} is free")]
     NoSpace {
         place: String,
         free: String,
@@ -261,12 +338,42 @@ impl CliError {
                 known.first().map_or("", String::as_str),
                 known.join(", ")
             ),
+            Self::TargetConflict { target, name } => format!(
+                "use --target {target} without a positional target, or omit --target and use {name}"
+            ),
             Self::Config { path, .. } => format!("fix or remove {path}; tilo-vm doctor re-checks it"),
             Self::NotInWorktree => "name the slot explicitly, e.g. tilo-vm swap --slot my-slot shell".into(),
             Self::SlotName { .. } => {
                 "name the slot explicitly (1-28 lowercase letters, digits, dashes), e.g. tilo-vm slot create my-slot"
                     .into()
             }
+            Self::DeviceAsleep { vm, wakeable: true, .. } => format!(
+                "wake it: tilo-vm vm wake {vm}   (its magic packet, sent from this machine on its LAN; vm status says whether that can wake it)   |   or at its power button, then tilo-vm vm status {vm}. Next time keep it from sleeping: tilo-vm vm awake {vm} --for 2h"
+            ),
+            Self::DeviceAsleep { vm, wakeable: false, .. } => format!(
+                "wake it at its power button or keyboard, then tilo-vm vm status {vm}: that records its MAC and hostname, so a new address is found by name. Next time keep it from sleeping: tilo-vm vm awake {vm} --for 2h"
+            ),
+            Self::PeerRoute { vm, failure: PeerFailure::Unreachable, .. } => format!(
+                "it is asleep, offline, or cannot reach a relay: wake it (at the machine, or tilo-vm vm wake {vm} from its LAN), check its network, then rerun. Next time keep it from sleeping: tilo-vm vm awake {vm} --for 2h"
+            ),
+            Self::PeerRoute { failure: PeerFailure::Refused, .. } => {
+                "the device said why above; fix that, then rerun (enrolling this machine is tilo-vm vm enrol-admin)".into()
+            }
+            Self::PeerRoute { vm, failure: PeerFailure::OtherDevice, .. } => format!(
+                "the recorded route is stale: on its LAN, tilo-vm vm status {vm} records it again"
+            ),
+            Self::PeerRoute { failure: PeerFailure::NotEnrolled, .. } | Self::NotEnrolledAdmin { .. } => {
+                "enrol this machine as one of the owner's devices: tilo-vm vm enrol-admin --via <the device that holds the identity>   (tilo-vm guide devices, \"Beyond the LAN\")".into()
+            }
+            Self::PeerRoute { vm, failure: PeerFailure::Failed, .. } => format!(
+                "rerun with the device on its LAN (tilo-vm vm status {vm}); tilo-device-admin dial --help shows the route by hand"
+            ),
+            Self::WakeTimeout { vm, wake: Some(wake), .. } => format!(
+                "it reported: {wake}. Someone has to wake it at the machine; tilo-vm vm status {vm} tells when it answers, and tilo-vm vm awake {vm} --for 2h keeps it from sleeping again"
+            ),
+            Self::WakeTimeout { vm, wake: None, .. } => format!(
+                "a magic packet wakes a machine only when its network interface keeps listening in suspend (Ethernet Wake-on-LAN, enabled); someone has to wake it at the machine, then tilo-vm vm status {vm} records what it can do, and tilo-vm vm awake {vm} --for 2h keeps it from sleeping again"
+            ),
             Self::Unreachable { vm, debug, .. } => {
                 let mut hint =
                     format!("tilo-vm vm start {vm}   (is it running?)   then   tilo-vm doctor");
@@ -281,6 +388,9 @@ impl CliError {
             ),
             Self::RootKeyRefused { install, .. } => format!(
                 "this hypervisor has no credential channel, so root's key is installed once after the first boot, with the dev account's password from os/account.env (tester, tilo): {install}"
+            ),
+            Self::SudoRefused { vm, ssh, user, .. } => format!(
+                "tilo-vm runs tilo-vmd and its own commands as root, through sudo when it logs in as {user}; allow that once, typing {user}'s password on this terminal: tilo-vm vm add {vm} --ssh {ssh} --grant-sudo   (or log in as root: --ssh root@<host>)"
             ),
             Self::DaemonMissing { vm, bootc: Some(true) } => format!(
                 "move the VM onto a dev image: tilo-vm vm upgrade {vm} --image registry.tilo.so/tilo/tilo-vm:<tag>   |   or one built here: tilo-vm vm upgrade {vm} --from local"
@@ -385,7 +495,7 @@ impl CliError {
                 "pass another path with --disk, or delete that file if no registered VM uses it (tilo-vm vm list)".into()
             }
             Self::NoSpace { .. } => {
-                "free space on that filesystem and rerun; an interrupted download resumes".into()
+                "free space there and rerun: what was already downloaded is reused, so a retry fetches only the rest (in a VM, tilo-vm gc --dry-run shows what it can delete)".into()
             }
             Self::ForgeAuth { token: None, .. } => {
                 "export FORGEJO_TOKEN=<forge token with package read access>, or log in with fgj or tea, then rerun. Disk downloads read only these".into()
@@ -454,6 +564,7 @@ impl CliError {
         let topic = match self {
             Self::NoVm { .. } => "quickstart",
             Self::UnknownVm { .. }
+            | Self::TargetConflict { .. }
             | Self::Config { .. }
             | Self::ArchMismatch { .. }
             | Self::NoDiskPublished { .. }
@@ -466,6 +577,11 @@ impl CliError {
             | Self::ChecksumMismatch { .. }
             | Self::DownloadFailed { .. }
             | Self::RootKeyRefused { .. } => "platforms",
+            Self::SudoRefused { .. }
+            | Self::DeviceAsleep { .. }
+            | Self::WakeTimeout { .. }
+            | Self::PeerRoute { .. }
+            | Self::NotEnrolledAdmin { .. } => "devices",
             Self::NotInWorktree | Self::SlotName { .. } => "concepts",
             Self::Remote(error) => return error.see.clone(),
             Self::NoManifest { .. }
@@ -547,7 +663,8 @@ mod tests {
     /// does not compile until it is added here and given a hint.
     #[expect(clippy::too_many_lines, reason = "one sample per variant")]
     fn samples() -> Vec<CliError> {
-        let all = vec![
+        let all =
+            vec![
             CliError::NoVm {
                 registry: "/home/u/.config/tilo-vm/vms.toml".into(),
             },
@@ -561,6 +678,7 @@ mod tests {
                 registry: "r".into(),
                 known: vec!["dev".into()],
             },
+            CliError::TargetConflict { target: "review".into(), name: "other".into() },
             CliError::Config {
                 path: "p".into(),
                 detail: "d".into(),
@@ -599,6 +717,12 @@ mod tests {
                 key: "/cfg/keys/dev_ed25519".into(),
                 install: "ssh -t tester@vm '...'".into(),
                 credentials: false,
+            },
+            CliError::SudoRefused {
+                vm: "yoga".into(),
+                ssh: "me@10.0.0.2".into(),
+                user: "me".into(),
+                detail: "a password is required".into(),
             },
             CliError::ProtocolMismatch {
                 vm: "dev".into(),
@@ -773,6 +897,60 @@ mod tests {
             CliError::Busy {
                 what: "the VM".into(),
             },
+            CliError::DeviceAsleep {
+                vm: "yoga".into(),
+                address: "10.0.0.223".into(),
+                detail: "No route to host".into(),
+                lookup: ", and yoga.local does not find it elsewhere".into(),
+                wakeable: true,
+            },
+            CliError::DeviceAsleep {
+                vm: "opi".into(),
+                address: "10.0.0.108".into(),
+                detail: "timed out".into(),
+                lookup: ", and no hostname is recorded to look it up by".into(),
+                wakeable: false,
+            },
+            CliError::NotEnrolledAdmin {
+                detail: "no device key".into(),
+            },
+            CliError::PeerRoute {
+                vm: "yoga".into(),
+                failure: PeerFailure::Unreachable,
+                detail: "no answer within 15s".into(),
+            },
+            CliError::PeerRoute {
+                vm: "yoga".into(),
+                failure: PeerFailure::Refused,
+                detail: "NotAdministrator: ...".into(),
+            },
+            CliError::PeerRoute {
+                vm: "yoga".into(),
+                failure: PeerFailure::OtherDevice,
+                detail: "device ab answered instead".into(),
+            },
+            CliError::PeerRoute {
+                vm: "yoga".into(),
+                failure: PeerFailure::NotEnrolled,
+                detail: "no certificate".into(),
+            },
+            CliError::PeerRoute {
+                vm: "yoga".into(),
+                failure: PeerFailure::Failed,
+                detail: "?".into(),
+            },
+            CliError::WakeTimeout {
+                vm: "yoga".into(),
+                sent: "for 02:11:22:33:44:55 to 255.255.255.255:9".into(),
+                seconds: 150,
+                wake: Some("Wi-Fi WoWLAN on wlan0 is supported but disabled".into()),
+            },
+            CliError::WakeTimeout {
+                vm: "opi".into(),
+                sent: "for aa:bb:cc:00:11:22 to 255.255.255.255:9".into(),
+                seconds: 150,
+                wake: None,
+            },
             CliError::InvalidInput("bad".into()),
             CliError::UnknownAppSet {
                 set: "x".into(),
@@ -846,13 +1024,19 @@ mod tests {
                 | CliError::ImageRefused { .. }
                 | CliError::BaseOlder { .. }
                 | CliError::UnknownVm { .. }
+                | CliError::TargetConflict { .. }
                 | CliError::Config { .. }
                 | CliError::NotInWorktree
                 | CliError::SlotName { .. }
                 | CliError::Unreachable { .. }
+                | CliError::DeviceAsleep { .. }
+                | CliError::PeerRoute { .. }
+                | CliError::NotEnrolledAdmin { .. }
+                | CliError::WakeTimeout { .. }
                 | CliError::DaemonMissing { .. }
                 | CliError::NotBootc { .. }
                 | CliError::RootKeyRefused { .. }
+                | CliError::SudoRefused { .. }
                 | CliError::ProtocolMismatch { .. }
                 | CliError::Remote(_)
                 | CliError::ToolMissing { .. }

@@ -28,7 +28,7 @@ impl Fixture {
             crate::shell::state::WorkspaceId(91),
             "Agents' machine",
         );
-        workspace.owner = Some(crate::shell::state::local_user_id_for_room(&workspace.room));
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
         tree.desktop.workspaces.push(workspace);
         tree.set_active(crate::shell::state::WorkspaceId(91));
         let frame_builder = FrameBuilder::with_handle(tree.shared(), false, (800, 600));
@@ -131,6 +131,40 @@ impl Fixture {
                     tabs: vec![tab],
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
+                });
+            }
+            chrome.bump();
+        });
+        self.frame_builder.relayout();
+    }
+
+    /// Open `app_id`'s window, a Wayland client's tab, in `strip`.
+    fn add_app_window(&mut self, strip: u64, app_id: &str, surface_id: u64) {
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth, next_id};
+        self.frame_builder.with_chrome(|chrome| {
+            {
+                let mut tree = chrome.tree_mut();
+                let strip = tree
+                    .desktop
+                    .active_workspace_mut()
+                    .and_then(|ws| ws.strips.iter_mut().find(|s| s.id.0 == strip))
+                    .expect("the strip");
+                let tab = Tab {
+                    id: next_id(),
+                    title: app_id.into(),
+                    tile: TileContent::Foreign {
+                        app_id: app_id.into(),
+                        surface_id,
+                    },
+                };
+                strip.window_groups.push(WindowGroup {
+                    id: next_id(),
+                    active_tab: tab.id,
+                    tabs: vec![tab],
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                    focus_history: Vec::new(),
                 });
             }
             chrome.bump();
@@ -430,4 +464,83 @@ fn a_crop_keeps_exactly_the_viewport_pixels() {
     assert_eq!(red, vec![5, 6, 9, 10]);
     let (w, h, _) = crop_rgba(&frame, (4, 3), Rect::new(3.0, 2.0, 9.0, 9.0));
     assert_eq!((w, h), (1, 1), "clamped to the frame");
+}
+
+#[test]
+fn an_agent_aimed_at_a_window_acts_in_its_pixels() {
+    const SURFACE: u64 = 0x00A9_E17A;
+    let mut fx = Fixture::new();
+    let (strip_a, _) = fx.seat("a");
+    fx.add_app_window(strip_a, "so.example.paint", SURFACE);
+    let placed = foreign::store()
+        .placement(SURFACE)
+        .expect("the window is laid out");
+
+    let reply = fx.send(
+        "a",
+        serde_json::json!({"op":"agent_seat","window":"so.example.paint"}),
+    );
+    let answer = &reply["answer"];
+    assert_eq!(answer["window"], "so.example.paint", "{reply}");
+    let viewport: [f64; 4] = serde_json::from_value(answer["viewport"].clone()).expect("viewport");
+    let shown = foreign::store().placement(SURFACE).expect("still laid out");
+    assert_eq!(
+        viewport,
+        [shown.x0, shown.y0, shown.width(), shown.height()],
+        "the window's own rect, not the screen (it was {placed:?} before)"
+    );
+    assert!(viewport[0] > 0.0 || viewport[1] > 0.0, "{viewport:?}");
+
+    fx.ok(
+        "a",
+        serde_json::json!({"op":"pointer_move","x":3.0,"y":4.0,"window":"so.example.paint"}),
+    );
+    assert_eq!(
+        fx.state.client_input.cursor(),
+        (viewport[0] + 3.0, viewport[1] + 4.0),
+        "coordinates count from the window's top-left"
+    );
+    let outside = fx.send(
+        "a",
+        serde_json::json!({"op":"click_at","x":viewport[2] + 1.0,"y":1.0,"window":"so.example.paint"}),
+    );
+    assert_eq!(outside["err"]["code"], "outside_viewport", "{outside}");
+    assert!(
+        outside["err"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("so.example.paint's window")),
+        "{outside}"
+    );
+
+    let unknown = fx.send(
+        "a",
+        serde_json::json!({"op":"agent_seat","window":"so.example.missing"}),
+    );
+    assert_eq!(unknown["err"]["code"], "unknown_window", "{unknown}");
+    assert!(
+        unknown["err"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("so.example.paint")),
+        "the refusal names the windows there are: {unknown}"
+    );
+
+    let busy = fx.send(
+        "b",
+        serde_json::json!({"op":"agent_seat","window":"so.example.paint"}),
+    );
+    assert_eq!(
+        busy["err"]["code"], "window_busy",
+        "a's strip stays a's: {busy}"
+    );
+    fx.ok("a", serde_json::json!({"op":"agent_leave"}));
+    let reply = fx.send(
+        "b",
+        serde_json::json!({"op":"agent_seat","window":"so.example.paint"}),
+    );
+    let strip_b = reply["answer"]["strip"].as_u64();
+    assert_eq!(
+        strip_b,
+        Some(strip_a),
+        "once a left, b may work in its window"
+    );
 }

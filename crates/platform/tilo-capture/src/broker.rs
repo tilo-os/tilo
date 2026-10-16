@@ -15,23 +15,29 @@
 //! such an app, so its code is the same wherever it runs.
 
 use std::collections::VecDeque;
-use std::io::{self, Read as _, Write as _};
-use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
+use std::io::{self, IoSlice, IoSliceMut, Read as _, Write as _};
+use std::mem::MaybeUninit;
+use std::os::fd::{AsFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::net::{UnixDatagram, UnixStream};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+
+use rustix::io::Errno;
+use rustix::net::{
+    RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendAncillaryBuffer,
+    SendAncillaryMessage, SendFlags,
+};
 
 use crate::{
     AudioCapture, AudioSource, CameraRequest, CaptureError, CaptureState, DeviceKind, Frame,
     MAX_BUFFERED_SAMPLES, MicrophoneRequest, VideoCapture, VideoSource, valid_rgba_frame,
 };
+use tilo_lock::MutexRecover as _;
 
 /// The inherited control socket, as a descriptor number.
 pub const CAPTURE_FD_ENV: &str = "TILO_SVC_CAPTURE_FD";
 
 const MAX_REQUEST: usize = 512;
-/// One descriptor's worth of `SCM_RIGHTS` data.
-const FD_BYTES: u32 = 4;
 const MAX_REASON: u32 = 4096;
 const MAX_AUDIO_SAMPLES: u32 = 1 << 20;
 /// How long a stream waits for a frame before checking its grant again.
@@ -170,48 +176,20 @@ fn invalid(what: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what)
 }
 
-/// `msghdr::msg_controllen` for a control buffer of `space` bytes: a
-/// `usize` on Linux, a `socklen_t` elsewhere.
-#[cfg(target_os = "linux")]
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "only the socklen_t targets can fail; callers share one signature"
-)]
-fn control_len(space: usize) -> io::Result<usize> {
-    Ok(space)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn control_len(space: usize) -> io::Result<libc::socklen_t> {
-    libc::socklen_t::try_from(space).map_err(|_| invalid("control buffer"))
-}
-
 /// Send `bytes` with `fd` attached.
 fn send_with_fd(socket: &UnixDatagram, bytes: &[u8], fd: &OwnedFd) -> io::Result<()> {
-    let mut iov = libc::iovec {
-        iov_base: bytes.as_ptr().cast_mut().cast(),
-        iov_len: bytes.len(),
-    };
-    // SAFETY: CMSG_SPACE is a pure size computation.
-    let space = unsafe { libc::CMSG_SPACE(FD_BYTES) } as usize;
-    let mut control = vec![0_u8; space];
-    // SAFETY: `msg` points at `iov` and `control`, which outlive the call;
-    // the control buffer is sized by CMSG_SPACE for exactly one descriptor.
-    unsafe {
-        let mut msg: libc::msghdr = std::mem::zeroed();
-        msg.msg_iov = &raw mut iov;
-        msg.msg_iovlen = 1;
-        msg.msg_control = control.as_mut_ptr().cast();
-        msg.msg_controllen = control_len(space)?;
-        let cmsg = libc::CMSG_FIRSTHDR(&raw const msg);
-        (*cmsg).cmsg_level = libc::SOL_SOCKET;
-        (*cmsg).cmsg_type = libc::SCM_RIGHTS;
-        (*cmsg).cmsg_len = libc::CMSG_LEN(FD_BYTES) as _;
-        std::ptr::write_unaligned(libc::CMSG_DATA(cmsg).cast::<libc::c_int>(), fd.as_raw_fd());
-        if libc::sendmsg(socket.as_raw_fd(), &raw const msg, 0) < 0 {
-            return Err(io::Error::last_os_error());
-        }
+    let fds = [fd.as_fd()];
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+    let mut control = SendAncillaryBuffer::new(&mut space);
+    if !control.push(SendAncillaryMessage::ScmRights(&fds)) {
+        return Err(invalid("control buffer"));
     }
+    rustix::net::sendmsg(
+        socket,
+        &[IoSlice::new(bytes)],
+        &mut control,
+        SendFlags::empty(),
+    )?;
     Ok(())
 }
 
@@ -219,45 +197,38 @@ fn send_with_fd(socket: &UnixDatagram, bytes: &[u8], fd: &OwnedFd) -> io::Result
 /// when the peer closed the socket.
 fn recv_with_fd(socket: &UnixDatagram) -> io::Result<Option<(Vec<u8>, Option<OwnedFd>)>> {
     let mut bytes = vec![0_u8; MAX_REQUEST];
-    let mut iov = libc::iovec {
-        iov_base: bytes.as_mut_ptr().cast(),
-        iov_len: bytes.len(),
+    let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+    let mut control = RecvAncillaryBuffer::new(&mut space);
+    #[cfg(target_os = "linux")]
+    let flags = RecvFlags::CMSG_CLOEXEC;
+    #[cfg(not(target_os = "linux"))]
+    let flags = RecvFlags::empty();
+    let received = match rustix::net::recvmsg(
+        socket,
+        &mut [IoSliceMut::new(&mut bytes)],
+        &mut control,
+        flags,
+    ) {
+        Ok(received) => received,
+        // A datagram peer that closed reads as a reset on macOS.
+        Err(Errno::CONNRESET | Errno::NOTCONN) => return Ok(None),
+        Err(error) => return Err(error.into()),
     };
-    // SAFETY: CMSG_SPACE is a pure size computation.
-    let space = unsafe { libc::CMSG_SPACE(FD_BYTES) } as usize;
-    let mut control = vec![0_u8; space];
-    // SAFETY: as in `send_with_fd`; a descriptor the kernel attached is
-    // owned from here on, and any other control message is ignored.
-    unsafe {
-        let mut msg: libc::msghdr = std::mem::zeroed();
-        msg.msg_iov = &raw mut iov;
-        msg.msg_iovlen = 1;
-        msg.msg_control = control.as_mut_ptr().cast();
-        msg.msg_controllen = control_len(space)?;
-        let read = libc::recvmsg(socket.as_raw_fd(), &raw mut msg, 0);
-        if read < 0 {
-            let error = io::Error::last_os_error();
-            // A datagram peer that closed reads as a reset on macOS.
-            return match error.raw_os_error() {
-                Some(libc::ECONNRESET | libc::ENOTCONN) => Ok(None),
-                _ => Err(error),
-            };
-        }
-        if read == 0 && msg.msg_controllen == 0 {
-            return Ok(None);
-        }
-        let mut fd = None;
-        let cmsg = libc::CMSG_FIRSTHDR(&raw const msg);
-        if !cmsg.is_null()
-            && (*cmsg).cmsg_level == libc::SOL_SOCKET
-            && (*cmsg).cmsg_type == libc::SCM_RIGHTS
+    // A descriptor the kernel attached is owned from here on; any other
+    // control message is ignored.
+    let mut fd = None;
+    for message in control.drain() {
+        if let RecvAncillaryMessage::ScmRights(mut fds) = message
+            && fd.is_none()
         {
-            let raw = std::ptr::read_unaligned(libc::CMSG_DATA(cmsg).cast::<libc::c_int>());
-            fd = Some(OwnedFd::from_raw_fd(raw));
+            fd = fds.next();
         }
-        bytes.truncate(usize::try_from(read).unwrap_or(0));
-        Ok(Some((bytes, fd)))
     }
+    if received.bytes == 0 && fd.is_none() {
+        return Ok(None);
+    }
+    bytes.truncate(received.bytes);
+    Ok(Some((bytes, fd)))
 }
 
 /// Whether a device may be captured for the app a control socket serves.
@@ -528,14 +499,14 @@ fn receive(stream: &mut UnixStream, shared: &Mutex<Received>) {
                 true,
             ),
             Ok(Some(Record::Video(frame))) => {
-                shared.lock().unwrap_or_else(PoisonError::into_inner).latest = Some(frame);
+                shared.lock_recover().latest = Some(frame);
                 (None, false)
             }
             Ok(Some(Record::Audio {
                 sample_rate,
                 samples,
             })) => {
-                let mut received = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                let mut received = shared.lock_recover();
                 received.sample_rate = sample_rate;
                 received.samples.extend(samples);
                 let excess = received.samples.len().saturating_sub(MAX_BUFFERED_SAMPLES);
@@ -556,7 +527,7 @@ fn receive(stream: &mut UnixStream, shared: &Mutex<Received>) {
             ),
         };
         if let Some(state) = state {
-            shared.lock().unwrap_or_else(PoisonError::into_inner).state = state;
+            shared.lock_recover().state = state;
         }
         if done {
             return;
@@ -566,7 +537,7 @@ fn receive(stream: &mut UnixStream, shared: &Mutex<Received>) {
 
 impl Brokered {
     fn received(&self) -> std::sync::MutexGuard<'_, Received> {
-        self.received.lock().unwrap_or_else(PoisonError::into_inner)
+        self.received.lock_recover()
     }
 }
 

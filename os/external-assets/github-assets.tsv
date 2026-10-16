@@ -1,4 +1,10 @@
 # sha256<TAB>filename<TAB>versioned upstream URL
+# Signal's optional provider runtime (os/external-assets/signal-runtime.json).
+ccd408e831eff7e41ebaaf309704840bb00d78a7869f35ad700dbae5b5a5bb65	signal-cli-0.14.8.tar.gz	https://github.com/AsamK/signal-cli/releases/download/v0.14.8/signal-cli-0.14.8.tar.gz
+1731a34baadec5479258ea0202e4d5d865d2efeee60cb0c7d7eb056fe96ca219	OpenJDK25U-jre_x64_linux_hotspot_25.0.4.1_1.tar.gz	https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.4.1%2B1/OpenJDK25U-jre_x64_linux_hotspot_25.0.4.1_1.tar.gz
+83ee12f7a58904436f04fd9179aa1286c7e5a98d1113671b08b64aebf9865444	jdk25u-520406d871955300957ef01e406ac2acd0f9b75c-source.tar.gz	https://github.com/adoptium/jdk25u/archive/520406d871955300957ef01e406ac2acd0f9b75c.tar.gz
+8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903	signal-cli-0.14.8-LICENSE	https://raw.githubusercontent.com/AsamK/signal-cli/22b028bbb9cee8f6aa22af71c6b3e9d09028a16a/LICENSE
+ca012287f714968e5ee4b043887c9cbfe04d30572c9c76527c09ed327e6060c4	signal-cli-0.14.8-source.tar.gz	https://github.com/AsamK/signal-cli/archive/22b028bbb9cee8f6aa22af71c6b3e9d09028a16a.tar.gz
 bcfeae05557a9f313ee4392d2f335d0ff69ebbfd232019e3736fb04999fe1734	cosign-v2.5.2-linux-amd64	https://github.com/sigstore/cosign/releases/download/v2.5.2/cosign-linux-amd64
 2cbcea1873ad76274c3f241ef175d204654e3aac3e73e6ec4504e5227015cb0a	cosign-v2.5.2-linux-arm64	https://github.com/sigstore/cosign/releases/download/v2.5.2/cosign-linux-arm64
 2a2e837a2c8d59ec9af5472ee22d3b04ee463c4e44476ecf993fd1e5ab6ebc7f	syft-1.51.0-linux-amd64.tar.gz	https://github.com/anchore/syft/releases/download/v1.51.0/syft_1.51.0_linux_amd64.tar.gz
@@ -11,6 +17,11 @@ e264f0639ab775338311036f207b35cebe99bc417b016b53931ebca8b30b3d94	steam-runtime-s
 e6c213bb221f4598e7e5e35804e8066b5b49a15ca2fb685729c9cf4ad82a20b7	doubletake-ae06722.tar.gz	https://github.com/omarroth/doubletake/archive/ae067228d76df011375164814b729932ed55ca2f.tar.gz
 bfa0e96a25928cb7c9d906643e8947182ad124b35bcad3f0c765f4fc011c47ab	fluxcast-a74f39f.tar.gz	https://github.com/IlyaP358/fluxcast/archive/a74f39fe3f2012e20315cd37e13e9803871e587f.tar.gz
 a78c32ec651aa445a2e5fbae08b91fb046aa9c538547ada4019f9d3ada9ba4d1	joycond-0df025a.tar.gz	https://github.com/DanielOgorchock/joycond/archive/0df025ac5dc284b1f31172b6b252321ba788c4de.tar.gz
+e75e0d10752aacfcac041d88f0f5099ba60248b046f1eb135ae886a4d58019ac	bootc-fa0d3f9.tar.gz	https://github.com/bootc-dev/bootc/archive/fa0d3f9cb9a0ce3b4d1dc2607a0bf5e31b822f60.tar.gz
+# chunkah, the content-based OCI re-layering of the published OS image (os/Containerfile.rechunk):
+# the release's source and its cargo vendor tree, built offline. GitHub asset SHA-256.
+12c0101532e4c65cd63244f28ed801296df9d0a7302e3646026387f684fb690b	chunkah-0.7.1.tar.gz	https://github.com/coreos/chunkah/releases/download/v0.7.1/chunkah-0.7.1.tar.gz
+56c73d1003f6c88fb8467434563a25ce65aa2125331b9d258202de3239dee328	chunkah-0.7.1-vendor.tar.gz	https://github.com/coreos/chunkah/releases/download/v0.7.1/chunkah-0.7.1-vendor.tar.gz
 67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006	sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz	https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
 821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77	sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz	https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-aarch64-unknown-linux-musl.tar.gz
 d15d7e476feec78d0ec9edc27b8f77279ec7a3e6227756e7036e5cd2066800f4	wasm-bindgen-0.2.108-x86_64-unknown-linux-musl.tar.gz	https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.108/wasm-bindgen-0.2.108-x86_64-unknown-linux-musl.tar.gz
@@ -21,9 +32,6 @@ ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0	appimagetool-1.
 f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158	appimagetool-1.9.1-aarch64.AppImage	https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-aarch64.AppImage
 2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d	type2-runtime-20251108-x86_64	https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
 00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444	type2-runtime-20251108-aarch64	https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-aarch64
-c880fa8d607b2aa6eadde7d6d6302b1396ebc38368fe2332fa20e193c7ee1420	libwpe-1.16.3.tar.xz	https://wpewebkit.org/releases/libwpe-1.16.3.tar.xz
-544ae14012f8e7e426b8cb522eb0aaaac831ad7c35601d1cf31d37670e0ebb3b	wpebackend-fdo-1.16.1.tar.xz	https://wpewebkit.org/releases/wpebackend-fdo-1.16.1.tar.xz
-b2bafef2751625b7fdf530f230ff0f542ff0eeba3590c3a989d931b2a55c858e	wpewebkit-2.52.6.tar.xz	https://wpewebkit.org/releases/wpewebkit-2.52.6.tar.xz
 e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118	doubletake-ae06722-LICENSE	https://raw.githubusercontent.com/omarroth/doubletake/ae067228d76df011375164814b729932ed55ca2f/LICENSE
 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986	fluxcast-a74f39f-LICENSE	https://raw.githubusercontent.com/IlyaP358/fluxcast/a74f39fe3f2012e20315cd37e13e9803871e587f/LICENSE
 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986	joycond-0df025a-LICENSE	https://raw.githubusercontent.com/DanielOgorchock/joycond/0df025ac5dc284b1f31172b6b252321ba788c4de/LICENSE
@@ -46,3 +54,14 @@ a5cb1a6ded7d2d7e92d550ba28edd21be2d1d4044662b399887351023e30ce64	dxvk-c3dd74b-LI
 # ARM LSE atomics unavailable on the Graviton 1 native CI hosts.
 4c999e19ffa31afa5aa429c679b665d5e2ca5a6b6832ad4b79668e8dcf3d8ec1	mold-2.40.4-x86_64-linux.tar.gz	https://github.com/rui314/mold/releases/download/v2.40.4/mold-2.40.4-x86_64-linux.tar.gz
 c799b9ccae8728793da2186718fbe53b76400a9da396184fac0c64aa3298ec37	mold-2.40.4-aarch64-linux.tar.gz	https://github.com/rui314/mold/releases/download/v2.40.4/mold-2.40.4-aarch64-linux.tar.gz
+3167956a7b2cffc4cfcaf6a282b95728c529eebef18a5d9e6d9ff32de32cc67c	brcmfmac43456-sdio-30d86fc.bin	https://raw.githubusercontent.com/armbian/firmware/30d86fc98f1bac54d4be7046c828a14e588f6fff/brcm/brcmfmac43456-sdio.bin
+2dbd7d22fc9af0eb560ceab45b19646d211bc7b34a1dd00c6bfac5dd6ba25e8a	brcmfmac43456-sdio-30d86fc.clm_blob	https://raw.githubusercontent.com/armbian/firmware/30d86fc98f1bac54d4be7046c828a14e588f6fff/brcm/brcmfmac43456-sdio.clm_blob
+66c71eb53b47c49d42386b66735134578640b0946f3f46e44f384fef5aacfd9e	brcmfmac43456-sdio-67ccb55.txt	https://raw.githubusercontent.com/armbian/firmware/67ccb5550b2aa460212d09403c706b1d962b388e/brcm/brcmfmac43456-sdio.txt
+# The browser engine: CEF's pinned minimal Linux distributions (scripts/browser/cef-lock.json).
+daf8c2b6e63787d6a91d666205a8a4521419937eabaf47723738c86aea7135bd	cef-152.0.7977.83-linux64-minimal.tar.bz2	https://cef-builds.spotifycdn.com/cef_binary_152.0.6%2Bg708dc14%2Bchromium-152.0.7977.83_linux64_minimal.tar.bz2
+6a2448eccce01ab2495131f754a1c75a49333aa1678a95cb794dfe166cc477d2	cef-152.0.7977.83-linuxarm64-minimal.tar.bz2	https://cef-builds.spotifycdn.com/cef_binary_152.0.6%2Bg708dc14%2Bchromium-152.0.7977.83_linuxarm64_minimal.tar.bz2
+# Windows cross-builds and packaging in the CI builder (os/Containerfile.builder).
+c492c6dfb7e5ac0eee586b796e0fc950ba13077e7f0bbb046f445d71790d5360	cargo-xwin-v0.23.1.x86_64-unknown-linux-musl.tar.gz	https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.1/cargo-xwin-v0.23.1.x86_64-unknown-linux-musl.tar.gz
+dc0a0fb28fdd90405f69e7365bce91d2504ea7491eb4d79d5655ffa106358925	cargo-xwin-v0.23.1.aarch64-unknown-linux-musl.tar.gz	https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.1/cargo-xwin-v0.23.1.aarch64-unknown-linux-musl.tar.gz
+9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732	innosetup-6.7.3.exe	https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+6cf58aa080e7ff82656f320cff8d4a3bff30408df8766806dcba3740dd839fa5	jsign-7.6.jar	https://github.com/ebourg/jsign/releases/download/7.6/jsign-7.6.jar

@@ -8,7 +8,7 @@
 //! the ordinary package sandbox, the composer as the image's own executable,
 //! which the socket checks by path as well. [`super::input_method::arbitrate`]
 //! decides which of them runs, from the active input source and — through
-//! [`super::input_method::osk_wanted`] — the on-screen keyboard preference and
+//! [`super::input_method::osk_service_wanted`] — the on-screen keyboard preference and
 //! the input hardware in use. Stopping one terminates its whole process group,
 //! so an old input method cannot linger after it lost the seat.
 
@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
 
 use smithay::reexports::calloop::LoopHandle;
@@ -28,18 +27,20 @@ use smithay::wayland::socket::ListeningSocketSource;
 use settings_store::hardware::InputMethodEngine;
 
 use super::input_environment::InputEnvironment;
-use super::input_method::{InputMethodOwner, OskInput, OskPreference, TrustedInputMethod};
+use super::input_method::{InputMethodOwner, OskInput, TrustedInputMethod};
 use super::state::{ClientState, State};
 use crate::shell::state::RoomId;
+use tilo_accessibility_settings::{AccessibilitySettings, OnScreenKeyboard};
 
 const PACKAGE_ID: &str = super::state::OSK_APP_ID;
 const PACKAGE_KIND: &str = "service";
 const RETRY_BACKOFF: Duration = Duration::from_secs(5);
+const INSTALL_REFRESH: Duration = Duration::from_secs(30);
 
-pub fn osk_preference() -> OskPreference {
-    OskPreference::from_setting(
-        settings_store::load_section("accessibility").get("on_screen_keyboard"),
-    )
+/// The on-screen keyboard preference in `settings`.
+pub fn osk_preference(settings: &settings_store::live::Snapshot) -> OnScreenKeyboard {
+    AccessibilitySettings::from_section(&settings.section(tilo_accessibility_settings::SECTION))
+        .on_screen_keyboard
 }
 
 /// What one service should be running: the owner it serves and, for the
@@ -68,10 +69,24 @@ pub struct InputMethodService {
     /// Whether the current launch's process is alive. A fresh flag per
     /// launch, so a stopping predecessor can never mark its successor dead.
     running: Arc<AtomicBool>,
+    /// A revoked predecessor must finish bounded group termination before
+    /// another launch can acquire this socket's authority.
+    stopping: Option<Arc<AtomicBool>>,
+    installed: Option<crate::shell::launcher::InstalledApp>,
     desired: Option<Request>,
     launched: Option<Request>,
-    stop: Option<Sender<()>>,
+    stop: Option<StopSignal>,
     last_attempt: Option<Instant>,
+}
+
+/// Stops the current launch when dropped. Its supervisor sleeps on this ring
+/// and the child's exit instead of waking every 150 ms to look at both.
+struct StopSignal(Arc<bounded_command::WakeFd>);
+
+impl Drop for StopSignal {
+    fn drop(&mut self) {
+        self.0.ring();
+    }
 }
 
 impl InputMethodService {
@@ -82,6 +97,8 @@ impl InputMethodService {
             accepting: Arc::new(AtomicBool::new(false)),
             process_group: Arc::new(AtomicI32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
+            stopping: None,
+            installed: None,
             desired: None,
             launched: None,
             stop: None,
@@ -123,8 +140,6 @@ impl InputMethodService {
             return;
         }
         self.desired = desired;
-        self.accepting
-            .store(self.desired.is_some(), Ordering::Release);
         self.stop_current();
         self.last_attempt = None;
         self.ensure_running();
@@ -138,16 +153,38 @@ impl InputMethodService {
         }
     }
 
+    /// Follow only the canonical installed keyboard row. Unrelated package
+    /// changes cannot restart the service or alter its input authority.
+    fn set_installed(&mut self, installed: Option<crate::shell::launcher::InstalledApp>) -> bool {
+        if self.kind != TrustedInputMethod::OnScreenKeyboard || self.installed == installed {
+            return false;
+        }
+        self.installed = installed;
+        self.stop_current();
+        self.last_attempt = None;
+        true
+    }
+
     fn stop_current(&mut self) {
+        self.accepting.store(false, Ordering::Release);
         self.process_group.store(0, Ordering::Release);
         self.launched = None;
         if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
+            self.stopping = Some(Arc::clone(&self.running));
+            drop(stop);
         }
         self.running = Arc::new(AtomicBool::new(false));
     }
 
     fn ensure_running(&mut self) {
+        if self
+            .stopping
+            .as_ref()
+            .is_some_and(|running| running.load(Ordering::Acquire))
+        {
+            return;
+        }
+        self.stopping = None;
         let Some(request) = self.desired.clone() else {
             return;
         };
@@ -167,17 +204,28 @@ impl InputMethodService {
                 return;
             }
         };
-        let (tx, rx) = channel();
-        self.stop = Some(tx);
+        let wake = match bounded_command::WakeFd::new() {
+            Ok(wake) => Arc::new(wake),
+            Err(error) => {
+                tracing::warn!(target: "tilo::input_method", kind = ?self.kind, %error, "input method stop signal unavailable");
+                return;
+            }
+        };
+        self.stop = Some(StopSignal(Arc::clone(&wake)));
         self.launched = Some(request);
-        let running = Arc::new(AtomicBool::new(false));
+        // Reserve this launch before its supervisor thread can run, so a
+        // compositor tick cannot create a duplicate while spawn is pending.
+        let running = Arc::new(AtomicBool::new(true));
         self.running = Arc::clone(&running);
+        self.accepting.store(true, Ordering::Release);
         let process_group = Arc::clone(&self.process_group);
         let kind = self.kind;
         let supervisor = std::thread::Builder::new()
             .name("tilo-input-method".to_string())
-            .spawn(move || supervise(kind, &launch, &rx, &running, &process_group));
+            .spawn(move || supervise(kind, &launch, &wake, &running, &process_group));
         if let Err(error) = supervisor {
+            self.running.store(false, Ordering::Release);
+            self.accepting.store(false, Ordering::Release);
             self.stop = None;
             self.launched = None;
             tracing::warn!(target: "tilo::input_method", %error, "could not create input method supervisor thread");
@@ -188,7 +236,11 @@ impl InputMethodService {
         match request.owner {
             InputMethodOwner::Nobody => Err("no input method requested".into()),
             InputMethodOwner::OnScreenKeyboard => {
-                let command = service_launch_command(&self.socket)?;
+                let app = self
+                    .installed
+                    .as_ref()
+                    .ok_or_else(|| format!("{PACKAGE_ID} is not installed"))?;
+                let command = service_launch_command(app, &self.socket)?;
                 Ok(Launch {
                     program: command.program,
                     args: command.args,
@@ -199,7 +251,9 @@ impl InputMethodService {
             }
             InputMethodOwner::Composer(engine) => {
                 let runtime = crate::shell::launcher::runtime_dir();
-                let config_home = runtime.join("tilo-session").join("input-method");
+                let config_home = runtime
+                    .join(tilo_paths::login::SESSION_DIR)
+                    .join("input-method");
                 let launch = super::input_method::composer_launch(
                     engine,
                     &request.layout,
@@ -230,7 +284,7 @@ impl InputMethodService {
 fn supervise(
     kind: TrustedInputMethod,
     launch: &Launch,
-    stop: &std::sync::mpsc::Receiver<()>,
+    stop: &bounded_command::WakeFd,
     running: &AtomicBool,
     process_group: &AtomicI32,
 ) {
@@ -259,6 +313,7 @@ fn supervise(
         Ok(child) => child,
         Err(error) => {
             tracing::warn!(target: "tilo::input_method", ?kind, %error, "could not start input method");
+            running.store(false, Ordering::Release);
             return;
         }
     };
@@ -269,25 +324,30 @@ fn supervise(
     let armed = process_group
         .compare_exchange(0, pgid, Ordering::AcqRel, Ordering::Acquire)
         .is_ok();
-    loop {
-        if !armed || stop.recv_timeout(Duration::from_millis(150)).is_ok() {
-            bounded_command::terminate_tree(&mut child, Duration::from_secs(1));
-            break;
+    // Sleep until the child exits or the stop signal rings (or is dropped).
+    let woke = if armed {
+        bounded_command::wait_child_or(&mut child, Some(stop.fd()), None)
+    } else {
+        Ok(bounded_command::Wakeup::Woken)
+    };
+    match woke {
+        Ok(bounded_command::Wakeup::Exited(status)) => {
+            if !status.success() {
+                tracing::warn!(target: "tilo::input_method", ?kind, ?status, "input method exited");
+            }
         }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    tracing::warn!(target: "tilo::input_method", ?kind, ?status, "input method exited");
-                }
-                break;
-            }
-            Ok(None) => {}
-            Err(error) => {
-                tracing::warn!(target: "tilo::input_method", ?kind, %error, "could not inspect input method");
-                break;
-            }
+        // Only the stop signal rings this descriptor, and there is no deadline.
+        Ok(bounded_command::Wakeup::Woken | bounded_command::Wakeup::Deadline) => {
+            bounded_command::terminate_tree(&mut child, Duration::from_secs(1));
+        }
+        Err(error) => {
+            tracing::warn!(target: "tilo::input_method", ?kind, %error, "could not inspect input method");
         }
     }
+    // Even if the launcher exited first, no descendant may retain the old
+    // package/runtime or the private display. Reap before publishing completion.
+    bounded_command::kill_tree(&mut child);
+    let _ = child.wait();
     let _ = process_group.compare_exchange(pgid, 0, Ordering::AcqRel, Ordering::Acquire);
     running.store(false, Ordering::Release);
 }
@@ -325,7 +385,7 @@ impl InputMethodSocketAuthorization {
         // SAFETY: `credentials.pid` came from the kernel's SO_PEERCRED
         // response and geteuid has no failure mode.
         let peer_group = unsafe { libc::getpgid(credentials.pid) };
-        let expected_uid = unsafe { libc::geteuid() };
+        let expected_uid = rustix::process::geteuid().as_raw();
         credential_decision(
             expected,
             expected_uid,
@@ -413,10 +473,8 @@ fn is_descendant_of(mut pid: libc::pid_t, ancestor: libc::pid_t) -> bool {
 /// The installed on-screen keyboard package, if it is a graphical service in
 /// its signed manifest.
 fn installed_osk() -> Result<crate::shell::launcher::InstalledApp, String> {
-    let app = crate::shell::launcher::read_installed_apps()
+    let app = crate::shell::launcher::installed_app(PACKAGE_ID)
         .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|app| app.package_id == PACKAGE_ID)
         .ok_or_else(|| format!("{PACKAGE_ID} is not installed"))?;
     let manifest = launcher::manifest::read_manifest(&app.manifest_path)
         .map_err(|e| format!("reading {}: {e}", app.manifest_path.display()))?;
@@ -428,11 +486,13 @@ fn installed_osk() -> Result<crate::shell::launcher::InstalledApp, String> {
     Ok(app)
 }
 
-fn service_launch_command(socket: &Path) -> Result<crate::shell::launcher::LaunchCommand, String> {
-    let app = installed_osk()?;
+fn service_launch_command(
+    app: &crate::shell::launcher::InstalledApp,
+    socket: &Path,
+) -> Result<crate::shell::launcher::LaunchCommand, String> {
     let launcher = crate::shell::launcher::resolve_launcher_bin().map_err(|e| e.to_string())?;
     Ok(crate::shell::launcher::build_launch_command(
-        &app,
+        app,
         &launcher,
         socket,
         RoomId::nil(),
@@ -451,13 +511,15 @@ pub struct InputMethodServices {
     /// The saved settings the owner follows, re-read by [`Self::reload`].
     primary_layout: String,
     engine: Option<InputMethodEngine>,
-    osk_preference: OskPreference,
+    osk_preference: OnScreenKeyboard,
     /// Whether the on-screen keyboard package can run at all. Without it an
     /// automatic keyboard must never take the seat, or nothing would answer
     /// the focused field.
     osk_installed: bool,
     /// The input hardware facts, followed by [`Self::follow_input`].
     osk_input: OskInput,
+    installed_epoch: u64,
+    installed_checked: Instant,
 }
 
 impl InputMethodServices {
@@ -508,50 +570,67 @@ impl InputMethodServices {
             sockets,
             primary_layout: "us".to_string(),
             engine: None,
-            osk_preference: OskPreference::default(),
+            osk_preference: OnScreenKeyboard::default(),
             osk_installed: false,
             osk_input: OskInput::default(),
+            installed_epoch: crate::shell::launcher::installed_apps_epoch(),
+            installed_checked: Instant::now(),
         }
     }
 
     /// Re-read the preferences that decide the owner and apply the decision.
-    pub fn reload(&mut self, state: &mut State) {
-        let input = settings_store::hardware::RichInputConfig::from_section(
-            &settings_store::load_section("input"),
+    pub fn reload(&mut self, state: &mut State, settings: &settings_store::live::Snapshot) {
+        self.reload_for_scope(
+            state,
+            settings,
+            &settings_store::keyboard_sources::active_scope(),
         );
+    }
+
+    pub fn reload_for_scope(
+        &mut self,
+        state: &mut State,
+        settings: &settings_store::live::Snapshot,
+        scope: &str,
+    ) {
+        let input =
+            settings_store::hardware::RichInputConfig::from_section(&settings.section("input"));
+        let input = settings_store::keyboard_sources::effective(&input, scope);
         self.primary_layout = input
             .sources()
             .first()
             .map_or_else(|| "us".to_string(), |source| source.id.clone());
         self.engine = input.active_input_method();
-        self.osk_preference = osk_preference();
-        self.osk_installed = self.has(TrustedInputMethod::OnScreenKeyboard)
-            && match installed_osk() {
-                Ok(_) => true,
-                Err(error) => {
-                    tracing::debug!(target: "tilo::input_method", %error, "on-screen keyboard unavailable");
-                    false
-                }
-            };
+        self.osk_preference = osk_preference(settings);
+        self.refresh_installed(state);
         self.apply(state);
     }
 
     /// Follow the input hardware in use. Only a change in whether the
-    /// on-screen keyboard is wanted re-arbitrates the seat.
+    /// on-screen keyboard should run re-arbitrates the seat; typing and
+    /// touching merely hide and show it (see [`Self::osk_shown`]).
     pub fn follow_input(&mut self, state: &mut State, input: &InputEnvironment) {
         let facts = OskInput::from_environment(input);
         if facts == self.osk_input {
             return;
         }
-        let before = self.osk_wanted();
+        let before = self.osk_service_wanted();
         self.osk_input = facts;
-        if self.osk_wanted() != before {
+        if self.osk_service_wanted() != before {
             self.apply(state);
         }
     }
 
-    fn osk_wanted(&self) -> bool {
-        self.osk_installed && super::input_method::osk_wanted(self.osk_preference, self.osk_input)
+    fn osk_service_wanted(&self) -> bool {
+        self.osk_installed
+            && super::input_method::osk_service_wanted(self.osk_preference, self.osk_input)
+    }
+
+    /// Whether a running on-screen keyboard may be shown for the focused
+    /// field: the preference and the input used most recently allow it.
+    pub fn osk_shown(&self) -> bool {
+        self.osk_service_wanted()
+            && super::input_method::osk_wanted(self.osk_preference, self.osk_input)
     }
 
     /// Apply the ownership decision: the seat's global gate first
@@ -563,7 +642,7 @@ impl InputMethodServices {
             self.engine
                 .is_some_and(super::input_method::engine_installed)
                 && self.has(TrustedInputMethod::Composer),
-            self.osk_wanted(),
+            self.osk_service_wanted(),
         );
         if state.input_method_owner_kind() != owner.kind() {
             tracing::info!(target: "tilo::input_method", ?owner, "input method owner changed");
@@ -574,10 +653,52 @@ impl InputMethodServices {
         }
     }
 
-    pub fn tick(&mut self) {
+    fn refresh_installed(&mut self, state: &mut State) {
+        let read_epoch = crate::shell::launcher::installed_apps_epoch();
+        let installed = match installed_osk() {
+            Ok(app) => Some(app),
+            Err(error) => {
+                tracing::debug!(target: "tilo::input_method", %error, "on-screen keyboard unavailable");
+                None
+            }
+        };
+        self.osk_installed = installed.is_some() && self.has(TrustedInputMethod::OnScreenKeyboard);
+        for service in &mut self.services {
+            if service.set_installed(installed.clone())
+                && state.input_method_owner_kind() == Some(TrustedInputMethod::OnScreenKeyboard)
+            {
+                // Revoke established clients as well as the accept gate. The
+                // next client will activate the existing focused text input;
+                // neither focus nor the visibility preference is changed.
+                state.set_input_method_owner(None);
+            }
+        }
+        // If a registry change raced this read, its epoch remains pending for
+        // the next tick rather than being hidden by the fallback interval.
+        self.installed_epoch = read_epoch;
+        self.installed_checked = Instant::now();
+    }
+
+    pub fn tick(&mut self, state: &mut State) {
+        self.tick_with_steps(state, |_| {});
+    }
+
+    /// Keep the production input-phase trace tied to the actual refresh and
+    /// service calls, so a slow registry read is distinguishable from seat
+    /// arbitration or a service restart.
+    pub fn tick_with_steps(&mut self, state: &mut State, mut step: impl FnMut(&'static str)) {
+        if self.installed_epoch != crate::shell::launcher::installed_apps_epoch()
+            || self.installed_checked.elapsed() >= INSTALL_REFRESH
+        {
+            self.refresh_installed(state);
+            step("input-method-refresh");
+            self.apply(state);
+            step("input-method-apply");
+        }
         for service in &mut self.services {
             service.tick();
         }
+        step("input-method-service-ticks");
         // X11 displays connect the composer and discount its connection by
         // this group.
         super::xwayland_composer::set_composer_process_group(
@@ -586,6 +707,7 @@ impl InputMethodServices {
                 .find(|service| service.kind() == TrustedInputMethod::Composer)
                 .and_then(InputMethodService::process_group),
         );
+        step("input-method-xwayland");
     }
 
     /// The private display paths, for unlinking at teardown.
@@ -615,6 +737,316 @@ fn bind_private_display(prefix: &str) -> Result<(ListeningSocketSource, PathBuf)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write as _;
+
+    struct InstalledServiceFixture {
+        methods: InputMethodServices,
+        state: State,
+        directory: tempfile::TempDir,
+        display: smithay::reexports::wayland_server::Display<State>,
+        _event_loop: smithay::reexports::calloop::EventLoop<'static, State>,
+        _env: tilo_test_env::ScopedEnv,
+    }
+
+    impl InstalledServiceFixture {
+        fn new() -> Self {
+            let directory = tempfile::tempdir().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_RUNTIME_DIR", directory.path());
+            env.set("XDG_CONFIG_HOME", directory.path());
+            env.set("TILO_APPS_DATA_DIR", directory.path());
+            let config = directory.path().join("tilo");
+            std::fs::create_dir_all(&config).unwrap();
+            std::fs::write(
+                config.join("settings.json"),
+                r#"{"accessibility":{"on_screen_keyboard":"always"}}"#,
+            )
+            .unwrap();
+            let payload = directory.path().join("payload");
+            std::fs::create_dir_all(&payload).unwrap();
+            std::fs::write(
+                directory.path().join("registry.toml"),
+                format!(
+                    "[[entry]]\nid = '{PACKAGE_ID}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                    payload.display().to_string(),
+                    payload.join("manifest.toml").display().to_string()
+                ),
+            )
+            .unwrap();
+            let launcher = directory.path().join("launcher");
+            std::fs::write(
+                &launcher,
+                "#!/bin/sh\ntrap '' TERM\nwhile :; do sleep 30; done\n",
+            )
+            .unwrap();
+            bounded_command::make_executable(&launcher).unwrap();
+            env.set("TILO_LAUNCHER_BIN", &launcher);
+            let event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
+            let display = smithay::reexports::wayland_server::Display::new().unwrap();
+            let state = State::new(event_loop.handle(), display.handle());
+            let methods = InputMethodServices::start(&event_loop.handle());
+            let fixture = Self {
+                methods,
+                state,
+                directory,
+                display,
+                _event_loop: event_loop,
+                _env: env,
+            };
+            fixture.install("1.0.0");
+            fixture
+        }
+
+        fn install(&self, version: &str) {
+            std::fs::write(
+                self.directory.path().join("payload/manifest.toml"),
+                crate::shell::test_support::canonical_manifest(
+                    &format!("id = '{PACKAGE_ID}'\nversion = '{version}'\nkind = 'service'"),
+                    "[entrypoint]\nbin = 'bin/app'\ntype = 'gui'\n",
+                ),
+            )
+            .unwrap();
+            crate::shell::launcher::invalidate_app_cache();
+        }
+
+        fn osk(&self) -> &InputMethodService {
+            self.methods
+                .services
+                .iter()
+                .find(|service| service.kind() == TrustedInputMethod::OnScreenKeyboard)
+                .unwrap()
+        }
+    }
+
+    impl Drop for InstalledServiceFixture {
+        fn drop(&mut self) {
+            let running: Vec<_> = self
+                .methods
+                .services
+                .iter()
+                .flat_map(|service| {
+                    std::iter::once(Arc::clone(&service.running)).chain(service.stopping.clone())
+                })
+                .collect();
+            self.methods.services.clear();
+            wait_for(|| running.iter().all(|flag| !flag.load(Ordering::Acquire)));
+            crate::shell::launcher::invalidate_app_cache();
+        }
+    }
+
+    /// The fixture's settings file as the compositor's live snapshot would
+    /// hold it.
+    fn saved_settings() -> settings_store::live::Snapshot {
+        settings_store::live::Snapshot {
+            generation: 0,
+            document: settings_store::load(),
+        }
+    }
+
+    fn wait_for(mut ready: impl FnMut() -> bool) {
+        let started = Instant::now();
+        while !ready() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "bounded service transition did not finish"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn installed_keyboard_update_revokes_old_authority_before_replacement() {
+        let mut fixture = InstalledServiceFixture::new();
+        fixture
+            .methods
+            .reload(&mut fixture.state, &saved_settings());
+        wait_for(|| fixture.osk().process_group().is_some());
+        let old_group = fixture.osk().process_group().unwrap();
+        let old_running = Arc::clone(&fixture.osk().running);
+        let (server, mut client) = UnixStream::pair().unwrap();
+        let old_client = fixture
+            .state
+            .display_handle
+            .insert_client(
+                server,
+                ClientState::input_method_arc(TrustedInputMethod::OnScreenKeyboard),
+            )
+            .unwrap();
+        fixture.state.register_trusted_input_method_client(
+            &old_client,
+            TrustedInputMethod::OnScreenKeyboard,
+        );
+        fixture.install("2.0.0");
+        fixture.methods.tick(&mut fixture.state);
+        let revoked = !fixture.osk().accepting.load(Ordering::Acquire)
+            && fixture.osk().process_group().is_none();
+        // Like the compositor loop, dispatch the standard Wayland display
+        // after revocation so the backend reaps its queued client kill.
+        // wl_display.sync: display object 1, opcode 0, twelve-byte message,
+        // with new callback object 2. No application content is transmitted.
+        client
+            .write_all(
+                &[
+                    1_u32.to_ne_bytes(),
+                    (12_u32 << 16).to_ne_bytes(),
+                    2_u32.to_ne_bytes(),
+                ]
+                .concat(),
+            )
+            .unwrap();
+        fixture
+            .display
+            .dispatch_clients(&mut fixture.state)
+            .unwrap();
+        let disconnected = fixture
+            .state
+            .display_handle
+            .backend_handle()
+            .get_client_data(old_client.id())
+            .is_err();
+        // Verify the normal tick, not a Settings toggle or another service door,
+        // eventually starts the new installed generation after bounded cleanup.
+        let started = Instant::now();
+        while fixture.osk().process_group().is_none() && started.elapsed() < Duration::from_secs(5)
+        {
+            fixture.methods.tick(&mut fixture.state);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let new_group = fixture.osk().process_group();
+        let old_finished = !old_running.load(Ordering::Acquire);
+        let owner = fixture.state.input_method_owner_kind();
+        let wanted = fixture.methods.osk_shown();
+        // Capture assertions after owned cleanup so an old-baseline failure
+        // cannot leak a supervisor or a TERM-resistant fixture process.
+        drop(fixture);
+        assert!(
+            revoked,
+            "updated package must revoke the old socket before relaunch"
+        );
+        assert!(
+            disconnected,
+            "already-connected old service cannot retain the seat"
+        );
+        assert!(
+            old_finished,
+            "replacement waits for old process-group termination"
+        );
+        assert!(new_group.is_some_and(|group| group != old_group));
+        assert_eq!(owner, Some(TrustedInputMethod::OnScreenKeyboard));
+        assert!(
+            wanted,
+            "package update preserves the saved visibility preference"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn unrelated_package_update_preserves_the_current_keyboard_launch() {
+        let mut fixture = InstalledServiceFixture::new();
+        fixture
+            .methods
+            .reload(&mut fixture.state, &saved_settings());
+        wait_for(|| fixture.osk().process_group().is_some());
+        let group = fixture.osk().process_group();
+        let running = Arc::clone(&fixture.osk().running);
+        let other = fixture.directory.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(
+            other.join("manifest.toml"),
+            crate::shell::test_support::canonical_manifest(
+                "id = 'dev.tilo.other'\nversion = '1.0.0'\nkind = 'app'",
+                "[entrypoint]\nbin = 'bin/app'\ntype = 'gui'\n",
+            ),
+        )
+        .unwrap();
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(fixture.directory.path().join("registry.toml"))
+            .unwrap()
+            .write_all(
+                format!(
+                    "[[entry]]\nid = 'dev.tilo.other'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                    other.display().to_string(),
+                    other.join("manifest.toml").display().to_string()
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        crate::shell::launcher::invalidate_app_cache();
+        fixture.methods.tick(&mut fixture.state);
+        let unchanged = fixture.osk().process_group() == group
+            && Arc::ptr_eq(&fixture.osk().running, &running)
+            && fixture.osk().accepting.load(Ordering::Acquire);
+        drop(fixture);
+        assert!(
+            unchanged,
+            "another installed application must not replace or revoke the keyboard"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn another_registry_row_cannot_claim_the_keyboard_service() {
+        let mut fixture = InstalledServiceFixture::new();
+        let other = fixture.directory.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(
+            other.join("manifest.toml"),
+            crate::shell::test_support::canonical_manifest(
+                &format!("id = '{PACKAGE_ID}'\nversion = '1.0.0'\nkind = 'service'"),
+                "[entrypoint]\nbin = 'bin/app'\ntype = 'gui'\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            fixture.directory.path().join("registry.toml"),
+            format!(
+                "[[entry]]\nid = 'dev.tilo.other'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                other.display().to_string(),
+                other.join("manifest.toml").display().to_string(),
+            ),
+        )
+        .unwrap();
+        crate::shell::launcher::invalidate_app_cache();
+        fixture
+            .methods
+            .reload(&mut fixture.state, &saved_settings());
+        let unavailable = !fixture.methods.osk_installed
+            && fixture.osk().installed.is_none()
+            && fixture.state.input_method_owner_kind()
+                != Some(TrustedInputMethod::OnScreenKeyboard);
+        drop(fixture);
+        assert!(
+            unavailable,
+            "only the canonical keyboard registry row may own the seat"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn running_keyboard_supervisor_sleeps_until_stopped() {
+        let mut fixture = InstalledServiceFixture::new();
+        fixture
+            .methods
+            .reload(&mut fixture.state, &saved_settings());
+        wait_for(|| fixture.osk().process_group().is_some());
+        let running = Arc::clone(&fixture.osk().running);
+        // Let the supervisor reach its wait; the kernel truncates names to 15 bytes.
+        std::thread::sleep(Duration::from_millis(100));
+        let supervisor = tilo_test_env::idle::named_thread("tilo-input-meth");
+        let before = tilo_test_env::idle::context_switches(&supervisor);
+        std::thread::sleep(Duration::from_millis(400));
+        let idle = tilo_test_env::idle::context_switches(&supervisor).saturating_sub(before);
+        let alive = running.load(Ordering::Acquire);
+        // Dropping stops the TERM-ignoring fixture through the stop signal
+        // alone, and waits (bounded) for the supervisor to finish.
+        drop(fixture);
+        assert!(alive, "the fixture keyboard must still be running");
+        // The 150 ms stop poll this replaces switched about three times here.
+        assert_eq!(idle, 0, "an idle input method supervisor must not wake");
+        assert!(!running.load(Ordering::Acquire));
+    }
 
     #[test]
     fn losing_the_seat_closes_the_accept_gate() {
@@ -695,8 +1127,7 @@ mod tests {
 
     #[test]
     fn wrong_group_or_same_uid_sibling_is_rejected() {
-        // SAFETY: geteuid has no failure mode.
-        let uid = unsafe { libc::geteuid() };
+        let uid = rustix::process::geteuid().as_raw();
         assert!(credential_decision(4100, uid, uid, 4100, true));
         assert!(!credential_decision(4100, uid, uid, 4101, true));
         assert!(!credential_decision(4100, uid, uid, 4100, false));

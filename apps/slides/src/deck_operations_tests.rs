@@ -1,171 +1,137 @@
-//! The deck's typed operations, driven the way an agent drives them: through
-//! the tree `provide_resources` / `resolve_resource` publish and the shared
-//! action door, against a deck held as a headless participant holds it.
+//! The deck's operations, driven the way an agent drives them: one call
+//! each, on the deck or on the slide it acts on, through the door the host
+//! uses.
 
 #![allow(
     clippy::float_cmp,
     reason = "every compared number is a literal the test itself passed in, stored unchanged"
 )]
 
-use automerge::{ActorId, AutoCommit};
 use serde_json::{Value, json};
-use tilo_actions::{ActionAddress, ActionRegistry, DoorError, LocalTransport, Resource};
+use tilo_actions::DoorError;
+use ui::framework::testing::TestApp;
+use ui::tilo_resource::{Edit, Invoke};
 
-use crate::actions::{
-    self, ADD_ELEMENT, DELETE_ELEMENT, MOVE_ELEMENT, MOVE_SLIDE, RESTYLE_ELEMENT, SlidesResourceCtx,
-};
-use crate::doc::SlidesDoc;
-use crate::model::{Deck, ElementKind, TextAlign, seed_deck};
+use crate::SlidesShell;
+use crate::actions;
+use crate::deck::{Deck, mirror};
+use crate::model::{ElementKind, TextAlign, seed_deck};
 
-const AGENT: &[u8] = b"deck-operations-agent";
-
-struct Participant {
-    doc: AutoCommit,
-    registry: ActionRegistry,
+fn seeded() -> TestApp<SlidesShell> {
+    let mut app = TestApp::<SlidesShell>::new().unwrap();
+    app.invoke(Invoke::apply(&actions::replace_deck_action(&seed_deck())).unwrap())
+        .unwrap();
+    app
 }
 
-impl Participant {
-    fn new() -> Self {
-        let mut doc = AutoCommit::new();
-        SlidesDoc::seed(&mut doc, &seed_deck());
-        doc.commit();
-        doc.set_actor(ActorId::from(AGENT));
-        let mut registry = ActionRegistry::new();
-        actions::register(&mut registry);
-        Self { doc, registry }
-    }
-
-    fn deck(&self) -> Deck {
-        SlidesDoc::load(&self.doc).expect("the deck loads")
-    }
-
-    fn resources(&self) -> Vec<Resource> {
-        actions::provide_resources(&SlidesResourceCtx::from_deck(&self.deck()), &self.doc)
-    }
-
-    fn invoke(&mut self, action: &str, args: &Value) -> Result<(), DoorError> {
-        self.invoke_on("slides.deck", action, args, false)
-    }
-
-    fn invoke_on(
-        &mut self,
-        resource: &str,
-        action: &str,
-        args: &Value,
-        confirmed: bool,
-    ) -> Result<(), DoorError> {
-        let resources = self.resources();
-        let address = ActionAddress::new(resource, action);
-        let args = args.as_object().expect("arguments are an object");
-        let mut transport = LocalTransport::default();
-        let result = if confirmed {
-            tilo_actions::door::invoke_json_confirmed(
-                &mut self.doc,
-                &resources,
-                &address,
-                args,
-                tilo_actions::door::InvocationProvenance::caller(AGENT),
-                &self.registry,
-                &mut transport,
-            )
-        } else {
-            tilo_actions::door::invoke_json(
-                &mut self.doc,
-                &resources,
-                &address,
-                args,
-                tilo_actions::door::InvocationProvenance::caller(AGENT),
-                &self.registry,
-                &mut transport,
-            )
-        };
-        result.map(|_| ())
-    }
+/// The deck as the editor draws it.
+fn deck(app: &TestApp<SlidesShell>) -> crate::model::Deck {
+    mirror(&app.state())
 }
 
-fn action_ids(resource: &Resource) -> Vec<&str> {
-    resource.actions.iter().map(|a| a.id.as_str()).collect()
+fn on_slide(
+    app: &mut TestApp<SlidesShell>,
+    slide: &str,
+    action: &str,
+    args: Value,
+) -> Result<Option<Value>, DoorError> {
+    app.call_on(&actions::slide_resource_id(slide), action, args)
+}
+
+fn field_edit(app: &mut TestApp<SlidesShell>, edit: &Edit<Deck>) -> Result<(), DoorError> {
+    app.call("field-edit", json!({ "edit": edit })).map(drop)
 }
 
 #[test]
-fn the_deck_publishes_its_typed_operations_eagerly_and_by_id() {
-    let participant = Participant::new();
-    let ctx = SlidesResourceCtx::from_deck(&participant.deck());
-    let eager = actions::provide_resources(&ctx, &participant.doc);
-    let resolved = actions::resolve_resource(&ctx, "slides.deck").expect("the deck resolves");
-    for deck in [&eager[0], &resolved] {
-        let ids = action_ids(deck);
-        for id in [
-            ADD_ELEMENT,
-            MOVE_ELEMENT,
-            RESTYLE_ELEMENT,
-            DELETE_ELEMENT,
-            MOVE_SLIDE,
-            ui::tilo_resource::APPLY,
-            ui::tilo_resource::GROUP,
-            // The existing tree is still there beside them.
-            "add-slide",
-            "theme-emerald",
-            "present",
-        ] {
-            assert!(ids.contains(&id), "`{id}` is published: {ids:?}");
-        }
-        assert_eq!(deck.children.len(), seed_deck().slides.len());
+fn the_deck_publishes_its_verbs_on_the_deck_and_on_each_slide() {
+    let mut app = seeded();
+    let surface = app.agent_surface();
+    let rows = surface.as_array().unwrap();
+    let row = |resource: &str, action: &str| {
+        rows.iter()
+            .find(|row| row["resource"] == resource && row["action"] == action)
+            .cloned()
+    };
+    for action in [
+        "add-slide",
+        "insert-slide",
+        "replace-deck",
+        ui::tilo_resource::APPLY,
+        ui::tilo_resource::GROUP,
+        ui::tilo_resource::FIELD_EDIT,
+    ] {
+        assert!(
+            row("slides.deck", action).is_some(),
+            "`{action}` is published"
+        );
     }
-    let add = eager[0]
-        .actions
-        .iter()
-        .find(|a| a.id == ADD_ELEMENT)
-        .unwrap();
-    let params: Vec<&str> = add.params().iter().map(|p| p.name.as_ref()).collect();
-    assert_eq!(
-        params,
-        [
-            "slide",
-            "kind",
-            "x",
-            "y",
-            "w",
-            "h",
-            "text",
-            "src",
-            "fill",
-            "text_color",
-            "stroke",
-            "stroke_width",
-            "font_size",
-            "align",
-            "bold",
-            "italic",
-            "radius",
-        ]
-    );
-    let violations = tilo_actions::validate_surface_contracts(&eager, &participant.registry);
-    assert!(violations.is_empty(), "{violations:#?}");
+    let slides = deck(&app).slides;
+    for slide in &slides {
+        let item = actions::slide_resource_id(&slide.id);
+        for element in &slide.elements {
+            let item = actions::element_resource_id(&slide.id, &element.id);
+            for action in ["delete-element", "bring-to-front", "send-to-back"] {
+                assert!(row(&item, action).is_some(), "`{action}` is on {item}");
+            }
+        }
+        for action in [
+            "add-element",
+            "move-slide",
+            "duplicate-slide",
+            "delete-slide",
+            "set-text",
+        ] {
+            assert!(row(&item, action).is_some(), "`{action}` is on {item}");
+        }
+    }
+    let add = row(&actions::slide_resource_id(&slides[0].id), "add-element").unwrap();
+    let params = add["params"].to_string();
+    for name in [
+        "kind",
+        "x",
+        "y",
+        "w",
+        "h",
+        "text",
+        "src",
+        "fill",
+        "text_color",
+        "stroke",
+        "stroke_width",
+        "font_size",
+        "align",
+        "bold",
+        "italic",
+        "radius",
+    ] {
+        assert!(
+            params.contains(&format!("\"{name}\"")),
+            "add-element takes `{name}`: {params}"
+        );
+    }
 }
 
 #[test]
 fn add_element_creates_it_on_top_with_a_minted_id() {
-    let mut participant = Participant::new();
-    let before = participant.deck();
+    let mut app = seeded();
+    let before = deck(&app);
     let slide = &before.slides[4];
-    let top = slide.elements.iter().map(|e| e.z).max().unwrap();
-    participant
-        .invoke(
-            ADD_ELEMENT,
-            &json!({
-                "slide": actions::slide_resource_id(&slide.id),
-                "kind": "text",
-                "x": 110, "y": 540, "w": 900, "h": 60,
-                "text": "hello@example.com",
-                "text_color": "text-dim",
-                "font_size": 28,
-                "align": "center",
-                "italic": true,
-            }),
-        )
-        .expect("add-element applies");
-    let after = participant.deck();
+    on_slide(
+        &mut app,
+        &slide.id,
+        "add-element",
+        json!({"element": {
+            "kind": "text",
+            "x": 110, "y": 540, "w": 900, "h": 60,
+            "text": "hello@example.com",
+            "text_color": "text-dim",
+            "font_size": 28,
+            "align": "center",
+            "italic": true,
+        }}),
+    )
+    .expect("add-element applies");
+    let after = deck(&app);
     let added: Vec<_> = after.slides[4]
         .elements
         .iter()
@@ -183,323 +149,231 @@ fn add_element_creates_it_on_top_with_a_minted_id() {
         (added.x, added.y, added.w, added.h),
         (110.0, 540.0, 900.0, 60.0)
     );
-    assert_eq!(added.z, top + 1, "the new element is above everything");
-    assert_eq!(added.id.len(), 20, "the id comes from the action's context");
-    // The element is addressable in the tree that is published next.
+    assert_eq!(
+        after.slides[4].z_sorted().last().map(|e| &e.id),
+        Some(&added.id),
+        "the new element is above everything"
+    );
     assert!(
-        actions::resolve_resource(
-            &SlidesResourceCtx::from_deck(&after),
-            &actions::element_resource_id(&added.id),
-        )
-        .is_some()
+        uuid::Uuid::parse_str(&added.id).is_ok(),
+        "the id comes from the action's context"
     );
 }
 
 #[test]
 fn add_element_refuses_what_the_inspector_could_not_make() {
-    let mut participant = Participant::new();
-    let slide = participant.deck().slides[0].id.clone();
-    let heads = participant.doc.get_heads();
-    for args in [
-        json!({"slide": slide, "kind": "star", "x": 0, "y": 0, "w": 10, "h": 10}),
-        json!({"slide": slide, "kind": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "fill": "plaid"}),
-        json!({"slide": slide, "kind": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "text": "x"}),
-        json!({"slide": slide, "kind": "image", "x": 0, "y": 0, "w": 10, "h": 10}),
-        json!({"slide": slide, "kind": "text", "x": 0, "y": 0, "w": 10, "h": 10,
+    let mut app = seeded();
+    let slide = deck(&app).slides[0].id.clone();
+    let versions = app.versions().len();
+    for element in [
+        json!({"kind": "star", "x": 0, "y": 0, "w": 10, "h": 10}),
+        json!({"kind": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "fill": "plaid"}),
+        json!({"kind": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "text": "x"}),
+        json!({"kind": "image", "x": 0, "y": 0, "w": 10, "h": 10}),
+        json!({"kind": "text", "x": 0, "y": 0, "w": 10, "h": 10,
                "fill": "accent", "text_color": "white"}),
-        json!({"slide": "no-such-slide", "kind": "rect", "x": 0, "y": 0, "w": 10, "h": 10}),
-        json!({"slide": slide, "kind": "rect", "x": 0, "y": 0, "w": 0, "h": 10}),
+        json!({"kind": "rect", "x": 0, "y": 0, "w": 0, "h": 10}),
     ] {
         assert!(
-            participant.invoke(ADD_ELEMENT, &args).is_err(),
-            "refused: {args}"
+            on_slide(
+                &mut app,
+                &slide,
+                "add-element",
+                json!({ "element": element })
+            )
+            .is_err(),
+            "refused: {element}"
         );
-        assert_eq!(
-            participant.doc.get_heads(),
-            heads,
-            "nothing written: {args}"
-        );
+        assert_eq!(app.versions().len(), versions, "nothing written: {element}");
     }
+    assert!(
+        app.call_on(
+            &actions::slide_resource_id("no-such-slide"),
+            "add-element",
+            json!({"element": {"kind": "rect", "x": 0, "y": 0, "w": 10, "h": 10}}),
+        )
+        .is_err(),
+        "a slide that is not there is refused"
+    );
 }
 
 #[test]
-fn move_element_moves_and_resizes_by_id() {
-    let mut participant = Participant::new();
-    let target = participant.deck().slides[2].elements[3].clone();
-    participant
-        .invoke(
-            MOVE_ELEMENT,
-            &json!({"element": target.id, "x": 140, "y": 260}),
-        )
-        .expect("move applies");
-    let moved = participant.deck().slides[2]
-        .element(&target.id)
-        .cloned()
-        .unwrap();
+fn an_element_is_moved_and_resized_by_field_edits() {
+    let mut app = seeded();
+    let slide = deck(&app).slides[2].clone();
+    let target = slide.elements[3].clone();
+    let paths = actions::element_paths(&slide.id, &target.id);
+    field_edit(&mut app, &paths.x.set(140.0)).unwrap();
+    field_edit(&mut app, &paths.y.set(260.0)).unwrap();
+    let moved = deck(&app).slides[2].element(&target.id).cloned().unwrap();
     assert_eq!(
         (moved.x, moved.y, moved.w, moved.h),
         (140.0, 260.0, target.w, target.h)
     );
 
-    participant
-        .invoke(
-            MOVE_ELEMENT,
-            &json!({"element": actions::element_resource_id(&target.id),
-                    "x": 150, "y": 270, "w": 400, "h": 40}),
-        )
-        .expect("resize applies");
-    let resized = participant.deck().slides[2]
-        .element(&target.id)
-        .cloned()
-        .unwrap();
+    for edit in actions::resize_element_actions(&slide.id, &target.id, (150.0, 270.0, 400.0, 40.0))
+    {
+        app.invoke(Invoke::apply(&edit).unwrap()).unwrap();
+    }
+    let resized = deck(&app).slides[2].element(&target.id).cloned().unwrap();
     assert_eq!(
         (resized.x, resized.y, resized.w, resized.h),
         (150.0, 270.0, 400.0, 40.0)
     );
 
     assert!(
-        participant
-            .invoke(
-                MOVE_ELEMENT,
-                &json!({"element": target.id, "x": 1, "y": 1, "w": 5})
-            )
-            .is_err(),
-        "a width without a height is refused"
+        field_edit(&mut app, &paths.w.set(0.0)).is_err(),
+        "a width the slide cannot show is refused"
     );
 }
 
 #[test]
-fn restyle_element_changes_only_the_named_styles() {
-    let mut participant = Participant::new();
+fn restyling_changes_only_the_named_styles() {
+    let mut app = seeded();
     // The closing slide's subtitle: the text that must stay legible.
-    let target = participant.deck().slides[4].elements[2].clone();
-    participant
-        .invoke(
-            RESTYLE_ELEMENT,
-            &json!({"element": target.id, "text_color": "white", "bold": true,
-                    "font_size": 36, "align": "right"}),
-        )
-        .expect("restyle applies");
-    let styled = participant.deck().slides[4]
-        .element(&target.id)
-        .cloned()
-        .unwrap();
+    let slide = deck(&app).slides[4].clone();
+    let target = slide.elements[2].clone();
+    let paths = actions::element_paths(&slide.id, &target.id);
+    field_edit(
+        &mut app,
+        &paths.fill.set(ui::tilo_resource::Atom("white".into())),
+    )
+    .unwrap();
+    field_edit(&mut app, &paths.font_size.set(36.0)).unwrap();
+    field_edit(&mut app, &paths.align.set(TextAlign::Right)).unwrap();
+    let bold = actions::restyle_action(&slide.id, &target, &actions::Style::Bold(true));
+    app.invoke(Invoke::apply(&bold).unwrap()).unwrap();
+    let styled = deck(&app).slides[4].element(&target.id).cloned().unwrap();
     assert_eq!(styled.fill, "white");
-    assert!(styled.bold);
+    assert!(styled.bold, "every word of the box is bold");
     assert_eq!(styled.font_size, 36.0);
     assert_eq!(styled.align, TextAlign::Right);
     assert_eq!(styled.italic, target.italic);
     assert_eq!(styled.stroke, target.stroke);
+    assert_eq!(styled.text, target.text);
     assert_eq!((styled.x, styled.y), (target.x, target.y));
 
     assert!(
-        participant
-            .invoke(RESTYLE_ELEMENT, &json!({"element": target.id}))
-            .is_err(),
-        "a restyle that names no style is refused"
+        field_edit(
+            &mut app,
+            &paths.fill.set(ui::tilo_resource::Atom("plaid".into()))
+        )
+        .is_err(),
+        "a colour outside the palette is refused"
     );
 }
 
 #[test]
 fn delete_element_is_destructive_and_needs_confirmation() {
-    let mut participant = Participant::new();
-    let target = participant.deck().slides[1].elements[0].id.clone();
+    let mut app = seeded();
+    let slide = deck(&app).slides[1].clone();
+    let target = slide.elements[0].id.clone();
+    let args = json!({});
+    let item = actions::element_resource_id(&slide.id, &target);
     assert!(matches!(
-        participant.invoke(DELETE_ELEMENT, &json!({"element": target})),
+        app.call_on(&item, "delete-element", args.clone()),
         Err(DoorError::ConfirmationRequired)
     ));
-    assert!(participant.deck().slides[1].element(&target).is_some());
-    participant
-        .invoke_on(
-            "slides.deck",
-            DELETE_ELEMENT,
-            &json!({"element": target}),
-            true,
-        )
+    assert!(deck(&app).slides[1].element(&target).is_some());
+    app.call_confirmed_on(&item, "delete-element", args)
         .expect("a confirmed delete applies");
-    assert!(participant.deck().slides[1].element(&target).is_none());
+    assert!(deck(&app).slides[1].element(&target).is_none());
 }
 
 #[test]
 fn move_slide_reorders_the_deck() {
-    let mut participant = Participant::new();
-    let order: Vec<String> = participant
-        .deck()
-        .slides
-        .iter()
-        .map(|s| s.id.clone())
-        .collect();
-    participant
-        .invoke(MOVE_SLIDE, &json!({"slide": order[4], "position": 1}))
+    let mut app = seeded();
+    let ids = |app: &TestApp<SlidesShell>| -> Vec<String> {
+        deck(app).slides.iter().map(|s| s.id.clone()).collect()
+    };
+    let order = ids(&app);
+    on_slide(&mut app, &order[4], "move-slide", json!({"position": 1}))
         .expect("move-slide applies");
-    let after: Vec<String> = participant
-        .deck()
-        .slides
-        .iter()
-        .map(|s| s.id.clone())
-        .collect();
     assert_eq!(
-        after,
+        ids(&app),
         [&order[0], &order[4], &order[1], &order[2], &order[3]].map(String::clone)
     );
-    participant
-        .invoke(MOVE_SLIDE, &json!({"slide": order[4], "position": 4}))
+    on_slide(&mut app, &order[4], "move-slide", json!({"position": 4}))
         .expect("and back to the end");
-    let back: Vec<String> = participant
-        .deck()
-        .slides
-        .iter()
-        .map(|s| s.id.clone())
-        .collect();
-    assert_eq!(back, order);
+    assert_eq!(ids(&app), order);
     assert!(
-        participant
-            .invoke(MOVE_SLIDE, &json!({"slide": order[0], "position": 9}))
-            .is_err(),
+        on_slide(&mut app, &order[0], "move-slide", json!({"position": 9})).is_err(),
         "a position past the end is refused"
     );
 }
 
 #[test]
 fn a_group_applies_several_operations_as_one_change() {
-    let mut participant = Participant::new();
-    let deck = participant.deck();
-    let slide = deck.slides[3].id.clone();
-    let add = json!({"slide": slide, "kind": "rect", "x": 96, "y": 600, "w": 300, "h": 40});
-    let changes = participant.doc.get_changes(&[]).len();
-    participant
-        .invoke(
-            ui::tilo_resource::GROUP,
-            &json!({"actions": [
-                {"action": ADD_ELEMENT, "args": add},
-                {"action": ADD_ELEMENT, "args": add},
-                {"action": MOVE_SLIDE, "args": {"slide": slide, "position": 0}},
-            ]}),
-        )
-        .expect("the group applies");
-    assert_eq!(
-        participant.doc.get_changes(&[]).len(),
-        changes + 1,
-        "one change"
-    );
-    let after = participant.deck();
-    assert_eq!(after.slides[0].id, slide);
+    let mut app = seeded();
+    let before = deck(&app);
+    let slide = ui::tilo_resource::Id::from(before.slides[3].id.as_str());
+    let add = || {
+        Deck::ADD_ELEMENT.with(crate::deck::deck::AddElement {
+            slide: slide.clone(),
+            element: serde_json::from_value(
+                json!({"kind": "rect", "x": 96, "y": 600, "w": 300, "h": 40}),
+            )
+            .unwrap(),
+        })
+    };
+    let versions = app.versions().len();
+    app.invoke(Invoke::group([
+        add(),
+        add(),
+        Deck::MOVE_SLIDE.with(crate::deck::deck::MoveSlide {
+            slide: slide.clone(),
+            position: 0,
+        }),
+    ]))
+    .expect("the group applies");
+    assert_eq!(app.versions().len(), versions + 1, "one change");
+    let after = deck(&app);
+    assert_eq!(after.slides[0].id, slide.as_str());
     let added: Vec<_> = after.slides[0]
         .elements
         .iter()
-        .filter(|e| deck.slides[3].element(&e.id).is_none())
+        .filter(|e| before.slides[3].element(&e.id).is_none())
         .collect();
     assert_eq!(added.len(), 2, "two identical requests add two elements");
     assert_ne!(added[0].id, added[1].id, "each member mints its own id");
 }
 
 #[test]
-fn apply_takes_any_slides_action_as_json() {
-    let mut participant = Participant::new();
-    let slide = participant.deck().slides[1].id.clone();
-    participant
-        .invoke(
-            ui::tilo_resource::APPLY,
-            &json!({"action": {"SetSlideBackground": {
-                "slide": 1, "id": slide, "background": "deep"}}}),
-        )
+fn apply_takes_any_deck_action_as_json() {
+    let mut app = seeded();
+    let slide = deck(&app).slides[1].id.clone();
+    let action = actions::set_slide_background_action(&slide, crate::model::Background::Deep);
+    app.call("apply", json!({ "action": action }))
         .expect("apply applies");
     assert_eq!(
-        participant.deck().slides[1].background,
+        deck(&app).slides[1].background,
         crate::model::Background::Deep
     );
     // A destructive value asks for confirmation through `apply` as well.
-    let element = participant.deck().slides[1].elements[0].id.clone();
+    let element = deck(&app).slides[1].elements[0].id.clone();
+    let delete = actions::delete_element_action(&slide, &element);
     assert!(matches!(
-        participant.invoke(
-            ui::tilo_resource::APPLY,
-            &json!({"action": {"DeleteElement": {"slide": 1, "id": element}}}),
-        ),
+        app.call("apply", json!({ "action": delete })),
         Err(DoorError::ConfirmationRequired)
     ));
 }
 
 #[test]
-fn a_created_element_is_the_same_on_two_replicas() {
-    let origin = Participant::new();
-    let slide = origin.deck().slides[0].id.clone();
-    let encoded = tilo_actions::door::encode_json(
-        &origin.resources(),
-        &ActionAddress::new("slides.deck", ADD_ELEMENT),
-        json!({"slide": slide, "kind": "ellipse", "x": 900, "y": 100, "w": 200, "h": 200})
-            .as_object()
-            .unwrap(),
+fn add_slide_writes_its_title_and_body_in_one_step() {
+    let mut app = seeded();
+    let before = deck(&app).slides.len();
+    app.call(
+        "add-slide",
+        json!({"layout": "title", "title": "Product Launch", "body": "October 2026"}),
     )
     .unwrap();
-
-    let bytes = origin.doc.clone().save();
-    let mut a = AutoCommit::load(&bytes).unwrap();
-    let mut b = AutoCommit::load(&bytes).unwrap();
-    a.set_actor(ActorId::from(b"replica-a".as_slice()));
-    b.set_actor(ActorId::from(b"replica-b".as_slice()));
-    let action = origin.registry.decode(&encoded).unwrap();
-    let envelope = tilo_actions::apply_local(&mut a, action.as_ref(), encoded.clone()).unwrap();
-    tilo_actions::replay(&mut b, &envelope, &origin.registry).unwrap();
-    assert_eq!(a.get_heads(), b.get_heads(), "the same change on both");
-    let (left, right) = (SlidesDoc::load(&a).unwrap(), SlidesDoc::load(&b).unwrap());
-    assert_eq!(left, right);
-    let minted = left.slides[0]
-        .elements
-        .iter()
-        .filter(|e| origin.deck().slides[0].element(&e.id).is_none())
-        .count();
-    assert_eq!(minted, 1);
-
-    // The same request authored again, on top of the first, is a new element.
-    let again = origin.registry.decode(&encoded).unwrap();
-    tilo_actions::apply_local(&mut a, again.as_ref(), encoded).unwrap();
-    let ids: std::collections::BTreeSet<_> = SlidesDoc::load(&a).unwrap().slides[0]
-        .elements
-        .iter()
-        .map(|e| e.id.clone())
-        .collect();
-    assert_eq!(ids.len(), origin.deck().slides[0].elements.len() + 2);
-}
-
-/// Recorded history keeps replaying: every payload shape written before the
-/// typed operations existed decodes to the same action and encodes back to
-/// the same bytes.
-#[test]
-fn recorded_payloads_decode_and_encode_unchanged() {
-    for payload in [
-        r#"{"MoveElement":{"slide":1,"id":"e1","x":10.0,"y":20.0}}"#,
-        r#"{"ResizeElement":{"slide":0,"id":"e1","x":1.0,"y":2.0,"w":3.0,"h":4.0}}"#,
-        r#"{"RestyleElement":{"slide":0,"id":"e1","patch":{"fill":"accent","stroke":null,"align":null,"font_size":40.0,"stroke_width":null,"radius":null,"bold":true,"italic":null}}}"#,
-        r#"{"DeleteElement":{"slide":2,"id":"e1"}}"#,
-        r#"{"MoveSlide":{"from":1,"to":3,"id":"s1"}}"#,
-        r#"{"SetSlideOrder":{"slide_id":"s1","rank":42}}"#,
-        r#"{"SetElementZ":{"slide_id":"s1","element_id":"e1","z":-3}}"#,
-        r#"{"SetSlideBackground":{"slide":0,"id":"s1","background":"deep"}}"#,
-        r#"{"SetDeckPalette":{"palette":"rose"}}"#,
-    ] {
-        let action: actions::SlidesAction = serde_json::from_str(payload).expect(payload);
-        assert_eq!(serde_json::to_string(&action).unwrap(), payload);
-    }
-}
-
-#[test]
-fn add_slide_writes_its_title_and_body_in_one_step() {
-    let mut participant = Participant::new();
-    let before = participant.deck().slides.len();
-    participant
-        .invoke(
-            "add-slide",
-            &json!({"layout": "title", "title": "Product Launch", "body": "October 2026"}),
-        )
-        .unwrap();
-    participant
-        .invoke(
-            "add-slide",
-            &json!({"title": "Agenda", "body": "Goals\nTimeline\nBudget"}),
-        )
-        .unwrap();
-    participant.invoke("add-slide", &json!({})).unwrap();
-    let deck = participant.deck();
+    app.call(
+        "add-slide",
+        json!({"title": "Agenda", "body": "Goals\nTimeline\nBudget"}),
+    )
+    .unwrap();
+    app.call("add-slide", json!({})).unwrap();
+    let deck = deck(&app);
     assert_eq!(deck.slides.len(), before + 3);
     let texts = |index: usize| -> Vec<String> {
         deck.slides[index]
@@ -518,9 +392,130 @@ fn add_slide_writes_its_title_and_body_in_one_step() {
         "no arguments: the template"
     );
     assert!(
-        participant
-            .invoke("add-slide", &json!({"layout": "sideways"}))
+        app.call("add-slide", json!({"layout": "sideways"}))
             .is_err(),
         "a layout outside the choices is refused"
     );
+}
+
+/// An agent's changes read back as the app's own sentences.
+#[test]
+fn an_agents_changes_read_as_sentences() {
+    use ui::tilo_actions::{ActionInvoker, ActorKind};
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = seeded();
+    let agent = ActionInvoker::actor("agent:claude")
+        .with_kind(ActorKind::Agent)
+        .acting_for("ada");
+    let kind = <Deck as ui::tilo_resource::Resource>::KIND;
+    let call = |app: &mut TestApp<SlidesShell>, resource: &str, id: &str, args: Value| {
+        app.call_by(agent.clone(), resource, id, args)
+            .unwrap_or_else(|error| panic!("{id}: {error:?}"));
+    };
+    call(&mut app, kind, "add-slide", json!({ "title": "Budget" }));
+    let slide = deck(&app).slides.last().unwrap().id.clone();
+    let item = actions::slide_resource_id(&slide);
+    call(
+        &mut app,
+        &item,
+        "set-text",
+        json!({ "body": "Costs\nIncome" }),
+    );
+    let title = deck(&app).slides.last().unwrap().elements[0].id.clone();
+    let paths = actions::element_paths(&slide, &title);
+    call(
+        &mut app,
+        kind,
+        "field-edit",
+        json!({ "edit": paths.x.set(120.0) }),
+    );
+    call(
+        &mut app,
+        kind,
+        "field-edit",
+        json!({ "edit": paths.bold.set(true) }),
+    );
+    call(
+        &mut app,
+        &actions::element_resource_id(&slide, &title),
+        "bring-to-front",
+        json!({}),
+    );
+    call(
+        &mut app,
+        kind,
+        "field-edit",
+        json!({ "edit": Deck::paths().title.replace("Plan") }),
+    );
+
+    let sentences = app.sentences(app.history().iter().filter(|entry| {
+        entry
+            .invoker
+            .as_ref()
+            .is_some_and(|invoker| invoker.actor == "agent:claude")
+    }));
+    assert_eq!(
+        sentences,
+        [
+            "Added a slide",
+            "Rewrote a slide's text",
+            "Moved Budget",
+            "Made Budget bold",
+            "Brought Budget to the front",
+            "Renamed the deck",
+        ]
+    );
+    // An element's edits and its item verbs are about the element, named by
+    // its rich-text body's first line, not by its id or its slide's.
+    let named: Vec<(String, String)> = app
+        .history()
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .invoker
+                .as_ref()
+                .is_some_and(|invoker| invoker.actor == "agent:claude")
+        })
+        .skip(2)
+        .take(3)
+        .map(|entry| {
+            let item = entry.item.expect("an element's change names the element");
+            (item.id, item.label)
+        })
+        .collect();
+    assert_eq!(named, vec![(title.clone(), "Budget".to_owned()); 3]);
+}
+
+/// The deck's verbs answer their caller with the outline of the deck they
+/// left, so an agent sees what it changed without reading the deck again.
+#[test]
+fn deck_edits_answer_with_the_outline() {
+    let mut app = seeded();
+    for (resource, action, args) in [
+        (
+            "slides.deck".to_owned(),
+            "add-slide",
+            json!({ "title": "Product Launch" }),
+        ),
+        (
+            actions::slide_resource_id(&deck(&app).slides[0].id),
+            "set-text",
+            json!({ "title": "Opening" }),
+        ),
+        (
+            actions::slide_resource_id(&deck(&app).slides[1].id),
+            "move-slide",
+            json!({ "position": 0 }),
+        ),
+    ] {
+        let answer = app.call_on(&resource, action, args).unwrap();
+        let outline = crate::outline::of_deck(&deck(&app));
+        assert_eq!(
+            answer
+                .as_ref()
+                .and_then(|answer| answer["outline"].as_str()),
+            Some(outline.as_str()),
+            "`{action}` answers with the outline"
+        );
+    }
 }

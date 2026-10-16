@@ -1,0 +1,274 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "discord.guild"
+label = "Discord server"
+version = 1
+fields = [
+  { path = "guild_id", type = "String", readonly = true },
+  { path = "name", type = "String", label = true },
+  { path = "workspace", type = "String", readonly = true },
+  { path = "only_channel", type = "Option<String>", readonly = true },
+  { path = "mirror_channels", type = "bool", readonly = true },
+  { path = "map_roles", type = "bool", readonly = true },
+  { path = "ownership", type = "Ownership" },
+  { path = "token_item", type = "Option<String>" },
+  { path = "bot_user", type = "String" },
+  { path = "channels", type = "Keyed<DChannel>", stored = "keyed" },
+  { path = "channels.*.id", type = "String", readonly = true },
+  { path = "channels.*.kind", type = "Json<ChannelKind>" },
+  { path = "channels.*.name", type = "String" },
+  { path = "channels.*.parent", type = "Option<String>" },
+  { path = "channels.*.position", type = "i64" },
+  { path = "channels.*.topic", type = "String" },
+  { path = "channels.*.overwrites", type = "Json<Vec<OverwriteInfo>>" },
+  { path = "roles", type = "Keyed<DRole>", stored = "keyed" },
+  { path = "roles.*.id", type = "String", readonly = true },
+  { path = "roles.*.name", type = "String" },
+  { path = "roles.*.permissions", type = "String" },
+  { path = "roles.*.color", type = "u32" },
+  { path = "roles.*.position", type = "i64" },
+  { path = "roles.*.managed", type = "bool" },
+  { path = "map", type = "Keyed<Mapping>", stored = "keyed" },
+  { path = "map.*.key", type = "String", readonly = true },
+  { path = "map.*.kind", type = "MappedKind" },
+  { path = "map.*.tilo", type = "String" },
+  { path = "map.*.discord", type = "String" },
+  { path = "map.*.origin", type = "Origin" },
+  { path = "map.*.persona", type = "Option<String>" },
+  { path = "map.*.root", type = "Option<String>" },
+  { path = "links", type = "Keyed<Link>", stored = "keyed" },
+  { path = "links.*.discord_user", type = "String", readonly = true },
+  { path = "links.*.person", type = "String" },
+  { path = "links.*.linked_at", type = "i64" },
+  { path = "pending_links", type = "Keyed<PendingLink>", stored = "keyed" },
+  { path = "pending_links.*.person", type = "String", readonly = true },
+  { path = "pending_links.*.code_sha256", type = "String" },
+  { path = "pending_links.*.expires_ms", type = "i64" },
+  { path = "link_failures", type = "Keyed<LinkFailure>", stored = "keyed" },
+  { path = "link_failures.*.discord_user", type = "String", readonly = true },
+  { path = "link_failures.*.window_start_ms", type = "i64" },
+  { path = "link_failures.*.count", type = "u32" },
+  { path = "avatars", type = "BTreeMap<String, String>" },
+  { path = "blocked_personas", type = "Set<String>" },
+  { path = "vanished", type = "Set<String>" },
+  { path = "tilo_only", type = "Set<String>" },
+  { path = "discord_only", type = "Set<String>" },
+  { path = "outbox", type = "Outbox<Queued, DiscordResult>" },
+]
+
+[[resources.verbs]]
+id = "connect"
+kind = "undoable"
+params = [
+  { name = "guild_id", required = true, schema = { type = "string" } },
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "workspace", required = true, schema = { type = "string" } },
+  { name = "only_channel", required = false, schema = { type = ["string", "null"] } },
+  { name = "mirror_channels", required = false, schema = { type = ["boolean", "null"] } },
+  { name = "map_roles", required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "observe-layout"
+kind = "undoable"
+params = [
+  { name = "bot_user", required = true, schema = { type = "string" } },
+  { name = "channels", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, id = { type = "string" }, kind = { type = "string", enum = ["text", "voice", "category", "thread"] }, overwrites = { type = "array", items = { type = "object", additionalProperties = false, properties = { allow = { type = "string" }, deny = { type = "string" }, id = { type = "string" }, kind = { type = "integer", maximum = 255, minimum = 0 } }, required = ["id", "kind", "allow", "deny"] } }, parent = { type = ["string", "null"] }, position = { type = "integer" }, topic = { type = "string" } }, required = ["id", "kind", "name", "position"] } } },
+  { name = "roles", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, color = { type = "integer", maximum = 4294967295, minimum = 0 }, id = { type = "string" }, managed = { type = "boolean" }, permissions = { type = "string" }, position = { type = "integer" } }, required = ["id", "name", "permissions", "color", "position", "managed"] } } },
+]
+
+[[resources.verbs]]
+id = "map"
+kind = "undoable"
+params = [
+  { name = "kind", required = true, schema = { oneOf = [{ type = "string", const = "channel" }, { type = "string", const = "category" }, { type = "string", const = "thread" }, { type = "string", const = "message" }, { type = "string", const = "webhook" }, { type = "string", const = "role" }] } },
+  { name = "tilo", required = true, schema = { type = "string" } },
+  { name = "discord", required = true, schema = { type = "string" } },
+  { name = "origin", required = true, schema = { type = "string", enum = ["tilo", "discord"] } },
+  { name = "persona", required = false, schema = { type = ["string", "null"] } },
+  { name = "root", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "unmap"
+kind = "undoable"
+params = [
+  { name = "kind", required = true, schema = { oneOf = [{ type = "string", const = "channel" }, { type = "string", const = "category" }, { type = "string", const = "thread" }, { type = "string", const = "message" }, { type = "string", const = "webhook" }, { type = "string", const = "role" }] } },
+  { name = "tilo", required = true, schema = { type = "string" } },
+  { name = "keep_apart", required = false, schema = { type = ["boolean", "null"] } },
+]
+
+[[resources.verbs]]
+id = "send"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { attachments = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, size = { type = "integer", minimum = 0 } }, required = ["blob", "name", "size"] } }, avatar_blob = { type = ["string", "null"] }, avatar_url = { type = ["string", "null"] }, channel = { type = "string" }, content = { type = "string" }, created_ms = { type = "integer" }, thread = { type = ["string", "null"] }, tilo = { type = "string" }, username = { type = "string" }, webhook = { type = "string" } }, required = ["channel", "webhook", "username", "content", "created_ms", "tilo"] } },
+]
+
+[[resources.verbs]]
+id = "edit"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, content = { type = "string" }, message = { type = "string" }, thread = { type = ["string", "null"] }, webhook = { type = "string" } }, required = ["channel", "webhook", "message", "content"] } },
+]
+
+[[resources.verbs]]
+id = "delete"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, message = { type = "string" }, thread = { type = ["string", "null"] }, webhook = { type = ["string", "null"] } }, required = ["channel", "message"] } },
+]
+
+[[resources.verbs]]
+id = "react"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, emoji = { type = "string" }, message = { type = "string" } }, required = ["channel", "message", "emoji"] } },
+]
+
+[[resources.verbs]]
+id = "unreact"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, emoji = { type = "string" }, message = { type = "string" } }, required = ["channel", "message", "emoji"] } },
+]
+
+[[resources.verbs]]
+id = "start-thread"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, channel = { type = "string" }, message = { type = "string" }, tilo = { type = "string" } }, required = ["channel", "message", "name", "tilo"] } },
+]
+
+[[resources.verbs]]
+id = "create-webhook"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" }, tilo = { type = "string" } }, required = ["channel", "tilo"] } },
+]
+
+[[resources.verbs]]
+id = "apply-channel"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, id = { type = ["string", "null"] }, kind = { type = "string", enum = ["text", "voice", "category", "thread"] }, parent = { type = ["string", "null"] }, position = { type = "integer" }, tilo = { type = "string" }, topic = { type = "string" } }, required = ["tilo", "kind", "name", "position"] } },
+]
+
+[[resources.verbs]]
+id = "delete-channel"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { channel = { type = "string" } }, required = ["channel"] } },
+]
+
+[[resources.verbs]]
+id = "apply-role"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, color = { type = "integer", maximum = 4294967295, minimum = 0 }, id = { type = ["string", "null"] }, permissions = { type = "string" }, tilo = { type = "string" } }, required = ["tilo", "name", "permissions", "color"] } },
+]
+
+[[resources.verbs]]
+id = "delete-role"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { role = { type = "string" } }, required = ["role"] } },
+]
+
+[[resources.verbs]]
+id = "set-member-roles"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { add = { type = "array", items = { type = "string" } }, remove = { type = "array", items = { type = "string" } }, user = { type = "string" } }, required = ["user", "add", "remove"] } },
+]
+
+[[resources.verbs]]
+id = "kick"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { reason = { type = "string" }, user = { type = "string" } }, required = ["user"] } },
+]
+
+[[resources.verbs]]
+id = "ban"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { reason = { type = "string" }, user = { type = "string" } }, required = ["user"] } },
+]
+
+[[resources.verbs]]
+id = "unban"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { reason = { type = "string" }, user = { type = "string" } }, required = ["user"] } },
+]
+
+[[resources.verbs]]
+id = "set-overwrite"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { allow = { type = "string" }, channel = { type = "string" }, deny = { type = "string" }, target = { type = "string" }, target_kind = { type = "string", enum = ["role", "member"] } }, required = ["channel", "target", "target_kind", "allow", "deny"] } },
+]
+
+[[resources.verbs]]
+id = "fetch-asset"
+kind = "outside"
+params = [
+  { name = "op", required = true, schema = { type = "object", additionalProperties = false, properties = { attachment = { type = ["object", "null"], additionalProperties = false, properties = { name = { type = "string" }, blob = { type = "string" }, height = { type = "integer", maximum = 4294967295, minimum = 0 }, kind = { type = "string" }, size = { type = "integer", minimum = 0 }, width = { type = "integer", maximum = 4294967295, minimum = 0 } }, required = ["kind", "name"] }, max_bytes = { type = "integer", minimum = 0 }, url = { type = "string" } }, required = ["url", "max_bytes"] } },
+]
+
+[[resources.verbs]]
+id = "begin-link"
+kind = "undoable"
+params = [
+  { name = "code_sha256", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "complete-link"
+kind = "undoable"
+params = [
+  { name = "discord_user", required = true, schema = { type = "string" } },
+  { name = "person", required = true, schema = { type = "string" } },
+  { name = "code_sha256", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "unlink"
+kind = "undoable"
+params = [
+  { name = "discord_user", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "block-persona"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "discord_user", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "unblock-persona"
+field = "moderation"
+kind = "undoable"
+params = [
+  { name = "discord_user", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "remember-avatar"
+kind = "undoable"
+params = [
+  { name = "hash", required = true, schema = { type = "string" } },
+  { name = "blob", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "finish-import"
+kind = "undoable"
+params = [
+  { name = "tilo_only", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+

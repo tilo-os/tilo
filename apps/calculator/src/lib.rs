@@ -4,10 +4,10 @@
 //! graphing. Durable artifacts (history and plotted functions) live in an
 //! Automerge document so undo/redo and live collaboration use the same state;
 //! per-window expression, selection, angle unit, and camera state stay local.
-//! The panels are custom Vello-drawn widgets.
+//! The panels are painted by the app over the toolkit's controls and regions.
 //!
-//! `app_root()` is the single integration point used by both the live
-//! event loop and the `--shots` offscreen renderer.
+//! [`CalculatorShell`] is the app: the binary runs it, `--shots` captures its
+//! scenarios, and [`definition`] is what other hosts mount.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app, not the desktop. The tax of proving every layout sum cannot
@@ -21,17 +21,12 @@
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
     reason = "app-local arithmetic; see the note above"
 )]
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         clippy::float_cmp,
         reason = "in a test these are the assertion, not a hazard"
@@ -40,8 +35,7 @@
 
 pub mod actions;
 pub mod app;
-pub mod component;
-pub mod doc;
+pub mod chrome;
 pub mod draw;
 pub mod engine;
 pub mod graph2d;
@@ -49,29 +43,15 @@ pub mod graph3d;
 pub mod keypad;
 pub mod mathfield;
 pub mod model;
+pub mod plot_panel;
+pub mod resource;
 pub mod zoom;
 
 pub use app::CalculatorApp;
-pub use component::definition;
+pub use resource::{Calculator, CalculatorShell};
 
-use ui::widget::Widget;
-
-/// Build the live app's root widget tree in Calculator mode.
-/// Any persisted state is adopted from the CRDT on the first sync.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(CalculatorApp::new())
+/// The calculator's application definition, which the browser desktop and
+/// other hosts mount.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::built_in_definition!(CalculatorShell)
 }
-
-/// Build a seeded root for the headless `--shots` renderer and demos. This is
-/// the path that seeds sample content; the live [`app_root`] does not.
-pub fn app_root_offline() -> Box<dyn Widget> {
-    Box::new(CalculatorApp::seeded())
-}
-
-#[cfg(test)]
-mod component_tests;
-
-#[cfg(test)]
-mod framework_history_tests;
-
-pub mod framework_history;

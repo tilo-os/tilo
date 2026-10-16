@@ -1,0 +1,21 @@
+[package]
+name = "moderation-model"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Reports and moderation decisions, the record a room's apps embed to offer reporting"
+
+[dependencies]
+serde.workspace = true
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::shell::device_fabric::{FabricError, FabricStamp};
 use crate::shell::personal_continuity::DeviceId;
+pub use runtime_collab::SpeakerMemberStatus;
 
 pub const MAX_SPEAKER_GROUPS: usize = 16;
 pub const MAX_SPEAKER_GROUP_MEMBERS: usize = 8;
@@ -615,30 +616,6 @@ impl SpeakerFabricState {
         let first = microphones.clone().next();
         microphones.find(|endpoint| endpoint.is_default).or(first)
     }
-}
-
-/// Where one member of a group stands right now.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SpeakerMemberState {
-    /// Consented (or the leader's own output) and online.
-    Ready,
-    /// Asked, not yet answered on that device.
-    AwaitingConsent,
-    /// Consented, but the device is offline.
-    Offline,
-    /// The device no longer offers this output.
-    OutputMissing,
-    /// Media continuity is off there, or it cannot join speaker groups.
-    Unavailable,
-    /// Not one of this person's certified devices.
-    NotCertified,
-}
-
-/// Where a live audio route or a "play here" should go.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AudioTarget {
-    Device(DeviceId),
-    SpeakerGroup(SpeakerGroupId),
 }
 
 /// Whether `value` is a usable group name: trimmed, bounded, printable.

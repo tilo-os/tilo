@@ -357,6 +357,13 @@ pub enum BackendEvent {
     /// `FrameBuilder::dispatch_event` — the same dispatch path the
     /// headless `execute_planned_action` uses.
     Input(WindowEvent),
+    /// A real libinput keyboard event, preserving its kernel `CLOCK_MONOTONIC`
+    /// timestamp before translation or input-loop queueing. Synthetic input
+    /// and compositor-generated repeats never use this variant.
+    PhysicalKey {
+        event: WindowEvent,
+        input_time_ns: u64,
+    },
     /// Raw relative mouse motion, emitted by the direct backend alongside the
     /// clamped absolute cursor event. Spatial device control needs the delta
     /// after the local cursor reaches a display edge.
@@ -394,6 +401,11 @@ pub enum BackendEvent {
     /// previously reported (keyboard unplug, VT pause, or keymap replacement).
     /// The compositor must retire its seat state before accepting new input.
     InputStateReset,
+    /// A discovered typing keyboard's effective source assignment, before its key event.
+    KeyboardConfiguration {
+        scope: String,
+        settings: Box<drm::input_config::KeyboardSettings>,
+    },
     /// A gesture the shell did **not** claim, for forwarding to the
     /// focused client over `zwp_pointer_gestures_v1`.
     Gesture(GestureEvent),
@@ -404,14 +416,6 @@ pub enum BackendEvent {
     /// `wl_touch`. The shell receives the same contact as raw
     /// `WindowEvent::Touch` through [`Self::Input`].
     Touch(TouchEvent),
-    /// A confirmed one-finger tap ended at this global position. The
-    /// compositor turns it into a pointer click only when the tap's touch
-    /// sequence did not already reach a client over `wl_touch`; otherwise
-    /// the client would be activated once per protocol.
-    TouchTap {
-        x: f64,
-        y: f64,
-    },
     /// An accessibility filter rejected input (a bounce-keys press) and the
     /// user asked to see it: flash the shell's visual alert.
     VisualAlert,
@@ -426,16 +430,60 @@ pub enum BackendEvent {
     InputDeviceRemoved {
         id: String,
     },
-    /// The class of physical input changed: the person typed, moved a
+    /// The class of physical input changed: the person typed, activated a
     /// pointer, touched the screen or used a controller after using
     /// something else. Reported by the source of the event, so emulated
     /// pointer input from a tap still counts as touch.
     InputUsed(ui::InputModality),
+    /// Pointer hover changes precision and shortcut hints, but preserves a
+    /// touch-started on-screen keyboard until deliberate pointer input.
+    PointerMotionUsed,
     /// A convertible's tablet-mode switch changed: `true` when the keyboard
     /// is folded away and the touchscreen is the primary input.
     TabletMode(bool),
     Redraw,
     Focus(bool),
+}
+
+impl BackendEvent {
+    /// Whether this event is the person using an input device, which keeps
+    /// the session from dimming, blanking, locking and suspending. It does
+    /// not matter who receives it: a pen stroke or a two-finger pinch that
+    /// goes straight to an app is as much use as a key the shell handles.
+    /// Exhaustive, so a new kind of input has to say whether it counts.
+    pub fn is_person_input(&self) -> bool {
+        match self {
+            Self::Input(_)
+            | Self::PhysicalKey { .. }
+            | Self::RelativePointerMotion { .. }
+            | Self::ModifiersChanged(_)
+            | Self::Tablet(_)
+            | Self::TabletPad(_)
+            | Self::TabletPadMap { .. }
+            | Self::Gesture(_)
+            | Self::ShellGesture(_)
+            | Self::Touch(_)
+            | Self::TabletMode(_)
+            // A key press an accessibility filter rejected was still pressed.
+            | Self::VisualAlert => true,
+            // Devices and outputs come and go on their own (a Bluetooth
+            // reconnect, a monitor waking), and the rest is bookkeeping that
+            // follows input already counted.
+            Self::CloseRequested
+            | Self::OutputResized { .. }
+            | Self::OutputsChanged
+            | Self::TabletPadAdded(_)
+            | Self::TabletPadRemoved(_)
+            | Self::InputStateReset
+            | Self::KeyboardConfiguration { .. }
+            | Self::InputDeviceAdded { .. }
+            | Self::InputDeviceRemoved { .. }
+            | Self::InputUsed(_)
+            | Self::PointerMotionUsed
+            | Self::Redraw
+            | Self::Focus(_) => false,
+        }
+    }
 }
 
 /// The physical tablet a tool is used on.
@@ -644,12 +692,39 @@ pub trait Backend {
         false
     }
 
+    /// CPU presenters can reuse strip pixels when layout uses whole-pixel pans.
+    fn pixel_aligned_strip_pan(&self) -> bool {
+        false
+    }
+
+    /// The presenter composites strip pans from retained layers
+    /// (`FramePaint::cache`) instead of rasterising every pixel of the strip.
+    fn composites_strip_layers(&self) -> bool {
+        false
+    }
+
+    /// The presenter keeps its target between frames and copies what a
+    /// scroll in an in-process app moved within it
+    /// (`FramePaint::scroll_copies`) before it repaints the damage.
+    fn copies_scrolls(&self) -> bool {
+        false
+    }
+
     /// Submit a frame with optional retained-damage authority. Backends that cannot retain a
     /// previous native target keep the established dense scene path.
     fn submit_frame_with_damage(&mut self, frame: &FramePaint, output: OutputId) {
         self.submit_frame(&frame.scene, output);
     }
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent));
+
+    /// Read input that arrived since the last poll, without blocking and
+    /// without touching anything else [`Self::poll_events`] applies (the
+    /// output table above all), so the run loop can call it between the
+    /// phases of a turn while that turn's frame is being built. The events
+    /// arrive in order and belong ahead of whatever the next
+    /// [`Self::poll_events`] returns. Backends whose input does not arrive
+    /// on their own loop have nothing to read here.
+    fn poll_input(&mut self, _callback: &mut dyn FnMut(BackendEvent)) {}
 
     /// Duplicate an fd which becomes readable whenever this backend has
     /// events waiting for [`Self::poll_events`]. The compositor registers it
@@ -765,6 +840,19 @@ pub trait Backend {
         false
     }
 
+    /// What `output`'s primary plane would scan out of a fullscreen client,
+    /// as last learned while presenting one there; `None` when the output
+    /// cannot scan a client out (no planes, rotated, calibrated, HDR) or the
+    /// backend has no planes at all. Fullscreen clients are told through
+    /// their dma-buf feedback ([`crate::compositor::scanout_feedback`]).
+    #[cfg(target_os = "linux")]
+    fn scanout_plane(
+        &self,
+        _output: OutputId,
+    ) -> Option<std::sync::Arc<crate::compositor::scanout_feedback::ScanoutPlane>> {
+        None
+    }
+
     /// The HDR signal an output is being driven with, or `None` for SDR.
     /// Clients learn it through `wp_color_management_output_v1`.
     fn output_hdr(&self, _output: OutputId) -> Option<OutputHdr> {
@@ -791,12 +879,23 @@ pub trait Backend {
     /// arrives, so nothing else would trigger it.
     fn reset_display(&mut self) {}
 
-    /// Re-read the persisted input preferences and apply them.
+    /// Re-read the persisted input, keyboard, accessibility and tablet
+    /// preferences and apply them.
     ///
     /// Default no-op — only the DRM backend owns input devices. Called
-    /// when the Settings app writes a change, so pointer speed and
+    /// when one of those settings sections changes, so pointer speed and
     /// tap-to-click take effect without restarting the session.
     fn reload_input_settings(&mut self) {}
+
+    /// `display`, `display_transaction` or `display_profiles` changed:
+    /// advance the display transaction and re-apply the arrangement, scale
+    /// and modes from the connector state the last hotplug probe found.
+    ///
+    /// Must not force-probe connectors: this runs on the input path, and a
+    /// forced KMS probe of every connector (slow on DP-MST docks) stalls
+    /// pointer and keyboard dispatch. Only a hotplug re-probes. Default
+    /// no-op for backends that own no displays.
+    fn reload_display_settings(&mut self) {}
 
     /// Show `image` as the pointer. Default no-op: a hosted backend's
     /// pointer belongs to the host and a headless one has none.
@@ -942,7 +1041,6 @@ pub fn apply_scale_factor_changed(output: &mut Output, scale_factor: f64) -> Opt
     }
     #[allow(
         clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
         reason = "monitor scale factor; f32 precision is ample for a UI scale value"
     )]
     let scale = scale_factor as f32;

@@ -14,7 +14,7 @@ resolver = "2"
 
 # Members name `workspace-hack = { version = "0.1" }` and the root manifest's
 # `[patch.crates-io]` points it at crates/workspace-hack. Workspaces outside
-# this one that reach members by path (fuzz/, qdoc-codec-markdown-wasm) have no
+# this one that reach members by path (fuzz/, tilo-doc-codec-markdown-wasm) have no
 # patch and resolve crates.io's empty workspace-hack 0.1.0 instead, so neither
 # their lockfiles nor a wasm32 build take on the host dependency set.
 workspace-hack-line-style = "version-only"
@@ -40,21 +40,39 @@ platforms = [
 # macOS) compiles the unified set for its Linux or macOS host as well.
 
 [traversal-excludes]
+# frame-link's demo draws text with cosmic-text but without the toolkit, so it
+# reaches cosmic-text's skrifa 0.40 / read-fonts 0.37 with fewer features than
+# the toolkit's graph (where tilo-pdf turns on their defaults). Counting it
+# would put both font crates into the hack, and so into every managed member's
+# build; a development demo is not worth that. It builds its own graph.
+workspace-members = ["frame-link"]
 # Every managed member builds every crate listed in the hack, so none may need
 # a system library: server containers (tilo-relay, registry-server) and cross
 # builds have no desktop development packages. Media stays optional
 # everywhere: hermetic builds, `--shots` and CI must not need gstreamer-1.0.
 third-party = [
+    # Wayland system linkage belongs to platform-selected clients/servers.
+    # A global feature union would make portable metadata and cross builds
+    # require the Linux client library even when native transport is disabled.
+    { name = "wayland-backend", path = "vendor/wayland-backend" },
+    { name = "wayland-client" },
+    { name = "wayland-sys" },
+    # Their `client` feature reaches wayland-client and wayland-sys, so in the
+    # hack's unconditional section they put the Linux client library into
+    # every Windows build of the imager.
+    { name = "wayland-protocols" },
+    { name = "wayland-protocols-misc" },
+    { name = "wayland-protocols-wlr" },
     { name = "gstreamer" },
     { name = "gstreamer-app" },
     { name = "gstreamer-base" },
     { name = "gstreamer-video" },
     # Its build script requires xkbcommon from pkg-config. zstd-sys builds its
-    # bundled sources and wayland-sys is dlopen-only, so both may stay.
+    # bundled sources, so it may stay.
     { name = "smithay-client-toolkit" },
     # The peer transport belongs to the hosts: tilo-desktop is managed and
     # must never reach iroh (tools/policy/check_desktop_model_dependencies.py).
-    { name = "iroh" },
+    { name = "iroh", path = "vendor/iroh" },
     { name = "iroh-base" },
     { name = "iroh-dns" },
     { name = "iroh-metrics" },
@@ -73,18 +91,23 @@ third-party = [
 #   a host stack after desktop-model gains a member dependency, list it here.
 # - tilo-crypto is also built standalone from registry dependencies only
 #   (os/kernel/project-crate.py).
-# - tilo-vm, its protocol and tilo-xdg-paths are the tilo-vm Windows CLI's whole
+# - tilo-vm and its protocol are the tilo-vm Windows CLI's whole
 #   workspace graph; keep that cross build to the crates it uses.
-# - tilo-atomic-file is the builder image's sccache canary, compiled cold into an
-#   empty namespace (build-builder-image.yml); it must stay small.
+# - install-profile-model is also built by the isolated tools/imager-profile
+#   workspace, which must not resolve the application workspace.
+# - tilo-advisory-lock is the builder image's sccache canary, compiled cold into
+#   an empty namespace (build-ci-builder.yml); it must stay small.
 workspace-members = [
     # tilo-desktop-model and its member dependencies
     "collab-types",
     "desktop-policy",
+    "tilo-action-policy",
     "tilo-actions",
     "tilo-automation",
     "tilo-automerge",
     "tilo-clock",
+    "tilo-lock",
+    "tilo-content",
     "tilo-desktop-model",
     "wire-frame",
     # standalone registry-only build
@@ -92,19 +115,14 @@ workspace-members = [
     # tilo-vm Windows CLI
     "tilo-vm",
     "tilo-vm-protocol",
-    "tilo-xdg-paths",
-    # builder sccache canary and its member dependency
+    # also built by the isolated tools/imager-profile workspace
+    "install-profile-model",
+    # builder sccache canary
     "tilo-advisory-lock",
-    "tilo-atomic-file",
     # The [patch.crates-io] replacement for rustls-native-certs sits below
     # third-party crates the hack itself depends on (rustls-platform-verifier),
     # so depending on the hack would be a cycle.
     "rustls-native-certs",
-    # browser wasm32 registry verifier and its member dependency: the hack's
-    # native features pull mio there
-    "registry-types",
-    "registry-web",
-    "registry-web-bindgen",
 ]
 # A -sys crate in the hack is linked into runtime-dylib, whose exports carry
 # Rust symbols only. A thin app that monomorphises its safe wrapper (Imager's

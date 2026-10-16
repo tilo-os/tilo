@@ -22,21 +22,20 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # the key custody.
 tilo-secret-vault = { version = "0.1.0", path = "../secret-vault" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-atomic-file = { version = "0.1.0", path = "../../../crates/system/atomic-file" }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
-# Resolves the per-user config root ($XDG_CONFIG_HOME/tilo) the same way the
-# Settings app does, so every app agrees on one directory.
-tilo-xdg-paths = { version = "0.1.0", path = "../xdg-paths" }
 # The vault in a browser page, which has no native config directory.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
+# Resolves the per-user config root ($XDG_CONFIG_HOME/tilo) the same way the
+# Settings app does, so every app agrees on one directory.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 
 # getrandom's `SysRng` draws generated passwords from the OS CSPRNG;
-# `zeroize` wipes decrypted plaintext from the heap.
+# `zeroize` wipes decrypted plaintext from the heap, including the secrets a
+# handoff credential deserializes into.
 getrandom.workspace = true
-zeroize.workspace = true
+zeroize = { workspace = true, features = ["serde"] }
 uuid.workspace = true
 url.workspace = true
 # The storage daemon reads short-lived credentials through the cloud source
@@ -44,10 +43,12 @@ url.workspace = true
 cloud-source = { version = "0.1.0", path = "../cloud-source" }
 bounded-command = { version = "0.1.0", path = "../../../crates/system/bounded-command" }
 
-[dev-dependencies]
-# Tests stage and inspect key files through the vault's own private-file
-# checks, and edit Windows ACLs through a bounded `icacls` call.
-private-fs = { path = "../private-fs" }
+# The person's accounts as a record of their own (`person`): the resource
+# layer, without any UI.
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource", optional = true }
+
+[features]
+person = ["dep:tilo-resource"]
 
 [lints]
 workspace = true

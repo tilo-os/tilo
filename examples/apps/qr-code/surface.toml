@@ -1,0 +1,14 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "example.qr-code"
+label = "QR code"
+version = 1
+fields = [
+  { path = "payload", type = "String" },
+]
+
+[[resources.verbs]]
+id = "clear"
+kind = "undoable"
+

@@ -1,0 +1,30 @@
+[package]
+name = "test-app-registry"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "A signed app registry on loopback that offers newer versions of an installed app, for booted-image update checks."
+
+[[bin]]
+name = "tilo-test-registry"
+path = "src/main.rs"
+
+[dependencies]
+package-store = { path = "../../packaging/package-store" }
+registry-types = { path = "../../packaging/registry-types" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+blake3.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+workspace-hack = { version = "0.1" }
+
+
+[lints]
+workspace = true

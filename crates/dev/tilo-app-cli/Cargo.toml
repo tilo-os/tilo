@@ -19,6 +19,7 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 anyhow.workspace = true
 clap.workspace = true
 fluent.workspace = true
@@ -28,11 +29,21 @@ libc.workspace = true
 notify.workspace = true
 image = { workspace = true, features = ["png"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
+# Inside a Tilo session, `dev` hands the app the shell's file chooser the
+# way the launcher does.
+launcher = { path = "../../packaging/launcher" }
+runtime-bundle = { path = "../../packaging/runtime-bundle" }
+blake3.workspace = true
 tilo-caps = { path = "../../sdk/tilo-caps" }
+# History's message convention, which `check` lists missing messages by.
+tilo-history = { path = "../../sdk/tilo-history" }
+tilo-actions = { path = "../../collab/actions" }
 sha2.workspace = true
 registry-types = { path = "../../packaging/registry-types" }
 registry-client = { path = "../../packaging/registry-client" }
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-paths = { path = "../../platform/tilo-paths" }
+tilo-files = { path = "../../platform/tilo-files" }
+bounded-command = { path = "../../system/bounded-command" }
 # The portability rules table deserializes into typed rules.
 serde.workspace = true
 serde_json.workspace = true
@@ -45,12 +56,26 @@ tilo-ui-graph = { path = "../ui-graph" }
 tilo-headless-schema = { path = "../headless-schema" }
 # The registry's web artifact is a zip of the immutable version.
 zip.workspace = true
+# Reuse the validator generation/features already locked in workspace-hack.
+wasmparser = { version = "=0.239.0", default-features = false, features = ["features", "simd", "std", "validate"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 serde_yaml = "0.9"
 tempfile.workspace = true
 tilo-test-env = { path = "../test-env" }
+# The outside-repository journey publishes into a real registry on loopback.
+registry-server = { path = "../../packaging/registry-server" }
+tokio = { workspace = true, features = ["rt"] }
 
 [lints]
 workspace = true
+
+[features]
+# Explicit expensive real generated-app/toolkit/package qualification.
+native-sdk-qualification = []
+
+[[test]]
+name = "native-sdk"
+path = "tests/native_sdk.rs"
+required-features = ["native-sdk-qualification"]

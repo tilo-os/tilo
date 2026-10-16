@@ -27,6 +27,8 @@
               they always fall on character boundaries; a failed scan panics the calling test"
 )]
 
+pub mod catalog;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -47,6 +49,9 @@ const BUILDER_CALLS: &[&str] = &[
     "push_notification(",
     ".draw_text(",
     ".draw_text_weighted(",
+    ".draw_style(",
+    ".text_role(",
+    ".text_role_in_band(",
     "draw_task_button(",
     "draw_more_row(",
 ];

@@ -14,9 +14,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -883,4 +880,119 @@ fn diff_to_string(diff: &git2::Diff) -> String {
     })
     .unwrap();
     out
+}
+
+/// Separate checkouts preserve the caller's HEAD and dirty files and use the
+/// explicitly selected revision, even when created from a linked checkout.
+#[test]
+fn linked_worktrees_use_selected_revision_and_preserve_existing_work() {
+    let (dir, path) = init_repo();
+    let repository = open(&path);
+    let original_head = repository.head().unwrap().name().unwrap().to_owned();
+    let initial = repository.head().unwrap().target().unwrap();
+    fs::write(path.join("file.txt"), "new revision\n").unwrap();
+    repo::stage_file(&path, "file.txt").unwrap();
+    repo::commit(&path, "second revision").unwrap();
+    fs::write(path.join("file.txt"), "uncommitted work\n").unwrap();
+    let destination = dir.path().join("agent-checkout");
+    repo::create_worktree(&path, &destination, "codex/tile", &initial.to_string()).unwrap();
+    let linked = open(&destination);
+    assert_eq!(linked.head().unwrap().shorthand().unwrap(), "codex/tile");
+    assert_eq!(linked.head().unwrap().target(), Some(initial));
+    assert_eq!(
+        repository.head().unwrap().name().unwrap(),
+        original_head.as_str()
+    );
+    assert_eq!(
+        fs::read_to_string(path.join("file.txt")).unwrap(),
+        "uncommitted work\n"
+    );
+    assert_eq!(
+        fs::read_to_string(destination.join("file.txt")).unwrap(),
+        "line 1\nline 2\nline 3\n"
+    );
+    let rows = repo::list_worktrees(&destination).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.iter().filter(|row| row.current).count(), 1);
+    assert!(
+        rows.iter()
+            .any(|row| row.current && row.head == "codex/tile")
+    );
+    let second = dir.path().join("second-checkout");
+    repo::create_worktree(&destination, &second, "codex/verify", "HEAD").unwrap();
+    // HEAD is resolved in the initiating checkout, not the main checkout.
+    assert_eq!(open(&second).head().unwrap().target(), Some(initial));
+    assert_eq!(repo::list_worktrees(&path).unwrap().len(), 3);
+}
+
+/// Existing paths and branches, invalid revisions and relative destinations
+/// fail without replacing files, creating branches, or silently succeeding.
+#[test]
+fn linked_worktrees_refuse_unsafe_destinations_and_invalid_inputs() {
+    let (dir, path) = init_repo();
+    let destination = dir.path().join("occupied");
+    fs::create_dir(&destination).unwrap();
+    fs::write(destination.join("keep.txt"), "keep").unwrap();
+    assert!(repo::create_worktree(&path, &destination, "codex/new", "HEAD").is_err());
+    assert_eq!(
+        fs::read_to_string(destination.join("keep.txt")).unwrap(),
+        "keep"
+    );
+    let repository = open(&path);
+    assert!(
+        repository
+            .find_branch("codex/new", git2::BranchType::Local)
+            .is_err()
+    );
+    let fresh = dir.path().join("fresh");
+    let branch = repository.head().unwrap().shorthand().unwrap().to_owned();
+    assert!(repo::create_worktree(&path, &fresh, &branch, "HEAD").is_err());
+    assert!(repo::create_worktree(&path, &fresh, "codex/new", "missing-revision").is_err());
+    assert!(repo::create_worktree(&path, Path::new("relative"), "codex/new", "HEAD").is_err());
+    assert!(!fresh.exists());
+    assert!(
+        repository
+            .find_branch("codex/new", git2::BranchType::Local)
+            .is_err()
+    );
+}
+
+/// Worktree enumeration failure is an explicit separate state: the ordinary
+/// repository, its current edits and an unborn checkout remain usable.
+#[test]
+fn linked_worktree_enumeration_errors_preserve_the_repository() {
+    let empty = tempfile::tempdir().unwrap();
+    Repository::init(empty.path()).unwrap();
+    let (model, _) = repo::load(empty.path()).expect("unborn repository still opens");
+    assert!(model.worktree_error.is_none());
+    assert_eq!(model.worktrees.len(), 1);
+    assert!(model.worktrees[0].current);
+
+    let (dir, path) = init_repo();
+    let linked = dir.path().join("missing-checkout");
+    repo::create_worktree(&path, &linked, "codex/missing", "HEAD").unwrap();
+    fs::remove_dir_all(&linked).unwrap();
+    fs::write(path.join("file.txt"), "current edit\n").unwrap();
+    assert!(repo::list_worktrees(&path).is_err());
+    let (model, _) = repo::load(&path).expect("current checkout still opens");
+    assert!(
+        model.worktree_error.is_some(),
+        "failure must not look like an empty list"
+    );
+    assert_eq!(model.commits.len(), 1);
+    assert!(
+        model
+            .unstaged
+            .iter()
+            .any(|change| change.path == "file.txt")
+    );
+    assert!(GitClientApp::open_at(&path).is_some());
+
+    let bare = tempfile::tempdir().unwrap();
+    Repository::init_bare(bare.path()).unwrap();
+    let (model, _) = repo::load(bare.path()).expect("bare repository still opens");
+    assert!(
+        model.worktree_error.is_some(),
+        "bare checkout absence is explicit"
+    );
 }

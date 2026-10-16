@@ -5,10 +5,6 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
-# The app uses the protocol types through ui's canonical re-export.
-[package.metadata.cargo-machete]
-ignored = ["tilo-actions"]
-
 [lib]
 name = "terminal"
 path = "src/lib.rs"
@@ -19,21 +15,26 @@ path = "src/main.rs"
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Hooks a host's own tests use (`TerminalWidget::attach_input_probe`) in an
+# optimised profile, where debug assertions are off.
+test-support = []
 
 [dependencies]
-tilo-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process", features = ["native-editor"] }
+tilo-paths.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # OSC 8 links open through `ui::portal::open_uri` (the OpenURI portal on Linux).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
-tilo-automerge.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 uuid.workspace = true
 portable-pty = "0.9.0"
 # The application runtime the terminal hosts. Only its client half is used:
 # the service protocol and the descriptor-passing helper.
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
+# Where a session runs, and the environment records it can run in.
+tilo-environment = { path = "../../crates/runtime/environment" }
 libc.workspace = true
 vte = "0.15.0"
 tracing.workspace = true

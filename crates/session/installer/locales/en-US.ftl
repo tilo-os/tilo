@@ -1,0 +1,25 @@
+installer-welcome-title = Welcome to Tilo
+installer-welcome-note = We'll review your choices before installing. Nothing on your drives changes until you confirm.
+installer-keyboard-note = Choose the layout your keyboard uses. You can change it later.
+installer-account-name = Your name (optional)
+installer-account-name-note = Use the name you want people to see. Your sign-in username can be different.
+installer-account-username = Username
+installer-account-username-note = Used to sign in and for your home directory.
+installer-account-password = Your password
+installer-account-password-note = This protects your files. Use 15+ characters, like a few unrelated words.
+installer-account-password-confirm = Type your password again
+installer-account-pin = Your startup PIN
+installer-account-pin-note = Use at least 6 digits. Your computer limits wrong guesses. Keep the recovery key for hardware changes.
+installer-account-pin-confirm = Type your startup PIN again
+installer-storage-no-drives = No drives are available yet. Check that the drive is connected, then choose Refresh disks. Nothing has been changed.
+installer-storage-erase-warning = This replaces everything on the selected drive, including its other operating systems and files. Back up anything you want to keep. Nothing is erased until you review and confirm the installation.
+installer-storage-keep-guidance = Keep your other operating system and its files. Tilo needs at least 35 GiB of unallocated space or suitable empty partitions. It never shrinks or moves existing partitions. If there isn't room, you can go back safely and make space from your other operating system.
+
+installer-media-title = Play more video and audio formats
+installer-media-note = Downloaded to this computer from the formats' publishers once it is online. You can turn it off in Settings.
+installer-media-install = Install
+installer-media-skip = Not now
+installer-media-chosen = Chosen: installed once the new system is online
+installer-media-undo = Undo
+installer-media-next = Next
+installer-media-back = Back

@@ -2,12 +2,14 @@
 use super::*;
 use crate::shell::{persist, state::WorkspaceTree};
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use std::{sync::Arc, time::SystemTime};
-use tilo_delivery_protocol::delivery_v3::descriptor::GenerationExpectation;
+use tilo_delivery_protocol::descriptor::GenerationExpectation;
 use tilo_joined_room::testing::{APP, ROOM, raw_fixture, raw_fixture_at};
 use tilo_joined_room::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
-use tilo_peer_state::{NeighbourMsg, TransportOrigin, join};
+use tilo_peer_state::{TransportOrigin, join};
 
 struct Fixture {
     enrollment: VerifiedNativeEnrollment,
@@ -16,7 +18,7 @@ struct Fixture {
     now: SystemTime,
 }
 /// The state tree the owner publishes into.
-pub(super) fn tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
+pub(crate) fn tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
     let store: Arc<dyn std::any::Any + Send + Sync> = tilo_joined_room::testing::store(owner);
     store
         .downcast::<TreeStore>()
@@ -58,6 +60,96 @@ fn tree_at(path: &std::path::Path) -> WorkspaceTreeHandle {
     assert!(tree.set_room(id, RoomId::parse(ROOM).unwrap()));
     tree.persist_path = Some(path.into());
     tree.shared()
+}
+
+/// Owner publications and state-file encodes this thread made while `run` ran.
+fn publications_and_encodes<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
+    let publications = PUBLICATIONS_ON_THIS_THREAD.with(std::cell::Cell::get);
+    let encodes = persist::ENCODES_ON_THIS_THREAD.with(std::cell::Cell::get);
+    let value = run();
+    (
+        value,
+        PUBLICATIONS_ON_THIS_THREAD
+            .with(std::cell::Cell::get)
+            .saturating_sub(publications),
+        persist::ENCODES_ON_THIS_THREAD
+            .with(std::cell::Cell::get)
+            .saturating_sub(encodes),
+    )
+}
+
+#[test]
+fn native_owner_publication_encodes_the_state_file_once_and_keeps_the_live_document() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state.json");
+    let tree = tree_at(&path);
+    let owner = open(tree.clone()).unwrap();
+    let heads_before = tree.write().current_heads();
+    assert!(
+        !heads_before.is_empty(),
+        "the fixture's document has history"
+    );
+    let (intent, bootstrap, _, _, now) = raw_fixture();
+    let (pending, publications, encodes) =
+        publications_and_encodes(|| prepare_enrollment(&owner, &intent, now));
+    let pending = pending.unwrap();
+    assert!(publications > 0, "a pending enrollment is published");
+    assert_eq!(
+        encodes, publications,
+        "each publication encodes the state file once"
+    );
+    let enrollment = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    let (installed, publications, encodes) =
+        publications_and_encodes(|| owner.install(&enrollment, now));
+    installed.unwrap();
+    assert!(publications > 0, "an install is published");
+    assert_eq!(
+        encodes, publications,
+        "each publication encodes the state file once"
+    );
+    let tree = tree.read();
+    assert!(
+        heads_before
+            .iter()
+            .all(|head| { automerge::ReadDoc::get_change_by_hash(&tree.doc, head).is_some() }),
+        "the installed tree carries the live document's history, not a fresh one"
+    );
+}
+
+/// The state file is written with its owner record encoded once; it is still
+/// exactly the tree pretty-printed, the file on disk is those bytes, and the
+/// digest that pass computed is the one the writer checks the file against.
+#[test]
+fn native_owner_state_file_encoded_once_is_the_pretty_tree_and_its_digest() {
+    let (directory, owner, _room, _now, _key) = test_enrolled_owner();
+    let tree = tree_of(&owner);
+    let tree = tree.read();
+    assert!(
+        !tree.native_authority.is_empty(),
+        "the fixture holds an enrolled record"
+    );
+    let encoded = persist::encode_tree(&tree).unwrap();
+    let oracle = serde_json::to_vec_pretty(&persist::DurableTree::of(&tree)).unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&encoded.bytes),
+        String::from_utf8_lossy(&oracle),
+        "the state file keeps its exact bytes"
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("state.json")).unwrap(),
+        oracle,
+        "the last publication wrote exactly those bytes"
+    );
+    assert_eq!(
+        encoded.authority,
+        store::digest(&tree.native_authority).unwrap()
+    );
+    assert_eq!(
+        tree.native_runtime.expected_digest(),
+        Some(encoded.authority),
+        "the writer expects the record the file holds"
+    );
+    tilo_joined_room::preflight_storage(&tree.native_authority).unwrap();
 }
 
 #[test]
@@ -166,7 +258,7 @@ fn native_pending_complete_survives_restart_and_cancellation_preserves_exact_pro
 
 #[test]
 fn native_pending_not_published_failure_returns_no_send_authority() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let tree = tree_at(&path);
@@ -187,7 +279,7 @@ fn native_pending_not_published_failure_returns_no_send_authority() {
 
 #[test]
 fn native_admission_not_published_keeps_previous_committed_chat_and_disk() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let tree = tree_at(&path);
@@ -232,8 +324,8 @@ fn native_admission_not_published_keeps_previous_committed_chat_and_disk() {
 
 #[test]
 fn native_uncertain_publication_fences_owner_ui_and_live_listener_until_reopen() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     for checkpoint in [Checkpoint::AfterPublish, Checkpoint::BeforeCommit] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("state.json");
@@ -340,11 +432,11 @@ fn bootstrap_candidate(
     generation: u64,
     now: SystemTime,
 ) -> join::TransportHint {
-    use tilo_delivery_protocol::delivery_v3::descriptor;
+    use tilo_delivery_protocol::descriptor;
     owner
         .with_current(RoomId::parse(ROOM).unwrap(), |view| {
             let authority = descriptor::DescriptorAuthority {
-                peer: view.peer(),
+                peer: view,
                 pinned_governor: view.governor(),
                 pinned_host: view.host().unwrap(),
                 workspace: view.workspace(),
@@ -374,11 +466,11 @@ fn bootstrap_response(
     pending: &NativeBootstrap,
     hint: &join::TransportHint,
     now: SystemTime,
-) -> tilo_delivery_protocol::delivery_v3::media_wire::BootstrapResponse {
+) -> tilo_delivery_protocol::bootstrap::BootstrapResponse {
     use ed25519_dalek::Signer;
-    use tilo_delivery_protocol::delivery_v3::{descriptor, media_wire};
+    use tilo_delivery_protocol::{bootstrap, descriptor};
     let metadata = descriptor::inspect_persisted_hint(hint, &hint.host).unwrap();
-    let mut response = media_wire::BootstrapResponse {
+    let mut response = bootstrap::BootstrapResponse {
         version: 1,
         request: pending.request().clone(),
         host_certificate: postcard::to_stdvec(&hint.host).unwrap(),
@@ -392,7 +484,7 @@ fn bootstrap_response(
             .unwrap(),
         signature: [[0; 32]; 2],
     };
-    response.signature = media_wire::split_signature(
+    response.signature = bootstrap::split_signature(
         SigningKey::from_bytes(&[61; 32])
             .sign(&response.signing_digest().unwrap())
             .to_bytes(),
@@ -534,10 +626,11 @@ fn native_file_writer_excludes_competing_owner_and_encoded_overflow_preserves_di
     drop(oversized);
     let mut oversized_authority = tree.read().clone();
     // Malformed oversized bytes must be refused before any generic tree clone or publication.
+    // A cap's worth of peer bytes encodes as a third more base64 text than the cap.
     tilo_joined_room::testing::set_stored_peer(
         &mut oversized_authority.native_authority,
         RoomId::parse(ROOM).unwrap(),
-        vec![0; store::MAX_AUTHORITY_BYTES / 2],
+        vec![0; store::MAX_AUTHORITY_BYTES],
     );
     assert!(persist::save_tree_to(&oversized_authority, &path).is_err());
     assert_eq!(std::fs::read(&path).unwrap(), committed);
@@ -546,7 +639,7 @@ fn native_file_writer_excludes_competing_owner_and_encoded_overflow_preserves_di
 
 #[test]
 fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_device() {
-    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+    use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let owner = open(tree_at(&path)).unwrap();
@@ -568,7 +661,7 @@ fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_devi
             let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
             let before = chat.get_heads();
             chat.put(ROOT, "topic", "A real native local edit").unwrap();
-            chat.commit();
+            chat.commit_edit("fixture", "topic");
             let changes = chat
                 .get_changes(&before)
                 .into_iter()
@@ -670,7 +763,7 @@ pub(crate) fn test_bootstrap_response(
     pending: &NativeBootstrap,
     hint: &join::TransportHint,
     now: SystemTime,
-) -> tilo_delivery_protocol::delivery_v3::media_wire::BootstrapResponse {
+) -> tilo_delivery_protocol::bootstrap::BootstrapResponse {
     bootstrap_response(pending, hint, now)
 }
 fn fresh_slot(
@@ -743,7 +836,7 @@ fn native_enrollment_target_slot_reassignment_rejects_late_complete_and_keeps_pr
 }
 #[test]
 fn native_enrollment_target_slot_failed_barrier_preserves_previous_binding() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let (tree, local, previous) = fresh_slot(&path);
@@ -811,7 +904,7 @@ fn native_authenticated_bootstrap_admits_historical_signed_coverage_but_ongoing_
 
 #[test]
 fn native_uncertain_new_pending_proof_remains_required_without_send_receipt() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let (tree, local, _) = fresh_slot(&path);
@@ -869,9 +962,9 @@ fn native_reopen_refuses_each_partial_acknowledged_descriptor_pair() {
 #[test]
 #[serial_test::serial(process_env)]
 fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
-    use crate::shell::state::{CapOverride, Effect, Scope, Subject, Verb};
-    use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
+    use crate::shell::state::{Access, CapOverride, Effect, Scope, Subject};
     use std::os::unix::fs::PermissionsExt;
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
     /// Lets background fs-authority publication settle before the wrapped
     /// scope restores the environment it reads.
     struct RestoreEnv {
@@ -897,14 +990,10 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     let observed_acl = directory.path().join("published-acl.json");
     let observed_state = directory.path().join("published-state.json");
     let publisher = directory.path().join("publisher.sh");
-    std::fs::write(&publisher, "#!/bin/sh\ncp \"$5\" \"$TILO_NATIVE_OWNER_ACL_OBSERVED\"\ncp \"$TILO_NATIVE_OWNER_STATE\" \"$TILO_NATIVE_OWNER_STATE_OBSERVED\"\n").unwrap();
+    std::fs::write(&publisher, "#!/bin/sh\ncp \"$3\" \"$TILO_NATIVE_OWNER_ACL_OBSERVED\"\ncp \"$TILO_NATIVE_OWNER_STATE\" \"$TILO_NATIVE_OWNER_STATE_OBSERVED\"\n").unwrap();
     std::fs::set_permissions(&publisher, std::fs::Permissions::from_mode(0o700)).unwrap();
     let values = [
         ("TILO_FS_AUTHORITY_PUBLISHER", publisher),
-        (
-            "TILO_FS_AUTHORITY_CACHE_DIR",
-            directory.path().join("cache"),
-        ),
         ("TILO_NATIVE_OWNER_ACL_OBSERVED", observed_acl.clone()),
         ("TILO_NATIVE_OWNER_STATE", path.clone()),
         ("TILO_NATIVE_OWNER_STATE_OBSERVED", observed_state.clone()),
@@ -922,18 +1011,18 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
         native.fs_acl_path = Some(acl.clone());
         let mut old = CapOverride::new(
             Subject::User(collab_types::Ed25519PublicKey::from_bytes([201; 32])),
-            Scope::Workspace,
+            Scope::FsPath("/var/workspace/old".into()),
             Effect::Grant,
-            Verb::Read,
+            Access::Read,
         );
-        old.id = "old-room-only".into();
-        native.desktop.workspaces[0].capabilities.push(old);
+        old.id = "old-sandbox-only".into();
+        native.desktop.workspaces[0].sandbox.push(old);
     }
     let owner = open(tree.clone()).unwrap();
     tree.read().export_fs_capabilities();
     settle_publication("baseline ACL export must publish");
     let baseline_acl = std::fs::read(&acl).unwrap();
-    assert!(String::from_utf8_lossy(&baseline_acl).contains("old-room-only"));
+    assert!(String::from_utf8_lossy(&baseline_acl).contains("old-sandbox-only"));
     let (intent, bootstrap, _, _, now) = raw_fixture();
     let id = owner
         .prepare_enrollment_into(&intent, Some(local), now)
@@ -962,7 +1051,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     owner.install(&complete, now).unwrap();
     settle_publication("committed install must publish its ACL");
     let committed_acl = std::fs::read(&acl).unwrap();
-    assert!(!String::from_utf8_lossy(&committed_acl).contains("old-room-only"));
+    assert!(!String::from_utf8_lossy(&committed_acl).contains("old-sandbox-only"));
     assert_eq!(std::fs::read(&observed_acl).unwrap(), committed_acl);
     let published_state: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&observed_state).unwrap()).unwrap();
@@ -972,7 +1061,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     );
     std::fs::remove_file(&observed_acl).unwrap();
     std::fs::remove_file(&observed_state).unwrap();
-    stale.flush_to_disk();
+    stale.queue_save();
     settle_publication("stale flush must leave publication idle");
     assert_eq!(std::fs::read(&acl).unwrap(), committed_acl);
     assert!(

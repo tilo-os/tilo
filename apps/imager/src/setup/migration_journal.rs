@@ -1249,9 +1249,11 @@ pub fn resume_folder(
     let destination = absolute(&journal.document.destination).map_err(|e| e.to_string())?;
     migration::copy_folder_internal(&source, &destination, cancelled, progress, Some(journal))
 }
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(test)]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 mod tests {
     use super::*;
+    use crate::setup::test_support::isolated;
     use std::{fs, path::PathBuf, sync::atomic::Ordering};
 
     fn decoded_document<T: serde::de::DeserializeOwned>(path: &Path) -> T {
@@ -1896,20 +1898,11 @@ mod tests {
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .unwrap();
-            let deadline = tilo_test_env::hang_deadline();
-            loop {
-                if let Some(status) = child.try_wait().unwrap() {
-                    assert!(status.success());
-                    assert!(source.parent().unwrap().join("fifo-rejected").is_file());
-                    break;
-                }
-                if ui::time::now() >= deadline {
-                    child.kill().unwrap();
-                    child.wait().unwrap();
-                    panic!("resume blocked opening a swapped FIFO");
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+            let status = bounded_command::wait_or_kill(&mut child, tilo_test_env::hang_bound())
+                .unwrap()
+                .expect("resume blocked opening a swapped FIFO");
+            assert!(status.success());
+            assert!(source.parent().unwrap().join("fifo-rejected").is_file());
         });
     }
     #[test]
@@ -2159,21 +2152,6 @@ mod tests {
             },
         );
     }
-
-    /// Runs one merged phase on a fresh thread so the thread-local race and
-    /// persistence injection hooks start clean, exactly as when the phase was
-    /// its own test; a failing phase re-raises its original panic payload.
-    fn isolated(phase: &str, body: impl FnOnce() + Send) {
-        std::thread::scope(|scope| {
-            let handle = std::thread::Builder::new()
-                .name(phase.to_owned())
-                .spawn_scoped(scope, body)
-                .expect("spawn isolated test phase");
-            if let Err(panic) = handle.join() {
-                std::panic::resume_unwind(panic);
-            }
-        });
-    }
 }
 
 #[cfg(test)]
@@ -2202,7 +2180,8 @@ pub(super) mod crash_injection {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
+#[cfg(windows)]
 mod windows_tests {
     #[test]
     fn journaled_copy_refuses_before_mutation_until_native_durability_is_available() {

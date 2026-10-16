@@ -78,6 +78,16 @@ impl DesktopSurface {
             .retain(|strip, _| strips.contains(strip));
     }
 
+    /// Take over the pointer from `shown`, the surface this one replaces on
+    /// screen while `shown` is kept for a later return (a workspace switch):
+    /// where the pointer is carries over; a press that began over `shown`
+    /// does not, here or when `shown` comes back.
+    pub fn take_pointer_from(&mut self, shown: &mut Self) {
+        self.navigation.cursor = shown.navigation.cursor;
+        self.navigation.pressed_group = None;
+        shown.navigation.pressed_group = None;
+    }
+
     /// Hosts call this after applying local intents. The tree owns the local
     /// selection; this compositor-independent layer only presents it.
     pub fn sync_navigation(&mut self, tree: &DesktopTree) {
@@ -129,26 +139,6 @@ impl DesktopSurface {
         }
     }
 
-    /// Pan the actual retained row without reframing the selected window on
-    /// the following layout. A later explicit selection still reveals it.
-    pub fn pan_desktop(&mut self, strip: StripId, offset: f64) -> Option<bool> {
-        if self.navigation.active_strip != Some(strip) || !offset.is_finite() {
-            return None;
-        }
-        let row = self.row_mut(strip)?;
-        if row.groups.iter().any(|group| group.maximized) {
-            return Some(false);
-        }
-        let moved = row.pan_to(offset);
-        if let Some(group) = self.navigation.groups.get(&strip).copied()
-            && let Some(key) = self.navigation_key(strip, group)
-        {
-            self.navigation.framed.insert(strip, key);
-            self.navigation.manual_pan = Some((strip, group));
-        }
-        Some(moved)
-    }
-
     /// An explicit app selection reveals even an already-selected app after
     /// manual panning. Clearing only this strip leaves retained peers intact.
     pub fn reveal_on_next_layout(&mut self, strip: StripId) {
@@ -169,7 +159,8 @@ impl DesktopSurface {
         let widths = row
             .groups
             .iter()
-            .map(|group| (group.id, group.get_rect().width()))
+            .filter(|group| !group.is_closing())
+            .map(|group| (group.id, group.dest_width_px()))
             .collect::<Vec<_>>();
         if widths.iter().any(|(_, width)| *width <= 0.0) {
             return None;
@@ -187,7 +178,7 @@ impl DesktopSurface {
         let count: usize = strips
             .iter()
             .filter_map(|id| self.row(*id))
-            .map(|row| row.groups.len())
+            .map(|row| row.groups.iter().filter(|g| !g.is_closing()).count())
             .sum();
         let focused = self.navigation.active_strip.and_then(|strip| {
             self.navigation
@@ -208,6 +199,16 @@ impl DesktopSurface {
                 self.navigation.framed.remove(&strip);
                 continue;
             };
+            if self.row(strip).is_some_and(|row| {
+                row.groups
+                    .iter()
+                    .any(ui::widget::WindowGroup::edge_resize_in_flight)
+            }) {
+                // A captured edge sets the viewport under the hand. Retain
+                // that deliberate framing when its Width intent is applied;
+                // a later explicit selection still reveals normally.
+                self.navigation.manual_pan = Some((strip, group));
+            }
             let Some(key) = self.navigation_key(strip, group) else {
                 continue;
             };
@@ -219,7 +220,7 @@ impl DesktopSurface {
                 continue;
             }
             if let Some(row) = self.row_mut(strip) {
-                row.scroll_group_into_view_animated(group, ui::clock::Instant::now());
+                row.scroll_group_into_view_animated(group, ui::time::Instant::now());
             }
             self.navigation.framed.insert(strip, key);
         }
@@ -295,7 +296,13 @@ impl DesktopSurface {
                 ..
             } => {
                 if let Some((strip, group)) = self.navigation.pressed_group.take()
-                    && self.row(strip).is_some_and(|row| !row.group_drag_active())
+                    && self.row(strip).is_some_and(|row| {
+                        !row.group_drag_active()
+                            && !row
+                                .groups
+                                .iter()
+                                .any(ui::widget::WindowGroup::edge_resize_in_flight)
+                    })
                 {
                     self.navigation.pending_focus = Some((strip, group));
                 }

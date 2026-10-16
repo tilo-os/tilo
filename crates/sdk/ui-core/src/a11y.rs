@@ -56,6 +56,9 @@ pub enum Role {
     /// Use [`AccessState::checked`].
     Switch,
     Slider,
+    /// A focusable divider between two panes that moves with the arrow
+    /// keys; its value is the first pane's share in percent.
+    Separator,
     SpinButton,
     /// Use [`AccessState::expanded`].
     ComboBox,
@@ -218,6 +221,18 @@ pub enum Action {
     ShowContextMenu,
 }
 
+/// A change to the person's accessibility preferences that a control asked
+/// for, such as the sign-in screen's larger-text or high-contrast toggle.
+/// The host applies it to the whole window, exactly as the matching system
+/// preference would.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AccessibilityRequest {
+    /// Multiply text by this factor (1.0 is the default size).
+    TextScale(f32),
+    HighContrast(bool),
+    ScreenReader(bool),
+}
+
 /// How urgently a [live region](AccessNode::live) narrates its own update
 /// *without moving focus* — a toast appearing, a status line changing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -270,7 +285,7 @@ pub struct AccessNode {
     /// chaining these keys from the owning widget downwards, so an AT that
     /// holds a reference to "the clip named `intro`" keeps pointing at that
     /// clip across repaints — and the same key path is what comes back on
-    /// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at)
+    /// [`Widget::perform_action`](crate::widget::Widget::perform_action)
     /// when the AT operates the node.
     ///
     /// `None` (the default) means "key me by my ordinal position among my
@@ -295,6 +310,34 @@ pub struct AccessNode {
     /// The export layer emits them as this node's subtree, nested as deeply
     /// as needed (rows containing cells).
     pub children: Vec<AccessNode>,
+}
+
+/// A widget's [`AccessNode`] with its synthetic children shared rather than
+/// owned, from [`Widget::accessibility_shared`](crate::widget::Widget::accessibility_shared).
+///
+/// A widget that keeps its children's nodes between frames (an editor's
+/// paragraphs) hands each over as the very `Arc` it handed over last frame
+/// when that child did not change. The semantic tree then knows the child is
+/// unchanged without copying or comparing it, so a frame that changes one
+/// child costs that child, not the widget's whole subtree.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SharedAccessNode {
+    /// The widget's node. Its own `children` are empty: they are in
+    /// [`Self::children`].
+    pub node: AccessNode,
+    pub children: Vec<std::sync::Arc<AccessNode>>,
+}
+
+impl SharedAccessNode {
+    /// The node as [`Widget::accessibility`](crate::widget::Widget::accessibility)
+    /// answers it, the children copied out where something else still holds
+    /// them.
+    pub fn into_owned(self) -> AccessNode {
+        let Self { mut node, children } = self;
+        node.children
+            .extend(children.into_iter().map(std::sync::Arc::unwrap_or_clone));
+        node
+    }
 }
 
 impl AccessNode {
@@ -338,7 +381,7 @@ impl AccessNode {
     }
 
     /// Route every keyed actionable descendant through its existing
-    /// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at)
+    /// [`Widget::perform_action`](crate::widget::Widget::perform_action)
     /// implementation. This is the high-complexity custom-canvas adapter:
     /// timeline/editor authors keep one stable keyed semantic tree instead of
     /// duplicating an action id and handler for every painted affordance.
@@ -485,7 +528,7 @@ impl AccessNode {
 /// This is the *inverse-less* half of the key contract: a widget hashes its
 /// element ids on the way out, and compares an incoming key path element back
 /// against `hash_key(&id)` on the way in (see
-/// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at)).
+/// [`Widget::perform_action`](crate::widget::Widget::perform_action)).
 /// The hash is a plain FNV-1a with a fixed basis, so it is deterministic within
 /// and across processes — unlike [`std::collections::hash_map::RandomState`],
 /// which would hand an assistive technology a different id every launch.
@@ -493,6 +536,27 @@ pub fn hash_key(value: &impl std::hash::Hash) -> u64 {
     let mut h = fnv::FnvHasher::default();
     std::hash::Hash::hash(value, &mut h);
     std::hash::Hasher::finish(&h)
+}
+
+/// Every name and value `root` and its descendants expose to assistive
+/// technology, depth first.
+pub fn texts(root: &dyn crate::widget::Widget) -> Vec<String> {
+    fn node(access: &AccessNode, out: &mut Vec<String>) {
+        out.extend(access.name.clone());
+        out.extend(access.value.clone());
+        for child in &access.children {
+            node(child, out);
+        }
+    }
+    fn visit(widget: &dyn crate::widget::Widget, out: &mut Vec<String>) {
+        if let Some(access) = widget.accessibility() {
+            node(&access, out);
+        }
+        widget.for_each_child(&mut |child| visit(child, out));
+    }
+    let mut out = Vec::new();
+    visit(root, &mut out);
+    out
 }
 
 /// Serializable absolute logical-pixel geometry for a synthetic

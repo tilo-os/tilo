@@ -142,9 +142,15 @@ case "$lock" in
 esac
 
 # Memory-init + heap hardening kargs
-for k in init_on_alloc=1 init_on_free=1 slab_nomerge page_alloc.shuffle=1 vsyscall=none; do
+for k in init_on_alloc=1 slab_nomerge page_alloc.shuffle=1 vsyscall=none; do
   has_karg "$k" && ok "karg $k" || warn "karg $k MISSING"
 done
+# 01-hardening.toml leaves init_on_free out on purpose: it zeroes all RAM on one
+# CPU at every boot and switches init_on_alloc's zeroing off. Someone may still
+# add it to their own boot entry; say so, it is not a failure.
+if has_karg init_on_free=1; then
+  note "karg init_on_free=1 is set locally: freed memory is scrubbed, boot zeroes all RAM first"
+fi
 # A dev image (os/Containerfile.dev, /usr/lib/tilo/image-flavour = dev) drops
 # this karg on purpose: tilo-vm hands the VM its SSH key as a credential.
 if has_karg systemd.import_credentials=no; then
@@ -185,10 +191,14 @@ fi
 # shows up here and nowhere else.
 meminit="$(journalctl --quiet --boot --dmesg --no-pager --output=cat 2>/dev/null \
   | grep -m1 'mem auto-init:' || true)"
+# The image asks for zero-on-alloc only (01-hardening.toml says why free is
+# off). A local init_on_free=1 makes the kernel zero on free instead and turn
+# alloc zeroing off: allocations still reach their caller zeroed, so note it.
 case "$meminit" in
-  *'alloc:on'*'free:on'*) ok "${meminit#*mem auto-init: }(live, from the kernel's own report)" ;;
-  '')                     note "mem auto-init: kernel report not in the ring buffer (rotated out?)" ;;
-  *)                      warn "mem auto-init NOT fully on: ${meminit#*mem auto-init: }" ;;
+  *'alloc:on'*) ok "${meminit#*mem auto-init: }(live, from the kernel's own report)" ;;
+  *'free:on'*)  note "mem auto-init zeroes on free (local init_on_free=1): ${meminit#*mem auto-init: }" ;;
+  '')           note "mem auto-init: kernel report not in the ring buffer (rotated out?)" ;;
+  *)            warn "mem auto-init NOT on: ${meminit#*mem auto-init: }" ;;
 esac
 
 # Enforced module signatures. sig_enforce is the live value of
@@ -565,13 +575,17 @@ case "${roottype:-}" in
   *)     note "root filesystem is NOT encrypted ($rootsrc, $roottype) — install with --encrypt to change that" ;;
 esac
 
-# hidepid on /proc (other users' processes hidden). Read PID 1's /proc: the
-# audit's own sandbox (ProtectKernelTunables=) mounts a fresh /proc without it.
-if findmnt --task 1 -no OPTIONS /proc 2>/dev/null | grep -qE 'hidepid=(2|invisible|1)'; then
-  ok "hidepid on /proc: $(findmnt --task 1 -no OPTIONS /proc | tr ',' '\n' | grep hidepid)"
-else
-  warn "hidepid on /proc NOT set"
-fi
+# Long-running services under their own users see only their own processes
+# (ProtectProc=invisible). /proc is not remounted hidepid globally: that hides
+# PID 1 from every unprivileged process, which breaks libsystemd's unit
+# lookups (the AT-SPI bus cannot start); secret holders are non-dumpable.
+for unit in tilo-relay.service tilo-fs-replica.service tilo-local-model.service; do
+  if [ "$(systemctl show -p ProtectProc --value "$unit" 2>/dev/null)" = invisible ]; then
+    ok "$unit sees only its own processes (ProtectProc=invisible)"
+  else
+    warn "$unit can see other users' processes (ProtectProc is not invisible)"
+  fi
+done
 
 # Hardened userspace allocator (scudo) on the base daemons. Query systemd's
 # effective unit environment rather than acquiring ptrace authority merely to
@@ -596,10 +610,13 @@ case "$fsctx" in
   *) note "fs.service domain: $fsctx" ;;
 esac
 
-# Image signature enforcement (verify-before-update). Match the Tilo registry
-# scope and pinned public-key path together: an unrelated sigstore policy must
-# not make this check pass.
+# Image signature enforcement (verify-before-update). Parsed, not grepped:
+# tilo-image-policy-check proves each Tilo image scope itself requires a
+# sigstore signature from the pinned key, so a signed sibling scope cannot
+# stand in for a weakened Tilo scope, and an unreadable or malformed policy
+# fails rather than passes.
 policy=/etc/containers/policy.json
+image_policy_check=/usr/libexec/tilo-image-policy-check
 
 legacy_crypto_tools=""
 for tool in openssl sbsign sbverify efi-updatevar cert-to-efi-sig-list mokutil pesign efikeygen certutil pk12util; do
@@ -621,14 +638,12 @@ for tool in p11tool gnutls-cli; do
   fi
 done
 
-if [ -r "$policy" ] \
-   && grep -Fq '"registry.tilo.so/tilo/tilo"' "$policy" \
-   && grep -Fq '"type": "sigstoreSigned"' "$policy" \
-   && grep -Fq '"keyPath": "/usr/share/tilo/cosign.pub"' "$policy" \
-   && [ -s /usr/share/tilo/cosign.pub ]; then
-  ok "container signature policy pins signed Tilo images to the installed verification key"
+if ! policy_report="$("$image_policy_check" "$policy" 2>&1)"; then
+  warn "Tilo image signature policy does not require the pinned signature: ${policy_report:-$image_policy_check produced no verdict}"
+elif [ ! -s /usr/share/tilo/cosign.pub ]; then
+  warn "Tilo image signature policy pins /usr/share/tilo/cosign.pub, but that verification key is missing or empty"
 else
-  warn "Tilo image signature policy or its pinned verification key is missing"
+  ok "container signature policy pins signed Tilo images to the installed verification key"
 fi
 
 if [ -e /var/lib/tilo/image-trust/required ]; then

@@ -1,9 +1,7 @@
 # Chat — Tilo application manifest.
 #
-# Peer-to-peer over iroh QUIC (feature `live-media`), which reaches
-# the n0 relay/DNS fleet and arbitrary peer addresses — not an
-# allowlistable set, so `mode = "host"`. The screen-share path goes
-# through the ScreenCast portal.
+# The conversation syncs through the collab service and calls run through
+# the shell's voice service, so the app opens no sockets of its own.
 #
 # Beyond the system read profile it needs, as a consented capability:
 # read on `/var/workspace` for the attachment picker.
@@ -24,7 +22,10 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["files.paths", "app-files", "network.sockets", "threads", "media.decode", "camera", "microphone", "screen-capture"]
+optional = ["open-uri", "clipboard", "files.paths", "app-files", "threads", "media.decode", "camera", "microphone", "screen-capture"]
+
+[resources]
+kinds = ["chat.workspace", "tilo.moderation", "tilo.rich-text"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -46,13 +47,12 @@ namespaces = [
     "uts",
     "ipc",
     "mount",
-    "net",
 ]
 seccomp    = "tilo-default"
 landlock   = "strict"
 
 [sandbox.net]
-mode = "host"
+mode = "off"
 
 [sandbox.portals]
 screencast = "via-host"
@@ -61,6 +61,10 @@ screencast = "via-host"
 collab = "optional@1"
 tilo-fs = "optional@1"
 shell-ui = "optional@1"
+
+[actions]
+query = true
+invoke = true
 
 [entrypoint]
 bin             = "bin/chat"

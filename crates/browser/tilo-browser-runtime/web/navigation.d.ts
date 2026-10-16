@@ -1,49 +1,67 @@
-/** Per-mount Tilo projection. All identities are opaque strings, including u64 IDs. */
+/**
+ * Per-mount Tilo projection, mirroring `tilo_desktop_surface::navigation`.
+ * All identities are opaque strings, including u64 IDs.
+ */
 export interface DesktopRoute { workspace: string; strip: string; group: string; tab: string }
 export type WorkspaceActivityView = 'catch-up' | 'explore' | 'replay' | 'tasks';
-/** Workspace settings tabs; `permissions` is the one labelled Privacy (every grant in the room). */
-export type WorkspaceSettingsTab = 'general' | 'members' | 'agents' | 'permissions' | 'apps';
-export type WorkspaceActivityState = {workspace: string; view: WorkspaceActivityView; playing: boolean; coverage: 'complete' | 'partial'} | null;
+export type WorkspaceTaskStatus = 'queued' | 'in_progress' | 'waiting' | 'done' | 'cancelled';
+export interface WorkspaceTask {
+  id: string;
+  title: string;
+  status: WorkspaceTaskStatus;
+  statusLabel: string;
+  routeLabel: string;
+  createdBy: string;
+  assignedAgent: string | null;
+  resource: string | null;
+  updatedAt: number;
+}
+/** `inSurface`: the runtime draws this view over the desktop itself (the shared history pane), so the page shows none of its own. */
+export type WorkspaceActivityState = {workspace: string; view: WorkspaceActivityView; playing: boolean; coverage: 'complete' | 'partial'; tasks: WorkspaceTask[]; inSurface: boolean} | null;
 /** Last authoritative close in this generation; reset to null when a pane opens.
- * Only dismissed permits returning focus to an external opener. Optional on older hosts. */
-export type WorkspaceActivityCloseReason = 'dismissed' | 'workspace-changed' | 'resource-opened' | 'access-changed' | 'disposed';
+ * Only dismissed permits returning focus to an external opener. */
+export type WorkspaceActivityCloseReason = 'dismissed' | 'workspace-changed' | 'resource-opened';
 export interface DesktopNavigationSnapshot {
   version: 1;
   generation: string;
-  /**
-   * Every window. `app` is its app id; `record` the record it shows (null for
-   * an app's one package-primary document), which another mount of the page
-   * with the same profile, device and room may pass as its `record` to edit
-   * the same document live, or `{kind: 'open', app, record}` opens again.
-   */
-  entries: Array<{route: DesktopRoute; label: string; stripLabel: string; workspaceLabel: string; app?: string | null; record?: string | null}>;
-  workspaces: Array<{id: string; label: string; room: string; owner?: string | null; strips: Array<{id: string; label: string}>}>;
-  applications?: Array<{id: string; label: string}>;
+  /** `app`: the package id the window shows, as links name it; null for a surface of no app. */
+  entries: Array<{route: DesktopRoute; app: string | null; label: string; stripLabel: string; workspaceLabel: string}>;
+  workspaces: Array<{id: string; label: string; room: string; owner: string | null; strips: Array<{id: string; label: string}>}>;
+  /** What `launch` can open. */
+  applications: Array<{id: string; label: string}>;
   activeWorkspace: string;
   activeStrip: string | null;
   active: DesktopRoute | null;
   widthPermille: number | null;
   maximized: boolean;
-  capabilities: {select: boolean; width: boolean; maximize: boolean; strips: boolean; commands?: boolean; close?: boolean; open?: boolean; globalSearch?: boolean; workspaceSelect?: boolean; workspaceHistory?: boolean; workspaceReplay?: boolean};
-  desktopPan?: {workspace: string; strip: string; offset: number; viewport: number; content: number; max: number} | null;
-  workspaceActivity?: WorkspaceActivityState;
-  workspaceActivityCloseReason?: WorkspaceActivityCloseReason | null;
-  history?: {target: string} | null;
-  /** The workspace settings while they are open over the desktop, and their tab. */
-  workspaceSettings?: {workspace: string; tab: WorkspaceSettingsTab} | null;
+  capabilities: {
+    select: boolean; width: boolean; maximize: boolean; strips: boolean; commands: boolean;
+    globalSearch: boolean; workspaceSelect: boolean; workspaceHistory: boolean; workspaceReplay: boolean;
+    workspaceTasks: boolean; close: boolean; closeInactive: boolean; launch: boolean; pan: boolean;
+    scroll: boolean; history: boolean;
+    /** The surface takes sideways wheel input itself; leave it the wheel rather than turn it into `pan`. */
+    swipe: boolean;
+    notifications: boolean;
+  };
+  desktopPan: {workspace: string; strip: string; offset: number; viewport: number; content: number; max: number} | null;
+  workspaceActivity: WorkspaceActivityState;
+  workspaceActivityCloseReason: WorkspaceActivityCloseReason | null;
+  /** Back and forward through the active tab's own history. */
+  history: {canBack: boolean; canForward: boolean} | null;
   scroll: {region: string; offset: number; viewport: number; content: number; max: number} | null;
+  /** Banners on screen, notifications kept in the centre, and whether the centre is open; with `capabilities.notifications`. */
+  notifications?: {active: number; retained: number; centerOpen: boolean};
 }
 export type DesktopScrollAction = {kind: "line" | "page"; value: -1 | 1} | {kind: "absolute"; value: number} | {kind: "start" | "end"};
 export type DesktopNavigationCommand = {generation: string} & (
   {kind: "workspace"; workspace: string} |
   {kind: "workspace-activity"; workspace: string; view: WorkspaceActivityView} |
   {kind: "close-workspace-activity"; workspace: string} |
-  /** The active workspace's settings, over the desktop (closing its Activity). */
-  {kind: "workspace-settings"; workspace: string; tab: WorkspaceSettingsTab} |
-  {kind: "close-workspace-settings"; workspace: string} |
-  {kind: "global-search"; query?: string} |
+  /** Open or close the notification centre over the desktop. */
+  {kind: "notification-center"; open: boolean} |
+  {kind: "global-search"} |
   {kind: "pan"; workspace: string; strip: string; offset: number} |
-  {kind: "history"; route: DesktopRoute; target: string} |
+  {kind: "history"; route: DesktopRoute; target: "back" | "forward"} |
   {kind: "close"; route: DesktopRoute} |
   {kind: "select"; route: DesktopRoute} |
   {kind: "strip"; workspace: string; strip: string} |
@@ -51,19 +69,17 @@ export type DesktopNavigationCommand = {generation: string} & (
   {kind: "maximize"; route: DesktopRoute; maximized: boolean} |
   {kind: "scroll"; region: string; action: DesktopScrollAction} |
   {kind: "commands"; query: string} |
-  /**
-   * An app id or alias, linked first when the core lacks it; opens in the active workspace.
-   * With `record` (a local desktop only) the window shows that existing record of the app
-   * in the workspace's room, such as another window's or a standalone mount's `record`.
-   */
-  {kind: "open"; app: string; record?: string}
+  /** Open an app of the snapshot's `applications` in a new window beside the focused one. */
+  {kind: "launch"; app: string} |
+  /** Show an app as following a link to it does: focus its window on the shown strip, else open one. */
+  {kind: "open"; app: string}
 );
 export interface DesktopNavigationV1 {
   readonly version: 1;
   getSnapshot(): DesktopNavigationSnapshot;
   subscribe(listener: (snapshot: DesktopNavigationSnapshot) => void): () => void;
   /** Workspace commands queue local presentation; observe snapshots for rendered pane state.
-   * Close resolves after terminal success and authoritative topology removal; open once the
-   * command is handed to the topology owner (a local desktop has applied it by then). */
+   * Close resolves after terminal success and authoritative topology removal; every other
+   * command once the runtime admitted it. */
   dispatch(command: DesktopNavigationCommand): Promise<void>;
 }

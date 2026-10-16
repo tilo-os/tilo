@@ -57,6 +57,13 @@ pub mod appearance;
 #[cfg(target_os = "linux")]
 pub mod auth;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod background;
 #[cfg(any(test, target_os = "linux"))]
 pub mod camera;
@@ -72,12 +79,27 @@ pub mod file_chooser;
 pub mod file_picker_spawner;
 pub mod global_shortcuts;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod inhibit;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod input_capture;
 #[cfg(target_os = "linux")]
 pub(crate) mod interface_dispatch;
 pub mod lifecycle;
+pub mod reply;
 // Native media observes this policy on every supported shell host.
 pub mod lockdown;
 #[cfg(any(test, target_os = "linux"))]
@@ -87,8 +109,31 @@ pub mod permission_store;
 pub mod picker_queue;
 pub mod print;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod remote_desktop;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(
+        dead_code,
+        reason = "only the Linux portal adapters load a store; other hosts build it for their tests"
+    )
+)]
+mod restore;
+#[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod screencast;
 pub mod screencast_pipewire;
 #[cfg(target_os = "linux")]
@@ -99,6 +144,13 @@ pub mod screenshot;
 pub mod secret;
 pub mod settings;
 #[cfg(any(test, target_os = "linux"))]
+#[cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        reason = "only the Linux portal adapter calls this model; other hosts build it for its tests"
+    )
+)]
 pub mod usb;
 #[cfg(any(test, target_os = "linux"))]
 pub mod wallpaper;
@@ -190,9 +242,28 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
 use crate::shell::state::{
-    AppId, CapOverride, Capability, Expiry, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION,
-    GrantScope, ResourceRef, Verb, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
+    Access, AppId, Capability, Expiry, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope,
+    ResourceRef, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
 };
+
+/// The `key` entry of a portal request's options (a D-Bus `a{sv}`) as `T`;
+/// `None` when it is absent or of another type.
+pub(crate) fn option<T: TryFrom<zbus::zvariant::OwnedValue>>(
+    options: &HashMap<String, zbus::zvariant::OwnedValue>,
+    key: &str,
+) -> Option<T> {
+    T::try_from(options.get(key)?.try_clone().ok()?).ok()
+}
+
+/// A text option an app may show the user or pass on: at most `max` bytes
+/// and free of control characters; `None` otherwise.
+pub(crate) fn text_option(
+    options: &HashMap<String, zbus::zvariant::OwnedValue>,
+    key: &str,
+    max: usize,
+) -> Option<String> {
+    option::<String>(options, key).filter(|v| v.len() <= max && !v.chars().any(char::is_control))
+}
 
 /// Identity of the sandboxed app that issued a portal request.
 ///
@@ -408,7 +479,7 @@ impl GrantStoreHandle {
         reason = "the read guard protects `ws`, which `ws.allows` needs through the final \
                   call — already dropped at the earliest possible point, the function's end"
     )]
-    pub fn permits(&self, caller: &PortalCaller, resource: &ResourceRef, verb: Verb) -> bool {
+    pub fn permits(&self, caller: &PortalCaller, resource: &ResourceRef, verb: Access) -> bool {
         let tree = self.tree.read();
         let Some(ws) = tree
             .desktop
@@ -439,15 +510,13 @@ impl GrantStoreHandle {
         };
         let ids = ws.grant_app(&caller.app_id, capability);
         // Mirror into the automerge doc so peer-sync ships it and a restart reloads it; tolerant of the doc not being seeded yet.
-        let written: Vec<CapOverride> = ws
-            .capabilities
-            .iter()
-            .filter(|c| ids.contains(&c.id))
-            .cloned()
-            .collect();
-        for cap in written {
-            tree.doc_insert_capability(caller.workspace_id, &cap);
-        }
+        tree.doc_write_policy(
+            caller.workspace_id,
+            &crate::shell::state::PolicyEdit {
+                sandbox_granted: ids,
+                ..crate::shell::state::PolicyEdit::default()
+            },
+        );
         true
     }
 
@@ -473,6 +542,10 @@ impl GrantStoreHandle {
         let Some(key) = self.portal_consent_key(caller, kind) else {
             return false;
         };
+        self.insert_portal_consent_key(key, scope)
+    }
+
+    fn insert_portal_consent_key(&self, key: String, scope: GrantScope) -> bool {
         let Ok(mut state) = self.portal_consents.lock() else {
             return false;
         };
@@ -497,11 +570,16 @@ impl GrantStoreHandle {
         tree.desktop
             .workspaces
             .iter()
-            .any(|workspace| workspace.id == caller.workspace_id)
-            .then(|| {
+            .find(|workspace| workspace.id == caller.workspace_id)
+            .filter(|workspace| !workspace.room.is_nil())
+            .map(|workspace| {
+                // A local slot survives joining a different room. Consent
+                // belongs to the durable room, never to that reusable slot.
+                // The prefix also leaves legacy numeric-slot records inert:
+                // their original room cannot be recovered safely.
                 format!(
-                    "{}\u{1f}{}\u{1f}{}",
-                    caller.workspace_id.0,
+                    "room:{}\u{1f}{}\u{1f}{}",
+                    workspace.room,
                     caller.app_id,
                     kind.name()
                 )
@@ -515,11 +593,11 @@ impl GrantStoreHandle {
     ///
     /// Acquires a read lock; returns `false` if the workspace or app has no grants (default-deny, so the caller records the grant).
     pub fn filesystem_path_granted(&self, caller: &PortalCaller, path: &std::path::Path) -> bool {
-        self.filesystem_path_allows(caller, path, Verb::Read)
+        self.filesystem_path_allows(caller, path, Access::Read)
     }
 
     /// True if `caller`'s grants let it `verb` `path` (read it, or with
-    /// [`Verb::Write`] replace it).
+    /// [`Access::Write`] replace it).
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the read guard protects `ws`, which `ws.allows` needs through the final call"
@@ -528,7 +606,7 @@ impl GrantStoreHandle {
         &self,
         caller: &PortalCaller,
         path: &std::path::Path,
-        verb: Verb,
+        verb: Access,
     ) -> bool {
         let tree = self.tree.read();
         let Some(ws) = tree
@@ -584,13 +662,6 @@ impl GrantStoreHandle {
         WorkspaceTreeHandle::clone(&self.tree)
     }
 
-    /// Back-compat alias for [`Self::tree_handle`]. A handful of older
-    /// tests/portals still reference `.tree()`; both now return the shared `WorkspaceTreeHandle`.
-    // NOT cfg-gated: reachable from the shots harness, which is a release build.
-    pub fn tree(&self) -> WorkspaceTreeHandle {
-        WorkspaceTreeHandle::clone(&self.tree)
-    }
-
     /// Resolve a launcher-verified live application to one concrete local
     /// workspace. Multiple live rooms are intentionally ambiguous unless a
     /// future parent-window resolver identifies the exact surface.
@@ -634,6 +705,8 @@ fn capability_kind_and_scope(capability: &Capability) -> Option<(CapabilityKind,
         Capability::RemoteDesktop { scope } => (CapabilityKind::RemoteDesktop, *scope),
         Capability::Print { scope } => (CapabilityKind::Print, *scope),
         Capability::Network { scope, .. } => (CapabilityKind::Network, *scope),
+        // The shell runtime keeps this decision; no portal asks for it.
+        Capability::HostShell { .. } => return None,
     })
 }
 
@@ -643,7 +716,7 @@ fn capability_kind_and_scope(capability: &Capability) -> Option<(CapabilityKind,
 /// Both variables follow the XDG rule: an empty or relative value is ignored
 /// rather than resolved against the compositor's working directory.
 pub(crate) fn private_state_root() -> Option<PathBuf> {
-    xdg_paths::state_dir().or_else(xdg_paths::runtime_dir)
+    tilo_paths::state_dir().or_else(tilo_paths::runtime_dir)
 }
 
 fn default_portal_consent_path() -> Option<PathBuf> {
@@ -651,7 +724,7 @@ fn default_portal_consent_path() -> Option<PathBuf> {
 }
 
 fn persist_portal_consents(path: &Path, always: &BTreeSet<String>) -> std::io::Result<()> {
-    atomic_file::json::write_private(
+    tilo_files::native::atomic::json::write_private(
         path,
         &PortalConsentFile {
             always: always.clone(),
@@ -842,16 +915,6 @@ impl PromptQueueHandle {
     pub fn queued_len(&self) -> usize {
         self.state.lock().map_or(0, |state| state.pending.len())
     }
-
-    /// Direct accessor (test only): peek at the front entry's caller + capability without removing it.
-    #[cfg(any(test, debug_assertions))]
-    pub fn front_for_tests(&self) -> Option<(PortalCaller, Capability)> {
-        let state = self.state.lock().ok()?;
-        state
-            .pending
-            .first()
-            .map(|p| (p.caller.clone(), p.capability.clone()))
-    }
 }
 
 /// Configuration handed to [`serve`] / interface constructors.
@@ -873,7 +936,7 @@ pub struct PortalContext {
     /// [`ScreenCastStreamProvisioner::provision_stream`] on `Start` Allow; tests use [`MockScreenCastProvisioner`] instead of the system Pipewire daemon.
     pub screencast_provisioner: ScreenCastStreamProvisionerHandle,
     /// The `RemoteDesktop` backend hands each granted `Notify*` action here;
-    /// production wires a [`ChannelInjector`] the compositor loop drains, and `--portal-server-only` mode uses the null handle.
+    /// production wires a [`ChannelInjector`] the compositor loop drains, and tests use the null handle.
     pub remote_input_injector: RemoteInputInjectorHandle,
     /// Compositor authority for InputCapture.  Native mode supplies live
     /// output zones; hosted/headless contexts deliberately keep it unavailable.
@@ -1007,25 +1070,7 @@ pub mod flow {
         kind: CapabilityKind,
         cap_template: Capability,
     ) -> PromptOutcome {
-        // Fast path — `Always`-scoped grant already present.
-        if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
-            return PromptOutcome::AllowAlways;
-        }
-        let rx = ctx.prompts().enqueue(caller.clone(), cap_template.clone());
-        match rx.await {
-            Ok(outcome) => {
-                // Persist Session/Always — Once is treated as one-shot.
-                if let Some(scope) = outcome.to_scope()
-                    && !matches!(scope, GRANT_ONCE)
-                {
-                    let cap = super::with_scope(cap_template, scope);
-                    ctx.grants().insert_portal_consent(&caller, &cap);
-                }
-                outcome
-            }
-            // A dead channel means the prompt pump shut down mid-flight — deny rather than hang the caller forever.
-            Err(_) => PromptOutcome::Deny,
-        }
+        resolve_inner(ctx, caller, kind, cap_template, None).await
     }
 
     /// Request-owned variant of [`resolve`]. It lets a portal close remove
@@ -1037,65 +1082,51 @@ pub mod flow {
         cap_template: Capability,
         request_key: String,
     ) -> PromptOutcome {
-        if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
-            return PromptOutcome::AllowAlways;
-        }
-        let rx =
-            ctx.prompts()
-                .enqueue_for_request(caller.clone(), cap_template.clone(), request_key);
-        match rx.await {
-            Ok(outcome) => {
-                if let Some(scope) = outcome.to_scope()
-                    && !matches!(scope, GRANT_ONCE)
-                {
-                    let cap = super::with_scope(cap_template, scope);
-                    ctx.grants().insert_portal_consent(&caller, &cap);
-                }
-                outcome
-            }
-            Err(_) => PromptOutcome::Deny,
-        }
+        resolve_inner(ctx, caller, kind, cap_template, Some(request_key)).await
     }
 
-    /// Consent path for portal-only capability kinds. It deliberately never
-    /// falls through to a broader workspace capability with a similar name.
-    pub async fn resolve_local(
+    async fn resolve_inner(
         ctx: &impl ConsentContext,
         caller: PortalCaller,
         kind: CapabilityKind,
         cap_template: Capability,
+        request_key: Option<String>,
     ) -> PromptOutcome {
+        let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
+            return PromptOutcome::Deny;
+        };
+        // Fast path — `Always`-scoped grant already present.
         if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
             return PromptOutcome::AllowAlways;
         }
-        let rx = ctx.prompts().enqueue(caller.clone(), cap_template);
+        let rx = ctx
+            .prompts()
+            .enqueue_inner(caller.clone(), cap_template, request_key);
         match rx.await {
-            Ok(outcome) => {
-                if let Some(scope) = outcome.to_scope()
-                    && !matches!(scope, GRANT_ONCE)
-                {
-                    let _ = ctx
-                        .grants()
-                        .insert_portal_consent_kind(&caller, kind, scope);
-                }
-                outcome
-            }
+            Ok(outcome) => finish(ctx, &caller, kind, consent_key, outcome),
+            // A dead channel means the prompt pump shut down mid-flight — deny rather than hang the caller forever.
             Err(_) => PromptOutcome::Deny,
         }
     }
-}
 
-/// Helper: rewrite a [`Capability`] template's `scope` field. Duplicated
-/// from `overlay_host::with_grant_scope` so the portal module doesn't take a hard dep on `shell::overlay_host` (pulls the whole UI stack).
-pub fn with_scope(cap: Capability, scope: GrantScope) -> Capability {
-    match cap {
-        Capability::Filesystem { path, mode, .. } => Capability::Filesystem { path, mode, scope },
-        Capability::Camera { .. } => Capability::Camera { scope },
-        Capability::Microphone { .. } => Capability::Microphone { scope },
-        Capability::Screencast { .. } => Capability::Screencast { scope },
-        Capability::RemoteDesktop { .. } => Capability::RemoteDesktop { scope },
-        Capability::Print { .. } => Capability::Print { scope },
-        Capability::Network { hosts, .. } => Capability::Network { hosts, scope },
+    fn finish(
+        ctx: &impl ConsentContext,
+        caller: &PortalCaller,
+        kind: CapabilityKind,
+        consent_key: String,
+        outcome: PromptOutcome,
+    ) -> PromptOutcome {
+        if ctx.grants().portal_consent_key(caller, kind).as_ref() != Some(&consent_key) {
+            return PromptOutcome::Deny;
+        }
+        if let Some(scope) = outcome.to_scope()
+            && !matches!(scope, GRANT_ONCE)
+        {
+            // Persist the identity approved by this prompt. Recomputing it
+            // here could bind an old approval to a newly joined room.
+            ctx.grants().insert_portal_consent_key(consent_key, scope);
+        }
+        outcome
     }
 }
 
@@ -1236,24 +1267,22 @@ pub async fn serve_with_inhibit_and_clipboard(
     background_service.launch_at_session_start(&ctx.grants.tree_handle());
     let background = BackgroundBackend::with_service_and_lifecycle(
         ctx.clone(),
-        background::BackgroundServiceHandle::new(Arc::new(background_service)),
+        Arc::new(background_service),
         lifecycle.clone(),
     );
     let input_capture =
         InputCaptureBackend::new(ctx.clone(), lifecycle.clone(), connection.clone());
     let input_capture_sessions = input_capture.session_handle();
     let clipboard = ClipboardBackend::with_session_providers(
-        vec![
-            clipboard::ClipboardSessionProviderHandle::new(Arc::new(remote_sessions)),
-            clipboard::ClipboardSessionProviderHandle::new(Arc::new(input_capture_sessions)),
-        ],
+        vec![Arc::new(remote_sessions), Arc::new(input_capture_sessions)],
         clipboard_broker,
-    );
+    )
+    .with_session_wake(lifecycle.wake.clone());
     let clipboard_events = clipboard.clone();
     let shortcut_service = global_shortcuts::ShellGlobalShortcutsService::global();
     let shortcuts = GlobalShortcutsBackend::with_service(
         ctx.clone(),
-        global_shortcuts::GlobalShortcutsServiceHandle::new(Arc::new(shortcut_service.clone())),
+        Arc::new(shortcut_service.clone()),
         lifecycle.clone(),
     );
     let shortcut_events = shortcuts.handle();
@@ -1262,7 +1291,7 @@ pub async fn serve_with_inhibit_and_clipboard(
     let inhibit = InhibitBackend::with_lifecycle(ctx.clone(), inhibit_registry, lifecycle.clone());
     let inhibit_monitors = inhibit.monitor_handle();
     input_capture.spawn_signal_emitter();
-    let secret = SecretBackend::new(ctx.clone());
+    let secret = SecretBackend::new(ctx.clone(), connection.clone());
     let usb = UsbBackend::with_lifecycle(ctx.clone(), lifecycle.clone());
 
     connection.object_server().at(OBJECT_PATH, fc).await?;
@@ -1344,7 +1373,7 @@ pub async fn serve_with_inhibit_and_clipboard(
     }
 
     Ok(ServerHandle {
-        connection,
+        _connection: connection,
         owns_name,
     })
 }
@@ -1352,11 +1381,9 @@ pub async fn serve_with_inhibit_and_clipboard(
 /// RAII handle keeping the portal D-Bus connection alive; drop releases the bus name and tears down the object server.
 #[cfg(target_os = "linux")]
 pub struct ServerHandle {
-    #[allow(
-        dead_code,
-        reason = "never read on purpose: holding the Connection keeps the bus name and object server alive until drop"
-    )]
-    connection: zbus::Connection,
+    /// Never read: holding the connection keeps the bus name and object
+    /// server alive until drop.
+    _connection: zbus::Connection,
     owns_name: bool,
 }
 
@@ -1377,6 +1404,128 @@ mod tests {
 
     fn empty_ws(id: u64) -> Workspace {
         Workspace::new(WorkspaceId(id), "t")
+    }
+
+    #[tokio::test]
+    async fn private_portal_prompt_cannot_approve_a_different_room() {
+        for variant in 0..2 {
+            for outcome in [
+                PromptOutcome::AllowOnce,
+                PromptOutcome::AllowSession,
+                PromptOutcome::AllowAlways,
+            ] {
+                let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(31));
+                let queue = PromptQueueHandle::new(PromptResolver::Channel);
+                let ctx = (store.clone(), queue.clone());
+                let caller = PortalCaller::new(id, "private-app");
+                let response = async {
+                    let cap = Capability::Camera { scope: GRANT_ONCE };
+                    match variant {
+                        0 => flow::resolve(&ctx, caller.clone(), CapabilityKind::Camera, cap).await,
+                        _ => {
+                            flow::resolve_for_request(
+                                &ctx,
+                                caller.clone(),
+                                CapabilityKind::Camera,
+                                cap,
+                                "/request/camera".into(),
+                            )
+                            .await
+                        }
+                    }
+                };
+                tokio::pin!(response);
+                assert!(futures_util::poll!(&mut response).is_pending());
+                let prompts = queue.drain();
+                assert_eq!(prompts.len(), 1);
+                assert!(
+                    store
+                        .tree_handle()
+                        .write()
+                        .set_room_in_memory(id, crate::shell::state::RoomId::new())
+                );
+                prompts
+                    .into_iter()
+                    .next()
+                    .unwrap()
+                    .reply
+                    .send(outcome)
+                    .unwrap();
+                assert_eq!(response.await, PromptOutcome::Deny);
+                assert_eq!(store.lookup(&caller, CapabilityKind::Camera), None);
+            }
+        }
+    }
+
+    #[test]
+    fn private_portal_consent_requires_a_durable_room_and_ignores_legacy_slots() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("consents.json");
+        let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(31));
+        let shared = store.tree_handle();
+        let caller = PortalCaller::new(id, "private-app");
+        let mut legacy = BTreeSet::new();
+        legacy.insert(format!("{}\u{1f}private-app\u{1f}camera", id.0));
+        persist_portal_consents(&path, &legacy).unwrap();
+        let store = GrantStoreHandle::with_consent_path(shared.clone(), Some(path.clone()));
+        assert_eq!(store.lookup(&caller, CapabilityKind::Camera), None);
+        assert!(store.insert_portal_consent(
+            &caller,
+            &Capability::Camera {
+                scope: GRANT_ALWAYS
+            }
+        ));
+
+        // A different local slot for the same room preserves durable consent.
+        let moved_id = WorkspaceId(32);
+        shared.write().desktop.workspaces[0].id = moved_id;
+        let moved = PortalCaller::new(moved_id, "private-app");
+        let restored = GrantStoreHandle::with_consent_path(shared.clone(), Some(path));
+        assert_eq!(restored.lookup(&caller, CapabilityKind::Camera), None);
+        assert_eq!(
+            restored.lookup(&moved, CapabilityKind::Camera),
+            Some(GRANT_ALWAYS)
+        );
+
+        shared.write().desktop.workspaces[0].set_room(crate::shell::state::RoomId::nil());
+        assert_eq!(restored.lookup(&moved, CapabilityKind::Camera), None);
+        assert!(!restored.insert_portal_consent(
+            &moved,
+            &Capability::Camera {
+                scope: GRANT_ALWAYS
+            }
+        ));
+    }
+
+    #[test]
+    fn private_portal_consent_does_not_follow_a_workspace_into_another_room() {
+        for scope in [GRANT_SESSION, GRANT_ALWAYS] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("consents.json");
+            let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(31));
+            let shared = store.tree_handle();
+            let store = GrantStoreHandle::with_consent_path(shared.clone(), Some(path.clone()));
+            let caller = PortalCaller::new(id, "private-app");
+            assert!(store.insert_portal_consent(&caller, &Capability::Camera { scope }));
+            assert_eq!(store.lookup(&caller, CapabilityKind::Camera), Some(scope));
+
+            // Joining an invitation preserves the local slot and replaces
+            // its collaboration room through the production join operation.
+            let joined_room = crate::shell::state::RoomId::new();
+            assert!(shared.write().set_room_in_memory(id, joined_room));
+            assert_eq!(
+                store.lookup(&caller, CapabilityKind::Camera),
+                None,
+                "privacy consent from the previous room must not authorize the joined room"
+            );
+            let restored = GrantStoreHandle::with_consent_path(shared, Some(path));
+            assert_eq!(restored.lookup(&caller, CapabilityKind::Camera), None);
+            assert!(restored.insert_portal_consent(&caller, &Capability::Camera { scope }));
+            assert_eq!(
+                restored.lookup(&caller, CapabilityKind::Camera),
+                Some(scope)
+            );
+        }
     }
 
     #[test]

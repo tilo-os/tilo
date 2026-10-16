@@ -10,7 +10,7 @@
 //! | Maya {#c3} | {#c4} |
 //! ```
 //!
-//! Headings carry their level, list items their numbering and depth (qdoc's
+//! Headings carry their level, list items their numbering and depth (tilo-doc's
 //! `level`, the block editor's `nesting`), and a run of cells becomes a
 //! Markdown table tagged with its table id (the id `EditTable` takes), each
 //! cell ending in its own block id, empty or not, so a caller can select
@@ -21,7 +21,7 @@
 //! offsets are its text's. A block the page ends inside closes with `…`;
 //! the next page continues it.
 
-use qdoc::document::{MarkSpan, MarkValue};
+use tilo_doc::document::{MarkSpan, MarkValue};
 
 use super::Segment;
 
@@ -178,7 +178,7 @@ fn table(out: &mut String, cells: &[Segment]) {
 mod tests {
     use super::super::{Segment, Shape};
     use super::render;
-    use qdoc::document::{MarkSpan, MarkValue};
+    use tilo_doc::document::{MarkSpan, MarkValue};
 
     fn block(id: &str, kind: &str, text: &str, shape: Shape) -> Segment {
         Segment {

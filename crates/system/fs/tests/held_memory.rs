@@ -4,12 +4,6 @@
 //! round's delta as it would from gossip. Its growth is compared with the same namespace loaded
 //! from a full save, which holds the document and the indexes built from it and nothing else.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::arithmetic_side_effects,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use fs::{Namespace, ROOT_INO};
 use tilo_automerge::heap::{self, ThreadCounting};
 

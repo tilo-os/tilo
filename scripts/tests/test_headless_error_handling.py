@@ -1,12 +1,9 @@
 """Regression tests for headless proof failures that must not look successful."""
 import builtins
-import contextlib
 import importlib.util
-import io
 import pathlib
 import subprocess
 import sys
-import tempfile
 import unittest
 from unittest import mock
 
@@ -22,52 +19,11 @@ def load_example(name):
     return module
 
 
-CURSOR = load_example("desktop-peer-cursor-proof")
+CURSOR = load_example("peers-cross-both-ways")
 LIFECYCLE = load_example("app-lifecycle-timing")
 
 
 class CursorEvidenceTests(unittest.TestCase):
-    def setUp(self):
-        CURSOR.failures.clear()
-
-    def run_proof(self, capture_control=True, pixel_error=None):
-        with tempfile.TemporaryDirectory() as root:
-            binary = pathlib.Path(root) / "shell"
-            binary.touch()
-            session = mock.Mock(name="session")
-            session.name = "test"
-            session.socket = str(pathlib.Path(root) / "control.sock")
-            session.log_path = str(pathlib.Path(root) / "shell.log")
-            session.wait_up.return_value = True
-            session.enumerate.return_value = [{"provider": "actions", "id": "peer.invite"}]
-            session.pointers.return_value = [{"x": 760, "y": 470, "name": "ada"}]
-
-            def snapshot(path):
-                if capture_control or not path.endswith("control-peer-moved-away.png"):
-                    pathlib.Path(path).write_bytes(b"x" * 6000)
-                return {"ok": {}}
-
-            session.snapshot.side_effect = snapshot
-            with contextlib.ExitStack() as stack:
-                stack.enter_context(mock.patch.object(CURSOR, "SHELL", binary))
-                stack.enter_context(mock.patch.object(CURSOR, "Session", return_value=session))
-                stack.enter_context(mock.patch.object(CURSOR, "mint_invite", return_value="invite"))
-                stack.enter_context(mock.patch.object(CURSOR, "join", return_value=True))
-                stack.enter_context(mock.patch.object(CURSOR, "wait_for", side_effect=lambda pred, **kw: pred()))
-                stack.enter_context(mock.patch.object(CURSOR.time, "sleep"))
-                pixels = stack.enter_context(mock.patch.object(CURSOR, "saturated_near"))
-                pixels.side_effect = pixel_error if pixel_error else [100, 0]
-                stack.enter_context(mock.patch.object(sys, "argv", ["proof", "--out", root]))
-                stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
-                return CURSOR.main()
-
-    def test_missing_control_capture_fails_proof(self):
-        self.assertEqual(self.run_proof(capture_control=False), 1)
-        self.assertIn("the moved-away control frame was captured", CURSOR.failures)
-
-    def test_both_pixel_observations_allow_success(self):
-        self.assertEqual(self.run_proof(), 0)
-
     def test_missing_pillow_is_an_error_not_a_pixel_count(self):
         original_import = builtins.__import__
 
@@ -80,8 +36,6 @@ class CursorEvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "requires Pillow") as raised:
                 CURSOR.saturated_near("unused.png", (760, 470))
         self.assertIsInstance(raised.exception.__cause__, ImportError)
-        with self.assertRaisesRegex(RuntimeError, "requires Pillow"):
-            self.run_proof(pixel_error=raised.exception)
 
 
 class ProcessObservationTests(unittest.TestCase):

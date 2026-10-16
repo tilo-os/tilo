@@ -19,7 +19,10 @@ pub enum PopError {
 
 impl<T> ConcurrentQueue<T> {
     pub fn unbounded() -> Self {
-        Self { queue: RefCell::new(Vec::new()), closed: Cell::new(false) }
+        Self {
+            queue: RefCell::new(Vec::new()),
+            closed: Cell::new(false),
+        }
     }
 
     pub fn push(&self, value: T) -> Result<(), PushError<T>> {

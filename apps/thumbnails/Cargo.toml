@@ -1,0 +1,36 @@
+[package]
+name = "thumbnails"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The thumbnails package: thumbnail-batch, the compute entrypoint that thumbnails a staged batch of images on whichever of a person's devices a job was placed on."
+
+# One command, no window: the compute worker launches it under the package
+# sandbox with a staged request and an output directory.
+[[bin]]
+name = "thumbnail-batch"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+# The batch itself, shared with the requester's local fallback so both
+# produce the same bytes.
+thumbnail = { package = "tilo-thumbnail", path = "../../crates/media/thumbnail" }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# Packs, signs, reads back and verifies the package as the release pipeline
+# and a worker's install do, and reads its manifest as the worker does.
+tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
+image = { workspace = true, features = ["jpeg", "png"] }
+blake3.workspace = true
+hex.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

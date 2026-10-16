@@ -77,7 +77,10 @@ history.
 - **Granularity: per channel.** A channel is one document route (app,
   workspace room, record), so per-channel keys are already per-resource. A
   finer split would add key-management state without narrowing who can read
-  what, because channel membership is the access boundary.
+  what, because channel membership is the access boundary. Membership is
+  decided per record: a Read Deny on a record, its app or any pattern over it
+  keeps the denied devices out of that record's channel alone
+  ([permissions.md](../../../docs/architecture/permissions.md) §5.3).
 
 ### Security properties
 
@@ -128,8 +131,12 @@ chain with no forks to reconcile.
   admitted again. `outbox()` lists, for each device with an unacknowledged
   delivery, the frames after the last one it acknowledged, and
   `acknowledge` applies a device's cumulative acknowledgement. Each change
-  stages the commit, writes the group, appends the frame, then merges; a
-  crash at any point is finished or rolled back on the next open.
+  stages the commit, writes the group, signs the frame, writes the ledger,
+  appends the frame, then merges; a crash at any point is finished or rolled
+  back on the next open. Its records live in a [`StewardStore`]: files on a
+  native device (`FileStewardStore`), or memory a browser exports to
+  `IndexedDB` (`MemoryStewardStore`). It signs through a [`StewardSigner`],
+  which may answer later, as a browser's `WebCrypto` key does.
 - [`ChannelMember`] is every other device's view. It starts `Waiting` and
   signs `MlsAccessRequestV1`s that carry fresh key packages. Its MLS
   credential is the device's certified key, and the steward refuses a
@@ -182,7 +189,8 @@ plaintext path.
   broker admitted it before the gate closed. Live plaintext on an encrypted
   route is refused as a downgrade.
 - **Access policy** (`shell/channel_policy.rs`). A channel is readable by:
-  - every person on the room's roster whose role can read, through each of
+  - every person on the room's roster, or named by a grant (a share, a
+    time-limited reader), who may Read the room node now, through each of
     their certified devices (root-signed, unexpired, not revoked, admitted
     by the room's governor);
   - the governing identity's own fleet;
@@ -202,7 +210,21 @@ plaintext path.
   delivery and never lose or reorder it.
 - **Endpoints.** An app asks the workspace identity service for its route's
   keys (`Request::ChannelKeys`) and gets `ChannelContentKeys`: content
-  keys, and no MLS secret. It refreshes every second. While the device waits
+  keys, and no MLS secret. It does not ask again on a timer: each route
+  keeps one `channelKeysChanged` call pending at the broker, which resolves
+  the moment the channel service records a change to that channel (a commit
+  the steward made, or a frame that reached this member), and the endpoint
+  asks for keys then. Every policy change above becomes such a commit
+  within the steward's reconcile interval, so a removed or revoked device's
+  apps stop holding the channel's keys within about a second plus the
+  commit's delivery to that device; the broker's epoch gate and the identity
+  service's per-signature trust check stop it publishing at once. A route
+  also asks when ciphertext arrives that its keys can't open, and when the
+  broker refuses an edit. A route still waiting for access is asked on a
+  timer as well (1 s, backing off to 30 s; admission itself is pushed), and
+  a broker without `channelKeysChanged` gets the old one-second refresh of
+  every route. The identity service serves its trust check from the
+  identity files' stamps while they are unchanged. While the device waits
   for access, the SDK holds edits and incoming ciphertext on the device and
   reports `ChannelAccessState::WaitingForAccess` through
   `CollabEvent::ChannelAccess` and `App::channel_access()`. Once keys arrive
@@ -216,6 +238,14 @@ plaintext path.
   not ask for keys on committed routes, and a host-signed endpoint commits
   through its host. Committed routes take encryption once their owner runs
   as a service member.
+- **Rooms a node governs** have no committed routes. A node is a relay whose
+  certificate lets it host and own workspaces; it stewards the channels of
+  the rooms it governs. A desktop session enrolled in such a room serves
+  each route as a channel: its apps ask for keys, seal and open, and its
+  sealed writes go to the relay as the device's own, never through the
+  governor. A company node's own session is such a member: a device of the
+  node's person with its own key and certificate, which joins every room
+  the node governs (`TILO_SHELL_FOLLOW_HOST_ROOMS`).
 - **Brokers and relays** hold gates, never keys. Every ingress path checks
   the channel's gate (`ChannelGate`): plaintext is closed off, and content
   sealed before the latest membership change is refused. Relays store and
@@ -288,9 +318,16 @@ If the lost machine was the room's governor, see the known limit above.
 
 - **External commit / external join.** Only Welcome-based joins are
   supported.
-- **Route-scoped service members.** A service member reads every channel of
-  its room. Narrowing a grant to single documents needs the steward to know
-  which route a channel belongs to.
+- **Below-record reads.** Admission is per record: a steward learns which
+  record a channel carries from a grant naming it or from the route a device
+  proves with its access request (`NeighbourMsg::MlsRoutedAccessRequest`), and
+  admits a device, or a service member, only while the same read decision
+  allows that record; a channel whose record it cannot name is withheld from
+  whoever a Deny over a pattern of records could keep out. A Deny below a
+  record (an item, a field) still binds only honest clients and doors: one key
+  opens the whole record, so against a modified client the record is the
+  confidentiality boundary
+  ([permissions.md](../../../docs/architecture/permissions.md) §5.3).
 - **Multiple ciphersuites / negotiation.** There is one fixed suite.
 
 ## Cipher suite

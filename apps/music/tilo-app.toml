@@ -28,7 +28,12 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["files.open", "files.paths", "app-files", "network.http", "network.status", "threads", "media.decode", "media.session"]
+optional = ["open-uri", "secrets", "files.open", "files.paths", "app-files", "network.http", "network.status", "threads", "media.decode", "media.session"]
+
+# The release collection packs this authored manifest directly. The runtime
+# admits the shared library only when its signed package declares this kind.
+[resources]
+kinds = ["music.library"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -64,6 +69,7 @@ file-chooser = "via-host"
 [sandbox.services]
 collab = "optional@1"
 tilo-fs = "optional@1"
+shell-ui = "optional@1"
 
 [entrypoint]
 bin             = "bin/music"
@@ -72,6 +78,10 @@ splash-segments = ["bin/music[0x0:0x400000]"]
 splash-budget   = 250
 
 [providers]
-mime = []
-ext  = []
+mime = [
+    "audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave",
+    "audio/mpeg", "audio/flac", "audio/x-flac", "audio/ogg", "audio/opus",
+    "audio/mp4", "audio/aac", "audio/aiff", "audio/x-aiff", "audio/x-ms-wma",
+]
+ext = ["wav", "wave", "mp3", "flac", "ogg", "oga", "opus", "m4a", "aac", "aif", "aiff", "wma"]
 schemes = ["music"]

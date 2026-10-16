@@ -21,7 +21,8 @@ use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 
 use crate::content::{self, Manifest};
 use crate::store::ContentStore;
-use crate::syncstate::SyncState;
+use fs_protocol::SyncState;
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 mod batch;
 mod ranges;
@@ -78,6 +79,9 @@ pub struct Hydrator {
     blob_connections:
         AsyncMutex<HashMap<(iroh_base::PublicKey, usize), iroh::endpoint::Connection>>,
     pub runtime_handle: tokio::runtime::Handle,
+    /// Woken by the first peer: a device that knows a peer may be dialled
+    /// by it.
+    reachability: crate::reachability::Reachability,
 }
 
 /// Chunk entries held by the manifest cache: roughly 40 bytes each, so
@@ -94,10 +98,7 @@ pub struct FetchGuard {
 
 impl Drop for FetchGuard {
     fn drop(&mut self) {
-        let mut counts = self
-            .counts
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut counts = self.counts.lock_recover();
         if let Some(count) = counts.get_mut(&self.hash) {
             *count = count.saturating_sub(1);
             if *count == 0 {
@@ -128,14 +129,23 @@ impl Hydrator {
             blob_bytes: std::sync::atomic::AtomicU64::new(0),
             blob_connections: AsyncMutex::new(HashMap::new()),
             runtime_handle: tokio::runtime::Handle::current(),
+            reachability: crate::reachability::Reachability::default(),
         }
+    }
+
+    /// Wake `reachability` when the first peer is added: every peer the
+    /// daemon learns of — persisted, from a ticket, met over gossip or
+    /// authenticated in a session — passes through [`Self::add_peer`].
+    #[must_use]
+    pub fn with_reachability(mut self, reachability: crate::reachability::Reachability) -> Self {
+        self.reachability = reachability;
+        self
     }
 
     /// Whether a fetch of blob `hash` is in flight right now.
     pub fn is_fetching(&self, hash: Hash) -> bool {
         self.in_flight
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .get(&hash)
             .is_some_and(|count| *count > 0)
     }
@@ -143,10 +153,7 @@ impl Hydrator {
     /// Mark `hash` as being fetched; the returned guard releases one reference
     /// on drop. Overlapping fetches therefore cannot clear each other's state.
     pub fn mark_fetching(&self, hash: Hash) -> FetchGuard {
-        let mut counts = self
-            .in_flight
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut counts = self.in_flight.lock_recover();
         let count = counts.entry(hash).or_insert(0);
         *count = count.saturating_add(1);
         drop(counts);
@@ -197,10 +204,8 @@ impl Hydrator {
 
     /// Register a peer we can hydrate blobs from. Idempotent per endpoint id.
     pub fn add_peer(&self, addr: EndpointAddr) {
-        let mut peers = self
-            .peers
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::reachability::wake(&self.reachability, "a content peer is known");
+        let mut peers = self.peers.write_recover();
         let now = Instant::now();
         if let Some(peer) = peers.iter_mut().find(|peer| peer.addr.id == addr.id) {
             // A stable node id can acquire new direct/relay hints after a
@@ -221,10 +226,7 @@ impl Hydrator {
 
     /// Forget a peer removed from authenticated discovery or local policy.
     pub fn remove_peer(&self, id: iroh_base::PublicKey) -> bool {
-        let mut peers = self
-            .peers
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut peers = self.peers.write_recover();
         let before = peers.len();
         peers.retain(|peer| peer.addr.id != id);
         before != peers.len()
@@ -232,10 +234,7 @@ impl Hydrator {
 
     pub fn known_peers(&self) -> Vec<EndpointAddr> {
         let now = Instant::now();
-        let mut peers = self
-            .peers
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut peers = self.peers.write_recover();
         peers.retain(|peer| now.duration_since(peer.last_seen) <= PEER_STALE_AFTER);
         let any_ready = peers.iter().any(|peer| peer.retry_after <= now);
         let mut ranked: Vec<_> = peers
@@ -256,10 +255,7 @@ impl Hydrator {
 
     fn record_peer_result(&self, id: iroh_base::PublicKey, elapsed: Duration, success: bool) {
         let now = Instant::now();
-        let mut peers = self
-            .peers
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut peers = self.peers.write_recover();
         let Some(peer) = peers.iter_mut().find(|peer| peer.addr.id == id) else {
             drop(peers);
             return;
@@ -302,11 +298,7 @@ impl Hydrator {
         result.remote_only = false;
         result.hydrated_bytes = bytes.len() as u64;
         result.blobs.push(manifest_hash);
-        let sources = self
-            .remote_sources
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let sources = self.remote_sources.read_recover().clone();
         result.remotely_durable = sources.contains_key(&manifest_hash);
         result.remote_source = sources.get(&manifest_hash).cloned();
         if content::is_file_backed(&manifest) {
@@ -335,33 +327,6 @@ impl Hydrator {
             }
         }
         result
-    }
-
-    /// Revalidate that a peer still serves this exact, content-addressed blob.
-    /// The bytes are discarded; this is the last online check before local GC.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the connection fails, the peer doesn't serve the blob, or the check times out.
-    pub async fn verify_remote_copy(&self, hash: Hash, peer: EndpointAddr) -> Result<()> {
-        tokio::time::timeout(Duration::from_secs(20), async {
-            let conn = self.blob_connection(&peer).await?;
-            let mut result = iroh_blobs::get::request::get_blob(conn, hash);
-            while let Some(item) = result.next().await {
-                match item {
-                    iroh_blobs::get::request::GetBlobItem::Done(_) => {
-                        return Ok::<_, anyhow::Error>(());
-                    }
-                    iroh_blobs::get::request::GetBlobItem::Error(error) => {
-                        return Err(anyhow!(error));
-                    }
-                    iroh_blobs::get::request::GetBlobItem::Item(_) => {}
-                }
-            }
-            Err(anyhow!("remote durability stream ended early"))
-        })
-        .await
-        .map_err(|_| anyhow!("remote durability check timed out"))?
     }
 
     /// # Errors
@@ -556,6 +521,31 @@ impl Hydrator {
         let manifest = Arc::new(self.store.manifest(manifest_hash).await?);
         self.manifests.insert(manifest_hash, Arc::clone(&manifest));
         Some(manifest)
+    }
+
+    /// The byte length of `manifest_hash` when every byte of it is local;
+    /// `None` when the manifest or any part of the content would have to be
+    /// fetched. Never touches the network.
+    pub async fn local_len(&self, manifest_hash: Hash) -> Option<u64> {
+        let manifest = self.local_manifest_index(manifest_hash).await?;
+        self.store
+            .is_complete(manifest_hash, &manifest)
+            .await
+            .then(|| manifest.total_len())
+    }
+
+    /// Run `fut` to completion on the daemon runtime from a synchronous
+    /// caller — a FUSE worker, the native plane or a test. This is the one
+    /// bridge from those threads into async code.
+    ///
+    /// A FUSE worker that waits here is unavailable to every other process
+    /// using the mount, so callers on one keep `fut` local or explicitly
+    /// bounded (a preview's few KiB, a thumbnail). Open-ended network
+    /// hydration belongs on the runtime instead: history restores and
+    /// conflict resolutions hydrate through a history job and commit once
+    /// the bytes are local.
+    pub fn block_on<F: std::future::Future>(&self, fut: F) -> F::Output {
+        tokio::task::block_in_place(|| self.runtime_handle.block_on(fut))
     }
 
     /// Write the complete local content of `manifest_hash` to `dest` as a
@@ -755,10 +745,7 @@ impl Hydrator {
                 .await?;
             self.count_blob_bytes(bytes.len() as u64);
             self.store.store_fetched(hash, bytes.clone()).await?;
-            self.remote_sources
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(hash, peer);
+            self.remote_sources.write_recover().insert(hash, peer);
             Ok::<_, anyhow::Error>(bytes)
         })
         .await

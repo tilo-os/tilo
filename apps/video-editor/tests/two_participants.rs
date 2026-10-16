@@ -27,116 +27,80 @@
 //! relayed verbatim, and what the other participant renders has to be a
 //! consequence of it.
 //!
-//! The two editors share one document, because collaborators do: the second
-//! adopts a save of the first, which is what a late joiner receives.
+//! The two editors share one record, because collaborators do: the second
+//! merges the first's document, which is what a late joiner receives.
 
-use automerge::AutoCommit;
-use taffy::{NodeId, TaffyTree};
-use ui::headless::{Framed, viewport};
 use ui::offscreen::OffscreenRenderer;
 use ui::permissions::UserId;
+use ui::prelude::TestApp;
 use ui::presence::PresenceCtx;
 use ui::theme::Theme;
-use ui::widget::Widget;
 use vello::Scene;
 use vello::peniko::Color;
-use video_editor::app::ShotScenario;
-use video_editor::doc::VideoDoc;
-use video_editor::model::{ClipId, MediaKind};
+use video_editor::model::{ClipId, MediaKind, Project};
 use video_editor::presence as vp;
-use video_editor::{VideoEditorApp, shot};
-use winit::event::{ElementState, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use video_editor::{VideoEditor, shot};
 
 const W: u32 = 1280;
 const H: u32 = 800;
-const W_F32: f32 = 1280.0;
-const H_F32: f32 = 800.0;
 
-/// One editor and the document it holds, mounted in the production frame host.
+/// One editor and the record it holds, hosted as the app runs.
 struct Participant {
-    app: Framed<VideoEditorApp>,
+    app: TestApp<VideoEditor>,
 }
 
 impl Participant {
-    /// The participant who opens the project.
+    /// The participant who opens the project: the demo project, as the
+    /// plain capture stages it.
     fn opening() -> Self {
         ui::host::install_default(ui::host::HostServices::recording().0);
-        Self::mount(
-            VideoEditorApp::new_for_shot(ShotScenario::Live),
-            AutoCommit::new(),
-        )
+        Self::focused(TestApp::<VideoEditor>::capture(None).expect("the project opens"))
     }
 
     /// A participant who joins and is handed the project, the way a late
     /// joiner is answered with the document.
     fn joining(from: &Participant) -> Self {
         ui::host::install_default(ui::host::HostServices::recording().0);
-        Self::mount(
-            VideoEditorApp::new(),
-            AutoCommit::load(&from.doc().clone().save()).expect("the handed-over document"),
-        )
+        let mut app = TestApp::<VideoEditor>::new().expect("the editor opens");
+        app.merge_peer(&mut from.app.peer_document())
+            .expect("the handed-over document");
+        Self::focused(app)
     }
 
-    /// Mounting runs the first frame, drawn with nobody else in the room.
-    fn mount(app: VideoEditorApp, doc: AutoCommit) -> Self {
-        let mut state = ui::State::new();
-        state.adopt_doc(doc);
-        Participant {
-            app: Framed::new(state, app, viewport((W_F32, H_F32)), Theme::dark()),
-        }
+    /// The editor holds the keyboard, as a person working in it does: key
+    /// presses reach it, and the host polls it for where its user is.
+    fn focused(mut app: TestApp<VideoEditor>) -> Self {
+        app.harness()
+            .relayout_themed((W, H), Theme::dark())
+            .expect("layout");
+        app.harness()
+            .click_named("video_editor_root")
+            .expect("the editor is on screen");
+        Participant { app }
     }
 
-    fn doc(&self) -> &AutoCommit {
-        &Framed::harness(&self.app).state().doc
+    /// The project this participant's record holds.
+    fn project(&self) -> Project {
+        self.app.state()
     }
 
     /// Sync, lay out and draw one frame — everything the host does per frame,
     /// so the editor has a real rect and real geometry behind it.
     fn frame(&mut self, presence: &PresenceCtx) -> Scene {
-        let harness = Framed::harness_mut(&mut self.app);
+        let harness = self.app.harness();
         harness.update_presence(|room| {
             *room = presence.clone();
             true
         });
         harness
-            .relayout_themed(viewport((W_F32, H_F32)), Theme::dark())
+            .relayout_themed((W, H), Theme::dark())
             .expect("layout");
         harness.scene().clone()
     }
 
     /// Press a key, the way the host delivers one.
-    fn press(&mut self, key: Key) {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = key;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        };
-        let mut handled = false;
-        let mut focus = None;
-        let taffy = TaffyTree::<()>::new();
-        let (app, state) = Framed::split(&mut self.app);
-        app.handle_event(
-            &event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: &mut state.doc,
-                path: &automerge::ROOT,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: NodeId::new(0),
-                taffy: &taffy,
-            },
-        );
+    fn press(&mut self, key: &str) {
+        self.app.harness().key(key);
     }
 
     /// Drain everything this editor currently wants to say about where its
@@ -145,11 +109,11 @@ impl Participant {
     /// The host offers one frame per poll and only sends what has changed, so
     /// draining is what a few frames of a live session do. Nothing here
     /// inspects or rebuilds a key — whatever comes out goes straight in.
-    fn relay(&self, to: &mut PresenceCtx, as_user: &str) -> usize {
+    fn relay(&mut self, to: &mut PresenceCtx, as_user: &str) -> usize {
         let mut sent: usize = 0;
         let mut last = None;
         for _ in 0..8 {
-            let Some(frame) = ui::presence::capability::presence_payload(&*self.app) else {
+            let Some(frame) = self.app.harness().focus_presence_payload() else {
                 break;
             };
             if Some(&frame) == last.as_ref() {
@@ -169,18 +133,26 @@ impl Participant {
 /// the document rather than from the editor, because that is the thing the
 /// two of them actually share.
 fn clip_ids(p: &Participant) -> Vec<ClipId> {
-    let mut ids: Vec<ClipId> = VideoDoc::load_project(p.doc())
-        .clips
-        .iter()
-        .map(|c| c.id)
-        .collect();
+    let mut ids: Vec<ClipId> = p.project().clips.iter().map(|c| c.id).collect();
     ids.sort();
     ids
 }
 
 /// How long the shared project runs.
 fn duration(p: &Participant) -> f64 {
-    VideoDoc::load_project(p.doc()).duration()
+    p.project().duration()
+}
+
+/// The colour a participant is drawn in: their identity colour, on the
+/// theme's presence palette (what every peer overlay paints with).
+fn drawn_colour(room: &PresenceCtx, who: &str) -> (u8, u8, u8) {
+    let colour = Theme::dark()
+        .tokens
+        .colors
+        .presence
+        .of_rgb(room.color_for(&UserId(who.to_string())))
+        .to_rgba8();
+    (colour.r, colour.g, colour.b)
 }
 
 /// Rasterise, and count how many pixels carry a colour.
@@ -217,7 +189,7 @@ fn participants_locate_and_track_each_other() {
         );
 
         // Ada jumps to the end of the project — a real key press.
-        ada.press(Key::Named(NamedKey::End));
+        ada.press("End");
         ada.frame(&PresenceCtx::empty());
 
         let mut room = PresenceCtx::empty();
@@ -259,8 +231,8 @@ fn participants_locate_and_track_each_other() {
 
         // Arrows nudge a selected clip and step the playhead only when nothing is
         // selected, so Ada lets go of her clip before scrubbing.
-        ada.press(Key::Named(NamedKey::Escape));
-        ada.press(Key::Named(NamedKey::Home));
+        ada.press("Escape");
+        ada.press("Home");
         ada.frame(&PresenceCtx::empty());
         ada.relay(&mut room, "ada");
         let at_start = vp::peer_playheads(&room);
@@ -273,7 +245,7 @@ fn participants_locate_and_track_each_other() {
 
         let mut seen = vec![at_start[0].at];
         for _ in 0..4 {
-            ada.press(Key::Named(NamedKey::ArrowRight));
+            ada.press("ArrowRight");
             ada.frame(&PresenceCtx::empty());
             ada.relay(&mut room, "ada");
             let now = vp::peer_playheads(&room);
@@ -292,11 +264,11 @@ fn participants_locate_and_track_each_other() {
         let mut ada = Participant::opening();
         let mut room = PresenceCtx::empty();
 
-        ada.press(Key::Named(NamedKey::Home));
+        ada.press("Home");
         ada.frame(&PresenceCtx::empty());
         ada.relay(&mut room, "ada");
 
-        ada.press(Key::Named(NamedKey::End));
+        ada.press("End");
         ada.frame(&PresenceCtx::empty());
         ada.relay(&mut room, "cass");
 
@@ -332,13 +304,14 @@ fn participants_locate_and_track_each_other() {
         );
 
         // "T" adds a title and opens its words for editing.
-        ada.press(Key::Character("t".into()));
+        ada.press("t");
         ada.frame(&PresenceCtx::empty());
         ada.relay(&mut room, "ada");
 
         // The title she just made, as the *document* holds it — which is what a
         // second participant would receive.
-        let title = VideoDoc::load_project(ada.doc())
+        let title = ada
+            .project()
             .media
             .iter()
             .find(|m| m.kind == MediaKind::Text)
@@ -362,10 +335,7 @@ fn participants_locate_and_track_each_other() {
         // A joiner receives the very object that key names, so it resolves.
         let bo = Participant::joining(&ada);
         assert!(
-            VideoDoc::load_project(bo.doc())
-                .media
-                .iter()
-                .any(|m| m.id == title),
+            bo.project().media.iter().any(|m| m.id == title),
             "the title Ada's caret is keyed to reached the other participant",
         );
     }
@@ -385,7 +355,7 @@ fn participants_presence_reaches_the_other_screen() {
         let mut ada = Participant::opening();
         let mut bo = Participant::joining(&ada);
 
-        ada.press(Key::Named(NamedKey::Home));
+        ada.press("Home");
         ada.frame(&PresenceCtx::empty());
         let mut room = PresenceCtx::empty();
         room.names
@@ -407,7 +377,7 @@ fn participants_presence_reaches_the_other_screen() {
         let empty_px = r.render(&alone, Color::BLACK);
         let peopled_px = r.render(&together, Color::BLACK);
 
-        let ada_colour = room.color_for(&UserId("ada".to_string()));
+        let ada_colour = drawn_colour(&room, "ada");
         let with = pixels_of_colour(&peopled_px, ada_colour);
         let without = pixels_of_colour(&empty_px, ada_colour);
         assert!(
@@ -429,7 +399,7 @@ fn participants_presence_reaches_the_other_screen() {
         let mut bo = Participant::joining(&ada);
 
         // Nothing selected, so the only thing Ada has to show is her playhead.
-        ada.press(Key::Named(NamedKey::Escape));
+        ada.press("Escape");
         ada.frame(&PresenceCtx::empty());
         let mut room = PresenceCtx::empty();
         room.names
@@ -456,7 +426,7 @@ fn participants_presence_reaches_the_other_screen() {
 
         // A clip near the start of the timeline, so it is on screen at the
         // default zoom -- an outline on a clip nobody can see proves nothing.
-        let project = VideoDoc::load_project(bo.doc());
+        let project = bo.project();
         let clip = project
             .clips
             .iter()
@@ -491,7 +461,7 @@ fn participants_presence_reaches_the_other_screen() {
         assert_eq!(vp::peer_clips(&room).len(), 1, "Ada starts with a clip");
 
         // Escape clears the selection.
-        ada.press(Key::Named(NamedKey::Escape));
+        ada.press("Escape");
         ada.frame(&PresenceCtx::empty());
         ada.relay(&mut room, "ada");
 
@@ -521,6 +491,6 @@ fn colour_on_screen(bo: &mut Participant, room: &PresenceCtx, who: &str) -> (usi
     let mut r = OffscreenRenderer::new(W, H);
     let a = r.render(&with, Color::BLACK);
     let b = r.render(&without, Color::BLACK);
-    let colour = room.color_for(&UserId(who.to_string()));
+    let colour = drawn_colour(room, who);
     (pixels_of_colour(&a, colour), pixels_of_colour(&b, colour))
 }

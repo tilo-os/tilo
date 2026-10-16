@@ -266,6 +266,7 @@ impl RustcCommand {
     }
 
     /// The `-L dependency=` directories Cargo put its builds in.
+    #[cfg(target_os = "linux")]
     fn dependency_dirs(&self) -> Vec<PathBuf> {
         self.args
             .windows(2)
@@ -704,6 +705,8 @@ pub(crate) struct DevLoop {
     pub changed_at: Option<SystemTime>,
     /// Bumped for every source change, so a build can tell it went stale.
     pub source_revision: Arc<AtomicU64>,
+    /// Cargo profile of every build; `None` is Cargo's `dev`.
+    pub profile: Option<String>,
     waiting: Vec<(ReloadTimings, SystemTime)>,
     pub reports: Vec<serde_json::Value>,
 }
@@ -716,6 +719,7 @@ impl DevLoop {
         session: PathBuf,
         timings_enabled: bool,
         source_revision: Arc<AtomicU64>,
+        profile: Option<String>,
     ) -> Self {
         Self {
             session,
@@ -723,6 +727,7 @@ impl DevLoop {
             baseline: HashMap::new(),
             changed_at: None,
             source_revision,
+            profile,
             waiting: Vec::new(),
             reports: Vec::new(),
         }

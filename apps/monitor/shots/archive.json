@@ -1,0 +1,44 @@
+[
+  {
+    "name": "monitor-context-menu.png",
+    "sha256": "29ecbb6e1ba1cdc9aa85a3c9d919067869af3cb21180701837ee133bad292236",
+    "bytes": 200201,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/29ecbb6e1ba1cdc9aa85a3c9d919067869af3cb21180701837ee133bad292236/monitor-context-menu.png"
+  },
+  {
+    "name": "monitor-narrow-resources.png",
+    "sha256": "d4c5290594845dd43655eaed4e0e60283d85c591d6637387f95c0bfb3f048a99",
+    "bytes": 68787,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/d4c5290594845dd43655eaed4e0e60283d85c591d6637387f95c0bfb3f048a99/monitor-narrow-resources.png"
+  },
+  {
+    "name": "monitor-narrow.png",
+    "sha256": "9e1bde0ea5427303b64403c408186ee7dcd21d0fd82d353ba726a0831ace504f",
+    "bytes": 102878,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/9e1bde0ea5427303b64403c408186ee7dcd21d0fd82d353ba726a0831ace504f/monitor-narrow.png"
+  },
+  {
+    "name": "monitor-per-process.png",
+    "sha256": "8bd850dd5fb652ba404a904365b01c0cd4d97f265b0a66cad4a027215c7f3a4b",
+    "bytes": 186949,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/8bd850dd5fb652ba404a904365b01c0cd4d97f265b0a66cad4a027215c7f3a4b/monitor-per-process.png"
+  },
+  {
+    "name": "monitor-resources.png",
+    "sha256": "69dfbe237daf4fa806b747e5626ce75d1b3396840b194d171950639852e2e660",
+    "bytes": 165471,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/69dfbe237daf4fa806b747e5626ce75d1b3396840b194d171950639852e2e660/monitor-resources.png"
+  },
+  {
+    "name": "monitor-tree-expanded.png",
+    "sha256": "2b551951bf4e4fce6e2a749bfd429a3923f6b38358a99501a950ad4d62c629f3",
+    "bytes": 187449,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/2b551951bf4e4fce6e2a749bfd429a3923f6b38358a99501a950ad4d62c629f3/monitor-tree-expanded.png"
+  },
+  {
+    "name": "monitor.png",
+    "sha256": "5b0421c734c062a9d31c7e2aa3e97fc7b4aef1f6e3b7526945b297587841043f",
+    "bytes": 192701,
+    "url": "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-metadata/5b0421c734c062a9d31c7e2aa3e97fc7b4aef1f6e3b7526945b297587841043f/monitor.png"
+  }
+]

@@ -4,43 +4,40 @@
 # editor/src/i18n.rs). Glyph-only faces are not keyed and stay as in code.
 
 ## Toolbar button faces
-toolbar-new = Neu ▾
-toolbar-body = Fließtext
-toolbar-list = • Liste
-toolbar-table = ⊞ Tabelle
-toolbar-image = 🖼 Bild
+toolbar-new = Neu
+toolbar-table = Tabelle
 toolbar-link = Link
 toolbar-styles = Stile
 toolbar-ruler = Lineal
-toolbar-outline = Gliederung
-toolbar-toc = IVZ
-toolbar-row-add = +Zeile
-toolbar-row-del = −Zeile
-toolbar-col-add = +Spalte
-toolbar-col-del = −Spalte
+toolbar-toc = Inhalt
+toolbar-row-add = Zeile einfügen
+toolbar-row-del = Zeile löschen
+toolbar-col-add = Spalte einfügen
+toolbar-col-del = Spalte löschen
+toolbar-bold = Fett
+toolbar-italic = Kursiv
+toolbar-underline = Unterstrichen
+toolbar-strikethrough = Durchgestrichen
+toolbar-superscript = Hochgestellt
+toolbar-subscript = Tiefgestellt
+toolbar-size-down = Kleiner
+toolbar-size-up = Größer
+toolbar-image = Bild
+toolbar-table-delete = Tabelle löschen
 
 ## Toolbar accessibility names / tooltips
 a11y-group-formatting = Formatierung
-a11y-zoom-out = Verkleinern
-a11y-zoom-out-description = Seitenmaßstab um 10 Prozent verringern
-a11y-zoom-reset = Zoom zurücksetzen
-a11y-zoom-reset-description = Seitenmaßstab auf 100 Prozent zurücksetzen
-a11y-zoom-in = Vergrößern
-a11y-zoom-in-description = Seitenmaßstab um 10 Prozent vergrößern
 a11y-bold = Fett
 a11y-italic = Kursiv
 a11y-underline = Unterstrichen
 a11y-strikethrough = Durchgestrichen
 a11y-superscript = Hochgestellt
 a11y-subscript = Tiefgestellt
-a11y-heading1 = Überschrift 1
-a11y-heading2 = Überschrift 2
 a11y-body-text = Fließtext
 a11y-bulleted-list = Aufzählungsliste
 a11y-align-left = Linksbündig
 a11y-align-center = Zentriert
 a11y-align-right = Rechtsbündig
-a11y-justify = Blocksatz
 a11y-line-spacing = Zeilenabstand
 a11y-font = Schriftart
 a11y-size-up = Schrift vergrößern
@@ -64,37 +61,13 @@ a11y-text-color-default = Standard-Textfarbe
 a11y-highlight = Hervorhebung #{ $hex }
 a11y-highlight-clear = Hervorhebung entfernen
 
-## Crash-recovery banner
-recovery-banner = Nicht gespeicherte Änderungen aus einer früheren Sitzung wiederhergestellt.
-recovery-restore = Wiederherstellen
-recovery-discard = Verwerfen
 
 ## Status bar
-status-count = { $words } { $words ->
-        [one] Wort
-       *[other] Wörter
-    }    { $chars } Zeichen
 status-untitled = Unbenannt
-format-odt = ODF-Text
-format-docx = Word-Dokument
-format-markdown = Markdown
-format-pdf = PDF
-format-html = HTML
-format-rtf = Rich Text
-format-epub = EPUB
 
 ## Header / footer edit-mode tabs
 band-header = Kopfzeile
 band-footer = Fußzeile
-
-## Find / find-and-replace bar
-find-find = Suchen
-find-replace-with = Ersetzen durch
-find-bad-pattern = Ungültiges Muster
-find-no-results = Keine Treffer
-find-count = { $cur } / { $total }
-find-replace = Ersetzen
-find-replace-all = Alle
 
 ## Review — context-menu rows
 review-accept-insertion = Einfügung annehmen
@@ -103,18 +76,16 @@ review-accept-deletion = Löschung annehmen
 review-reject-deletion = Löschung ablehnen
 review-resolve-comment = Kommentar auflösen
 review-reply = Antworten
-review-thread = Kommentarthread
 review-thread-unavailable = Dieser Kommentar ist nicht mehr verfügbar
-review-reply-placeholder = Antwort schreiben…
+review-reply-placeholder = Antwort schreiben
 review-send-reply = Senden
 review-cancel-reply = Abbrechen
-review-you = Du
 review-accept-all = Alle Änderungen annehmen
 review-reject-all = Alle Änderungen ablehnen
 
 ## Review / comment margin cards
 review-comment = Kommentar
-review-resolve = ✓ Auflösen
+review-resolve = Auflösen
 review-insertion = Einfügung
 review-deletion = Löschung
 
@@ -125,7 +96,7 @@ menu-copy = Kopieren
 menu-paste = Einfügen
 menu-select-all = Alles auswählen
 
-## Templates (New ▾ menu)
+## Templates (the New menu)
 template-blank = Leer
 template-letter = Brief
 template-report = Bericht
@@ -141,24 +112,24 @@ style-list = Listenelement
 style-quote = Zitat
 
 ## Paragraph panel
-panel-this-paragraph = DIESER ABSATZ
+panel-this-paragraph = Dieser Absatz
 panel-line-spacing = Zeilenabstand
-panel-style = ABSATZSTIL
-panel-style-hint = Ändert jeden Absatz vom Typ "{ $name }"
+panel-style = Absatzstil
+panel-style-hint = Änderungen unten gelten für jeden Absatz dieser Formatvorlage.
 panel-caret-hint = Cursor in einen Absatz setzen
-panel-paragraph-styles = ABSATZSTILE
-panel-style-properties = STILEIGENSCHAFTEN
+panel-paragraph-styles = Absatzstile
+panel-style-properties = Stileigenschaften
 panel-font = Schriftart
 panel-font-serif = Serif
 panel-font-mono = Mono
 panel-font-sans = Sans
-panel-weight = Stärke
+panel-weight = Betonung
 panel-bold = Fett
 panel-italic = Kursiv
 panel-colour = Farbe
-panel-colour-custom = Benutzerdefiniert…
+panel-colour-custom = Eigene Farbe
 panel-align = Ausrichtung
-panel-new-style = + Neuer Stil hieraus
+panel-new-style = Neuer Stil aus diesem Absatz
 panel-num-size = Größe
 panel-num-space-before = Abstand davor
 panel-num-space-after = Abstand danach
@@ -169,48 +140,33 @@ style-menu-delete = Stil löschen
 style-menu-duplicate = Stil duplizieren
 
 ## Transient toasts (confirmation cues)
-toast-toc-updated = Inhaltsverzeichnis aktualisiert ({ $n } { $n ->
-        [one] Eintrag
-       *[other] Einträge
-    })
 toast-toc-empty = Erst Überschriften hinzufügen — ein Inhaltsverzeichnis listet sie auf
-toast-style-deleted = Stil gelöscht
-toast-style-duplicated = Stil dupliziert
-toast-saved = Dokument gespeichert
+saved-file = { $file } gespeichert
 toast-save-failed = Dokument konnte nicht gespeichert werden
 toast-open-failed = Dokument konnte nicht geöffnet werden. Das aktuelle Dokument bleibt unverändert.
 toast-view-only = Dieses Dokument ist nur zum Ansehen geöffnet.
-unsaved-title = Speichern?
-unsaved-body = Dieses Dokument vor dem Ersetzen speichern?
-unsaved-save = Speichern
-unsaved-discard = Änderungen verwerfen
-unsaved-cancel = Abbrechen
-unsaved-close = Schließen
 toast-file-dialog-failed = Dateiauswahl konnte nicht geöffnet werden
 
 ## Outline / navigation pane
-outline-header = GLIEDERUNG
+outline-header = Gliederung
 outline-empty = Noch keine Überschriften
-outline-untitled = (unbenannt)
+outline-untitled = Unbenannte Überschrift
 
 ## Page layout (ruler) bottom bar
 layout-margins = Ränder
 layout-spacing = Abstände
-layout-none-hint = Seitenlayout — Ränder oder Abstände wählen, dann auf der Seite ziehen
-layout-margins-readout = Ränder  L { $l }  O { $t }  R { $r }  U { $b }   ·   Ziehen = gegenüberliegendes Paar · Umschalt = eine Seite · Strg = alle proportional
-layout-spacing-readout = Abstand für { $name }  { $px } px   ·   Griff ziehen — jeder Block vom Typ "{ $name }" folgt
+layout-margins-readout = Links { $l } px   Oben { $t } px   Rechts { $r } px   Unten { $b } px
+layout-spacing-readout = Absätze „{ $name }“: { $px } px danach
 
 ## Canvas
 a11y-document-editor = Dokumenteditor
 a11y-group-review = Vorschläge prüfen
 page-indicator = Seite { $n }
 canvas-image-missing = Bild
-canvas-embedded-content = ⟦ eingebetteter Inhalt ⟧
+canvas-embedded-content = Eingebetteter Inhalt
 canvas-empty-placeholder = Beginne zu schreiben…
-toolbar-history = Verlauf
-toolbar-more = Mehr ▾
-toolbar-text-color = Textfarbe…
-toolbar-highlight = Hervorhebung…
+toolbar-text-color = Farbe
+toolbar-highlight = Hervorhebung
 picker-text-color = Textfarbe
 picker-highlight = Hervorhebung
 a11y-text-colour-name = Textfarbe { $colour }
@@ -226,6 +182,101 @@ color-yellow = Gelb
 color-cyan = Cyan
 color-pink = Rosa
 color-orange = Orange
-a11y-more-tools = Weitere Formatierungs- und Dokumentwerkzeuge
 a11y-version-history = Versionsverlauf
+a11y-more-tools = Weitere Formatierungs- und Dokumentwerkzeuge
 panel-close = Schließen
+
+## Inspector and status band
+panel-image-crop-inset = Ränder zuschneiden
+status-words = { $words } { $words ->
+        [one] Wort
+       *[other] Wörter
+    }
+status-chars = { $chars } { $chars ->
+        [one] Zeichen
+       *[other] Zeichen
+    }
+a11y-zoom = Zoom
+line-spacing-single = Einfach
+line-spacing-double = Doppelt
+panel-align-left = Links
+panel-align-center = Mitte
+panel-align-right = Rechts
+panel-align-justify = Blocksatz
+
+panel-image = Bild
+panel-image-size = Größe
+panel-image-width = Breite
+panel-image-flip = Spiegeln
+panel-image-flip-h = Horizontal
+panel-image-flip-v = Vertikal
+panel-image-smaller = Kleiner
+panel-image-larger = Größer
+panel-image-crop = Zuschneiden
+panel-image-crop-reset = Zurücksetzen
+panel-image-position = Position
+panel-image-inline = Im Text
+panel-image-free = Frei
+panel-image-wrap-left = Links
+panel-image-wrap-right = Rechts
+a11y-group-image-placement = Bildposition
+a11y-image-inline = Bild im Textfluss
+a11y-image-inline-description = Das Bild bleibt im Textfluss, zwischen den Absätzen
+a11y-image-free-position = Freie Bildposition
+a11y-image-free-position-description = Das Bild frei auf der Seite platzieren, ohne Textumfluss
+a11y-image-wrap-left = Bild links mit Textumfluss
+a11y-image-wrap-left-description = Das Bild links platzieren und den Text rechts daneben fließen lassen
+a11y-image-wrap-right = Bild rechts mit Textumfluss
+a11y-image-wrap-right-description = Das Bild rechts platzieren und den Text links daneben fließen lassen
+file-choice-title = Zu öffnendes Dokument wählen
+file-choice-body = Diese Datei unterscheidet sich vom Dokument im Arbeitsbereich. Behalte die Version im Arbeitsbereich oder importiere die gewählte Datei in ihren Verlauf.
+file-choice-keep = Version im Arbeitsbereich behalten
+file-choice-use = Gewählte Datei verwenden
+
+## History: what each change did, by field and by verb
+word-processor-document-body = { $op ->
+    [splice] Text bearbeitet
+    [mark] { $on ->
+        [true] { $characters } Zeichen formatiert: { $mark ->
+            [strong] fett
+            [em] kursiv
+            [underline] unterstrichen
+            [strike] durchgestrichen
+           *[other] { $mark }
+        }
+       *[false] { $mark } von { $characters } Zeichen entfernt
+    }
+    [set] { $kind ->
+        [heading] Überschrift der Ebene { $level } erstellt
+        [list_item] Liste erstellt
+        [paragraph] Absatz erstellt
+       *[other] Absatzformat geändert
+    }
+    [insert] { $object ->
+        [table] Tabelle eingefügt
+        [image] Bild eingefügt
+        [page-break] Seitenumbruch eingefügt
+       *[other] In den Text eingefügt
+    }
+    [remove] { $blocks } Objekte entfernt
+    [replace] Ganzen Text ersetzt
+   *[other] Text bearbeitet
+}
+word-processor-append-paragraph = Absatz hinzugefügt
+word-processor-insert-table = Tabelle mit { $rows } × { $columns } eingefügt
+word-processor-add-row = Tabellenzeile hinzugefügt
+word-processor-add-column = Tabellenspalte hinzugefügt
+word-processor-delete-row = Tabellenzeile gelöscht
+word-processor-delete-column = Tabellenspalte gelöscht
+word-processor-delete-table = Tabelle gelöscht
+word-processor-delete-image = Bild gelöscht
+word-processor-accept-change = Änderung angenommen
+word-processor-reject-change = Änderung abgelehnt
+word-processor-accept-all-changes = Alle Änderungen angenommen
+word-processor-reject-all-changes = Alle Änderungen abgelehnt
+word-processor-add-comment = Kommentiert: { $text }
+word-processor-reply-to-comment = Geantwortet: { $text }
+word-processor-resolve-comment = Kommentar erledigt
+word-processor-set-page-margins = Seitenränder geändert
+word-processor-generate-toc = Inhaltsverzeichnis eingefügt
+word-processor-note-file-written = In die Datei gespeichert

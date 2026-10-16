@@ -30,6 +30,19 @@
 //!   through the gate's loopback port
 //!   ([`launcher::netgate::LoopbackGate`]). With no gate, the launch is
 //!   offline.
+//!
+//! ## Tilo's private stores
+//!
+//! The identity secrets, vault keys, trust and revocation lists and the
+//! workspace tree live in [`launcher::capabilities::private_store_roots`].
+//! Linux hides them behind a read-only tmpfs mounted after every grant
+//! (`launcher::capabilities`, "Tilo's private stores are never inside a
+//! grant"). Seatbelt has no mount namespace, but its last matching rule
+//! wins: every store is denied outright after every grant — a home folder
+//! grant or a path picked in the chooser alike — and every directory and
+//! symlink its path resolves through is denied writes. An app can neither
+//! read a store nor rename an ancestor aside and plant a substitute at the
+//! old path ([`SeatbeltPolicy::hidden`], [`SeatbeltPolicy::pinned`]).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -37,6 +50,10 @@ use std::path::{Path, PathBuf};
 use launcher::appdir;
 use launcher::capabilities::CapabilityPlan;
 use launcher::netgate::EgressDecision;
+
+/// Symlinks followed while resolving one private store's path before the
+/// resolution gives up — the kernel's own limit.
+const MAX_SYMLINK_HOPS: usize = 40;
 
 /// Where Tilo keeps per-user state on macOS, relative to `HOME`. The runtime
 /// profile is `<this>/runtime`; app containers are `<this>/tilo-rooms/…`.
@@ -183,6 +200,10 @@ pub struct PolicyInputs<'a> {
     pub gate_port: Option<u16>,
     /// The app's own per-user cache directory (see [`prepare_darwin_cache`]).
     pub darwin_cache: Option<&'a Path>,
+    /// Tilo's private stores, as
+    /// [`launcher::capabilities::private_store_roots`] names them: kept out
+    /// of [`Self::capabilities`] and hidden whatever else is granted.
+    pub private_stores: &'a [PathBuf],
 }
 
 /// Every grant of one launch, as resolved paths.
@@ -198,6 +219,14 @@ pub struct SeatbeltPolicy {
     /// User-granted read-write paths.
     pub read_write: Vec<PathBuf>,
     pub network: SeatbeltNetwork,
+    /// Tilo's private stores, resolved: neither readable nor writable, nor
+    /// even visible to `stat`, whatever else is granted.
+    pub hidden: Vec<PathBuf>,
+    /// Every directory and symlink a [`Self::hidden`] store's path resolves
+    /// through: none may be written, so none can be renamed, removed or
+    /// repointed to move the store aside and plant a substitute where Tilo
+    /// looks. What is inside them stays as granted.
+    pub pinned: Vec<PathBuf>,
     /// Grants the profile could not express. Each is denied, never widened.
     pub not_enforced: Vec<String>,
 }
@@ -212,6 +241,8 @@ pub enum PolicyError {
         #[source]
         source: io::Error,
     },
+    #[error("Tilo's private store {path} cannot be hidden: its path loops through symlinks")]
+    PrivateStore { path: PathBuf },
     #[error("the {role} directory {path} resolves to the filesystem root")]
     Root { role: &'static str, path: PathBuf },
     #[error(
@@ -232,11 +263,20 @@ impl SeatbeltPolicy {
     /// cannot be granted, and an unresolvable path in a profile would match
     /// nothing anyway.
     ///
+    /// The grants are first confined against [`PolicyInputs::private_stores`]
+    /// by the Linux launcher's own
+    /// [`CapabilityPlan::confine_private_stores`] (a no-op for a plan that
+    /// [`CapabilityPlan::for_app`] already confined): a grant inside a store
+    /// is dropped, a store a grant reaches is created so that the app cannot
+    /// create it first, and a writable grant holding a symlink on a store's
+    /// way is made read-only.
+    ///
     /// # Errors
     ///
     /// Returns [`PolicyError`] when the payload, runtime or container
     /// directory cannot be resolved, is the root, or when the container
-    /// overlaps a directory the app may execute from.
+    /// overlaps a directory the app may execute from, or when a private
+    /// store's path loops through symlinks.
     pub fn resolve(inputs: &PolicyInputs<'_>) -> Result<Self, PolicyError> {
         let payload = resolve_dir("payload", inputs.payload_dir)?;
         let runtime = inputs
@@ -262,14 +302,24 @@ impl SeatbeltPolicy {
             }
         }
 
+        let capabilities = inputs
+            .capabilities
+            .clone()
+            .confine_private_stores(inputs.private_stores);
+        let (hidden, pinned) = resolve_private_stores(
+            inputs
+                .private_stores
+                .iter()
+                .chain(&capabilities.masked_dirs),
+        )?;
+
         let mut not_enforced = Vec::new();
-        let read_write = resolve_grants(&inputs.capabilities.rw_paths, &mut not_enforced);
-        let read_only: Vec<PathBuf> =
-            resolve_grants(&inputs.capabilities.ro_paths, &mut not_enforced)
-                .into_iter()
-                .filter(|path| !read_write.contains(path))
-                .collect();
-        for device in &inputs.capabilities.devices {
+        let read_write = resolve_grants(&capabilities.rw_paths, &mut not_enforced);
+        let read_only: Vec<PathBuf> = resolve_grants(&capabilities.ro_paths, &mut not_enforced)
+            .into_iter()
+            .filter(|path| !read_write.contains(path))
+            .collect();
+        for device in &capabilities.devices {
             not_enforced.push(format!(
                 "device `{device}`: macOS gates capture devices through TCC, which the \
                  Seatbelt profile does not grant"
@@ -299,9 +349,172 @@ impl SeatbeltPolicy {
             read_only,
             read_write,
             network,
+            hidden,
+            pinned,
             not_enforced,
         })
     }
+}
+
+/// Resolve every private store into the paths to hide and the paths to pin
+/// (see [`SeatbeltPolicy::hidden`] and [`SeatbeltPolicy::pinned`]).
+///
+/// A store that does not exist yet is still hidden, at the path it would be
+/// created at. A relative store path names nothing to find and is skipped,
+/// as on Linux.
+fn resolve_private_stores<'p>(
+    stores: impl Iterator<Item = &'p PathBuf>,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>), PolicyError> {
+    let mut hidden: Vec<PathBuf> = Vec::new();
+    let mut pinned: Vec<PathBuf> = Vec::new();
+    for store in stores {
+        if !store.is_absolute() {
+            tracing::warn!(
+                target: "tilo_launcher::macos",
+                path = %store.display(),
+                "private store path is not absolute; it names nothing to hide"
+            );
+            continue;
+        }
+        let (real, route) = store_route(store).ok_or_else(|| PolicyError::PrivateStore {
+            path: store.clone(),
+        })?;
+        if !hidden.contains(&real) {
+            hidden.push(real);
+        }
+        for step in route {
+            if !pinned.contains(&step) {
+                pinned.push(step);
+            }
+        }
+    }
+    // Inside a hidden store every write is denied already.
+    pinned.retain(|step| !hidden.iter().any(|store| step.starts_with(store)));
+    Ok((hidden, pinned))
+}
+
+/// Where `store` resolves, followed one component at a time, and every path
+/// that resolution passed through: each directory on the way and each
+/// symlink, where it lives. Renaming, removing or repointing any of them
+/// would change what the store's path names.
+///
+/// Every existing component is spelled as the disk spells it: the default
+/// macOS volume ignores case, and Seatbelt matches the stored name, so a
+/// store named in another case would otherwise be denied under a name no
+/// access ever uses. Components from the first one that does not exist
+/// onwards are kept as written. `None` when the path loops through symlinks.
+fn store_route(store: &Path) -> Option<(PathBuf, Vec<PathBuf>)> {
+    use std::collections::VecDeque;
+
+    let mut pending: VecDeque<PathBuf> = VecDeque::new();
+    queue_components(&mut pending, store, false);
+    let mut real = PathBuf::from("/");
+    let mut route: Vec<PathBuf> = Vec::new();
+    let mut hops = 0usize;
+    let mut missing = false;
+    while let Some(part) = pending.pop_front() {
+        if part.as_os_str() == ".." {
+            real.pop();
+            continue;
+        }
+        let next = real.join(&part);
+        let meta = if missing {
+            None
+        } else {
+            std::fs::symlink_metadata(&next).ok()
+        };
+        match meta {
+            Some(meta) if meta.file_type().is_symlink() => {
+                hops = hops.saturating_add(1);
+                if hops > MAX_SYMLINK_HOPS {
+                    return None;
+                }
+                let target = std::fs::read_link(&next).ok()?;
+                route.push(on_disk(&next).unwrap_or(next));
+                if target.is_absolute() {
+                    real = PathBuf::from("/");
+                }
+                queue_components(&mut pending, &target, true);
+            }
+            Some(_) => {
+                real = on_disk(&next)
+                    .or_else(|| std::fs::canonicalize(&next).ok())
+                    .unwrap_or(next);
+                route.push(real.clone());
+            }
+            None => {
+                missing = true;
+                real = next;
+            }
+        }
+    }
+    // The store itself is hidden, not pinned.
+    route.retain(|step| step != &real);
+    Some((real, route))
+}
+
+/// Queue `path`'s normal and parent components, at the front (a symlink's
+/// target, resolved before whatever followed the link) or at the back.
+fn queue_components(pending: &mut std::collections::VecDeque<PathBuf>, path: &Path, front: bool) {
+    use std::path::Component;
+
+    let parts: Vec<PathBuf> = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(PathBuf::from(name)),
+            Component::ParentDir => Some(PathBuf::from("..")),
+            Component::RootDir | Component::CurDir | Component::Prefix(_) => None,
+        })
+        .collect();
+    if front {
+        for part in parts.into_iter().rev() {
+            pending.push_front(part);
+        }
+    } else {
+        pending.extend(parts);
+    }
+}
+
+/// The path the kernel reports for `path` itself, a symlink not followed:
+/// each component as the disk spells it.
+#[cfg(target_os = "macos")]
+fn on_disk(path: &Path) -> Option<PathBuf> {
+    use std::ffi::{CString, OsStr};
+    use std::os::fd::{FromRawFd as _, OwnedFd};
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let name = CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: `name` is NUL-terminated and outlives the call. `O_SYMLINK`
+    // opens a symlink itself and `O_NONBLOCK` keeps a FIFO from blocking.
+    let fd = unsafe {
+        libc::open(
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_SYMLINK | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return None;
+    }
+    // SAFETY: `open` returned a descriptor this function alone owns.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let mut buf = vec![0u8; usize::try_from(libc::PATH_MAX).ok()?];
+    // SAFETY: `F_GETPATH` writes at most `MAXPATHLEN` (= `PATH_MAX`) bytes,
+    // NUL included, into `buf`, which holds that many.
+    let status = unsafe {
+        use std::os::fd::AsRawFd as _;
+        libc::fcntl(fd.as_raw_fd(), libc::F_GETPATH, buf.as_mut_ptr())
+    };
+    if status < 0 {
+        return None;
+    }
+    let len = buf.iter().position(|&b| b == 0)?;
+    buf.truncate(len);
+    Some(PathBuf::from(OsStr::from_bytes(&buf)))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn on_disk(_path: &Path) -> Option<PathBuf> {
+    None
 }
 
 fn resolve_dir(role: &'static str, path: &Path) -> Result<PathBuf, PolicyError> {
@@ -387,6 +600,7 @@ mod tests {
             egress,
             gate_port: None,
             darwin_cache: None,
+            private_stores: &[],
         }
     }
 
@@ -491,7 +705,7 @@ mod tests {
         let policy = SeatbeltPolicy::resolve(&inputs(&l, &plan, &unrestricted)).unwrap();
         assert_eq!(policy.network, SeatbeltNetwork::Unrestricted);
 
-        let filtered = EgressDecision::Filtered(EgressPolicy::new(vec!["example.com".into()]));
+        let filtered = EgressDecision::Filtered(EgressPolicy::from_grants(["example.com"]));
         let offline = SeatbeltPolicy::resolve(&inputs(&l, &plan, &filtered)).unwrap();
         assert_eq!(offline.network, SeatbeltNetwork::Denied);
         assert_eq!(offline.not_enforced.len(), 1);
@@ -591,6 +805,132 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// `layout()` plus a home holding Tilo's private store.
+    fn home_with_store(l: &Layout) -> (PathBuf, PathBuf) {
+        let home = l.root.join("home");
+        let store = home.join(".config/tilo");
+        std::fs::create_dir_all(store.join("identity/secrets")).unwrap();
+        std::fs::create_dir_all(home.join("Documents")).unwrap();
+        (home, store)
+    }
+
+    fn real(path: &Path) -> PathBuf {
+        std::fs::canonicalize(path).unwrap()
+    }
+
+    #[test]
+    fn a_home_grant_hides_the_store_and_pins_every_directory_on_its_way() {
+        let l = layout();
+        let (home, store) = home_with_store(&l);
+        let plan = CapabilityPlan {
+            rw_paths: vec![home.clone(), store.join("identity")],
+            ..CapabilityPlan::empty()
+        };
+        let egress = EgressDecision::Blocked;
+        let stores = [store.clone()];
+        let mut i = inputs(&l, &plan, &egress);
+        i.private_stores = &stores;
+        let policy = SeatbeltPolicy::resolve(&i).unwrap();
+
+        // The grant inside the store is dropped; the one containing it stays.
+        assert_eq!(policy.read_write, vec![real(&home)]);
+        assert_eq!(policy.hidden, vec![real(&store)]);
+        let config = real(&home.join(".config"));
+        for dir in config.ancestors().filter(|dir| dir.parent().is_some()) {
+            assert!(policy.pinned.contains(&dir.to_path_buf()), "{policy:?}");
+        }
+        assert!(!policy.pinned.contains(&PathBuf::from("/")), "{policy:?}");
+        assert!(
+            !policy.pinned.iter().any(|p| p.starts_with(real(&store))),
+            "{policy:?}"
+        );
+    }
+
+    #[test]
+    fn a_store_is_hidden_without_any_grant_and_created_only_when_one_reaches_it() {
+        let l = layout();
+        let home = l.root.join("home");
+        std::fs::create_dir_all(home.join("Documents")).unwrap();
+        let store = home.join(".config/tilo");
+        let stores = [store.clone()];
+        let egress = EgressDecision::Blocked;
+
+        // A picked path could still name it, so it is hidden at the path it
+        // would be created at, and nothing is created.
+        let none = CapabilityPlan::empty();
+        let mut i = inputs(&l, &none, &egress);
+        i.private_stores = &stores;
+        let policy = SeatbeltPolicy::resolve(&i).unwrap();
+        assert_eq!(policy.hidden, vec![real(&home).join(".config/tilo")]);
+        assert!(policy.pinned.contains(&real(&home)), "{policy:?}");
+        assert!(!home.join(".config").exists());
+
+        // A writable home would let the app create it first.
+        let plan = CapabilityPlan {
+            rw_paths: vec![home.clone()],
+            ..CapabilityPlan::empty()
+        };
+        let mut i = inputs(&l, &plan, &egress);
+        i.private_stores = &stores;
+        let policy = SeatbeltPolicy::resolve(&i).unwrap();
+        assert!(store.is_dir(), "the store was not created before launch");
+        assert_eq!(policy.hidden, vec![real(&store)]);
+        assert!(policy.pinned.contains(&real(&home.join(".config"))));
+    }
+
+    #[test]
+    fn a_symlink_on_the_way_is_pinned_where_it_lives() {
+        let l = layout();
+        let home = l.root.join("home");
+        let elsewhere = l.root.join("elsewhere/tilo");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::create_dir_all(home.join(".config")).unwrap();
+        let link = home.join(".config/tilo");
+        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+        let none = CapabilityPlan::empty();
+        let egress = EgressDecision::Blocked;
+        let stores = [link];
+        let mut i = inputs(&l, &none, &egress);
+        i.private_stores = &stores;
+        let policy = SeatbeltPolicy::resolve(&i).unwrap();
+        assert_eq!(policy.hidden, vec![real(&elsewhere)]);
+        let link_on_disk = real(&home.join(".config")).join("tilo");
+        assert!(policy.pinned.contains(&link_on_disk), "{policy:?}");
+        assert!(
+            policy.pinned.contains(&real(&l.root.join("elsewhere"))),
+            "{policy:?}"
+        );
+
+        let looped = l.root.join("loop");
+        std::os::unix::fs::symlink(&looped, &looped).unwrap();
+        let stores = [looped.join("tilo")];
+        i.private_stores = &stores;
+        assert!(matches!(
+            SeatbeltPolicy::resolve(&i),
+            Err(PolicyError::PrivateStore { .. })
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_store_named_in_another_case_is_hidden_as_the_disk_spells_it() {
+        let l = layout();
+        let (home, store) = home_with_store(&l);
+        assert!(
+            home.join(".CONFIG").is_dir(),
+            "the temporary directory is on a case-sensitive volume; this test needs the default \
+             case-insensitive one"
+        );
+        let none = CapabilityPlan::empty();
+        let egress = EgressDecision::Blocked;
+        let stores = [home.join(".CONFIG/TILO")];
+        let mut i = inputs(&l, &none, &egress);
+        i.private_stores = &stores;
+        let policy = SeatbeltPolicy::resolve(&i).unwrap();
+        assert_eq!(policy.hidden, vec![real(&store)]);
+        assert!(policy.pinned.contains(&real(&home.join(".config"))));
     }
 
     #[test]

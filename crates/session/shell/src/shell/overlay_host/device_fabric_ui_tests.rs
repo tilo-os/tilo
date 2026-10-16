@@ -14,6 +14,7 @@ fn fixture() -> (DeviceFabricView, DeviceId) {
     let remote = DeviceId::new("certified-laptop").unwrap();
     (
         DeviceFabricView {
+            displays: Vec::new(),
             bluetooth_authorizations: Vec::new(),
             bluetooth_handoffs: Vec::new(),
             gamepad_authorizations: Vec::new(),
@@ -53,9 +54,7 @@ fn fixture() -> (DeviceFabricView, DeviceId) {
             revertible_calibrations: Vec::new(),
             tethering: Vec::new(),
             remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView::default(),
-            display_mirror_consents: Vec::new(),
-            display_mirrors: Vec::new(),
-            display_mirror_available: false,
+            device_unlocks: Vec::new(),
         },
         remote,
     )
@@ -752,7 +751,7 @@ fn device_pane_settings_controllers_and_calls_require_explicit_choices() {
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn device_pane_tethering_capture_and_mirror_require_explicit_consent() {
+fn device_pane_tethering_and_capture_require_explicit_consent() {
     fn device_pane_requests_tethering_from_the_exact_certified_phone() {
         let (mut view, remote) = fixture();
         view.local_media.clear();
@@ -873,66 +872,9 @@ fn device_pane_tethering_capture_and_mirror_require_explicit_consent() {
         );
     }
 
-    fn device_pane_mirror_requires_consent_and_stops_exact_session() {
-        let (mut view, remote) = fixture();
-        view.local_media.clear();
-        view.local_outputs.clear();
-        view.display_mirror_available = true;
-        view.display_mirror_consents = vec![
-            crate::shell::device_fabric_runtime::DisplayMirrorConsentView {
-                session_id: [21; 16],
-                source_label: "Desk computer".into(),
-            },
-        ];
-        view.display_mirrors = vec![
-            crate::shell::device_fabric_runtime::DisplayMirrorStatusView {
-                session_id: [22; 16],
-                peer: remote.clone(),
-                peer_label: "Travel laptop".into(),
-                outbound: true,
-                phase: crate::shell::device_fabric_runtime::DisplayMirrorPhase::Streaming,
-            },
-        ];
-        let actions = Rc::new(RefCell::new(Vec::new()));
-        let recorded = Rc::clone(&actions);
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()));
-        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        host.set_device_fabric_bridge(Rc::new(move |action| {
-            recorded.borrow_mut().push(action);
-            Ok(view.clone())
-        }));
-
-        let (allow, decline) =
-            ShellOverlayHost::qs_realtime_consent_actions(host.qs_device_row_rect(0));
-        host.handle_qs_device_fabric_click(allow.center());
-        host.handle_qs_device_fabric_click(decline.center());
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(1).center());
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(3).center());
-        host.handle_qs_device_fabric_click(host.qs_device_row_rect(2).center());
-
-        let actions = actions.borrow();
-        assert!(
-            actions.contains(&DeviceFabricUiAction::ResolveDisplayMirror {
-                session_id: [21; 16],
-                approved: true,
-            })
-        );
-        assert!(
-            actions.contains(&DeviceFabricUiAction::ResolveDisplayMirror {
-                session_id: [21; 16],
-                approved: false,
-            })
-        );
-        assert!(actions.contains(&DeviceFabricUiAction::RequestDisplayMirror { target: remote }));
-        assert!(actions.contains(&DeviceFabricUiAction::StopDisplayMirror {
-            session_id: [22; 16],
-        }));
-    }
-
     device_pane_requests_tethering_from_the_exact_certified_phone();
     device_pane_requires_explicit_tethering_consent_and_exposes_disconnect();
     device_pane_routes_remote_capture_and_requires_explicit_source_consent();
-    device_pane_mirror_requires_consent_and_stops_exact_session();
 }
 
 #[test]
@@ -1001,5 +943,60 @@ fn device_pane_lists_microphones_and_switches_and_levels_them() {
     assert!(
         !actions.contains(&DeviceFabricUiAction::SelectLocalInput { node_id: 70 }),
         "the current microphone is not re-selected"
+    );
+}
+
+#[test]
+fn display_move_requires_settings_owner_and_an_unlocked_session() {
+    let mut host = ShellOverlayHost::new(Box::new(Container::new()));
+    let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
+    host.chrome = Some(chrome.clone());
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let received = calls.clone();
+    host.set_device_fabric_bridge(Rc::new(move |action| {
+        received.borrow_mut().push(action);
+        Ok(DeviceFabricView::default())
+    }));
+    let request = settings_store::device_displays::DeviceDisplayMove {
+        screen: settings_store::device_displays::DeviceDisplay {
+            device: "peer".into(),
+            device_label: "Peer".into(),
+            connector: "eDP-1".into(),
+            output_id: None,
+            label: "Panel".into(),
+            online: true,
+            local: false,
+            x: 1920,
+            y: 0,
+            width: 1280,
+            height: 720,
+            scale_milli: 1250,
+            revision: 7,
+        },
+        x: 0,
+        y: 1080,
+    };
+    chrome.borrow_mut().test_only_owner_override = Some(false);
+    assert!(
+        host.request_device_display_move("so.tilo.settings", request.clone())
+            .is_err()
+    );
+    chrome.borrow_mut().test_only_owner_override = Some(true);
+    assert!(
+        host.request_device_display_move("so.tilo.terminal", request.clone())
+            .is_err()
+    );
+    chrome.borrow_mut().set_session_locked(true);
+    assert!(
+        host.request_device_display_move("so.tilo.settings", request.clone())
+            .is_err()
+    );
+    assert!(calls.borrow().is_empty());
+    chrome.borrow_mut().set_session_locked(false);
+    host.request_device_display_move("so.tilo.settings", request.clone())
+        .unwrap();
+    assert_eq!(
+        calls.borrow().as_slice(),
+        &[DeviceFabricUiAction::MoveDisplay(request)]
     );
 }

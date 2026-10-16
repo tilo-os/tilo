@@ -2,21 +2,19 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard"
 )]
 tilo_automerge_isolate::test_worker!();
 
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use tilo_peer_state::{
-    NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin, seed_room,
-};
+use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin, seed_room};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
 
@@ -78,7 +76,7 @@ fn fixture_with_documents_and_expiry(
             document
                 .put(ROOT, "value", format!("value-{index:02}"))
                 .unwrap();
-            document.commit();
+            document.commit_edit("fixture", "fixture");
             SeedDocument {
                 app_id: APP.into(),
                 record_id: format!("tab-{index:02}"),
@@ -335,7 +333,7 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
         let heads = doc.get_heads();
         doc.put(ROOT, "value", format!("edit-{generation}"))
             .unwrap();
-        doc.commit();
+        doc.commit_edit("fixture", "value");
         peer.publish_incremental(
             APP,
             &format!("tab-{index:02}"),
@@ -358,7 +356,7 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
                 ScalarValue::Bytes(postcard::to_allocvec(&coverage).unwrap()),
             )
             .unwrap();
-        whole_map.commit();
+        whole_map.commit_edit("fixture", "fixture");
         whole_map
             .put(
                 ROOT,
@@ -366,7 +364,7 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
                 ScalarValue::Bytes(postcard::to_allocvec(&receipts).unwrap()),
             )
             .unwrap();
-        whole_map.commit();
+        whole_map.commit_edit("fixture", "fixture");
         whole_map_bytes += whole_map
             .get_changes(&heads)
             .iter()

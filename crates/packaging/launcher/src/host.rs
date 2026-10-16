@@ -47,19 +47,19 @@
 //! compositor's own `TILO_*` variables don't leak into a process not
 //! subject to them.
 //!
-//! And the lifetime. Each launch runs in its own transient
-//! `app-tilo-<id>-<pid>.scope` of the systemd user manager, part of the
-//! graphical session target, so a logout or a compositor crash stops the
-//! application and everything it forked instead of leaving it running with
-//! no display, and resource accounting and OOM handling see one app as one
-//! unit. A manager that is unreachable or refuses costs the scope, never
-//! the launch.
+//! And the lifetime. Like every packaged app, each launch runs in its own
+//! transient `app-tilo-<id>-<pid>.scope` of the systemd user manager (see
+//! [`crate::scope`]), so a logout or a compositor crash stops the
+//! application and everything it forked, and resource accounting and OOM
+//! handling see one app as one unit. A manager that is unreachable or
+//! refuses costs the scope, never the launch.
 
 use std::os::unix::process::CommandExt as _;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use crate::scope;
 use desktop_entry::launch::{HostLaunch, HostLaunchError, LaunchEnv, plan_by_id, plan_file};
 
 #[derive(Debug, thiserror::Error)]
@@ -125,11 +125,11 @@ pub fn plan_host_file(path: &std::path::Path, env: &LaunchEnv) -> Result<HostLau
 /// Returns [`HostError::Spawn`] if `launch`'s program cannot be spawned or
 /// waited on.
 pub fn spawn(launch: &HostLaunch) -> Result<ExitStatus, HostError> {
-    let busctl = Path::new(BUSCTL);
+    let busctl = Path::new(scope::BUSCTL);
     spawn_with(
         launch,
         busctl.is_file().then_some(busctl),
-        SCOPE_JOIN_TIMEOUT,
+        scope::JOIN_TIMEOUT,
     )
 }
 
@@ -155,7 +155,12 @@ fn spawn_with(
     );
 
     if let Some(busctl) = busctl
-        && let Err(error) = join_app_scope(busctl, launch, scope_join_timeout)
+        && let Err(error) = scope::join_with(
+            busctl,
+            &launch.desktop_id,
+            &launch.display_name,
+            scope_join_timeout,
+        )
     {
         eprintln!(
             "tilo-launcher: {} runs outside a session scope: {error}",
@@ -173,121 +178,6 @@ fn spawn_with(
         program: launch.program.display().to_string(),
         source,
     })
-}
-
-/// The systemd user manager's D-Bus front end.
-const BUSCTL: &str = "/usr/bin/busctl";
-
-/// Stopping this target at logout stops every host application's scope.
-const SESSION_TARGET: &str = "tilo-graphical-session.target";
-
-/// The longest unit name systemd accepts.
-const UNIT_NAME_MAX: usize = 255;
-
-/// How long the manager gets to move this process once it accepted the
-/// scope. It runs the start job right after answering, so a healthy manager
-/// needs milliseconds.
-const SCOPE_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
-
-/// Move this launcher into a new `app-tilo-<id>-<pid>.scope` before it
-/// forks the app, so the app and everything it forks start inside the scope
-/// rather than being chased into it afterwards. `StartTransientUnit`
-/// answers once the start job is queued, before the move, hence the wait
-/// on this process's own cgroup.
-fn join_app_scope(busctl: &Path, launch: &HostLaunch, timeout: Duration) -> Result<(), String> {
-    let pid = std::process::id();
-    let unit = scope_unit_name(&launch.desktop_id, pid)
-        .ok_or_else(|| "its desktop id cannot name a unit".to_string())?;
-    let output = Command::new(busctl)
-        .args(scope_request_args(&unit, pid, &launch.display_name))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|error| format!("running {}: {error}", busctl.display()))?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    let deadline = Instant::now().checked_add(timeout);
-    loop {
-        let cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
-        if cgroup_is_unit(&cgroup, &unit) {
-            return Ok(());
-        }
-        if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
-            return Err(format!(
-                "{unit} was accepted but not joined within {timeout:?}"
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(2));
-    }
-}
-
-/// `busctl` arguments for `StartTransientUnit` of a scope holding `pid`.
-fn scope_request_args(unit: &str, pid: u32, display_name: &str) -> Vec<String> {
-    let mut properties: Vec<Vec<String>> = vec![
-        vec!["PIDs".into(), "au".into(), "1".into(), pid.to_string()],
-        vec!["Slice".into(), "s".into(), "app.slice".into()],
-        vec![
-            "CollectMode".into(),
-            "s".into(),
-            "inactive-or-failed".into(),
-        ],
-        vec![
-            "PartOf".into(),
-            "as".into(),
-            "1".into(),
-            SESSION_TARGET.into(),
-        ],
-    ];
-    let description: String = display_name.chars().filter(|c| !c.is_control()).collect();
-    if !description.trim().is_empty() {
-        properties.push(vec!["Description".into(), "s".into(), description]);
-    }
-    let mut args: Vec<String> = [
-        "--user",
-        "--timeout=2",
-        "call",
-        "org.freedesktop.systemd1",
-        "/org/freedesktop/systemd1",
-        "org.freedesktop.systemd1.Manager",
-        "StartTransientUnit",
-        "ssa(sv)a(sa(sv))",
-    ]
-    .map(String::from)
-    .to_vec();
-    args.push(unit.to_string());
-    args.push("fail".into());
-    args.push(properties.len().to_string());
-    args.extend(properties.into_iter().flatten());
-    args.push("0".into());
-    args
-}
-
-/// Whether `/proc/self/cgroup` places this process in `unit`.
-fn cgroup_is_unit(cgroup: &str, unit: &str) -> bool {
-    cgroup
-        .lines()
-        .any(|line| line.rsplit('/').next() == Some(unit))
-}
-
-/// `app-tilo-<desktop id>-<pid>.scope`, the name the desktop-environment
-/// convention (<https://systemd.io/DESKTOP_ENVIRONMENTS>) gives a launched
-/// app, with the id escaped as a unit name must be: `-` separates the name's
-/// fields, so it and anything else outside `[A-Za-z0-9:_.]` becomes `\xNN`.
-/// `None` when the result is too long to be a unit name.
-fn scope_unit_name(desktop_id: &str, pid: u32) -> Option<String> {
-    use std::fmt::Write as _;
-    let mut escaped = String::with_capacity(desktop_id.len());
-    for byte in desktop_id.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'.') {
-            escaped.push(char::from(byte));
-        } else {
-            let _ = write!(escaped, "\\x{byte:02x}");
-        }
-    }
-    let unit = format!("app-tilo-{escaped}-{pid}.scope");
-    (!escaped.is_empty() && unit.len() <= UNIT_NAME_MAX).then_some(unit)
 }
 
 /// Put each host launch in its own session before its desktop entry is
@@ -320,12 +210,11 @@ mod tests {
     /// A perfectly valid package manifest — the refusal being tested has
     /// to come from the launch *mode*, not from anything wrong with the
     /// package.
-    fn example_manifest() -> crate::manifest::MinimalManifest {
-        toml::from_str(
-            "[package]\nid = \"so.tilo.example\"\nversion = \"1.0.0\"\n\
-             [entrypoint]\nbin = \"bin/example\"\n",
+    fn example_manifest() -> crate::manifest::ManifestView {
+        crate::manifest::test_manifest(
+            "id = \"so.tilo.example\"\nversion = \"1.0.0\"\nkind = \"app\"",
+            "[entrypoint]\nbin = \"bin/example\"\n",
         )
-        .expect("the fixture manifest parses")
     }
 
     #[test]
@@ -427,7 +316,7 @@ mod tests {
             let pid = std::process::id();
             assert_eq!(
                 argv.lines().map(str::to_string).collect::<Vec<_>>(),
-                scope_request_args(
+                scope::request_args(
                     &format!("app-tilo-org.example.Probe\\x2dx-{pid}.scope"),
                     pid,
                     "Probe"
@@ -441,9 +330,14 @@ mod tests {
                 .expect("the launch runs");
             assert_eq!(status.code(), Some(7));
             assert!(
-                join_app_scope(&busctl, &launch, Duration::from_millis(20))
-                    .expect_err("a refusal is reported")
-                    .contains("Access denied"),
+                scope::join_with(
+                    &busctl,
+                    &launch.desktop_id,
+                    &launch.display_name,
+                    Duration::from_millis(20)
+                )
+                .expect_err("a refusal is reported")
+                .contains("Access denied"),
                 "the manager's own reason is kept for the log"
             );
         }
@@ -453,66 +347,6 @@ mod tests {
                 spawn_with(&launch, None, Duration::from_millis(20)).expect("the launch runs");
             assert_eq!(status.code(), Some(7));
         }
-    }
-
-    #[test]
-    fn a_scope_request_names_its_unit_slice_session_and_process() {
-        assert_eq!(
-            scope_request_args("app-tilo-com.spotify.Client-42.scope", 42, "Spo\ntify"),
-            [
-                "--user",
-                "--timeout=2",
-                "call",
-                "org.freedesktop.systemd1",
-                "/org/freedesktop/systemd1",
-                "org.freedesktop.systemd1.Manager",
-                "StartTransientUnit",
-                "ssa(sv)a(sa(sv))",
-                "app-tilo-com.spotify.Client-42.scope",
-                "fail",
-                "5",
-                "PIDs",
-                "au",
-                "1",
-                "42",
-                "Slice",
-                "s",
-                "app.slice",
-                "CollectMode",
-                "s",
-                "inactive-or-failed",
-                "PartOf",
-                "as",
-                "1",
-                "tilo-graphical-session.target",
-                "Description",
-                "s",
-                "Spotify",
-                "0",
-            ]
-        );
-        assert_eq!(
-            scope_unit_name("com.spotify.Client", 42).as_deref(),
-            Some("app-tilo-com.spotify.Client-42.scope")
-        );
-        assert_eq!(
-            scope_unit_name("org.gnome.Text-Editor", 1).as_deref(),
-            Some("app-tilo-org.gnome.Text\\x2dEditor-1.scope")
-        );
-        assert_eq!(
-            scope_unit_name("a b/c", 1).as_deref(),
-            Some("app-tilo-a\\x20b\\x2fc-1.scope")
-        );
-        assert_eq!(scope_unit_name("", 1), None);
-        assert_eq!(scope_unit_name(&"x".repeat(250), 1), None);
-        assert!(cgroup_is_unit(
-            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-tilo-a\\x2db-7.scope\n",
-            "app-tilo-a\\x2db-7.scope"
-        ));
-        assert!(!cgroup_is_unit(
-            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-cursor-1.scope\n",
-            "app-tilo-a\\x2db-7.scope"
-        ));
     }
 
     #[test]

@@ -10,7 +10,10 @@
 
 use std::path::Path;
 
+pub mod installed_root;
 pub mod lsblk;
+#[cfg_attr(not(unix), path = "root_customization_unsupported.rs")]
+pub mod root_customization;
 pub mod udisks;
 
 pub use lsblk::{BlockDevice, Lsblk};

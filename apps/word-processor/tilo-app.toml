@@ -27,6 +27,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "spellcheck"]
 
+[resources]
+kinds = ["word-processor.document", "tilo.rich-text"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
@@ -58,7 +61,6 @@ file-chooser = "via-host"
 [sandbox.services]
 collab = "optional@1"
 tilo-fs = "optional@1"
-spellcheck = "optional@1"
 
 [entrypoint]
 bin             = "bin/word-processor"
@@ -73,10 +75,10 @@ mime = [
     "text/markdown",
     "text/html",
 ]
-# Every extension qdoc has a rich-text codec for. An extension the
+# Every extension tilo-doc has a rich-text codec for. An extension the
 # format registry calls a document but no installed package claims is a
 # reportable dead end ("nothing here opens .html") rather than an open,
-# so the list is kept in step with `qdoc_codecs::DOCUMENT_EXTENSIONS`.
+# so the list is kept in step with `tilo_doc_codecs::DOCUMENT_EXTENSIONS`.
 # `html`/`htm` and `rtf` are import-only there; opening them still works,
 # saving back to the same format does not yet.
 ext  = [

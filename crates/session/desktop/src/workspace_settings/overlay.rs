@@ -6,7 +6,8 @@
 
 use crate::authority::WorkspaceAuthority as _;
 use crate::i18n::{t, t_args};
-use ui::clock::{Duration, Instant};
+use ui::num::{f32_of_f64, f64_of_usize};
+use ui::time::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -26,6 +27,8 @@ use super::{
     draw_permissions_pane, members_pane_rows, ownership_action_rect, ownership_transfer_resource,
     permission_profiles_rect, permissions_pane_layout,
 };
+use ui::TextRole;
+use ui::text_render::TextStyle;
 
 /// The "At a glance" stat tiles: the base surface inside the raised summary
 /// card, with a hairline derived against the card. Where a palette makes
@@ -61,6 +64,18 @@ pub struct WorkspaceSettingsModel<'a> {
     /// Whether policy controls are live rather than painted disabled.
     pub owner_controls: bool,
     pub apps: &'a dyn AppDirectory,
+    /// The person's devices and whether this workspace shows on each.
+    /// Empty for a workspace that is not the person's own.
+    pub devices: &'a [WorkspaceDevice],
+}
+
+/// One of the person's devices as the General tab offers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceDevice {
+    pub label: String,
+    pub shown: bool,
+    /// The device this lens runs on.
+    pub here: bool,
 }
 
 /// The Permissions tab's grant-composer controls, as painted.
@@ -103,6 +118,11 @@ pub enum EventOutcome {
     CreateInvite,
     EditName,
     CommitName,
+    /// Show the workspace on the `n`th listed device, or keep it off.
+    ToggleDevice(usize),
+    /// Move the workspace one place earlier (`-1`) or later (`1`).
+    MoveWorkspace(i32),
+    DeleteWorkspace,
 }
 
 /// Keyboard operations understood by the focused member-permission sheet.
@@ -145,7 +165,10 @@ pub struct DrawPlan {
 pub struct WorkspaceSettingsOverlay {
     viewport: Rect,
     general_scroll_y: f64,
+    /// General body geometry reserves both OS UI and text scaling.
     general_text_scale: f64,
+    /// Measured footer plus its themed inset/gap, reserved outside the body clip.
+    general_footer_height: f64,
     transition: ui::Transition,
     tab_pill_rects: [Rect; 5],
     default_app_rects: Vec<(desktop_policy::ResourceKind, Rect, Rect)>,
@@ -159,6 +182,15 @@ pub struct WorkspaceSettingsOverlay {
     member_sheet: Option<MemberSheet>,
     member_sheet_focus: usize,
     member_sheet_option_rects: Vec<Rect>,
+    /// The General tab's devices card: one toggle per device, the two move
+    /// buttons and Delete, as painted (scroll applied).
+    device_toggle_rects: Vec<Rect>,
+    move_rects: [Rect; 2],
+    delete_rect: Rect,
+    /// Rows the devices card had when last painted, for the scroll range.
+    device_rows: usize,
+    /// Shaped caret/scroll cache; the host owns the rename draft and selection.
+    name_input: Option<ui::widget::TextInput>,
 }
 
 impl Default for WorkspaceSettingsOverlay {
@@ -167,6 +199,7 @@ impl Default for WorkspaceSettingsOverlay {
             viewport: Rect::ZERO,
             general_scroll_y: 0.0,
             general_text_scale: 1.0,
+            general_footer_height: 48.0,
             transition: ui::Transition::closed(),
             tab_pill_rects: [Rect::ZERO; 5],
             default_app_rects: Vec::new(),
@@ -180,6 +213,11 @@ impl Default for WorkspaceSettingsOverlay {
             member_sheet: None,
             member_sheet_focus: 0,
             member_sheet_option_rects: Vec::new(),
+            device_toggle_rects: Vec::new(),
+            move_rects: [Rect::ZERO; 2],
+            delete_rect: Rect::ZERO,
+            device_rows: 0,
+            name_input: None,
         }
     }
 }
@@ -280,20 +318,22 @@ impl WorkspaceSettingsOverlay {
         theme: &Theme,
     ) {
         let hint = t("workspace-settings-close-hint");
-        let size = theme.tokens.typography.scale.xs;
-        let (width, _) = text_renderer.measure(&hint, size, None);
-        text_renderer.draw_text(
+        let style = theme.text(TextRole::Caption);
+        let (width, _) = text_renderer.measure_style(&hint, None, &style);
+        text_renderer.draw_style(
             scene,
             &hint,
-            size,
             theme.tokens.colors.text_dim,
             transform.pre_translate((card.x1 - f64::from(width) - 24.0, card.y1 - 24.0).into()),
             None,
+            &style,
         );
     }
 
     pub fn general_body_rect(&self) -> Rect {
-        Self::body_rect_for(self.rect())
+        let mut body = Self::body_rect_for(self.rect());
+        body.y1 = (self.rect().y1 - self.general_footer_height).max(body.y0);
+        body
     }
 
     pub fn general_summary_rect(&self) -> Rect {
@@ -322,10 +362,50 @@ impl WorkspaceSettingsOverlay {
         if !delta.is_finite() || self.member_sheet.is_some() {
             return false;
         }
-        let max = (382.0 * self.general_text_scale - self.general_body_rect().height()).max(0.0);
+        let content = 382.0 + Self::devices_card_height(self.device_rows) + 16.0;
+        let max = (content * self.general_text_scale - self.general_body_rect().height()).max(0.0);
         let old = self.general_scroll_y;
         self.general_scroll_y = (old + delta).clamp(0.0, max);
         (old - self.general_scroll_y).abs() > f64::EPSILON
+    }
+
+    /// Unscaled height of the devices card for `rows` devices.
+    fn devices_card_height(rows: usize) -> f64 {
+        let rows = f64::from(u32::try_from(rows).unwrap_or(u32::MAX));
+        48.0 + rows * 40.0 + 56.0
+    }
+
+    /// The devices card under "At a glance": where this workspace shows,
+    /// its place in the list, and Delete. Scroll applied.
+    pub fn devices_card_rect(&self) -> Rect {
+        let body = self.general_body_rect();
+        let scale = self.general_text_scale;
+        let top = body.y0 + 390.0 * scale - self.general_scroll_y;
+        Rect::new(
+            body.x0,
+            top,
+            body.x1,
+            top + Self::devices_card_height(self.device_rows) * scale,
+        )
+    }
+
+    /// The devices card's control under `point`, if any.
+    fn devices_card_hit(&self, point: Point) -> Option<EventOutcome> {
+        let hit = |rect: &Rect| rect.area() > 0.0 && rect.contains(point);
+        if let Some(index) = self.device_toggle_rects.iter().position(hit) {
+            return Some(EventOutcome::ToggleDevice(index));
+        }
+        if hit(&self.move_rects[0]) {
+            return Some(EventOutcome::MoveWorkspace(-1));
+        }
+        if hit(&self.move_rects[1]) {
+            return Some(EventOutcome::MoveWorkspace(1));
+        }
+        hit(&self.delete_rect).then_some(EventOutcome::DeleteWorkspace)
+    }
+
+    pub fn device_toggle_rects(&self) -> &[Rect] {
+        &self.device_toggle_rects
     }
 
     pub fn name_rect(&self) -> Rect {
@@ -569,7 +649,11 @@ impl WorkspaceSettingsOverlay {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(pulse_alpha),
+                theme
+                    .tokens
+                    .colors
+                    .text_primary
+                    .with_alpha_factor(pulse_alpha),
                 None,
                 &RoundedRect::from_rect(
                     Rect::new(point.x - 14.0, point.y - 2.0, point.x + 14.0, point.y + 2.0),
@@ -603,23 +687,7 @@ impl WorkspaceSettingsOverlay {
         // Panel role (HIG §9.1–§9.3): the Panel radius, an elevation-token
         // shadow that follows the sheet's own corners and fades with it,
         // `panel_ground` and the derived Panel border.
-        let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
-        ui::chrome::shell::panel_shadow(scene, panel_transform, rect, radius, theme, alpha);
-        let card = RoundedRect::from_rect(rect, radius);
-        scene.fill(
-            Fill::NonZero,
-            panel_transform,
-            ui::chrome::shell::panel_ground(theme),
-            None,
-            &card,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            panel_transform,
-            ui::chrome::shell::panel_border(theme),
-            None,
-            &card,
-        );
+        ui::chrome::shell::paint_panel(scene, panel_transform, rect, theme, alpha);
         Some(DrawPlan {
             transform: panel_transform,
             layered: in_flight,
@@ -723,6 +791,11 @@ impl WorkspaceSettingsOverlay {
         if matches!(active_tab, WsTab::General) && !self.general_body_rect().contains(point) {
             return EventOutcome::CommitName;
         }
+        if matches!(active_tab, WsTab::General)
+            && let Some(outcome) = self.devices_card_hit(point)
+        {
+            return outcome;
+        }
         if matches!(active_tab, WsTab::General) && self.invite_rect().contains(point) {
             return EventOutcome::CreateInvite;
         }
@@ -781,7 +854,20 @@ impl WorkspaceSettingsOverlay {
             return;
         }
 
-        self.general_text_scale = f64::from(theme.text_scale);
+        self.general_text_scale = f64::from(theme.text_scale * theme.ui_scale);
+        let editing = model.owner_controls && model.editing_name.is_some();
+        let hsize = tokens.typography.style(TextRole::Caption);
+        let hint = text_renderer.elide_to_width_style(
+            &t(if editing {
+                "workspace-settings-edit-hint"
+            } else {
+                "workspace-settings-close-hint"
+            }),
+            f32_of_f64(rect.width() - 2.0 * f64::from(tokens.spacing.s6)),
+            &hsize,
+        );
+        let footer = Self::footer_hint_rect(rect, &hint, text_renderer, theme);
+        self.general_footer_height = rect.y1 - footer.y0 + f64::from(tokens.spacing.s2);
         self.scroll_general(0.0);
         let body_clip = self.general_body_rect();
         scene.push_layer(
@@ -798,7 +884,7 @@ impl WorkspaceSettingsOverlay {
             rect.y1 - self.general_scroll_y,
         );
         let body_y = rect.y0 + 168.0;
-        let editing = self.draw_ws_settings_name_input(
+        self.draw_ws_settings_name_input(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             content_rect,
             model,
@@ -826,25 +912,30 @@ impl WorkspaceSettingsOverlay {
             model,
             collab_y,
         );
+        self.draw_ws_settings_devices(scene, transform, text_renderer, theme, model);
 
         scene.pop_layer();
 
-        let hint = t(if editing {
-            "workspace-settings-edit-hint"
-        } else {
-            "workspace-settings-close-hint"
-        });
-        let hsize = tokens.typography.scale.xs;
-        let (hw, _hh) = text_renderer.measure(&hint, hsize, None);
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &hint,
-            hsize,
             colors.text_dim,
-            transform.pre_translate((rect.x1 - f64::from(hw) - 24.0, rect.y1 - 24.0).into()),
+            transform.pre_translate((footer.x0, footer.y0).into()),
             None,
+            &hsize,
         );
         self.draw_member_sheet(scene, transform, text_renderer, theme, rect, model);
+    }
+
+    fn footer_hint_rect(rect: Rect, hint: &str, text: &mut TextRenderer, theme: &Theme) -> Rect {
+        let (width, height) = text.measure_style(hint, None, &theme.text(TextRole::Caption));
+        let inset = f64::from(theme.tokens.spacing.s6);
+        Rect::new(
+            rect.x1 - inset - f64::from(width),
+            rect.y1 - inset - f64::from(height),
+            rect.x1 - inset,
+            rect.y1 - inset,
+        )
     }
 
     /// Paint the focused decision surface over the settings lens. The outer
@@ -894,23 +985,7 @@ impl WorkspaceSettingsOverlay {
         // Panel role (HIG §9.1–§9.3): Panel radius, elevation-token shadow,
         // `panel_ground` and the derived border — not a sprite shadow off a
         // ramp slot over a declared border.
-        let sheet_radius = ui::chrome::ChromeRole::Panel.radius(theme, card.height());
-        let surface = RoundedRect::from_rect(card, sheet_radius);
-        ui::chrome::shell::panel_shadow(scene, transform, card, sheet_radius, theme, 1.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::shell::panel_ground(theme),
-            None,
-            &surface,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::chrome::shell::panel_border(theme),
-            None,
-            &surface,
-        );
+        ui::chrome::shell::paint_panel(scene, transform, card, theme, 1.0);
 
         let (title, description, subject): (String, String, Option<String>) = match &sheet {
             MemberSheet::Role(user) => {
@@ -942,22 +1017,22 @@ impl WorkspaceSettingsOverlay {
                 Some(super::short_id(cap_id)),
             ),
         };
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &title,
-            tokens.typography.scale.lg,
             colors.text_primary,
             transform.pre_translate((card.x0 + 20.0, card.y0 + 20.0).into()),
             None,
+            &tokens.typography.style(TextRole::Heading),
         );
         if let Some(subject) = subject {
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &subject,
-                tokens.typography.scale.sm,
-                colors.accent[4],
+                colors.intent.inverted_hover,
                 transform.pre_translate((card.x0 + 20.0, card.y0 + 48.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
         }
         let desc_y = if role_sheet {
@@ -965,18 +1040,18 @@ impl WorkspaceSettingsOverlay {
         } else {
             card.y0 + 72.0
         };
-        let description = text_renderer.elide_to_width(
+        let description = text_renderer.elide_to_width_style(
             &description,
-            tokens.typography.scale.sm,
-            f64_to_f32_lossy(card.width() - 40.0),
+            f32_of_f64(card.width() - 40.0),
+            &tokens.typography.style(TextRole::Caption),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &description,
-            tokens.typography.scale.sm,
             colors.text_dim,
             transform.pre_translate((card.x0 + 20.0, desc_y).into()),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
 
         self.member_sheet_option_rects.clear();
@@ -1026,7 +1101,7 @@ impl WorkspaceSettingsOverlay {
             card.y0 + 112.0
         };
         for (index, (label, preview)) in labels.iter().zip(&previews).enumerate() {
-            let y0 = start_y + usize_to_f64_lossy(index) * (row_h + gap);
+            let y0 = start_y + f64_of_usize(index) * (row_h + gap);
             let option = Rect::new(option_x0, y0, option_x1, y0 + row_h);
             self.member_sheet_option_rects.push(option);
             let focused = index == self.member_sheet_focus;
@@ -1034,9 +1109,9 @@ impl WorkspaceSettingsOverlay {
             let tint = if destructive {
                 colors.semantic.danger
             } else {
-                colors.accent[5]
+                colors.intent.inverted
             };
-            let rr = RoundedRect::from_rect(option, f64::from(tokens.radii.md));
+            let rr = RoundedRect::from_rect(option, f64::from(tokens.radii.control));
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -1051,33 +1126,33 @@ impl WorkspaceSettingsOverlay {
                 None,
                 &rr,
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 label,
-                tokens.typography.scale.sm,
                 colors.text_primary,
                 transform.pre_translate((option.x0 + 12.0, option.y0 + 9.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
             if role_sheet {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     preview,
-                    tokens.typography.scale.xs,
                     colors.text_dim,
                     transform.pre_translate((option.x0 + 12.0, option.y0 + 29.0).into()),
                     None,
+                    &tokens.typography.style(TextRole::Caption),
                 );
             }
         }
         let hint = t("workspace-settings-sheet-keyboard-hint");
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &hint,
-            tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate((card.x0 + 20.0, card.y1 - 22.0).into()),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
     }
 
@@ -1107,83 +1182,87 @@ impl WorkspaceSettingsOverlay {
                 .active_workspace()
                 .and_then(|workspace| workspace.role_of(model.local_user))
                 .map_or_else(|| t("workspace-settings-role-guest"), super::role_label);
-            let width = f64_to_f32_lossy(close.x0 - identity.x0 - 88.0);
-            let caption = text_renderer.elide_to_width(
+            let width = f32_of_f64(close.x0 - identity.x0 - 88.0);
+            let caption = text_renderer.elide_to_width_style(
                 &t_args(
                     "workspace-settings-identity-caption",
                     &[("role", role.into())],
                 ),
-                tokens.typography.scale.xs,
                 width,
+                &tokens.typography.style(TextRole::Caption),
             );
-            let name = text_renderer.elide_to_width(&name, tokens.typography.scale.base, width);
-            text_renderer.draw_text(
+            let name = text_renderer.elide_to_width_style(
+                &name,
+                width,
+                &tokens.typography.style(TextRole::Body),
+            );
+            text_renderer.draw_style(
                 scene,
                 &caption,
-                tokens.typography.scale.xs,
-                colors.accent[4],
+                colors.intent.inverted_hover,
                 transform.pre_translate((identity.x0 + 76.0, identity.y0 + 8.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &name,
-                tokens.typography.scale.base,
                 colors.text_primary,
                 transform.pre_translate((identity.x0 + 76.0, identity.y0 + 38.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Body),
             );
             return model.desktop.active_workspace().map_or_else(
                 || t("workspace-settings-workspace-fallback"),
                 |workspace| workspace.name.clone(),
             );
         }
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("workspace-settings-current-workspace"),
-            tokens.typography.scale.xs,
-            colors.accent[4],
+            colors.intent.inverted_hover,
             transform.pre_translate((identity.x0 + 76.0, identity.y0 + 12.0).into()),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
         let active_name = model.desktop.active_workspace().map_or_else(
             || t("workspace-settings-workspace-fallback"),
             |w| w.name.clone(),
         );
-        let tsize = tokens.typography.scale.xl;
-        let shown_name = text_renderer.elide_to_width(
+        let tsize = tokens.typography.style(TextRole::Title);
+        let shown_name = text_renderer.elide_to_width_style(
             &active_name,
-            tsize,
-            f64_to_f32_lossy(close.x0 - (identity.x0 + 76.0) - 12.0),
+            f32_of_f64(close.x0 - (identity.x0 + 76.0) - 12.0),
+            &tsize,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &shown_name,
-            tsize,
             colors.text_primary,
             transform.pre_translate((identity.x0 + 76.0, identity.y0 + 34.0).into()),
             None,
+            &tsize,
         );
         let active_role = model
             .desktop
             .active_workspace()
             .and_then(|workspace| workspace.role_of(model.local_user))
             .map_or_else(|| t("workspace-settings-role-guest"), super::role_label);
-        let label = text_renderer.elide_to_width(
+        let label = text_renderer.elide_to_width_style(
             &t_args(
                 "workspace-settings-role-policy-line",
                 &[("role", active_role.into())],
             ),
-            tokens.typography.scale.sm,
-            f64_to_f32_lossy(identity.x1 - identity.x0 - 92.0),
+            f32_of_f64(identity.x1 - identity.x0 - 92.0),
+            &tokens.typography.style(TextRole::Caption),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &label,
-            tokens.typography.scale.sm,
             colors.text_dim,
             transform.pre_translate((identity.x0 + 76.0, identity.y0 + 58.0).into()),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
         active_name
     }
@@ -1210,7 +1289,7 @@ impl WorkspaceSettingsOverlay {
             scene,
             transform,
             identity,
-            f64::from(tokens.radii.lg),
+            f64::from(tokens.radii.control),
             colors.surfaces.raised,
         );
         let mark = Rect::new(
@@ -1222,16 +1301,16 @@ impl WorkspaceSettingsOverlay {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[5].with_alpha_factor(0.18),
+            colors.text_primary.with_alpha_factor(0.18),
             None,
-            &RoundedRect::from_rect(mark, f64::from(tokens.radii.lg)),
+            &RoundedRect::from_rect(mark, f64::from(tokens.radii.control)),
         );
         ui::icons::draw_icon(
             scene,
             transform,
             mark.inset(-14.0),
             ui::icons::Icon::LayoutGrid,
-            colors.accent[4],
+            colors.intent.inverted_hover,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let close = self.close_rect();
@@ -1273,13 +1352,13 @@ impl WorkspaceSettingsOverlay {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let lsize = tokens.typography.scale.base;
+        let label_style = tokens.typography.style(TextRole::Body);
         let tabs = WsTab::all();
         let nav = Self::nav_rect_for(rect);
         // The strip's track: a quiet lift under the Selector pills and a
         // hairline derived against the panel ground (HIG §9.2/§9.5), not a
         // ramp slot inside a faded declared border.
-        let nav_rr = RoundedRect::from_rect(nav, f64::from(tokens.radii.lg));
+        let nav_rr = RoundedRect::from_rect(nav, f64::from(tokens.radii.control));
         scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &nav_rr);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
@@ -1291,11 +1370,15 @@ impl WorkspaceSettingsOverlay {
             None,
             &nav_rr,
         );
-        let segment_w = nav.width() / usize_to_f64_lossy(tabs.len());
+        let segment_w = nav.width() / f64_of_usize(tabs.len());
         // Every pill gets the same treatment: the plan is measured once for
         // the whole strip, so the strip never shows one elided label next to
         // four intact ones or one icon next to four bare labels.
-        let plan = tab_strip_plan(text_renderer, lsize, segment_w - 2.0 * Self::PILL_INSET);
+        let plan = tab_strip_plan(
+            text_renderer,
+            &label_style,
+            segment_w - 2.0 * Self::PILL_INSET,
+        );
         // Segment widths follow the measured labels once equal fifths cannot
         // hold the widest one (the `s1` pill margins each side are part of
         // the need), so "General" at 200 % is not elided beside pills with
@@ -1315,7 +1398,7 @@ impl WorkspaceSettingsOverlay {
                 } else {
                     tab.label()
                 };
-                f64::from(text_renderer.measure(&label, lsize, None).0) + reserved
+                f64::from(text_renderer.measure_style(&label, None, &label_style).0) + reserved
             })
             .collect();
         let widths = tab_pill_widths(&needs, nav.width());
@@ -1377,12 +1460,12 @@ impl WorkspaceSettingsOverlay {
             let show_icon = plan.icons;
             let icon_size = if show_icon { TAB_ICON_PX } else { 0.0 };
             let icon_gap = if show_icon { TAB_ICON_GAP } else { 0.0 };
-            let label = text_renderer.elide_to_width(
+            let label = text_renderer.elide_to_width_style(
                 &label,
-                lsize,
-                f64_to_f32_lossy(pill_rect.width() - icon_size - icon_gap - 8.0),
+                f32_of_f64(pill_rect.width() - icon_size - icon_gap - 8.0),
+                &label_style,
             );
-            let (w, h) = text_renderer.measure(&label, lsize, None);
+            let (w, h) = text_renderer.measure_style(&label, None, &label_style);
             let content_w = icon_size + icon_gap + f64::from(w);
             let content_x = pill_rect.center().x - content_w / 2.0;
             if show_icon {
@@ -1396,14 +1479,17 @@ impl WorkspaceSettingsOverlay {
                         pill_rect.center().y + icon_size / 2.0,
                     ),
                     icon,
-                    if active { colors.accent[4] } else { color },
+                    if active {
+                        colors.intent.inverted_hover
+                    } else {
+                        color
+                    },
                     ui::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &label,
-                lsize,
                 color,
                 transform.pre_translate(
                     (
@@ -1413,6 +1499,7 @@ impl WorkspaceSettingsOverlay {
                         .into(),
                 ),
                 None,
+                &label_style,
             );
         }
         self.tab_pill_rects = pill_rects;
@@ -1657,45 +1744,8 @@ impl WorkspaceSettingsOverlay {
         Self::draw_ws_settings_close_hint(scene, transform, rect, text_renderer, theme);
     }
 
-    /// Name input — edits fall through to `editing_workspace_name`.
-    /// Returns whether the name is currently being edited, so the
-    /// caller's footer hint can match.
-    fn name_selection_geometry(
-        text_renderer: &mut TextRenderer,
-        shown: &str,
-        input_size: f32,
-        input_rect: Rect,
-        selection: ui::text_selection::Selection,
-    ) -> (Rect, Rect) {
-        let x = input_rect.x0 + 12.0;
-        let (_, height) = text_renderer.measure("Ag", input_size, None);
-        let y = input_rect.y0 + (input_rect.height() - f64::from(height)) / 2.0;
-        let advance = |renderer: &mut TextRenderer, offset| {
-            f64::from(
-                renderer
-                    .measure(shown.get(..offset).unwrap_or(shown), input_size, None)
-                    .0,
-            )
-        };
-        let anchor = x + advance(text_renderer, selection.anchor);
-        let focus = x + advance(text_renderer, selection.cursor);
-        (
-            Rect::new(
-                anchor.min(focus),
-                y,
-                anchor.max(focus),
-                y + f64::from(height),
-            ),
-            Rect::new(focus, y, focus + 2.0, y + f64::from(height)),
-        )
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
-    )]
     fn draw_ws_settings_name_input(
-        &self,
+        &mut self,
         ctx: &mut PaintCtx<'_>,
         rect: Rect,
         model: &WorkspaceSettingsModel<'_>,
@@ -1708,110 +1758,122 @@ impl WorkspaceSettingsOverlay {
         let body = Self::body_rect(rect);
         let identity_card = Rect::new(
             body.x0,
-            body.y0 + 8.0 * f64::from(theme.text_scale),
+            body.y0 + 8.0 * f64::from(theme.text_scale * theme.ui_scale),
             body.x1,
-            body.y0 + 112.0 * f64::from(theme.text_scale),
+            body.y0 + 112.0 * f64::from(theme.text_scale * theme.ui_scale),
         );
         ui::surface::card(
             scene,
             transform,
             identity_card,
-            f64::from(tokens.radii.lg),
+            f64::from(tokens.radii.control),
             colors.surfaces.raised,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("workspace-settings-identity-title"),
-            tokens.typography.scale.base,
             colors.text_primary,
             transform.pre_translate(
                 (
                     identity_card.x0 + 16.0,
-                    identity_card.y0 + 13.0 * f64::from(theme.text_scale),
+                    identity_card.y0 + 13.0 * f64::from(theme.text_scale * theme.ui_scale),
                 )
                     .into(),
             ),
             None,
+            &tokens.typography.style(TextRole::Body),
         );
-        let description = text_renderer.elide_to_width(
+        let description = text_renderer.elide_to_width_style(
             &t("workspace-settings-identity-description"),
-            tokens.typography.scale.xs,
-            f64_to_f32_lossy(identity_card.width() - 32.0),
+            f32_of_f64(identity_card.width() - 32.0),
+            &tokens.typography.style(TextRole::Caption),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &description,
-            tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate(
                 (
                     identity_card.x0 + 16.0,
-                    identity_card.y0 + 36.0 * f64::from(theme.text_scale),
+                    identity_card.y0 + 36.0 * f64::from(theme.text_scale * theme.ui_scale),
                 )
                     .into(),
             ),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
-        let input_rect = self.name_rect();
-        let input = RoundedRect::from_rect(input_rect, f64::from(tokens.radii.sm));
-        scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &input);
         let can_rename = model.owner_controls;
         let editing = can_rename && model.editing_name.is_some();
-        let border_color = if editing {
-            colors.accent[5]
-        } else {
-            ui::surface::edge_on(colors.surfaces.base)
-        };
-        scene.stroke(
-            &vello::kurbo::Stroke::new(if editing { 2.0 } else { 1.0 }),
-            transform,
-            border_color,
-            None,
-            &input,
-        );
         let shown = if editing {
             model.editing_name.unwrap_or(active_name)
         } else {
             active_name
         };
-        let input_size = tokens.typography.scale.base / text_renderer.text_scale();
-        let (selected, caret) = Self::name_selection_geometry(
-            text_renderer,
+        self.paint_name_field(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            model,
             shown,
-            input_size,
-            input_rect,
-            model.name_selection,
         );
-        if editing && selected.width() > 0.0 {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.accent[5].with_alpha_factor(0.35),
-                None,
-                &selected,
-            );
-        }
-        text_renderer.draw_text(
-            scene,
-            shown,
-            input_size,
-            colors.text_primary,
-            transform.pre_translate((input_rect.x0 + 12.0, caret.y0).into()),
-            None,
-        );
-        if editing {
-            scene.fill(Fill::NonZero, transform, colors.accent[5], None, &caret);
-        } else if !can_rename {
-            text_renderer.draw_text(
+        if !editing && !can_rename {
+            text_renderer.draw_style(
                 scene,
                 &t("workspace-settings-rename-admin-only"),
-                tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate((identity_card.x0 + 16.0, identity_card.y1 - 12.0).into()),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
         }
         editing
+    }
+
+    fn paint_name_field(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        model: &WorkspaceSettingsModel<'_>,
+        shown: &str,
+    ) {
+        use ui::widget::{FieldFace, TextInput, Widget};
+        let editing = model.owner_controls && model.editing_name.is_some();
+        let face = FieldFace::new(self.name_rect(), shown)
+            .focused(editing)
+            .disabled(!model.owner_controls);
+        if !editing {
+            if let Some(input) = &mut self.name_input {
+                input.set_focus(false);
+            }
+            face.paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
+            return;
+        }
+        face.paint_chrome(ctx.scene, ctx.transform, ctx.theme);
+        let input = self.name_input.get_or_insert_with(|| {
+            TextInput::new(Vec::new())
+                .with_plain_chrome()
+                .with_spellcheck(false)
+                .with_autocorrect(false)
+        });
+        input.set_text(shown);
+        let painted_selection = input
+            .selection_anchor_focus_public()
+            .unwrap_or_else(|| (input.cursor_pos(), input.cursor_pos()));
+        if painted_selection != (model.name_selection.anchor, model.name_selection.cursor) {
+            input.set_selection(model.name_selection.anchor, model.name_selection.cursor);
+        }
+        input.set_focus(true);
+        input.apply_layout_external(face.text_rect(ctx.theme));
+        // Embedded TextInput shapes its stock role at text_scale; unlike
+        // FieldFace it does not read the UI-scaled typography token.
+        let input_theme = ctx
+            .theme
+            .clone()
+            .with_text_scale(ctx.theme.text_scale * ctx.theme.ui_scale);
+        input.draw(
+            ctx.scene,
+            ctx.transform,
+            ctx.text,
+            &input_theme,
+            &ui::presence::PresenceCtx::default(),
+        );
     }
 
     /// Sharing card that opens the signed invite composer.
@@ -1830,18 +1892,18 @@ impl WorkspaceSettingsOverlay {
         let body = Self::body_rect(rect);
         let sharing_card =
             Self::draw_ws_settings_invite_link_card(scene, transform, theme, text_renderer, body);
-        let invite_y = body.y0 + 202.0 * f64::from(theme.text_scale);
+        let invite_y = body.y0 + 202.0 * f64::from(theme.text_scale * theme.ui_scale);
         let url_pill = Rect::new(
             sharing_card.x0 + 16.0,
             invite_y,
-            sharing_card.x1 - 24.0 - 72.0 * f64::from(theme.text_scale),
-            invite_y + 34.0 * f64::from(theme.text_scale),
+            sharing_card.x1 - 24.0 - 72.0 * f64::from(theme.text_scale * theme.ui_scale),
+            invite_y + 34.0 * f64::from(theme.text_scale * theme.ui_scale),
         );
         ui::surface::card(
             scene,
             transform,
             url_pill,
-            f64::from(tokens.radii.sm),
+            f64::from(tokens.radii.detail),
             colors.surfaces.base,
         );
         let invite_url = t(if can_invite {
@@ -1849,53 +1911,29 @@ impl WorkspaceSettingsOverlay {
         } else {
             "workspace-settings-invite-admin-only"
         });
-        let invite_url = text_renderer.elide_to_width(
+        let invite_url = text_renderer.elide_to_width_style(
             &invite_url,
-            tokens.typography.scale.sm,
-            f64_to_f32_lossy(url_pill.width() - 24.0),
+            f32_of_f64(url_pill.width() - 24.0),
+            &tokens.typography.style(TextRole::Caption),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &invite_url,
-            tokens.typography.scale.sm,
             colors.text_primary,
             transform.pre_translate((url_pill.x0 + 12.0, url_pill.y0 + 9.0).into()),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
         let invite_btn = self.invite_rect();
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            if can_invite {
-                colors.accent[5]
-            } else {
-                colors.surfaces.base
-            },
-            None,
-            &RoundedRect::from_rect(
-                invite_btn,
-                ui::chrome::ChromeRole::Control.radius(theme, invite_btn.height()),
-            ),
-        );
         let invite_label = t("workspace-settings-invite-create");
-        let (cw, _ch) = text_renderer.measure(&invite_label, tokens.typography.scale.sm, None);
-        text_renderer.draw_text(
+        ui::widget::Button::paint(
             scene,
-            &invite_label,
-            tokens.typography.scale.sm,
-            if can_invite {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            },
-            transform.pre_translate(
-                (
-                    invite_btn.x0 + (invite_btn.width() - f64::from(cw)) / 2.0,
-                    invite_btn.y0 + 9.0,
-                )
-                    .into(),
-            ),
-            None,
+            transform,
+            text_renderer,
+            theme,
+            &ui::widget::ButtonFace::new(invite_btn, &invite_label)
+                .role(ui::widget::ButtonRole::Primary)
+                .disabled(!can_invite),
         );
         invite_y
     }
@@ -1915,72 +1953,272 @@ impl WorkspaceSettingsOverlay {
         let colors = &tokens.colors;
         let sharing_card = Rect::new(
             body.x0,
-            body.y0 + 128.0 * f64::from(theme.text_scale),
+            body.y0 + 128.0 * f64::from(theme.text_scale * theme.ui_scale),
             body.x1,
-            body.y0 + 252.0 * f64::from(theme.text_scale),
+            body.y0 + 252.0 * f64::from(theme.text_scale * theme.ui_scale),
         );
         ui::surface::card(
             scene,
             transform,
             sharing_card,
-            f64::from(tokens.radii.lg),
+            f64::from(tokens.radii.control),
             colors.surfaces.raised,
         );
         let share_icon = Rect::new(
             sharing_card.x0 + 16.0,
-            sharing_card.y0 + 14.0 * f64::from(theme.text_scale),
+            sharing_card.y0 + 14.0 * f64::from(theme.text_scale * theme.ui_scale),
             sharing_card.x0 + 48.0,
-            sharing_card.y0 + 46.0 * f64::from(theme.text_scale),
+            sharing_card.y0 + 46.0 * f64::from(theme.text_scale * theme.ui_scale),
         );
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[5].with_alpha_factor(0.16),
+            colors.text_primary.with_alpha_factor(0.16),
             None,
-            &RoundedRect::from_rect(share_icon, f64::from(tokens.radii.md)),
+            &RoundedRect::from_rect(share_icon, f64::from(tokens.radii.control)),
         );
         ui::icons::draw_icon(
             scene,
             transform,
             share_icon.inset(-8.0),
             ui::icons::Icon::Copy,
-            colors.accent[4],
+            colors.intent.inverted_hover,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("workspace-settings-invite-title"),
-            tokens.typography.scale.base,
             colors.text_primary,
             transform.pre_translate(
                 (
                     sharing_card.x0 + 60.0,
-                    sharing_card.y0 + 13.0 * f64::from(theme.text_scale),
+                    sharing_card.y0 + 13.0 * f64::from(theme.text_scale * theme.ui_scale),
                 )
                     .into(),
             ),
             None,
+            &tokens.typography.style(TextRole::Body),
         );
-        let description = text_renderer.elide_to_width(
+        let description = text_renderer.elide_to_width_style(
             &t("workspace-settings-invite-description"),
-            tokens.typography.scale.xs,
-            f64_to_f32_lossy(sharing_card.width() - 76.0),
+            f32_of_f64(sharing_card.width() - 76.0),
+            &tokens.typography.style(TextRole::Caption),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &description,
-            tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate(
                 (
                     sharing_card.x0 + 60.0,
-                    sharing_card.y0 + 36.0 * f64::from(theme.text_scale),
+                    sharing_card.y0 + 36.0 * f64::from(theme.text_scale * theme.ui_scale),
                 )
                     .into(),
             ),
             None,
+            &tokens.typography.style(TextRole::Caption),
         );
         sharing_card
+    }
+
+    /// Paint the devices card and record its controls' rects. A workspace
+    /// that is not the person's own lists no devices but still offers its
+    /// place in the list and Delete.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one card painted top to bottom from shared running offsets, recording each control's rect as it goes"
+    )]
+    fn draw_ws_settings_devices(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        model: &WorkspaceSettingsModel<'_>,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let scale = f64::from(theme.text_scale * theme.ui_scale);
+        self.device_rows = model.devices.len();
+        let card = self.devices_card_rect();
+        ui::surface::card(
+            scene,
+            transform,
+            card,
+            f64::from(tokens.radii.control),
+            colors.surfaces.raised,
+        );
+        let style = theme.text(TextRole::Caption);
+        let text = |text_renderer: &mut TextRenderer,
+                    scene: &mut Scene,
+                    label: &str,
+                    color,
+                    x: f64,
+                    y: f64| {
+            text_renderer.draw_style(
+                scene,
+                label,
+                color,
+                transform.pre_translate((x, y).into()),
+                None,
+                &style,
+            );
+        };
+        text_renderer.draw_style(
+            scene,
+            &t("workspace-settings-devices-title"),
+            colors.text_primary,
+            transform.pre_translate((card.x0 + 16.0, card.y0 + 16.0 * scale).into()),
+            None,
+            &theme.text(TextRole::Body),
+        );
+        let button = |scene: &mut Scene,
+                      text_renderer: &mut TextRenderer,
+                      rect: Rect,
+                      label: &str,
+                      fill,
+                      ink| {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                fill,
+                None,
+                &RoundedRect::from_rect(
+                    rect,
+                    ui::chrome::ChromeRole::Control.radius(theme, rect.height()),
+                ),
+            );
+            let (width, height) = text_renderer.measure_style(label, None, &style);
+            text_renderer.draw_style(
+                scene,
+                label,
+                ink,
+                transform.pre_translate(
+                    (
+                        rect.x0 + (rect.width() - f64::from(width)) / 2.0,
+                        rect.y0 + (rect.height() - f64::from(height)) / 2.0,
+                    )
+                        .into(),
+                ),
+                None,
+                &style,
+            );
+        };
+        // A shown device is selected: the lift of the card, never an accent.
+        let lifted = ui::chrome::shell::selection_tier_on(
+            theme,
+            ui::chrome::SelectionState::active(true),
+            colors.surfaces.raised,
+        )
+        .fill;
+        self.device_toggle_rects.clear();
+        let mut y = card.y0 + 48.0 * scale;
+        for device in model.devices {
+            let label = if device.here {
+                t_args(
+                    "workspace-settings-device-here",
+                    &[("device", device.label.clone().into())],
+                )
+            } else {
+                device.label.clone()
+            };
+            text(
+                text_renderer,
+                scene,
+                &label,
+                colors.text_primary,
+                card.x0 + 16.0,
+                y + 10.0 * scale,
+            );
+            let toggle = Rect::new(
+                card.x1 - 16.0 - 96.0 * scale,
+                y,
+                card.x1 - 16.0,
+                y + 32.0 * scale,
+            );
+            button(
+                scene,
+                text_renderer,
+                toggle,
+                &t(if device.shown {
+                    "workspace-settings-device-shown"
+                } else {
+                    "workspace-settings-device-hidden"
+                }),
+                if device.shown {
+                    lifted
+                } else {
+                    colors.surfaces.base
+                },
+                colors.text_primary,
+            );
+            self.device_toggle_rects.push(toggle);
+            y += 40.0 * scale;
+        }
+        let row = y + 8.0 * scale;
+        let first = model
+            .desktop
+            .workspaces
+            .first()
+            .is_some_and(|workspace| workspace.id == model.desktop.active);
+        let last = model
+            .desktop
+            .workspaces
+            .last()
+            .is_some_and(|workspace| workspace.id == model.desktop.active);
+        let earlier = Rect::new(
+            card.x0 + 16.0,
+            row,
+            card.x0 + 16.0 + 96.0 * scale,
+            row + 32.0 * scale,
+        );
+        let later = Rect::new(
+            earlier.x1 + 8.0,
+            row,
+            earlier.x1 + 8.0 + 96.0 * scale,
+            row + 32.0 * scale,
+        );
+        for (rect, key, enabled) in [
+            (earlier, "workspace-settings-move-earlier", !first),
+            (later, "workspace-settings-move-later", !last),
+        ] {
+            button(
+                scene,
+                text_renderer,
+                rect,
+                &t(key),
+                colors.surfaces.base,
+                if enabled {
+                    colors.text_primary
+                } else {
+                    colors.text_dim
+                },
+            );
+        }
+        self.move_rects = [
+            if first { Rect::ZERO } else { earlier },
+            if last { Rect::ZERO } else { later },
+        ];
+        let deletable = model.desktop.workspaces.len() > 1;
+        let delete = Rect::new(
+            card.x1 - 16.0 - 120.0 * scale,
+            row,
+            card.x1 - 16.0,
+            row + 32.0 * scale,
+        );
+        button(
+            scene,
+            text_renderer,
+            delete,
+            &t("workspace-settings-delete"),
+            colors.surfaces.base,
+            if deletable {
+                colors.semantic.danger
+            } else {
+                colors.text_dim
+            },
+        );
+        self.delete_rect = if deletable { delete } else { Rect::ZERO };
     }
 
     /// Live workspace summary. Detailed member management belongs to the
@@ -2002,38 +2240,41 @@ impl WorkspaceSettingsOverlay {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let body = Self::body_rect(rect);
-        let summary_card = Self::summary_card_rect_for(body, f64::from(theme.text_scale), 0.0);
+        let summary_card =
+            Self::summary_card_rect_for(body, f64::from(theme.text_scale * theme.ui_scale), 0.0);
         ui::surface::card(
             scene,
             transform,
             summary_card,
-            f64::from(tokens.radii.lg),
+            f64::from(tokens.radii.control),
             colors.surfaces.raised,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("workspace-settings-glance-title"),
-            tokens.typography.scale.base,
             colors.text_primary,
             transform.pre_translate(
                 (
                     summary_card.x0 + 16.0,
-                    summary_card.y0 + 13.0 * f64::from(theme.text_scale),
+                    summary_card.y0 + 13.0 * f64::from(theme.text_scale * theme.ui_scale),
                 )
                     .into(),
             ),
             None,
+            &tokens.typography.style(TextRole::Body),
         );
         let (members, grants, app_rules) =
             model.desktop.active_workspace().map_or((0, 0, 0), |ws| {
                 let members = ws.roster().len();
-                let grants = ws
-                    .capabilities
+                let sandbox = ws
+                    .sandbox
                     .iter()
-                    .filter(|cap| {
-                        cap.effect == collab_types::caps::Effect::Grant && !cap.is_room_membership()
-                    })
-                    .count();
+                    .filter(|cap| cap.effect == collab_types::caps::Effect::Grant);
+                let given =
+                    ws.policy.grants.iter().filter(|grant| {
+                        !matches!(grant.subject, tilo_action_policy::Subject::Role(_))
+                    });
+                let grants = sandbox.count().saturating_add(given.count());
                 (members, grants, ws.default_apps.policy.len())
             });
         let stats = [
@@ -2060,17 +2301,17 @@ impl WorkspaceSettingsOverlay {
             ),
         ];
         let stat_gap = 8.0;
-        let stat_y0 = summary_card.y0 + 44.0 * f64::from(theme.text_scale);
+        let stat_y0 = summary_card.y0 + 44.0 * f64::from(theme.text_scale * theme.ui_scale);
         let stat_w = (summary_card.width() - 32.0 - stat_gap * 2.0) / 3.0;
         for (i, (value, label)) in stats.iter().enumerate() {
-            let x0 = summary_card.x0 + 16.0 + usize_to_f64_lossy(i) * (stat_w + stat_gap);
+            let x0 = summary_card.x0 + 16.0 + f64_of_usize(i) * (stat_w + stat_gap);
             let stat = Rect::new(
                 x0,
                 stat_y0,
                 x0 + stat_w,
-                summary_card.y1 - 14.0 * f64::from(theme.text_scale),
+                summary_card.y1 - 14.0 * f64::from(theme.text_scale * theme.ui_scale),
             );
-            let stat_rr = RoundedRect::from_rect(stat, f64::from(tokens.radii.md));
+            let stat_rr = RoundedRect::from_rect(stat, f64::from(tokens.radii.control));
             let (stat_fill, stat_edge) = stat_tile_face(theme);
             scene.fill(Fill::NonZero, transform, stat_fill, None, &stat_rr);
             scene.stroke(
@@ -2080,34 +2321,38 @@ impl WorkspaceSettingsOverlay {
                 None,
                 &stat_rr,
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 value,
-                tokens.typography.scale.lg,
                 colors.text_primary,
                 transform.pre_translate(
-                    (stat.x0 + 12.0, stat.y0 + 8.0 * f64::from(theme.text_scale)).into(),
+                    (
+                        stat.x0 + 12.0,
+                        stat.y0 + 8.0 * f64::from(theme.text_scale * theme.ui_scale),
+                    )
+                        .into(),
                 ),
                 None,
+                &tokens.typography.style(TextRole::Heading),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 label,
-                tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate(
-                    (stat.x0 + 12.0, stat.y0 + 33.0 * f64::from(theme.text_scale)).into(),
+                    (
+                        stat.x0 + 12.0,
+                        stat.y0 + 33.0 * f64::from(theme.text_scale * theme.ui_scale),
+                    )
+                        .into(),
                 ),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
         }
     }
 }
 
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "workspace-settings has at most a handful of rows"
-)]
 /// Glyph size and gap for a tab pill's leading icon.
 const TAB_ICON_PX: f64 = 15.0;
 const TAB_ICON_GAP: f64 = 7.0;
@@ -2133,13 +2378,13 @@ pub(crate) struct TabStripPlan {
 /// an icon. Elision is the last resort, applied uniformly, never the first.
 pub(crate) fn tab_strip_plan(
     text_renderer: &mut TextRenderer,
-    size: f32,
+    style: &TextStyle,
     pill_w: f64,
 ) -> TabStripPlan {
     let mut widest = |labels: &[String]| -> f64 {
         labels
             .iter()
-            .map(|label| f64::from(text_renderer.measure(label, size, None).0))
+            .map(|label| f64::from(text_renderer.measure_style(label, None, style).0))
             .fold(0.0, f64::max)
     };
     let full: Vec<String> = WsTab::all().iter().map(WsTab::label).collect();
@@ -2183,28 +2428,12 @@ pub(crate) fn tab_pill_widths(needs: &[f64], nav_width: f64) -> Vec<f64> {
     if count == 0 {
         return Vec::new();
     }
-    let equal = nav_width / usize_to_f64_lossy(count);
+    let equal = nav_width / f64_of_usize(count);
     let total: f64 = needs.iter().sum();
     if needs.iter().all(|need| *need <= equal) || total <= 0.0 {
         return vec![equal; count];
     }
     needs.iter().map(|need| need / total * nav_width).collect()
-}
-
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "navigation item counts are tiny, far below f64's 2^53 exact-integer range"
-)]
-fn usize_to_f64_lossy(value: usize) -> f64 {
-    value as f64
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "screen-space geometry stays within f32 precision"
-)]
-fn f64_to_f32_lossy(value: f64) -> f32 {
-    value as f32
 }
 
 #[cfg(test)]
@@ -2215,23 +2444,207 @@ mod tests {
     fn rename_selection_paint_tracks_selected_range_and_caret() {
         let mut tr = TextRenderer::new();
         tr.set_text_scale(2.0);
-        let rect = Rect::new(20.0, 30.0, 400.0, 100.0);
-        let (selected, caret) = WorkspaceSettingsOverlay::name_selection_geometry(
-            &mut tr,
-            "Home",
-            16.0,
-            rect,
-            ui::text_selection::Selection {
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        // Production field bounds with shared padding.
+        overlay.layout(Rect::new(0.0, 0.0, 600.0, 700.0));
+        let theme = Theme::dark().with_text_scale(2.0);
+        overlay.general_text_scale = 2.0;
+        let mut scene = Scene::new();
+        let desktop = DesktopTree::default();
+        let local_user = "owner".to_string();
+        let model = WorkspaceSettingsModel {
+            desktop: &desktop,
+            tab: WsTab::General,
+            grant_draft: GrantDraft::default(),
+            local_user: &local_user,
+            acting_user: &local_user,
+            editing_name: Some("Home"),
+            name_selection: ui::text_selection::Selection {
                 anchor: 4,
                 cursor: 0,
             },
+            governs_active_room: false,
+            owner_controls: true,
+            apps: &super::super::NoAppDirectory,
+            devices: &[],
+        };
+        overlay.paint_name_field(
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
+            &model,
+            "Home",
         );
+        let input = overlay.name_input.as_ref().expect("shared field painted");
+        let selected = input.selection_rect(&theme, 0, 4);
+        let caret = input.caret_rect(&theme, 0);
         assert!(
             selected.width() > 20.0,
             "select-all needs a painted highlight"
         );
-        assert_eq!(caret.x0, rect.x0 + 12.0);
+        assert_eq!(
+            caret.x0,
+            overlay.name_rect().x0 + f64::from(theme.padding_standard)
+        );
         assert!(caret.height() >= 32.0);
+    }
+
+    #[test]
+    fn workspace_name_field_keeps_long_carets_visible_and_resets_on_cancel() {
+        use ui::widget::Widget;
+        let desktop = DesktopTree::default();
+        let local_user = "owner".to_string();
+        let name = "W".repeat(64);
+        let mut model = WorkspaceSettingsModel {
+            desktop: &desktop,
+            tab: WsTab::General,
+            grant_draft: GrantDraft::default(),
+            local_user: &local_user,
+            acting_user: &local_user,
+            editing_name: Some(&name),
+            name_selection: ui::text_selection::Selection::collapsed(name.len()),
+            governs_active_room: false,
+            owner_controls: true,
+            apps: &super::super::NoAppDirectory,
+            devices: &[],
+        };
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        let mut renderer = TextRenderer::new();
+        for (width, scale) in [(1280.0, 1.0), (600.0, 2.0), (480.0, 2.0)] {
+            let theme = Theme::dark().with_text_scale(scale);
+            overlay.layout(Rect::new(0.0, 0.0, width, 800.0));
+            overlay.general_text_scale = f64::from(scale);
+            let mut scene = Scene::new();
+            overlay.paint_name_field(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &theme),
+                &model,
+                &name,
+            );
+            let input = overlay.name_input.as_ref().expect("shared field painted");
+            let caret = input.caret_rect(&theme, name.len());
+            assert!(input.scroll_x() > 0.0, "long-name editing must scroll");
+            assert!(overlay.name_rect().contains(caret.origin()));
+            assert!(
+                caret.x1 <= overlay.name_rect().x1,
+                "full caret must remain reachable"
+            );
+            model.name_selection = ui::text_selection::Selection::collapsed(0);
+            overlay.paint_name_field(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &theme),
+                &model,
+                &name,
+            );
+            assert_eq!(overlay.name_input.as_ref().unwrap().scroll_x(), 0.0);
+            model.name_selection = ui::text_selection::Selection::collapsed(name.len());
+        }
+        model.editing_name = None;
+        overlay.paint_name_field(
+            &mut PaintCtx::new(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut renderer,
+                &Theme::dark(),
+            ),
+            &model,
+            "Home",
+        );
+        assert!(
+            !overlay.name_input.as_ref().unwrap().is_focused(),
+            "cancel removes editing focus"
+        );
+        assert_eq!(
+            model.name_selection.cursor,
+            name.len(),
+            "painting cannot mutate the owner selection"
+        );
+    }
+
+    #[test]
+    fn workspace_name_production_render_matrix() {
+        let out = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/workspace-name-review");
+        std::fs::create_dir_all(&out).expect("capture directory");
+        let desktop = DesktopTree::default();
+        let user = "owner".to_string();
+        let name = format!("Project start {} final name", "W".repeat(38));
+        for (label, width, height, theme, editing) in [
+            ("dark-edit", 1280, 800, Theme::dark(), true),
+            ("light-edit", 1280, 800, Theme::light(), true),
+            (
+                "high-contrast-edit",
+                1280,
+                800,
+                Theme::high_contrast(),
+                true,
+            ),
+            (
+                "large-text-edit",
+                600,
+                800,
+                Theme::dark().with_text_scale(2.0),
+                true,
+            ),
+            (
+                "ui-text-edit",
+                1280,
+                800,
+                Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+                true,
+            ),
+            ("narrow-rest", 480, 700, Theme::dark(), false),
+        ] {
+            let mut overlay = WorkspaceSettingsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, f64::from(width), f64::from(height)));
+            overlay.general_text_scale = f64::from(theme.text_scale * theme.ui_scale);
+            let model = WorkspaceSettingsModel {
+                desktop: &desktop,
+                tab: WsTab::General,
+                grant_draft: GrantDraft::default(),
+                local_user: &user,
+                acting_user: &user,
+                editing_name: editing.then_some(name.as_str()),
+                name_selection: ui::text_selection::Selection::collapsed(name.len()),
+                governs_active_room: false,
+                owner_controls: true,
+                apps: &super::super::NoAppDirectory,
+                devices: &[],
+            };
+            let mut scene = Scene::new();
+            let mut text = TextRenderer::new();
+            let clip = overlay.general_body_rect();
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                1.0,
+                Affine::IDENTITY,
+                &clip,
+            );
+            let rect = overlay.rect();
+            overlay.draw_ws_settings_name_input(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+                rect,
+                &model,
+                &name,
+            );
+            scene.pop_layer();
+            let mut renderer = ui::offscreen::OffscreenRenderer::new(width, height);
+            renderer.render_png(
+                &scene,
+                vello::peniko::Color::BLACK,
+                out.join(format!("{label}.png")),
+            );
+            assert!(overlay.name_rect().width() > 0.0);
+            if editing {
+                let input = overlay.name_input.as_ref().expect("editing field painted");
+                let caret = input.caret_rect(&theme, name.len());
+                assert!(overlay.name_rect().contains(caret.origin()));
+                assert!(caret.x1 <= overlay.name_rect().x1);
+            }
+            assert!(
+                std::fs::metadata(out.join(format!("{label}.png")))
+                    .unwrap()
+                    .len()
+                    > 1024
+            );
+        }
     }
 
     #[test]
@@ -2291,10 +2704,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn lens_layout_keeps_its_rhythm_bezel_and_footer_on_every_output() {
         // Phase `lens_header_keeps_one_rhythm_and_centres_the_close_chip`.
         // One rhythm across the header (HIG §7b): `s4` above the identity
@@ -2443,17 +2852,17 @@ mod tests {
             let mut text = TextRenderer::new();
             // The 540 px laptop lens at 100 %: five ~95 px pills.
             let base = Theme::dark();
-            let plan = tab_strip_plan(&mut text, base.tokens.typography.scale.base, 95.6);
+            let plan = tab_strip_plan(&mut text, &base.text(TextRole::Body), 95.6);
             assert!(plan.icons, "at 100% every pill has room for its icon");
             // The same lens at 200 % text: no pill can hold a full label, so the
             // whole strip drops to compact labels (and icons only if they all
             // fit) instead of eliding the active tab alone.
             let large = Theme::dark().with_text_scale(2.0);
-            let lsize = large.tokens.typography.scale.base;
+            let label_style = large.text(TextRole::Body);
             // In the 540 px lens even compact labels overflow a 95.6 px pill at
             // 28 px type, so the plan drops to compact labels without icons and
             // every pill elides by the same rule — never the active tab alone.
-            let plan = tab_strip_plan(&mut text, lsize, 95.6);
+            let plan = tab_strip_plan(&mut text, &label_style, 95.6);
             assert_eq!(
                 plan,
                 TabStripPlan {
@@ -2462,7 +2871,7 @@ mod tests {
                 }
             );
             // In the 800 px lens (145.6 px pills) compact labels fit with icons.
-            let plan = tab_strip_plan(&mut text, lsize, 145.6);
+            let plan = tab_strip_plan(&mut text, &label_style, 145.6);
             assert_eq!(
                 plan,
                 TabStripPlan {
@@ -2472,7 +2881,12 @@ mod tests {
             );
             let widest = WsTab::all()
                 .iter()
-                .map(|tab| f64::from(text.measure(&tab.compact_label(), lsize, None).0))
+                .map(|tab| {
+                    f64::from(
+                        text.measure_style(&tab.compact_label(), None, &label_style)
+                            .0,
+                    )
+                })
                 .fold(0.0, f64::max);
             assert!(
                 widest + TAB_LABEL_INSET + TAB_ICON_PX + TAB_ICON_GAP <= 145.6,
@@ -2641,5 +3055,50 @@ mod general_scroll_tests {
         );
         assert!(overlay.scroll_general(-1000.0));
         assert_eq!(overlay.name_rect(), name);
+    }
+    /// The devices card scrolls fully into view and its controls answer as
+    /// the device toggles, the moves and Delete.
+    #[test]
+    fn the_devices_card_scrolls_into_view_and_its_controls_answer() {
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        overlay.layout(Rect::new(0.0, 0.0, 960.0, 540.0));
+        overlay.device_rows = 3;
+        overlay.scroll_general(10_000.0);
+        let card = overlay.devices_card_rect();
+        assert!(card.y1 <= overlay.general_body_rect().y1 + 0.5);
+        let toggle = Rect::new(
+            card.x1 - 112.0,
+            card.y0 + 48.0,
+            card.x1 - 16.0,
+            card.y0 + 80.0,
+        );
+        overlay.device_toggle_rects = vec![toggle];
+        overlay.move_rects = [
+            Rect::new(
+                card.x0 + 16.0,
+                card.y1 - 48.0,
+                card.x0 + 112.0,
+                card.y1 - 16.0,
+            ),
+            Rect::ZERO,
+        ];
+        overlay.delete_rect = Rect::new(
+            card.x1 - 136.0,
+            card.y1 - 48.0,
+            card.x1 - 16.0,
+            card.y1 - 16.0,
+        );
+        assert_eq!(
+            overlay.hit_test(toggle.center(), WsTab::General),
+            EventOutcome::ToggleDevice(0)
+        );
+        assert_eq!(
+            overlay.hit_test(overlay.move_rects[0].center(), WsTab::General),
+            EventOutcome::MoveWorkspace(-1)
+        );
+        assert_eq!(
+            overlay.hit_test(overlay.delete_rect.center(), WsTab::General),
+            EventOutcome::DeleteWorkspace
+        );
     }
 }

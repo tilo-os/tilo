@@ -253,7 +253,7 @@ pub fn start_physical_gamepad_forwarding(
     target: &DeviceId,
     binding: PhysicalGamepadBinding,
 ) -> Result<u64, String> {
-    if !ContinuityPolicySnapshot::load().permits(ContinuityCapability::TypedGamepad) {
+    if !ContinuityPolicySnapshot::current().permits(ContinuityCapability::TypedGamepad) {
         return Err(crate::shell::i18n::t("continuity-disabled-gamepad"));
     }
     let local = network
@@ -381,6 +381,7 @@ pub fn stop_all_physical_gamepads(network: &ShellNetwork) {
 pub fn pump_physical_gamepads(
     network: &ShellNetwork,
     current_binding: Option<&PhysicalGamepadBinding>,
+    policy: ContinuityPolicySnapshot,
 ) {
     if let Ok(mut manager) = manager().lock() {
         // Settings performs explicit discovery and starting a lease performs
@@ -391,8 +392,7 @@ pub fn pump_physical_gamepads(
             return;
         }
         let now = Instant::now();
-        let policy_allowed =
-            ContinuityPolicySnapshot::load().permits(ContinuityCapability::TypedGamepad);
+        let policy_allowed = policy.permits(ContinuityCapability::TypedGamepad);
         let online: Vec<DeviceId> = network
             .device_fabric()
             .snapshots()

@@ -80,9 +80,37 @@ named "Throwaway test identity" and marked as one beside its record, and the
 op never replaces or adopts a real identity. A newly minted identity comes
 with fresh desktop state: tilo-vmd stops the session, removes the user's
 `~/.config/tilo/state.json` and the files beside it that belong to it
-(`state.automerge`, its `.meta`, `state.json.invocations`), and starts it
+(`state.automerge`, its `.log` and `.meta`, `state.json.invocations`), and starts it
 again, since a workspace made before the identity belongs to the Unix user
 and hides app launches. Running the same create again keeps the identity and the layout.
+
+Stand-in slots set `TILO_IDENTITY_ROOT` to the account's actual home followed
+by `/.local/share/tilo/test-identity`, for both the session and user manager.
+The device key, owner public key and all device certificates stay there;
+new throwaway personal identities use owner-only secret files in the same
+user's identity config directory, even when normal sessions use a platform
+secret store.
+`slot exec` inherits that identity root. The supported `tilo-vm slot rm NAME`
+stops the session and user manager, removes their drop-ins, and deletes the
+account and home, including both identity trees. Real `device`/`vm` slots do
+not receive this override and cannot be removed this way.
+
+A throwaway cannot use the shared `/var/lib/tilo` identity tree. Its device
+certificates expire after 24 hours; after expiry, remove and recreate the
+slot instead of treating a copied certificate as lasting access. Setting
+`TILO_IDENTITY_ROOT` alone in a manual fixture does **not** isolate personal
+identity records: also use a dedicated `HOME`/`XDG_CONFIG_HOME` and dispose of
+both trees. Never point the override at a real account's device identity.
+
+After upgrading the daemon, restart an existing stand-in slot before asking
+it to mint an identity, so its new environment takes effect. Older versions
+could leave identity-keyed certificates in the shared tree after slot
+removal. This fix does not sweep or revoke those certificates: their roots
+must be identified and reviewed individually, without deleting real-device
+trust. Legacy throwaway secrets in a platform store also need reviewed
+cleanup; deleting a home cannot remove those items. Deleting local files
+also does not revoke copies held by peers.
+
 
 ## Several monitors, mixed scale
 

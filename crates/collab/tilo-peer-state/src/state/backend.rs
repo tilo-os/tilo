@@ -1,10 +1,9 @@
 //! One private peer representation; storage qualification cannot be copied.
 use super::{
-    AcceptedCheckpoint, Actor, ArtifactKind, AutoCommit, BTreeMap, CachedDocument, CapDecision,
-    CapOverride, ChannelState, DeviceCert, DurableV4, DurableV5, DurableV6, Ed25519PublicKey,
-    ExactAdmissions, GovernedIdentity, NeighbourMsg, Principal, RedemptionReceipt, ResourceRef,
-    RevocationList, Role, Route, Scope, StatePeer, Subject, SystemTime, VecDeque, Verb,
-    VerifiedCertificate, decide_capability, err, now_ns, now_secs, room,
+    AcceptedCheckpoint, AutoCommit, BTreeMap, CachedDocument, ChannelState, DeviceCert, DurableV4,
+    DurableV5, DurableV6, Ed25519PublicKey, ExactAdmissions, GovernedIdentity, NeighbourMsg,
+    RedemptionReceipt, RevocationList, Role, Route, StatePeer, SystemTime, VecDeque,
+    VerifiedCertificate, err, now_ns, room,
 };
 use crate::resources::native::NativeDocument;
 pub(super) mod access;
@@ -38,6 +37,10 @@ pub(super) trait Storage: sealed::Sealed {
         key: &[u8; 32],
     ) -> Option<&'a VerifiedCertificate>;
     fn is_revoked(revocations: &Self::RevocationUnion, key: &[u8; 32]) -> bool;
+    fn exact_admission<'a>(
+        exact: &'a Self::ExactEvidence,
+        key: &crate::admission::AdmissionKey,
+    ) -> Option<&'a [u8; 32]>;
 }
 pub(super) struct LegacyNative;
 pub(super) struct BoundedNative;
@@ -45,7 +48,7 @@ impl sealed::Sealed for LegacyNative {}
 impl sealed::Sealed for BoundedNative {}
 impl Storage for LegacyNative {
     type Room = CachedDocument;
-    type Document = AutoCommit;
+    type Document = CachedDocument;
     type Checkpoint = AcceptedCheckpoint;
     type Retention = ();
     type CertificateRoster = BTreeMap<[u8; 32], VerifiedCertificate>;
@@ -59,6 +62,12 @@ impl Storage for LegacyNative {
     }
     fn is_revoked(revocations: &Self::RevocationUnion, key: &[u8; 32]) -> bool {
         revocations.is_revoked(key)
+    }
+    fn exact_admission<'a>(
+        exact: &'a Self::ExactEvidence,
+        key: &crate::admission::AdmissionKey,
+    ) -> Option<&'a [u8; 32]> {
+        exact.get(key)
     }
 }
 impl Storage for BoundedNative {
@@ -78,18 +87,17 @@ impl Storage for BoundedNative {
     fn is_revoked(revocations: &Self::RevocationUnion, key: &[u8; 32]) -> bool {
         revocations.is_revoked(key)
     }
+    fn exact_admission<'a>(
+        exact: &'a Self::ExactEvidence,
+        key: &crate::admission::AdmissionKey,
+    ) -> Option<&'a [u8; 32]> {
+        exact.as_ref()?.get(key)
+    }
 }
 
 // Historical restore keeps checkpoint bytes lazy. No eager load rejects
 // previously accepted opaque checkpoint bytes.
 pub(super) struct NativeCheckpoint {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "kept for a later decode; only tests read it today"
-        )
-    )]
     pub(super) original: Vec<u8>,
 }
 
@@ -101,8 +109,71 @@ pub(super) struct PeerDocument<S: Storage> {
     pub(super) covered_snapshot: Option<S::Checkpoint>,
     /// Sealed writes this replica admitted but holds no key to open, in
     /// admission order: the durable record of an encrypted document here.
-    /// Bounded reads refuse encrypted documents and leave it empty.
-    pub(super) sealed: Vec<collab_types::SignedOp>,
+    /// Both restore paths validate every retained envelope before replay.
+    pub(super) sealed: SealedLog,
+}
+
+/// A record's sealed writes in admission order. Every admission decides in
+/// a copy of the state, and a busy record's history holds thousands of
+/// writes: it is kept in shared chunks, so a copy costs a pointer per chunk
+/// and a write copies at most the chunk it joins, not the whole history.
+#[derive(Clone, Default)]
+pub(crate) struct SealedLog {
+    chunks: Vec<std::sync::Arc<Vec<collab_types::SignedOp>>>,
+    len: usize,
+    /// The payload bytes of every write held.
+    bytes: usize,
+}
+
+/// Writes one shared chunk of a [`SealedLog`] holds.
+const SEALED_CHUNK: usize = 64;
+
+impl SealedLog {
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    /// The payload bytes of every write held.
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
+    }
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &collab_types::SignedOp> {
+        self.chunks.iter().flat_map(|chunk| chunk.iter())
+    }
+    pub(crate) fn first(&self) -> Option<&collab_types::SignedOp> {
+        self.iter().next()
+    }
+    pub(crate) fn to_vec(&self) -> Vec<collab_types::SignedOp> {
+        self.iter().cloned().collect()
+    }
+    pub(crate) fn push(&mut self, op: collab_types::SignedOp) {
+        self.len = self.len.saturating_add(1);
+        self.bytes = self.bytes.saturating_add(op.payload.len());
+        match self.chunks.last_mut() {
+            Some(chunk) if chunk.len() < SEALED_CHUNK => std::sync::Arc::make_mut(chunk).push(op),
+            _ => self.chunks.push(std::sync::Arc::new(vec![op])),
+        }
+    }
+}
+
+impl From<Vec<collab_types::SignedOp>> for SealedLog {
+    fn from(ops: Vec<collab_types::SignedOp>) -> Self {
+        let mut log = Self::default();
+        for op in ops {
+            log.push(op);
+        }
+        log
+    }
+}
+
+impl<'a> IntoIterator for &'a SealedLog {
+    type Item = &'a collab_types::SignedOp;
+    type IntoIter = Box<dyn Iterator<Item = &'a collab_types::SignedOp> + 'a>;
+    fn into_iter(self) -> Self::IntoIter {
+        Box::new(self.iter())
+    }
 }
 impl Clone for PeerDocument<LegacyNative> {
     fn clone(&self) -> Self {
@@ -223,6 +294,41 @@ mod tests {
             peer.core.certificate_typed(&source, now),
             Err(CertificateLookupError::Revoked)
         );
+    }
+
+    /// A copy of a long sealed history shares its chunks; a write to the
+    /// copy copies only the chunk it joins, and both read in order.
+    #[test]
+    fn a_sealed_log_copy_shares_its_chunks_and_keeps_order() {
+        let op = |seq: u64| {
+            collab_types::SignedOp::new_unsigned(
+                vec![0; 10],
+                collab_types::ArtifactId::new(),
+                collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+                collab_types::AttestationId::new(),
+                collab_types::OpKind::Change,
+                web_time::SystemTime::UNIX_EPOCH,
+                seq,
+            )
+        };
+        let log = SealedLog::from((1..=200).map(op).collect::<Vec<_>>());
+        let mut copy = log.clone();
+        copy.push(op(201));
+        let shared = log
+            .chunks
+            .iter()
+            .zip(&copy.chunks)
+            .filter(|(a, b)| std::sync::Arc::ptr_eq(a, b))
+            .count();
+        assert_eq!(
+            shared,
+            log.chunks.len() - 1,
+            "only the last chunk is copied"
+        );
+        assert_eq!((log.len(), copy.len()), (200, 201));
+        assert_eq!((log.bytes(), copy.bytes()), (2000, 2010));
+        let seqs: Vec<u64> = copy.iter().map(|op| op.seq).collect();
+        assert_eq!(seqs, (1..=201).collect::<Vec<_>>());
     }
 }
 

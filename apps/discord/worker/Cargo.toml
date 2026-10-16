@@ -1,0 +1,55 @@
+[package]
+name = "discord-worker"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The Discord connector's outside worker: one gateway session, the REST calls the bridge queues, and nothing else"
+
+[lib]
+name = "discord_worker"
+path = "src/lib.rs"
+
+[[bin]]
+name = "discord-worker"
+path = "src/main.rs"
+
+[dependencies]
+tilo-lock = { version = "0.1.0", path = "../../../crates/platform/tilo-lock" }
+blake3.workspace = true
+discord-wire = { path = "../../discord-model" }
+futures-util = { workspace = true, features = ["sink"] }
+percent-encoding.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tilo-connector = { path = "../../../crates/agent/connector" }
+tilo-net = { path = "../../../crates/platform/tilo-net", features = ["http"] }
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tokio-rustls.workspace = true
+tokio-websockets = { version = "0.13.3", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector"] }
+url.workspace = true
+zeroize.workspace = true
+workspace-hack = { version = "0.1" }
+tilo-clock = { path = "../../../crates/platform/tilo-clock" }
+
+[dev-dependencies]
+fake-discord = { path = "../../../crates/dev/fake-discord" }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tilo-secrets = { path = "../../../crates/platform/tilo-secrets" }
+# The bridge end to end: its program on a room's host, with this binary.
+tilo-relay = { path = "../../../crates/hosting/tilo-relay", features = ["agents"] }
+tilo-agent-participant = { path = "../../../crates/agent/agent-participant" }
+tilo-automation = { path = "../../../crates/collab/automation" }
+tilo-user-identity = { path = "../../../crates/collab/tilo-user-identity" }
+ui = { package = "tilo-app", path = "../../../crates/sdk/tilo-app" }
+chat = { path = "../../chat" }
+discord = { path = ".." }
+automerge.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+iroh.workspace = true
+tilo-automerge-isolate.workspace = true
+
+[lints]
+workspace = true

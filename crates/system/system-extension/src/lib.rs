@@ -21,16 +21,6 @@
 //! accepted set stays active until the transaction is explicitly completed or
 //! aborted.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "tests use these as assertions"
-    )
-)]
 #![allow(
     clippy::missing_errors_doc,
     reason = "the compact public API is documented as one transaction protocol above; every fallible method returns one of the explicit ExtensionError variants"
@@ -481,10 +471,13 @@ impl ExtensionStateStore {
         if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(ExtensionStoreError::UnsafeStatePath(self.path.clone()));
         }
-        if metadata.len() > MAX_STATE_BYTES {
-            return Err(ExtensionStoreError::StateTooLarge);
-        }
-        let state: ExtensionState = serde_json::from_slice(&fs::read(&self.path)?)?;
+        let bytes = tilo_files::native::bounded::read_or(
+            &self.path,
+            MAX_STATE_BYTES,
+            ExtensionStoreError::StateTooLarge,
+        )?
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))?;
+        let state: ExtensionState = serde_json::from_slice(&bytes)?;
         state.validate()?;
         Ok(state)
     }
@@ -496,7 +489,7 @@ impl ExtensionStateStore {
         // Desired state authorises a privileged image-build boundary.  Keep it
         // owner-only before the atomic rename so a session cannot replace an
         // accepted declaration between review and activation.
-        atomic_file::write_creating_parent_with_mode(&self.path, &bytes, 0o600)?;
+        tilo_files::native::atomic::write_creating_parent_with_mode(&self.path, &bytes, 0o600)?;
         Ok(())
     }
 

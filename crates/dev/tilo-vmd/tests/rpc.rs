@@ -26,11 +26,15 @@ struct Daemon {
 
 impl Daemon {
     fn spawn(root: &std::path::Path) -> Self {
+        Self::spawn_with(root, "record")
+    }
+
+    fn spawn_with(root: &std::path::Path, apply: &str) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_tilo-vmd"))
             .args([
                 "rpc",
                 "--apply",
-                "record",
+                apply,
                 "--manifest",
                 "/nonexistent",
                 "--base",
@@ -44,10 +48,9 @@ impl Daemon {
             .unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         let stdin = child.stdin.take().unwrap();
-        Self {
-            child,
-            client: Client::new(stdout, stdin),
-        }
+        let mut client = Client::new(stdout, stdin);
+        client.enable_binary_uploads();
+        Self { child, client }
     }
 }
 
@@ -550,4 +553,461 @@ fn rpc_requests_are_validated_and_routed_per_slot() {
         }));
         assert!(error.hint.contains("headful or headless"), "{}", error.hint);
     }
+}
+
+#[test]
+fn device_login_input_uses_the_physical_seat() {
+    use tilo_vm_protocol::{Input, InputAction};
+
+    let actions = vec![InputAction::Key {
+        combos: vec!["a".into()],
+    }];
+    let root = tempfile::tempdir().unwrap();
+    let mut login = Daemon::spawn_with(root.path(), "record-login");
+    login.client.hello("test").unwrap();
+    let sent = login
+        .client
+        .call(Input {
+            slot: "device".into(),
+            actions: actions.clone(),
+        })
+        .unwrap();
+    assert_eq!(sent.seat, "seat0");
+    assert!(sent.events > 0);
+
+    let board_root = tempfile::tempdir().unwrap();
+    let mut board = Daemon::spawn_with(board_root.path(), "record-device");
+    board.client.hello("test").unwrap();
+    let error = rpc_error(board.client.call(Input {
+        slot: "device".into(),
+        actions,
+    }));
+    assert_eq!(error.code, code::INVALID);
+    assert!(error.message.contains("headless"));
+}
+
+#[test]
+fn the_device_slot_is_the_machines_own_session() {
+    // Phase `a_machine_without_its_own_session_has_no_device_slot`.
+    {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::spawn(root.path());
+        let client = &mut daemon.client;
+        client.hello("test").unwrap();
+        let layer = import(client, "shell", &tarball("usr/bin/shell", b"v1"));
+        let error = rpc_error(client.call(Swap {
+            slot: "device".into(),
+            component: "shell".into(),
+            layer,
+            info: Some(ComponentInfo::new(Scope::Session, vec![])),
+        }));
+        assert_eq!(error.code, code::NOT_FOUND);
+        assert!(error.hint.contains("board"), "{}", error.hint);
+        assert_eq!(error.see.as_deref(), Some("tilo-vm guide devices"));
+    }
+    // Phase `swaps_restart_the_devices_session_and_roll_back`.
+    {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::spawn_with(root.path(), "record-device");
+        let client = &mut daemon.client;
+        client.hello("test").unwrap();
+        let unit = "tilo-board-headless-session@tester.service";
+        // Listed before anything was swapped into it: it is the machine's session.
+        let fresh = client.call(Status { slot: None }).unwrap();
+        assert_eq!(fresh.slots.len(), 1, "{:?}", fresh.slots);
+        assert_eq!(
+            (
+                fresh.slots[0].name.as_str(),
+                fresh.slots[0].kind,
+                fresh.slots[0].generation
+            ),
+            ("device", SlotKind::Device, 0)
+        );
+        let v1 = import(client, "shell", &tarball("usr/bin/shell", b"v1"));
+        let v2 = import(client, "shell", &tarball("usr/bin/shell", b"v2"));
+        let swap = |layer: &str| Swap {
+            slot: "device".into(),
+            component: "shell".into(),
+            layer: layer.into(),
+            info: Some(ComponentInfo::new(Scope::Session, vec![])),
+        };
+        let applied = client.call(swap(&v1)).unwrap();
+        assert_eq!(
+            (applied.generation, applied.policy, applied.changed),
+            (1, Policy::SessionRestart, true)
+        );
+        for unit in ["user@1000.service", unit, "tilo-board-drm-session.service"] {
+            assert!(
+                applied
+                    .actions
+                    .contains(&Action::WriteDropIn { unit: unit.into() }),
+                "{unit}: {:?}",
+                applied.actions
+            );
+        }
+        let restart = [
+            Action::StopUnit { unit: unit.into() },
+            Action::RestartUnit {
+                unit: "user@1000.service".into(),
+            },
+            Action::StartUnit { unit: unit.into() },
+        ];
+        assert!(
+            applied.actions.windows(3).any(|w| w == restart),
+            "{:?}",
+            applied.actions
+        );
+        assert!(
+            !applied
+                .actions
+                .iter()
+                .any(|a| matches!(a, Action::EnsureUser { .. })),
+            "the device's account is never a slot user: {:?}",
+            applied.actions
+        );
+        assert_eq!(client.call(swap(&v2)).unwrap().generation, 2);
+
+        let status = client
+            .call(Status {
+                slot: Some("device".into()),
+            })
+            .unwrap();
+        let device = &status.slots[0];
+        assert_eq!(device.kind, SlotKind::Device);
+        assert_eq!(device.user.as_deref(), Some("tester"));
+        assert_eq!(device.components["shell"], v2);
+        assert_eq!(device.generations, [0, 1, 2]);
+        assert!(status.issues.is_empty(), "{:?}", status.issues);
+        let listed = client.call(SlotList {}).unwrap();
+        assert_eq!(
+            listed.iter().filter(|s| s.name == "device").count(),
+            1,
+            "{listed:?}"
+        );
+
+        let back = client
+            .call(Rollback {
+                slot: "device".into(),
+                to: Some(0),
+            })
+            .unwrap();
+        assert_eq!((back.generation, back.policy), (0, Policy::SessionRestart));
+        assert!(
+            back.actions
+                .contains(&Action::StartUnit { unit: unit.into() })
+        );
+        let forward = client
+            .call(Rollback {
+                slot: "device".into(),
+                to: Some(2),
+            })
+            .unwrap();
+        assert_eq!(forward.generation, 2);
+
+        let shown = client
+            .call(SlotShow {
+                name: "device".into(),
+            })
+            .unwrap();
+        assert_eq!(shown.files.len(), 1, "{:?}", shown.files);
+        assert_eq!(shown.files[0].layer, v2);
+        let picture = client
+            .call(Shot {
+                slot: "device".into(),
+            })
+            .unwrap();
+        assert!(!picture.png.is_empty());
+    }
+    // Phase `the_device_slot_is_neither_created_removed_nor_moved`.
+    {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::spawn_with(root.path(), "record-device");
+        let client = &mut daemon.client;
+        client.hello("test").unwrap();
+        let errors = [
+            rpc_error(client.call(SlotCreate {
+                name: "device".into(),
+                kind: SlotKind::Headless,
+                owner: Owner::default(),
+                outputs: vec![],
+                identity: false,
+            })),
+            rpc_error(client.call(SlotRm {
+                name: "device".into(),
+            })),
+            rpc_error(client.call(SeatClaim {
+                slot: "device".into(),
+                owner: Owner::default(),
+                steal: false,
+            })),
+            rpc_error(client.call(SeatRelease {
+                slot: "device".into(),
+            })),
+        ];
+        for error in errors {
+            assert_eq!(error.code, code::INVALID, "{error:?}");
+            assert!(
+                error.hint.contains("rollback --slot device --to 0"),
+                "{}",
+                error.hint
+            );
+        }
+        // Other slots on the same machine are ordinary slots.
+        let created = client
+            .call(SlotCreate {
+                name: "agent-a".into(),
+                kind: SlotKind::Headless,
+                owner: Owner::default(),
+                outputs: vec![],
+                identity: false,
+            })
+            .unwrap();
+        assert!(created.actions.contains(&Action::StartUnit {
+            unit: "tilo-vm-session@agent-a.service".into()
+        }));
+    }
+}
+
+#[test]
+fn chunked_upload_preserves_verified_layer_and_cache() {
+    let root = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::spawn(root.path());
+    daemon.client.hello("upload-ack-test").unwrap();
+    // Send multiple chunks and leave a short final chunk.
+    let data = vec![83_u8; tilo_vm_protocol::UPLOAD_CHUNK_BYTES * 5 + 17];
+    let bytes = tarball("usr/bin/shell", &data);
+    let hash = import(&mut daemon.client, "shell", &bytes);
+    let installed =
+        std::fs::read(root.path().join("layers").join(&hash).join("usr/bin/shell")).unwrap();
+    assert_eq!(
+        sha2::Sha256::digest(&installed),
+        sha2::Sha256::digest(&data)
+    );
+    assert_eq!(installed.len(), data.len());
+    let again = import(&mut daemon.client, "shell", &bytes);
+    assert_eq!(again, hash, "chunked uploads preserve layer identity");
+    let layers = daemon.client.call(LayerList {}).unwrap();
+    assert_eq!(
+        layers.len(),
+        1,
+        "the existing content cache reuses the layer"
+    );
+    assert_eq!(layers[0].hash, hash);
+    assert_eq!(layers[0].provenance.component, "shell");
+
+    let invalid = tarball("etc/unapproved", b"bad layer");
+    let upload = daemon.client.upload(invalid.as_slice()).unwrap();
+    assert!(
+        daemon
+            .client
+            .call(LayerImport {
+                source: LayerSource::Upload(upload),
+                provenance: Box::new(Provenance::local("shell")),
+            })
+            .is_err()
+    );
+    let retained = daemon.client.call(LayerList {}).unwrap();
+    assert_eq!(retained.len(), 1, "rejected imports cannot publish a layer");
+    assert_eq!(retained[0].hash, hash);
+}
+
+#[test]
+fn verified_layer_cache_refuses_corruption_and_missing_entries() {
+    let root = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::spawn(root.path());
+    daemon.client.hello("cache-fixture").unwrap();
+    let bytes = tarball("usr/bin/shell", b"source-pinned payload");
+    let hash = import(&mut daemon.client, "shell", &bytes);
+    let verified = daemon
+        .client
+        .call(tilo_vm_protocol::LayerVerify { hash: hash.clone() })
+        .unwrap();
+    assert_eq!(verified.hash, hash);
+    assert_eq!(verified.provenance.component, "shell");
+    let missing = daemon.client.call(tilo_vm_protocol::LayerVerify {
+        hash: "f".repeat(64),
+    });
+    assert!(missing.is_err());
+    std::fs::write(
+        root.path().join("layers").join(&hash).join("usr/bin/shell"),
+        b"damaged cache",
+    )
+    .unwrap();
+    assert!(
+        daemon
+            .client
+            .call(tilo_vm_protocol::LayerVerify { hash: hash.clone() })
+            .is_err()
+    );
+    // A normal reupload must not silently return the corrupt existing directory.
+    let upload = daemon.client.upload(bytes.as_slice()).unwrap();
+    assert!(
+        daemon
+            .client
+            .call(LayerImport {
+                source: LayerSource::Upload(upload),
+                provenance: Box::new(Provenance::local("shell")),
+            })
+            .is_err()
+    );
+    std::fs::remove_dir_all(root.path().join("layers").join(&hash)).unwrap();
+    let replaced = import(&mut daemon.client, "shell", &bytes);
+    assert_eq!(replaced, hash);
+    assert!(
+        daemon
+            .client
+            .call(tilo_vm_protocol::LayerVerify { hash })
+            .is_ok()
+    );
+}
+
+#[test]
+fn binary_upload_cancellation_cleans_partial_files_and_keeps_rpc_aligned() {
+    struct Failing(std::io::Cursor<Vec<u8>>);
+    impl std::io::Read for Failing {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            if self.0.position() == self.0.get_ref().len() as u64 {
+                return Err(std::io::Error::other("source cancelled"));
+            }
+            std::io::Read::read(&mut self.0, output)
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut daemon = Daemon::spawn(dir.path());
+    daemon.client.hello("binary-fixture").unwrap();
+    assert!(matches!(
+        daemon
+            .client
+            .upload(Failing(std::io::Cursor::new(vec![31; 2 << 20]))),
+        Err(ClientError::Io(_))
+    ));
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("uploads"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert!(daemon.client.call(LayerList {}).unwrap().is_empty());
+    let bytes = tarball("usr/bin/binary-probe", &vec![57; (2 << 20) + 33]);
+    let hash = import(&mut daemon.client, "binary-probe", &bytes);
+    assert_eq!(daemon.client.call(LayerList {}).unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("uploads"))
+            .unwrap()
+            .count(),
+        0
+    );
+    assert_eq!(
+        std::fs::read(
+            dir.path()
+                .join("layers")
+                .join(hash)
+                .join("usr/bin/binary-probe")
+        )
+        .unwrap(),
+        vec![57; (2 << 20) + 33]
+    );
+}
+
+/// Runs one of tilo-vmd's boot-time commands against `root`, as its unit does.
+fn boot_step(root: &std::path::Path, step: &str, booted: &str) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_tilo-vmd"))
+        .args([step, "--apply", "record", "--manifest", "/nonexistent"])
+        .args(["--base", "/nonexistent", "--booted", booted])
+        .arg("--root")
+        .arg(root)
+        .output()
+        .unwrap()
+}
+
+/// An upgraded laptop kept running layers built for its previous image (an
+/// old shell against a new launcher and tilo-vmd). Booting another image
+/// puts every slot back on it before anything is merged: the slot runs
+/// generation 0, the old generations cannot be rolled back to, status says
+/// what was dropped, and rebooting the same image changes nothing.
+#[test]
+fn booting_another_image_puts_slots_back_on_it_over_stdio() {
+    let root = tempfile::tempdir().unwrap();
+    let shell = {
+        let mut daemon = Daemon::spawn(root.path());
+        let client = &mut daemon.client;
+        client.hello("test").unwrap();
+        client
+            .call(SlotCreate {
+                name: "agent-a".into(),
+                kind: SlotKind::Headless,
+                owner: Owner::default(),
+                outputs: vec![],
+                identity: false,
+            })
+            .unwrap();
+        // The image the slot is made on, as the boot records it.
+        let first = boot_step(root.path(), "reconcile-image", "composefs:old");
+        assert!(first.status.success(), "{first:?}");
+        let shell = import(client, "shell", &tarball("usr/bin/shell", b"old shell"));
+        let applied = client
+            .call(Swap {
+                slot: "agent-a".into(),
+                component: "shell".into(),
+                layer: shell.clone(),
+                info: Some(ComponentInfo::new(Scope::Session, vec![])),
+            })
+            .unwrap();
+        assert_eq!(applied.generation, 1);
+        shell
+    };
+
+    // The same image again: the swap stays.
+    let same = boot_step(root.path(), "reconcile-image", "composefs:old");
+    assert!(same.status.success(), "{same:?}");
+    {
+        let mut daemon = Daemon::spawn(root.path());
+        let client = &mut daemon.client;
+        client.hello("test").unwrap();
+        let status = client.call(Status { slot: None }).unwrap();
+        assert_eq!(status.slots_image.as_deref(), Some("composefs:old"));
+        assert_eq!(status.image_change, None);
+        let slot = status.slots.iter().find(|s| s.name == "agent-a").unwrap();
+        assert_eq!(slot.generation, 1);
+    }
+
+    // The upgrade's first boot.
+    let upgraded = boot_step(root.path(), "reconcile-image", "composefs:new");
+    assert!(upgraded.status.success(), "{upgraded:?}");
+    let said = String::from_utf8_lossy(&upgraded.stderr);
+    assert!(
+        said.contains("slot agent-a left generation 1 (shell) and runs the image as installed"),
+        "{said}"
+    );
+    let restored = boot_step(root.path(), "restore", "composefs:new");
+    assert!(restored.status.success(), "{restored:?}");
+
+    let mut daemon = Daemon::spawn(root.path());
+    let client = &mut daemon.client;
+    client.hello("test").unwrap();
+    let status = client.call(Status { slot: None }).unwrap();
+    assert_eq!(status.slots_image.as_deref(), Some("composefs:new"));
+    let change = status.image_change.expect("the change is reported");
+    assert_eq!(change.from.as_deref(), Some("composefs:old"));
+    assert_eq!(change.to, "composefs:new");
+    assert_eq!(change.dropped.len(), 1);
+    assert_eq!(change.dropped[0].slot, "agent-a");
+    assert_eq!(change.dropped[0].components, vec!["shell".to_owned()]);
+    let slot = status.slots.iter().find(|s| s.name == "agent-a").unwrap();
+    assert_eq!(slot.generation, 0);
+    assert!(slot.components.is_empty(), "{:?}", slot.components);
+    let error = rpc_error(client.call(Rollback {
+        slot: "agent-a".into(),
+        to: Some(1),
+    }));
+    assert!(error.message.contains('1'), "{error:?}");
+    // Imported moments ago, so the boot keeps the layer for a later one;
+    // nothing references it any more.
+    assert!(
+        client
+            .call(LayerList {})
+            .unwrap()
+            .iter()
+            .any(|layer| layer.hash == shell)
+    );
 }

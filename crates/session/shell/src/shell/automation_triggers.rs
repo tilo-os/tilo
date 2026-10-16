@@ -20,6 +20,10 @@
 //!   capability shares with the saver ([`watched_folders`]).
 //! - [`FocusModeTriggers`] fires when Do Not Disturb or the focus schedule
 //!   switches on or off.
+//! - [`RecordChangedTriggers`] fires on a committed change to a record of a
+//!   watched kind in the saver's room.
+//! - [`IncomingMessageTriggers`] fires on a message someone else received in
+//!   the saver's rooms (a change its app marks as one).
 //!
 //! What an event says (the app, the workspace, the file, the mode) is the
 //! trigger's payload ([`TriggerSpec::payload`]); each value is handed to the
@@ -29,7 +33,10 @@
 //!   Each schedule's next fire time is persisted before the firing is handed
 //!   over, so a restart neither repeats a fire nor forgets one; a fire time
 //!   missed while the device was off or asleep is skipped or run once,
-//!   according to the trigger's [`CatchUp`] policy.
+//!   according to the trigger's [`CatchUp`] policy. The ledger is written on
+//!   the state writer, never on the compositor's loop: a firing waits until
+//!   the write that records it has finished and is handed over by a later
+//!   tick ([`TriggerHost::take_settled_firings`]).
 //!
 //! A shortcut reaches every device of the person who saved it, and each of
 //! them arms it. A schedule still runs once per fire time: the saver's
@@ -39,9 +46,15 @@
 //! each other device waits [`CLAIM_GRACE`] per rank before taking a fire
 //! time nobody has claimed — so an elected device that is asleep or offline
 //! is covered by the next one.
+//!
+//! A record trigger runs on one of the saver's devices the same way:
+//! devices rank themselves by a hash of the change, the first runs it at
+//! once, each other waits [`CLAIM_GRACE`] per rank and drops it if the
+//! run's first change has appeared.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::{
@@ -53,6 +66,7 @@ use serde_json::{Map, Value};
 use settings_store::hardware::KeyChord;
 use sha2::{Digest as _, Sha256};
 use tilo_actions::params::ParamType;
+use tilo_automation::dispatch::RecordEvent;
 use tilo_automation::{
     CatchUp, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, FocusTransition, RunId, Schedule, ScheduleClaim,
     Shortcut, TriggerSpec, Weekday,
@@ -232,6 +246,9 @@ pub enum TriggerEvent<'a> {
     Focus(FocusState),
     /// Files changed inside watched folders since the last look.
     Files(&'a [FolderChange]),
+    /// Changes committed to records of this device's rooms since the last
+    /// look.
+    Records(&'a [RecordEvent]),
 }
 
 /// Whether each focus mode is on.
@@ -306,7 +323,7 @@ impl FolderChange {
 }
 
 /// One trigger that fired: run `shortcut` in `room`, as run `run`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Firing {
     pub room: String,
     pub shortcut: String,
@@ -332,6 +349,7 @@ impl Firing {
                         && match input.ty {
                             ParamType::Boolean => value.is_boolean(),
                             ParamType::Text => value.is_string(),
+                            ParamType::Object => value.is_object(),
                             _ => false,
                         }
                 })
@@ -364,6 +382,21 @@ pub trait TriggerSource: Send {
         armed: &[Armed<'_>],
         context: TriggerContext<'_>,
     ) -> Vec<Firing>;
+
+    /// Runs another of the person's devices started; a source holding one
+    /// for its turn drops it.
+    fn forget_started(&mut self, _started: &BTreeSet<RunId>) {}
+
+    /// Firings an earlier event produced that were waiting for something to
+    /// reach the disk and may run now.
+    fn take_settled(&mut self) -> Vec<Firing> {
+        Vec::new()
+    }
+
+    /// Whether firings are waiting for the disk.
+    fn holds_firings(&self) -> bool {
+        false
+    }
 }
 
 /// Fires a shortcut whose keyboard trigger names the pressed chord.
@@ -608,7 +641,7 @@ pub fn watched_folders(
 }
 
 /// One schedule's persisted state.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct LedgerEntry {
     /// The trigger as it was when armed; a changed schedule starts over.
     trigger: TriggerSpec,
@@ -616,52 +649,108 @@ struct LedgerEntry {
     next_fire_ms: i64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct ScheduleLedger {
     /// Keyed by `room/shortcut/trigger index`.
     #[serde(default)]
     schedules: BTreeMap<String, LedgerEntry>,
 }
 
-/// Fires scheduled triggers when their time comes, exactly once per fire
+/// Fires scheduled triggers when their time comes, at most once per fire
 /// time, across restarts.
-#[derive(Debug)]
+///
+/// The ledger of next fire times is written on the state writer, because
+/// [`TriggerEvent::Tick`] arrives on the compositor's loop and the write's
+/// fsyncs can take seconds under I/O pressure. Each ledger value handed to
+/// the writer gets the next sequence number, and the firings of the tick that
+/// produced it wait under that number. The write marks its number settled
+/// (on disk, or failed and logged, which runs the firings as before) and
+/// wakes the loop; a later tick hands the firings over. A newer value that
+/// replaces a queued older one holds at least as much and settles a higher
+/// number, so it releases both. A crash before the write lands leaves the
+/// previous ledger and loses no run: none has started.
 pub struct ScheduleTriggers {
     ledger: ScheduleLedger,
     path: Option<PathBuf>,
+    writer: &'static crate::shell::durable_writer::DurableWriter,
+    /// The newest ledger value handed to the writer.
+    submitted: u64,
+    /// Every ledger value up to this one is settled.
+    settled: Arc<AtomicU64>,
+    /// Firings waiting for the ledger value numbered with them.
+    held: Vec<(u64, Firing)>,
+}
+
+impl std::fmt::Debug for ScheduleTriggers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScheduleTriggers")
+            .field("ledger", &self.ledger)
+            .field("path", &self.path)
+            .field("submitted", &self.submitted)
+            .field("held", &self.held.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl ScheduleTriggers {
     /// Schedules persisted at `path`, or kept in memory only for `None`.
     #[must_use]
     pub fn open(path: Option<PathBuf>) -> Self {
+        Self::open_with_writer(path, crate::shell::durable_writer::global())
+    }
+
+    /// [`Self::open`], writing the ledger on `writer`.
+    #[must_use]
+    pub fn open_with_writer(
+        path: Option<PathBuf>,
+        writer: &'static crate::shell::durable_writer::DurableWriter,
+    ) -> Self {
         let ledger = path
             .as_ref()
             .and_then(|path| std::fs::read(path).ok())
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        Self { ledger, path }
+        Self {
+            ledger,
+            path,
+            writer,
+            submitted: 0,
+            settled: Arc::new(AtomicU64::new(0)),
+            held: Vec::new(),
+        }
     }
 
-    /// When the schedule `key` fires next, when it is armed.
-    #[must_use]
-    pub fn next_fire(&self, room: &str, shortcut: &str, index: usize) -> Option<DateTime<Utc>> {
-        self.ledger
-            .schedules
-            .get(&ledger_key(room, shortcut, index))
-            .and_then(|entry| DateTime::from_timestamp_millis(entry.next_fire_ms))
-    }
-
-    fn persist(&self) {
-        let Some(path) = &self.path else {
+    /// Hand the ledger to the writer and hold `due` until it is written.
+    /// Kept in memory only, or when the ledger cannot be encoded, `due` runs
+    /// at once, as it did when the write happened here.
+    fn persist(&mut self, due: Vec<Firing>) {
+        let Some(path) = self.path.clone() else {
+            self.held.extend(due.into_iter().map(|firing| (0, firing)));
             return;
         };
-        let written = serde_json::to_vec_pretty(&self.ledger)
-            .map_err(std::io::Error::other)
-            .and_then(|bytes| atomic_file::write_creating_parent(path, &bytes));
-        if let Err(error) = written {
-            tracing::warn!(%error, path = %path.display(), "shortcut schedules were not saved");
-        }
+        let bytes = match serde_json::to_vec_pretty(&self.ledger) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(%error, path = %path.display(), "shortcut schedules were not saved");
+                self.held.extend(due.into_iter().map(|firing| (0, firing)));
+                return;
+            }
+        };
+        self.submitted = self.submitted.saturating_add(1);
+        let sequence = self.submitted;
+        self.held
+            .extend(due.into_iter().map(|firing| (sequence, firing)));
+        let settled = Arc::clone(&self.settled);
+        // Made on the loop's thread, so it wakes the loop that holds the
+        // firings; a no-op where no loop installed a wake.
+        let wake = crate::shell::search::invocation_wake::waker();
+        self.writer.submit(path.clone(), move || {
+            if let Err(error) = tilo_files::native::atomic::write_creating_parent(&path, &bytes) {
+                tracing::warn!(%error, path = %path.display(), "shortcut schedules were not saved");
+            }
+            settled.fetch_max(sequence, Ordering::AcqRel);
+            wake.wake();
+        });
     }
 }
 
@@ -677,7 +766,7 @@ impl TriggerSource for ScheduleTriggers {
         };
         let clock = context.clock;
         let now = clock.now();
-        let mut firings = Vec::new();
+        let mut due_now = Vec::new();
         let mut live = BTreeSet::new();
         let mut changed = false;
         for armed in armed {
@@ -708,7 +797,7 @@ impl TriggerSource for ScheduleTriggers {
                         }
                         let on_time = now.signed_duration_since(start) <= MISSED_AFTER;
                         if on_time || *catch_up == CatchUp::RunOnce {
-                            firings.push(Firing {
+                            due_now.push(Firing {
                                 room: armed.room.clone(),
                                 shortcut: armed.shortcut.id.clone(),
                                 trigger: trigger.clone(),
@@ -742,12 +831,29 @@ impl TriggerSource for ScheduleTriggers {
         let before = self.ledger.schedules.len();
         self.ledger.schedules.retain(|key, _| live.contains(key));
         changed |= self.ledger.schedules.len() != before;
-        // Persisted before anything runs: a crash after this point loses at
-        // most the run, never repeats it.
+        // Persisted before anything runs: a firing is handed over only once
+        // the ledger that moved past its fire time is written, so a crash
+        // loses at most the run, never repeats it.
         if changed {
-            self.persist();
+            self.persist(due_now);
         }
-        firings
+        self.take_settled()
+    }
+
+    fn take_settled(&mut self) -> Vec<Firing> {
+        if self.held.is_empty() {
+            return Vec::new();
+        }
+        let settled = self.settled.load(Ordering::Acquire);
+        let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held)
+            .into_iter()
+            .partition(|(sequence, _)| *sequence <= settled);
+        self.held = waiting;
+        ready.into_iter().map(|(_, firing)| firing).collect()
+    }
+
+    fn holds_firings(&self) -> bool {
+        !self.held.is_empty()
     }
 }
 
@@ -867,6 +973,193 @@ fn weekday_of(date: NaiveDate) -> Weekday {
     }
 }
 
+/// A record firing this device holds back while devices ranked before it
+/// get their turn.
+#[derive(Clone, Debug)]
+struct Held {
+    firing: Firing,
+    start: DateTime<Utc>,
+}
+
+/// Where `device` stands for a change; lowest first. Every device of the
+/// person ranks the same way, so they agree without talking.
+fn change_device_rank(change: &str, device: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"tilo.shortcut.change-runner\0");
+    hasher.update(change.as_bytes());
+    hasher.update([0]);
+    hasher.update(device.as_bytes());
+    hasher.finalize().into()
+}
+
+/// How many online devices rank before the local one for `change`.
+fn change_rank(change: &str, devices: &PersonalDevices) -> usize {
+    let Some(local) = devices.local.as_deref() else {
+        return 0;
+    };
+    let mine = change_device_rank(change, local);
+    devices
+        .online
+        .iter()
+        .filter(|device| device.as_str() != local)
+        .filter(|device| change_device_rank(change, device) < mine)
+        .count()
+}
+
+/// Shared by both record sources: hold each firing for its turn and hand
+/// it over when the turn comes. The run's own first change is the claim: a
+/// held firing whose run already started elsewhere is dropped
+/// ([`TriggerSource::forget_started`]).
+#[derive(Debug, Default)]
+struct RecordElection {
+    held: Vec<Held>,
+}
+
+impl RecordElection {
+    fn offer(
+        &mut self,
+        firings: Vec<Firing>,
+        change: &str,
+        context: TriggerContext<'_>,
+    ) -> Vec<Firing> {
+        let rank = change_rank(change, context.devices);
+        if rank == 0 {
+            return firings;
+        }
+        let wait = CLAIM_GRACE
+            .checked_mul(i32::try_from(rank).unwrap_or(i32::MAX))
+            .unwrap_or(ChronoDuration::MAX);
+        let start = context
+            .clock
+            .now()
+            .checked_add_signed(wait)
+            .unwrap_or(DateTime::<Utc>::MAX_UTC);
+        self.held
+            .extend(firings.into_iter().map(|firing| Held { firing, start }));
+        Vec::new()
+    }
+
+    fn due(&mut self, now: DateTime<Utc>) -> Vec<Firing> {
+        let (due, waiting): (Vec<Held>, Vec<Held>) = std::mem::take(&mut self.held)
+            .into_iter()
+            .partition(|held| held.start <= now);
+        self.held = waiting;
+        due.into_iter().map(|held| held.firing).collect()
+    }
+
+    fn forget_started(&mut self, started: &BTreeSet<RunId>) {
+        self.held.retain(|held| !started.contains(&held.firing.run));
+    }
+
+    /// Due firings, then the firings of `event`'s changes whose trigger
+    /// `wanted` accepts, those this device runs now.
+    fn observe(
+        &mut self,
+        event: TriggerEvent<'_>,
+        armed: &[Armed<'_>],
+        context: TriggerContext<'_>,
+        wanted: fn(&TriggerSpec) -> bool,
+    ) -> Vec<Firing> {
+        let mut ready = self.due(context.clock.now());
+        if let TriggerEvent::Records(events) = event {
+            for change in events {
+                let firings = record_firings(armed, change, wanted);
+                ready.extend(self.offer(firings, &change.change, context));
+            }
+        }
+        ready
+    }
+}
+
+/// What `event` fires among `armed` in its room, through the dispatcher a
+/// bot's host uses too, so both fire on a change the same way.
+fn record_firings(
+    armed: &[Armed<'_>],
+    event: &RecordEvent,
+    wanted: fn(&TriggerSpec) -> bool,
+) -> Vec<Firing> {
+    use tilo_automation::dispatch::{self, Armed as DispatchArmed, Event, Firer};
+    let mut firings = Vec::new();
+    for armed in armed.iter().filter(|armed| armed.room == event.room) {
+        let Some(saver) = armed.shortcut.saved_by.as_deref() else {
+            continue;
+        };
+        let dispatched = dispatch::dispatch(
+            &[DispatchArmed {
+                firer: Firer::Shortcut {
+                    shortcut: &armed.shortcut.id,
+                    saver,
+                },
+                shortcut: armed.shortcut,
+            }],
+            Event::Record(event),
+        );
+        for fired in dispatched
+            .firings
+            .into_iter()
+            .filter(|fired| wanted(&fired.trigger))
+        {
+            firings.push(Firing {
+                room: armed.room.clone(),
+                shortcut: armed.shortcut.id.clone(),
+                trigger: fired.trigger,
+                run: fired.run,
+                claim: None,
+                inputs: fired.inputs,
+            });
+        }
+    }
+    firings
+}
+
+/// Fires a shortcut's record-changed triggers on matching changes, on one
+/// of the saver's devices.
+#[derive(Debug, Default)]
+pub struct RecordChangedTriggers {
+    election: RecordElection,
+}
+
+impl TriggerSource for RecordChangedTriggers {
+    fn observe(
+        &mut self,
+        event: TriggerEvent<'_>,
+        armed: &[Armed<'_>],
+        context: TriggerContext<'_>,
+    ) -> Vec<Firing> {
+        self.election.observe(event, armed, context, |trigger| {
+            matches!(trigger, TriggerSpec::RecordChanged { .. })
+        })
+    }
+
+    fn forget_started(&mut self, started: &BTreeSet<RunId>) {
+        self.election.forget_started(started);
+    }
+}
+
+/// Fires a shortcut's incoming-message triggers on a message someone else
+/// received in the saver's rooms, on one of the saver's devices.
+#[derive(Debug, Default)]
+pub struct IncomingMessageTriggers {
+    election: RecordElection,
+}
+
+impl TriggerSource for IncomingMessageTriggers {
+    fn observe(
+        &mut self,
+        event: TriggerEvent<'_>,
+        armed: &[Armed<'_>],
+        context: TriggerContext<'_>,
+    ) -> Vec<Firing> {
+        self.election.observe(event, armed, context, |trigger| {
+            matches!(trigger, TriggerSpec::IncomingMessage { .. })
+        })
+    }
+
+    fn forget_started(&mut self, started: &BTreeSet<RunId>) {
+        self.election.forget_started(started);
+    }
+}
+
 /// Every trigger source a session runs, reading one clock and one view of
 /// the person's devices.
 pub struct TriggerHost {
@@ -890,6 +1183,8 @@ impl TriggerHost {
                 Box::new(WorkspaceJoinedTriggers::default()),
                 Box::new(FileChangedTriggers),
                 Box::new(FocusModeTriggers::default()),
+                Box::new(RecordChangedTriggers::default()),
+                Box::new(IncomingMessageTriggers::default()),
             ],
         }
     }
@@ -898,7 +1193,7 @@ impl TriggerHost {
     /// the launcher-provided state root.
     #[must_use]
     pub fn for_session() -> Self {
-        let schedules = xdg_paths::env_dir("XDG_STATE_HOME")
+        let schedules = tilo_paths::env_dir("XDG_STATE_HOME")
             .map(|state| state.join("tilo/automation/schedules.json"));
         Self::new(Arc::new(SystemClock), schedules)
     }
@@ -917,7 +1212,13 @@ impl TriggerHost {
     /// Show `event` to every source; every firing, in source order.
     pub fn observe(&mut self, event: TriggerEvent<'_>, armed: &[Armed<'_>]) -> Vec<Firing> {
         let clock = Arc::clone(&self.clock);
-        let devices = self.devices.personal_devices();
+        // Only schedules read the device list, and asking for it is a lock plus
+        // a copy of the personal fabric: a keystroke must not pay for it.
+        let devices = if matches!(event, TriggerEvent::Key(_)) {
+            PersonalDevices::default()
+        } else {
+            self.devices.personal_devices()
+        };
         let context = TriggerContext {
             clock: clock.as_ref(),
             devices: &devices,
@@ -926,6 +1227,30 @@ impl TriggerHost {
             .iter_mut()
             .flat_map(|source| source.observe(event, armed, context))
             .collect()
+    }
+
+    /// Runs another of the person's devices already started: no source
+    /// starts them here.
+    pub fn forget_started(&mut self, started: &BTreeSet<RunId>) {
+        for source in &mut self.sources {
+            source.forget_started(started);
+        }
+    }
+
+    /// Firings an earlier tick held until their schedule ledger was written,
+    /// now that it is. Reads no clock, device list or disk, so the loop can
+    /// ask on every iteration.
+    pub fn take_settled_firings(&mut self) -> Vec<Firing> {
+        self.sources
+            .iter_mut()
+            .flat_map(|source| source.take_settled())
+            .collect()
+    }
+
+    /// Whether a firing waits for its schedule ledger to be written.
+    #[must_use]
+    pub fn holds_firings(&self) -> bool {
+        self.sources.iter().any(|source| source.holds_firings())
     }
 }
 
@@ -1568,21 +1893,20 @@ mod tests {
     #[test]
     fn a_folder_is_watched_only_while_its_capability_lets_the_saver_read_it() {
         use crate::shell::state::{Workspace, WorkspaceAuthority as _, WorkspaceId};
-        use collab_types::{CapOverride, Scope, Subject, Verb};
+        use collab_types::{Access, CapOverride, Scope, Subject};
 
         let owner = "person:owner".to_string();
         let mut workspace = Workspace::new(WorkspaceId(1), "Scans");
-        workspace.room = personal_room();
+        workspace.set_room(personal_room());
         workspace.set_owner(owner.clone());
         workspace
-            .grant_as(
+            .govern_as_at(
                 &owner,
-                CapOverride::membership(
-                    Subject::person("person:me"),
-                    workspace.room.to_string(),
-                    Verb::Read,
-                )
-                .with_id("me-membership"),
+                tilo_action_policy::Change::AddMember {
+                    person: "person:me".into(),
+                    role: tilo_action_policy::Role::Viewer,
+                },
+                tilo_clock::unix_now(),
             )
             .expect("the owner admits the saver");
         workspace
@@ -1591,11 +1915,22 @@ mod tests {
                 CapOverride::grant(
                     Subject::person("person:me"),
                     Scope::FsPath("/var/workspace/inbox".into()),
-                    Verb::Read,
+                    Access::Read,
                 )
                 .with_id("inbox-read"),
             )
             .expect("the owner shares the folder");
+        workspace
+            .grant_as(
+                &owner,
+                CapOverride::grant(
+                    Subject::person("person:me"),
+                    Scope::NetHost("example.org".into()),
+                    Access::Read,
+                )
+                .with_id("me-host"),
+            )
+            .expect("the owner shares a host");
         workspace.shortcuts = vec![event_shortcut(
             &TriggerSpec::FileChanged {
                 capability: "inbox-read".into(),
@@ -1616,8 +1951,8 @@ mod tests {
             }]
         );
         assert!(
-            readable_folder(&workspace, "me-membership", "person:me")
-                .expect_err("a membership is no folder")
+            readable_folder(&workspace, "me-host", "person:me")
+                .expect_err("a host is no folder")
                 .contains("does not share a folder")
         );
 
@@ -1625,6 +1960,329 @@ mod tests {
         assert!(
             folders(std::slice::from_ref(&workspace)).is_empty(),
             "a revoked capability stops the watch"
+        );
+    }
+
+    #[test]
+    fn a_key_press_reads_no_device_directory() {
+        struct Counting(std::sync::atomic::AtomicUsize);
+        impl DeviceDirectory for Counting {
+            fn personal_devices(&self) -> PersonalDevices {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                PersonalDevices::default()
+            }
+        }
+        let clock = Arc::new(ManualClock::new(
+            DateTime::parse_from_rfc3339("2026-09-25T10:00:00Z")
+                .expect("an RFC 3339 instant")
+                .with_timezone(&Utc),
+            FixedOffset::east_opt(0).expect("offset"),
+        ));
+        let counting = Arc::new(Counting(std::sync::atomic::AtomicUsize::new(0)));
+        let mut triggers = TriggerHost::new(clock as Arc<dyn Clock>, None);
+        triggers.set_devices(Arc::clone(&counting) as Arc<dyn DeviceDirectory>);
+        let chord = KeyChord::parse("Ctrl+Alt+J").expect("a chord");
+        triggers.observe(TriggerEvent::Key(&chord), &[]);
+        assert_eq!(counting.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+        triggers.observe(TriggerEvent::Tick, &[]);
+        assert_eq!(counting.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    fn a_post(change: &str, by: &str) -> RecordEvent {
+        RecordEvent {
+            room: "room".into(),
+            record: "rec-1".into(),
+            kind: "chat.workspace".into(),
+            change: change.into(),
+            actor: tilo_actions::interaction::InteractionActor::new(
+                by,
+                tilo_actions::interaction::ActorKind::Person,
+            ),
+            did: tilo_actions::entry::Did::verb(
+                tilo_actions::ActionKey::new("so.tilo.chat", "chat.workspace", "post"),
+                [],
+            ),
+            arguments: serde_json::Map::new(),
+            item: None,
+            before: None,
+            after: None,
+            caused_by: None,
+            incoming_message: true,
+            shortcut: None,
+            run: None,
+        }
+    }
+
+    fn watch_chat() -> Shortcut {
+        event_shortcut(
+            &TriggerSpec::RecordChanged {
+                kind: "chat.workspace".into(),
+                actions: vec![],
+                fields: vec![],
+                by: tilo_automation::shortcut::ActorFilter::Anyone,
+            },
+            &[("event", "object")],
+        )
+    }
+
+    fn observe_as(
+        source: &mut dyn TriggerSource,
+        events: &[RecordEvent],
+        saved: &Shortcut,
+        device: &str,
+        clock: &ManualClock,
+    ) -> Vec<Firing> {
+        let armed = [Armed {
+            room: "room".into(),
+            shortcut: saved,
+            claims: &[],
+        }];
+        let devices = PersonalDevices {
+            local: Some(device.into()),
+            online: ["laptop", "desktop"].map(String::from).into(),
+        };
+        source.observe(
+            TriggerEvent::Records(events),
+            &armed,
+            TriggerContext {
+                clock,
+                devices: &devices,
+            },
+        )
+    }
+
+    /// The device that goes first for `change`, and the other one.
+    fn change_order(change: &str) -> (&'static str, &'static str) {
+        if change_device_rank(change, "laptop") < change_device_rank(change, "desktop") {
+            ("laptop", "desktop")
+        } else {
+            ("desktop", "laptop")
+        }
+    }
+
+    fn morning_clock() -> ManualClock {
+        ManualClock::new(
+            at("2026-10-12T09:00:00Z"),
+            FixedOffset::east_opt(0).expect("offset"),
+        )
+    }
+
+    #[test]
+    fn a_record_change_fires_the_savers_shortcut_on_the_elected_device_once() {
+        let clock = morning_clock();
+        let saved = watch_chat();
+        let event = [a_post("c1", "bob")];
+        let (first, second) = change_order("c1");
+        let mut on_first = RecordChangedTriggers::default();
+        let mut on_second = RecordChangedTriggers::default();
+        let fired = observe_as(&mut on_first, &event, &saved, first, &clock);
+        assert_eq!(fired.len(), 1, "the first-ranked device runs it at once");
+        assert!(fired[0].inputs["event"].is_object());
+        assert!(
+            observe_as(&mut on_second, &event, &saved, second, &clock).is_empty(),
+            "the other device holds it"
+        );
+        // The run's first change reaches the other device before its turn.
+        on_second.forget_started(&BTreeSet::from([fired[0].run]));
+        clock.set(at("2026-10-12T09:00:00Z") + CLAIM_GRACE);
+        assert!(
+            observe_as(&mut on_second, &[], &saved, second, &clock).is_empty(),
+            "a run started elsewhere is not run again"
+        );
+    }
+
+    #[test]
+    fn the_second_device_takes_over_when_the_first_never_ran_it() {
+        let clock = morning_clock();
+        let start = at("2026-10-12T09:00:00Z");
+        let saved = watch_chat();
+        let event = [a_post("c2", "bob")];
+        let (_, second) = change_order("c2");
+        let mut source = RecordChangedTriggers::default();
+        assert!(observe_as(&mut source, &event, &saved, second, &clock).is_empty());
+        clock.set(start + CLAIM_GRACE - ChronoDuration::seconds(1));
+        assert!(observe_as(&mut source, &[], &saved, second, &clock).is_empty());
+        clock.set(start + CLAIM_GRACE);
+        assert_eq!(
+            observe_as(&mut source, &[], &saved, second, &clock).len(),
+            1
+        );
+        clock.advance(CLAIM_GRACE);
+        assert!(
+            observe_as(&mut source, &[], &saved, second, &clock).is_empty(),
+            "and runs it once"
+        );
+    }
+
+    #[test]
+    fn an_incoming_message_fires_only_the_incoming_message_trigger() {
+        let clock = morning_clock();
+        let saved = event_shortcut(
+            &TriggerSpec::IncomingMessage {
+                app_id: None,
+                from: None,
+            },
+            &[("event", "object")],
+        );
+        let event = [a_post("c3", "bob")];
+        let (first, _) = change_order("c3");
+        let mut messages = IncomingMessageTriggers::default();
+        let mut changes = RecordChangedTriggers::default();
+        assert_eq!(
+            observe_as(&mut messages, &event, &saved, first, &clock).len(),
+            1
+        );
+        assert!(observe_as(&mut changes, &event, &saved, first, &clock).is_empty());
+    }
+
+    fn hourly_tidy() -> Shortcut {
+        shortcut(&TriggerSpec::Schedule {
+            schedule: Schedule::Interval { seconds: 3600 },
+            catch_up: CatchUp::Skip,
+        })
+    }
+
+    /// One tick of `schedules` for `tidy` saved in the personal room.
+    fn schedule_tick(
+        schedules: &mut ScheduleTriggers,
+        tidy: &Shortcut,
+        clock: &ManualClock,
+    ) -> Vec<Firing> {
+        let armed = [Armed {
+            room: PERSONAL.into(),
+            shortcut: tidy,
+            claims: &[],
+        }];
+        schedules.observe(
+            TriggerEvent::Tick,
+            &armed,
+            TriggerContext {
+                clock,
+                devices: &PersonalDevices::default(),
+            },
+        )
+    }
+
+    /// A writer of its own whose thread is parked in a job from now on, for
+    /// the life of the process: the test's stand-in for a crash before the
+    /// writes queued behind it reach the disk.
+    fn writer_that_never_finishes() -> &'static crate::shell::durable_writer::DurableWriter {
+        let writer = Box::leak(Box::new(
+            crate::shell::durable_writer::DurableWriter::spawn("schedule-ledger-test"),
+        ));
+        let (started, running) = std::sync::mpsc::channel::<()>();
+        writer.submit(PathBuf::from("parked"), move || {
+            started.send(()).expect("test alive");
+            loop {
+                std::thread::park();
+            }
+        });
+        running.recv().expect("the writer parked");
+        writer
+    }
+
+    #[test]
+    fn a_schedule_fire_waits_for_its_ledger_and_never_runs_twice_across_a_crash() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("automation/schedules.json");
+        let tidy = hourly_tidy();
+        let clock = ManualClock::new(
+            at("2026-09-25T10:00:00Z"),
+            FixedOffset::east_opt(0).unwrap(),
+        );
+        let mut schedules = ScheduleTriggers::open(Some(path.clone()));
+        assert!(schedule_tick(&mut schedules, &tidy, &clock).is_empty());
+        crate::shell::durable_writer::global().flush();
+        assert!(
+            path.exists(),
+            "arming the schedule recorded its first fire time"
+        );
+
+        // The fire time comes, but its ledger write never finishes.
+        let mut crashed =
+            ScheduleTriggers::open_with_writer(Some(path.clone()), writer_that_never_finishes());
+        clock.advance(ChronoDuration::hours(1));
+        assert!(
+            schedule_tick(&mut crashed, &tidy, &clock).is_empty(),
+            "nothing runs before the ledger that moves past the fire time is written"
+        );
+        assert!(crashed.holds_firings());
+        assert!(crashed.take_settled().is_empty());
+        drop(crashed);
+
+        // After the crash the fire time is still due, and nothing ran it.
+        let mut restarted = ScheduleTriggers::open(Some(path.clone()));
+        let mut fired = schedule_tick(&mut restarted, &tidy, &clock);
+        crate::shell::durable_writer::global().flush();
+        fired.extend(restarted.take_settled());
+        assert_eq!(fired.len(), 1, "the fire time runs once: {fired:?}");
+        assert_eq!(
+            fired[0].run,
+            scheduled_run(&hourly_key(), at("2026-09-25T11:00:00Z"))
+        );
+        assert!(!restarted.holds_firings());
+
+        // Restarted after that write landed, it is not run again.
+        drop(restarted);
+        let mut again = ScheduleTriggers::open(Some(path));
+        assert!(schedule_tick(&mut again, &tidy, &clock).is_empty());
+        crate::shell::durable_writer::global().flush();
+        assert!(again.take_settled().is_empty());
+        assert!(!again.holds_firings());
+    }
+
+    #[test]
+    fn a_schedule_whose_ledger_cannot_be_written_still_runs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let not_a_directory = dir.path().join("file");
+        std::fs::write(&not_a_directory, b"").expect("a regular file");
+        let tidy = hourly_tidy();
+        let clock = ManualClock::new(
+            at("2026-09-25T10:00:00Z"),
+            FixedOffset::east_opt(0).unwrap(),
+        );
+        let mut schedules = ScheduleTriggers::open(Some(not_a_directory.join("schedules.json")));
+        assert!(schedule_tick(&mut schedules, &tidy, &clock).is_empty());
+        clock.advance(ChronoDuration::hours(1));
+        let mut fired = schedule_tick(&mut schedules, &tidy, &clock);
+        crate::shell::durable_writer::global().flush();
+        fired.extend(schedules.take_settled());
+        assert_eq!(
+            fired.len(),
+            1,
+            "a failed write is logged and the run goes ahead"
+        );
+    }
+
+    /// Ticks reach the schedule source on the compositor's loop; a fire must
+    /// not wait for the ledger's fsyncs there.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn firing_a_schedule_never_waits_for_the_disk() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("automation/schedules.json");
+        let tidy = hourly_tidy();
+        let clock = ManualClock::new(
+            at("2026-09-25T10:00:00Z"),
+            FixedOffset::east_opt(0).unwrap(),
+        );
+        let mut schedules = ScheduleTriggers::open(Some(path.clone()));
+        let mut fired = crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
+            let mut fired = schedule_tick(&mut schedules, &tidy, &clock);
+            clock.advance(ChronoDuration::hours(1));
+            fired.extend(schedule_tick(&mut schedules, &tidy, &clock));
+            fired
+        });
+        crate::shell::durable_writer::global().flush();
+        fired.extend(schedules.take_settled());
+        assert_eq!(fired.len(), 1, "the fire time ran once: {fired:?}");
+        let written: ScheduleLedger =
+            serde_json::from_slice(&std::fs::read(&path).expect("the ledger is on disk"))
+                .expect("a ledger");
+        assert_eq!(
+            written.schedules[&hourly_key()].next_fire_ms,
+            at("2026-09-25T12:00:00Z").timestamp_millis(),
+            "the state writer recorded the next fire time"
         );
     }
 }

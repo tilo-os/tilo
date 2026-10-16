@@ -1,0 +1,7 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "passwords.vault"
+label = "Password vault"
+version = 1
+

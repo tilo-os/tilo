@@ -93,6 +93,14 @@ class DevelopmentVersionTests(unittest.TestCase):
             stale['catalog'][1]['version'] = '0.2.0'
             with self.assertRaisesRegex(ValueError, 'rebuild clock'):
                 collection_plan(stale, {'apps': new['catalog']}, {'apps': old['catalog']})
+        with self.subTest(phase='a packed app names the build of its declared runtime release'):
+            built = copy.deepcopy(new['catalog'])
+            built[0]['runtime'] = 'tilo-runtime/1.0.0+native.' + '0' * 32
+            merged = collection_plan(plan, {'apps': built}, {'apps': old['catalog']})
+            self.assertEqual(merged['catalog'][0]['version'], new['catalog'][0]['version'])
+            built[0]['runtime'] = 'tilo-runtime/2.0.0+native.' + '0' * 32
+            with self.assertRaisesRegex(ValueError, 'calc runtime'):
+                collection_plan(plan, {'apps': built}, {'apps': old['catalog']})
 
 
 if __name__ == '__main__':

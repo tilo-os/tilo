@@ -22,6 +22,7 @@ use super::staging::plan::{self, Basis, Plan, PlanError, Requirements, TargetBou
 use super::staging::probe::{self, Blocker, HostFacts};
 use super::staging::record::{Record, ReleaseRef, Step};
 use super::staging::{ALIGN_BYTES, DEFAULT_TARGET_BYTES};
+use tilo_lock::MutexRecover as _;
 
 /// Release jobs set this at build time only after the round trip passed.
 pub(super) const BUILD_GATE: Option<&str> = option_env!("TILO_IMAGER_INTERNAL_INSTALL");
@@ -194,9 +195,7 @@ pub(super) struct StagingLink {
 
 impl StagingLink {
     fn lock(&self) -> MutexGuard<'_, RunShared> {
-        self.shared
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.shared.lock_recover()
     }
 
     fn set_state(&self, state: RunState) {
@@ -1247,7 +1246,8 @@ pub(super) mod fixture {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 pub(super) mod tests {
     use super::fixture::{basis, facts, fake_bounds, fake_plan};
     use super::*;

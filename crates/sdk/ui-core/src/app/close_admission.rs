@@ -26,7 +26,7 @@ impl App {
         self.actions.action_palette = None;
         self.bindings.clear();
         self.layout.node_map.clear();
-        self.layout.structure_dirty = true;
+        self.layout.request_rebuild();
         self.layout.layout_dirty = true;
     }
     /// Refusal keeps every live owner and wake scope available for editing.
@@ -101,16 +101,7 @@ impl App {
     pub(super) fn checkpoint_before_close(&mut self) -> Vec<String> {
         let _entry = self.enter_wake_scope();
         let mut errors = Vec::new();
-        if self.legacy_persistence == crate::launch::LegacyPersistencePolicy::WidgetOwned {
-            if let Err(error) =
-                crate::component_lifecycle::try_flush_owned_persistence(self.root_widget.as_mut())
-                    .unwrap_or_else(|| {
-                        Err("widget-owned persistence requires a checked flush hook".into())
-                    })
-            {
-                errors.push(error);
-            }
-        } else if let Some(records) = self.persistence.records.as_mut() {
+        if let Some(records) = self.persistence.records.as_mut() {
             if let Err(error) = records.try_flush(&mut self.state.doc) {
                 errors.push(error);
             }
@@ -352,9 +343,7 @@ impl App {
                     .insert(BrokerReply::Update(id), request_id);
                 self.collaboration.manager.send(
                     crate::collaboration::CollabRequest::RemoteAction {
-                        message: tilo_actions::remote::RemoteActionMessage::Observe {
-                            invocation: id,
-                        },
+                        message: tilo_actions::remote::RemoteActionMessage::observe(id),
                     },
                 );
             }
@@ -389,7 +378,12 @@ impl App {
                 Key::Named(NamedKey::Enter | NamedKey::Space) => {
                     if let Some(node) = self.focused_node {
                         let _ = self.dispatch_node(node, |widget, doc, path| {
-                            widget.perform_action(&crate::a11y::Action::Activate, doc, path)
+                            widget.perform_action(
+                                &crate::a11y::Action::Activate,
+                                &[],
+                                &mut crate::widget::Edits::lend(doc),
+                                path,
+                            )
                         });
                         handled = true;
                     }
@@ -422,7 +416,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -484,7 +478,7 @@ mod tests {
             dyn crate::component_lifecycle::ComponentLifecycle
         );
 
-        fn sync(&mut self, doc: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        fn sync(&mut self, doc: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
             self.text.sync(doc, path);
         }
         fn build_layout(
@@ -532,7 +526,7 @@ mod tests {
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
-            _: &mut automerge::AutoCommit,
+            _: &mut crate::widget::Edits<'_>,
             _: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
             let Some(request) = op.unscoped() else {
@@ -573,13 +567,13 @@ mod tests {
                 Vec::new()
             }
         }
-        fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
+        fn checkpoint_components(&mut self) -> Vec<String> {
             self.flushes.set(self.flushes.get() + 1);
-            Some(if self.fail.get() {
-                Err("fixture owned writer refused".into())
+            if self.fail.get() {
+                vec!["fixture owned writer refused".into()]
             } else {
-                Ok(())
-            })
+                Vec::new()
+            }
         }
     }
 
@@ -590,7 +584,6 @@ mod tests {
                 "Draft",
                 "save",
                 "Save",
-                false,
             )]
         }
     }
@@ -608,11 +601,7 @@ mod tests {
                 document: None,
                 save_allowed: false,
             };
-            let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root))
-                .with_autosave(crate::persist::DocWriter::disabled(
-                    "fixture root owns persistence",
-                ))
-                .with_legacy_persistence(crate::launch::LegacyPersistencePolicy::WidgetOwned);
+            let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root));
             assert!(!app.request_close());
             assert!(!app.close_admission.admitted);
             assert!(app.close_admission.dialog.is_some());
@@ -657,7 +646,7 @@ mod tests {
             assert!(app.close_admission.ready);
         }
 
-        // Case `disabled_host_and_missing_owned_hook_still_refuse_close`.
+        // Case `disabled_host_writer_still_refuses_close`.
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
@@ -669,11 +658,6 @@ mod tests {
             assert!(
                 !app.request_close(),
                 "ordinary unavailable host writer cannot be skipped"
-            );
-            app.legacy_persistence = crate::launch::LegacyPersistencePolicy::WidgetOwned;
-            assert!(
-                !app.request_close(),
-                "owned policy requires an actual checked root hook"
             );
             assert!(!app.close_admission.admitted);
         }
@@ -687,7 +671,6 @@ mod tests {
                 "Replacement",
                 "save",
                 "Save",
-                false,
             );
             let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "save");
             let root = crate::widget::resource_actions::immediate(
@@ -765,11 +748,7 @@ mod tests {
             document: Some(dirty.clone()),
             save_allowed,
         };
-        let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root))
-            .with_autosave(crate::persist::DocWriter::disabled(
-                "fixture owns persistence",
-            ))
-            .with_legacy_persistence(crate::launch::LegacyPersistencePolicy::WidgetOwned);
+        let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root));
         app.state
             .doc
             .put(automerge::ROOT, "draft", "pending edit")

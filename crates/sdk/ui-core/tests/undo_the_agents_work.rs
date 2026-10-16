@@ -1,7 +1,7 @@
 //! Undoing what an agent did — across one document, and across two.
 //!
 //! Everything here drives the production path: real `automerge` documents with
-//! the real `qdoc` schema the word processor stores, real replication by
+//! the real `tilo-doc` schema the word processor stores, real replication by
 //! fork/merge and by `State::load_incremental` (the code path a peer's CRDT
 //! delta actually arrives through), the real `tilo_ui::history_source` producer, and
 //! the real revert. Nothing is stubbed, and every assertion that matters is on
@@ -11,10 +11,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -43,17 +39,17 @@ fn actor_hex(handle: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// The word processor's document: the real qdoc schema.
+// The word processor's document: the real tilo-doc schema.
 // ---------------------------------------------------------------------------
 
 struct Report {
     doc: AutoCommit,
-    c: qdoc::Containers,
+    c: tilo_doc::Containers,
     /// One id generator per participant, held for the participant's whole
     /// session — as the app holds one. A fresh generator per edit would restart
     /// the counter and mint block ids that collide with that participant's own
     /// earlier blocks, silently overwriting them.
-    ids: std::collections::HashMap<String, qdoc::IdGen>,
+    ids: std::collections::HashMap<String, tilo_doc::IdGen>,
 }
 
 impl Report {
@@ -61,7 +57,7 @@ impl Report {
     fn started_by_a_person() -> (Self, String) {
         let mut doc = AutoCommit::new();
         doc.set_actor(ActorId::from(PERSON.as_bytes()));
-        let c = qdoc::model::init(&mut doc, &ROOT);
+        let c = tilo_doc::model::init(&mut doc, &ROOT);
         tilo_resource::history::commit_stamped_at(&mut doc, 1_780_000_000);
 
         let mut report = Self {
@@ -78,15 +74,20 @@ impl Report {
     }
 
     /// Edit as `handle`, committing once — one change, one author, like the app.
-    fn edit_as<R>(&mut self, handle: &str, at: i64, f: impl FnOnce(&mut qdoc::DocMut) -> R) -> R {
+    fn edit_as<R>(
+        &mut self,
+        handle: &str,
+        at: i64,
+        f: impl FnOnce(&mut tilo_doc::DocMut) -> R,
+    ) -> R {
         self.doc.set_actor(ActorId::from(handle.as_bytes()));
         let actor = self.doc.get_actor().to_hex_string();
         let ids = self
             .ids
             .entry(actor.clone())
-            .or_insert_with(|| qdoc::IdGen::new(actor));
+            .or_insert_with(|| tilo_doc::IdGen::new(actor));
         let out = {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut self.doc,
                 c: &self.c,
                 ids,
@@ -98,7 +99,7 @@ impl Report {
     }
 
     fn text(&self) -> Vec<String> {
-        qdoc::model::materialize(&self.doc, &self.c)
+        tilo_doc::model::materialize(&self.doc, &self.c)
             .blocks
             .into_iter()
             .map(|b| b.text)
@@ -173,7 +174,7 @@ fn agent_work_is_undone_through_the_document_not_the_peer_stack() {
         // and it is only ever called for a locally handled event.
         assert!(
             alice
-                .undo_for_author(&UserId(AGENT.into()), None, None)
+                .undo_as(Some(&UserId(AGENT.into())), None, None, None)
                 .is_none(),
             "a remote author's work never reaches the local undo stack"
         );
@@ -204,8 +205,8 @@ fn agent_work_is_undone_through_the_document_not_the_peer_stack() {
         assert!(out.is_complete(), "nothing was held back: {:?}", out.kept);
         assert!(out.wrote, "the undo actually wrote something");
 
-        let c = qdoc::model::open(&alice.doc, &ROOT).expect("schema");
-        let body: Vec<String> = qdoc::model::materialize(&alice.doc, &c)
+        let c = tilo_doc::model::open(&alice.doc, &ROOT).expect("schema");
+        let body: Vec<String> = tilo_doc::model::materialize(&alice.doc, &c)
             .blocks
             .into_iter()
             .map(|b| b.text)
@@ -272,8 +273,8 @@ fn agent_work_is_undone_through_the_document_not_the_peer_stack() {
 
         bob.merge(&mut report.doc).expect("peers merge");
 
-        let cb = qdoc::model::open(&bob, &ROOT).expect("schema");
-        let bob_text: Vec<String> = qdoc::model::materialize(&bob, &cb)
+        let cb = tilo_doc::model::open(&bob, &ROOT).expect("schema");
+        let bob_text: Vec<String> = tilo_doc::model::materialize(&bob, &cb)
             .blocks
             .into_iter()
             .map(|b| b.text)
@@ -499,7 +500,7 @@ fn runs_span_applications_and_are_refused_whole_when_unresolvable() {
             ),
             (
                 WORD_PROCESSOR.into(),
-                "file:/reports/q3.qdoc".into(),
+                "file:/reports/q3.tilo-doc".into(),
                 &mut report.doc,
             ),
         ];
@@ -536,7 +537,7 @@ fn runs_span_applications_and_are_refused_whole_when_unresolvable() {
 
         let mut open: Vec<(String, String, &mut AutoCommit)> = vec![(
             WORD_PROCESSOR.into(),
-            "file:/reports/q3.qdoc".into(),
+            "file:/reports/q3.tilo-doc".into(),
             &mut report.doc,
         )];
         let out = undo_run(&run, Some(&actor_hex(AGENT)), &directory(), &mut open);
@@ -651,13 +652,19 @@ fn one_instruction_two_apps() -> (AutoCommit, AutoCommit, Report, AgentRun) {
             app: PHOTO_EDITOR.into(),
             record: "file:/photos/figure-1.png".into(),
             run: photo_run,
-            summary: "Cropped to 1200x900".into(),
+            what: vec![tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new(PHOTO_EDITOR, "document", "crop"),
+                [],
+            ))],
         },
         RunStep {
             app: WORD_PROCESSOR.into(),
-            record: "file:/reports/q3.qdoc".into(),
+            record: "file:/reports/q3.tilo-doc".into(),
             run: report_run,
-            summary: "Placed the figure".into(),
+            what: vec![tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new(WORD_PROCESSOR, "document", "place-figure"),
+                [],
+            ))],
         },
     ];
     record_run(
@@ -702,7 +709,7 @@ fn run_records_replicate_without_polluting_history() {
             ),
             (
                 WORD_PROCESSOR.into(),
-                "file:/reports/q3.qdoc".into(),
+                "file:/reports/q3.tilo-doc".into(),
                 &mut report.doc,
             ),
         ];
@@ -745,7 +752,7 @@ fn run_records_replicate_without_polluting_history() {
 
     // Case `the_schema_genesis_is_nobodys_run`.
     {
-        // Every qdoc document opens with a change written under a fixed actor that
+        // Every tilo-doc document opens with a change written under a fixed actor that
         // no person is. Addressing that actor must find nothing: inverting the
         // genesis would take the document's own containers out with it.
         let (mut report, _intro) = Report::started_by_a_person();
@@ -754,7 +761,7 @@ fn run_records_replicate_without_polluting_history() {
         let versions = tilo_resource::history::versions(&mut report.doc);
         let genesis = versions
             .iter()
-            .find(|v| qdoc::model::is_schema_genesis(v))
+            .find(|v| tilo_doc::model::is_schema_genesis(v))
             .expect("the document carries the shared schema genesis")
             .clone();
 

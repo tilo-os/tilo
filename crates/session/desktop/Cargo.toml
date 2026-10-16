@@ -7,9 +7,7 @@ publish.workspace = true
 
 [dependencies]
 fnv.workspace = true
-tilo-resource = { path = "../../sdk/tilo-resource" }
 automerge.workspace = true
-tilo-automerge.workspace = true
 blake3.workspace = true
 hex.workspace = true
 taffy.workspace = true
@@ -18,22 +16,28 @@ winit.workspace = true
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-uuid.workspace = true
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
+tilo-action-policy = { path = "../../collab/action-policy" }
+uuid.workspace = true
+tilo-app = { path = "../../sdk/tilo-app", default-features = false }
 tilo-desktop-model = { path = "../desktop-model" }
+tilo-desktop-surface = { path = "../desktop-surface" }
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
 tilo-clock = { path = "../../platform/tilo-clock" }
+ed25519-dalek.workspace = true
+durable-store = { path = "../../system/durable-store" }
 # The emoji picker's catalogue, search, skin tones and recents.
 emoji = { path = "../../text/emoji" }
 
 [dev-dependencies]
-ed25519-dalek.workspace = true
-fluent.workspace = true
+chat = { path = "../../../apps/chat", default-features = false }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 word-processor = { path = "../../../apps/word-processor" }
-chat = { path = "../../../apps/chat", default-features = false }
+tilo-app-state = { path = "../../system/app-state" }
+tempfile.workspace = true
 notes = { path = "../../../apps/notes" }
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, features = ["test-support"] }
 
 [lints]
 workspace = true

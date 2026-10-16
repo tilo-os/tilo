@@ -4,7 +4,7 @@
 //! An ODP file is an `OpenDocument` package: a ZIP archive whose first entry is
 //! an uncompressed `mimetype`, alongside `content.xml` (the slides), plus the
 //! usual `styles.xml`, `meta.xml` and `META-INF/manifest.xml`. This module
-//! mirrors how `crates/doc/qdoc` handles `.odt` (ZIP + `content.xml`), but maps
+//! mirrors how `crates/doc/tilo-doc` handles `.odt` (ZIP + `content.xml`), but maps
 //! the presentation vocabulary — `draw:page` slides holding `draw:frame`
 //! text-boxes and `draw:rect` / `draw:ellipse` / `draw:line` shapes — onto the
 //! [`Deck`]/[`Slide`]/[`Element`](crate::model) model and back.
@@ -324,7 +324,11 @@ fn collect_pictures(deck: &Deck, content: &ContentStore) -> Vec<BundledPicture> 
         let Some(bytes) = crate::assets::read_asset(content, &element.src) else {
             continue;
         };
-        let Some((ext, mime)) = picture_format(&bytes) else {
+        let Some(tilo_content::ImageFormat {
+            extension: ext,
+            mime,
+        }) = tilo_content::image_format(&bytes)
+        else {
             continue;
         };
         let href = format!("Pictures/picture-{}.{}", pictures.len() + 1, ext);
@@ -336,25 +340,6 @@ fn collect_pictures(deck: &Deck, content: &ContentStore) -> Vec<BundledPicture> 
         });
     }
     pictures
-}
-
-fn picture_format(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some(("png", "image/png"))
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        Some(("jpg", "image/jpeg"))
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        Some(("gif", "image/gif"))
-    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        Some(("webp", "image/webp"))
-    } else if std::str::from_utf8(bytes)
-        .ok()
-        .is_some_and(|text| text.trim_start().starts_with("<svg"))
-    {
-        Some(("svg", "image/svg+xml"))
-    } else {
-        None
-    }
 }
 
 // ===========================================================================
@@ -473,7 +458,7 @@ pub(crate) fn cache_imported_picture(content: &ContentStore, bytes: &[u8]) -> Op
     if bytes.len() > MAX_IMPORTED_PICTURE_BYTES {
         return None;
     }
-    picture_format(bytes)?;
+    tilo_content::image_format(bytes)?;
     crate::assets::store_asset(content, bytes)
 }
 
@@ -527,7 +512,7 @@ fn parse_content(xml: &str) -> Option<Deck> {
                 // its own event, splitting the surrounding text. Fold it back into
                 // the active run so a literal `&`, `<` or `>` survives the round
                 // trip instead of vanishing at the split.
-                if in_text_p && let Some(ch) = qdoc_codecs::resolve_general_ref(&r) {
+                if in_text_p && let Some(ch) = tilo_doc_codecs::resolve_general_ref(&r) {
                     p_buf.push(ch);
                     let (bold, italic) = spans.last().copied().unwrap_or_default();
                     crate::model::push_run(&mut p_block, ch.encode_utf8(&mut [0; 4]), bold, italic);
@@ -756,7 +741,7 @@ fn attr(e: &quick_xml::events::BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
-        .and_then(|a| qdoc_codecs::unescape_attr(&a))
+        .and_then(|a| tilo_doc_codecs::unescape_attr(&a))
 }
 
 #[cfg(test)]

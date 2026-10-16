@@ -50,8 +50,6 @@ pub struct HostIdentity {
     pub app_name: Option<String>,
     /// The workspace this process collaborates in.
     pub workspace_id: Option<String>,
-    /// The collaboration cluster, used when no workspace id is set.
-    pub cluster_id: Option<String>,
     /// The signed-in person's id, when the launcher bound one.
     pub user_id: Option<String>,
     /// The presence handle to announce, overriding the user id.
@@ -80,6 +78,12 @@ pub struct HostPaths {
     pub home: Option<PathBuf>,
     /// The per-user configuration directory.
     pub config_home: Option<PathBuf>,
+    /// This process's own cache directory (`XDG_CACHE_HOME`). In a sandbox it
+    /// is the app's private, persistent `.cache`, which no other app reads.
+    pub cache_home: Option<PathBuf>,
+    /// The session's read-only pipeline cache directory
+    /// (`TILO_PIPELINE_SEED_DIR`), bound in by the launcher.
+    pub pipeline_seed: Option<PathBuf>,
 }
 
 impl HostPaths {
@@ -89,6 +93,14 @@ impl HostPaths {
         self.config_home
             .clone()
             .or_else(|| self.home.as_ref().map(|home| home.join(".config")))
+    }
+
+    /// This process's cache directory: [`Self::cache_home`], else `.cache`
+    /// under [`Self::home`].
+    pub fn cache_dir(&self) -> Option<PathBuf> {
+        self.cache_home
+            .clone()
+            .or_else(|| self.home.as_ref().map(|home| home.join(".cache")))
     }
 }
 
@@ -117,8 +129,6 @@ pub struct RunnerDiagnostics {
     pub perf_log: bool,
     /// Disable the scroll-reposition layout fast path.
     pub disable_scroll_fast_path: bool,
-    /// Disable the navigation split's cached content layout.
-    pub disable_split_cache: bool,
     /// Request GPU timestamp queries.
     pub gpu_timestamps: bool,
     /// Request timestamp queries inside compute passes.
@@ -129,6 +139,8 @@ pub struct RunnerDiagnostics {
     pub profile_out: Option<PathBuf>,
     /// Record presentation feedback for a native performance scenario.
     pub presentation_profile: bool,
+    /// Record content-free render stages under explicit presentation diagnostics.
+    pub presentation_timing: bool,
     /// Open windows without taking focus from the active application.
     pub window_no_activate: bool,
     /// Restore the always-refresh hosted pump for paired host measurements.
@@ -155,6 +167,10 @@ pub struct HostEnvironment {
     /// Directory of live `ui/*.json` screens. Absent when the app uses the
     /// graph embedded in its binary.
     pub ui_graph_dir: Option<PathBuf>,
+    /// Session `settings.json` the launcher named for this process
+    /// (`TILO_SESSION_SETTINGS`). Present when this process paints the same
+    /// document the shell chrome watches.
+    pub session_settings: Option<PathBuf>,
 }
 
 static INSTALLED: RwLock<Option<Arc<HostEnvironment>>> = RwLock::new(None);
@@ -244,6 +260,25 @@ mod tests {
             ..HostPaths::default()
         };
         assert_eq!(paths.config_dir(), Some(PathBuf::from("/cfg")));
+    }
+
+    #[test]
+    fn cache_dir_falls_back_to_home() {
+        let paths = HostPaths {
+            home: Some("/home/ada".into()),
+            ..HostPaths::default()
+        };
+        assert_eq!(paths.cache_dir(), Some(PathBuf::from("/home/ada/.cache")));
+        let paths = HostPaths {
+            home: Some("/home/ada".into()),
+            cache_home: Some("/run/tilo/app/.cache".into()),
+            ..HostPaths::default()
+        };
+        assert_eq!(
+            paths.cache_dir(),
+            Some(PathBuf::from("/run/tilo/app/.cache"))
+        );
+        assert_eq!(HostPaths::default().cache_dir(), None);
     }
 
     #[test]

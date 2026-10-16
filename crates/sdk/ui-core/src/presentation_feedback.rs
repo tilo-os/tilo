@@ -1,8 +1,4 @@
 //! Opt-in native drawable feedback; independent of render-worker API completion.
-#![allow(
-    clippy::disallowed_methods,
-    reason = "native host runner: drawable feedback logs from its own thread"
-)]
 #[cfg(all(target_os = "macos", feature = "presentation-feedback"))]
 use std::sync::{
     Arc,
@@ -11,8 +7,8 @@ use std::sync::{
 };
 
 pub(crate) struct Observer {
-    #[cfg(all(target_os = "macos", feature = "presentation-feedback"))]
     worker_id: u64,
+    window: Option<std::sync::Arc<winit::window::Window>>,
     #[cfg(all(target_os = "macos", feature = "presentation-feedback"))]
     sender: mpsc::SyncSender<Sample>,
 }
@@ -26,22 +22,8 @@ struct Sample {
 }
 
 impl Observer {
-    #[cfg_attr(
-        not(all(target_os = "macos", feature = "presentation-feedback")),
-        allow(
-            clippy::unused_self,
-            reason = "the enabled backend reads the observer worker identity"
-        )
-    )]
-    fn worker_id(&self) -> Option<u64> {
-        #[cfg(all(target_os = "macos", feature = "presentation-feedback"))]
-        {
-            Some(self.worker_id)
-        }
-        #[cfg(not(all(target_os = "macos", feature = "presentation-feedback")))]
-        {
-            None
-        }
+    pub(crate) fn worker_id(&self) -> Option<u64> {
+        Some(self.worker_id)
     }
 
     /// Emitted only under the native timing gate. The caller brackets complete
@@ -51,7 +33,7 @@ impl Observer {
             eprintln!("tilo-display-error handoff row is not an object");
             return;
         };
-        crate::native_scenario::log::emit_json("tilo-native-worker-handoff", row);
+        crate::native_scenario::log::emit_timing_json("tilo-native-worker-handoff", row);
     }
 
     pub(crate) fn log_native_present(
@@ -60,7 +42,7 @@ impl Observer {
         cpu_frame_id: Option<u64>,
         bounds: crate::render_thread::timing::CallBounds,
     ) {
-        crate::native_scenario::log::emit_json(
+        crate::native_scenario::log::emit_timing_json(
             "tilo-native-present-call",
             serde_json::json!({
                 "worker_id": self.worker_id(), "worker_frame_ix": worker_frame_ix,
@@ -86,7 +68,7 @@ impl Observer {
         outcome: crate::render_thread::FrameOutcome,
     ) {
         let (receive, start, end) = bounds;
-        crate::native_scenario::log::emit_json(
+        crate::native_scenario::log::emit_timing_json(
             "tilo-native-worker",
             serde_json::json!({
                 "worker_id": self.worker_id(), "worker_frame_ix": worker_frame_ix,
@@ -119,7 +101,7 @@ impl Observer {
         };
         #[cfg(not(all(target_os = "macos", feature = "presentation-feedback")))]
         let readback: Option<(usize, bool, bool)> = None;
-        crate::native_scenario::log::emit_json(
+        crate::native_scenario::log::emit_timing_json(
             "tilo-native-render-config",
             serde_json::json!({
                 "worker_id": self.worker_id(),
@@ -134,7 +116,7 @@ impl Observer {
         );
     }
 
-    pub(crate) fn from_env() -> Option<Self> {
+    pub(crate) fn from_env(_window: Option<std::sync::Arc<winit::window::Window>>) -> Option<Self> {
         if !std::env::var("TILO_PROFILE_PRESENTATION").is_ok_and(|value| value == "1") {
             return None;
         }
@@ -159,17 +141,80 @@ impl Observer {
                 eprintln!("tilo-display-error {error}");
                 return None;
             }
-            Some(Self { worker_id, sender })
+            Some(Self {
+                worker_id,
+                sender,
+                window: _window,
+            })
         }
         #[cfg(not(all(target_os = "macos", feature = "presentation-feedback")))]
         {
+            if tilo_presentation::supported() {
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static NEXT_WORKER: AtomicU64 = AtomicU64::new(1);
+                return Some(Self {
+                    worker_id: NEXT_WORKER.fetch_add(1, Ordering::Relaxed),
+                    window: _window,
+                });
+            }
             eprintln!(
-                "tilo-display-error presentation feedback requires macOS and the presentation-feedback feature"
+                "tilo-display-error presentation feedback requires a supported native backend"
             );
             None
         }
     }
 
+    pub(crate) fn present_wayland(
+        &self,
+        worker_frame_ix: u64,
+        cpu_frame_id: Option<u64>,
+        present: impl FnOnce(),
+    ) {
+        if !tilo_presentation::supported() {
+            present();
+            return;
+        }
+        use tilo_presentation::Feedback;
+        let worker_id = self.worker_id;
+        let process_id = std::process::id();
+        let observer_session = crate::native_scenario::observer_session_id();
+        let Some(window) = self.window.as_ref() else {
+            eprintln!("tilo-display-error native window missing for Wayland presentation feedback");
+            present();
+            return;
+        };
+        let accepted = tilo_presentation::present(
+            window,
+            Box::new(move |result| {
+                let row = match result {
+                    Feedback::Presented {
+                        clock_id,
+                        timestamp,
+                        refresh,
+                        sequence,
+                        flags,
+                    } => serde_json::json!({
+                        "worker_id": worker_id, "worker_frame_ix": worker_frame_ix, "process_id": process_id,
+                        "observer_session": observer_session,
+                        "cpu_frame_id": cpu_frame_id, "backend": "wayland",
+                        "clock_id": clock_id, "presented_time_ns": timestamp.as_nanos(),
+                        "refresh_ns": refresh.as_nanos(), "sequence": sequence, "flags": flags,
+                        "discarded": false,
+                    }),
+                    Feedback::Discarded => serde_json::json!({
+                        "worker_id": worker_id, "worker_frame_ix": worker_frame_ix, "process_id": process_id,
+                        "observer_session": observer_session,
+                        "cpu_frame_id": cpu_frame_id, "backend": "wayland", "discarded": true,
+                    }),
+                };
+                crate::native_scenario::log::emit_json("tilo-display-frame", row);
+            }),
+            present,
+        );
+        if !accepted {
+            eprintln!("tilo-display-error compositor lacks standard Wayland presentation feedback");
+        }
+    }
     #[cfg_attr(
         not(all(target_os = "macos", feature = "presentation-feedback")),
         allow(

@@ -18,7 +18,7 @@
               now, and the stand-in daemon's methods take D-Bus arguments by value"
 )]
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use automerge::{AutoCommit, ROOT, ReadDoc};
@@ -26,9 +26,10 @@ use shell::bluetooth::{PairingPromptHandle, PairingService};
 use shell::bluetooth_prompt::ENTRY_FIELD_ID;
 use shell::compositor::frame::FrameBuilder;
 use tilo_bluez::{AGENT_CAPABILITY, AGENT_PATH, BluezClient, DeviceNames, PairingPrompt};
+use tilo_lock::MutexRecover as _;
 use vello::kurbo::{Point, Rect};
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey, SmolStr};
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey, SmolStr};
 use zbus::connection::Builder;
 use zbus::zvariant::ObjectPath;
 
@@ -42,10 +43,7 @@ const DEVICE_NAME: &str = "Studio Keyboard";
 type Calls = Arc<Mutex<Vec<String>>>;
 
 fn record(calls: &Calls, call: String) {
-    calls
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push(call);
+    calls.lock_recover().push(call);
 }
 
 struct FakeAgentManager {
@@ -133,7 +131,16 @@ impl Rig {
                 .expect("the agent registers with the daemon");
             (bluez, service)
         });
-        let mut fb = FrameBuilder::new((W, H));
+        // The dialog over the bare desktop: an app page behind it, painted
+        // in the same ground as the capture placeholder, would make what
+        // the dialog shows locally indistinguishable from the placeholder.
+        let mut tree = shell::shell::state::WorkspaceTree::bootstrap_demo();
+        for workspace in &mut tree.desktop.workspaces {
+            for strip in &mut workspace.strips {
+                strip.window_groups.clear();
+            }
+        }
+        let mut fb = FrameBuilder::with_tree(tree, (W, H));
         fb.host_mut().set_pairing_prompt_handle(handle);
         let mut rig = Self {
             rt,
@@ -151,10 +158,7 @@ impl Rig {
     }
 
     fn calls(&self) -> Vec<String> {
-        self.calls
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+        self.calls.lock_recover().clone()
     }
 
     /// Call the agent as `bluetoothd` does, without waiting for the answer.
@@ -219,7 +223,7 @@ impl Rig {
         self.fb.dispatch_event(
             event,
             &Modifiers::default(),
-            &mut self.doc,
+            &mut ui::widget::Edits::lend(&mut self.doc),
             &ROOT,
             &mut self.focus,
         );
@@ -232,41 +236,21 @@ impl Rig {
             .get(test_id)
             .unwrap_or_else(|| panic!("{test_id} is on screen"));
         let at: Point = rect.center();
-        self.send(&WindowEvent::CursorMoved {
-            // SAFETY: an opaque id no handler inspects.
-            device_id: unsafe { std::mem::zeroed() },
-            position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-        });
+        self.send(&ui::synthetic_input::cursor_moved(at.x, at.y));
         for state in [ElementState::Pressed, ElementState::Released] {
-            self.send(&WindowEvent::MouseInput {
-                // SAFETY: an opaque id no handler inspects.
-                device_id: unsafe { std::mem::zeroed() },
-                state,
-                button: MouseButton::Left,
-            });
+            self.send(&ui::synthetic_input::mouse_input(state, MouseButton::Left));
         }
     }
 
     fn key(&mut self, key: Key, text: Option<&str>) {
         for state in [ElementState::Pressed, ElementState::Released] {
-            // SAFETY: `KeyEvent` has a platform-private field and no public
-            // constructor; every field a handler reads is set below.
-            let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-            event.logical_key = key.clone();
-            event.physical_key =
-                PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-            event.location = KeyLocation::Standard;
-            event.state = state;
-            event.repeat = false;
-            event.text = text
-                .filter(|_| state == ElementState::Pressed)
-                .map(SmolStr::new);
-            self.send(&WindowEvent::KeyboardInput {
-                // SAFETY: an opaque id no handler inspects.
-                device_id: unsafe { std::mem::zeroed() },
-                event,
-                is_synthetic: false,
-            });
+            let event = ui::synthetic_input::key_event(
+                key.clone(),
+                text.filter(|_| state == ElementState::Pressed)
+                    .map(SmolStr::new),
+                state,
+            );
+            self.send(&ui::synthetic_input::keyboard_input(event));
             self.frame();
         }
     }

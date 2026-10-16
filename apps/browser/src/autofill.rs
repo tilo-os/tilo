@@ -1,25 +1,38 @@
-//! Device-local, opt-in address profiles. Never part of collaborative history.
+//! Opt-in address profiles: the person's own, kept in their own room
+//! ([`AddressBook`]). They follow the person to their other devices and never
+//! reach a collaborator; a private window has none.
 
 use crate::browsing_mode::BrowsingMode;
 use serde::{Deserialize, Serialize};
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use ui::framework::PersonRecord;
+use ui::tilo_resource::{self, Id, Identified, Invoke, Keyed, Model, Refusal, resource};
 
-const MAX_BYTES: u64 = 65536;
 const MAX_PROFILES: usize = 16;
 
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// One saved address, an item of the person's [`AddressBook`].
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Model)]
 #[serde(deny_unknown_fields)]
 pub struct AddressProfile {
+    /// The profile's id: letters, digits, `-` and `_`.
     pub id: String,
+    /// Label
+    #[model(label)]
     pub label: String,
+    /// Full name
     pub full_name: String,
+    /// Given name
     pub given_name: String,
+    /// Family name
     pub family_name: String,
+    /// Street
     pub street: String,
+    /// City
     pub city: String,
+    /// Region
     pub region: String,
+    /// Postal code
     pub postal_code: String,
+    /// Country
     pub country: String,
 }
 impl AddressProfile {
@@ -49,67 +62,69 @@ impl AddressProfile {
     }
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SavedProfiles {
-    enabled: bool,
-    profiles: Vec<AddressProfile>,
-}
-impl SavedProfiles {
-    fn valid(&self) -> bool {
-        let mut ids = std::collections::BTreeSet::new();
-        self.profiles.len() <= MAX_PROFILES
-            && self
-                .profiles
-                .iter()
-                .all(|profile| profile.valid() && ids.insert(&profile.id))
+impl Identified for AddressProfile {
+    fn id(&self) -> Id {
+        Id::from_raw(self.id.clone())
     }
 }
 
-/// Contains personal data: deliberately has no Debug or collaborative action implementation.
+/// `std::fmt::Debug` names the profile, never the personal data it holds.
+impl std::fmt::Debug for AddressProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AddressProfile({})", self.id)
+    }
+}
+
+/// The person's address book, a resource of their own room: whether
+/// autofill is on, and the saved profiles. Every way in keeps each profile
+/// valid and the book within its limit.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+#[model(check = AddressBook::valid)]
+pub struct AddressBook {
+    /// Address autofill
+    pub enabled: bool,
+    /// Saved addresses, by id
+    pub profiles: Keyed<AddressProfile>,
+}
+
+#[resource(kind = "browser.address-book", label = "Address book")]
+impl AddressBook {}
+
+impl AddressBook {
+    fn valid(&self) -> Result<(), Refusal> {
+        if !self.profiles.iter().all(AddressProfile::valid) {
+            return Err(Refusal::new(
+                "Address profile fields are invalid or too long",
+            ));
+        }
+        if self.profiles.len() > MAX_PROFILES {
+            return Err(Refusal::new("Address profile limit reached"));
+        }
+        Ok(())
+    }
+}
+
+/// The address book a window fills forms from: the person's record, or
+/// nothing in a private window.
+///
+/// Contains personal data: deliberately has no Debug implementation.
 pub struct AutofillStore {
-    path: Option<PathBuf>,
-    saved: SavedProfiles,
+    record: Option<PersonRecord<AddressBook>>,
+    saved: AddressBook,
 }
 impl AutofillStore {
-    /// Open normal address profiles, or an empty nonpersistent private store.
-    ///
-    /// # Errors
-    /// Returns an error if the normal profile file cannot be read or exceeds schema or size limits.
-    pub fn open(mode: BrowsingMode, path: &Path) -> Result<Self, String> {
-        // This return must precede metadata/read calls on a normal profile path.
-        if mode.is_private() {
-            return Ok(Self {
-                path: None,
-                saved: SavedProfiles::default(),
-            });
-        }
-        let saved = match std::fs::File::open(path) {
-            Ok(file) => {
-                let mut bytes = Vec::new();
-                file.take(MAX_BYTES + 1)
-                    .read_to_end(&mut bytes)
-                    .map_err(|_| "Cannot read address profiles")?;
-                if bytes.len() as u64 > MAX_BYTES {
-                    return Err("Address profiles file is too large".into());
-                }
-                let saved: SavedProfiles = serde_json::from_slice(&bytes)
-                    .map_err(|_| "Address profiles file is invalid")?;
-                if !saved.valid() {
-                    return Err("Address profiles file is invalid".into());
-                }
-                saved
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => SavedProfiles::default(),
-            Err(_) => return Err("Cannot open address profiles".into()),
-        };
-        Ok(Self {
-            path: Some(path.to_owned()),
-            saved,
-        })
+    /// The person's address book, or an empty one nothing is saved to in a
+    /// private window or without the person's record.
+    pub fn open(mode: BrowsingMode, record: Option<PersonRecord<AddressBook>>) -> Self {
+        let record = record.filter(|_| !mode.is_private());
+        let saved = record
+            .as_ref()
+            .map(|record| (*record.get()).clone())
+            .unwrap_or_default();
+        Self { record, saved }
     }
     pub fn enabled(&self) -> bool {
-        self.path.is_some() && self.saved.enabled
+        self.record.is_some() && self.saved.enabled
     }
     pub fn profiles(&self) -> &[AddressProfile] {
         &self.saved.profiles
@@ -119,19 +134,17 @@ impl AutofillStore {
             .then(|| self.saved.profiles.iter().find(|profile| profile.id == id))
             .flatten()
     }
-    /// Persist the address-autofill preference.
+    /// Turn address autofill on or off.
     ///
     /// # Errors
-    /// Returns an error in private mode or if the updated store cannot be saved.
+    /// Returns an error in a private window or when the record refuses it.
     pub fn set_enabled(&mut self, enabled: bool) -> Result<(), String> {
-        let mut next = self.saved.clone();
-        next.enabled = enabled;
-        self.persist(next)
+        self.edit(&AddressBook::paths().enabled.set(enabled))
     }
     /// Save a validated address profile.
     ///
     /// # Errors
-    /// Returns an error when autofill is disabled, fields or profile count exceed limits, or persistence fails.
+    /// Returns an error when autofill is disabled, fields or profile count exceed limits, or the record refuses it.
     pub fn put(&mut self, profile: AddressProfile) -> Result<(), String> {
         if !self.enabled() {
             return Err("Enable address autofill before adding profiles".into());
@@ -139,53 +152,61 @@ impl AutofillStore {
         if !profile.valid() {
             return Err("Address profile fields are invalid or too long".into());
         }
-        let mut next = self.saved.clone();
-        if let Some(existing) = next.profiles.iter_mut().find(|p| p.id == profile.id) {
-            *existing = profile;
-        } else {
-            if next.profiles.len() >= MAX_PROFILES {
-                return Err("Address profile limit reached".into());
-            }
-            next.profiles.push(profile);
+        // A saved profile changes field by field, so a concurrent edit of
+        // another of its fields is kept.
+        let mut after = self.saved.profiles.clone();
+        match after.find_mut(&profile.id()) {
+            Some(saved) => *saved = profile,
+            None => after.push(profile),
         }
-        self.persist(next)
+        let edits = AddressBook::paths()
+            .profiles
+            .edits(&self.saved.profiles, &after);
+        self.edit_all(&edits)
     }
     /// Delete a saved address profile by ID.
     ///
     /// # Errors
-    /// Returns an error in private mode or if the updated store cannot be saved.
+    /// Returns an error in a private window or when the record refuses it.
     pub fn delete(&mut self, id: &str) -> Result<(), String> {
-        let mut next = self.saved.clone();
-        next.profiles.retain(|p| p.id != id);
-        self.persist(next)
+        self.edit(
+            &AddressBook::paths()
+                .profiles
+                .remove(&Id::from_raw(id.to_owned())),
+        )
     }
-    fn persist(&mut self, next: SavedProfiles) -> Result<(), String> {
-        let path = self
-            .path
+    fn edit(&mut self, edit: &tilo_resource::Edit<AddressBook>) -> Result<(), String> {
+        self.edit_all(std::slice::from_ref(edit))
+    }
+    fn edit_all(&mut self, edits: &[tilo_resource::Edit<AddressBook>]) -> Result<(), String> {
+        if edits.is_empty() {
+            return Ok(());
+        }
+        let record = self
+            .record
             .as_ref()
             .ok_or("Address profiles are unavailable in private windows")?;
-        let bytes = serde_json::to_vec(&next).map_err(|_| "Cannot encode address profiles")?;
-        if !next.valid() || bytes.len() as u64 > MAX_BYTES {
-            return Err("Address profiles exceed storage limits".into());
-        }
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .ok_or("Address profile directory is unavailable")?;
-        std::fs::create_dir_all(parent).map_err(|_| "Cannot create address profile directory")?;
-        tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
-            .map_err(|_| "Cannot save address profiles")?;
-        self.saved = next;
+        let members = edits
+            .iter()
+            .map(Invoke::edit)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        let invoke = match <[_; 1]>::try_from(members) {
+            Ok([edit]) => edit,
+            Err(members) => Invoke::group(members),
+        };
+        record.invoke(&invoke).map_err(|error| error.to_string())?;
+        self.saved = (*record.get()).clone();
         Ok(())
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::browsing_mode::BrowsingMode;
 
-    fn profile(id: &str) -> AddressProfile {
+    pub(crate) fn profile(id: &str) -> AddressProfile {
         AddressProfile {
             id: id.into(),
             label: "Home".into(),
@@ -200,14 +221,26 @@ mod tests {
         }
     }
 
+    /// The person's address book, as a capture's profile keeps it.
+    pub(crate) fn address_book() -> (
+        ui::framework::testing::TestApp<crate::BrowserShell>,
+        PersonRecord<AddressBook>,
+    ) {
+        let mut app =
+            ui::framework::testing::TestApp::<crate::BrowserShell>::capture(None).unwrap();
+        let record = app
+            .person::<AddressBook>()
+            .expect("a test profile keeps person records");
+        (app, record)
+    }
+
     /// Profile lifecycle: opt-in, private isolation and capacity.
     #[test]
     fn address_profiles_opt_in_edit_capacity_and_private_isolation() {
         // Phase `address_profiles_require_opt_in_and_survive_explicit_edits`.
         {
-            let root = tempfile::tempdir().unwrap();
-            let path = root.path().join("addresses.json");
-            let mut store = AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
+            let (_app, record) = address_book();
+            let mut store = AutofillStore::open(BrowsingMode::Normal, Some(record.clone()));
             assert!(!store.enabled());
             assert!(store.put(profile("one")).is_err());
             store.set_enabled(true).unwrap();
@@ -216,43 +249,37 @@ mod tests {
             let mut edited = profile("one");
             edited.city = "Changed".into();
             store.put(edited).unwrap();
-            let mut reopened = AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
+            let mut reopened = AutofillStore::open(BrowsingMode::Normal, Some(record.clone()));
             assert!(reopened.enabled());
             assert_eq!(reopened.profiles().len(), 2);
             assert_eq!(reopened.profiles()[0].city, "Changed");
             reopened.delete("one").unwrap();
             assert_eq!(
-                AutofillStore::open(BrowsingMode::Normal, &path)
-                    .unwrap()
-                    .profiles()[0]
-                    .id,
+                AutofillStore::open(BrowsingMode::Normal, Some(record)).profiles()[0].id,
                 "two"
             );
             reopened.set_enabled(false).unwrap();
             assert!(reopened.profile_for_fill("two").is_none());
         }
 
-        // Phase `private_mode_never_reads_or_changes_normal_profiles`.
+        // Phase `private_mode_never_reads_or_changes_the_persons_profiles`.
         {
-            let root = tempfile::tempdir().unwrap();
-            let path = root.path().join("addresses.json");
-            std::fs::write(&path, "deliberately invalid normal data").unwrap();
-            let mut private = AutofillStore::open(BrowsingMode::Private, &path).unwrap();
+            let (_app, record) = address_book();
+            let mut normal = AutofillStore::open(BrowsingMode::Normal, Some(record.clone()));
+            normal.set_enabled(true).unwrap();
+            normal.put(profile("kept")).unwrap();
+            let mut private = AutofillStore::open(BrowsingMode::Private, Some(record.clone()));
             assert!(private.profiles().is_empty());
-            assert!(private.set_enabled(true).is_err());
+            assert!(private.set_enabled(false).is_err());
             assert!(private.put(profile("one")).is_err());
-            assert!(private.delete("one").is_err());
-            assert_eq!(
-                std::fs::read_to_string(path).unwrap(),
-                "deliberately invalid normal data"
-            );
+            assert!(private.delete("kept").is_err());
+            assert_eq!(record.with(|book| book.profiles.len()), 1);
         }
 
         // Phase `profile_capacity_still_allows_editing_and_deleting_existing_entries`.
         {
-            let root = tempfile::tempdir().unwrap();
-            let path = root.path().join("addresses.json");
-            let mut store = AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
+            let (_app, record) = address_book();
+            let mut store = AutofillStore::open(BrowsingMode::Normal, Some(record));
             store.set_enabled(true).unwrap();
             for index in 0..16 {
                 store.put(profile(&format!("profile-{index}"))).unwrap();
@@ -265,54 +292,23 @@ mod tests {
         }
     }
 
-    /// Rejected input, failed saves and malformed stores.
+    /// Rejected input never reaches the record.
     #[test]
-    fn invalid_fields_failed_saves_and_bad_stores_leave_state_untouched() {
-        // Phase `rejects_oversized_or_secret_fields_without_changing_saved_state`.
-        {
-            let root = tempfile::tempdir().unwrap();
-            let path = root.path().join("addresses.json");
-            let mut store = AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
-            store.set_enabled(true).unwrap();
-            let before = std::fs::read(&path).unwrap();
-            let mut invalid = profile("one");
-            invalid.street = "x".repeat(1025);
-            assert!(store.put(invalid).is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), before);
-            let mut data = serde_json::to_value(profile("one")).unwrap();
-            data["password"] = "must never enter this store".into();
-            assert!(serde_json::from_value::<AddressProfile>(data).is_err());
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                assert_eq!(
-                    std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
-                    0o600
-                );
-            }
-        }
-
-        // Phase `failed_save_does_not_publish_an_unsaved_profile`.
-        {
-            let root = tempfile::tempdir().unwrap();
-            let path = root.path().join("addresses.json");
-            let mut store = AutofillStore::open(BrowsingMode::Normal, &path).unwrap();
-            store.set_enabled(true).unwrap();
-            std::fs::remove_file(&path).unwrap();
-            std::fs::create_dir(&path).unwrap();
-            assert!(store.put(profile("one")).is_err());
-            assert!(store.profiles().is_empty());
-        }
-
-        // Phase `malformed_or_oversized_store_is_reported_and_left_untouched`.
-        {
-            let root = tempfile::tempdir().unwrap();
-            let path = root.path().join("addresses.json");
-            for bytes in [b"invalid".to_vec(), vec![b' '; 65537]] {
-                std::fs::write(&path, &bytes).unwrap();
-                assert!(AutofillStore::open(BrowsingMode::Normal, &path).is_err());
-                assert_eq!(std::fs::read(&path).unwrap(), bytes);
-            }
-        }
+    fn invalid_fields_leave_the_book_untouched() {
+        let (_app, record) = address_book();
+        let mut store = AutofillStore::open(BrowsingMode::Normal, Some(record.clone()));
+        store.set_enabled(true).unwrap();
+        let mut invalid = profile("one");
+        invalid.street = "x".repeat(1025);
+        assert!(store.put(invalid.clone()).is_err());
+        assert!(
+            record
+                .invoke(&Invoke::edit(&AddressBook::paths().profiles.insert(&invalid)).unwrap())
+                .is_err()
+        );
+        assert!(record.with(|book| book.profiles.is_empty()));
+        let mut data = serde_json::to_value(profile("one")).unwrap();
+        data["password"] = "must never enter this store".into();
+        assert!(serde_json::from_value::<AddressProfile>(data).is_err());
     }
 }

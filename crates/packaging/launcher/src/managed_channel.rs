@@ -5,11 +5,16 @@ use super::{
     Arc, KernelProcess, ManagedBinding, Mutex, Path, ProcessIdentity, ProcessRecord,
     VerifiedLaunchAuthority, VerifiedManagedSupervisor,
 };
+use rustix::{
+    event::{PollFd, PollFlags, Timespec, poll},
+    net::sockopt::set_socket_passcred,
+    process::{Pid, PidfdFlags, pidfd_open},
+};
 use std::{
     fs::File,
     io::{Read, Write},
     os::{
-        fd::{AsRawFd, FromRawFd},
+        fd::{AsRawFd, FromRawFd, OwnedFd},
         unix::{fs::MetadataExt, net::UnixStream},
     },
     time::Duration,
@@ -122,17 +127,13 @@ pub(super) struct ProcessEvidence {
     pub(super) supervisor: ProcessIdentity,
     pub(super) channel_id: String,
     executable: Arc<Executable>,
-    pidfd: File,
+    pidfd: OwnedFd,
 }
 impl ProcessEvidence {
     pub(super) fn revalidate(&self, process: ProcessIdentity) -> Result<(), String> {
-        let mut poll = libc::pollfd {
-            fd: self.pidfd.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
+        let mut pidfd = [PollFd::new(&self.pidfd, PollFlags::IN)];
         // A pidfd pins the original kernel task even after numeric PID reuse.
-        if unsafe { libc::poll(&raw mut poll, 1, 0) } != 0
+        if poll(&mut pidfd, Some(&Timespec::default())).map_err(|e| e.to_string())? != 0
             || !process.is_current()
             || !self.supervisor.is_current()
         {
@@ -178,9 +179,35 @@ pub struct PendingManagedConnection {
     executable: Arc<Executable>,
     channel_id: String,
 }
+
+/// Cancellation of exactly one connected startup descriptor. This cannot
+/// read/write protocol data, identify a process, or grant launch authority.
+/// Shutting it down also wakes an in-flight blocking descriptor challenge.
+pub struct ManagedConnectionCancellation(UnixStream);
+
+impl ManagedConnectionCancellation {
+    /// Interrupt this connection only; the owning launcher must still stop
+    /// its actual children and retire canonical session custody.
+    ///
+    /// # Errors
+    /// Reports a kernel failure to shut down the retained connected socket.
+    pub fn cancel(&self) -> std::io::Result<()> {
+        self.0.shutdown(std::net::Shutdown::Both)
+    }
+}
+
 impl PendingManagedConnection {
     pub fn channel_id(&self) -> &str {
         &self.channel_id
+    }
+
+    /// Retain cancellation before moving the one-use connection into a worker.
+    /// No protocol endpoint or process authority is exposed by this handle.
+    ///
+    /// # Errors
+    /// Refuses a kernel failure to duplicate the retained socket descriptor.
+    pub fn cancellation(&self) -> std::io::Result<ManagedConnectionCancellation> {
+        self.socket.try_clone().map(ManagedConnectionCancellation)
     }
     /// Allocate this attempt's one connected descriptor pair and challenge.
     ///
@@ -206,20 +233,7 @@ impl PendingManagedConnection {
             digest,
         )?);
         let (socket, client) = UnixStream::pair().map_err(|e| e.to_string())?;
-        let enabled: libc::c_int = 1;
-        if unsafe {
-            libc::setsockopt(
-                socket.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_PASSCRED,
-                (&raw const enabled).cast(),
-                libc::socklen_t::try_from(std::mem::size_of_val(&enabled))
-                    .map_err(|_| "socket option size")?,
-            )
-        } != 0
-        {
-            return Err(std::io::Error::last_os_error().to_string());
-        }
+        set_socket_passcred(&socket, true).map_err(|e| e.to_string())?;
         socket
             .set_read_timeout(Some(Duration::from_secs(10)))
             .map_err(|e| e.to_string())?;
@@ -274,19 +288,14 @@ impl PendingManagedConnection {
             return Err("descriptor challenge mismatch".into());
         }
         let process = ProcessIdentity::read(pid)?;
-        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
-        if fd < 0 {
-            return Err(format!(
-                "agent pidfd unavailable: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        let fd = i32::try_from(fd).map_err(|_| "agent pidfd out of range")?;
+        let pid = Pid::from_raw(pid.cast_signed()).ok_or("agent PID out of range")?;
+        let pidfd = pidfd_open(pid, PidfdFlags::empty())
+            .map_err(|e| format!("agent pidfd unavailable: {e}"))?;
         let evidence = ProcessEvidence {
             supervisor: supervisor.process(),
             executable: self.executable,
             channel_id: self.channel_id,
-            pidfd: unsafe { File::from_raw_fd(fd) },
+            pidfd,
         };
         evidence.revalidate(process)?;
         {
@@ -479,7 +488,7 @@ fn receive_credentials(socket: &UnixStream) -> Result<([u8; 32], u32), String> {
         let credential = received
             .credential
             .ok_or("kernel sender credential missing")?;
-        if credential.pid <= 0 || credential.uid != unsafe { libc::geteuid() } {
+        if credential.pid <= 0 || credential.uid != rustix::process::geteuid().as_raw() {
             return Err("wrong kernel sender identity".into());
         }
         let pid = credential.pid.unsigned_abs();
@@ -564,50 +573,24 @@ mod received_rights_tests {
         receiver
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
-        let enabled: libc::c_int = i32::from(passcred);
-        let enabled_len = libc::socklen_t::try_from(std::mem::size_of_val(&enabled)).unwrap();
-        assert_eq!(
-            unsafe {
-                libc::setsockopt(
-                    receiver.as_raw_fd(),
-                    libc::SOL_SOCKET,
-                    libc::SO_PASSCRED,
-                    (&raw const enabled).cast(),
-                    enabled_len,
-                )
-            },
-            0
-        );
+        set_socket_passcred(&receiver, passcred).unwrap();
         (receiver, sender)
     }
     fn send_rights(sender: &UnixStream, file: &File, count: usize) {
-        let mut answer = [37_u8; 32];
-        let payload: Vec<u8> = std::iter::repeat_n(file.as_raw_fd().to_ne_bytes(), count)
-            .flatten()
-            .collect();
-        let bytes = u32::try_from(payload.len()).unwrap();
-        let space = unsafe { libc::CMSG_SPACE(bytes) as usize };
-        let mut control = vec![0usize; space.div_ceil(std::mem::size_of::<usize>())];
-        let mut iov = libc::iovec {
-            iov_base: answer.as_mut_ptr().cast(),
-            iov_len: answer.len(),
-        };
-        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
-        msg.msg_iov = &raw mut iov;
-        msg.msg_iovlen = 1;
-        msg.msg_control = control.as_mut_ptr().cast();
-        msg.msg_controllen = space;
-        unsafe {
-            let header = libc::CMSG_FIRSTHDR(&raw const msg);
-            (*header).cmsg_level = libc::SOL_SOCKET;
-            (*header).cmsg_type = libc::SCM_RIGHTS;
-            (*header).cmsg_len = libc::CMSG_LEN(bytes) as usize;
-            std::ptr::copy_nonoverlapping(payload.as_ptr(), libc::CMSG_DATA(header), payload.len());
-            assert_eq!(
-                libc::sendmsg(sender.as_raw_fd(), &raw const msg, libc::MSG_NOSIGNAL),
-                32
-            );
-        }
+        use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
+        use std::os::fd::AsFd;
+        let rights = vec![file.as_fd(); count];
+        let mut space =
+            vec![std::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(count))];
+        let mut control = SendAncillaryBuffer::new(&mut space);
+        assert!(control.push(SendAncillaryMessage::ScmRights(&rights)));
+        let sent = sendmsg(
+            sender,
+            &[std::io::IoSlice::new(&[37; 32])],
+            &mut control,
+            SendFlags::NOSIGNAL,
+        );
+        assert_eq!(sent.unwrap(), 32);
     }
     fn descriptor_count(file: &File) -> usize {
         let expected = file.metadata().unwrap();
@@ -645,9 +628,10 @@ mod received_rights_tests {
         let chunk = receive_credential_chunk(&receiver, &mut answer).unwrap();
         assert_eq!(chunk.rights.len(), 1);
         assert_eq!(descriptor_count(file.as_file()), before + 1);
-        let flags = unsafe { libc::fcntl(chunk.rights[0].as_raw_fd(), libc::F_GETFD) };
         assert!(
-            flags >= 0 && flags & libc::FD_CLOEXEC != 0,
+            rustix::io::fcntl_getfd(&chunk.rights[0])
+                .unwrap()
+                .contains(rustix::io::FdFlags::CLOEXEC),
             "recvmsg must atomically set CLOEXEC"
         );
         assert_not_inherited(file.path());
@@ -679,6 +663,36 @@ mod received_rights_tests {
             receive_credentials(&receiver).unwrap(),
             ([37; 32], std::process::id()),
             "credential-only challenge remains valid"
+        );
+    }
+
+    #[test]
+    fn cancelling_one_descriptor_wakes_its_challenge_without_affecting_another() {
+        let (receiver, mut sender) = socket_pair(true);
+        let cancellation = ManagedConnectionCancellation(receiver.try_clone().unwrap());
+        let (ready, waiting) = std::sync::mpsc::channel();
+        let (finished, result) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            ready.send(()).unwrap();
+            finished.send(receive_credentials(&receiver)).unwrap();
+        });
+        waiting.recv_timeout(Duration::from_secs(1)).unwrap();
+        cancellation.cancel().unwrap();
+        assert!(
+            result
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .is_err(),
+            "cancellation must wake and refuse the real credential receive"
+        );
+        worker.join().unwrap();
+        assert!(sender.write_all(&[37; 32]).is_err());
+        let (other_receiver, mut other_sender) = socket_pair(true);
+        other_sender.write_all(&[41; 32]).unwrap();
+        assert_eq!(
+            receive_credentials(&other_receiver).unwrap(),
+            ([41; 32], std::process::id()),
+            "cancelling a prior connection must not affect another agent"
         );
     }
 }

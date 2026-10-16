@@ -4,9 +4,10 @@
 //! local state and the OS dispatch. The overlay host only supplies the panel
 //! bounds and maps `Back`/`Changed` into navigation and chrome invalidation.
 
+use ui::num::f32_of_f64;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::Key;
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -17,22 +18,16 @@ use crate::shell::i18n::t;
 use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
 use tilo_desktop::drill_in::{
     CONTROL_INSET, DrillInList, DrillInOutcome, GLYPH, RELATED_GAP, TOGGLE_H, TOGGLE_W,
-    centred_text_top, leading_glyph, paint_control, trailing_toggle, type_size,
+    centred_text_top, leading_glyph, paint_control, trailing_toggle,
 };
+use ui::TextRole;
+use ui::widget::ButtonRole;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VpnPaneOutcome {
     DrillIn(DrillInOutcome),
     Reconcile,
     ActionFailed { profile: String, error: String },
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "bounded screen-space widths retain sufficient f32 precision"
-)]
-fn f64_to_f32_lossy(value: f64) -> f32 {
-    value as f32
 }
 
 #[derive(Default)]
@@ -221,23 +216,12 @@ impl QuickSettingsVpnPane {
         profiles: &mut [os_actions::VpnConnectionInfo],
         actions: &dyn QsActions,
     ) -> Option<VpnPaneOutcome> {
-        match logical_key {
-            Key::Named(NamedKey::Tab) => {
+        match super::PaneKey::of(logical_key, backwards)? {
+            super::PaneKey::Focus(backwards) => {
                 self.focus_next(panel, profiles, backwards);
                 Some(VpnPaneOutcome::DrillIn(DrillInOutcome::None))
             }
-            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => {
-                self.focus_next(panel, profiles, true);
-                Some(VpnPaneOutcome::DrillIn(DrillInOutcome::None))
-            }
-            Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => {
-                self.focus_next(panel, profiles, false);
-                Some(VpnPaneOutcome::DrillIn(DrillInOutcome::None))
-            }
-            Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                Some(self.activate_focused(panel, profiles, actions))
-            }
-            _ => None,
+            super::PaneKey::Activate => Some(self.activate_focused(panel, profiles, actions)),
         }
     }
 
@@ -293,7 +277,7 @@ impl QuickSettingsVpnPane {
                 text,
                 theme,
                 &ButtonFace::new(Self::back_rect(panel), "")
-                    .ghost()
+                    .role(ButtonRole::Plain)
                     .icon(ui::icons::Icon::ChevronLeft)
                     .focused(true)
                     .accessible_name(&t("qs-back")),
@@ -323,7 +307,7 @@ impl QuickSettingsVpnPane {
                     text,
                     theme,
                     &ButtonFace::new(*row, "")
-                        .ghost()
+                        .role(ButtonRole::Plain)
                         .focused(true)
                         .accessible_name(&profile.name),
                 );
@@ -344,11 +328,12 @@ impl QuickSettingsVpnPane {
                 theme,
                 &ToggleFace::new(toggle, profile.active).hovered(hovered),
             );
-            let name_size = type_size(text, theme.tokens.typography.scale.sm);
-            let status_size = type_size(text, theme.tokens.typography.scale.xs);
+            let name_style = theme.text(TextRole::Caption);
+            let status_style = theme.text(TextRole::Caption);
             let text_x = glyph.x1 + CONTROL_INSET;
             let text_width = (toggle.x0 - RELATED_GAP - text_x).max(1.0);
-            let name = text.elide_to_width(&profile.name, name_size, f64_to_f32_lossy(text_width));
+            let name =
+                text.elide_to_width_style(&profile.name, f32_of_f64(text_width), &name_style);
             let status = t(if profile.active {
                 "qs-connected"
             } else {
@@ -356,29 +341,32 @@ impl QuickSettingsVpnPane {
             });
             // Name and status are one measured block on the row's centre
             // line (HIG §7), not two lines pinned from the row's top.
-            let (_, name_h) = text.measure_weighted(&name, name_size, None, TextWeight::Medium);
-            let (_, status_h) = text.measure(&status, status_size, None);
+            let (_, name_h) = text.measure_style(
+                &name,
+                None,
+                &name_style.clone().with_weight(TextWeight::Medium),
+            );
+            let (_, status_h) = text.measure_style(&status, None, &status_style);
             let block_top = centred_text_top(*row, f64::from(name_h) + f64::from(status_h));
-            text.draw_text_weighted(
+            text.draw_style(
                 scene,
                 &name,
-                name_size,
                 colors.text_primary,
                 transform.pre_translate((text_x, block_top).into()),
                 None,
-                TextWeight::Medium,
+                &name_style.clone().with_weight(TextWeight::Medium),
             );
-            text.draw_text(
+            text.draw_style(
                 scene,
                 &status,
-                status_size,
                 if profile.active {
-                    colors.accent[5]
+                    colors.intent.inverted
                 } else {
                     colors.text_dim
                 },
                 transform.pre_translate((text_x, block_top + f64::from(name_h)).into()),
-                Some(f64_to_f32_lossy(text_width)),
+                Some(f32_of_f64(text_width)),
+                &status_style,
             );
         }
     }
@@ -388,6 +376,7 @@ impl QuickSettingsVpnPane {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use winit::keyboard::NamedKey;
 
     #[derive(Default)]
     struct RecordingActions {
@@ -492,10 +481,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn vpn_keyboard_and_semantics_follow_the_visible_profiles() {
         // Phase `keyboard_wraps_to_a_profile_and_uses_the_same_action_path`.
         {

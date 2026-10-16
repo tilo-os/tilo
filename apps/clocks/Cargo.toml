@@ -14,7 +14,6 @@ name = "clocks"
 path = "src/main.rs"
 
 [dependencies]
-tilo-process = { path = "../../crates/platform/tilo-process" }
 chrono = { workspace = true, features = ["clock", "serde"] }
 chrono-tz = "0.10"
 serde.workspace = true
@@ -22,13 +21,7 @@ serde_json.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-files = { path = "../../crates/platform/tilo-files" }
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
-vello.workspace = true
 taffy.workspace = true
-automerge.workspace = true
-winit.workspace = true
-tilo-actions = { path = "../../crates/collab/actions" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 
 [features]
@@ -38,7 +31,8 @@ thin = ["dep:runtime-dylib"]
 workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
+tilo-history = { path = "../../crates/sdk/tilo-history" }
+tilo-test-env = { path = "../../crates/dev/test-env" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

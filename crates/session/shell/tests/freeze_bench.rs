@@ -5,16 +5,6 @@
 //!
 //! Run: `cargo test -p shell --test freeze_bench -- --ignored --nocapture`
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::time::Instant;
 
 use shell::shell::state::{TileContent as ShellTile, WindowGroup};
@@ -51,6 +41,7 @@ fn placeholder_group(kind: ui::widget::AppKind, label: &str) -> WindowGroup {
         active_tab: tab_id,
         width: shell::shell::state::WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     }
 }
 
@@ -74,12 +65,12 @@ fn freeze_bench_times_first_sync_and_group_rematerialization() {
         std::thread::sleep(std::time::Duration::from_millis(300));
 
         // Fresh shared doc (like the compositor's `test_control_ctx.doc`).
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let first = ms(|| {
-            Widget::sync(&mut w, &mut doc, &ROOT);
+            Widget::sync(&mut w, &doc, &ROOT);
         });
         let second = ms(|| {
-            Widget::sync(&mut w, &mut doc, &ROOT);
+            Widget::sync(&mut w, &doc, &ROOT);
         });
         println!("--- terminal first-sync CRDT populate (the drop freeze) ---");
         println!("  first  sync (init_crdt): {first:8.2} ms");

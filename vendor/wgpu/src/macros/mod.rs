@@ -95,13 +95,13 @@ macro_rules! include_spirv_source {
 
 #[test]
 fn make_spirv_le_pass() {
-    static SPIRV: &[u32] = include_spirv_source!("le-aligned.spv");
+    static SPIRV: &[u32] = include_spirv_source!(concat!(env!("OUT_DIR"), "/le-aligned.spv"));
     assert_eq!(SPIRV, &[0x07230203, 0x11223344]);
 }
 
 #[test]
 fn make_spirv_be_pass() {
-    static SPIRV: &[u32] = include_spirv_source!("be-aligned.spv");
+    static SPIRV: &[u32] = include_spirv_source!(concat!(env!("OUT_DIR"), "/be-aligned.spv"));
     assert_eq!(SPIRV, &[0x07230203, 0x11223344]);
 }
 
@@ -127,7 +127,8 @@ macro_rules! include_spirv {
 
 #[cfg(all(feature = "spirv", test))]
 #[expect(dead_code)]
-static SPIRV: crate::ShaderModuleDescriptor<'_> = include_spirv!("le-aligned.spv");
+static SPIRV: crate::ShaderModuleDescriptor<'_> =
+    include_spirv!(concat!(env!("OUT_DIR"), "/le-aligned.spv"));
 
 /// Macro to load raw SPIR-V data statically, for use with [`Features::PASSTHROUGH_SHADERS`].
 ///
@@ -157,7 +158,7 @@ macro_rules! include_spirv_raw {
 #[cfg(test)]
 #[expect(dead_code)]
 static SPIRV_RAW: crate::ShaderModuleDescriptorPassthrough<'_> =
-    include_spirv_raw!("le-aligned.spv");
+    include_spirv_raw!(concat!(env!("OUT_DIR"), "/le-aligned.spv"));
 
 /// Load WGSL source code from a file at compile time.
 ///
@@ -253,7 +254,7 @@ pub(crate) use hal_type_gles;
 
 #[doc(hidden)]
 pub mod helpers {
+    pub use Some;
     pub use alloc::{borrow::Cow, string::String};
     pub use core::{include_bytes, include_str};
-    pub use Some;
 }

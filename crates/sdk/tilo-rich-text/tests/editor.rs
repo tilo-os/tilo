@@ -5,12 +5,11 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use qdoc_rich_text::{RichText, RichTextAction};
+use tilo_document::{RichText, RichTextAction};
 use tilo_rich_text::RichTextViews;
 use ui::framework::testing::TestApp;
 use ui::framework::{ResourceApp, ViewCx};
@@ -31,28 +30,9 @@ impl ResourceApp for Document {
     }
 }
 
-/// The same document, edited by a participant whose writing is attributed.
-struct Attributed;
-
-impl ResourceApp for Attributed {
-    type Resource = RichText;
-    const ID: &'static str = "so.tilo.rich-text-attributed-example";
-    const TITLE: &'static str = "Rich text";
-
-    fn view(cx: &mut ViewCx<RichText>) -> Element {
-        let mut surface = tilo_rich_text::RichTextSurface::new();
-        surface.editor_mut().set_local_author(Some("ada".into()));
-        cx.rich_text_in(surface)
-    }
-}
-
 fn open() -> TestApp<Document> {
-    open_as()
-}
-
-fn open_as<A: ResourceApp<Resource = RichText>>() -> TestApp<A> {
     ui::i18n::I18nManager::init("en-US");
-    let mut app = TestApp::<A>::new().unwrap();
+    let mut app = TestApp::<Document>::new().unwrap();
     // Focus the editor the way a person does: click into it.
     let target = app
         .harness()
@@ -65,8 +45,8 @@ fn open_as<A: ResourceApp<Resource = RichText>>() -> TestApp<A> {
 }
 
 fn paragraphs_of(doc: &ui::tilo_resource::Doc) -> Vec<String> {
-    let c = qdoc::model::open(doc, &ui::automerge::ROOT).unwrap();
-    qdoc::model::materialize(doc, &c)
+    let c = tilo_doc::model::open(doc, &ui::automerge::ROOT).unwrap();
+    tilo_doc::model::materialize(doc, &c)
         .blocks
         .into_iter()
         .map(|block| block.text)
@@ -79,19 +59,19 @@ fn paragraphs<A: ResourceApp<Resource = RichText>>(app: &TestApp<A>) -> Vec<Stri
 
 fn authors<A: ResourceApp<Resource = RichText>>(app: &TestApp<A>) -> Vec<(usize, usize, String)> {
     app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &ui::automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &ui::automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
-            .flat_map(|block| qdoc::author_runs(&block.marks))
+            .flat_map(|block| tilo_doc::author_runs(&block.marks))
             .collect()
     })
 }
 
 fn bold_ranges(app: &TestApp<Document>) -> Vec<(usize, usize)> {
     app.read_document(|doc| {
-        let c = qdoc::model::open(doc, &ui::automerge::ROOT).unwrap();
-        qdoc::model::materialize(doc, &c)
+        let c = tilo_doc::model::open(doc, &ui::automerge::ROOT).unwrap();
+        tilo_doc::model::materialize(doc, &c)
             .blocks
             .into_iter()
             .flat_map(|block| block.marks)
@@ -101,6 +81,14 @@ fn bold_ranges(app: &TestApp<Document>) -> Vec<(usize, usize)> {
     })
 }
 
+/// The verb a change's entry records.
+fn verb(context: &ui::tilo_actions::ActionContext) -> &str {
+    match &context.what {
+        Some(ui::tilo_actions::Did::Verb(verb)) => &verb.action.action,
+        other => panic!("a verb: {other:?}"),
+    }
+}
+
 #[test]
 fn a_keystroke_is_an_action_and_undo_takes_back_a_word_at_a_time() {
     let mut app = open();
@@ -108,13 +96,13 @@ fn a_keystroke_is_an_action_and_undo_takes_back_a_word_at_a_time() {
     assert_eq!(paragraphs(&app), ["hello world"]);
     let last = app.versions().pop().unwrap();
     let context = last.context.as_ref().unwrap();
-    assert_eq!(context.action_label, "Splice Text");
+    assert_eq!(verb(context), "splice-text");
     assert_eq!(
         context
             .resource
             .as_ref()
             .map(|resource| resource.kind.as_str()),
-        Some("qdoc.rich-text")
+        Some("tilo.rich-text")
     );
 
     assert!(app.undo());
@@ -175,34 +163,30 @@ fn moving_a_paragraph_up_is_one_move_the_document_keeps() {
     app.harness().set_modifiers(&[]);
     assert_eq!(paragraphs(&app), ["second", "first"]);
     let last = app.versions().pop().unwrap();
-    assert_eq!(last.context.as_ref().unwrap().action_label, "Move Blocks");
+    assert_eq!(verb(last.context.as_ref().unwrap()), "move-blocks");
     assert!(app.undo());
     assert_eq!(paragraphs(&app), ["first", "second"]);
 }
 
 #[test]
-fn typed_text_is_attributed_to_its_writer_in_the_same_step() {
-    let mut app = open_as::<Attributed>();
+fn typed_text_is_attributed_to_its_writer_by_the_splice_itself() {
+    let mut app = open();
     app.harness().type_text("hello");
     app.harness().key("Enter");
     app.harness().type_text("world");
     assert_eq!(paragraphs(&app), ["hello", "world"]);
-    assert_eq!(
-        authors(&app),
-        [(0, 5, "ada".to_owned()), (0, 5, "ada".to_owned())]
-    );
+    // The last keystroke is one splice, and that splice named its writer.
+    let last = app.versions().pop().unwrap();
+    let context = last.context.as_ref().unwrap();
+    assert_eq!(verb(context), "splice-text");
+    let writer = context.invoker.as_ref().unwrap().actor.clone();
+    assert!(!writer.is_empty());
+    assert_eq!(authors(&app), [(0, 5, writer.clone()), (0, 5, writer)]);
     assert!(app.undo());
     assert_eq!(paragraphs(&app), ["hello", ""]);
     assert!(app.undo());
     assert!(app.undo());
     assert_eq!(paragraphs(&app), [""]);
-    assert!(authors(&app).is_empty());
-}
-
-#[test]
-fn text_nobody_is_named_for_stays_unattributed() {
-    let mut app = open();
-    app.harness().type_text("hello");
     assert!(authors(&app).is_empty());
 }
 
@@ -249,14 +233,14 @@ fn a_collaborator_typing_in_the_same_paragraph_converges_and_keeps_my_caret() {
     let mut app = open();
     app.harness().type_text("world");
     let mut peer = app.peer_document();
-    let block = qdoc::model::blocks_in_order(
+    let block = tilo_doc::model::blocks_in_order(
         &peer,
-        &qdoc::model::open(&peer, &ui::automerge::ROOT).unwrap(),
+        &tilo_doc::model::open(&peer, &ui::automerge::ROOT).unwrap(),
     )[0]
     .clone();
     // While I keep typing, the collaborator types at the start.
     RichTextAction::SpliceText {
-        region: qdoc_rich_text::action::RegionKind::Body,
+        region: tilo_document::action::RegionKind::Body,
         block,
         at: 0,
         del: 0,
@@ -284,9 +268,9 @@ fn a_collaborators_new_paragraph_appears_without_moving_me() {
     let mut app = open();
     app.harness().type_text("draft");
     let mut peer = app.peer_document();
-    let first = qdoc::model::blocks_in_order(
+    let first = tilo_doc::model::blocks_in_order(
         &peer,
-        &qdoc::model::open(&peer, &ui::automerge::ROOT).unwrap(),
+        &tilo_doc::model::open(&peer, &ui::automerge::ROOT).unwrap(),
     )[0]
     .clone();
     RichTextAction::InsertParagraph {
@@ -308,12 +292,15 @@ fn an_agent_edit_through_the_action_door_is_shown_and_undoable() {
     let mut app = open();
     app.harness().type_text("typed");
     let block = app.read_document(|doc| {
-        qdoc::model::blocks_in_order(doc, &qdoc::model::open(doc, &ui::automerge::ROOT).unwrap())[0]
-            .clone()
+        tilo_doc::model::blocks_in_order(
+            doc,
+            &tilo_doc::model::open(doc, &ui::automerge::ROOT).unwrap(),
+        )[0]
+        .clone()
     });
     app.invoke(
         ui::tilo_resource::Invoke::<RichText>::apply(&RichTextAction::SpliceText {
-            region: qdoc_rich_text::action::RegionKind::Body,
+            region: tilo_document::action::RegionKind::Body,
             block,
             at: 5,
             del: 0,
@@ -326,4 +313,18 @@ fn an_agent_edit_through_the_action_door_is_shown_and_undoable() {
     app.harness().key("End");
     app.harness().type_text(".");
     assert_eq!(paragraphs(&app), ["typed by hand."]);
+}
+
+#[test]
+fn a_typed_word_stays_one_undo_step_after_a_restart() {
+    let mut app = open();
+    app.harness().type_text("hello world");
+    assert_eq!(paragraphs(&app), ["hello world"]);
+    let mut app = app.reopen().unwrap();
+    assert!(app.undo());
+    assert_eq!(paragraphs(&app), ["hello "], "one word is one step");
+    assert!(app.undo());
+    assert_eq!(paragraphs(&app), [""]);
+    assert!(app.redo());
+    assert_eq!(paragraphs(&app), ["hello "]);
 }

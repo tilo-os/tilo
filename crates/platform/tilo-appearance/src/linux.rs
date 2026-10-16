@@ -4,11 +4,12 @@
 //! desktop without the portal leaves every preference unset.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use zbus::zvariant::{OwnedValue, Value};
 
 use crate::{Appearance, Scheme};
+use tilo_lock::MutexRecover as _;
 
 const NAMESPACE: &str = "org.freedesktop.appearance";
 
@@ -38,7 +39,7 @@ pub(crate) fn follow(changed: impl Fn() + Send + 'static) -> Reading {
         .spawn(move || {
             let followed = zbus::blocking::Connection::session().and_then(|connection| {
                 watch(&connection, |appearance| {
-                    *shared.lock().unwrap_or_else(PoisonError::into_inner) = appearance;
+                    *shared.lock_recover() = appearance;
                     changed();
                 })
             });
@@ -53,7 +54,7 @@ pub(crate) fn follow(changed: impl Fn() + Send + 'static) -> Reading {
 }
 
 pub(crate) fn current(reading: &Reading) -> Appearance {
-    *reading.lock().unwrap_or_else(PoisonError::into_inner)
+    *reading.lock_recover()
 }
 
 /// Publishes the portal's appearance, then the appearance after each change

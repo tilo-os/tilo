@@ -49,16 +49,19 @@ pub(crate) fn converge(a: &mut AutoCommit, b: &mut AutoCommit) {
     let mut a_to_b = SyncSession::default();
     let mut b_to_a = SyncSession::default();
     for _ in 0..200 {
-        let mut progressed = false;
-        if let Some(message) = a_to_b.generate(a) {
+        let forward = if let Some(message) = a_to_b.generate(a) {
             b_to_a.receive(b, &message);
-            progressed = true;
-        }
-        if let Some(message) = b_to_a.generate(b) {
+            true
+        } else {
+            false
+        };
+        let backward = if let Some(message) = b_to_a.generate(b) {
             a_to_b.receive(a, &message);
-            progressed = true;
-        }
-        if !progressed {
+            true
+        } else {
+            false
+        };
+        if !forward && !backward {
             break;
         }
     }
@@ -68,41 +71,43 @@ pub(crate) fn converge(a: &mut AutoCommit, b: &mut AutoCommit) {
 mod tests {
     use super::converge;
     use automerge::AutoCommit;
+    use ui::tilo_resource::{Invoke, Replica};
 
-    use crate::{doc, seed};
+    use crate::model::Library;
+    use crate::resource::library::CreatePlaylist;
 
-    fn seeded() -> AutoCommit {
-        let mut doc = AutoCommit::new();
-        let library = seed::sample_library();
-        doc::seed(&mut doc, &library, &seed::sample_playback(&library));
-        doc
+    fn seeded() -> Replica<Library> {
+        let mut library = Replica::<Library>::new();
+        for action in crate::seed::sample_actions() {
+            library.apply(action).unwrap();
+        }
+        library
     }
 
     #[test]
     fn platform_document_handshake_converges_library_edits_both_ways() {
         let mut laptop = seeded();
-        let mut phone = AutoCommit::new();
-        converge(&mut laptop, &mut phone);
+        let mut phone = Replica::<Library>::from_doc(AutoCommit::new());
+        converge(laptop.doc_mut(), phone.doc_mut());
 
-        doc::set_liked(&mut laptop, "tk_v2", true);
-        doc::create_playlist(&mut phone, "Phone picks");
-        converge(&mut laptop, &mut phone);
+        laptop
+            .apply(Invoke::edit(&Library::like("tk_v2", true)).unwrap())
+            .unwrap();
+        phone
+            .apply(Library::CREATE_PLAYLIST.with(CreatePlaylist {
+                name: "Phone picks".into(),
+                track: None,
+            }))
+            .unwrap();
+        converge(laptop.doc_mut(), phone.doc_mut());
 
-        let laptop_library = doc::load_library(&laptop);
-        let phone_library = doc::load_library(&phone);
-        assert!(laptop_library.is_liked("tk_v2"));
-        assert!(phone_library.is_liked("tk_v2"));
-        assert!(
-            laptop_library
-                .playlists
-                .iter()
-                .any(|playlist| playlist.name == "Phone picks")
-        );
-        assert!(
-            phone_library
-                .playlists
-                .iter()
-                .any(|playlist| playlist.name == "Phone picks")
-        );
+        for library in [laptop.state().unwrap(), phone.state().unwrap()] {
+            assert!(library.is_liked("tk_v2"));
+            assert!(
+                library
+                    .playlists()
+                    .any(|playlist| playlist.name == "Phone picks")
+            );
+        }
     }
 }

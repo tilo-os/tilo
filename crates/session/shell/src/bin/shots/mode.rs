@@ -70,6 +70,7 @@ pub mod offscreen {
         fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
             let scene = driver.paint();
             let path = self.dir.join(format!("{name}.png"));
+            self.renderer.set_backdrop(driver.take_backdrop());
             self.renderer.render_png(&scene, Color::TRANSPARENT, &path);
             if !self.first_paint_seen {
                 // Match the mark name the ui `App` emits at the same
@@ -148,7 +149,7 @@ pub mod offscreen {
         );
         let mut first_paint_seen = false;
         for name in scenes {
-            let mut driver = ShellDriver::new(viewport);
+            let mut driver = ShellDriver::for_scene(name, viewport);
             if let Some(outputs) = outputs {
                 driver.set_outputs(outputs);
             }
@@ -157,6 +158,7 @@ pub mod offscreen {
                 .map_err(|e| format!("scene_setup({name}) failed: {e}"))?;
             let scene = driver.paint_settled();
             let path = dir.join(format!("{name}.png"));
+            renderer.set_backdrop(driver.take_backdrop());
             renderer.render_png(&scene, Color::TRANSPARENT, &path);
             if !first_paint_seen {
                 // Mark AFTER render_png returns so the metric captures
@@ -215,8 +217,8 @@ pub mod recording {
         frames_per_step_for, scenario,
     };
 
-    use shell::compositor::mp4_recording::{Mp4Recording, recording_encoder};
     use shell::network::encoder::VideoEncoder;
+    use tilo_callstream::mp4_recording::{Mp4Recording, recording_encoder};
 
     /// What a recording produced: the codec and its first access unit (a
     /// keyframe), so a caller can check the content decodes.
@@ -283,7 +285,11 @@ pub mod recording {
         for action in &scenario.actions {
             scenario_apply_then_capture(driver, action, &mut sink)?;
         }
-        let first_unit = sink.first_unit.take();
+        let mut first_unit = sink.first_unit.take();
+        let tail = encoder
+            .finish()
+            .map_err(|e| format!("finish encoding in recording mode: {e}"))?;
+        write_units(&mut file, &mut first_unit, tail)?;
         file.finish()?;
         Ok(RecordingSummary { codec, first_unit })
     }
@@ -307,21 +313,31 @@ pub mod recording {
     impl RecordingSink<'_> {
         fn encode_current(&mut self, driver: &mut ShellDriver) -> Result<(), String> {
             let scene = driver.paint();
+            self.renderer.set_backdrop(driver.take_backdrop());
             let rgba = self.renderer.render_rgba_resilient(&scene);
             for _ in 0..self.frames_per_step {
-                let unit = self
+                let units = self
                     .encoder
                     .encode(&rgba)
                     .map_err(|e| format!("encode in recording mode: {e}"))?;
-                if !unit.is_empty() {
-                    self.file.write_access_unit(&unit)?;
-                    if self.first_unit.is_none() {
-                        self.first_unit = Some(unit);
-                    }
-                }
+                write_units(self.file, &mut self.first_unit, units)?;
             }
             Ok(())
         }
+    }
+
+    fn write_units(
+        file: &mut Mp4Recording,
+        first_unit: &mut Option<Vec<u8>>,
+        units: Vec<media::EncodedUnit>,
+    ) -> Result<(), String> {
+        for unit in units.into_iter().filter(|unit| !unit.data.is_empty()) {
+            file.write_access_unit(&unit.data)?;
+            if first_unit.is_none() {
+                *first_unit = Some(unit.data);
+            }
+        }
+        Ok(())
     }
 
     impl SnapshotSink for RecordingSink<'_> {
@@ -457,7 +473,7 @@ mod tests {
 
     use std::fs;
 
-    use shell::network::decoder::VideoDecoder;
+    use tilo_callstream::surface_decoder::VideoDecoder;
 
     use super::super::scenario::lookup;
 
@@ -486,8 +502,8 @@ mod tests {
         assert_eq!(frame.width, 128);
         assert_eq!(frame.height, 96);
         let pixels = match &frame.pixels {
-            shell::network::DecodedPixels::Rgba8(bytes) => bytes,
-            other @ shell::network::DecodedPixels::P010 { .. } => {
+            tilo_callstream::surface_decoder::DecodedPixels::Rgba8(bytes) => bytes,
+            other @ tilo_callstream::surface_decoder::DecodedPixels::P010 { .. } => {
                 panic!("an SDR decoder should yield RGBA pixels, got {other:?}")
             }
         };
@@ -505,40 +521,65 @@ mod tests {
         let _ = fs::remove_file(&tmp);
     }
 
-    /// The desktop a scenario boots opens its apps with their documents:
-    /// clicking into Notes and typing lands in that tab's own record,
-    /// instead of every in-process tile painting "Document unavailable".
+    /// The desktop a scenario boots opens its apps as their own components:
+    /// its Notes tab is the Notes app, still there after the scenario
+    /// clicks into it and types, instead of a tile saying it is unavailable.
     #[test]
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the shell fixture owns long-lived permits by design and lives for the whole test"
     )]
-    fn booted_notes_tab_has_its_document_and_takes_typing() {
-        use shell::shell::notes_app::BODY_KEY;
-        use shell::shell::state::TileContent;
-        use shell::shell::tab_documents::tab_body;
-        use ui::record::RecordId;
-
+    fn booted_notes_tab_is_the_notes_app_and_takes_typing() {
         let mut driver = ShellDriver::new((1600, 900));
-        let group = driver.chrome().tree().desktop.workspaces[0].strips[0].window_groups[0].clone();
-        let notes = group.tabs[0].id;
-        let hosted: Vec<u64> = group
-            .tabs
-            .iter()
-            .filter(|tab| matches!(tab.tile, TileContent::AppPlaceholder { .. }))
-            .map(|tab| tab.id)
-            .collect();
-        assert!(hosted.len() >= 2, "the booted group opens Notes and Files");
+        let (strip, notes) = {
+            let chrome = driver.chrome();
+            let tree = chrome.tree();
+            let strip = &tree.desktop.workspaces[0].strips[0];
+            (strip.id, strip.window_groups[0].tabs[0].id)
+        };
         let scenario = lookup("notes_click_and_type").expect("notes_click_and_type in catalogue");
         scenario::run(&mut driver, &scenario, &mut NullSink);
 
-        let records = driver.chrome().records().clone();
-        for tab in hosted {
-            assert!(
-                records.read(&RecordId::for_tab(tab), |_| ()).is_some(),
-                "booted tab {tab} has no document"
-            );
+        let host = driver
+            .host_mut()
+            .group_at_for_tests(strip, 0)
+            .and_then(|group| group.host_for_tab_mut(notes))
+            .expect("the booted Notes tab");
+        match host.content() {
+            ui::widget::TileContent::App(app) => assert_eq!(app.app_title(), "Notes"),
+            _ => panic!("the booted Notes tab is not the Notes app"),
         }
-        assert_eq!(tab_body(&records, notes, BODY_KEY).as_deref(), Some("hi"));
+    }
+
+    /// The edge-overlay scenario addresses the top bar's chips by name, so
+    /// it reaches the same chip at every viewport of the sweep; each name
+    /// must resolve when the scenario reaches it, or the click is dropped
+    /// and the snapshot shows the wrong state.
+    #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the shell fixture owns long-lived permits by design and lives for the whole test"
+    )]
+    fn overlay_edges_reaches_every_named_chip() {
+        let scenario = lookup("overlay_edges").expect("overlay_edges in catalogue");
+        for size in [(1280, 720), (1920, 1080)] {
+            let mut driver = ShellDriver::new(size);
+            for action in &scenario.actions {
+                if let scenario::Action::ClickNamed(name)
+                | scenario::Action::MoveCursorNamed(name) = action
+                {
+                    assert!(
+                        driver.resolve_named_centre(name).is_some(),
+                        "{size:?}: '{name}' does not resolve when overlay_edges reaches it"
+                    );
+                }
+                let step = Scenario {
+                    name: "_overlay_edges_step",
+                    description: "",
+                    actions: vec![action.clone()],
+                };
+                scenario::run(&mut driver, &step, &mut NullSink);
+            }
+        }
     }
 }

@@ -42,7 +42,7 @@ use ui::state::{DocumentFrontier, DocumentReplica};
 
 /// The desktop document's route. Changing it splits rooms by build.
 const DESKTOP_APP: &str = "so.tilo.browser-desktop";
-const DESKTOP_RECORD: &str = "desktop";
+pub(crate) const DESKTOP_RECORD: &str = "desktop";
 const DESKTOP_KEY: &str = "desktop";
 
 thread_local! {
@@ -57,6 +57,9 @@ pub(crate) struct Attachment {
     pub changed: Rc<Cell<bool>>,
     /// Schedules a frame for the mount.
     pub notify: Arc<dyn Fn() + Send + Sync>,
+    /// Who the mount's person is: the desktop changes it publishes name
+    /// them, so every page's Activity says whose they were.
+    pub author: String,
 }
 
 struct Replica {
@@ -89,6 +92,9 @@ pub(crate) struct Room {
     /// Routes a delivered document failed to apply to: this page never
     /// answers a compaction request for them.
     unapplied: HashSet<DocumentRoute>,
+    /// Changes this page made to the room: to its records, sent, and to its
+    /// desktop's windows (opened, closed, moved), not the desktop it joined.
+    authored: u64,
 }
 
 /// The record a checkout is on the collaboration wire.
@@ -138,10 +144,17 @@ pub(crate) fn open(
         desktop_value: None,
         stored: BTreeSet::new(),
         unapplied: HashSet::new(),
+        authored: 0,
     };
     ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
     pump(id);
     Ok(())
+}
+
+/// How many changes to the room peer `id` made: records it sent, and
+/// windows the person opened, closed or moved.
+pub(crate) fn authored(id: u32) -> u64 {
+    room(id).map_or(0, |room| room.borrow().authored)
 }
 
 /// The certified device key (hex) of peer `id`, if it replicates a room.
@@ -175,7 +188,26 @@ pub(crate) fn records(id: u32) -> Vec<(String, String)> {
     records.into_iter().collect()
 }
 
+/// The room's desktop document with every peer's changes, for Activity.
+/// `None` until the room delivered or published one.
+pub(crate) fn desktop_history(id: u32) -> Option<AutoCommit> {
+    let room = room(id)?;
+    let room = room.borrow();
+    let doc = room.desktop.document();
+    (!doc.base_heads().is_empty()).then(|| doc.clone())
+}
+
+/// Read the retained desktop's frontier without cloning its whole history.
+pub(crate) fn desktop_history_heads(id: u32) -> Option<Vec<ui::automerge::ChangeHash>> {
+    let room = room(id)?;
+    let room = room.borrow();
+    let heads = room.desktop.document().base_heads();
+    (!heads.is_empty()).then_some(heads)
+}
+
 pub(crate) fn close(id: u32) {
+    crate::browser::forget_feedback_startup(id);
+    crate::feedback_delivery::forget(id);
     ROOMS.with_borrow_mut(|rooms| rooms.remove(&id));
 }
 
@@ -304,7 +336,7 @@ impl Room {
                     }
                 }
                 PeerEvent::DocumentRejected(reason) => {
-                    warn(&format!("dropped a document: {reason}"))
+                    warn(&format!("dropped a document: {reason}"));
                 }
                 _ => {}
             }
@@ -567,7 +599,7 @@ impl Room {
                     };
                     match outbound(store, &checkout, replica) {
                         Ok(Some((mutation, heads))) => {
-                            outgoing.push((route, mutation, (id, key, heads)))
+                            outgoing.push((route, mutation, (id, key, heads)));
                         }
                         Ok(None) => {}
                         Err(error) => warn(&format!("{}/{}: {error}", key.0, key.1)),
@@ -578,8 +610,14 @@ impl Room {
         // Records first: a desktop naming a new tab's record must not reach
         // a peer before the record does.
         for (route, mutation, advance) in outgoing {
+            // A first snapshot carries what was there already; an
+            // increment is what this page changed.
+            let authored = matches!(mutation, DocumentMutation::Incremental(_));
             if self.peer.publish(route, &mutation).is_err() {
                 return;
+            }
+            if authored {
+                self.authored = self.authored.saturating_add(1);
             }
             let (id, key, heads) = advance;
             if let Some(replica) = self
@@ -595,23 +633,34 @@ impl Room {
     }
 
     fn send_desktop(&mut self) {
-        let Some(value) = self.mounts.values().find_map(|mounted| {
-            mounted
-                .attachment
-                .desktop
-                .as_ref()
-                .map(|(handle, shared)| crate::desktop::shared_value(handle, shared))
+        let Some((value, author)) = self.mounts.values().find_map(|mounted| {
+            mounted.attachment.desktop.as_ref().map(|(handle, shared)| {
+                (
+                    crate::desktop::shared_value(handle, shared),
+                    mounted.attachment.author.clone(),
+                )
+            })
         }) else {
             return;
         };
         if self.desktop_value.as_ref() == Some(&value) {
             return;
         }
+        // The desktop this page joined with is not something the person did.
+        let joined = self.desktop_value.is_some();
         let doc = self.desktop.document_mut();
-        if doc.put(ROOT, DESKTOP_KEY, value.to_string()).is_err() {
-            return;
+        // The same change the desktop's own history log would make: its
+        // time, and who made it.
+        if tilo_desktop_surface::history_log::record(doc, &value, &author, ui::time::unix_now_i64())
+        {
+            // Windows opened, closed, moved or resized: the person's own
+            // work on the desktop, as the history pane tells it.
+            if joined {
+                self.authored = self.authored.saturating_add(1);
+            }
+        } else if doc.put(ROOT, DESKTOP_KEY, value.to_string()).is_ok() {
+            doc.commit();
         }
-        doc.commit();
         let mutation = if self.desktop_snapshotted {
             let (delta, heads) = self.desktop.pending_outbound_delta();
             if delta.is_empty() {
@@ -664,4 +713,153 @@ fn desktop_value(doc: &AutoCommit) -> Option<serde_json::Value> {
         },
         _ => None,
     }
+}
+
+/// Publish a reviewed report as this peer, using the existing action and record.
+/// This neither creates a destination nor answers its canonical receipt.
+pub(crate) fn submit_feedback(
+    id: u32,
+    admission: &tilo_desktop::feedback::transport::Enrollment,
+    submission: &tilo_app::feedback::Submission,
+) -> Result<(), String> {
+    use ui::record::RecordOwners;
+    let room = room(id).ok_or("feedback peer closed")?;
+    let (records, store, peer, uuid) = {
+        let room = room.borrow();
+        if !room.ready
+            || room.uuid != admission.destination.room
+            || room.device
+                != hex::encode(
+                    admission
+                        .reporter
+                        .device_public_key()
+                        .ok_or("reporter device absent")?,
+                )
+        {
+            return Err("feedback room not ready".into());
+        }
+        let store = room.store.clone();
+        let records = room.mounts.values().find_map(|mount| {
+            mount
+                .attachment
+                .stores
+                .borrow()
+                .iter()
+                .find(|records| {
+                    records.package_and_home() == ("so.tilo.chat".into(), room.uuid.clone())
+                })
+                .cloned()
+        });
+        let records = match records {
+            Some(records) => records,
+            None => RecordOwners::with_store(store.clone())
+                .open("so.tilo.chat", &room.uuid)
+                .map_err(|error| error.to_string())?,
+        };
+        (records, store, room.peer.clone(), room.uuid.clone())
+    };
+    let mut frame = feedback_publisher(admission, &records, store)?;
+    frame.relayout();
+    frame
+        .invoke_bound_action(
+            &ui::bound_dispatch::BoundActionAddress {
+                instance_id: 1,
+                address: tilo_actions::ActionAddress::new(
+                    tilo_app::feedback::destination::item(
+                        tilo_app::feedback::destination::CHANNELS,
+                        &admission.destination.channel,
+                    ),
+                    tilo_app::feedback::destination::SUBMIT,
+                ),
+            },
+            serde_json::json!({"submission": submission})
+                .as_object()
+                .ok_or("invalid submission arguments")?,
+        )
+        .map_err(|error| error.to_string())?;
+    let bytes = records
+        .read(&RecordId::package_primary(), |document| {
+            document.clone().save()
+        })
+        .ok_or("feedback source disappeared")?;
+    peer.publish(
+        DocumentRoute {
+            app_id: "so.tilo.chat".into(),
+            cluster_id: uuid,
+            record: String::new(),
+        },
+        &DocumentMutation::Snapshot(bytes),
+    )
+}
+
+fn feedback_publisher(
+    admission: &tilo_desktop::feedback::transport::Enrollment,
+    records: &RecordStore,
+    store: Rc<MemoryStore>,
+) -> Result<ui::headless::FrameHarness, String> {
+    use ui::application::{
+        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    };
+    use ui::application_view::InstanceViewStore;
+    let uuid = &admission.destination.room;
+    let definition =
+        crate::desktop::application("so.tilo.chat").ok_or("Chat component unavailable")?;
+    let checkout = RecordCheckout::package_primary(definition.record_kind.clone());
+    records
+        .try_open_record(&checkout)
+        .map_err(|error| error.to_string())?;
+    let target = LaunchTarget::Record {
+        checkout,
+        reveal: None,
+    };
+    let views = Rc::new(
+        InstanceViewStore::with_store(
+            store,
+            &hex::encode(
+                admission
+                    .reporter
+                    .device_public_key()
+                    .ok_or("reporter device absent")?,
+            ),
+            uuid,
+        )
+        .map_err(|error| error.to_string())?
+        .without_persistence(),
+    );
+    let context = HostContext::prepare(
+        definition,
+        HostContextInputs {
+            records: records.clone(),
+            views,
+            device_id: hex::encode(
+                admission
+                    .reporter
+                    .device_public_key()
+                    .ok_or("reporter device absent")?,
+            ),
+            instance_id: 1,
+            permissions: Rc::new(RefCell::new(admission.permissions.clone())),
+            author: ui::permissions::UserId(hex::encode(
+                admission
+                    .reporter
+                    .user_public_key()
+                    .ok_or("reporter root absent")?,
+            )),
+            action_context: tilo_actions::ActionContext::default(),
+        },
+        &target,
+    )
+    .map_err(|error| error.to_string())?;
+    let component = definition
+        .instantiate(context, target, RestoreInput::None)
+        .map_err(|error| error.to_string())?;
+    ui::headless::FrameHarness::from_component(
+        component,
+        (1000, 700),
+        ComponentRunnerInputs {
+            theme: ui::Theme::dark(),
+            text_renderer: ui::TextRenderer::new(),
+        },
+    )
+    .map_err(|error| error.to_string())
 }

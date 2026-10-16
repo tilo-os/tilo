@@ -519,7 +519,11 @@ mod tests {
     #[test]
     fn test_load_changes() {
         fn fixture(name: &str) -> Vec<u8> {
-            fs::read("./tests/fixtures/".to_owned() + name).unwrap()
+            fs::read_to_string(format!("./tests/fixtures/{name}.hex"))
+                .unwrap()
+                .split_ascii_whitespace()
+                .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+                .collect()
         }
 
         let mut patch_log = PatchLog::active();

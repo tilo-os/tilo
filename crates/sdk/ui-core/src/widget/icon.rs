@@ -1,5 +1,6 @@
-//! `IconWidget` — a fixed-size leaf that paints one themed vector glyph
-//! from the shared [`crate::icons::Icon`] set.
+//! `IconWidget` — a leaf that paints one themed vector glyph from the
+//! shared [`crate::icons::Icon`] set, at one of the theme's three icon
+//! sizes ([`IconSize`]).
 //!
 //! Wraps the immediate-mode [`crate::icons::Icon::draw`] helper in the
 //! [`Widget`] contract so an icon can be dropped straight into a
@@ -10,9 +11,9 @@
 //! [`IconWidget::with_color`], [`IconWidget::dim`], [`IconWidget::with_stroke`].
 
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX};
@@ -31,27 +32,61 @@ enum Tint {
     Fixed(Color),
 }
 
-/// Fixed-size themed glyph widget — see module docs.
+/// Which of the theme's icon sizes a glyph takes: `metrics.icon_sm`,
+/// `icon_md` or `icon_lg` (14, 20 and 24 by default).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum IconSize {
+    /// Beside a caption or inside a small control.
+    Small,
+    /// Beside a row's label; the default.
+    #[default]
+    Regular,
+    /// A header mark, a glyph beside a title.
+    Large,
+}
+
+impl IconSize {
+    /// The edge length this size resolves to in `theme`.
+    #[must_use]
+    pub fn px(self, theme: &Theme) -> f32 {
+        let metrics = &theme.tokens.metrics;
+        match self {
+            Self::Small => metrics.icon_sm,
+            Self::Regular => metrics.icon_md,
+            Self::Large => metrics.icon_lg,
+        }
+    }
+}
+
+/// Themed glyph widget — see module docs.
 pub struct IconWidget {
     icon: Icon,
-    /// Box edge length in logical pixels. The glyph is centred in this
-    /// square.
-    size: f32,
+    /// The square the glyph is centred in, resolved from the theme at
+    /// layout.
+    size: IconSize,
     tint: Tint,
     stroke_px: f64,
     rect: Rect,
 }
 
 impl IconWidget {
-    /// `size x size` logical pixels.
-    pub fn new(icon: Icon, size: f32) -> Self {
+    /// `icon` at [`IconSize::Regular`].
+    #[must_use]
+    pub fn new(icon: Icon) -> Self {
         Self {
             icon,
-            size,
+            size: IconSize::Regular,
             tint: Tint::Primary,
             stroke_px: LUCIDE_DEFAULT_STROKE_PX,
             rect: Rect::ZERO,
         }
+    }
+
+    /// Take one of the theme's icon sizes.
+    #[must_use]
+    pub fn sized(mut self, size: IconSize) -> Self {
+        self.size = size;
+        self
     }
 
     #[must_use]
@@ -68,7 +103,7 @@ impl IconWidget {
     }
 
     /// Resolve the glyph through the active theme's primary accent. Prefer
-    /// this over capturing `Theme::dark().accent_primary` at construction so
+    /// this over capturing `Theme::dark().tokens.colors.intent.inverted` at construction so
     /// light, custom, and high-contrast themes remain truthful.
     #[must_use]
     pub fn accent(mut self) -> Self {
@@ -90,7 +125,7 @@ impl IconWidget {
         match self.tint {
             Tint::Primary => theme.text_primary,
             Tint::Dim => theme.text_dim,
-            Tint::Accent => theme.accent_primary,
+            Tint::Accent => theme.tokens.colors.intent.inverted,
             Tint::Fixed(c) => c,
         }
     }
@@ -100,30 +135,19 @@ impl Widget for IconWidget {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::length(self.size),
-                height: Dimension::length(self.size),
-            },
+        let edge = self.size.px(theme);
+        let style = Style {
+            size: Size::from_lengths(edge, edge),
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -145,12 +169,8 @@ impl Widget for IconWidget {
         "IconWidget"
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    /// Fixed-size leaf: layout is settled once the first non-zero rect
-    /// lands.
+    /// A leaf sized by the theme: layout is settled once the first
+    /// non-zero rect lands.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
@@ -166,7 +186,8 @@ mod tests {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        w.rect = Rect::new(0.0, 0.0, f64::from(w.size), f64::from(w.size));
+        let edge = f64::from(w.size.px(&theme));
+        w.rect = Rect::new(0.0, 0.0, edge, edge);
         w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         scene
     }
@@ -175,7 +196,7 @@ mod tests {
     fn icon_widget_paints_resolved_glyph_or_nothing() {
         /// A laid-out icon widget must emit at least one stroke into the scene.
         fn icon_widget_paints_glyph() {
-            let mut w = IconWidget::new(Icon::Home, 24.0);
+            let mut w = IconWidget::new(Icon::Home).sized(IconSize::Large);
             let scene = paint(&mut w);
             let color_tags = scene
                 .encoding()
@@ -192,7 +213,7 @@ mod tests {
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            let mut w = IconWidget::new(Icon::Home, 24.0);
+            let mut w = IconWidget::new(Icon::Home).sized(IconSize::Large);
             // rect stays ZERO
             w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             let tags = scene.encoding().draw_tags.len();
@@ -202,17 +223,28 @@ mod tests {
         /// The colour builders pick the documented theme slots.
         fn icon_widget_color_resolution() {
             let theme = Theme::dark();
-            let primary = IconWidget::new(Icon::Star, 16.0);
+            let primary = IconWidget::new(Icon::Star);
             assert_eq!(primary.resolve_color(&theme), theme.text_primary);
 
-            let dim = IconWidget::new(Icon::Star, 16.0).dim();
+            let dim = IconWidget::new(Icon::Star).dim();
             assert_eq!(dim.resolve_color(&theme), theme.text_dim);
 
-            let fixed = IconWidget::new(Icon::Star, 16.0).with_color(Color::from_rgb8(1, 2, 3));
+            let fixed = IconWidget::new(Icon::Star).with_color(Color::from_rgb8(1, 2, 3));
             assert_eq!(fixed.resolve_color(&theme), Color::from_rgb8(1, 2, 3));
         }
 
+        /// Each size resolves from the theme's icon metrics.
+        fn icon_widget_sizes_follow_the_theme() {
+            let theme = Theme::dark();
+            let metrics = &theme.tokens.metrics;
+            assert_eq!(IconSize::Small.px(&theme), metrics.icon_sm);
+            assert_eq!(IconSize::Regular.px(&theme), metrics.icon_md);
+            assert_eq!(IconSize::Large.px(&theme), metrics.icon_lg);
+            assert_eq!(IconWidget::new(Icon::Star).size, IconSize::Regular);
+        }
+
         icon_widget_paints_glyph();
+        icon_widget_sizes_follow_the_theme();
         icon_widget_zero_rect_is_noop();
         icon_widget_color_resolution();
     }

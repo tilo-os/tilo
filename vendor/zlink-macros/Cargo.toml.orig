@@ -1,0 +1,73 @@
+[package]
+name = "zlink-macros"
+version = "0.7.0"
+description = "Macros providing the high-level zlink API"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+proc-macro = true
+
+[features]
+default = ["proxy"]
+std = []
+proxy = ["syn/full", "syn/clone-impls"]
+service = ["syn/full", "syn/clone-impls", "introspection"]
+idl-parse = []
+introspection = []
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", default-features = false, features = [
+    "derive",
+    "parsing",
+    "printing",
+    "proc-macro",
+    "extra-traits"
+] }
+# The Varlink grammar, so the names the derives emit are checked by running the same parser that
+# reads them back. `parse` (hence winnow) is always on: this is a proc-macro crate, so the dep is
+# built for the host and never reaches a user's binary.
+zlink-idl = { path = "../zlink-idl", version = "=0.7.0", features = ["parse"] }
+
+[dev-dependencies]
+zlink = { path = "../zlink", default-features = false, features = [
+    "tokio",
+    "introspection",
+    "idl-parse",
+    "service",
+    "proxy",
+    "tracing",
+] }
+serde = "1.0"
+serde_json = "1.0"
+serde-json-core = { version = "0.6.0", default-features = false, features = [
+    "heapless",
+] }
+serde-prefix-all = "0.1.0"
+futures-util = { version = "0.3.31", default-features = false }
+tokio = { version = "1.42.0", features = [
+    "macros",
+    "rt",
+    "test-util",
+    "rt-multi-thread",
+    "fs",
+] }
+tempfile = "3.14"
+test-log = { version = "0.2.17", default-features = false, features = [
+    "trace",
+    "color",
+] }
+
+[package.metadata.docs.rs]
+all-features = true
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-freebsd",
+    "x86_64-unknown-netbsd",
+]

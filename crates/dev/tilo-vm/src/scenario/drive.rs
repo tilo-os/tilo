@@ -19,16 +19,20 @@ pub const INSTALLER: &str = "installer";
 /// What the scenario installs, in the installer's own terms.
 pub struct Choices {
     pub layout: Layout,
+    pub filesystem: Option<String>,
     pub unlock: Unlock,
     pub username: String,
     pub full_name: String,
     pub hostname: String,
+    pub keyboard_layout: Option<String>,
+    pub timezone: Option<String>,
+    pub locale: Option<String>,
     pub account_secret: Secret,
     pub disk_secret: Option<Secret>,
 }
 
 /// What the install reported, secret-free.
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Installed {
     /// Steps in the order the driver found them.
     pub steps: Vec<String>,
@@ -234,7 +238,20 @@ pub fn install(
         }
         last_step.clone_from(&step);
         match step.as_str() {
-            "keyboard" | "network" => {
+            "keyboard" => {
+                if let Some(layout) = &choices.keyboard_layout {
+                    invoke(
+                        console,
+                        "installer.keyboard",
+                        "set-layout",
+                        json!({ "layout": layout }),
+                    )?;
+                }
+                invoke(console, INSTALLER, "next", json!({}))?;
+            }
+            // media: the optional extra video and audio formats. A scenario
+            // installs what the medium ships and nothing it would fetch.
+            "network" | "media" => {
                 invoke(console, INSTALLER, "next", json!({}))?;
             }
             "disk" => disk_step(console, &state, choices, pace)?,
@@ -273,15 +290,49 @@ pub fn install(
                 invoke(console, INSTALLER, "next", json!({}))?;
             }
             "options" => {
+                if let Some(filesystem) = &choices.filesystem {
+                    invoke(
+                        console,
+                        "installer.options",
+                        "set-filesystem",
+                        json!({ "filesystem": filesystem }),
+                    )?;
+                }
                 invoke(
                     console,
                     "installer.options",
                     "set-hostname",
                     json!({ "hostname": choices.hostname }),
                 )?;
+                for (action, key, value) in [
+                    ("set-timezone", "timezone", &choices.timezone),
+                    ("set-locale", "locale", &choices.locale),
+                ] {
+                    if let Some(value) = value {
+                        invoke(console, "installer.options", action, json!({ key: value }))?;
+                    }
+                }
                 invoke(console, INSTALLER, "next", json!({}))?;
             }
             "review" => {
+                // A skipped preconfigured screen must still match explicit inputs.
+                for (pointer, expected) in [
+                    ("/options/hostname", Some(&choices.hostname)),
+                    ("/keyboard/layout", choices.keyboard_layout.as_ref()),
+                    ("/options/timezone", choices.timezone.as_ref()),
+                    ("/options/locale", choices.locale.as_ref()),
+                ] {
+                    if let Some(expected) = expected
+                        && state.pointer(pointer).and_then(Value::as_str) != Some(expected.as_str())
+                    {
+                        return Err(DriveError::Stuck {
+                            step: step.clone(),
+                            detail: format!(
+                                "installer {pointer} does not match requested {expected}; no install started"
+                            ),
+                        });
+                    }
+                }
                 invoke(
                     console,
                     "installer.review",
@@ -489,6 +540,7 @@ mod tests {
         install_polls: VecDeque<&'static str>,
         calls: Vec<String>,
         policy: &'static str,
+        preferences: Value,
     }
 
     impl FakeInstaller {
@@ -503,6 +555,7 @@ mod tests {
                 install_polls: VecDeque::from(["running", "running", "done"]),
                 calls: Vec::new(),
                 policy: "passphrase",
+                preferences: json!({"hostname":"scenario-tilo", "layout":"English (US)", "timezone":"UTC", "locale":"en_US.UTF-8"}),
             }
         }
 
@@ -525,6 +578,8 @@ mod tests {
                     "confirmation_target": self.selected,
                     "preflight": "not-run",
                 },
+                "keyboard": {"layout": self.preferences["layout"]},
+                "options": self.preferences,
                 "account": {"secret_policy": self.policy},
                 "install": {"state": install, "stages": ["Copying verified Tilo system files…"], "log_tail": []},
                 "recovery_key": {"available": self.step == "install"},
@@ -540,10 +595,25 @@ mod tests {
             self.calls.push(id.to_owned());
             let ok = json!({"answer": {"id": id}});
             match (self.step, id) {
+                ("keyboard", "set-layout@installer.keyboard") => {
+                    self.preferences["layout"] = args["layout"].clone();
+                }
+                ("options", "set-hostname@installer.options") => {
+                    self.preferences["hostname"] = args["hostname"].clone();
+                }
+                ("options", "set-timezone@installer.options") => {
+                    self.preferences["timezone"] = args["timezone"].clone();
+                }
+                ("options", "set-locale@installer.options") => {
+                    self.preferences["locale"] = args["locale"].clone();
+                }
                 ("keyboard", "next@installer") => self.step = "network",
                 ("network", "next@installer") => self.step = "disk",
                 ("disk", "set-method@installer.storage") => {
                     self.method = args["method"].as_str().unwrap().into();
+                }
+                ("options", "set-filesystem@installer.options") => {
+                    assert_eq!(args["filesystem"], "ext4");
                 }
                 ("disk", "select@installer.disk:/dev/vdb") => {
                     self.selected = Some("/dev/vdb".into());
@@ -558,7 +628,8 @@ mod tests {
                     self.disk_passphrase = args["passphrase"].as_str().map(str::to_owned);
                 }
                 ("account", "next@installer") if self.passphrase.is_some() => self.step = "options",
-                ("options", "next@installer") => self.step = "review",
+                ("options", "next@installer") => self.step = "media",
+                ("media", "next@installer") => self.step = "review",
                 ("review", "set-recovery-promise@installer.review") => self.promise = true,
                 ("review", "begin@installer.review") => {
                     if !self.promise {
@@ -572,7 +643,6 @@ mod tests {
                     self.step = "install";
                 }
                 ("account", "set-identity@installer.account")
-                | ("options", "set-hostname@installer.options")
                 | ("install", "confirm-saved@installer.recovery" | "power-off@installer.power") => {
                 }
                 _ => return Self::refuse("action_unavailable"),
@@ -605,13 +675,81 @@ mod tests {
     fn choices(unlock: Unlock) -> Choices {
         Choices {
             layout: Layout::Erase,
+            filesystem: None,
             unlock,
             username: "scenario".into(),
             full_name: "Scenario User".into(),
             hostname: "scenario-tilo".into(),
+            keyboard_layout: None,
+            timezone: None,
+            locale: None,
             account_secret: Secret::new("scenario-passphrase-2026"),
             disk_secret: None,
         }
+    }
+
+    #[test]
+    fn explicit_install_preferences_are_applied_and_checked_before_begin() {
+        let mut requested = choices(Unlock::Passphrase);
+        requested.hostname = "laptop".into();
+        requested.keyboard_layout = Some("German (QWERTZ)".into());
+        requested.timezone = Some("Europe/Berlin".into());
+        requested.locale = Some("de_DE.UTF-8".into());
+        let mut fake = FakeInstaller::new();
+        install(
+            &mut fake,
+            &requested,
+            Duration::from_secs(60),
+            &mut NoWait(0),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(
+            fake.preferences,
+            json!({"hostname":"laptop", "layout":"German (QWERTZ)", "timezone":"Europe/Berlin", "locale":"de_DE.UTF-8"})
+        );
+        assert!(fake.calls.contains(&"begin@installer.review".into()));
+        // Preconfigured media may skip keyboard. Refuse an incompatible choice before disk writes.
+        let mut skipped = FakeInstaller::new();
+        skipped.step = "network";
+        let error = install(
+            &mut skipped,
+            &requested,
+            Duration::from_secs(60),
+            &mut NoWait(0),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("/keyboard/layout"));
+        assert!(!skipped.calls.contains(&"begin@installer.review".into()));
+        let mut compatible = FakeInstaller::new();
+        compatible.step = "network";
+        compatible.preferences["layout"] = json!("German (QWERTZ)");
+        install(
+            &mut compatible,
+            &requested,
+            Duration::from_secs(60),
+            &mut NoWait(0),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(compatible.calls.contains(&"begin@installer.review".into()));
+        let mut default = FakeInstaller::new();
+        install(
+            &mut default,
+            &choices(Unlock::Passphrase),
+            Duration::from_secs(60),
+            &mut NoWait(0),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(default.preferences["layout"], "English (US)");
+        assert!(!default.calls.iter().any(|call| matches!(
+            call.as_str(),
+            "set-layout@installer.keyboard"
+                | "set-timezone@installer.options"
+                | "set-locale@installer.options"
+        )));
     }
 
     /// The whole wizard is driven through actions in whatever order it presents; distinct credentials
@@ -638,6 +776,7 @@ mod tests {
                     "disk",
                     "account",
                     "options",
+                    "media",
                     "review",
                     "install",
                     "power-off"
@@ -663,6 +802,7 @@ mod tests {
             let mut fake = FakeInstaller::new();
             let mut chosen = choices(Unlock::Passphrase);
             chosen.username = "bob".into();
+            chosen.filesystem = Some("ext4".into());
             chosen.account_secret = Secret::new("account-password-for-testing");
             chosen.disk_secret = Some(Secret::new("disk-passphrase-for-testing"));
             let mut lines = Vec::new();
@@ -674,6 +814,10 @@ mod tests {
                 &mut |line| lines.push(line.to_owned()),
             )
             .unwrap();
+            assert!(
+                fake.calls
+                    .contains(&"set-filesystem@installer.options".to_string())
+            );
             assert_eq!(
                 fake.passphrase.as_deref(),
                 Some("account-password-for-testing")

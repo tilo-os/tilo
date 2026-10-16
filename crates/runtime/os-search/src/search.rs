@@ -3,7 +3,7 @@
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use tilo_actions::remote::{
@@ -14,6 +14,7 @@ use tilo_actions::{ActionFailure, InvocationId};
 
 use crate::entry::{EntryId, SearchEntry, opening};
 use crate::index::{Changes, ResourceIndex};
+use tilo_lock::MutexRecover as _;
 
 /// Rows asked for per catalogue page.
 const PAGE: u32 = 128;
@@ -74,7 +75,7 @@ impl OsSearch {
     }
 
     fn index(&self) -> MutexGuard<'_, ResourceIndex> {
-        self.index.lock().unwrap_or_else(PoisonError::into_inner)
+        self.index.lock_recover()
     }
 
     /// Walk the catalogue and make what it offers the index.
@@ -223,12 +224,15 @@ impl OsSearch {
         let receipt = answer(self.host.invoke(
             &self.caller,
             InvokeRequest {
+                on_behalf_of: None,
                 invocation: InvocationId::new(),
                 target: entry.target,
                 argument: InvokeArgument::None,
                 context: None,
                 confirmation: None,
                 revision: Some(resolved.revision),
+                wait_ms: None,
+                appearance: None,
             },
         ))
         .await??;

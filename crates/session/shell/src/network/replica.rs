@@ -21,7 +21,9 @@
 //! [`TopicSubscriber`]: crate::network::hub::TopicSubscriber
 //! [`WorkspaceTree`]: crate::shell::state::WorkspaceTree
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::network::hub::TopicSubscriber;
 use crate::network::protocol::NeighbourMsg;
@@ -34,7 +36,7 @@ use crate::shell::state::{PeerOrigin, RoomId};
 /// and a FIFO queue of messages to broadcast on its behalf.
 ///
 /// The tree is a [`WorkspaceTreeHandle`]
-/// (`Arc<parking_lot::RwLock<WorkspaceTree>>`) shared with the shell chrome
+/// (one tree behind a lock, with a write generation) shared with the shell chrome
 /// and the portal's grant store, so `apply_changes` is visible to both
 /// immediately. `pending_outgoing` uses `std::sync::Mutex` — drained from
 /// arbitrary threads, no read-heavy workload to motivate `RwLock`.
@@ -56,8 +58,20 @@ pub struct WorkspaceTreeReplica {
     /// transport-authenticated identity rather than anything the message
     /// claimed, so a peer can't put itself in here by saying it is here.
     /// Session-scoped, never persisted.
-    pub participants: std::collections::HashMap<RoomId, std::collections::BTreeSet<u64>>,
+    participants: std::collections::HashMap<RoomId, std::collections::BTreeSet<u64>>,
+    /// Advanced each time a peer is first seen taking part in a room, so the
+    /// roster can tell that nobody new arrived without locking the replica.
+    participants_epoch: Arc<AtomicU64>,
+    /// The heads a peer's request named that this replica asked a room back
+    /// for, and when (see [`PULL_BACK_REPEAT`]).
+    pulled_back: std::collections::HashMap<RoomId, (Vec<automerge::ChangeHash>, Instant)>,
 }
+
+/// How long a replica waits before asking a room back again for the same
+/// heads it lacked. Changes this machine refuses stay unknown here however
+/// often they are offered; two peers that each refuse the other's would
+/// otherwise ask each other back forever. New heads are asked for at once.
+const PULL_BACK_REPEAT: Duration = Duration::from_secs(300);
 
 impl WorkspaceTreeReplica {
     pub fn new(id: u64, tree: WorkspaceTreeHandle) -> Self {
@@ -67,7 +81,22 @@ impl WorkspaceTreeReplica {
             pending_outgoing: Arc::new(Mutex::new(Vec::new())),
             origin: PeerOrigin::hub(id),
             participants: std::collections::HashMap::new(),
+            participants_epoch: Arc::default(),
+            pulled_back: std::collections::HashMap::new(),
         }
+    }
+
+    /// Whether `room` may be asked back now for the `heads` a peer named,
+    /// noting that it is.
+    fn pull_back_due(&mut self, room: RoomId, heads: &[automerge::ChangeHash]) -> bool {
+        let now = Instant::now();
+        if self.pulled_back.get(&room).is_some_and(|(asked, at)| {
+            asked.as_slice() == heads && now.saturating_duration_since(*at) < PULL_BACK_REPEAT
+        }) {
+            return false;
+        }
+        self.pulled_back.insert(room, (heads.to_vec(), now));
+        true
     }
 
     /// Record that `from` has taken part in `room`'s document; a no-op for an
@@ -76,7 +105,16 @@ impl WorkspaceTreeReplica {
         let Some(handle) = from.liveness_handle() else {
             return;
         };
-        self.participants.entry(room).or_default().insert(handle);
+        if self.participants.entry(room).or_default().insert(handle) {
+            self.participants_epoch.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    /// A counter that advances whenever [`Self::participants_in`] gains a
+    /// peer in any room. Shared, so a reader holding it can compare two
+    /// loads without taking the replica's lock.
+    pub fn participants_epoch(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.participants_epoch)
     }
 
     /// The peers that have taken part in `room`'s document this session.
@@ -95,11 +133,21 @@ impl WorkspaceTreeReplica {
     /// room's current heads — asked room by room so an answer can't merge
     /// several rooms into one undifferentiated document.
     pub fn request_sync(&self) {
+        let rooms = self.tree.read().rooms();
+        self.request_sync_of(&rooms);
+    }
+
+    /// [`Self::request_sync`] for `rooms` alone.
+    fn request_sync_of(&self, rooms: &[RoomId]) {
         let mut tree = self.tree.write();
-        let rooms = tree.rooms();
         let mut msgs = Vec::with_capacity(rooms.len());
-        for room in rooms {
+        for &room in rooms {
             if tree.requires_native_owner(room) {
+                tracing::debug!(
+                    target: "shell::network::replica",
+                    %room,
+                    "not requesting room replication: the room's native owner replicates it"
+                );
                 continue;
             }
             let heads = tree.room_heads(room);
@@ -119,23 +167,18 @@ impl WorkspaceTreeReplica {
                 since,
                 room: room.to_string(),
                 invite_id: None,
+                nonce: getrandom::rand_core::Rng::next_u64(&mut getrandom::rand_core::UnwrapErr(
+                    getrandom::SysRng,
+                )),
             });
         }
         drop(tree);
-        self.pending_outgoing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend(msgs);
+        self.pending_outgoing.lock_recover().extend(msgs);
     }
 
     /// Drain pending outbound messages so a test (or Hub-driver) can broadcast them; stable FIFO order.
     pub fn drain_outgoing(&self) -> Vec<NeighbourMsg> {
-        std::mem::take(
-            &mut *self
-                .pending_outgoing
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
+        std::mem::take(&mut *self.pending_outgoing.lock_recover())
     }
 }
 
@@ -179,6 +222,7 @@ impl WorkspaceTreeReplica {
                     serde_json::from_slice(since).unwrap_or_default();
                 let mut tree = self.tree.write();
                 let exported = tree.export_room_changes_since(room_id, &since_heads);
+                let behind = exported.is_some() && tree.room_lacks_any(room_id, &since_heads);
                 drop(tree);
                 // `None` = not in that room. No reply — a peer learns nothing about a room it named, not even that it's unknown here.
                 let Some(changes) = exported else {
@@ -187,12 +231,19 @@ impl WorkspaceTreeReplica {
                 // Recorded after "not in that room" (so asking about an absent room
                 // doesn't count) and before "nothing to send" (an up-to-date guest still counts as a participant).
                 self.note_participant(room_id, sender);
+                // The asker holds changes this machine does not: a push of
+                // them never arrived here. Ask back rather than wait for this
+                // machine's own next pull, which an idle desktop makes only
+                // every few minutes; the asker's pull after its own activity
+                // is what repairs a push its peers missed.
+                if behind && self.pull_back_due(room_id, &since_heads) {
+                    self.request_sync_of(&[room_id]);
+                }
                 if changes.is_empty() {
                     return;
                 }
                 self.pending_outgoing
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock_recover()
                     .push(NeighbourMsg::SyncResp {
                         changes,
                         room: room_id.to_string(),
@@ -243,7 +294,6 @@ mod tests {
 
     use super::*;
     use crate::network::hub::Hub;
-    use crate::shell::state::WorkspaceAuthority as _;
     use automerge::{ROOT, ReadDoc, ScalarValue};
 
     /// Proxy that forwards `TopicSubscriber` calls into a shared replica
@@ -268,7 +318,7 @@ mod tests {
 
     use crate::network::invite::{accept_invite_into, make_invite_token};
     use crate::shell::state::WorkspaceId;
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+    use collab_types::caps::{Access, CapOverride, Scope, Subject};
 
     /// Room A's distinguishing strings, chosen so a substring search can't match them by accident.
     const ROOM_A_NAME: &str = "Design review";
@@ -289,26 +339,26 @@ mod tests {
         // Re-point each room at its own owner so the two are distinguishable on the wire.
         tree.adopt_ownerless_workspaces(&ROOM_A_OWNER.to_string());
         if let Some(ws) = tree.desktop.workspaces.iter_mut().find(|w| w.id == b) {
-            ws.owner = Some(ROOM_B_OWNER.to_string());
+            ws.set_owner(ROOM_B_OWNER.to_string());
         }
 
-        tree.grant_in_workspace(
+        tree.grant_sandbox_in_workspace(
             a,
             &ROOM_A_OWNER.to_string(),
             CapOverride::grant(
                 Subject::app("files"),
                 Scope::FsPath(ROOM_A_PATH.to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("the owner may grant in room A");
-        tree.grant_in_workspace(
+        tree.grant_sandbox_in_workspace(
             b,
             &ROOM_B_OWNER.to_string(),
             CapOverride::grant(
                 Subject::app("files"),
                 Scope::FsPath(ROOM_B_PATH.to_string()),
-                Verb::Read,
+                Access::Read,
             ),
         )
         .expect("the owner may grant in room B");
@@ -396,6 +446,56 @@ mod tests {
             for msg in &replies {
                 hub.broadcast(id, msg);
             }
+        }
+    }
+
+    #[test]
+    fn rejected_replies_do_not_commit_a_pending_local_rename() {
+        use automerge::transaction::Transactable as _;
+
+        let (mut tree, workspace, _) = host_with_two_rooms();
+        let room = tree.room_of(workspace).expect("room A");
+        tree.sync_room_doc(room);
+        let original_heads = tree.room_heads(room);
+        let mut rogue = tree.room_docs.get(&room).expect("room document").clone();
+        rogue
+            .put(automerge::ROOT, "owner", "rogue-owner")
+            .expect("rogue change");
+        let rogue_changes = rogue
+            .get_changes(&original_heads)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect();
+        tree.desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace)
+            .expect("workspace")
+            .name = "Renamed locally".into();
+        tree.seed_doc_from_cache();
+        let tree = tree.shared();
+        let mut replica = WorkspaceTreeReplica::new(1, tree.clone());
+        for changes in [rogue_changes, vec![vec![0xff]]] {
+            replica.handle_from(
+                &PeerOrigin::hub(2),
+                &NeighbourMsg::SyncResp {
+                    changes,
+                    room: room.to_string(),
+                },
+            );
+            let mut tree = tree.write();
+            assert_eq!(tree.room_heads(room), original_heads);
+            let workspace = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == workspace)
+                .expect("workspace");
+            let name = workspace.name.clone();
+            let owner = workspace.owner().cloned();
+            drop(tree);
+            assert_eq!(name, "Renamed locally");
+            assert_eq!(owner.as_deref(), Some(ROOM_A_OWNER));
         }
     }
 
@@ -511,6 +611,7 @@ mod tests {
                     since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new()).unwrap(),
                     room: stranger_room.to_string(),
                     invite_id: None,
+                    nonce: 0,
                 },
             );
             assert!(
@@ -534,6 +635,7 @@ mod tests {
                     since: Vec::new(),
                     room: String::new(),
                     invite_id: None,
+                    nonce: 0,
                 },
             );
 
@@ -607,13 +709,13 @@ mod tests {
                 .expect("the guest's workspace")
                 .set_owner(ROGUE_OWNER.to_string());
             guest
-                .grant_in_workspace(
+                .grant_sandbox_in_workspace(
                     guest_ws,
                     &ROGUE_OWNER.to_string(),
                     CapOverride::grant(
                         Subject::app("rogue"),
                         Scope::FsPath(ROGUE_PATH.to_string()),
-                        Verb::Write,
+                        Access::Write,
                     ),
                 )
                 .expect("the guest grants in its own copy");
@@ -637,18 +739,18 @@ mod tests {
                 .find(|w| w.id == a)
                 .expect("the host keeps room A's workspace");
             assert_eq!(
-                ws.owner.as_deref(),
+                ws.owner().map(String::as_str),
                 Some(ROOM_A_OWNER),
                 "a guest's SyncResp took ownership of the host's room",
             );
             assert!(
-                ws.capabilities
+                ws.sandbox
                     .iter()
                     .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROOM_A_PATH)),
                 "the owner's own grant was replaced by the guest's list",
             );
             assert!(
-                !ws.capabilities
+                !ws.sandbox
                     .iter()
                     .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROGUE_PATH)),
                 "the guest's grant entered the host's capability list",
@@ -710,6 +812,8 @@ mod tests {
                 guest_tree.set_room(guest_ws, room_a),
                 "the guest joins room A"
             );
+            // The invite names the host (hub 1) as room A's governor.
+            assert!(guest_tree.pin_room_authority(room_a, PeerOrigin::hub(1)));
 
             let tree_a = host_tree.shared();
             let tree_b = guest_tree.shared();
@@ -748,7 +852,7 @@ mod tests {
                 .expect("the guest keeps its own workspace");
             assert_eq!(ws.name, ROOM_A_NAME, "the room's name arrived");
             assert!(
-                ws.capabilities
+                ws.sandbox
                     .iter()
                     .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROOM_A_PATH)),
                 "the room's capabilities arrived"
@@ -765,40 +869,36 @@ mod tests {
             let owner = ROOM_A_OWNER.to_string();
             let bob = "bob-device-root".to_string();
             let carol = "carol-device-root".to_string();
-            let bob_cap = host_tree
-                .grant_in_workspace(
+            host_tree
+                .admit_in_workspace(
                     host_workspace,
                     &owner,
-                    CapOverride::membership(
-                        Subject::person(bob.clone()),
-                        room.to_string(),
-                        Verb::Write,
-                    ),
+                    &bob,
+                    tilo_action_policy::Role::Editor,
                 )
                 .expect("owner admits Bob");
             host_tree
-                .grant_in_workspace(
+                .admit_in_workspace(
                     host_workspace,
                     &owner,
-                    CapOverride::membership(
-                        Subject::person(carol.clone()),
-                        room.to_string(),
-                        Verb::Comment,
-                    ),
+                    &carol,
+                    tilo_action_policy::Role::Commenter,
                 )
                 .expect("owner admits Carol");
             host_tree.sync_room_doc(room);
 
+            let authority_key = iroh::SecretKey::generate();
             let guest = |name: &str| {
                 let mut tree = WorkspaceTree::default();
                 let workspace = tree.append_empty_workspace(name);
                 assert!(tree.set_room(workspace, room));
+                // Each accepted the authority's invite, which pins it.
+                assert!(tree.pin_room_authority(room, PeerOrigin::peer(&authority_key.public())));
                 (tree.shared(), workspace)
             };
             let (bob_tree, bob_workspace) = guest("Bob local");
             let (carol_tree, carol_workspace) = guest("Carol local");
             let host_tree = host_tree.shared();
-            let authority_key = iroh::SecretKey::generate();
             let host = Arc::new(Mutex::new(
                 WorkspaceTreeReplica::new(1, host_tree.clone())
                     .with_origin(PeerOrigin::peer(&authority_key.public())),
@@ -833,7 +933,7 @@ mod tests {
             assert!(
                 host_tree
                     .write()
-                    .revoke_in_workspace(host_workspace, &owner, &bob_cap)
+                    .remove_from_workspace(host_workspace, &owner, &bob)
             );
 
             // Carol stays online; Bob's replica is reconstructed to model a
@@ -879,6 +979,8 @@ mod tests {
                 guest_tree.set_room(guest_ws, room_a),
                 "the guest joins room A"
             );
+            // The invite names the host (hub 1) as room A's governor.
+            assert!(guest_tree.pin_room_authority(room_a, PeerOrigin::hub(1)));
 
             let tree_a = host_tree.shared();
             let tree_b = guest_tree.shared();
@@ -914,6 +1016,7 @@ mod tests {
             let mut guest_tree = WorkspaceTree::default();
             let guest_ws = guest_tree.append_empty_workspace("Placeholder");
             assert!(guest_tree.set_room(guest_ws, room_a));
+            assert!(guest_tree.pin_room_authority(room_a, PeerOrigin::hub(1)));
 
             let tree_a = host_tree.shared();
             let tree_b = guest_tree.shared();
@@ -938,6 +1041,46 @@ mod tests {
     }
 
     #[test]
+    fn a_delayed_reply_preserves_a_local_edit_not_yet_exported() {
+        let (tree, workspace, _) = host_with_two_rooms();
+        let room = tree.room_of(workspace).expect("room A");
+        let tree = tree.shared();
+        let old_changes = tree
+            .write()
+            .export_room_changes_since(room, &[])
+            .expect("room snapshot");
+        {
+            let mut tree = tree.write();
+            tree.desktop
+                .workspaces
+                .iter_mut()
+                .find(|w| w.id == workspace)
+                .expect("workspace")
+                .name = "Renamed locally".into();
+            tree.seed_doc_from_cache();
+        }
+        let mut replica = WorkspaceTreeReplica::new(1, tree.clone());
+        replica.handle_from(
+            &PeerOrigin::hub(2),
+            &NeighbourMsg::SyncResp {
+                changes: old_changes,
+                room: room.to_string(),
+            },
+        );
+        assert_eq!(
+            tree.read()
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == workspace)
+                .expect("workspace")
+                .name,
+            "Renamed locally",
+            "a delayed peer response must merge the local edit before projecting the room back into the cache"
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "each phase keeps one former test's body verbatim"
@@ -955,6 +1098,7 @@ mod tests {
                     since: vec![1],
                     room: String::new(),
                     invite_id: None,
+                    nonce: 0,
                 });
             rep.pending_outgoing
                 .lock()
@@ -963,6 +1107,7 @@ mod tests {
                     since: vec![2],
                     room: String::new(),
                     invite_id: None,
+                    nonce: 0,
                 });
 
             let drained = rep.drain_outgoing();
@@ -1030,6 +1175,8 @@ mod tests {
                 rep.participants_in(room).is_empty(),
                 "nobody has asked about this room yet",
             );
+            let epoch = rep.participants_epoch();
+            let arrivals = || epoch.load(std::sync::atomic::Ordering::Acquire);
 
             // A room this machine is not in — answering nothing is tested elsewhere; this also leaves no trace of a participant.
             let elsewhere = RoomId::new();
@@ -1039,6 +1186,7 @@ mod tests {
                     since: since.clone(),
                     room: elsewhere.to_string(),
                     invite_id: None,
+                    nonce: 0,
                 },
             );
             assert!(
@@ -1054,6 +1202,7 @@ mod tests {
                     since: since.clone(),
                     room: room.to_string(),
                     invite_id: None,
+                    nonce: 0,
                 },
             );
             assert!(
@@ -1061,19 +1210,30 @@ mod tests {
                 "a hub subscriber is not a peer that arrived: {:?}",
                 rep.participants_in(room),
             );
-
-            rep.handle_from(
-                &PeerOrigin::peer(&guest),
-                &NeighbourMsg::SyncReq {
-                    since,
-                    room: room.to_string(),
-                    invite_id: None,
-                },
+            assert_eq!(
+                arrivals(),
+                0,
+                "nobody arrived, so the roster has nothing to re-read"
             );
+
+            let ask = NeighbourMsg::SyncReq {
+                since,
+                room: room.to_string(),
+                invite_id: None,
+                nonce: 0,
+            };
+            rep.handle_from(&PeerOrigin::peer(&guest), &ask);
             assert!(
                 rep.participants_in(room).contains(&handle),
                 "a peer that asked this room for its changes is in it: {:?}",
                 rep.participants_in(room),
+            );
+            assert_eq!(arrivals(), 1, "an arrival is announced to the roster");
+            rep.handle_from(&PeerOrigin::peer(&guest), &ask);
+            assert_eq!(
+                arrivals(),
+                1,
+                "asking again is not arriving again, so the roster is not re-read",
             );
         }
     }
@@ -1141,7 +1301,7 @@ mod tests {
             use crate::shell::state::WorkspaceTreeHandleExt;
 
             // Construct via the handle so chrome + replica share the same
-            // `Arc<RwLock<WorkspaceTree>>`; starts empty so every chrome mutation is captured.
+            // tree; starts empty so every chrome mutation is captured.
             let handle: WorkspaceTreeHandle = WorkspaceTreeHandle::test_default();
             let replica = WorkspaceTreeReplica::new(42, handle.clone());
             let chrome = ChromeState::new_with_handle(handle.clone());
@@ -1178,6 +1338,7 @@ mod tests {
     reason = "The native WorkspaceExt methods are selected by host-specific workspace code and test configurations."
 )]
 use crate::shell::state::WorkspaceExt as _;
+use tilo_lock::MutexRecover as _;
 
 #[cfg(test)]
 mod native_owner_gate_tests {
@@ -1197,6 +1358,7 @@ mod native_owner_gate_tests {
                 since: vec![],
                 room: room.to_string(),
                 invite_id: None,
+                nonce: 0,
             },
         );
         assert!(

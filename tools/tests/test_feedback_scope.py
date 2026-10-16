@@ -13,8 +13,14 @@ class FeedbackScopeTests(unittest.TestCase):
             self.assertRegex(workflow, r'python3 tools/ci/compiler_inputs\.py --output target/ci/compiler-inputs\.json --\s+check --locked --all-targets \$\{\{ matrix\.packages \}\}')
             self.assertIn('cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}', workflow)
             self.assertIn("if: matrix.test_packages != ''", workflow)
-            self.assertIn("if: contains(matrix.test_packages, '-p app-cli')", workflow)
-            self.assertIn('needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins]', workflow)
+            # The merged tree's shard preparation builds the installer fixture
+            # app-cli's tests execute (test_ci_test_shard_environment.py).
+            self.assertIn('run: bash tools/ci/prepare-test-shard.sh', workflow)
+            prepare = (ROOT / 'tools/ci/prepare-test-shard.sh').read_text(encoding='utf-8')
+            self.assertIn('if tests app-cli app-host; then', prepare)
+            # A shard's affected apps pass the nightly's native certification.
+            self.assertIn('certify --workspace ${{ matrix.test_packages }}', workflow)
+            self.assertIn('needs: [builder, select, security, test, check, clippy, android, wasm, suites, vendored, pins, tapps]', workflow)
             self.assertIn('test "$BUILDER_RESULT" = success', workflow)
             self.assertIn('*:true:success)', workflow)
             self.assertIn('pull_request:false:skipped)', workflow)
@@ -32,7 +38,7 @@ class FeedbackScopeTests(unittest.TestCase):
         with self.subTest(phase='nightly executes complete coverage on both native architectures'):
             workflow = (ROOT / '.forgejo/workflows/ci-nightly.yml').read_text(encoding='utf-8')
             pairs = re.findall(r'- arch: (\S+)\s+runner: (\S+)', workflow)
-            self.assertEqual(pairs, [('x86_64', 'runner'), ('aarch64', 'runner-arm64')])
+            self.assertEqual(pairs, [('x86_64', 'runner-disk-100g'), ('aarch64', 'runner-disk-100g-arm64')])
             self.assertIn('runs-on: ${{ matrix.runner }}', workflow)
             self.assertIn("./os/dev/assert-native-arch.sh '${{ matrix.arch }}'", workflow)
             self.assertIn('lvp_icd.${{ matrix.arch }}.json', workflow)

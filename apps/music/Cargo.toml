@@ -21,25 +21,33 @@ web-features = []
 
 [features]
 thin = ["dep:runtime-dylib"]
+# Play Spotify and reach YouTube Music through their engine libraries in the
+# runtime bundle (libtilo_spotify_engine.so and libtilo_youtube_engine.so,
+# under crates/runtime/engines/) instead of the executable. The release
+# collection enables it (dist/apps/app-collections.toml); a `thin` build
+# without it (`tilo-app dev`) links librespot and rustypipe statically,
+# because an engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
+runtime-engine = ["thin", "spotify-native", "tilo-spotify-engine/thin", "tilo-youtube-engine/thin"]
 # The default app includes live search, stream resolution, and audio output.
 # The bundled sample library and runtime offline switch keep shots and tests
 # hermetic. Live builds also support network lyrics.
-default = ["audio", "live"]
+default = ["audio", "live", "spotify-native"]
+spotify-native = ["audio", "live", "tilo-spotify/native"]
 # Desktop audio output. Media controls and the host file chooser for playlist
 # covers come with `ui`.
-audio = ["dep:gstreamer", "dep:tokio"]
+audio = ["dep:gstreamer", "dep:tokio", "media/voice"]
 # YouTube Music search and stream resolution through the pure-Rust `rustypipe`
 # InnerTube client. Shots/tests select their hermetic backend at runtime; `reqwest`
 # supports `--probe` verification.
-live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "tilo-net/http", "tilo-net/blocking"]
-# Enable network lyrics without the full live backend; live already enables them.
-lyrics = ["tilo-net/http", "tilo-net/blocking"]
+live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "dep:tilo-invidious", "tilo-net/http", "tilo-net/blocking", "dep:tilo-spotify"]
 
 [dependencies]
-fnv.workspace = true
+tilo-spotify = { path = "../../crates/platform/tilo-spotify", optional = true }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+tilo-spotify-engine = { path = "../../crates/runtime/engines/spotify", optional = true }
+tilo-youtube-engine = { path = "../../crates/runtime/engines/youtube", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 tilo-files = { path = "../../crates/platform/tilo-files" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -60,7 +68,6 @@ image = { workspace = true, features = ["jpeg", "png", "webp"] }
 # Portal-selected cover art is normalised through the shared preview decoder.
 tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 tracing.workspace = true
-tracing-subscriber.workspace = true
 hex.workspace = true
 sha2.workspace = true
 vello.workspace = true
@@ -80,8 +87,12 @@ tokio = { workspace = true, optional = true, features = ["rt", "macros", "time"]
 # resolution. Embeds `rquickjs` for signature deobfuscation — no external
 # interpreter, downloader, or JS runtime binary. Gated behind `live`.
 rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }
+# Fully-rangeable stream URLs through Invidious media proxies.
+tilo-invidious = { path = "../../crates/platform/tilo-invidious", optional = true }
 
 [dev-dependencies]
+test-http = { path = "../../crates/dev/test-http" }
+tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 serial_test.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
@@ -93,3 +104,8 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+
+# The Windows-on-Arm test proves QuickJS, which rustypipe embeds for stream
+# signatures, runs there.
+[target.'cfg(all(windows, target_arch = "aarch64"))'.dev-dependencies]
+rquickjs.workspace = true

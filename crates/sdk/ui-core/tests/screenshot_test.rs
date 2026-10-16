@@ -1,7 +1,7 @@
 //! Screenshot-driven visual E2E smoke test.
 //!
 //! Renders a minimal vello scene through the headless offscreen harness
-//! (`support::offscreen`), then asserts pixel invariants — background tint
+//! (`tilo_ui::offscreen`), then asserts pixel invariants — background tint
 //! at (0, 0), a filled rect lighting up opaque pixels inside its bounds,
 //! untouched regions staying at the base colour.
 //!
@@ -14,27 +14,10 @@
 //! for reference-set provenance + per-DPI bases + tolerance. This is an "am
 //! I wired up correctly" smoke check.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
-use crate::support::offscreen::OffscreenRenderer;
+use tilo_ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
-
-fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        OffscreenRenderer::new(w, h)
-    }))
-    .ok()
-}
 
 #[allow(
     clippy::too_many_lines,
@@ -49,7 +32,7 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
     // Case `headless_renderer_paints_a_solid_background_and_a_filled_rect`.
     {
         fn headless_renderer_paints_a_solid_background_and_a_filled_rect() {
-            let Some(mut renderer) = try_new_renderer(128, 64) else {
+            let Some(mut renderer) = OffscreenRenderer::try_new(128, 64).ok() else {
                 eprintln!("offscreen: no wgpu adapter available — skipping screenshot test");
                 return;
             };
@@ -98,7 +81,7 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
     // Case `headless_renderer_writes_a_png_file`.
     {
         fn headless_renderer_writes_a_png_file() {
-            let Some(mut renderer) = try_new_renderer(32, 32) else {
+            let Some(mut renderer) = OffscreenRenderer::try_new(32, 32).ok() else {
                 eprintln!("offscreen: no wgpu adapter available — skipping PNG test");
                 return;
             };
@@ -147,7 +130,7 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
             use tilo_ui::widget::{Container, Widget};
 
             let (w, h) = (160, 80);
-            let Some(mut renderer) = try_new_renderer(w, h) else {
+            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
                 eprintln!("offscreen: no wgpu adapter available — skipping widget render test");
                 return;
             };
@@ -225,7 +208,7 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
             // 240 wide gives us room for the first 96 px min-width pill + gap;
             // 44 tall matches TAB_BAR_HEIGHT exactly.
             let (bar_w, bar_h) = (240u32, 44u32);
-            let Some(mut renderer) = try_new_renderer(bar_w, bar_h) else {
+            let Some(mut renderer) = OffscreenRenderer::try_new(bar_w, bar_h).ok() else {
                 eprintln!("offscreen: no wgpu adapter available — skipping tab-bar test");
                 return;
             };

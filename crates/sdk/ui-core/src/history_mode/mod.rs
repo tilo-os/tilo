@@ -4,7 +4,6 @@
 //! It therefore neither commits an app's open transaction nor gives a
 //! historical renderer access to a live record, persistence, or dispatch.
 
-pub mod adapter;
 mod assets;
 pub mod capability;
 pub mod checked_files;
@@ -18,6 +17,7 @@ pub use owner::HistoryOwner;
 pub(crate) mod canvas;
 pub(crate) mod frame;
 pub(crate) mod frozen_root;
+pub use frozen_root::FrozenRootPreview;
 pub(crate) mod host;
 pub mod pending_controls;
 pub use preview::*;
@@ -187,7 +187,21 @@ pub struct HistoryController {
     live_updates: bool,
     generation: u64,
     snapshots: HashMap<Vec<ChangeHash>, Arc<[u8]>>,
+    /// How many of the newest changes the projection describes.
+    window: usize,
+    /// The projected history holds changes older than the window.
+    has_earlier: bool,
+    /// For an app's own history, which of the session's lists of its rooms'
+    /// verified agents ([`crate::history_source::set_room_agents`]) the
+    /// source names; a newer list is named on the next refresh.
+    room_agents: Option<u64>,
 }
+
+/// How many of the newest changes a history view describes when it opens,
+/// and how many more each request for earlier ones adds. Describing a change
+/// costs a replay step, so a long history opens at its latest page instead
+/// of replaying everything.
+pub const HISTORY_PAGE: usize = 200;
 
 impl HistoryController {
     /// Build a controller with the default factual history source.
@@ -210,21 +224,64 @@ impl HistoryController {
         source: HistorySource,
         live: &AutoCommit,
     ) -> Result<Self, HistoryError> {
-        let mut controller = Self {
+        let mut controller = Self::unprojected_with_source(resource, source, Vec::new());
+        controller.refresh(live)?;
+        Ok(controller)
+    }
+
+    /// A controller that has observed the committed frontier `live_heads`
+    /// but projected nothing yet. Projecting replays the whole change log,
+    /// which only an open history view needs; the first [`Self::refresh`]
+    /// against a document does it.
+    pub(crate) fn unprojected(resource: HistoryResource, live_heads: Vec<ChangeHash>) -> Self {
+        // An app's own history names the agents the session verified for
+        // its rooms, as the workspace's Activity does.
+        let revision = crate::history_source::room_agents_revision();
+        let source = HistorySource::new()
+            .with_authors(crate::history_source::AuthorDirectory::with_room_agents());
+        let mut controller = Self::unprojected_with_source(resource, source, live_heads);
+        controller.room_agents = Some(revision);
+        controller
+    }
+
+    fn unprojected_with_source(
+        resource: HistoryResource,
+        source: HistorySource,
+        live_heads: Vec<ChangeHash>,
+    ) -> Self {
+        Self {
             resource,
-            source: source.with_max_entries(usize::MAX),
+            source: source.with_max_entries(HISTORY_PAGE),
             entries: Vec::new(),
             groups: Vec::new(),
             projected_heads: None,
-            observed_live_heads: Vec::new(),
+            observed_live_heads: sorted_heads(live_heads),
             selected: None,
             side: PreviewSide::After,
             live_updates: false,
             generation: 0,
             snapshots: HashMap::new(),
-        };
-        controller.refresh(live)?;
-        Ok(controller)
+            window: HISTORY_PAGE,
+            has_earlier: false,
+            room_agents: None,
+        }
+    }
+
+    /// Whether changes older than the listed ones exist.
+    pub fn has_earlier(&self) -> bool {
+        self.has_earlier
+    }
+
+    /// List another page of older changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a projection error if the committed history cannot be read.
+    pub fn show_earlier(&mut self, live: &AutoCommit) -> Result<(), HistoryError> {
+        self.window = self.window.saturating_add(HISTORY_PAGE);
+        self.source = std::mem::take(&mut self.source).with_max_entries(self.window);
+        self.projected_heads = None;
+        self.refresh(live)
     }
 
     pub fn resource(&self) -> &HistoryResource {
@@ -264,6 +321,15 @@ impl HistoryController {
             .as_ref()
             .is_some_and(|selected| selected.after.heads != live_heads);
         self.observed_live_heads.clone_from(&live_heads);
+        if let Some(named) = self.room_agents {
+            let current = crate::history_source::room_agents_revision();
+            if current != named {
+                *self.source.authors_mut() =
+                    crate::history_source::AuthorDirectory::with_room_agents();
+                self.room_agents = Some(current);
+                self.projected_heads = None;
+            }
+        }
         if self.projected_heads.as_ref() == Some(&live_heads) {
             return Ok(());
         }
@@ -271,6 +337,7 @@ impl HistoryController {
         let named = read_named_ranges(&projection, self.source.authors());
         let groups = group_entries(&entries, &named, &GroupingConfig::default());
 
+        self.has_earlier = projection.get_changes_meta(&[]).len() > self.window;
         self.projected_heads = Some(live_heads);
         self.entries = entries;
         self.groups = groups;
@@ -492,6 +559,9 @@ mod tests;
 
 #[cfg(test)]
 mod host_tests;
+
+#[cfg(test)]
+pub(crate) mod focus_tests;
 
 #[cfg(test)]
 pub(crate) mod isolation_tests;

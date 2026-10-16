@@ -1,0 +1,89 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "feeds.library"
+label = "Feeds"
+version = 1
+fields = [
+  { path = "folders", type = "Collection<Folder>", stored = "collection" },
+  { path = "folders.*.name", type = "String", label = true },
+  { path = "folders.*.collapsed", type = "bool" },
+  { path = "feeds", type = "Collection<Feed>", stored = "collection" },
+  { path = "feeds.*.title", type = "String", label = true },
+  { path = "feeds.*.url", type = "String", readonly = true },
+  { path = "feeds.*.site_url", type = "String", readonly = true },
+  { path = "feeds.*.folder", type = "Option<Id>" },
+  { path = "feeds.*.kind", type = "FeedKind", readonly = true },
+  { path = "feeds.*.certificate_pin", type = "Option<String>", readonly = true },
+  { path = "articles", type = "Collection<Article>", stored = "collection" },
+  { path = "articles.*.feed_id", type = "Id", readonly = true },
+  { path = "articles.*.title", type = "String", label = true, readonly = true },
+  { path = "articles.*.author", type = "String", readonly = true },
+  { path = "articles.*.url", type = "String", readonly = true },
+  { path = "articles.*.published", type = "i64", readonly = true },
+  { path = "articles.*.summary", type = "String", readonly = true },
+  { path = "articles.*.blocks", type = "Json<Vec<ContentBlock>>", readonly = true },
+  { path = "articles.*.read", type = "bool" },
+  { path = "articles.*.starred", type = "bool" },
+  { path = "articles.*.tags", type = "Set<String>" },
+]
+
+[[resources.verbs]]
+id = "add-subscription"
+kind = "undoable"
+params = [
+  { name = "url", required = true, schema = { type = "string" } },
+  { name = "folder", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "unsubscribe"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "feed", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "mark-feed-read"
+kind = "undoable"
+params = [
+  { name = "feed", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "mark-everything-read"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "new-folder"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-folder"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "folder", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "import-subscriptions"
+kind = "undoable"
+params = [
+  { name = "outlines", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { folder = { type = ["string", "null"] }, site_url = { type = "string" }, title = { type = "string" }, url = { type = "string" } }, required = ["title", "url"] } } },
+]
+
+[[resources.verbs]]
+id = "refreshed"
+kind = "undoable"
+params = [
+  { name = "articles", required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { author = { type = "string" }, blocks = { type = "array", items = { type = "object", additionalProperties = false, properties = { href = { type = ["string", "null"] }, kind = { type = "string", enum = ["Heading1", "Heading2", "Heading3", "Paragraph", "Bullet", "Quote", "Code", "Link", "Divider"] }, text = { type = "string" } }, required = ["kind", "text"] } }, published = { type = "integer" }, summary = { type = "string" }, title = { type = "string" }, url = { type = "string" } }, required = ["title"] } } },
+  { name = "feed", required = true, schema = { type = "string" } },
+  { name = "title", required = false, schema = { type = ["string", "null"] } },
+  { name = "certificate_pin", required = false, schema = { type = ["string", "null"] } },
+]
+

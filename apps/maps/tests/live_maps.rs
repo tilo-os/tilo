@@ -19,17 +19,12 @@
 //! written (default: `apps/maps/live-out/`).
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
 use std::path::PathBuf;
-use ui::time::{Duration, UNIX_EPOCH};
+use ui::time::Duration;
 
 use maps::MapsApp;
 mod livetest;
@@ -54,10 +49,7 @@ fn map_region() -> Rect {
 fn unique_cache() -> PathBuf {
     // Only needs to be distinct per run; a pre-epoch clock (never in practice)
     // just falls back to 0 rather than panicking the test setup.
-    let n = ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let n = ui::time::unix_now_ns();
     std::env::temp_dir().join(format!("tilo-maps-live-{}-{}", std::process::id(), n))
 }
 

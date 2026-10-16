@@ -5,7 +5,7 @@
 //! Fault testing found the regression in the product (offline B typing into
 //! the first paragraph of a fresh Writer document while A typed into the same
 //! paragraph): after the merge only one side's text survived. The cause was
-//! in the qdoc model, not the renderer: a new block carried no `text` object,
+//! in the tilo-doc model, not the renderer: a new block carried no `text` object,
 //! and the first splice on each replica created one lazily with
 //! `put_object(block, "text", Text)`. Two concurrent creations are a map-key
 //! conflict, so Automerge exposes only one winner and the loser's whole
@@ -13,7 +13,6 @@
 //! path typing, Ctrl+K and agents share) on two replicas and merge both ways.
 
 use automerge::AutoCommit;
-use tilo_actions::Action;
 use tilo_automerge::ApplyIncoming as _;
 use word_processor::actions::{
     MarkVal, RegionKind, RichTextAction, Span, set_mark_action, splice_text_action,
@@ -35,12 +34,12 @@ fn fork(doc: &mut AutoCommit) -> (AutoCommit, AutoCommit) {
 }
 
 fn apply(doc: &mut AutoCommit, action: &RichTextAction) {
-    action.apply(doc).unwrap();
+    word_processor::model::apply(doc, action).unwrap();
     doc.commit();
 }
 
 /// Merge both directions and require identical results.
-fn merge_both(a: &mut AutoCommit, b: &mut AutoCommit) -> qdoc::DocSnapshot {
+fn merge_both(a: &mut AutoCommit, b: &mut AutoCommit) -> tilo_doc::DocSnapshot {
     let mut a_copy = a.clone();
     let mut b_copy = b.clone();
     a.merge_incoming(&mut b_copy).unwrap();
@@ -54,17 +53,17 @@ fn merge_both(a: &mut AutoCommit, b: &mut AutoCommit) -> qdoc::DocSnapshot {
     snap_a
 }
 
-fn snapshot(doc: &AutoCommit) -> qdoc::DocSnapshot {
-    let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-    qdoc::model::materialize(doc, &c)
+fn snapshot(doc: &AutoCommit) -> tilo_doc::DocSnapshot {
+    let c = word_processor::model::open(doc).unwrap();
+    tilo_doc::model::materialize(doc, &c)
 }
 
 fn blocks(doc: &AutoCommit) -> Vec<String> {
-    let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
-    qdoc::model::blocks_in_order(doc, &c)
+    let c = word_processor::model::open(doc).unwrap();
+    tilo_doc::model::blocks_in_order(doc, &c)
 }
 
-fn only_text(snap: &qdoc::DocSnapshot) -> &str {
+fn only_text(snap: &tilo_doc::DocSnapshot) -> &str {
     assert_eq!(snap.blocks.len(), 1, "{snap:?}");
     &snap.blocks[0].text
 }

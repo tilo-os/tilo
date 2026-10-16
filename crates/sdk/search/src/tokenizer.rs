@@ -7,8 +7,8 @@
 //! with a marker is a prefix, word-prefix or whole-value match: the tiers
 //! the ranking needs, all answered by tantivy's `PhraseQuery`.
 //!
-//! [`WordTokenizer`] finds words, for BM25 and typo-tolerant
-//! `FuzzyTermQuery`. It segments the folded value with ICU word breaking
+//! [`WordTokenizer`] finds words, for BM25 and for matching a typed word
+//! within a typo or two of them. It segments the folded value with ICU word breaking
 //! so scripts written without spaces still yield words.
 
 use std::sync::LazyLock;

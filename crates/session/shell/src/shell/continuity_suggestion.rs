@@ -321,6 +321,7 @@ mod tests {
                 active_tab: TERMINAL,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             },
             WindowGroup {
                 id: 20,
@@ -328,6 +329,7 @@ mod tests {
                 active_tab: NOTES,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             },
         ];
         let workspace_id = workspace.id;

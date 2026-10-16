@@ -28,18 +28,16 @@
               lint fires on macro-generated code a per-function #[allow] cannot reach"
 )]
 
+use super::reply::{Ended, OrFail, Reply, Results, answer, ensure};
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd as StdOwnedFd;
 #[cfg(target_os = "linux")]
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use zbus::interface;
-#[cfg(target_os = "linux")]
-use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
 use zbus::object_server::SignalEmitter;
 #[cfg(target_os = "linux")]
@@ -54,21 +52,12 @@ use super::PortalCaller;
 use super::lifecycle::PortalLifecycle;
 #[cfg(target_os = "linux")]
 use super::lifecycle::{LifecycleEntry, LifecycleResource};
+use super::restore::{RestoreRecord, RestoreStore, restore_data, restore_key};
 #[cfg(target_os = "linux")]
 use super::{CapabilityKind, PortalContext, auth::authenticate_call, flow};
 
 #[cfg(target_os = "linux")]
 const MAX_LIVE_SESSIONS: usize = 64;
-#[cfg_attr(
-    not(target_os = "linux"),
-    expect(
-        dead_code,
-        reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-    )
-)]
-const MAX_RESTORE_RECORDS: usize = 256;
-const RESTORE_VENDOR: &str = "tilo";
-const RESTORE_DATA_VERSION: u32 = 1;
 
 /// Device-type bitmask (`RemoteDesktop.AvailableDeviceTypes`).
 pub mod device_type {
@@ -116,7 +105,7 @@ impl RemoteInputInjectorHandle {
         Self { inner }
     }
 
-    /// A handle that drops every action — default for portal contexts that don't host a live seat (e.g. `--portal-server-only`).
+    /// A handle that drops every action — default for portal contexts that don't host a live seat (e.g. tests).
     pub fn null() -> Self {
         Self {
             inner: Arc::new(NullInjector),
@@ -199,41 +188,13 @@ impl RemoteInputInjector for ChannelInjector {
 #[derive(Clone, Debug, Default)]
 struct RemoteDesktopSession {
     owner: String,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     app_id: String,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     caller: Option<PortalCaller>,
     /// Devices the user granted (bitmask). `Notify*` is gated on this.
     devices: u32,
     /// The user consented at `SelectDevices` (so `Start` needn't re-ask).
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     consented: bool,
     /// Serializes concurrent SelectDevices calls across the async prompt.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     selecting: bool,
     /// `Start` has committed the session; `Notify*` only injects after.
     started: bool,
@@ -242,44 +203,16 @@ struct RemoteDesktopSession {
     /// access merely because the same app previously used the clipboard.
     clipboard_requested: bool,
     /// Serializes concurrent Start calls.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     starting: bool,
     /// The sender-context EIS server reads this before every event. Closing a
     /// session flips it before dropping the map entry, so a retained client FD
     /// can never inject after the authenticated session ended.
     eis_live: Arc<AtomicBool>,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     eis_connected: bool,
     /// The effective standard v2 persistence request selected by the user.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     persist_mode: u32,
     /// A validated restore record skips the duplicate consent prompt, but is
     /// still bound to the same authenticated application id.
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     restored: bool,
 }
 
@@ -291,140 +224,18 @@ struct RemoteRestoreData {
     issued_unix_seconds: u64,
 }
 
-#[derive(Default)]
-struct RemoteRestoreStore {
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
-    memory: HashMap<String, RemoteRestoreData>,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
-    durable: HashMap<String, RemoteRestoreData>,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
-    path: Option<PathBuf>,
-}
-
-impl RemoteRestoreStore {
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
-    fn load() -> Self {
-        let path =
-            xdg_paths::state_dir().map(|root| root.join("tilo/portal/remote-desktop-restore.json"));
-        let durable = path
-            .as_ref()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| {
-                serde_json::from_slice::<HashMap<String, RemoteRestoreData>>(&bytes).ok()
-            })
-            .filter(|records| {
-                records.len() <= MAX_RESTORE_RECORDS
-                    && records.iter().all(|(key, record)| {
-                        uuid::Uuid::parse_str(key).is_ok()
-                            && !record.app_id.is_empty()
-                            && record.app_id.len() <= 256
-                            && record.devices != 0
-                            && record.devices & !device_type::ALL == 0
-                            && record.persist_mode == 2
-                    })
-            })
-            .unwrap_or_default();
-        Self {
-            memory: HashMap::new(),
-            durable,
-            path,
-        }
+impl RestoreRecord for RemoteRestoreData {
+    fn app_id(&self) -> &str {
+        &self.app_id
     }
-
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
-    fn get(&self, key: &str) -> Option<RemoteRestoreData> {
-        self.memory
-            .get(key)
-            .or_else(|| self.durable.get(key))
-            .cloned()
+    fn persist_mode(&self) -> u32 {
+        self.persist_mode
     }
-
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
-    fn insert(&mut self, key: String, record: RemoteRestoreData) -> Result<(), String> {
-        let target = if record.persist_mode == 2 {
-            &mut self.durable
-        } else {
-            &mut self.memory
-        };
-        target.insert(key, record);
-        while target.len() > MAX_RESTORE_RECORDS {
-            let Some(oldest) = target
-                .iter()
-                .min_by_key(|(_, record)| record.issued_unix_seconds)
-                .map(|(key, _)| key.clone())
-            else {
-                break;
-            };
-            target.remove(&oldest);
-        }
-        self.persist()
+    fn issued_unix_seconds(&self) -> u64 {
+        self.issued_unix_seconds
     }
-
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
-    fn persist(&self) -> Result<(), String> {
-        let Some(path) = &self.path else {
-            return if self.durable.is_empty() {
-                Ok(())
-            } else {
-                Err("private portal state directory is unavailable".into())
-            };
-        };
-        let bytes = serde_json::to_vec(&self.durable)
-            .map_err(|error| format!("serialize remote-desktop restores: {error}"))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("create remote-desktop restore directory: {error}"))?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-                    .map_err(|error| format!("secure remote-desktop restore directory: {error}"))?;
-            }
-        }
-        atomic_file::write_with_mode(path, &bytes, 0o600)
-            .map_err(|error| format!("write remote-desktop restores: {error}"))
+    fn grant_in_range(&self) -> bool {
+        self.devices != 0 && self.devices & !device_type::ALL == 0
     }
 }
 
@@ -432,23 +243,9 @@ pub struct RemoteDesktopBackend {
     #[cfg(target_os = "linux")]
     ctx: PortalContext,
     injector: RemoteInputInjectorHandle,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     lifecycle: PortalLifecycle,
     sessions: Arc<Mutex<HashMap<String, RemoteDesktopSession>>>,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
-    restore: Arc<Mutex<RemoteRestoreStore>>,
+    restore: Arc<Mutex<RestoreStore<RemoteRestoreData>>>,
 }
 
 /// Lifecycle hook retained by `serve` for Session.Close and frontend loss.
@@ -458,54 +255,6 @@ pub struct RemoteDesktopSessionHandle {
 }
 
 impl RemoteDesktopSessionHandle {
-    /// Bind Clipboard access before `Start`. Only the authenticated portal
-    /// frontend generation that created this remote-desktop session may do so.
-    pub fn request_clipboard(&self, session_handle: &str, owner: &str) -> bool {
-        self.sessions.lock().ok().is_some_and(|mut sessions| {
-            sessions.get_mut(session_handle).is_some_and(|session| {
-                if session.owner != owner || session.started {
-                    return false;
-                }
-                session.clipboard_requested = true;
-                true
-            })
-        })
-    }
-
-    /// True only after the same owner has requested Clipboard and committed
-    /// the RemoteDesktop session with `Start`.
-    pub fn clipboard_active(&self, session_handle: &str, owner: &str) -> bool {
-        self.sessions.lock().ok().is_some_and(|sessions| {
-            sessions.get(session_handle).is_some_and(|session| {
-                session.owner == owner && session.started && session.clipboard_requested
-            })
-        })
-    }
-
-    /// Non-DBus lifecycle check for the clipboard bridge.  It intentionally
-    /// exposes no caller identity or device capability: it only lets the
-    /// bridge discard bytes after a session has been closed.
-    pub fn clipboard_live(&self, session_handle: &str) -> bool {
-        self.sessions.lock().ok().is_some_and(|sessions| {
-            sessions
-                .get(session_handle)
-                .is_some_and(|session| session.started && session.clipboard_requested)
-        })
-    }
-    /// Active clipboard recipients for compositor-originated ownership
-    /// changes. Names are implementation-side session paths, not app input.
-    pub fn clipboard_sessions(&self) -> Vec<String> {
-        self.sessions.lock().map_or_else(
-            |_| Vec::new(),
-            |sessions| {
-                sessions
-                    .iter()
-                    .filter(|(_, session)| session.started && session.clipboard_requested)
-                    .map(|(path, _)| path.clone())
-                    .collect()
-            },
-        )
-    }
     pub fn close(&self, session_handle: &str) -> bool {
         self.sessions
             .lock()
@@ -524,16 +273,32 @@ impl RemoteDesktopSessionHandle {
 
 impl super::clipboard::ClipboardSessionProvider for RemoteDesktopSessionHandle {
     fn request_clipboard(&self, session: &str, owner: &str) -> bool {
-        Self::request_clipboard(self, session, owner)
+        self.sessions.lock().ok().is_some_and(|mut sessions| {
+            sessions.get_mut(session).is_some_and(|session| {
+                if session.owner != owner || session.started {
+                    return false;
+                }
+                session.clipboard_requested = true;
+                true
+            })
+        })
     }
-    fn clipboard_active(&self, session: &str, owner: &str) -> bool {
-        Self::clipboard_active(self, session, owner)
-    }
-    fn clipboard_live(&self, session: &str) -> bool {
-        Self::clipboard_live(self, session)
+    fn clipboard_owner(&self, session: &str) -> Option<String> {
+        let sessions = self.sessions.lock().ok()?;
+        let session = sessions.get(session)?;
+        (session.started && session.clipboard_requested).then(|| session.owner.clone())
     }
     fn clipboard_sessions(&self) -> Vec<String> {
-        Self::clipboard_sessions(self)
+        self.sessions.lock().map_or_else(
+            |_| Vec::new(),
+            |sessions| {
+                sessions
+                    .iter()
+                    .filter(|(_, session)| session.started && session.clipboard_requested)
+                    .map(|(path, _)| path.clone())
+                    .collect()
+            },
+        )
     }
 }
 
@@ -551,7 +316,9 @@ impl RemoteDesktopBackend {
             ctx,
             lifecycle,
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            restore: Arc::new(Mutex::new(RemoteRestoreStore::load())),
+            restore: Arc::new(Mutex::new(RestoreStore::load(
+                "remote-desktop-restore.json",
+            ))),
         }
     }
 
@@ -585,28 +352,27 @@ impl RemoteDesktopBackend {
         }
         self.injector.inject(action);
     }
-}
 
-/// Decode the standard v2 `(suv)` restore record. The third component is a
-/// backend-private variant; a malformed or foreign record is deliberately a
-/// normal non-restorable request, never an authority failure.
-fn restore_key(options: &HashMap<String, OwnedValue>) -> Option<String> {
-    let raw = options.get("restore_data")?.try_clone().ok()?;
-    let (vendor, version, payload): (String, u32, OwnedValue) = raw.try_into().ok()?;
-    if vendor != RESTORE_VENDOR || version != RESTORE_DATA_VERSION {
-        return None;
+    /// [`Self::route`] for the sender of a `Notify*` call.
+    fn notify(
+        &self,
+        hdr: &zbus::message::Header<'_>,
+        session_handle: &ObjectPath<'_>,
+        need: u32,
+        action: RemoteAction,
+    ) {
+        if let Some(sender) = hdr.sender() {
+            self.route(sender.as_str(), session_handle, need, action);
+        }
     }
-    let key = Value::from(payload).downcast::<String>().ok()?;
-    uuid::Uuid::parse_str(&key).ok().map(|_| key)
-}
-
-fn restore_data(key: String) -> Option<OwnedValue> {
-    let payload = OwnedValue::from(zbus::zvariant::Str::from(key));
-    OwnedValue::try_from(Value::new((RESTORE_VENDOR, RESTORE_DATA_VERSION, payload))).ok()
 }
 
 #[cfg(target_os = "linux")]
 #[interface(name = "org.freedesktop.impl.portal.RemoteDesktop")]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop D-Bus signatures; zbus deserializes owned values here rather than by reference"
+)]
 impl RemoteDesktopBackend {
     /// Device types the seat can be driven with.
     #[zbus(property)]
@@ -633,10 +399,6 @@ impl RemoteDesktopBackend {
     }
 
     /// `CreateSession` — register the session.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types and count are fixed by the org.freedesktop.impl.portal.RemoteDesktop.CreateSession D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     async fn create_session(
         &self,
         #[zbus(signal_emitter)] _ctx: SignalEmitter<'_>,
@@ -646,54 +408,52 @@ impl RemoteDesktopBackend {
         session_handle: ObjectPath<'_>,
         app_id: String,
         _options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        tracing::debug!("RemoteDesktop.CreateSession: app={app_id}");
-        if !self.ctx.remote_input_injector.available() {
-            return (2, HashMap::new());
-        }
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None).await else {
-            return (2, HashMap::new());
-        };
-        let key = session_handle.to_string();
-        {
-            let Ok(mut sessions) = self.sessions.lock() else {
-                return (2, HashMap::new());
-            };
-            if sessions.contains_key(&key) || sessions.len() >= MAX_LIVE_SESSIONS {
-                return (2, HashMap::new());
+    ) -> Reply {
+        answer(async move {
+            tracing::debug!("RemoteDesktop.CreateSession: app={app_id}");
+            ensure(self.ctx.remote_input_injector.available())?;
+            let auth = authenticate_call(&self.ctx, &hdr, &app_id, None)
+                .await
+                .or_fail()?;
+            let key = session_handle.to_string();
+            {
+                let mut sessions = self.sessions.lock().or_fail()?;
+                if sessions.contains_key(&key) || sessions.len() >= MAX_LIVE_SESSIONS {
+                    return Err(Ended::Failed);
+                }
+                sessions.insert(
+                    key.clone(),
+                    RemoteDesktopSession {
+                        owner: auth.owner.to_string(),
+                        app_id: app_id.clone(),
+                        caller: Some(auth.caller.clone()),
+                        ..Default::default()
+                    },
+                );
             }
-            sessions.insert(
-                key.clone(),
-                RemoteDesktopSession {
-                    owner: auth.owner.to_string(),
-                    app_id: app_id.clone(),
-                    caller: Some(auth.caller.clone()),
-                    ..Default::default()
-                },
-            );
-        }
-        let cleanup = self.session_handle();
-        let cleanup_path = key.clone();
-        let entry = LifecycleEntry {
-            owner: auth.owner.to_string(),
-            app_id,
-            resource: LifecycleResource::RemoteDesktop,
-        };
-        let registered = self
-            .lifecycle
-            .register_session(connection, &key, entry, move |_| {
-                cleanup.close(&cleanup_path);
-            })
-            .await;
-        if !matches!(registered, Ok(true)) {
-            let _ = self.session_handle().close(&key);
-            return (2, HashMap::new());
-        }
-        // The frontend-created session handle is the sole CreateSession
-        // result; the current implementation interface defines no result
-        // fields for this method.
-        (0, HashMap::new())
+            let cleanup = self.session_handle();
+            let cleanup_path = key.clone();
+            let entry = LifecycleEntry {
+                owner: auth.owner.to_string(),
+                app_id,
+                resource: LifecycleResource::RemoteDesktop,
+            };
+            let registered = self
+                .lifecycle
+                .register_session(connection, &key, entry, move |_| {
+                    cleanup.close(&cleanup_path);
+                })
+                .await;
+            if !matches!(registered, Ok(true)) {
+                let _ = self.session_handle().close(&key);
+                return Err(Ended::Failed);
+            }
+            // The frontend-created session handle is the sole CreateSession
+            // result; the current implementation interface defines no result
+            // fields for this method.
+            Ok(Results::new())
+        })
+        .await
     }
 
     /// `SelectDevices` — request pointer/keyboard access; surfaces the consent prompt and records the granted devices on the session.
@@ -706,135 +466,118 @@ impl RemoteDesktopBackend {
         session_handle: ObjectPath<'_>,
         app_id: String,
         options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        tracing::debug!("RemoteDesktop.SelectDevices: app={app_id}");
-        let key = session_handle.to_string();
-        let requested_persist = opt_u32(&options, "persist_mode").unwrap_or(0);
-        if requested_persist > 2 {
-            return (2, HashMap::new());
-        }
-        let restored = restore_key(&options).and_then(|key| {
-            self.restore
-                .lock()
-                .ok()
-                .and_then(|store| store.get(&key))
-                .filter(|record| record.app_id == app_id)
-        });
-        let mut types = restored.as_ref().map_or_else(
-            || opt_u32(&options, "types").unwrap_or(device_type::ALL),
-            |record| record.devices,
-        ) & device_type::ALL;
-        if types == 0 {
-            types = device_type::ALL;
-        }
-
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None).await else {
-            return (2, HashMap::new());
-        };
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let cancellation = cancelled.clone();
-        let request_path = handle.to_string();
-        let request_entry = LifecycleEntry {
-            owner: auth.owner.to_string(),
-            app_id: auth.caller.app_id.clone(),
-            resource: LifecycleResource::Prompt,
-        };
-        let registered = self
-            .lifecycle
-            .register_request(connection, &request_path, request_entry, move |_| {
-                cancellation.store(true, Ordering::Release);
-            })
-            .await;
-        if !matches!(registered, Ok(true)) {
-            return (2, HashMap::new());
-        }
-        let Some(session) = self
-            .sessions
-            .lock()
-            .ok()
-            .and_then(|sessions| sessions.get(&key).cloned())
-        else {
-            self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            return (2, HashMap::new());
-        };
-        if session.owner != auth.owner.as_str()
-            || session.app_id != app_id
-            || session.caller.as_ref() != Some(&auth.caller)
-            || session.consented
-            || session.started
-        {
-            self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            return (2, HashMap::new());
-        }
-        let marked_selecting = self.sessions.lock().ok().is_some_and(|mut sessions| {
-            sessions.get_mut(&key).is_some_and(|entry| {
-                if entry.selecting || entry.consented || entry.started {
-                    false
-                } else {
-                    entry.selecting = true;
-                    true
-                }
-            })
-        });
-        if !marked_selecting {
-            self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            return (2, HashMap::new());
-        }
-        let cap_template = Capability::RemoteDesktop {
-            scope: Expiry::AfterUse,
-        };
-        let allowed = restored.is_some()
-            || flow::resolve(
-                &self.ctx,
-                auth.caller,
-                CapabilityKind::RemoteDesktop,
-                cap_template,
-            )
-            .await
-            .is_allowed();
-
-        if cancelled.load(Ordering::Acquire) || !allowed {
-            if let Ok(mut sessions) = self.sessions.lock()
-                && let Some(entry) = sessions.get_mut(&key)
-            {
-                entry.selecting = false;
+    ) -> Reply {
+        answer(async move {
+            tracing::debug!("RemoteDesktop.SelectDevices: app={app_id}");
+            let key = session_handle.to_string();
+            let requested_persist =
+                crate::portal::option::<u32>(&options, "persist_mode").unwrap_or(0);
+            if requested_persist > 2 {
+                return Err(Ended::Failed);
             }
-            self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            return (1, HashMap::new());
-        }
+            let restored = restore_key(&options).and_then(|key| {
+                self.restore
+                    .lock()
+                    .ok()
+                    .and_then(|store| store.get(&key))
+                    .filter(|record| record.app_id == app_id)
+            });
+            let mut types = restored.as_ref().map_or_else(
+                || crate::portal::option::<u32>(&options, "types").unwrap_or(device_type::ALL),
+                |record| record.devices,
+            ) & device_type::ALL;
+            if types == 0 {
+                types = device_type::ALL;
+            }
 
-        let updated = self.sessions.lock().ok().is_some_and(|mut sessions| {
-            let Some(entry) = sessions.get_mut(&key) else {
-                return false;
+            let auth = authenticate_call(&self.ctx, &hdr, &app_id, None)
+                .await
+                .or_fail()?;
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let cancellation = cancelled.clone();
+            let request_path = handle.to_string();
+            let request_entry = LifecycleEntry {
+                owner: auth.owner.to_string(),
+                app_id: auth.caller.app_id.clone(),
+                resource: LifecycleResource::Prompt,
             };
-            entry.devices = types;
-            entry.consented = true;
-            entry.selecting = false;
-            entry.persist_mode = restored
-                .as_ref()
-                .map_or(requested_persist, |record| record.persist_mode);
-            entry.restored = restored.is_some();
-            true
-        });
-        if !updated {
+            let cancel = move |_: &LifecycleEntry| {
+                cancellation.store(true, Ordering::Release);
+            };
             self.lifecycle
-                .complete_request_object(connection, &request_path)
-                .await;
-            return (2, HashMap::new());
-        }
-        self.lifecycle
-            .complete_request_object(connection, &request_path)
-            .await;
-        (0, HashMap::new())
+                .with_request(connection, &request_path, request_entry, cancel, async {
+                    let Some(session) = self
+                        .sessions
+                        .lock()
+                        .ok()
+                        .and_then(|sessions| sessions.get(&key).cloned())
+                    else {
+                        return Err(Ended::Failed);
+                    };
+                    if session.owner != auth.owner.as_str()
+                        || session.app_id != app_id
+                        || session.caller.as_ref() != Some(&auth.caller)
+                        || session.consented
+                        || session.started
+                    {
+                        return Err(Ended::Failed);
+                    }
+                    let marked_selecting = self.sessions.lock().ok().is_some_and(|mut sessions| {
+                        sessions.get_mut(&key).is_some_and(|entry| {
+                            if entry.selecting || entry.consented || entry.started {
+                                false
+                            } else {
+                                entry.selecting = true;
+                                true
+                            }
+                        })
+                    });
+                    if !marked_selecting {
+                        return Err(Ended::Failed);
+                    }
+                    let cap_template = Capability::RemoteDesktop {
+                        scope: Expiry::AfterUse,
+                    };
+                    let allowed = restored.is_some()
+                        || flow::resolve(
+                            &self.ctx,
+                            auth.caller,
+                            CapabilityKind::RemoteDesktop,
+                            cap_template,
+                        )
+                        .await
+                        .is_allowed();
+
+                    if cancelled.load(Ordering::Acquire) || !allowed {
+                        if let Ok(mut sessions) = self.sessions.lock()
+                            && let Some(entry) = sessions.get_mut(&key)
+                        {
+                            entry.selecting = false;
+                        }
+                        return Err(Ended::Cancelled);
+                    }
+
+                    let updated = self.sessions.lock().ok().is_some_and(|mut sessions| {
+                        let Some(entry) = sessions.get_mut(&key) else {
+                            return false;
+                        };
+                        entry.devices = types;
+                        entry.consented = true;
+                        entry.selecting = false;
+                        entry.persist_mode = restored
+                            .as_ref()
+                            .map_or(requested_persist, |record| record.persist_mode);
+                        entry.restored = restored.is_some();
+                        true
+                    });
+                    if !updated {
+                        return Err(Ended::Failed);
+                    }
+                    Ok(Results::new())
+                })
+                .await
+        })
+        .await
     }
 
     /// `Start` — commit the session. Returns the granted `devices` bitmask.
@@ -847,103 +590,98 @@ impl RemoteDesktopBackend {
         app_id: String,
         parent_window: String,
         _options: HashMap<String, OwnedValue>,
-    ) -> (u32, HashMap<String, OwnedValue>) {
-        tracing::debug!("RemoteDesktop.Start: app={app_id}");
-        if !self.ctx.remote_input_injector.available() {
-            return (2, HashMap::new());
-        }
-        let key = session_handle.to_string();
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) =
-            authenticate_call(&self.ctx, sender.as_ref(), &app_id, Some(&parent_window)).await
-        else {
-            return (2, HashMap::new());
-        };
-        let Some(session) = self.sessions.lock().ok().and_then(|s| s.get(&key).cloned()) else {
-            return (2, HashMap::new());
-        };
-        if session.owner != auth.owner.as_str()
-            || session.app_id != app_id
-            || session.caller.as_ref() != Some(&auth.caller)
-            || !session.consented
-            || session.selecting
-            || session.starting
-            || session.started
-        {
-            return (2, HashMap::new());
-        }
-        let marked_starting = self.sessions.lock().ok().is_some_and(|mut sessions| {
-            sessions.get_mut(&key).is_some_and(|entry| {
-                if entry.starting || entry.started {
-                    false
-                } else {
-                    entry.starting = true;
-                    true
-                }
-            })
-        });
-        if !marked_starting {
-            return (2, HashMap::new());
-        }
-
-        let devices = if session.devices == 0 {
-            device_type::ALL
-        } else {
-            session.devices
-        };
-        let persist_mode = session.persist_mode;
-        let session_key = key.clone();
-        let Ok(mut sessions) = self.sessions.lock() else {
-            return (2, HashMap::new());
-        };
-        let Some(entry) = sessions.get_mut(&key) else {
-            return (2, HashMap::new());
-        };
-        entry.starting = false;
-        entry.started = true;
-        entry.devices = devices;
-        drop(sessions);
-
-        let restore_key = (persist_mode > 0).then(|| uuid::Uuid::new_v4().to_string());
-        if let Some(key) = &restore_key {
-            let record = RemoteRestoreData {
-                app_id: app_id.clone(),
-                devices,
-                persist_mode,
-                issued_unix_seconds: tilo_clock::unix_now(),
-            };
-            let stored = self
-                .restore
+    ) -> Reply {
+        answer(async move {
+            tracing::debug!("RemoteDesktop.Start: app={app_id}");
+            ensure(self.ctx.remote_input_injector.available())?;
+            let key = session_handle.to_string();
+            let auth = authenticate_call(&self.ctx, &hdr, &app_id, Some(&parent_window))
+                .await
+                .or_fail()?;
+            let session = self
+                .sessions
                 .lock()
-                .map_err(|_| "remote-desktop restore store is unavailable".to_string())
-                .and_then(|mut store| store.insert(key.clone(), record));
-            if stored.is_err() {
-                if let Ok(mut sessions) = self.sessions.lock()
-                    && let Some(entry) = sessions.get_mut(&session_key)
-                {
-                    entry.starting = false;
-                    entry.started = false;
-                }
-                return (2, HashMap::new());
+                .ok()
+                .and_then(|s| s.get(&key).cloned())
+                .or_fail()?;
+            if session.owner != auth.owner.as_str()
+                || session.app_id != app_id
+                || session.caller.as_ref() != Some(&auth.caller)
+                || !session.consented
+                || session.selecting
+                || session.starting
+                || session.started
+            {
+                return Err(Ended::Failed);
             }
-        }
+            let marked_starting = self.sessions.lock().ok().is_some_and(|mut sessions| {
+                sessions.get_mut(&key).is_some_and(|entry| {
+                    if entry.starting || entry.started {
+                        false
+                    } else {
+                        entry.starting = true;
+                        true
+                    }
+                })
+            });
+            ensure(marked_starting)?;
 
-        let mut results: HashMap<String, OwnedValue> = HashMap::new();
-        if let Ok(v) = OwnedValue::try_from(Value::U32(devices)) {
-            results.insert("devices".to_string(), v);
-        }
-        if let Ok(v) = OwnedValue::try_from(Value::Bool(false)) {
-            results.insert("clipboard_enabled".to_string(), v);
-        }
-        if let Some(key) = restore_key
-            && let Some(data) = restore_data(key)
-        {
-            results.insert("restore_data".to_string(), data);
-            if let Ok(mode) = OwnedValue::try_from(Value::U32(persist_mode)) {
-                results.insert("persist_mode".to_string(), mode);
+            let devices = if session.devices == 0 {
+                device_type::ALL
+            } else {
+                session.devices
+            };
+            let persist_mode = session.persist_mode;
+            let session_key = key.clone();
+            let mut sessions = self.sessions.lock().or_fail()?;
+            let entry = sessions.get_mut(&key).or_fail()?;
+            entry.starting = false;
+            entry.started = true;
+            entry.devices = devices;
+            drop(sessions);
+
+            let restore_key = (persist_mode > 0).then(|| uuid::Uuid::new_v4().to_string());
+            if let Some(key) = &restore_key {
+                let record = RemoteRestoreData {
+                    app_id: app_id.clone(),
+                    devices,
+                    persist_mode,
+                    issued_unix_seconds: tilo_clock::unix_now(),
+                };
+                let stored = self
+                    .restore
+                    .lock()
+                    .map_err(|_| "remote-desktop restore store is unavailable".to_string())
+                    .and_then(|mut store| store.insert(key.clone(), record));
+                if stored.is_err() {
+                    if let Ok(mut sessions) = self.sessions.lock()
+                        && let Some(entry) = sessions.get_mut(&session_key)
+                    {
+                        entry.starting = false;
+                        entry.started = false;
+                    }
+                    return Err(Ended::Failed);
+                }
             }
-        }
-        (0, results)
+
+            let mut results: HashMap<String, OwnedValue> = HashMap::new();
+            if let Ok(v) = OwnedValue::try_from(Value::U32(devices)) {
+                results.insert("devices".to_string(), v);
+            }
+            if let Ok(v) = OwnedValue::try_from(Value::Bool(false)) {
+                results.insert("clipboard_enabled".to_string(), v);
+            }
+            if let Some(key) = restore_key
+                && let Some(data) = restore_data(key)
+            {
+                results.insert("restore_data".to_string(), data);
+                if let Ok(mode) = OwnedValue::try_from(Value::U32(persist_mode)) {
+                    results.insert("persist_mode".to_string(), mode);
+                }
+            }
+            Ok(results)
+        })
+        .await
     }
 
     /// v2 EIS transport.  Unlike InputCapture this is a sender-context EIS
@@ -956,8 +694,7 @@ impl RemoteDesktopBackend {
         app_id: String,
         _options: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<OwnedFd> {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let auth = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None)
+        let auth = authenticate_call(&self.ctx, &hdr, &app_id, None)
             .await
             .map_err(|_| zbus::fdo::Error::AccessDenied("untrusted RemoteDesktop caller".into()))?;
         let key = session_handle.to_string();
@@ -988,10 +725,6 @@ impl RemoteDesktopBackend {
     }
 
     /// Relative pointer motion.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerMotion D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     fn notify_pointer_motion(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -1000,9 +733,8 @@ impl RemoteDesktopBackend {
         dx: f64,
         dy: f64,
     ) {
-        let Some(sender) = hdr.sender() else { return };
-        self.route(
-            sender.as_str(),
+        self.notify(
+            &hdr,
             &session_handle,
             device_type::POINTER,
             RemoteAction::PointerMotionRelative { dx, dy },
@@ -1010,10 +742,6 @@ impl RemoteDesktopBackend {
     }
 
     /// Absolute pointer motion, relative to a stream node.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerMotionAbsolute D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     fn notify_pointer_motion_absolute(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -1023,9 +751,8 @@ impl RemoteDesktopBackend {
         x: f64,
         y: f64,
     ) {
-        let Some(sender) = hdr.sender() else { return };
-        self.route(
-            sender.as_str(),
+        self.notify(
+            &hdr,
             &session_handle,
             device_type::POINTER,
             RemoteAction::PointerMotionAbsolute { stream, x, y },
@@ -1033,10 +760,6 @@ impl RemoteDesktopBackend {
     }
 
     /// Pointer button (evdev code + state).
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerButton D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     fn notify_pointer_button(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -1045,9 +768,8 @@ impl RemoteDesktopBackend {
         button: i32,
         state: u32,
     ) {
-        let Some(sender) = hdr.sender() else { return };
-        self.route(
-            sender.as_str(),
+        self.notify(
+            &hdr,
             &session_handle,
             device_type::POINTER,
             RemoteAction::PointerButton {
@@ -1058,10 +780,6 @@ impl RemoteDesktopBackend {
     }
 
     /// Smooth scroll.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerAxis D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     fn notify_pointer_axis(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -1070,9 +788,8 @@ impl RemoteDesktopBackend {
         dx: f64,
         dy: f64,
     ) {
-        let Some(sender) = hdr.sender() else { return };
-        self.route(
-            sender.as_str(),
+        self.notify(
+            &hdr,
             &session_handle,
             device_type::POINTER,
             RemoteAction::PointerAxis { dx, dy },
@@ -1080,10 +797,6 @@ impl RemoteDesktopBackend {
     }
 
     /// Discrete scroll (`axis` 0 vertical, 1 horizontal).
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyPointerAxisDiscrete D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     fn notify_pointer_axis_discrete(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -1092,9 +805,8 @@ impl RemoteDesktopBackend {
         axis: u32,
         steps: i32,
     ) {
-        let Some(sender) = hdr.sender() else { return };
-        self.route(
-            sender.as_str(),
+        self.notify(
+            &hdr,
             &session_handle,
             device_type::POINTER,
             RemoteAction::PointerAxisDiscrete { axis, steps },
@@ -1102,10 +814,6 @@ impl RemoteDesktopBackend {
     }
 
     /// Key press/release by evdev keycode.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyKeyboardKeycode D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     fn notify_keyboard_keycode(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -1114,9 +822,8 @@ impl RemoteDesktopBackend {
         keycode: i32,
         state: u32,
     ) {
-        let Some(sender) = hdr.sender() else { return };
-        self.route(
-            sender.as_str(),
+        self.notify(
+            &hdr,
             &session_handle,
             device_type::KEYBOARD,
             RemoteAction::KeyboardKeycode {
@@ -1127,10 +834,6 @@ impl RemoteDesktopBackend {
     }
 
     /// Key press/release by keysym.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "argument types are fixed by the org.freedesktop.impl.portal.RemoteDesktop.NotifyKeyboardKeysym D-Bus signature; zbus deserializes owned values here rather than by reference"
-    )]
     fn notify_keyboard_keysym(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -1139,9 +842,8 @@ impl RemoteDesktopBackend {
         keysym: i32,
         state: u32,
     ) {
-        let Some(sender) = hdr.sender() else { return };
-        self.route(
-            sender.as_str(),
+        self.notify(
+            &hdr,
             &session_handle,
             device_type::KEYBOARD,
             RemoteAction::KeyboardKeysym {
@@ -1285,12 +987,6 @@ fn remote_action_from_eis(request: reis::request::EisRequest) -> Option<RemoteAc
     }
 }
 
-#[cfg(target_os = "linux")]
-fn opt_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
-    let v = options.get(key)?.try_clone().ok()?;
-    u32::try_from(v).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1319,7 +1015,7 @@ mod tests {
             injector,
             lifecycle: PortalLifecycle::new(),
             sessions: Arc::new(Mutex::new(HashMap::new())),
-            restore: Arc::new(Mutex::new(RemoteRestoreStore::default())),
+            restore: Arc::new(Mutex::new(RestoreStore::default())),
         }
     }
 

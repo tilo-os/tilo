@@ -3,8 +3,9 @@
 //! The store is a flat list of [`HistoryEntry`] rows keyed by URL. Every
 //! navigation calls [`History::record`], which de-duplicates by URL
 //! (bumping the visit count and refreshing the title + timestamp) so the
-//! list stays one-row-per-page. It persists as a JSON array under
-//! `tilo_paths::data_dir()/tilo-browser/history.json`.
+//! list stays one-row-per-page. It is the person's own record
+//! ([`BrowsingHistory`]): it follows them to their other devices and never
+//! reaches a collaborator, whatever room the browser is open in.
 //!
 //! [`History::suggest`] powers the address-bar overlay. It fuzzy-matches
 //! the query as a case-insensitive *subsequence* of each entry's title
@@ -24,25 +25,17 @@
 //! and ranks the whole history by recency + frequency alone — the
 //! "most-recent / most-visited" default the overlay shows the moment the
 //! address bar is focused.
-//!
-//! Persistence uses `serde_json::Value` directly rather than a derived
-//! `Serialize`/`Deserialize`: `serde`'s derive macro is not a dependency
-//! of this crate, and the hand-rolled shape is trivial and forgiving of
-//! partial rows.
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use tilo_clock::unix_now;
 use ui::search::{FieldWeight, ListIndex, MAX_FIELD_RANK};
+use ui::tilo_resource::{self, Atom, Counter, Model, Refusal, resource};
 
 /// Keep history useful without letting a long-lived profile turn every
 /// address-bar query, resource snapshot, or persisted JSON write into an
 /// unbounded operation.
 pub const MAX_HISTORY_ENTRIES: usize = 10_000;
-/// A profile is user-controlled input.  Refuse a corrupt or hostile history
-/// file before handing it to JSON parsing, which otherwise has to allocate a
-/// complete value tree first.
-pub const MAX_HISTORY_FILE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_HISTORY_URL_BYTES: usize = 8 * 1024;
 pub const MAX_HISTORY_TITLE_BYTES: usize = 4 * 1024;
 
@@ -83,9 +76,16 @@ impl PartialEq for History {
 // Match quality carries the largest weight so a clearly better textual
 // match always outranks a worse one regardless of recency/frequency;
 // recency and frequency only order comparable matches.
-const W_MATCH: f64 = 1.0;
-const W_RECENCY: f64 = 0.3;
-const W_FREQ: f64 = 0.2;
+struct Weights {
+    matching: f64,
+    recency: f64,
+    frequency: f64,
+}
+const WEIGHTS: Weights = Weights {
+    matching: 1.0,
+    recency: 0.3,
+    frequency: 0.2,
+};
 
 /// Recency half-life: a page loses half its recency weight every this
 /// many seconds (3 days). Long enough that yesterday's pages still rank,
@@ -131,15 +131,9 @@ impl History {
         self.revision
     }
 
-    /// Record a visit to `url` with `title`, stamped at the current wall
-    /// clock. De-duplicates by URL — see [`History::record_at`].
-    pub fn record(&mut self, url: &str, title: &str) {
-        self.record_at(url, title, unix_now());
-    }
-
-    /// Deterministic core of [`History::record`]: record a visit stamped
-    /// at `now` (Unix seconds). Split out so ranking/recency behaviour is
-    /// unit-testable without touching the wall clock.
+    /// Record a visit to `url` with `title`, stamped at `now` (Unix
+    /// seconds), so ranking/recency behaviour is unit-testable without
+    /// touching the wall clock.
     ///
     /// De-dup rule: if `url` already exists, bump its `visit_count`,
     /// set `last_visit = now`, and replace the title *only when the new
@@ -210,9 +204,9 @@ impl History {
             };
             let match_score = f64::from(rank) / f64::from(MAX_FIELD_RANK);
 
-            let score = W_MATCH * match_score
-                + W_RECENCY * recency_score(entry.last_visit, now)
-                + W_FREQ * frequency_score(entry.visit_count);
+            let score = WEIGHTS.matching * match_score
+                + WEIGHTS.recency * recency_score(entry.last_visit, now)
+                + WEIGHTS.frequency * frequency_score(entry.visit_count);
             scored.push((score, entry));
         }
 
@@ -233,105 +227,8 @@ impl History {
             .collect()
     }
 
-    // --- Persistence ----------------------------------------------------
-
-    /// Load history from the on-disk JSON file, or an empty history when
-    /// the file is missing or unreadable/corrupt (never fails — a broken
-    /// history file must not stop the browser from starting).
-    pub fn load() -> History {
-        let Some(path) = history_path() else {
-            return History::new();
-        };
-        match std::fs::metadata(&path) {
-            Ok(metadata) if metadata.len() > MAX_HISTORY_FILE_BYTES as u64 => History::new(),
-            Err(_) => History::new(),
-            Ok(_) => match std::fs::read_to_string(&path) {
-                Ok(text) => History::from_json_str(&text),
-                Err(_) => History::new(),
-            },
-        }
-    }
-
-    /// Persist history to the JSON file, creating the parent directory if
-    /// needed. Returns an error only on genuine IO failure.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the platform exposes no data directory, if the
-    /// parent directory can't be created, or if the write itself fails.
-    pub fn save(&self) -> std::io::Result<()> {
-        let path = history_path().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "no data directory available for browser history",
-            )
-        })?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, self.to_json_string())
-    }
-
-    /// Serialise the history to a pretty JSON array string. Pure — no IO,
-    /// so the round-trip is unit-testable.
-    pub fn to_json_string(&self) -> String {
-        let arr: Vec<serde_json::Value> = self
-            .entries
-            .iter()
-            .map(|e| {
-                serde_json::json!({
-                    "url": e.url,
-                    "title": e.title,
-                    "last_visit": e.last_visit,
-                    "visit_count": e.visit_count,
-                })
-            })
-            .collect();
-        serde_json::to_string_pretty(&serde_json::Value::Array(arr))
-            .unwrap_or_else(|_| "[]".to_string())
-    }
-
-    /// Parse a history from a JSON array string. Unknown/partial rows are
-    /// tolerated (missing fields default; rows without a URL are skipped)
-    /// and any parse failure yields an empty history.
-    pub fn from_json_str(text: &str) -> History {
-        let mut entries = Vec::new();
-        if text.len() > MAX_HISTORY_FILE_BYTES {
-            return History::new();
-        }
-        if let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(text)
-        {
-            for item in items {
-                let url = item
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim();
-                if url.is_empty() || url.len() > MAX_HISTORY_URL_BYTES {
-                    continue;
-                }
-                let title = item
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .map_or_else(String::new, |title| {
-                        bounded_text(title, MAX_HISTORY_TITLE_BYTES)
-                    });
-                let last_visit = item
-                    .get("last_visit")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0);
-                let visit_count = item
-                    .get("visit_count")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0) as u32;
-                entries.push(HistoryEntry {
-                    url: url.to_string(),
-                    title,
-                    last_visit,
-                    visit_count,
-                });
-            }
-        }
+    /// The history of `entries`, as the person's record holds them.
+    pub(crate) fn from_entries(entries: Vec<HistoryEntry>) -> History {
         let mut history = History {
             entries,
             ..History::new()
@@ -370,14 +267,6 @@ fn bounded_text(value: &str, limit: usize) -> String {
     value.get(..end).unwrap_or_default().to_string()
 }
 
-/// Absolute path to the history file:
-/// `tilo_paths::data_dir()/tilo-browser/history.json`. `None` when the platform
-/// exposes no data directory. The legacy directory remains the canonical
-/// default until storage migration is explicit and crash-safe.
-pub fn history_path() -> Option<PathBuf> {
-    crate::storage::data_dir().map(|d| d.join("history.json"))
-}
-
 /// Recency weight in `[0, 1]`: `1.0` for a page visited *now*, halving
 /// every [`RECENCY_HALF_LIFE_SECS`]. `now` before `last_visit` (clock
 /// skew) clamps to `1.0`.
@@ -392,6 +281,132 @@ fn recency_score(last_visit: u64, now: u64) -> f64 {
 fn frequency_score(visit_count: u32) -> f64 {
     let n = f64::from(visit_count.max(1));
     1.0 - 1.0 / (1.0 + n)
+}
+
+/// The visits the address suggestions show in a screenshot.
+pub(crate) fn sample_entries() -> Vec<HistoryEntry> {
+    vec![
+        HistoryEntry {
+            url: "https://github.com/tilo/tilo".into(),
+            title: "Tilo on code.tilo.so".into(),
+            last_visit: 3,
+            visit_count: 12,
+        },
+        HistoryEntry {
+            url: "https://en.wikipedia.org/wiki/Web_browser".into(),
+            title: "Web browser - Wikipedia".into(),
+            last_visit: 2,
+            visit_count: 5,
+        },
+        HistoryEntry {
+            url: "https://duckduckgo.com/?q=rust".into(),
+            title: "rust at DuckDuckGo".into(),
+            last_visit: 1,
+            visit_count: 3,
+        },
+    ]
+}
+
+/// One visited page in the person's record.
+#[derive(Model, Clone, Debug, PartialEq)]
+pub struct Visit {
+    /// Title: the last page title seen. Written whole.
+    #[model(label)]
+    pub title: Atom,
+    /// When it was last visited, in Unix seconds.
+    pub last: u64,
+    /// How often it was visited: visits on two devices add up.
+    pub count: Counter,
+}
+
+/// The person's browsing history as a resource of their own room: each
+/// visited page, keyed by URL, with its title, last visit and visit count.
+/// It follows them to their other devices and never reaches a
+/// collaborator.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct BrowsingHistory {
+    /// Visited pages, by URL. Only visiting and forgetting change them.
+    #[model(readonly)]
+    pub visits: BTreeMap<String, Visit>,
+}
+
+#[resource(kind = "browser.browsing-history", label = "Browsing history")]
+impl BrowsingHistory {
+    /// Record a visit to a page.
+    ///
+    /// Recording a visit is the browser keeping its history, not an edit of
+    /// the person's to take back.
+    #[action(housekeeping)]
+    pub fn visit(
+        &mut self,
+        #[param("The page's address")] url: String,
+        #[param("The page's title; blank keeps the one known")] title: String,
+        #[param("When it finished loading, in Unix seconds")] at: u64,
+    ) -> Result<(), Refusal> {
+        let url = url.trim();
+        if url.is_empty() || url.len() > MAX_HISTORY_URL_BYTES {
+            return Err(Refusal::new("a visit names one page's URL"));
+        }
+        let title = bounded_text(&title, MAX_HISTORY_TITLE_BYTES);
+        if let Some(visit) = self.visits.get_mut(url) {
+            if !title.trim().is_empty() {
+                visit.title = Atom(title);
+            }
+            visit.last = visit.last.max(at);
+            visit.count.add(1);
+        } else {
+            let mut count = Counter::default();
+            count.add(1);
+            self.visits.insert(
+                url.to_owned(),
+                Visit {
+                    title: Atom(title),
+                    last: at,
+                    count,
+                },
+            );
+        }
+        // Keep the most useful pages; the rest fall off.
+        if self.visits.len() > MAX_HISTORY_ENTRIES {
+            let kept: std::collections::BTreeSet<String> = History::of(self)
+                .entries
+                .into_iter()
+                .map(|entry| entry.url)
+                .collect();
+            self.visits.retain(|url, _| kept.contains(url));
+        }
+        Ok(())
+    }
+
+    /// Forget one page.
+    #[action]
+    pub fn forget(&mut self, #[param("The page's address")] url: String) {
+        self.visits.remove(&url);
+    }
+
+    /// Forget every page.
+    #[action]
+    pub fn clear_history(&mut self) {
+        self.visits.clear();
+    }
+}
+
+impl History {
+    /// The history the person's record holds.
+    pub fn of(record: &BrowsingHistory) -> History {
+        History::from_entries(
+            record
+                .visits
+                .iter()
+                .map(|(url, visit)| HistoryEntry {
+                    url: url.clone(),
+                    title: visit.title.0.clone(),
+                    last_visit: visit.last,
+                    visit_count: u32::try_from(visit.count.get()).unwrap_or(u32::MAX),
+                })
+                .collect(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -598,70 +613,72 @@ mod tests {
         assert_eq!(out.len(), 3, "the result is capped at the limit");
     }
 
-    /// JSON persistence, garbage tolerance, bounds and data root.
+    /// The person's record keeps one row per page, merges devices by page
+    /// and refuses what a visit cannot name.
     #[test]
-    fn history_persistence_round_trips_and_bounds_hostile_rows() {
-        // Phase `json_round_trips`.
-        {
-            let mut h = History::new();
-            h.record_at("https://a.test", "Alpha", 111);
-            h.record_at("https://b.test", "Beta", 222);
-            h.record_at("https://a.test", "Alpha", 333); // count=2
-            let text = h.to_json_string();
-            let back = History::from_json_str(&text);
-            assert_eq!(back, h, "history survives a JSON round-trip intact");
-        }
+    fn browsing_history_record_counts_visits_and_merges_devices() {
+        use ui::tilo_resource::Replica;
+        let visit = |url: &str, title: &str, at: u64| {
+            BrowsingHistory::VISIT.with(browsing_history::Visit {
+                url: url.into(),
+                title: title.into(),
+                at,
+            })
+        };
+        let entries = |record: &Replica<BrowsingHistory>| {
+            History::of(&record.state().unwrap()).entries().to_vec()
+        };
+        let mut laptop = Replica::<BrowsingHistory>::new();
+        laptop.apply(visit("https://a.test", "Alpha", 111)).unwrap();
+        laptop.apply(visit("https://b.test", "Beta", 222)).unwrap();
+        laptop.apply(visit("https://a.test", "", 333)).unwrap();
+        let history = entries(&laptop);
+        assert_eq!(history.len(), 2);
+        let alpha = history
+            .iter()
+            .find(|entry| entry.url == "https://a.test")
+            .unwrap();
+        assert_eq!((alpha.visit_count, alpha.last_visit), (2, 333));
+        assert_eq!(alpha.title, "Alpha", "a blank title keeps the known one");
 
-        // Phase `from_json_skips_rows_without_url_and_tolerates_garbage`.
-        {
-            let json = r#"[
-                {"url":"https://ok.test","title":"OK","last_visit":5,"visit_count":2},
-                {"title":"no url"},
-                {"url":"https://partial.test"}
-            ]"#;
-            let h = History::from_json_str(json);
-            assert_eq!(h.len(), 2, "the URL-less row is skipped, partials default");
-            let partial = h
-                .entries()
+        let long_title = "t".repeat(MAX_HISTORY_TITLE_BYTES + 64);
+        laptop
+            .apply(visit("https://kept.test", &long_title, 1))
+            .unwrap();
+        let too_long_url = format!("https://example.test/{}", "x".repeat(MAX_HISTORY_URL_BYTES));
+        assert!(laptop.apply(visit(&too_long_url, "ignored", 1)).is_err());
+        assert_eq!(
+            entries(&laptop)
                 .iter()
-                .find(|e| e.url == "https://partial.test")
-                .unwrap();
-            assert_eq!(
-                partial.visit_count, 0,
-                "missing numeric fields default to 0"
-            );
-            assert_eq!(partial.title, "", "missing title defaults to empty");
-        }
+                .find(|entry| entry.url == "https://kept.test")
+                .unwrap()
+                .title
+                .len(),
+            MAX_HISTORY_TITLE_BYTES
+        );
 
-        // Phase `from_json_garbage_is_empty`.
-        {
-            assert!(History::from_json_str("not json at all").is_empty());
-            assert!(History::from_json_str("{\"not\":\"an array\"}").is_empty());
-        }
+        let mut phone = laptop.fork();
+        phone.apply(visit("https://c.test", "Gamma", 444)).unwrap();
+        phone.apply(visit("https://a.test", "", 400)).unwrap();
+        laptop.apply(visit("https://a.test", "", 350)).unwrap();
+        laptop
+            .apply(BrowsingHistory::FORGET.with("https://b.test".to_owned()))
+            .unwrap();
+        laptop.sync_with(&mut phone).unwrap();
+        assert_eq!(laptop.state().unwrap(), phone.state().unwrap());
+        let merged = entries(&laptop);
+        let urls: Vec<&str> = merged.iter().map(|entry| entry.url.as_str()).collect();
+        assert!(urls.contains(&"https://c.test"));
+        assert!(!urls.contains(&"https://b.test"));
+        let alpha = merged
+            .iter()
+            .find(|entry| entry.url == "https://a.test")
+            .unwrap();
+        assert_eq!(alpha.visit_count, 4, "visits on two devices add up");
 
-        // Phase `hostile_history_rows_are_bounded_before_search_can_materialize_them`.
-        {
-            let too_long_url =
-                format!("https://example.test/{}", "x".repeat(MAX_HISTORY_URL_BYTES));
-            let json = serde_json::json!([
-                { "url": too_long_url, "title": "ignored" },
-                {
-                    "url": "https://kept.example.test",
-                    "title": "t".repeat(MAX_HISTORY_TITLE_BYTES + 64),
-                }
-            ]);
-            let history = History::from_json_str(&json.to_string());
-            assert_eq!(history.len(), 1);
-            assert_eq!(history.entries()[0].title.len(), MAX_HISTORY_TITLE_BYTES);
-            assert!(History::from_json_str(&" ".repeat(MAX_HISTORY_FILE_BYTES + 1)).is_empty());
-        }
-
-        // Phase `history_path_preserves_the_existing_browser_data_root`.
-        {
-            // Only assert the tail so the test is host-agnostic.
-            if let Some(p) = history_path() {
-                assert!(p.ends_with("tilo-browser/history.json"), "path was {p:?}");
-            }
-        }
+        laptop
+            .apply(BrowsingHistory::CLEAR_HISTORY.with(()))
+            .unwrap();
+        assert!(entries(&laptop).is_empty());
     }
 }

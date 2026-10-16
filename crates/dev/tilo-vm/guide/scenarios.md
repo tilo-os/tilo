@@ -21,6 +21,25 @@ No slot and no dev VM are involved. The scenario runs its own QEMU VM through
 when QEMU is on the host itself) in a named cycle, so its disks, TPM and
 firmware state exist for this run only.
 
+For an already-built unsigned ARM development medium, Linux also supports
+`TILO_UNVERIFIED_VM_INSTALL=1 TILO_VM_ARCH=aarch64`. This explicit opt-in
+attaches the existing VM install-proof port required by that medium. The guest
+still requires its embedded development marker, detected virtualization and
+passphrase unlock; signed production checks are unchanged. Use only owned
+disposable VM targets, never physical disks. This diagnostic does not establish
+release signing or current-source acceptance. On an x86 host, select
+`TILO_ACCEL=tcg TILO_MEM=4096 TILO_SMP=2 TILO_DISTROBOX=""` explicitly; ARM
+software emulation can take substantially longer than native installation.
+
+An Apple silicon Mac runs the same ARM scenario natively under Hypervisor.framework
+with Homebrew's `qemu`, `socat`, `tesseract`, `imagemagick` and `util-linux`
+(for `setsid`, which is keg-only, so append `/opt/homebrew/opt/util-linux/bin` to
+`PATH`). Link Homebrew's `edk2-aarch64-code.fd` and `edk2-arm-vars.fd` into one
+directory as `AAVMF_CODE.fd` and `AAVMF_VARS.fd`, then run with
+`TILO_ACCEL=hvf TILO_VM_ARCH=aarch64 TILO_DISTROBOX="" TILO_AAVMF_DIRS=<that directory>`
+and `--graphics software`. The installer, the encrypted install and the target's
+cold boot take minutes, not hours.
+
 On Windows ARM64, use the native `tilo-vm.exe` and the WHPX transport:
 
 ```powershell
@@ -49,7 +68,7 @@ the installed system's first boot. It retains
 the external raw file even without `--keep`; it only cleans its own VM cycle.
 On Windows it also requires a fresh proof from the guest on a dedicated
 virtio-serial port. The scenario checks that the guest installed the image it
-booted, that its composefs digest matches the installer and first boot, and
+booted, that its composefs digest matches the installer, and
 that its disk and partition identities match the source raw's verified GPT.
 The checked proof is saved as `vm-install-proof-checked.json` in the scenario
 artifacts; the private installer serial log is still withheld. The
@@ -66,11 +85,17 @@ target for guided alongside; the medium remains unchanged. Set `TILO_QEMU_SYSTEM
 QEMU installation. The two boots share the target and UEFI variable store.
 The virtio console and QMP endpoints bind to localhost TCP ports in the run
 plan. Windows supports erase and a supplied guided-alongside raw target with
-passphrase unlock and software graphics. Built-in alongside fixtures need
+passphrase unlock and software graphics. Install Tesseract with English data
+for first-boot screen recognition (`pacman -S mingw-w64-clang-aarch64-tesseract-ocr
+mingw-w64-clang-aarch64-tesseract-data-eng` in the Clang ARM64 MSYS2 shell).
+The first boot may show identity setup
+instead of sign-in; this is recorded as a screenshot and OCR observation. Its
+composefs identity is inferred from the installer proof and the VM's sole
+target disk, whereas the sign-in console reports that identity directly.
+Built-in alongside fixtures need
 Linux filesystem creation tools, and TPM PIN needs a persistent software TPM.
 The default `--graphics gl`
-must therefore be overridden on Windows. This route has static and transport
-checks but has not yet completed a live installer cycle on this host.
+must therefore be overridden on Windows.
 
 Phases, each timed in the receipt (`target/dev-runs/<id>/run.json`):
 
@@ -78,14 +103,34 @@ Phases, each timed in the receipt (`target/dev-runs/<id>/run.json`):
 |---|---|
 | `prepare` | `vm.sh init-cycle`; for an alongside layout, a 40 GiB target with a foreign EFI partition and a Linux sentinel filesystem, hashed |
 | `boot-installer` | boot the medium (a throwaway overlay; the medium is never written) with a blank target as `/dev/vdb`; wait for the installer to answer its console |
-| `install` | walk the wizard through the installer's published actions: keyboard, network, disk and method, account, options, review, **begin** (destructive: its confirmation phrase is the target), progress, recovery-key confirmation, **power off** |
+| `install` | walk the wizard through the installer's published actions: keyboard, network, disk and method, account, options, media (the optional extra formats, skipped), review, **begin** (destructive: its confirmation phrase is the target), progress, recovery-key confirmation, **power off** |
 | `power-off` | the installer's own Finish action stops the VM |
 | `verify-alongside` | the preserved extents hash exactly as before |
-| `first-boot` | cold-boot the target, type the unlock secret at its boot prompt, wait for the greeter to answer its console, and check it booted the composefs image the installer wrote |
+| `first-boot` | cold-boot the target, enter the unlock secret twice at most during early boot, then recognize sign-in through its console or identity setup through a screenshot and OCR |
 
 The result (`--json`, and `result.json` in the artifact directory) names the
-target, every step the installer went through, the image digest the live
-installer booted and the one the first boot runs, and the preserved extents.
+target, every step the installer went through, the installed image digest,
+the observed first-boot surface, and the preserved extents. Sign-in reports
+its composefs digest directly; identity setup proves the target boots but
+does not itself report that digest.
+
+### Retained installation preferences
+
+Use `--hostname laptop --keyboard-layout "German (QWERTZ)" --timezone Europe/Berlin`
+for a German keyboard and Berlin time. The keyboard argument is the installer's
+published display name. `--locale de_DE.UTF-8` is optional; without it the medium's
+language choice stays unchanged. Hostname defaults to `scenario-tilo`; omitted
+keyboard, timezone and locale preserve the medium's choices.
+
+These inputs are recorded in `scenario.json`; `--resume` requires the same inputs.
+The driver checks their installer state before starting the destructive install,
+including when preconfigured media skip a screen. An incompatible skipped screen
+fails before installation. Regular identity OOBE remains for the first user boot.
+
+The installed console and desktop receive the selected keyboard. A prebuilt CI
+initrd is unchanged: its early encrypted-disk unlock can still use US keys until
+the root filesystem is available. Use a layout-neutral passphrase or account for
+that first-unlock layout; changing the signed initrd is a separate image operation.
 
 ## The console channel
 

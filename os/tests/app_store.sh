@@ -8,12 +8,11 @@
 # fails silently — as an empty launcher, or as an app that installs fine and
 # then refuses to start:
 #
-#   * Every apps/<name>/tilo-app.toml declares `runtime = "tilo-runtime/<v>"`.
-#     The launcher resolves that literal string to /usr/lib/tilo-runtime/<v>/
-#     and errors with RuntimeBundleMissing if it is not there. The image bakes
-#     exactly one version, from RUNTIME_VERSION in os/Containerfile. These
-#     were "2026.07" and "1" respectively, so every packaged app would have
-#     failed at launch.
+#   * Every apps/<name>/tilo-app.toml declares `runtime = "tilo-runtime/<release>"`.
+#     The image bakes one build of that release, from RUNTIME_RELEASE in
+#     os/Containerfile, named `<release>+native.<abi digest>`, and pack-apps.sh
+#     stamps that id into every packaged app. Were the release and the bake
+#     different, every packaged app would be refused.
 #   * os/Containerfile derives the app package list from the `apps/…` entries
 #     in the workspace members, and cargo takes *package* names there. A
 #     directory whose package name differs would be silently absent from the
@@ -44,9 +43,9 @@ manifests=("$REPO"/apps/*/tilo-app.toml)
 [ -e "${manifests[0]}" ] || { bad "no apps/*/tilo-app.toml found"; exit 1; }
 
 # --- 1. the baked runtime version is the one the apps ask for ----------------
-baked="$(sed -n 's/^ARG RUNTIME_VERSION=\(.*\)$/\1/p' "$CONTAINERFILE" | head -1)"
+baked="$(sed -n 's/^ARG RUNTIME_RELEASE=\(.*\)$/\1/p' "$CONTAINERFILE" | head -1)"
 if [ -z "$baked" ]; then
-  bad "could not read ARG RUNTIME_VERSION — the declaration it is parsed out of moved"
+  bad "could not read ARG RUNTIME_RELEASE — the declaration it is parsed out of moved"
 else
   declared="$(sed -n 's/^runtime  *= *"tilo-runtime\/\([^"]*\)".*/\1/p' "${manifests[@]}" \
                 | sort -u)"
@@ -59,7 +58,7 @@ else
   else
     bad "os/Containerfile bakes tilo-runtime/$baked but the apps declare tilo-runtime/$declared
       The launcher looks for /usr/lib/tilo-runtime/$declared/ and will refuse every
-      preinstalled app with RuntimeBundleMissing. Change ARG RUNTIME_VERSION in
+      preinstalled app with RuntimeBundleMissing. Change ARG RUNTIME_RELEASE in
       os/Containerfile, or the manifests, so the two agree."
   fi
 fi
@@ -159,8 +158,11 @@ else
   bad "MAX_TAPP_BYTES can weaken the canonical application size policy"
 fi
 
+# The dependencies are the collector's closure: DT_NEEDED and the libraries the
+# runtime loads on first use (GLib, GStreamer; #4020).
 if grep -q -- '--include /out/libruntime_dylib.so' "$CONTAINERFILE" \
-   && grep -q 'ldd /out/libruntime_dylib.so' "$CONTAINERFILE"; then
+   && grep -q 'tilo-collect-runtime-dependencies.py' "$CONTAINERFILE" \
+   && grep -q -- '--library-dir /out /out/libruntime_dylib.so' "$CONTAINERFILE"; then
   ok "the signed runtime bundle carries the shared runtime and its ELF dependencies"
 else
   bad "the image builds thin apps but does not bundle their shared runtime dependencies"
@@ -219,15 +221,23 @@ else
     bad "$INSTALL_MAIN no longer consults system_bundle_path, so baking into
         $sysroot would no longer satisfy the install-time runtime check."
   fi
-  if grep -q -- "--out \"$sysroot/\${RUNTIME_VERSION}\"" "$CONTAINERFILE"; then
-    ok "os/Containerfile bakes the runtime bundle into $sysroot/\${RUNTIME_VERSION}"
+  if grep -q -- "--out-root $sysroot " "$CONTAINERFILE" \
+     && grep -q -- '--release "${RUNTIME_RELEASE}"' "$CONTAINERFILE" \
+     && grep -q 'RUNTIME_ID="tilo-runtime/$(cat /out/runtime-version)"' "$CONTAINERFILE"; then
+    ok "os/Containerfile bakes the runtime build into $sysroot and stamps it into every app"
   else
-    bad "os/Containerfile does not bake the runtime bundle into $sysroot/\${RUNTIME_VERSION}
+    bad "os/Containerfile does not bake the ABI-named runtime build into $sysroot, or does
+      not stamp its id into the packed apps
       tilo-install looks there and nowhere else that exists during a container
       build, so every packaged app is refused at install time with
       RuntimeDependencyMissing and the image never builds."
   fi
-  if containerfile_has_copy "$CONTAINERFILE" "$sysroot/" "$sysroot/" builder; then
+  # The runtime reaches the rootfs through runtime-image-payload, which copies
+  # the builder's tree to /image$sysroot (beside the font catalog's hard links,
+  # #4003); the rootfs copies that /image/usr/ to /usr/ whole.
+  if containerfile_has_copy "$CONTAINERFILE" "/image/usr/" "/usr/" runtime-image-payload \
+     && grep -q -- "--mount=type=bind,from=builder,source=$sysroot,target=/tilo-runtime,ro" "$CONTAINERFILE" \
+     && grep -q -- "cp -a /tilo-runtime /image$sysroot " "$CONTAINERFILE"; then
     ok "the image copies the runtime bundle from and to $sysroot"
   else
     bad "os/Containerfile does not copy $sysroot/ to $sysroot/ — the booted system
@@ -302,6 +312,22 @@ sys.exit(0 if re.search(pattern, source) else 1)
       containerfile_installs_output "$CONTAINERFILE" shell /usr/bin/shell \
         && ok "the image installs the compositor that owns 'tools'" \
         || bad "os/Containerfile does not install the compositor-owned 'tools' service."
+      continue
+    fi
+    # The system interface is no daemon either: it is the launcher's
+    # image-owned system authority grant, served to the image's control panel
+    # when it declares it, at a version the image declares serving.
+    if [ "$svc" = "system" ]; then
+      services="$REPO/crates/packaging/launcher/src/services.rs"
+      authority="$REPO/crates/packaging/launcher/src/system_authority.rs"
+      if grep -Fq 'pub const SYSTEM_SERVICE: &str = "system";' "$services" \
+          && grep -Fq 'services.contains_key(crate::services::SYSTEM_SERVICE)' "$authority" \
+          && grep -Eq '^system *= *\[' "$REPO/os/usr/share/tilo/system-interfaces.toml" \
+          && grep -Eq '^COPY .*os/usr/share/tilo/system-interfaces\.toml .*/usr/share/tilo/' "$CONTAINERFILE"; then
+        ok "apps [$users] require 'system': the launcher grants it and the image declares serving it"
+      else
+        bad "apps [$users] require 'system', but the launcher's grant or the image's system-interfaces.toml does not serve it."
+      fi
       continue
     fi
     if [ ! -r "$unit" ]; then
@@ -426,9 +452,9 @@ $(printf '%s\n' "$bogus" | sed 's/^/      /')
   fi
 fi
 
-# Thin apps must use the same feature set and package exclusions as CI's default
-# collection. Putting browser/wpe into the image thin graph unified ui/webview
-# into every tapp and added ~1.9 MB of .text versus package-apps (#1158).
+# Thin apps must use the same feature set and package set as CI's default
+# collection: a divergent graph made image thin apps ~1.9 MB of .text larger
+# than package-apps (#1158).
 collection_features="$(python3 "$REPO/tools/apps/app_release.py" --collection default   | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin)["features"]))')"
 image_features="$(printf '%s' "$feat_line" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)"
 collection_sorted="$(printf '%s' "$collection_features" | tr ',' '\n' | sed '/^$/d' | sort -u | paste -sd, -)"
@@ -440,13 +466,12 @@ else
       collection: $collection_sorted
       a divergent graph is what made image thin apps ~1.9 MB of .text larger than CI"
 fi
-if grep -Eq 'THIN_EXCLUDES="browser"' "$CONTAINERFILE" \
-   && ! grep -Fq 'THIN_BROWSER_FEATURE=",browser/wpe"' "$CONTAINERFILE" \
-   && ! grep -Fq 'APP_FEATURES="${APP_FEATURES}${THIN_BROWSER_FEATURE}"' "$CONTAINERFILE"; then
-  ok "image thin apps always exclude browser (separate WPE runtime), matching the collection"
+if grep -Fq 'if [ "${TILO_WITH_BROWSER}" = "0" ]; then THIN_EXCLUDES="browser"; else THIN_EXCLUDES=""; fi' "$CONTAINERFILE" \
+   && ! grep -Eq '^exclude *=.*"browser"' "$REPO/dist/apps/app-collections.toml"; then
+  ok "image thin apps carry the Browser like the default collection, unless the image omits it"
 else
-  bad "image thin-apps step can still pull browser/wpe into the unified collection graph
-      which reintroduces the ~1.9 MB .text gap versus CI (#1158)"
+  bad "the image thin-app package set diverges from the default collection's Browser
+      (it may leave the Browser out only when TILO_WITH_BROWSER=0 omits its engine)"
 fi
 
 # --- nobody may re-enable ashpd's default backend ----------------------------
@@ -458,11 +483,11 @@ fi
 # private async-std copy — cargo unions features, so it turns ashpd off for
 # every portal-using crate at once.
 #
-# apps/chat did exactly that, and it was invisible: chat's ashpd is behind
-# `live-media`, which is off by default, so no ordinary build, no --shots run
-# and no CI job ever compiled it. The OS image is the first thing that asks for
-# that feature, so the image build is where it surfaced — after the cold Rust
-# compile. A grep costs nothing and catches it before the build starts.
+# A crate whose ashpd sits behind a feature that is off by default does this
+# invisibly: no ordinary build, no --shots run and no CI job compiles it. The
+# OS image is the first thing that asks for the feature, so the image build is
+# where it surfaces — after the cold Rust compile. A grep costs nothing and
+# catches it before the build starts.
 offenders="$(grep -rln 'ashpd *= *{[^}]*default-features *= *true' \
                --include=Cargo.toml "$REPO" 2>/dev/null \
              | grep -v '/vendor/' | sed "s|^$REPO/||" | tr '\n' ' ')"

@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "assets": [
+    {
+      "file": "lo-annotations.docx",
+      "sha256": "b6dfd11a7aeb209a8bc271d93c7ee4690f3cd2c1fadbaccbe212f9bcb5c7521f",
+      "bytes": 8208,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/b6dfd11a7aeb209a8bc271d93c7ee4690f3cd2c1fadbaccbe212f9bcb5c7521f/lo-annotations.docx"
+    },
+    {
+      "file": "lo-annotations.odt",
+      "sha256": "01601aa8e1cb7ed87f2b1ac909b26bc6bbaa89407729e6f81fa3614a2896096c",
+      "bytes": 11753,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/01601aa8e1cb7ed87f2b1ac909b26bc6bbaa89407729e6f81fa3614a2896096c/lo-annotations.odt"
+    },
+    {
+      "file": "lo-drawings.docx",
+      "sha256": "c4e6188ad66c97604e6220679b29089f060b5b730f7bc818b04edb39aba09a38",
+      "bytes": 8943,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/c4e6188ad66c97604e6220679b29089f060b5b730f7bc818b04edb39aba09a38/lo-drawings.docx"
+    },
+    {
+      "file": "lo-drawings.odt",
+      "sha256": "e3a27cf507261d13ef149e6cfed987fd851a4dc514608e01f6d41beb0bb17027",
+      "bytes": 21377,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/e3a27cf507261d13ef149e6cfed987fd851a4dc514608e01f6d41beb0bb17027/lo-drawings.odt"
+    },
+    {
+      "file": "lo-fields.docx",
+      "sha256": "32518ac3d7a2831a456905c37d9f369a51069e47a9c97bd630a4991bfcb28213",
+      "bytes": 6988,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/32518ac3d7a2831a456905c37d9f369a51069e47a9c97bd630a4991bfcb28213/lo-fields.docx"
+    },
+    {
+      "file": "lo-fields.odt",
+      "sha256": "0a5d5fa129b0d9bdad717ab9e4018e8b9d14a59aa6b83f0eb604b7155be5efe1",
+      "bytes": 12537,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/0a5d5fa129b0d9bdad717ab9e4018e8b9d14a59aa6b83f0eb604b7155be5efe1/lo-fields.odt"
+    },
+    {
+      "file": "lo-structure.docx",
+      "sha256": "d32d93fcef721faf2b29a458251a0b8a96692780dce46c84fdb78a9c701d02f6",
+      "bytes": 8815,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/d32d93fcef721faf2b29a458251a0b8a96692780dce46c84fdb78a9c701d02f6/lo-structure.docx"
+    },
+    {
+      "file": "lo-structure.odt",
+      "sha256": "a3e03e86acd4b3cd5c920580d13259e67f4321c3438f7ee1808a564c9790129a",
+      "bytes": 16030,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/a3e03e86acd4b3cd5c920580d13259e67f4321c3438f7ee1808a564c9790129a/lo-structure.odt"
+    },
+    {
+      "file": "sample.docx",
+      "sha256": "2d8d0ad24f42a12994d00a0305cbf2acef7df4504c20120f6787ffdfe0941c60",
+      "bytes": 2882,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/2d8d0ad24f42a12994d00a0305cbf2acef7df4504c20120f6787ffdfe0941c60/sample.docx"
+    },
+    {
+      "file": "sample.odt",
+      "sha256": "f3754e162a1e26858076e0595ccda4cf0bf2fdd39d368277f1fdd73377b50438",
+      "bytes": 2059,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/f3754e162a1e26858076e0595ccda4cf0bf2fdd39d368277f1fdd73377b50438/sample.odt"
+    },
+    {
+      "file": "xxe.docx",
+      "sha256": "c849645dee6b0535541b92f4ec53538c5cacd2ec5c2f30b2fe6342abc4f23f7f",
+      "bytes": 979,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/c849645dee6b0535541b92f4ec53538c5cacd2ec5c2f30b2fe6342abc4f23f7f/xxe.docx"
+    },
+    {
+      "file": "xxe.odt",
+      "sha256": "7d7a1958c68075b77d4ab6399159250b064765eb22fb65da0660a96fe5d7780b",
+      "bytes": 739,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/7d7a1958c68075b77d4ab6399159250b064765eb22fb65da0660a96fe5d7780b/xxe.odt"
+    },
+    {
+      "file": "zipbomb.docx",
+      "sha256": "106abd35af58c97a31404d56a89e2da46bcd5d16f065272d0564b4b157f7013a",
+      "bytes": 306784,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/106abd35af58c97a31404d56a89e2da46bcd5d16f065272d0564b4b157f7013a/zipbomb.docx"
+    }
+  ]
+}

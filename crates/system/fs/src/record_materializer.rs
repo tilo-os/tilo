@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use collab_types::FileRecordId;
+use fs_protocol::FileRecordId;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -415,7 +415,7 @@ impl RecordMaterializer {
                 && namespace_already_complete
                 && !matches!(
                     transaction.manifest.operation,
-                    collab_types::FileMutationOperation::RestoreContent { .. }
+                    fs_protocol::FileMutationOperation::RestoreContent { .. }
                 )
             {
                 report.transactions_reconciled = report.transactions_reconciled.saturating_add(1);
@@ -451,7 +451,7 @@ impl RecordMaterializer {
                 };
                 let completion = if matches!(
                     entry.transaction.manifest.operation,
-                    collab_types::FileMutationOperation::RestoreContent { .. }
+                    fs_protocol::FileMutationOperation::RestoreContent { .. }
                 ) {
                     crate::transaction_coordinator::complete_checked_restore_after_repository(
                         repository,
@@ -496,7 +496,7 @@ impl RecordMaterializer {
                         HistoryError::Io(_) => RecordMaterializerError::HistoryUnavailable,
                         _ => RecordMaterializerError::HistoryRejected,
                     })?;
-                if let collab_types::FileMutationOperation::MergeContentConflict {
+                if let fs_protocol::FileMutationOperation::MergeContentConflict {
                     source_record,
                     conflict_id,
                     ..
@@ -511,8 +511,8 @@ impl RecordMaterializer {
                         .resolve(
                             source_record,
                             conflict_id,
-                            collab_types::ConflictResolution {
-                                strategy: collab_types::ConflictStrategy::Merge,
+                            fs_protocol::ConflictResolution {
+                                strategy: fs_protocol::ConflictStrategy::Merge,
                                 result: source.proposed_version.id,
                                 actor: transaction.manifest.actor,
                                 timestamp_ms: transaction.manifest.timestamp_ms,
@@ -522,7 +522,7 @@ impl RecordMaterializer {
                 }
                 let delta = if matches!(
                     transaction.manifest.operation,
-                    collab_types::FileMutationOperation::RestoreContent { .. }
+                    fs_protocol::FileMutationOperation::RestoreContent { .. }
                 ) {
                     let mut namespace = self
                         .namespace
@@ -687,7 +687,7 @@ impl RecordMaterializer {
                         let thumbnail = metadata
                             .previews
                             .iter()
-                            .filter(|preview| preview.status == collab_types::PreviewStatus::Ready)
+                            .filter(|preview| preview.status == fs_protocol::PreviewStatus::Ready)
                             .filter_map(|preview| {
                                 preview
                                     .hash
@@ -955,18 +955,20 @@ mod tests {
 
     use std::time::UNIX_EPOCH;
 
-    use collab_types::{
-        ConflictMergeCodecV1, ConflictResolution, ConflictStatus, ConflictStrategy, ContentHash,
-        ContentRevisionV1, Ed25519PublicKey, FILE_BINDING_VERSION,
-        FILE_MUTATION_TRANSACTION_VERSION, FileActor, FileBindingV1, FileConflictV1,
-        FileMetadataV1, FileMutationOperation, FileMutationParticipant,
-        FileMutationParticipantRole, FileMutationTransaction, FileMutationTransactionManifest,
-        FileNodeKind, FileProvenance, FileVersionId, FileVersionV1, IndexStatus,
-    };
+    use collab_types::Ed25519PublicKey;
     use ed25519_dalek::SigningKey;
+    use fs_protocol::{
+        ConflictMergeCodecV1, ConflictResolution, ConflictStatus, ConflictStrategy, ContentHash,
+        ContentRevisionV1, FILE_BINDING_VERSION, FILE_MUTATION_TRANSACTION_VERSION, FileActor,
+        FileBindingV1, FileConflictV1, FileMetadataV1, FileMutationOperation,
+        FileMutationParticipant, FileMutationParticipantRole, FileMutationTransaction,
+        FileMutationTransactionManifest, FileNodeKind, FileProvenance, FileVersionId,
+        FileVersionV1, IndexStatus,
+    };
 
     use crate::namespace::ROOT_INO;
     use crate::record_access::RecordAccessSessionId;
+    use crate::record_replication::test_authorizers::{AllowActor, AllowAll};
 
     struct Fixture {
         workspace: Uuid,
@@ -1096,17 +1098,7 @@ mod tests {
     fn materialization_uses_current_signed_state_and_refuses_unknown_records() {
         // Phase `delayed_materialization_uses_current_repository_not_captured_snapshot`.
         {
-            use crate::record_replication::{RecordAction, RecordAuthorizer};
             use crate::record_repository::RecordRepositoryKey;
-            struct Allow;
-            impl RecordAuthorizer for Allow {
-                fn actor_is_certified(&self, _: &FileActor) -> bool {
-                    true
-                }
-                fn allows(&self, _: &FileActor, _: FileRecordId, _: RecordAction) -> bool {
-                    true
-                }
-            }
             let fixture = Fixture::new();
             let repository =
                 RecordRepository::open(fixture.temp.path().join("delayed-records")).unwrap();
@@ -1115,7 +1107,7 @@ mod tests {
                 record_id: fixture.record,
             };
             let old = FileMetadataV1 {
-                schema_version: collab_types::files::FILE_METADATA_VERSION,
+                schema_version: fs_protocol::files::FILE_METADATA_VERSION,
                 record_id: fixture.record,
                 content_hash: Some(ContentHash([41; 32])),
                 byte_len: 41,
@@ -1127,8 +1119,8 @@ mod tests {
                 properties: None,
             };
             let old_envelope = fixture.envelope(1, RecordOperationV1::SetMetadata(old.clone()));
-            repository.apply(key, &old_envelope, &Allow).unwrap();
-            let captured = repository.snapshot(key, &fixture.actor, &Allow).unwrap();
+            repository.apply(key, &old_envelope, &AllowAll).unwrap();
+            let captured = repository.snapshot(key, &fixture.actor, &AllowAll).unwrap();
             let current = FileMetadataV1 {
                 content_hash: Some(ContentHash([42; 32])),
                 byte_len: 42,
@@ -1150,7 +1142,7 @@ mod tests {
                         .unwrap();
                 });
                 wait.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-                repository.apply(key, &current_envelope, &Allow).unwrap();
+                repository.apply(key, &current_envelope, &AllowAll).unwrap();
                 drop(namespace);
                 worker.join().unwrap();
             });
@@ -1173,7 +1165,7 @@ mod tests {
                 2,
             ));
             let metadata = FileMetadataV1 {
-                schema_version: collab_types::files::FILE_METADATA_VERSION,
+                schema_version: fs_protocol::files::FILE_METADATA_VERSION,
                 record_id: fixture.record,
                 content_hash: Some(ContentHash([4; 32])),
                 byte_len: 99,
@@ -1258,7 +1250,7 @@ mod tests {
                 .record_id_for(ROOT_INO)
                 .unwrap();
             let binding = FileBindingV1 {
-                schema_version: collab_types::FILE_BINDING_VERSION,
+                schema_version: fs_protocol::FILE_BINDING_VERSION,
                 record_id: fixture.record,
                 parent: Some(parent),
                 name: "after.txt".into(),
@@ -1296,7 +1288,7 @@ mod tests {
         {
             let fixture = Fixture::new();
             let metadata = FileMetadataV1 {
-                schema_version: collab_types::files::FILE_METADATA_VERSION,
+                schema_version: fs_protocol::files::FILE_METADATA_VERSION,
                 record_id: fixture.record,
                 content_hash: None,
                 byte_len: 1,
@@ -1392,17 +1384,7 @@ mod tests {
     fn conflicts_project_repository_resolution_into_typed_history() {
         // Phase `delayed_open_conflict_projects_repository_resolution`.
         {
-            use crate::record_replication::{RecordAction, RecordAuthorizer};
             use crate::record_repository::RecordRepositoryKey;
-            struct Allow;
-            impl RecordAuthorizer for Allow {
-                fn actor_is_certified(&self, _: &FileActor) -> bool {
-                    true
-                }
-                fn allows(&self, _: &FileActor, _: FileRecordId, _: RecordAction) -> bool {
-                    true
-                }
-            }
             let fixture = Fixture::new();
             let repository =
                 RecordRepository::open(fixture.temp.path().join("conflict-race")).unwrap();
@@ -1464,11 +1446,11 @@ mod tests {
             let mut captured = None;
             for (index, operation) in operations.into_iter().enumerate() {
                 let envelope = fixture.envelope(index as u64 + 1, operation);
-                repository.apply(key, &envelope, &Allow).unwrap();
+                repository.apply(key, &envelope, &AllowAll).unwrap();
                 if index == 2 {
                     captured = Some((
                         envelope,
-                        repository.snapshot(key, &fixture.actor, &Allow).unwrap(),
+                        repository.snapshot(key, &fixture.actor, &AllowAll).unwrap(),
                     ));
                 }
             }
@@ -1563,24 +1545,7 @@ mod tests {
     fn remote_transactions_and_merges_materialize_exactly_and_heal_after_restart() {
         // Phase `startup_reconciliation_heals_committed_but_unprojected_operations`.
         {
-            use crate::record_replication::{RecordAction, RecordAuthorizer};
             use crate::record_repository::{RecordRepository, RecordRepositoryKey};
-
-            struct Allow(FileActor);
-            impl RecordAuthorizer for Allow {
-                fn actor_is_certified(&self, actor: &FileActor) -> bool {
-                    *actor == self.0
-                }
-
-                fn allows(
-                    &self,
-                    actor: &FileActor,
-                    _record_id: FileRecordId,
-                    _action: RecordAction,
-                ) -> bool {
-                    *actor == self.0
-                }
-            }
 
             let fixture = Fixture::new();
             let repository =
@@ -1590,7 +1555,7 @@ mod tests {
                 record_id: fixture.record,
             };
             let metadata = FileMetadataV1 {
-                schema_version: collab_types::files::FILE_METADATA_VERSION,
+                schema_version: fs_protocol::files::FILE_METADATA_VERSION,
                 record_id: fixture.record,
                 content_hash: Some(ContentHash([31; 32])),
                 byte_len: 314,
@@ -1613,8 +1578,8 @@ mod tests {
             };
             let version_envelope =
                 fixture.envelope(1, RecordOperationV1::AppendVersion(version.clone()));
-            let revision = collab_types::ContentRevisionV1 {
-                schema_version: collab_types::CONTENT_REVISION_VERSION,
+            let revision = fs_protocol::ContentRevisionV1 {
+                schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                 record_id: fixture.record,
                 version_id: version.id,
                 content_hash: version.content_hash,
@@ -1630,13 +1595,13 @@ mod tests {
                 .unwrap()
                 .enable_signed_content_authority();
             repository
-                .apply(key, &version_envelope, &Allow(fixture.actor))
+                .apply(key, &version_envelope, &AllowActor(fixture.actor))
                 .unwrap();
             repository
-                .apply(key, &revision_envelope, &Allow(fixture.actor))
+                .apply(key, &revision_envelope, &AllowActor(fixture.actor))
                 .unwrap();
             repository
-                .apply(key, &metadata_envelope, &Allow(fixture.actor))
+                .apply(key, &metadata_envelope, &AllowActor(fixture.actor))
                 .unwrap();
 
             assert!(
@@ -1698,26 +1663,7 @@ mod tests {
         // persisted independently with the same signed prepare+commit pair, and
         // the materializer runs after every received stream batch.
         {
-            use crate::record_replication::{RecordAction, RecordAuthorizer};
             use crate::record_repository::{RecordRepository, RecordRepositoryKey};
-
-            #[derive(Clone, Copy)]
-            struct AllowActor(FileActor);
-
-            impl RecordAuthorizer for AllowActor {
-                fn actor_is_certified(&self, actor: &FileActor) -> bool {
-                    *actor == self.0
-                }
-
-                fn allows(
-                    &self,
-                    actor: &FileActor,
-                    _record_id: FileRecordId,
-                    _action: RecordAction,
-                ) -> bool {
-                    *actor == self.0
-                }
-            }
 
             for source_first in [true, false] {
                 let temp = tempfile::tempdir().unwrap();
@@ -1774,7 +1720,7 @@ mod tests {
                     assert!(initial_namespace.set_content_revision(
                         ino,
                         &ContentRevisionV1 {
-                            schema_version: collab_types::CONTENT_REVISION_VERSION,
+                            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                             record_id,
                             version_id,
                             content_hash: Some(hash),
@@ -1789,7 +1735,7 @@ mod tests {
                 // require or produce a namespace write.
                 let persisted_namespace_before_transaction = initial_namespace.save();
                 let namespace_path = temp.path().join("namespace.bin");
-                atomic_file::write_creating_parent(
+                tilo_files::native::atomic::write_creating_parent(
                     &namespace_path,
                     &persisted_namespace_before_transaction,
                 )
@@ -1823,7 +1769,7 @@ mod tests {
                         provenance: FileProvenance::Create,
                     };
                     let revision = ContentRevisionV1 {
-                        schema_version: collab_types::CONTENT_REVISION_VERSION,
+                        schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                         record_id,
                         version_id,
                         content_hash: Some(hash),
@@ -1912,7 +1858,7 @@ mod tests {
                             observed_at_ms: 2,
                         },
                         proposed_content_revision: Some(ContentRevisionV1 {
-                            schema_version: collab_types::CONTENT_REVISION_VERSION,
+                            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
                             record_id,
                             version_id: version.id,
                             content_hash: version.content_hash,
@@ -2202,7 +2148,7 @@ mod tests {
         {
             for codec in [
                 ConflictMergeCodecV1::PlainUtf8ThreeWayV1,
-                ConflictMergeCodecV1::QdocAutomergeV1,
+                ConflictMergeCodecV1::TiloDocAutomergeV1,
             ] {
                 remote_completed_merge_case(codec);
             }
@@ -2214,24 +2160,7 @@ mod tests {
         reason = "The shared UTF-8 and Automerge merge fixture checks exact revision projection, history resolution, journal cleanup, and restart replay."
     )] // Shared end-to-end merge/restart scenario helper.
     fn remote_completed_merge_case(codec: ConflictMergeCodecV1) {
-        use crate::record_replication::{RecordAction, RecordAuthorizer};
         use crate::record_repository::{RecordRepository, RecordRepositoryKey};
-
-        #[derive(Clone, Copy)]
-        struct AllowActor(FileActor);
-        impl RecordAuthorizer for AllowActor {
-            fn actor_is_certified(&self, actor: &FileActor) -> bool {
-                *actor == self.0
-            }
-            fn allows(
-                &self,
-                actor: &FileActor,
-                _record_id: FileRecordId,
-                _action: RecordAction,
-            ) -> bool {
-                *actor == self.0
-            }
-        }
 
         let temp = tempfile::tempdir().unwrap();
         let workspace = Uuid::new_v4();
@@ -2291,7 +2220,7 @@ mod tests {
             resolution: None,
         };
         let current_revision = ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
+            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
             record_id,
             version_id: current.id,
             content_hash: current.content_hash,
@@ -2300,7 +2229,11 @@ mod tests {
         };
         assert!(initial_namespace.set_content_revision(ino, &current_revision, 2));
         let namespace_path = temp.path().join("namespace.bin");
-        atomic_file::write_creating_parent(&namespace_path, &initial_namespace.save()).unwrap();
+        tilo_files::native::atomic::write_creating_parent(
+            &namespace_path,
+            &initial_namespace.save(),
+        )
+        .unwrap();
         let namespace = Arc::new(Mutex::new(initial_namespace));
         let history_path = temp.path().join("history.json");
         let history = Arc::new(FileHistoryStore::open(&history_path).unwrap());
@@ -2393,7 +2326,7 @@ mod tests {
             provenance: FileProvenance::ConflictResolution,
         };
         let result_revision = ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
+            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
             record_id,
             version_id: result.id,
             content_hash: result.content_hash,
@@ -2421,7 +2354,7 @@ mod tests {
         participant.projection_hash = participant.computed_projection_hash().unwrap();
         let transaction = FileMutationTransaction::signed(
             FileMutationTransactionManifest {
-                schema_version: collab_types::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
+                schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V2,
                 transaction_id: Uuid::new_v4(),
                 workspace_id: workspace,
                 actor,

@@ -9,24 +9,11 @@
 //! asserts rather than breaking the build — hence one copy, here,
 //! dev-dependency only.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::time::{Duration, SystemTime};
 
 use collab_types::{
     ArtifactId, Attestation, AttestationId, ChannelId, Claim, Ed25519PublicKey, EncryptionMetadata,
-    OpClass, Role, RoleAttestation, Signature, SignedOp, sign_event, sign_op,
+    OpKind, Role, RoleAttestation, Signature, SignedOp, sign_event, sign_op,
 };
 use ed25519_dalek::SigningKey;
 
@@ -147,7 +134,7 @@ pub fn signed_op(
     author_pk: Ed25519PublicKey,
     artifact: ArtifactId,
     attestation_id: AttestationId,
-    op_class: OpClass,
+    kind: OpKind,
     payload: Vec<u8>,
     seq: u64,
 ) -> SignedOp {
@@ -156,7 +143,7 @@ pub fn signed_op(
         artifact,
         author_pk,
         attestation_id,
-        op_class,
+        kind,
         SystemTime::now(),
         seq,
     );
@@ -187,7 +174,7 @@ pub fn signed_op_encrypted(
     author_pk: Ed25519PublicKey,
     artifact: ArtifactId,
     attestation_id: AttestationId,
-    op_class: OpClass,
+    kind: OpKind,
     payload: Vec<u8>,
     seq: u64,
     encryption: EncryptionMetadata,
@@ -197,7 +184,7 @@ pub fn signed_op_encrypted(
         artifact,
         author_pk,
         attestation_id,
-        op_class,
+        kind,
         SystemTime::now(),
         seq,
         encryption,

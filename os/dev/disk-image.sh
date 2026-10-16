@@ -24,8 +24,11 @@
 #                            install without first importing IMAGE locally
 #     --firstboot-seed FILE   install an installer-format NAME:SHA512_CRYPT seed;
 #                            create the account on first boot, never in this step
-#     --bootc-helper FILE     execute this verified ARM64 bootc inside the image
-#                            instead of the image's /usr/bin/bootc
+#     --bootc-helper FILE     execute this bootc (an ELF for this host's
+#                            architecture) instead of the image's /usr/bin/bootc
+#     --reseal-uki            with a helper built from Containerfile.bootc-helper:
+#                            let install rewrite a stale composefs= seal to
+#                            its own digest and print it (bootc#2334)
 #     --offline-target-dir DIR
 #                            copy a verified, digest-pinned OCI target into the
 #                            live installer's writable /var for offline installs
@@ -42,6 +45,8 @@
 #                            store and scratch in DIR instead of
 #                            /var/lib/containers and /var/tmp (a build host
 #                            whose root filesystem is small)
+#   TILO_ROOT_PODMAN_STORAGE_CONF=FILE  explicitly pass a root storage.conf
+#                            through sudo (for a native overlay store)
 #   TILO_QCOW2_COMPRESS=1      write zstd clusters in the first qcow2 conversion;
 #                            useful for the dev-disk runner's limited scratch
 #
@@ -103,6 +108,9 @@ if [ -n "${TILO_ROOT_PODMAN_STORE:-}" ]; then
   ROOT_PODMAN_ARGS=(--root "$ROOT_CONTAINERS/storage" --runroot "$TILO_ROOT_PODMAN_STORE/run")
   ROOT_PODMAN_ENV=("TMPDIR=$TILO_ROOT_PODMAN_STORE/tmp")
 fi
+if [ -n "${TILO_ROOT_PODMAN_STORAGE_CONF:-}" ]; then
+  ROOT_PODMAN_ENV+=("CONTAINERS_STORAGE_CONF=$TILO_ROOT_PODMAN_STORAGE_CONF")
+fi
 root_podman() {
   sudo -n env "${ROOT_PODMAN_ENV[@]+"${ROOT_PODMAN_ENV[@]}"}" \
     podman "${ROOT_PODMAN_ARGS[@]+"${ROOT_PODMAN_ARGS[@]}"}" "$@"
@@ -115,6 +123,8 @@ RETAIN="${TILO_RETAINED_GENERATIONS:-3}"; UKI_BUDGET=160M
 KARGS=(); USERSPEC=""; TARGET_IMGREF=""; SEALED_SOURCE_IMGREF=""
 FIRSTBOOT_SEED=""
 BOOTC_HELPER=""
+RESEAL_UKI=0
+DIRECT_SEALED_SOURCE=0
 OFFLINE_TARGET_DIR=""
 ETC_OVERLAY=""
 DIRECT_BOOT_DIR=""
@@ -141,6 +151,7 @@ while [ $# -gt 0 ]; do
     --sealed-source-imgref) SEALED_SOURCE_IMGREF="$2"; shift ;;
     --firstboot-seed) FIRSTBOOT_SEED="$2"; shift ;;
     --bootc-helper) BOOTC_HELPER="$2"; shift ;;
+    --reseal-uki) RESEAL_UKI=1 ;;
     --offline-target-dir) OFFLINE_TARGET_DIR="$2"; shift ;;
     --etc-overlay) ETC_OVERLAY="$2"; shift ;;
     --direct-boot-bundle) DIRECT_BOOT_DIR="$2"; shift ;;
@@ -217,10 +228,16 @@ if [ -n "$ETC_OVERLAY" ]; then
 fi
 
 if [ -n "$OFFLINE_TARGET_DIR" ]; then
+  OFFLINE_TARGET_FLAGS=()
+  case "${TILO_INSTALLER_DEV_TARGET:-0}" in
+    0) ;;
+    1) OFFLINE_TARGET_FLAGS=(--development) ;;
+    *) die "TILO_INSTALLER_DEV_TARGET must be 0 or 1" ;;
+  esac
   [ -d "$OFFLINE_TARGET_DIR" ] && [ ! -L "$OFFLINE_TARGET_DIR" ] \
     || die "--offline-target-dir must name a regular directory"
   python3 "$(dirname "${BASH_SOURCE[0]}")/installer-offline-target.py" \
-    verify "$OFFLINE_TARGET_DIR" \
+    verify "$OFFLINE_TARGET_DIR" "${OFFLINE_TARGET_FLAGS[@]}" \
     || die "offline target OCI layout failed validation"
 fi
 
@@ -228,20 +245,24 @@ if [ -n "$BOOTC_HELPER" ]; then
   [ -f "$BOOTC_HELPER" ] && [ ! -L "$BOOTC_HELPER" ] && [ -x "$BOOTC_HELPER" ] \
     || die "--bootc-helper must name an executable regular, non-symlink file"
   python3 - "$BOOTC_HELPER" <<'PY' \
-    || die "--bootc-helper must be an ARM64 ELF executable"
+    || die "--bootc-helper must be an ELF executable for $(uname -m)"
+import platform
 import struct
 import sys
+
+MACHINES = {"aarch64": 183, "x86_64": 62}
 
 with open(sys.argv[1], "rb") as source:
     header = source.read(20)
 if len(header) != 20 or header[:4] != b"\x7fELF" or header[5] not in (1, 2):
     raise SystemExit(1)
 byteorder = "<" if header[5] == 1 else ">"
-if struct.unpack_from(byteorder + "H", header, 18)[0] != 183:  # EM_AARCH64
+if struct.unpack_from(byteorder + "H", header, 18)[0] != MACHINES.get(platform.machine()):
     raise SystemExit(1)
 PY
   BOOTC_HELPER="$(readlink -f "$BOOTC_HELPER")"
 fi
+[ "$RESEAL_UKI" = 0 ] || [ -n "$BOOTC_HELPER" ] || die "--reseal-uki needs --bootc-helper"
 
 if [ -z "$SEALED_SOURCE_IMGREF" ]; then
   podman image exists "$IMAGE" || die "$IMAGE is not in rootless podman storage"
@@ -250,7 +271,13 @@ else
   [[ "$IMAGE" =~ @sha256:[0-9a-f]{64}$ ]] \
     || die "--sealed-source-imgref requires digest-pinned IMAGE as the authoritative target-imgref"
   command -v skopeo >/dev/null || die "--sealed-source-imgref requires skopeo to verify the mirror digest"
-  source_identity="$(skopeo inspect --tls-verify=false --format '{{.Name}} {{.Digest}}' \
+  source_tls=(--tls-verify=false)
+  if [ "${SEALED_SOURCE_IMGREF#docker://}" = "$IMAGE" ]; then
+    # An authoritative signed source is not an unsigned construction mirror.
+    DIRECT_SEALED_SOURCE=1
+    source_tls=()
+  fi
+  source_identity="$(skopeo inspect "${source_tls[@]}" --format '{{.Name}} {{.Digest}}' \
     "docker://${SEALED_SOURCE_IMGREF#docker://}")" \
     || die "cannot inspect sealed registry source $SEALED_SOURCE_IMGREF"
   read -r source_repository source_digest <<< "$source_identity"
@@ -429,6 +456,12 @@ mkdir -p "$OUTDIR"
 # Absolute, because Podman binds this directory into the installer container.
 # A relative source would resolve against Podman's current working directory.
 OUTDIR="$(cd "$OUTDIR" && pwd)"
+# DrvFs is 9p inside WSL. Its raw loop-backed image can allocate the entire
+# logical disk on Windows before qemu-img has a chance to make a sparse qcow2.
+# Build on WSL's native ext4 filesystem, then export only the final qcow2.
+if [ "$(stat -f -c %T "$OUTDIR")" = v9fs ]; then
+  die "disk image output $OUTDIR is on a 9p filesystem; use a native Linux filesystem for the raw build, then export the qcow2"
+fi
 RAW="$OUTDIR/disk.raw"
 QCOW="$OUTDIR/disk.qcow2"
 MNT="$OUTDIR/.mnt"
@@ -469,23 +502,45 @@ trap cleanup EXIT
 # over HTTP installs. So a local registry is started and the image published to
 # it; this is a new requirement of dropping bib.
 REG=""; SRC_REF=""; RUNREF="$IMAGE"; TLS_ARGS=(); SOURCE_POLICY=""
+# Ready only when this answers. A container named tilo-disk-registry can be
+# exited while its port mapping still exists, and that name used to count as
+# success even though 127.0.0.1:5000 was refusing connections.
+registry_v2_up() {
+  curl --connect-timeout 2 --max-time 4 -sf "http://127.0.0.1:$1/v2/" >/dev/null 2>&1
+}
 start_registry() {
-  local want="${TILO_DISK_REG_PORT:-5000}" port
-  # An already-present registry container of ours is authoritative: reuse it on
-  # whatever port it was published on.
+  local want="${TILO_DISK_REG_PORT:-5000}" port running started=false
   if podman container exists tilo-disk-registry 2>/dev/null; then
-    [ "$(podman inspect -f '{{.State.Running}}' tilo-disk-registry)" = true ] \
-      || podman start tilo-disk-registry >/dev/null
-    port="$(podman port tilo-disk-registry 5000/tcp 2>/dev/null | head -1)"
+    running="$(podman inspect -f '{{.State.Running}}' tilo-disk-registry 2>/dev/null)" || running=false
+    if [ "$running" != true ]; then
+      podman start tilo-disk-registry >/dev/null 2>&1 || true
+      running="$(podman inspect -f '{{.State.Running}}' tilo-disk-registry 2>/dev/null)" || running=false
+      started=true
+    fi
+    port="$(podman port tilo-disk-registry 5000/tcp 2>/dev/null | head -1)" || true
     port="${port##*:}"
     [ -n "$port" ] || port="$want"
-    echo "localhost:$port"; return
+    # Only a container we just started needs a moment to accept connections.
+    # One that was already up, or that stayed exited, is checked once.
+    if [ "$started" = true ] && [ "$running" = true ]; then
+      for _ in $(seq 1 30); do
+        registry_v2_up "$port" && break
+        sleep 1
+      done
+    fi
+    if registry_v2_up "$port"; then
+      echo "localhost:$port"
+      return
+    fi
+    msg "replacing tilo-disk-registry; http://127.0.0.1:$port/v2/ is not answering" >&2
+    podman rm -f tilo-disk-registry >/dev/null 2>&1 || true
   fi
   # Someone else's registry already listening (the composefs spike leaves one on
   # :5000) is fine to push to — one local registry is as good as another.
-  if curl -sf "http://localhost:$want/v2/" >/dev/null 2>&1; then
+  if registry_v2_up "$want"; then
     msg "reusing the registry already listening on :$want" >&2
-    echo "localhost:$want"; return
+    echo "localhost:$want"
+    return
   fi
   for port in $(seq "$want" $(( want + 9 ))); do
     podman run -d --name tilo-disk-registry -p "$port:5000" \
@@ -494,12 +549,13 @@ start_registry() {
         continue
       }
     for _ in $(seq 1 30); do
-      curl -sf "http://localhost:$port/v2/" >/dev/null 2>&1 && break
+      registry_v2_up "$port" && break
       sleep 1
     done
-    if curl -sf "http://localhost:$port/v2/" >/dev/null 2>&1; then
+    if registry_v2_up "$port"; then
       msg "started a registry on :$port for the install source" >&2
-      echo "localhost:$port"; return
+      echo "localhost:$port"
+      return
     fi
     podman rm -f tilo-disk-registry >/dev/null 2>&1 || true
   done
@@ -512,6 +568,10 @@ if [ -n "$SEALED_SOURCE_IMGREF" ]; then
   REG="${RUNREF%%/*}"
   TLS_ARGS=(--tls-verify=false)
   REGCONF="$OUTDIR/.registries.conf"
+  if [ "$DIRECT_SEALED_SOURCE" = 1 ]; then
+    TLS_ARGS=()
+    printf '[[registry]]\nlocation = "%s"\ninsecure = false\n' "$REG" > "$REGCONF"
+  else
   printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$REG" > "$REGCONF"
   # The image's runtime policy correctly trusts its signed authoritative
   # repository, not an unsigned transport mirror. bootc evaluates the running
@@ -537,6 +597,7 @@ with open(path, "w", encoding="utf-8") as output:
     json.dump(policy, output, separators=(",", ":"))
     output.write("\n")
 PY
+  fi
   msg "using verified sealed registry source $SRC_REF (no local import or republish)"
 elif [ "$COMPOSEFS" = yes ]; then
   REG="$(start_registry)" || die "could not bring up a local registry, and the composefs
@@ -596,40 +657,16 @@ fi
 msg "1/4 systemd-repart -> $RAW (ESP $ESP_SIZE + $ROOTFS root >= $ROOT_MIN, disk $SIZE)"
 rm -f "$RAW"
 truncate -s "$SIZE" "$RAW"
+# Pin 512-byte sectors. Without --sector-size, systemd-repart 255 and >= 257
+# format a regular file's partitions with 4096-byte filesystem sectors, which
+# makes the ESP a 4K-sector FAT that SD/eMMC/USB firmware cannot read. btrfs
+# keeps its 4 KiB minimum block size; ext4 does not take a sector size.
 sudo -n systemd-repart --empty=force --dry-run=no --discard=no --offline=false \
-  --definitions="$DEFS" --size="$SIZE" "$RAW"
+  --sector-size=512 --definitions="$DEFS" --size="$SIZE" "$RAW"
+python3 "$SCRIPT_DIR/check-disk-sectors.py" "$RAW" >&2 \
+  || die "systemd-repart did not lay out $RAW with 512-byte sectors"
 
 LOOP="$(sudo -n losetup -fP --show "$RAW")"
-# Partition nodes exist before udev has probed their filesystems. The boot-gap
-# layout is identified by those filesystem types, so wait until the probe lands.
-sudo -n blockdev --rereadpt "$LOOP" 2>/dev/null || true
-sudo -n udevadm settle 2>/dev/null || true
-if [ -n "$BOOT_GAP" ]; then
-  root_dev=""
-  esp_dev=""
-  for _ in 1 2 3 4 5; do
-    root_dev=""
-    esp_dev=""
-    while read -r part fstype; do
-      case "$fstype" in
-        vfat)
-          [ -z "$esp_dev" ] || die "boot-gap disk has more than one FAT partition"
-          esp_dev="$part" ;;
-        btrfs|ext4)
-          [ -z "$root_dev" ] || die "boot-gap disk has more than one root filesystem"
-          root_dev="$part" ;;
-      esac
-    done < <(lsblk -ln -o PATH,FSTYPE "$LOOP")
-    [ -n "$root_dev" ] && [ -n "$esp_dev" ] && break
-    sleep 0.5
-    sudo -n udevadm settle 2>/dev/null || true
-  done
-  [ -n "$root_dev" ] && [ -n "$esp_dev" ] \
-    || die "boot-gap disk is missing its ESP or root filesystem"
-else
-  root_dev="${LOOP}p2"
-  esp_dev="${LOOP}p1"
-fi
 sudo -n udevadm settle 2>/dev/null || true
 # systemd-repart lays the partitions out in definition order: with the boot gap
 # the loader hole is p1, so the ESP and root move up by one. Their filesystem
@@ -666,8 +703,26 @@ if [ -n "$BOOT_GAP" ]; then
     *) die "boot-gap disk: $root_dev is not the root filesystem" ;;
   esac
 fi
+if [ "$ROOTFS" = ext4 ] && [ "$COMPOSEFS" = yes ]; then
+  # systemd-repart uses mkfs.ext4 defaults, which omit the filesystem-wide
+  # verity feature. Without it bootc silently installs unverified composefs
+  # objects, and the resulting image cannot perform a verified upgrade.
+  sudo -n tune2fs -O verity "$root_dev"
+  sudo -n tune2fs -l "$root_dev" | grep -Eq '^Filesystem features:.*[[:space:]]verity([[:space:]]|$)' \
+    || die "ext4 root is missing its fs-verity filesystem feature"
+fi
 mkdir -p "$MNT"
-sudo -n mount "$root_dev" "$MNT"
+if [ "$ROOTFS" = btrfs ]; then
+  # Compress objects while bootc installs them, before a small board disk fills.
+  # Level 3 reduces the installed immutable payload. This mount exists only
+  # during assembly; the booted image still selects its runtime mount policy.
+  # The inherited inode property also applies to objects created after reboot;
+  # the installation mount option alone would only cover this mount's lifetime.
+  sudo -n mount -o compress=zstd:3 "$root_dev" "$MNT"
+  sudo -n btrfs property set "$MNT" compression zstd
+else
+  sudo -n mount "$root_dev" "$MNT"
+fi
 if [ "$BOOT_IS_ESP" = yes ]; then ESP_AT="$MNT/boot"; else ESP_AT="$MNT/boot/efi"; fi
 sudo -n mkdir -p "$ESP_AT"
 if [ "${TILO_DISK_FORCE_MTOOLS_ESP:-0}" != 1 ] \
@@ -723,6 +778,7 @@ install_args=(to-filesystem --generic-image --skip-fetch-check
   && install_args+=(--boot-mount-spec "UUID=$ESP_UUID")
 [ -n "$SRC_REF" ] && install_args+=(--source-imgref "$SRC_REF")
 install_args+=("${KARGS[@]+"${KARGS[@]}"}")
+[ "$DIRECT_SEALED_SOURCE" = 0 ] || install_args+=(--enforce-container-sigpolicy)
 install_args+=("/run/tilo-install-target")
 
 # Bind only the prepared disk target, not the job container's root filesystem.
@@ -748,7 +804,10 @@ if [ -n "$BOOTC_HELPER" ]; then
   run_args+=(-v "$BOOTC_HELPER:/run/tilo-installer-bootc:ro"
     --entrypoint /run/tilo-installer-bootc)
   bootc_argv=()
-  msg "using explicit ARM64 bootc helper $BOOTC_HELPER"
+  msg "using explicit bootc helper $BOOTC_HELPER"
+  if [ "$RESEAL_UKI" = 1 ]; then
+    run_args+=(-e BOOTC_INSTALL_RESEAL_UKI=1)
+  fi
 fi
 if [ -n "$SRC_REF" ]; then
   run_args+=(--network host
@@ -761,6 +820,14 @@ fi
 msg "3/4 bootc install ${install_args[*]}"
 if ! root_podman run "${run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
        "$RUNREF" "${bootc_argv[@]}" install "${install_args[@]}" 2>&1 | tee "$LOG"; then
+  # Report both the target and its sparse backing filesystem: either can
+  # exhaust space, and the composefs object writer does not identify which.
+  msg "failed install storage: target and raw-image backing filesystem"
+  sudo -n df -h "$MNT" "$OUTDIR" >&2 || true
+  sudo -n df -i "$MNT" "$OUTDIR" >&2 || true
+  if [ "$ROOTFS" = btrfs ]; then
+    sudo -n btrfs filesystem usage "$MNT" >&2 || true
+  fi
   # The two failures that are specific to dropping bib get named, because
   # neither message says what to do about it.
   if grep -q 'Invalid splitstream content type' "$LOG"; then
@@ -781,6 +848,15 @@ if ! root_podman run "${run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
   Full log: $LOG"
   fi
   die "bootc install failed; full log: $LOG"
+fi
+
+# A composefs repository whose objects carry no fs-verity still boots, but its
+# first `bootc upgrade` fails with EIO ("lower file ... has no fs-verity
+# digest"). bootc installs such a repository without a word when the kernel it
+# runs on lacks fs-verity, so check every object here.
+if [ "$COMPOSEFS" = yes ]; then
+  sudo -n python3 "$SCRIPT_DIR/check-composefs-verity.py" "$MNT/composefs/objects" \
+    || die "the installed composefs objects lack fs-verity: check $ROOTFS feature flags and kernel $(uname -r) support"
 fi
 
 # --- bib's customizations.user, replaced --------------------------------------
@@ -821,6 +897,14 @@ if [ -n "$USERSPEC" ]; then
       mount --bind /target-var /var
       useradd -m ${u_groups:+-G '$u_groups'} '$u_name'
       printf '%s:%s\n' '$u_name' '$u_pass' | chpasswd
+      # An always-on board image ships the session template and its marker;
+      # its instance is the account created here.
+      board_wants=/etc/systemd/system/multi-user.target.wants
+      board_session=\"\$board_wants/tilo-board-headless-session@$u_name.service\"
+      if [ -f /usr/share/tilo/board-headless-session ]; then
+        install -d -m 0755 \"\$board_wants\"
+        ln -sfn /usr/lib/systemd/system/tilo-board-headless-session@.service \"\$board_session\"
+      fi
       # Label the new home. A home directory inherited from /var comes out
       # \`var_t\` rather than \`user_home_dir_t\`, which an SELinux-enforcing session
       # does not get to use.
@@ -839,7 +923,10 @@ if [ -n "$USERSPEC" ]; then
         [ -f \"/etc/\$db\" ] || { echo \"missing /etc/\$db after account creation\" >&2; exit 1; }
         setfiles -F \"\$fc\" \"/etc/\$db\"
       done
-      setfiles -F \"\$fc\" /var/home"
+      setfiles -F \"\$fc\" /var/home
+      if [ -L \"\$board_session\" ]; then
+        setfiles -F \"\$fc\" \"\$board_session\"
+      fi"
 fi
 
 # Exercise the same one-use account handoff as the graphical installer. This
@@ -865,7 +952,40 @@ if [ -n "$ETC_OVERLAY" ]; then
   sudo -n mount -o remount,rw "$MNT"
   mapfile -t overlay_entries < <(cd "$ETC_OVERLAY" && find . \( -type f -o -type l \) -printf '%P\n' | LC_ALL=C sort)
   msg "adding validation access to this disk's /etc: ${overlay_entries[*]}"
-  sudo -n cp -a --no-preserve=ownership "$ETC_OVERLAY/." "$t_etc/"
+  # Add the entries without touching the directories that already exist: a
+  # `cp -a SRC/. DST/` also copies SRC's own mode, timestamps and SELinux
+  # context onto DST, which left the deployment's /etc labelled
+  # `unconfined_u:object_r:var_t` (the runner's work directory) instead of
+  # `etc_t`, so confined services (ldconfig, accounts-daemon) could not use it.
+  # Every directory the overlay lands in that the deployment already has:
+  # /etc itself and each existing parent of an overlay entry. Their label,
+  # mode and owner must come out exactly as they went in.
+  existing_dirs=("$t_etc")
+  while IFS= read -r dir; do
+    sudo -n test -d "$t_etc/$dir" && existing_dirs+=("$t_etc/$dir")
+  done < <(cd "$ETC_OVERLAY" && find . -mindepth 1 -type d -printf '%P\n' | LC_ALL=C sort)
+  # The label is read as the xattr itself: a runner without SELinux enabled
+  # still stores and copies it, and stat's %C would only print "?" there.
+  dir_metadata() {
+    sudo -n python3 - "${existing_dirs[@]}" <<'PY'
+import os, sys
+for path in sys.argv[1:]:
+    st = os.stat(path)
+    try:
+        label = os.getxattr(path, "security.selinux").rstrip(b"\0").decode()
+    except OSError:
+        label = "-"
+    print(f"{st.st_mode & 0o7777:o} {st.st_uid}:{st.st_gid} {label} {path}")
+PY
+  }
+  before_overlay="$(dir_metadata)"
+  sudo -n tar -C "$ETC_OVERLAY" --no-xattrs --no-selinux -cf - . \
+    | sudo -n tar -C "$t_etc" --no-same-owner --no-overwrite-dir -xf -
+  after_overlay="$(dir_metadata)"
+  if [ "$before_overlay" != "$after_overlay" ]; then
+    diff <(printf '%s\n' "$before_overlay") <(printf '%s\n' "$after_overlay") >&2 || true
+    die "the validation overlay changed the label, mode or owner of an existing /etc directory"
+  fi
   overlay_label_args=(--rm --privileged -v "$t_etc:/target-etc")
   if [ -n "$SRC_REF" ]; then
     overlay_label_args+=(--network host
@@ -893,7 +1013,7 @@ if [ -n "$OFFLINE_TARGET_DIR" ]; then
   sudo -n mount -o remount,rw "$MNT"
   sudo -n install -d -m 0700 "$t_var/lib/tilo-installer"
   sudo -n python3 "$(dirname "${BASH_SOURCE[0]}")/installer-offline-target.py" \
-    install "$OFFLINE_TARGET_DIR" "$t_var/lib/tilo-installer/target-oci" \
+    install "$OFFLINE_TARGET_DIR" "$t_var/lib/tilo-installer/target-oci" "${OFFLINE_TARGET_FLAGS[@]}" \
     || die "could not stage the verified offline target into the live medium"
   # The host runner may have no SELinux policy or restorecon at all. Use the
   # install image's own file_contexts through the same confined offline-label
@@ -1010,6 +1130,8 @@ fi
 if [ "$KEEP_RAW" = 1 ]; then
   msg "4/4 leaving the raw image in place"
   sudo -n chown "$(id -u):$(id -g)" "$RAW"
+  # As for the qcow2 below: a VM that boots it must not wait on its writeback.
+  inenv "sync -- '$RAW'"
   msg "DONE: $RAW"
 else
   msg "4/4 qemu-img convert -> $QCOW"
@@ -1023,6 +1145,11 @@ else
   inenv "\$(test -x /usr/bin/qemu-img && echo /usr/bin/qemu-img || echo qemu-img) \
     convert -f raw -O qcow2 $qcow_opts '$RAW' '$QCOW'"
   rm -f "$RAW"
+  # Write the image out now. Otherwise gigabytes of it are still dirty in the
+  # host's page cache when a VM boots it, and the guest's first flush (the
+  # sync() at switch-root) waits for that writeback: the release gate's boot
+  # budget then measured the host's disk, not the OS (run 60770, 47 s).
+  inenv "sync -- '$QCOW'"
   msg "DONE: $QCOW"
   ls -lh "$QCOW" >&2
 fi

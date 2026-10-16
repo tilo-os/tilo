@@ -11,14 +11,9 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use automerge::{ChangeHash, ObjId, Patch, PatchAction, Prop, ReadDoc};
+use automerge::{ChangeHash, ObjId, Prop, ReadDoc};
 
 use crate::model::Doc;
-
-/// Above this many patches a delta stops indexing them and asks readers to
-/// read everything: a change that large (a whole-document import, a long
-/// offline session merging in) costs about as much to index as to re-read.
-const MAX_INDEXED_PATCHES: usize = 50_000;
 
 /// How the keys of one map object were touched.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -72,6 +67,12 @@ impl Touched {
     pub fn written(&self) -> impl Iterator<Item = &str> {
         self.written.iter().map(String::as_str)
     }
+
+    fn merge(&mut self, other: Self) {
+        self.written.extend(other.written);
+        self.below.extend(other.below);
+        self.all |= other.all;
+    }
 }
 
 /// How one key of a map was touched by a [`Delta`].
@@ -115,45 +116,18 @@ impl Delta {
         }
     }
 
-    /// The delta Automerge's patches describe.
-    #[must_use]
-    pub fn from_patches(patches: &[Patch]) -> Self {
-        if patches.is_empty() {
-            return Self::nothing();
-        }
-        if patches.len() > MAX_INDEXED_PATCHES {
-            return Self::everything();
-        }
-        let mut index: HashMap<ObjId, Touched> = HashMap::new();
-        for patch in patches {
-            for (parent, prop) in &patch.path {
-                let entry = index.entry(parent.clone()).or_default();
-                match prop {
-                    Prop::Map(key) => {
-                        entry.below.insert(key.clone());
-                    }
-                    Prop::Seq(_) => entry.all = true,
+    /// Add what `other` touched, so the deltas of several syncs read as one.
+    pub fn merge(&mut self, other: Self) {
+        self.kind = match (std::mem::take(&mut self.kind), other.kind) {
+            (Kind::Everything, _) | (_, Kind::Everything) => Kind::Everything,
+            (Kind::Nothing, other) | (other, Kind::Nothing) => other,
+            (Kind::Indexed(mut index), Kind::Indexed(more)) => {
+                for (obj, touched) in more {
+                    index.entry(obj).or_default().merge(touched);
                 }
+                Kind::Indexed(index)
             }
-            let entry = index.entry(patch.obj.clone()).or_default();
-            match &patch.action {
-                PatchAction::PutMap { key, .. }
-                | PatchAction::DeleteMap { key }
-                | PatchAction::Conflict {
-                    prop: Prop::Map(key),
-                }
-                | PatchAction::Increment {
-                    prop: Prop::Map(key),
-                    ..
-                } => {
-                    entry.written.insert(key.clone());
-                }
-                _ => entry.all = true,
-            }
-        }
-        Self {
-            kind: Kind::Indexed(index),
-        }
+        };
     }
 
     /// Nothing changed.
@@ -199,7 +173,7 @@ impl Delta {
 /// Where an object sits: the path from the root to it, as `(parent, prop)`
 /// pairs, root first — what a state already knowing an object answers
 /// without asking the document (see [`Resource::locate`](crate::Resource::locate)).
-pub type Path = Vec<(ObjId, Prop)>;
+pub type ObjPath = Vec<(ObjId, Prop)>;
 
 /// Above this many new changes, or operations in them, a delta is
 /// [`Delta::everything`]: reading the change would cost about as much as
@@ -222,7 +196,7 @@ impl Delta {
     pub fn from_changes(
         doc: &Doc,
         changes: &[automerge::Change],
-        locate: &dyn Fn(&ObjId) -> Option<Path>,
+        locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
     ) -> Self {
         let mut index: HashMap<ObjId, Touched> = HashMap::new();
         let mut created: HashMap<ObjId, (ObjId, Option<String>)> = HashMap::new();
@@ -269,7 +243,7 @@ fn mark_path(
     doc: &Doc,
     obj: &ObjId,
     created: &HashMap<ObjId, (ObjId, Option<String>)>,
-    locate: &dyn Fn(&ObjId) -> Option<Path>,
+    locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
     located: &mut std::collections::HashSet<ObjId>,
     index: &mut HashMap<ObjId, Touched>,
 ) {
@@ -290,7 +264,7 @@ fn mark_path(
             current = parent.clone();
             continue;
         }
-        let path: Option<Path> = locate(&current).or_else(|| {
+        let path: Option<ObjPath> = locate(&current).or_else(|| {
             let parents: Vec<automerge::Parent> = doc.parents(&current).ok()?.collect();
             // An object no longer reachable changes nothing anyone reads.
             if parents.iter().any(|parent| !parent.visible) {
@@ -360,9 +334,23 @@ impl Tracker {
     pub fn delta_located(
         &mut self,
         doc: &mut Doc,
-        locate: &dyn Fn(&ObjId) -> Option<Path>,
+        locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
     ) -> Delta {
-        let heads = doc.get_heads();
+        // Closes the open transaction, so its edits are part of the delta.
+        doc.get_heads();
+        self.committed_delta_located(doc, locate)
+    }
+
+    /// [`Self::delta_located`] up to the committed document, read through a
+    /// shared reference: edits of a transaction still open come with the
+    /// delta after it closes.
+    pub fn committed_delta_located(
+        &mut self,
+        doc: &Doc,
+        locate: &dyn Fn(&ObjId) -> Option<ObjPath>,
+    ) -> Delta {
+        let heads = doc.committed_heads();
+        let committed = doc.committed_document();
         let Some(previous) = self.heads.replace(heads.clone()) else {
             return Delta::everything();
         };
@@ -372,11 +360,11 @@ impl Tracker {
         // A version this document does not have: it was replaced wholesale.
         if previous
             .iter()
-            .any(|hash| doc.get_change_meta_by_hash(hash).is_none())
+            .any(|hash| committed.get_change_meta_by_hash(hash).is_none())
         {
             return Delta::everything();
         }
-        let metas = doc.get_changes_meta(&previous);
+        let metas = committed.get_changes_meta(&previous);
         let ops: u64 = metas
             .iter()
             .map(|meta| meta.max_op.saturating_add(1).saturating_sub(meta.start_op))
@@ -387,7 +375,7 @@ impl Tracker {
         let hashes: Vec<ChangeHash> = metas.iter().map(|meta| meta.hash).collect();
         let mut changes = Vec::with_capacity(hashes.len());
         for hash in &hashes {
-            match doc.get_change_by_hash(hash) {
+            match committed.get_change_by_hash(hash) {
                 Some(change) => changes.push(change),
                 None => return Delta::everything(),
             }
@@ -481,5 +469,28 @@ mod tests {
         assert_eq!(asked.get(), 1);
         assert_eq!(delta.under(&blocks).key("b"), Touch::Below);
         assert_eq!(delta.under(&block).key("text"), Touch::Below);
+    }
+
+    #[test]
+    fn merged_deltas_read_as_one() {
+        let mut doc = Doc::new();
+        doc.put(ROOT, "a", 1).unwrap();
+        doc.put(ROOT, "b", 1).unwrap();
+        doc.commit();
+        let mut tracker = Tracker::new();
+        tracker.start(&mut doc);
+        doc.put(ROOT, "a", 2).unwrap();
+        doc.commit();
+        let mut merged = tracker.delta(&mut doc);
+        doc.put(ROOT, "b", 2).unwrap();
+        doc.commit();
+        merged.merge(tracker.delta(&mut doc));
+        assert_eq!(merged.key(&ROOT, "a"), Touch::Written);
+        assert_eq!(merged.key(&ROOT, "b"), Touch::Written);
+        let mut nothing = Delta::nothing();
+        nothing.merge(merged.clone());
+        assert_eq!(nothing.key(&ROOT, "b"), Touch::Written);
+        merged.merge(Delta::everything());
+        assert!(merged.is_everything());
     }
 }

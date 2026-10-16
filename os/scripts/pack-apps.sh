@@ -17,6 +17,8 @@
 #   BIN_DIR        directory of built release binaries      [default: /out]
 #   TAPP_DIR       install these already-verified release tapps instead of
 #                  packing BIN_DIR (optional)
+#   COHORT_TAPP_DIR retain each installed signed archive by application id
+#                  for verified image-cohort selection (optional)
 #   EXPECTED_PUBKEY require every prebuilt tapp to use this publisher (64 hex)
 #   STORE          app store root; becomes TILO_APPS_DATA_DIR
 #                                          [default: /usr/share/tilo-apps]
@@ -25,6 +27,9 @@
 #                  SOURCE_DATE_EPOCH for independently reproduced OS images
 #   IDENTITY_JSON  signing key; generated if absent    [default: $STAGE/id.json]
 #   PUBKEY_OUT     write the signing pubkey here (optional)
+#   RUNTIME_ID     the runtime build the apps in BIN_DIR were linked against,
+#                  `tilo-runtime/<release>+native.<digest>`; stamped over each
+#                  manifest's authored release (required unless TAPP_DIR)
 #   PKG_BIN / INSTALL_BIN / BUNDLE_BIN / SHIM_BIN
 #                  tool paths                        [default: $BIN_DIR/<name>]
 #   REQUIRE_MIN    fail unless at least this many packages install [default: 1]
@@ -75,6 +80,7 @@ INSTALL_BIN="${INSTALL_BIN:-$BIN_DIR/tilo-install}"
 BUNDLE_BIN="${BUNDLE_BIN:-$BIN_DIR/tilo-runtime-bundle}"
 SHIM_BIN="${SHIM_BIN:-$BIN_DIR/tilo-cli-shim}"
 TAPP_DIR="${TAPP_DIR:-}"
+RUNTIME_ID="${RUNTIME_ID:-}"
 EXPECTED_PUBKEY="${EXPECTED_PUBKEY:-}"
 REQUIRE_MIN="${REQUIRE_MIN:-1}"
 msg() { printf '[pack-apps] %s\n' "$*" >&2; }
@@ -100,10 +106,14 @@ mkdir -p "$STAGE" "$STORE"
 initial_rows="$(grep -c '^\[\[entry\]\]' "$STORE/registry.toml" 2>/dev/null || true)"
 
 # --- source-package signing identity ---------------------------------------
-# Minted per build and discarded with the stage dir, exactly like the runtime
-# bundle's. Nothing needs to sign as this identity again: the packages are
-# already unpacked into the store by the time the image is sealed, so the
-# signature's job (binding manifest to payload during install) is done.
+# The caller's IDENTITY_JSON when it names one, else minted here and discarded
+# with the stage dir. The signature's job (binding manifest to payload during
+# install) is done once the packages are unpacked into the store, and the key
+# is in no trust list. It does name every package: the publisher key is in the
+# signed root, whose hash is the package id and the payload tree's directory
+# name. So a key minted per build gives identical binaries new paths and new
+# cohort archives in every image; Build / OS dev passes one identity for all
+# its builds instead (os/Containerfile).
 prebuilt=0
 if [ -n "$TAPP_DIR" ] && compgen -G "$TAPP_DIR/*.tapp" >/dev/null; then
     prebuilt=1
@@ -150,7 +160,8 @@ if [ "$prebuilt" = 1 ]; then
             failed+=("$(basename "$tapp"): signature or content verification failed")
             continue
         fi
-        package_pubkey=$("$PKG_BIN" inspect "$tapp" \
+        package_details=$("$PKG_BIN" inspect "$tapp")
+        package_pubkey=$(printf '%s\n' "$package_details" \
             | sed -n 's/^identity  *= *"ed25519:\([0-9a-fA-F]\{64\}\)".*/\1/p' \
             | head -1)
         [ -n "$package_pubkey" ] \
@@ -161,10 +172,20 @@ if [ "$prebuilt" = 1 ]; then
             failed+=("$(basename "$tapp"): collection mixes publisher identities")
             continue
         fi
+        if [ -n "${COHORT_TAPP_DIR:-}" ]; then
+            package_id=$(printf '%s\n' "$package_details" \
+                | sed -n 's/^id  *= *"\([^"]*\)".*/\1/p' | head -1)
+            [[ "$package_id" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] \
+                || { failed+=("$(basename "$tapp"): unsafe or missing application id"); continue; }
+        fi
         if ! "$INSTALL_BIN" install "$tapp" --allow-self-signed \
                 >"$STAGE/$(basename "$tapp").install.log" 2>&1; then
             failed+=("$(basename "$tapp"): install failed")
             continue
+        fi
+        if [ -n "${COHORT_TAPP_DIR:-}" ]; then
+            mkdir -p "$COHORT_TAPP_DIR"
+            cp "$tapp" "$COHORT_TAPP_DIR/$package_id.tapp"
         fi
         shipped+=("$(basename "$tapp")")
     done
@@ -174,7 +195,11 @@ if [ "$prebuilt" = 1 ]; then
     fi
 else
 
+[[ "$RUNTIME_ID" == */*+native.* ]] \
+    || die "RUNTIME_ID must name the runtime build the apps link (tilo-runtime/<release>+native.<digest>)"
+
 for manifest in "$REPO"/apps/*/tilo-app.toml; do
+    if [ -n "${APP_DIR:-}" ] && [ "$(basename "$(dirname "$manifest")")" != "$APP_DIR" ]; then continue; fi
     [ -e "$manifest" ] || continue
     app="$(basename "$(dirname "$manifest")")"
 
@@ -205,6 +230,10 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
         "$manifest" > "$staged_manifest"
     grep -q "ed25519:$PUBKEY" "$staged_manifest" \
         || { failed+=("$app ($id): could not stamp publisher identity"); continue; }
+    # The binary links this exact runtime build, so the package names it,
+    # not just the release the manifest was written for.
+    "$(dirname "${BASH_SOURCE[0]}")/stamp-runtime.sh" "$staged_manifest" "$RUNTIME_ID" \
+        || { failed+=("$app ($id): could not stamp runtime $RUNTIME_ID"); continue; }
 
     tapp="$STAGE/$id.tapp"
     if ! "$PKG_BIN" pack \
@@ -238,6 +267,14 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
         continue
     fi
 
+    if [ -n "${COHORT_TAPP_DIR:-}" ]; then
+        mkdir -p "$COHORT_TAPP_DIR"
+        cp "$tapp" "$COHORT_TAPP_DIR/$id.tapp"
+    fi
+    if [ -n "${TAPP_OUT:-}" ]; then
+        [ -n "${APP_DIR:-}" ] || die "TAPP_OUT requires a selected APP_DIR"
+        cp "$tapp" "$TAPP_OUT"
+    fi
     shipped+=("$id ($tapp_bytes bytes)")
 done
 fi
@@ -267,3 +304,11 @@ expected_rows=$((initial_rows + ${#shipped[@]}))
 [ "$rows" = "$expected_rows" ] \
     || die "registry has $rows row(s), expected $initial_rows existing + ${#shipped[@]} installed"
 msg "registry.toml lists $rows package(s)"
+
+# Every runtime build a shipped app pins -- the Browser's engine included --
+# must ship with the image at that exact version, or the app boots into
+# "not installed". The check reads the installed manifests, so no list of
+# runtimes is kept beside the apps.
+STORE="$STORE" RUNTIME_ROOT="${RUNTIME_ROOT:-/usr/lib/tilo-runtime}" BUNDLE_BIN="$BUNDLE_BIN" \
+    "$(dirname "${BASH_SOURCE[0]}")/check-shipped-runtimes.sh" \
+    || die "an app pins a runtime build the image does not ship"

@@ -24,7 +24,9 @@ pub struct InputEnvironment {
     /// read outside libinput and announce no device, so using one is what
     /// makes it available.
     controller: Option<ControllerFamily>,
-    typed_since_touch: bool,
+    /// Touch is the most recent of touch, keyboard and pointer activation. False
+    /// until the screen is first touched.
+    touch_is_current: bool,
     tablet_mode: bool,
 }
 
@@ -48,13 +50,22 @@ impl InputEnvironment {
     /// it exists even when no backend announced it (a headless session's
     /// injected input). Returns whether anything changed.
     pub fn note_used(&mut self, modality: InputModality) -> bool {
+        let previous_touch = self.touch_is_current;
         let changed = self.last_used != Some(modality);
         self.last_used = Some(modality);
         match modality {
-            InputModality::Keyboard => self.typed_since_touch = true,
-            InputModality::Touch => self.typed_since_touch = false,
-            InputModality::Pointer | InputModality::Controller => {}
+            InputModality::Keyboard | InputModality::Pointer => self.touch_is_current = false,
+            InputModality::Touch => self.touch_is_current = true,
+            InputModality::Controller => {}
         }
+        changed || previous_touch != self.touch_is_current
+    }
+
+    /// Pointer hover updates pointer precision and help without dismissing
+    /// the keyboard requested by a touch. A click or scroll uses `note_used`.
+    pub fn note_pointer_motion(&mut self) -> bool {
+        let changed = self.last_used != Some(InputModality::Pointer);
+        self.last_used = Some(InputModality::Pointer);
         changed
     }
 
@@ -65,10 +76,10 @@ impl InputEnvironment {
         self.note_used(InputModality::Controller) || changed
     }
 
-    /// Whether a physical key was pressed after the most recent touch (or
-    /// before any touch). Pointer use in between does not reset it.
-    pub fn typed_since_touch(&self) -> bool {
-        self.typed_since_touch
+    /// Whether the screen was touched after the most recent key press or
+    /// pointer activation (and touched at all).
+    pub fn touch_is_current(&self) -> bool {
+        self.touch_is_current
     }
 
     /// Record a convertible's tablet-mode switch. Returns whether it changed.
@@ -215,14 +226,35 @@ mod tests {
     }
 
     #[test]
-    fn typing_is_remembered_across_pointer_use_until_the_next_touch() {
+    fn activation_after_hover_publishes_touch_policy_change() {
         let mut input = InputEnvironment::default();
-        assert!(!input.typed_since_touch());
-        input.note_used(InputModality::Keyboard);
-        input.note_used(InputModality::Pointer);
-        assert!(input.typed_since_touch());
+        assert!(input.note_used(InputModality::Touch));
+        assert!(input.note_pointer_motion());
+        assert!(input.touch_is_current());
+        assert_eq!(input.last_used(), Some(InputModality::Pointer));
+        assert!(!input.note_pointer_motion());
+        assert!(input.note_used(InputModality::Pointer));
+        assert!(!input.touch_is_current());
+        assert!(!input.note_used(InputModality::Pointer));
+        assert!(input.note_used(InputModality::Touch));
+        assert!(input.note_pointer_motion());
+        assert!(input.note_used(InputModality::Keyboard));
+        assert!(!input.touch_is_current());
+    }
+
+    #[test]
+    fn touch_stays_current_until_a_key_or_the_pointer_is_used() {
+        let mut input = InputEnvironment::default();
+        assert!(!input.touch_is_current(), "nothing touched yet");
         input.note_used(InputModality::Touch);
-        assert!(!input.typed_since_touch());
+        assert!(input.touch_is_current());
+        input.note_used(InputModality::Controller);
+        assert!(input.touch_is_current(), "a controller is neither");
+        input.note_used(InputModality::Pointer);
+        assert!(!input.touch_is_current());
+        input.note_used(InputModality::Touch);
+        input.note_used(InputModality::Keyboard);
+        assert!(!input.touch_is_current());
         assert!(input.set_tablet_mode(true));
         assert!(!input.set_tablet_mode(true));
         assert!(input.tablet_mode());

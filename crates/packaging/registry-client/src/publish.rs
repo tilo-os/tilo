@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use anyhow::{Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use registry_types::EntryAction;
+use registry_types::retention::RetentionPolicy;
 
 use crate::client::RegistryClient;
 use crate::entry::{EntryMetadata, Platform, build_entry, check_package};
@@ -28,6 +29,7 @@ pub struct Published {
 /// one package id — its platforms and architectures — go into a single
 /// request that extends the one still waiting for review, if any: a newer
 /// request for a package replaces the waiting one and must keep its versions.
+/// Each entry keeps its versions within `retention`.
 ///
 /// # Errors
 ///
@@ -40,6 +42,7 @@ pub fn publish(
     packages: &[Vec<u8>],
     arch: Option<&str>,
     metadata: Option<&EntryMetadata>,
+    retention: &RetentionPolicy,
 ) -> Result<Vec<Published>> {
     let mut by_id: BTreeMap<String, Vec<(usize, Platform, String)>> = BTreeMap::new();
     for (index, bytes) in packages.iter().enumerate() {
@@ -80,6 +83,7 @@ pub fn publish(
                 arch,
                 entry.as_ref(),
                 metadata,
+                retention,
             )?);
             if let Some(slot) = published.get_mut(index) {
                 *slot = Some(Published {

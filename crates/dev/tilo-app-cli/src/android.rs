@@ -1286,6 +1286,20 @@ pub struct Keystore {
     pub key_pass: String,
 }
 
+/// The signing tools read the keystore passwords from these variables of
+/// their own environment, never from argv, which other users can list.
+const STORE_PASS_ENV: &str = "TILO_ANDROID_SIGNING_STORE_PASS";
+const KEY_PASS_ENV: &str = "TILO_ANDROID_SIGNING_KEY_PASS";
+
+impl Keystore {
+    fn password_env(&self) -> [(&'static str, &str); 2] {
+        [
+            (STORE_PASS_ENV, self.store_pass.as_str()),
+            (KEY_PASS_ENV, self.key_pass.as_str()),
+        ]
+    }
+}
+
 /// Which key signs a build.
 #[derive(Debug, Clone, Default)]
 pub enum Signing {
@@ -1346,8 +1360,8 @@ fn release_keystore(tools: &Toolchain, explicit: Option<&Path>) -> Result<Keysto
             alias: env("TILO_ANDROID_KEY_ALIAS").unwrap_or_else(|| "tilo-release".to_owned()),
         });
     }
-    let dir = registry_client::key::default_path()
-        .and_then(|key| key.parent().map(Path::to_path_buf))
+    let dir = tilo_paths::config_dir()
+        .map(|config| config.join("tilo"))
         .ok_or_else(|| {
             anyhow::anyhow!("no configuration directory for the Android release keystore; set $TILO_ANDROID_KEYSTORE")
         })?;
@@ -1405,8 +1419,9 @@ fn generate_keystore(tools: &Toolchain, keystore: &Keystore, dname: &str) -> Res
             .arg("-genkeypair")
             .arg("-keystore")
             .arg(&keystore.path)
-            .args(["-storetype", "PKCS12", "-storepass", &keystore.store_pass])
-            .args(["-keypass", &keystore.key_pass, "-alias", &keystore.alias])
+            .args(["-storetype", "PKCS12", "-storepass:env", STORE_PASS_ENV])
+            .args(["-keypass:env", KEY_PASS_ENV, "-alias", &keystore.alias])
+            .envs(keystore.password_env())
             .args(["-keyalg", "RSA", "-keysize", "4096", "-validity", "10000"])
             .args(["-dname", dname]),
     )
@@ -1501,7 +1516,7 @@ fn checkout(app_dir: &Path) -> Result<Checkout> {
     }
     Ok(Checkout {
         android,
-        fonts: ui_core.join("assets/fonts"),
+        fonts: crate::font_assets::prepared_fonts(&root, "product")?,
         target_dir,
     })
 }
@@ -1659,7 +1674,7 @@ fn stage_apk(
     let assets = stage.join("assets");
     let fonts = assets.join("tilo").join("fonts");
     std::fs::create_dir_all(&fonts)?;
-    super::copy_payload_tree(&checkout.fonts, &fonts)
+    copy_standalone_fonts(&checkout.fonts, &fonts)
         .with_context(|| format!("copying the font catalog {}", checkout.fonts.display()))?;
     let icon = compile_icon(tools, app_dir, metadata, stage)?;
     let debuggable = matches!(request.signing, Signing::Debug);
@@ -1677,6 +1692,53 @@ fn stage_apk(
         icon,
         content,
     })
+}
+
+/// Copy the SDK's standalone font catalog out of the checkout's: the fonts
+/// the manifest scopes `product`, which any app may bundle, with the
+/// licences, provenance and manifest. Fonts only the Tilo OS ships (`os`,
+/// such as New Computer Modern's GPL-licensed Regular cut) and test fixtures
+/// stay out; the toolkit sets text in the cuts the catalog has.
+fn copy_standalone_fonts(source: &Path, destination: &Path) -> Result<()> {
+    let manifest: toml::Table = std::fs::read_to_string(source.join("manifest.toml"))
+        .context("reading the font manifest")?
+        .parse()
+        .context("parsing the font manifest")?;
+    for font in manifest
+        .get("font")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if font.get("scope").and_then(toml::Value::as_str) != Some("product") {
+            continue;
+        }
+        let name = font
+            .get("file")
+            .and_then(toml::Value::as_str)
+            .context("a font without a file")?;
+        if name.contains("..") || Path::new(name).is_absolute() {
+            bail!("the font manifest names a file outside the catalog: {name}");
+        }
+        let target = destination.join(name);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(source.join(name), &target).with_context(|| format!("copying {name}"))?;
+    }
+    let licenses = source.join("LICENSES");
+    if licenses.is_dir() {
+        let target = destination.join("LICENSES");
+        std::fs::create_dir_all(&target)?;
+        super::copy_payload_tree(&licenses, &target)?;
+    }
+    for file in ["manifest.toml", "PROVENANCE.md"] {
+        if source.join(file).is_file() {
+            std::fs::copy(source.join(file), destination.join(file))
+                .with_context(|| format!("copying {file}"))?;
+        }
+    }
+    Ok(())
 }
 
 /// Link, align and sign the staged APK into `apk`.
@@ -1702,9 +1764,10 @@ fn link_apk(
             .args(["sign", "--ks"])
             .arg(&keystore.path)
             .arg("--ks-pass")
-            .arg(format!("pass:{}", keystore.store_pass))
+            .arg(format!("env:{STORE_PASS_ENV}"))
             .arg("--key-pass")
-            .arg(format!("pass:{}", keystore.key_pass))
+            .arg(format!("env:{KEY_PASS_ENV}"))
+            .envs(keystore.password_env())
             .arg("--ks-key-alias")
             .arg(&keystore.alias)
             .arg("--out")
@@ -1966,11 +2029,12 @@ fn build_bundle(
             .arg("-keystore")
             .arg(&keystore.path)
             .args([
-                "-storepass",
-                &keystore.store_pass,
-                "-keypass",
-                &keystore.key_pass,
+                "-storepass:env",
+                STORE_PASS_ENV,
+                "-keypass:env",
+                KEY_PASS_ENV,
             ])
+            .envs(keystore.password_env())
             .args([
                 "-sigalg",
                 "SHA256withRSA",
@@ -2422,7 +2486,12 @@ pub struct DeviceRequest {
     pub arch: Option<PackageArch>,
 }
 
-fn build_for_device(start: &Path, adb: &Adb, request: &DeviceRequest) -> Result<AndroidBuild> {
+fn build_for_device(
+    start: &Path,
+    adb: &Adb,
+    request: &DeviceRequest,
+    profile: &str,
+) -> Result<AndroidBuild> {
     let arch = match request.arch {
         Some(arch) => arch,
         None => adb.arch()?,
@@ -2431,7 +2500,7 @@ fn build_for_device(start: &Path, adb: &Adb, request: &DeviceRequest) -> Result<
         start,
         &BuildRequest {
             arch,
-            profile: "dev".to_owned(),
+            profile: profile.to_owned(),
             signing: Signing::Debug,
             bundle: false,
             features: Vec::new(),
@@ -2463,7 +2532,7 @@ pub fn run_on_device(start: &Path, request: &DeviceRequest) -> Result<AndroidBui
     let tools = Toolchain::discover();
     let adb = Adb::connect(&tools, request.device.as_deref())?;
     let mut logcat = adb.logcat()?;
-    let result = build_for_device(start, &adb, request);
+    let result = build_for_device(start, &adb, request, "dev");
     let build = match result {
         Ok(build) => build,
         Err(error) => {
@@ -2524,7 +2593,7 @@ pub fn dev_on_device(start: &Path, dev: &crate::DevRequest, request: &DeviceRequ
     while !super::DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
         if rebuild {
             rebuild = false;
-            match build_for_device(&app_dir, &adb, request) {
+            match build_for_device(&app_dir, &adb, request, dev.profile().unwrap_or("dev")) {
                 Ok(build) => application_id = Some(build.metadata.application_id),
                 Err(error) => eprintln!("[tilo-app] {error:#}\n[tilo-app] waiting for a change"),
             }
@@ -2592,6 +2661,31 @@ pub fn clippy(start: &Path, arch: PackageArch) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_apk_carries_only_the_standalone_font_catalog() {
+        let checkout = crate::font_assets::prepared_fonts(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."),
+            "fixtures",
+        )
+        .unwrap();
+        let out = tempfile::tempdir().unwrap();
+        copy_standalone_fonts(&checkout, out.path()).unwrap();
+        let fonts = out.path();
+        // New Computer Modern's GPL-licensed Regular cut is the Tilo OS's
+        // alone; its GUST-licensed cuts ship with every app.
+        assert!(!fonts.join("NewCM10-Regular.otf").exists());
+        assert!(fonts.join("NewCM10-Book.otf").is_file());
+        assert!(fonts.join("NewCM08-Book.otf").is_file());
+        // Test fixtures stay out too.
+        assert!(!fonts.join("AdwaitaSans-Regular.ttf").exists());
+        assert!(fonts.join("TiloSans[wdth,wght].ttf").is_file());
+        assert!(fonts.join("LICENSES/GUST-FONT-LICENSE.txt").is_file());
+        assert_eq!(
+            std::fs::read(fonts.join("manifest.toml")).unwrap(),
+            std::fs::read(checkout.join("manifest.toml")).unwrap()
+        );
+    }
 
     fn manifest(net: &str, portals: &str) -> tilo_app_package::Manifest {
         tilo_app_package::Manifest::from_toml_str(&format!(

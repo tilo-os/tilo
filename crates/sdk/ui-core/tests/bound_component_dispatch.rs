@@ -41,7 +41,7 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
         );
         assert_eq!(provider.search("").len(), 1);
         assert!(provider.search_limited("", 0).is_empty());
-        let page = provider.search_page("", None, 1, 1);
+        let page = provider.search_page(&"".into(), None, 1, 1);
         assert_eq!(page.results.len(), 1);
         assert!(page.next.is_some());
         assert_eq!(page.inspected, 1);
@@ -88,7 +88,7 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
         );
         assert!(provider.search("").is_empty());
         assert!(provider.search_limited("", 1).is_empty());
-        let page = provider.search_page("", None, 1, 1);
+        let page = provider.search_page(&"".into(), None, 1, 1);
         assert!(page.results.is_empty() && page.next.is_none() && page.inspected == 0);
         assert!(
             provider
@@ -142,7 +142,7 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
 fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
     // Case `cleared_or_unadmitted_nodes_never_dispatch_as_outer_widgets`.
     {
-        let mut root = Button::new("probe", "Probe", None);
+        let mut root = Button::new("probe", "Probe");
         let mut tree = taffy::TaffyTree::new();
         let mut nodes = HashMap::new();
         let node = root.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
@@ -174,7 +174,7 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
                 .unwrap()
             );
             let original = nodes[&node];
-            let mut other = Button::new("other", "Other", None);
+            let mut other = Button::new("other", "Other");
             nodes.insert(node, std::ptr::from_mut::<dyn Widget>(&mut other));
             assert!(matches!(
                 invoke_bound_node::<()>(
@@ -240,7 +240,12 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
                         if widget.name() == "Leaf" {
                             widget.set_focus(true);
                             widget.ime_cursor_rect();
-                            widget.perform_action(&tilo_ui::a11y::Action::Focus, doc, root);
+                            widget.perform_action(
+                                &tilo_ui::a11y::Action::Focus,
+                                &[],
+                                &mut tilo_ui::widget::Edits::lend(doc),
+                                root,
+                            );
                         }
                     },
                 )
@@ -295,13 +300,13 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
         let mut state = tilo_ui::State::new();
         state.doc.put(ROOT, "marker", "shell").unwrap();
         let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+            tilo_ui::font_catalog::checkout_root(),
             "en-US",
         );
         let renderer = tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap();
         CAPTURES.with_borrow_mut(Vec::clear);
         TASKS.with_borrow_mut(Vec::clear);
-        let mut driver = tilo_ui::headless::Driver::new_with_controlled_inputs(
+        let mut driver = tilo_ui::headless::FrameHarness::new_with_controlled_inputs(
             state,
             Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
             (400, 300),
@@ -418,7 +423,12 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
                     &ROOT,
                     |widget, doc, path| {
                         if widget.name() == "Leaf" {
-                            widget.perform_action(&tilo_ui::a11y::Action::Focus, doc, path);
+                            widget.perform_action(
+                                &tilo_ui::a11y::Action::Focus,
+                                &[],
+                                &mut tilo_ui::widget::Edits::lend(doc),
+                                path,
+                            );
                         }
                     },
                 )
@@ -488,25 +498,29 @@ impl Leaf {
         });
         TASKS.with_borrow_mut(|tasks| tasks.push(tilo_ui::LatestTask::new(0)));
     }
-    fn edit(&self, doc: &mut AutoCommit, label: &'static str) {
+    /// Check `doc` is this leaf's record and note the callback `label`.
+    fn observe(&self, doc: &AutoCommit, label: &'static str) {
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.record.as_str())
         );
-        doc.put(ROOT, "last_callback", label).unwrap();
         self.capture(label);
+    }
+    fn edit(&self, doc: &mut tilo_ui::widget::Edits<'_>, label: &'static str) {
+        self.observe(doc, label);
+        crate::support::application::write_fixture_string(doc, "last_callback", label);
     }
 }
 impl Widget for Leaf {
     tilo_ui::provides!(dyn tilo_ui::resources::PublishesResources);
 
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
-        let (doc, _) = tilo_ui::doc::document(doc, path);
-        self.edit(doc, "sync");
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
+        let (doc, _) = tilo_ui::doc::document_ref(doc, path);
+        self.observe(doc, "sync");
     }
-    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
-        let (doc, _) = tilo_ui::doc::document(doc, path);
-        self.edit(doc, "update");
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
+        let (doc, _) = tilo_ui::doc::document_ref(doc, path);
+        self.observe(doc, "update");
         false
     }
     fn build_layout(
@@ -556,7 +570,7 @@ impl Widget for Leaf {
             Some(ctx.node_id),
             "adapter shifted event topology"
         );
-        self.edit(ctx.state, "event");
+        self.edit(&mut ctx.state, "event");
     }
     fn name(&self) -> &'static str {
         "Leaf"
@@ -596,23 +610,17 @@ impl Widget for Leaf {
     }
     fn perform_action(
         &mut self,
-        _: &tilo_ui::a11y::Action,
-        doc: &mut AppModel,
+        action: &tilo_ui::a11y::Action,
+        key_path: &[u64],
+        doc: &mut tilo_ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (doc, _) = tilo_ui::doc::document(doc, path);
-        self.edit(doc, "action");
-        true
-    }
-    fn perform_action_at(
-        &mut self,
-        action: &tilo_ui::a11y::Action,
-        path: &[u64],
-        doc: &mut AppModel,
-        doc_path: &ModelPath,
-    ) -> bool {
-        let (doc, _) = tilo_ui::doc::document(doc, doc_path);
-        assert_eq!(path, &[42]);
+        if key_path.is_empty() {
+            self.edit(doc, "action");
+            return true;
+        }
+        assert_eq!(key_path, &[42]);
         assert_eq!(action, &tilo_ui::a11y::Action::Focus);
         self.edit(doc, "synthetic-action");
         true
@@ -623,10 +631,10 @@ impl Widget for Leaf {
     )]
     fn start_operation(
         &mut self,
-        op: &tilo_ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        op: &tilo_ui::host_operation::ResourceOperation<'_>,
+        doc: &mut tilo_ui::widget::Edits<'_>,
         _: &ObjId,
-    ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
         if op.unscoped().is_none() {
             return Ok(None);
         }
@@ -636,7 +644,9 @@ impl Widget for Leaf {
         );
         self.capture("operation-start");
         self.operation_state = Some(LocalState::new(0));
-        Ok(Some(tilo_ui::widget::ResourceOperationStart::Accepted))
+        Ok(Some(
+            tilo_ui::host_operation::ResourceOperationStart::Accepted,
+        ))
     }
     fn poll_resource_operation(
         &mut self,
@@ -728,21 +738,22 @@ impl Widget for Root {
 
     fn start_operation(
         &mut self,
-        op: &tilo_ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        op: &tilo_ui::host_operation::ResourceOperation<'_>,
+        doc: &mut tilo_ui::widget::Edits<'_>,
         path: &ObjId,
-    ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
         if op.unscoped().is_none() {
-            return tilo_ui::widget::start_in_children(self, op, doc, path);
+            return tilo_ui::host_operation::start_in_children(self, op, doc, path);
         }
         if !LEGACY_MUTABLE.get() {
-            if let Some(started) = tilo_ui::widget::start_in_children(self, op, doc, path)? {
+            if let Some(started) = tilo_ui::host_operation::start_in_children(self, op, doc, path)?
+            {
                 return Ok(Some(started));
             }
             if let Some(accept) = LEGACY_START.get() {
                 LEGACY_START_CALLS.set(LEGACY_START_CALLS.get().saturating_add(1));
                 return Ok(accept.then(|| {
-                    tilo_ui::widget::ResourceOperationStart::Completed(
+                    tilo_ui::host_operation::ResourceOperationStart::Completed(
                         tilo_actions::ActionOutput::default(),
                     )
                 }));
@@ -755,17 +766,18 @@ impl Widget for Root {
             .and_then(|(value, _)| value.as_str().map(str::to_owned))
             .unwrap_or_default();
         LEGACY_DOCUMENTS.with_borrow_mut(|seen| seen.push((marker, path == &ROOT)));
-        doc.put(ROOT, "legacy-follow-up", true)
-            .map_err(|e| e.to_string())?;
-        Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        crate::support::application::write_fixture_flag(doc, "legacy-follow-up");
+        Ok(Some(
+            tilo_ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
 
-    fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
+    fn sync(&mut self, d: &AppModel, p: &ModelPath) {
         self.0.sync(d, p);
     }
-    fn update(&mut self, d: &mut AppModel, p: &ModelPath) -> bool {
+    fn update(&mut self, d: &AppModel, p: &ModelPath) -> bool {
         self.0.update(d, p)
     }
     fn build_layout(
@@ -787,6 +799,13 @@ impl Widget for Root {
         theme: &tilo_ui::Theme,
         presence: &tilo_ui::PresenceCtx,
     ) {
+        assert!(
+            presence.permits(&tilo_ui::permissions::PermissionScope::workspace(
+                tilo_ui::permissions::ActionKind::Undoable
+            )) == EXPECTED_WRITE.get(),
+            "draw received outer authority"
+        );
+        self.mark("draw-permissions");
         self.0.draw(scene, transform, renderer, theme, presence);
     }
     fn handle_event(
@@ -796,25 +815,12 @@ impl Widget for Root {
     ) {
         self.0.handle_event(event, ctx);
     }
-    fn draw_with_presence(
+    fn on_external_event(
         &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text: &mut tilo_ui::TextRenderer,
-        theme: &tilo_ui::Theme,
-        presence: &tilo_ui::PresenceCtx,
-        permissions: &tilo_ui::permissions::PermissionContext,
+        _: &str,
+        doc: &mut tilo_ui::widget::Edits<'_>,
+        path: &ModelPath,
     ) {
-        assert!(
-            permissions.check(&tilo_ui::permissions::PermissionScope::workspace(
-                tilo_ui::permissions::Verb::Write
-            )) == EXPECTED_WRITE.get(),
-            "draw received outer authority"
-        );
-        self.mark("draw-permissions");
-        self.0.draw(scene, transform, text, theme, presence);
-    }
-    fn on_external_event(&mut self, _: &str, doc: &mut AppModel, path: &ModelPath) {
         let (doc, _) = tilo_ui::doc::document(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
@@ -877,7 +883,12 @@ impl tilo_ui::search::capability::SearchSource for Root {
         self.mark("provider-create");
         vec![]
     }
-    fn activate_search_result(&mut self, _: &str, doc: &mut AppModel, path: &ModelPath) {
+    fn activate_search_result(
+        &mut self,
+        _: &str,
+        doc: &mut tilo_ui::widget::Edits<'_>,
+        path: &ModelPath,
+    ) {
         let (doc, _) = tilo_ui::doc::document(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
@@ -902,9 +913,6 @@ impl AppWidget for Root {
     }
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("P")
-    }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
     }
     fn commands(&self) -> Vec<tilo_ui::AppCommand> {
         COMMAND_CALLS.set(COMMAND_CALLS.get().saturating_add(1));
@@ -1045,7 +1053,12 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
                         doc,
                         &ROOT,
                         |widget, doc, root| {
-                            widget.perform_action(&tilo_ui::a11y::Action::Focus, doc, root)
+                            widget.perform_action(
+                                &tilo_ui::a11y::Action::Focus,
+                                &[],
+                                &mut tilo_ui::widget::Edits::lend(doc),
+                                root,
+                            )
                         },
                     )
                     .unwrap();
@@ -1082,17 +1095,17 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
         let invocation = tilo_actions::InvocationId::new();
         assert!(matches!(
             tile.start_operation(
-                &tilo_ui::widget::ResourceOperation::local(
+                &tilo_ui::host_operation::ResourceOperation::local(
                     invocation,
                     tilo_actions::OperationKind::Effect,
                     "probe",
                     &[]
                 ),
-                &mut outer,
+                &mut tilo_ui::widget::Edits::lend(&mut outer),
                 &ROOT
             )
             .unwrap(),
-            Some(tilo_ui::widget::ResourceOperationStart::Accepted)
+            Some(tilo_ui::host_operation::ResourceOperationStart::Accepted)
         ));
         CANCELLED.set(0);
         CLOSED_DROPS.set(0);
@@ -1125,11 +1138,11 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
         let component = component(&host, 1);
         let checkout = component.record().clone();
         let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+            tilo_ui::font_catalog::checkout_root(),
             "en-US",
         );
         let replace = std::rc::Rc::new(Cell::new(false));
-        let mut driver = tilo_ui::headless::Driver::new_with_controlled_inputs(
+        let mut driver = tilo_ui::headless::FrameHarness::new_with_controlled_inputs(
             tilo_ui::State::new(),
             Box::new(ReplacingHost(
                 TileHost::from_component(component),
@@ -1262,29 +1275,34 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
             match callback {
                 Callback::DrawPermissions => {
                     let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-                        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+                        tilo_ui::font_catalog::checkout_root(),
                         "en-US",
                     );
                     let mut renderer = tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap();
-                    tile.draw_with_presence(
-                        &mut vello::Scene::new(),
-                        vello::kurbo::Affine::IDENTITY,
-                        &mut renderer,
-                        &tilo_ui::Theme::dark(),
-                        &tilo_ui::PresenceCtx::empty(),
-                        &tilo_ui::permissions::PermissionContext::permissive(),
+                    let presence = tilo_ui::PresenceCtx::empty();
+                    presence.with_permissions(
+                        tilo_ui::permissions::PermissionContext::permissive(),
+                        || {
+                            tile.draw(
+                                &mut vello::Scene::new(),
+                                vello::kurbo::Affine::IDENTITY,
+                                &mut renderer,
+                                &tilo_ui::Theme::dark(),
+                                &presence,
+                            );
+                        },
                     );
                 }
 
                 Callback::Start => {
                     tile.start_operation(
-                        &tilo_ui::widget::ResourceOperation::local(
+                        &tilo_ui::host_operation::ResourceOperation::local(
                             invocation,
                             tilo_actions::OperationKind::Effect,
                             "probe",
                             &[],
                         ),
-                        &mut shell,
+                        &mut tilo_ui::widget::Edits::lend(&mut shell),
                         &ROOT,
                     )
                     .unwrap();
@@ -1296,9 +1314,16 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                     tilo_ui::search::capability::search_providers(&tile);
                 }
                 Callback::Search => tilo_ui::search::capability::activate_search_result(
-                    &mut tile, "result", &mut shell, &ROOT,
+                    &mut tile,
+                    "result",
+                    &mut tilo_ui::widget::Edits::lend(&mut shell),
+                    &ROOT,
                 ),
-                Callback::External => tile.on_external_event("probe", &mut shell, &ROOT),
+                Callback::External => tile.on_external_event(
+                    "probe",
+                    &mut tilo_ui::widget::Edits::lend(&mut shell),
+                    &ROOT,
+                ),
                 Callback::Control => {
                     // A tile with its own document owner is drained through that
                     // owner's control custody, never by the generic outer drain.
@@ -1387,7 +1412,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
         );
         assert!(
             CAPTURES.with_borrow(|c| c.iter().any(|(_, label, _)| *label == "draw-permissions")),
-            "ordinary Driver paint did not reach the permission-aware root"
+            "ordinary FrameHarness paint did not reach the permission-aware root"
         );
         *permissions.borrow_mut() = tilo_ui::permissions::PermissionContext::permissive();
         EXPECTED_WRITE.set(true);
@@ -1416,6 +1441,8 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 Box::new(Column::new().push(Box::new(TileHost::from_component(component)))),
                 viewport,
             );
+            // A bare root draws under the driver's own permissive authority.
+            EXPECTED_WRITE.set(true);
             let legacy = controlled_driver(
                 Box::new(Column::new().push(Box::new(TileHost::new(
                     tilo_ui::widget::TileContent::App(Box::new(Root(
@@ -1426,6 +1453,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                 )))),
                 viewport,
             );
+            EXPECTED_WRITE.set(false);
             let actual = canonical.targets()["dispatch-root"];
             let expected = legacy.targets()["dispatch-root"];
             assert!(expected.width() > f64::from(viewport.0) / 2.0);
@@ -1490,13 +1518,13 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
                 bindings.rebuild(&tile, &tree, node, &nodes);
             }
             tile.start_operation(
-                &tilo_ui::widget::ResourceOperation::local(
+                &tilo_ui::host_operation::ResourceOperation::local(
                     tilo_actions::InvocationId::new(),
                     tilo_actions::OperationKind::Effect,
                     "probe",
                     &[],
                 ),
-                &mut AutoCommit::new(),
+                &mut tilo_ui::widget::Edits::lend(&mut AutoCommit::new()),
                 &ROOT,
             )
             .unwrap();
@@ -1520,13 +1548,13 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
         let id = tilo_actions::InvocationId::new();
         let mut doc = AutoCommit::new();
         tile.start_operation(
-            &tilo_ui::widget::ResourceOperation::local(
+            &tilo_ui::host_operation::ResourceOperation::local(
                 id,
                 tilo_actions::OperationKind::Effect,
                 "probe",
                 &[],
             ),
-            &mut doc,
+            &mut tilo_ui::widget::Edits::lend(&mut doc),
             &ROOT,
         )
         .unwrap();
@@ -1603,7 +1631,11 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
             1,
             "close unwind left a live root in the tile"
         );
-        tile.on_external_event("refused", &mut AutoCommit::new(), &ROOT);
+        tile.on_external_event(
+            "refused",
+            &mut tilo_ui::widget::Edits::lend(&mut AutoCommit::new()),
+            &ROOT,
+        );
         assert_eq!(CLOSED_DROPS.get(), 1);
     }
 }
@@ -1708,7 +1740,7 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
                     .err()
                     .unwrap()
             } else {
-                tilo_ui::headless::Driver::from_component(
+                tilo_ui::headless::FrameHarness::from_component(
                     parent,
                     (320, 180),
                     crate::support::application::runner_inputs(),
@@ -1885,7 +1917,7 @@ thread_local! { static PANIC_VIEW: Cell<bool> = const { Cell::new(false) }; }
 
 struct ReplacingHost(TileHost, std::rc::Rc<Cell<bool>>);
 impl Widget for ReplacingHost {
-    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         if self.1.replace(false) {
             self.0
                 .replace_content(tilo_ui::widget::TileContent::Notice {
@@ -1943,7 +1975,7 @@ impl Widget for ReplacingHost {
 #[repr(transparent)]
 struct SameNameUnregisteredWrapper(Button);
 impl Widget for SameNameUnregisteredWrapper {
-    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {}
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,
@@ -1987,12 +2019,15 @@ impl Widget for SameNameUnregisteredWrapper {
     }
 }
 
-fn controlled_driver(root: Box<dyn Widget>, viewport: (u32, u32)) -> tilo_ui::headless::Driver {
+fn controlled_driver(
+    root: Box<dyn Widget>,
+    viewport: (u32, u32),
+) -> tilo_ui::headless::FrameHarness {
     let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+        tilo_ui::font_catalog::checkout_root(),
         "en-US",
     );
-    tilo_ui::headless::Driver::new_with_controlled_inputs(
+    tilo_ui::headless::FrameHarness::new_with_controlled_inputs(
         tilo_ui::State::new(),
         root,
         viewport,
@@ -2040,13 +2075,13 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
                 ))));
             let result = tree
                 .start_operation(
-                    &tilo_ui::widget::ResourceOperation::local(
+                    &tilo_ui::host_operation::ResourceOperation::local(
                         tilo_actions::InvocationId::new(),
                         tilo_actions::OperationKind::Effect,
                         "legacy",
                         &[],
                     ),
-                    &mut AutoCommit::new(),
+                    &mut tilo_ui::widget::Edits::lend(&mut AutoCommit::new()),
                     &ROOT,
                 )
                 .unwrap();
@@ -2099,13 +2134,13 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
             )));
             let mut invoke = || {
                 tree.start_operation(
-                    &tilo_ui::widget::ResourceOperation::local(
+                    &tilo_ui::host_operation::ResourceOperation::local(
                         tilo_actions::InvocationId::new(),
                         tilo_actions::OperationKind::Effect,
                         "legacy.mutable",
                         &[],
                     ),
-                    &mut outer,
+                    &mut tilo_ui::widget::Edits::lend(&mut outer),
                     &outer_path,
                 )
             };
@@ -2124,7 +2159,9 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
         );
         assert!(matches!(
             outcomes[0],
-            Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(_)))
+            Ok(Some(
+                tilo_ui::host_operation::ResourceOperationStart::Completed(_)
+            ))
         ));
         assert_eq!(
             outcomes[1].as_ref().unwrap_err(),
@@ -2189,13 +2226,13 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
         outer.put(ROOT, "marker", "outer-A").unwrap();
         let mut invoke = || {
             tree.start_operation(
-                &tilo_ui::widget::ResourceOperation::local(
+                &tilo_ui::host_operation::ResourceOperation::local(
                     tilo_actions::InvocationId::new(),
                     tilo_actions::OperationKind::Effect,
                     "legacy.mutable",
                     &[],
                 ),
-                &mut outer,
+                &mut tilo_ui::widget::Edits::lend(&mut outer),
                 &ROOT,
             )
         };
@@ -2217,7 +2254,9 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
         LEGACY_MUTABLE.set(false);
         assert!(matches!(
             selected,
-            Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(_)))
+            Ok(Some(
+                tilo_ui::host_operation::ResourceOperationStart::Completed(_)
+            ))
         ));
         assert_eq!(
             absent.as_ref().unwrap_err(),
@@ -2233,7 +2272,9 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
         );
         assert!(matches!(
             retained,
-            Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(_)))
+            Ok(Some(
+                tilo_ui::host_operation::ResourceOperationStart::Completed(_)
+            ))
         ));
         assert_eq!(
             LEGACY_DOCUMENTS.with_borrow(Clone::clone),
@@ -2273,13 +2314,12 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
 #[test]
 fn bound_resources_list_and_look_up_what_the_component_permissions_admit() {
     use crate::support::application::action_probe_factory;
-    use tilo_ui::permissions::{Actor, PermissionContext, Role};
+    use tilo_ui::permissions::{PermissionContext, Role};
     let host = ProbeHost::new();
     let definition = definition(action_probe_factory);
     let driver = |instance, role| {
         let permissions = std::rc::Rc::new(std::cell::RefCell::new(
-            PermissionContext::from_capabilities(Actor::person(Some(role), "probe-author"), vec![])
-                .at_unix_time(100),
+            PermissionContext::member("probe-author", role).at_unix_time(100),
         ));
         let context = host
             .prepare_with_permissions(&definition, instance, &LaunchTarget::New, permissions)
@@ -2343,12 +2383,9 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
         let host = ProbeHost::new();
         let definition = definition(action_probe_factory);
         let permissions = std::rc::Rc::new(std::cell::RefCell::new(
-            tilo_ui::permissions::PermissionContext::from_capabilities(
-                tilo_ui::permissions::Actor::person(
-                    Some(tilo_ui::permissions::Role::Owner),
-                    "probe-author",
-                ),
-                vec![],
+            tilo_ui::permissions::PermissionContext::member(
+                "probe-author",
+                tilo_ui::permissions::Role::Owner,
             )
             .at_unix_time(100),
         ));
@@ -2391,10 +2428,10 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
         assert!(observed[0].borrow().is_empty());
         assert_eq!(*observed[1].borrow(), vec!["View"]);
         host.records
-            .read_history(&checkout.id, |_, history| {
+            .read_history(&checkout.id, |doc, history| {
                 assert!(
                     history
-                        .next_undo_in(&crate::support::application::author(), 12)
+                        .next_undo_in(doc, &crate::support::application::author(), 12)
                         .is_none()
                 );
             })
@@ -2406,12 +2443,16 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
             .with_history(&checkout.id, |doc, history| {
                 let author = crate::support::application::author();
                 assert_eq!(
-                    history.next_undo_in(&author, 11).unwrap().author.as_ref(),
+                    history
+                        .next_undo_in(doc, &author, 11)
+                        .unwrap()
+                        .author
+                        .as_ref(),
                     Some(&author)
                 );
-                assert!(history.next_undo_in(&author, 12).is_none());
-                history.undo_in(doc, &author, 11, None, None).unwrap();
-                assert!(history.next_undo_in(&author, 11).is_none());
+                assert!(history.next_undo_in(doc, &author, 12).is_none());
+                history.undo_in(doc, &author, 11, None, None, None).unwrap();
+                assert!(history.next_undo_in(doc, &author, 11).is_none());
                 assert_eq!(
                     doc.get(automerge::ROOT, "body")
                         .unwrap()
@@ -2457,13 +2498,14 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
             for instance in 11..13 {
                 let allowed = instance < 11_u64.saturating_add(authorized);
                 let permissions = std::rc::Rc::new(std::cell::RefCell::new(
-                    tilo_ui::permissions::PermissionContext::from_capabilities(
-                        tilo_ui::permissions::Actor::person(
-                            allowed.then_some(tilo_ui::permissions::Role::Owner),
+                    if allowed {
+                        tilo_ui::permissions::PermissionContext::member(
                             "probe-author",
-                        ),
-                        vec![],
-                    )
+                            tilo_ui::permissions::Role::Owner,
+                        )
+                    } else {
+                        tilo_ui::permissions::PermissionContext::stranger("probe-author")
+                    }
                     .at_unix_time(100),
                 ));
                 let component = definition
@@ -2492,7 +2534,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
                     )
                     .unwrap(),
                 );
-            let button = Button::new("outer-edit", "Outer edit", None)
+            let button = Button::new("outer-edit", "Outer edit")
                 .on_action(tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap());
             column = column.push(Box::new(button));
             let mut driver = controlled_driver(Box::new(column), (300, 200));
@@ -2518,6 +2560,7 @@ fn driver_controls_resolve_bound_targets_to_their_record_owner() {
                         assert_eq!(
                             history
                                 .next_undo_in(
+                                    doc,
                                     &author(),
                                     11_u64.saturating_add(u64::try_from(index).unwrap())
                                 )
@@ -2540,7 +2583,7 @@ fn assert_same_name_inline_wrapper_refused() {
     let clicked = std::rc::Rc::new(Cell::new(false));
     let observer = clicked.clone();
     let wrapper = Box::new(SameNameUnregisteredWrapper(
-        Button::new("ambiguous-child", "Child", None).on_click(move || observer.set(true)),
+        Button::new("ambiguous-child", "Child").on_click(move || observer.set(true)),
     ));
     assert_eq!(
         std::ptr::from_ref(wrapper.as_ref()).cast::<()>(),

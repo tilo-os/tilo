@@ -10,11 +10,11 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+#[path = "support/steward.rs"]
+mod steward;
 mod support;
 
 use collab_types::DocumentMutation;
@@ -36,6 +36,7 @@ async fn refresh_asks_the_restarted_host_for_the_room_again() {
         "127.0.0.1:0".parse().unwrap(),
     )
     .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
     let listen = host.web.addr;
     let peer = start_peer(
         Host::Https(host.https()),

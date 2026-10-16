@@ -28,7 +28,7 @@
 //! implementation needs `--features realtime`; without it construction
 //! returns [`RealtimeError::NotCompiled`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 pub use crate::hw::realtime::{CodecElement, CodecFamily, CodecTier, RealtimePolicy, StreamCodec};
@@ -229,6 +229,10 @@ pub struct EncoderConfig {
     /// sharp text and large static areas.
     pub screen_content: bool,
     pub policy: RealtimePolicy,
+    /// Encode at this size rather than the input's: the pipeline scales each
+    /// frame first (on the GPU where the VA-API path converts, else in
+    /// `videoscale`). Both dimensions must be even.
+    pub output_size: Option<(u32, u32)>,
 }
 
 impl EncoderConfig {
@@ -247,6 +251,7 @@ impl EncoderConfig {
             hdr: None,
             screen_content: false,
             policy: RealtimePolicy::encoder_from_env(),
+            output_size: None,
         }
     }
 
@@ -432,6 +437,14 @@ pub fn crop_frame(frame: crate::Frame, width: u32, height: u32) -> crate::Frame 
     }
 }
 
+/// Run on a media thread each time a [`RealtimeDecoder`] has a picture
+/// out (or an element failed, or a candidate finished starting), so a loop
+/// that does not wait for pictures (see [`RealtimeDecoder::set_picture_wait`])
+/// is woken to collect it with [`RealtimeDecoder::take_late_picture`]
+/// instead of polling. It must not block: a wake-up ping, not the work
+/// itself.
+pub type PictureWake = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 /// One decoded picture from a [`RealtimeDecoder`].
 #[derive(Clone, Debug)]
 pub struct DecodedPicture {
@@ -450,6 +463,11 @@ pub struct CodecCapabilities {
     pub hardware_decode: BTreeSet<StreamCodec>,
     pub software_encode: BTreeSet<StreamCodec>,
     pub software_decode: BTreeSet<StreamCodec>,
+    /// The largest picture each hardware decoder takes, where it has a limit
+    /// (the Hantro G1 on an RK3566 stops at 1920x1088 for H.264). A sender
+    /// encodes no larger, so a receiver never falls back to software
+    /// decoding. A codec missing here has no known limit.
+    pub hardware_decode_max: BTreeMap<StreamCodec, (u32, u32)>,
 }
 
 impl CodecCapabilities {
@@ -697,10 +715,6 @@ mod unavailable {
             false
         }
 
-        pub fn coded_size(&self) -> Option<(u32, u32)> {
-            None
-        }
-
         /// # Errors
         ///
         /// Always [`RealtimeError::NotCompiled`].
@@ -710,6 +724,13 @@ mod unavailable {
             _pts: Duration,
         ) -> Result<Vec<EncodedUnit>, RealtimeError> {
             Err(RealtimeError::NotCompiled)
+        }
+
+        /// # Errors
+        ///
+        /// Never returns: no encoder exists to finish.
+        pub fn finish(self) -> Result<Vec<EncodedUnit>, RealtimeError> {
+            match self.never {}
         }
 
         pub fn force_keyframe(&mut self) {}
@@ -731,6 +752,17 @@ mod unavailable {
             Err(RealtimeError::NotCompiled)
         }
 
+        /// # Errors
+        ///
+        /// Always [`RealtimeError::NotCompiled`].
+        pub fn new_without_waiting(_config: DecoderConfig) -> Result<Self, RealtimeError> {
+            Err(RealtimeError::NotCompiled)
+        }
+
+        pub fn startup_deadline(&self) -> Option<std::time::Instant> {
+            match self.never {}
+        }
+
         pub fn element(&self) -> Option<&'static CodecElement> {
             match self.never {}
         }
@@ -738,6 +770,10 @@ mod unavailable {
         pub fn set_display_size(&mut self, _size: Option<(u32, u32)>) {}
 
         pub fn set_stream_color(&mut self, _color: Option<super::StreamColor>) {}
+
+        pub fn set_picture_wait(&mut self, _wait: Duration) {}
+
+        pub fn set_picture_wake(&mut self, _wake: Option<super::PictureWake>) {}
 
         /// # Errors
         ///
@@ -748,6 +784,17 @@ mod unavailable {
             _keyframe_hint: Option<bool>,
         ) -> Result<Option<DecodedPicture>, RealtimeError> {
             Err(RealtimeError::NotCompiled)
+        }
+
+        pub fn picture_pending(&self) -> bool {
+            match self.never {}
+        }
+
+        /// # Errors
+        ///
+        /// Never returns: no decoder exists to drain.
+        pub fn take_late_picture(&mut self) -> Result<Option<DecodedPicture>, RealtimeError> {
+            match self.never {}
         }
     }
 
@@ -777,6 +824,7 @@ mod tests {
             hardware_decode: hw_dec.iter().copied().collect(),
             software_encode: sw.iter().copied().collect(),
             software_decode: sw.iter().copied().collect(),
+            hardware_decode_max: BTreeMap::new(),
         }
     }
 
@@ -812,6 +860,7 @@ mod tests {
                 hardware_decode: [Av1, Vp9].into(),
                 software_encode: [Vp9, Av1].into(),
                 software_decode: [Vp9, Av1].into(),
+                hardware_decode_max: BTreeMap::new(),
             };
             let receiver = CodecCapabilities {
                 software_decode: [Vp9, Av1].into(),

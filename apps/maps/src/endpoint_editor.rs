@@ -1,24 +1,29 @@
 //! Self-contained From/To editor for the Directions panel.
+//!
+//! Each endpoint is the toolkit's [`Autocomplete`]: its own field, its own
+//! suggestion list, keyboard navigation (arrows, Enter, Escape) and pointer
+//! picking. This component owns which field is being edited, the typed
+//! drafts, the debounce before a live geocode, and the places each field
+//! suggests; the app owns the route and the geocoder.
 
 use ui::time::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
-use winit::keyboard::{Key, NamedKey};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::Widget;
-use ui::paint::PaintCtx;
+use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, TextInput, TextInputKind};
+use ui::tokens::TextRole;
+use ui::widget::{
+    Autocomplete, AutocompleteOutcome, Button, ButtonFace, ButtonRole, ControlSize, Suggestion,
+};
 
-use crate::canvas;
-use crate::draw;
-use crate::geo;
-use crate::model::{LatLon, Place};
-use crate::search_box::drive_text_input;
+use crate::canvas::{self, MapPalette};
+use crate::model::Place;
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
 const OVERLAY_MAX: usize = 6;
@@ -38,14 +43,6 @@ pub(super) enum EndpointEffect {
     Handled,
 }
 
-#[derive(Clone, Copy)]
-enum EndpointHit {
-    Field(Endpoint),
-    Pick(Endpoint, usize),
-    Swap,
-    Consume,
-}
-
 pub(super) struct EndpointFrame<'a> {
     pub content: Rect,
     pub top: f64,
@@ -53,34 +50,96 @@ pub(super) struct EndpointFrame<'a> {
     pub destination: Option<&'a str>,
 }
 
+/// One endpoint: its field, its draft and the places it suggests.
+struct Field {
+    input: Autocomplete,
+    query: String,
+    results: Vec<Place>,
+    rect: Option<Rect>,
+    /// Whether the geocoder has answered the current draft.
+    searched: bool,
+}
+
+impl Field {
+    fn new(id: &str, placeholder: &str) -> Self {
+        Self {
+            // A route endpoint is a structured place/address vocabulary: the
+            // autocomplete's field is a search field, never prose to
+            // spellcheck or autocorrect.
+            input: Autocomplete::new()
+                .with_id(id)
+                .with_placeholder(placeholder)
+                .with_text_role(TextRole::Body)
+                .with_max_visible(OVERLAY_MAX),
+            query: String::new(),
+            results: Vec::new(),
+            rect: None,
+            searched: false,
+        }
+    }
+
+    /// Show the places for the current draft, or the state of the search
+    /// for them.
+    fn show_results(&mut self, editing: bool) {
+        let suggestions = self
+            .results
+            .iter()
+            .take(OVERLAY_MAX)
+            .map(|place| {
+                let detail = if place.address.is_empty() {
+                    place.category.label().to_string()
+                } else {
+                    place.address.clone()
+                };
+                Suggestion::new(place.name.clone()).with_detail(detail)
+            })
+            .collect();
+        self.input.set_suggestions_open(suggestions);
+        if editing && self.results.is_empty() && !self.query.trim().is_empty() {
+            let status = if self.searched {
+                "No places found"
+            } else {
+                "Searching…"
+            };
+            self.input.set_status(Some(status.to_string()));
+            self.input.open();
+        }
+    }
+}
+
 pub(super) struct EndpointEditor {
-    origin_input: TextInput,
-    destination_input: TextInput,
+    origin: Field,
+    destination: Field,
     focused: Option<Endpoint>,
-    origin_query: String,
-    destination_query: String,
-    origin_results: Vec<Place>,
-    destination_results: Vec<Place>,
     deadline: Option<Instant>,
-    origin_rect: Option<Rect>,
-    destination_rect: Option<Rect>,
-    hits: Vec<(Rect, EndpointHit)>,
+    swap_rect: Option<Rect>,
+    /// The pointer, for the hover state of the swap button.
+    pointer: Point,
 }
 
 impl EndpointEditor {
     pub(super) fn new() -> Self {
         Self {
-            origin_input: endpoint_input("Choose starting point"),
-            destination_input: endpoint_input("Choose destination"),
+            origin: Field::new("maps_route_origin", "Choose starting point"),
+            destination: Field::new("maps_route_destination", "Choose destination"),
             focused: None,
-            origin_query: String::new(),
-            destination_query: String::new(),
-            origin_results: Vec::new(),
-            destination_results: Vec::new(),
             deadline: None,
-            origin_rect: None,
-            destination_rect: None,
-            hits: Vec::new(),
+            swap_rect: None,
+            pointer: Point::ZERO,
+        }
+    }
+
+    fn field(&self, endpoint: Endpoint) -> &Field {
+        match endpoint {
+            Endpoint::Origin => &self.origin,
+            Endpoint::Destination => &self.destination,
+        }
+    }
+
+    fn field_mut(&mut self, endpoint: Endpoint) -> &mut Field {
+        match endpoint {
+            Endpoint::Origin => &mut self.origin,
+            Endpoint::Destination => &mut self.destination,
         }
     }
 
@@ -88,36 +147,44 @@ impl EndpointEditor {
     /// effect immediately, so this is idempotent during ordinary local edits
     /// and authoritative after a document reload.
     pub(super) fn sync_queries(&mut self, origin: &str, destination: &str) {
-        if self.origin_query != origin {
-            origin.clone_into(&mut self.origin_query);
-            if self.focused == Some(Endpoint::Origin) {
-                self.origin_input.set_text(origin);
-            }
-        }
-        if self.destination_query != destination {
-            destination.clone_into(&mut self.destination_query);
-            if self.focused == Some(Endpoint::Destination) {
-                self.destination_input.set_text(destination);
+        for (endpoint, query) in [
+            (Endpoint::Origin, origin),
+            (Endpoint::Destination, destination),
+        ] {
+            let focused = self.focused == Some(endpoint);
+            let field = self.field_mut(endpoint);
+            if field.query != query {
+                query.clone_into(&mut field.query);
+                if focused {
+                    field.input.set_text(query);
+                }
             }
         }
     }
 
+    /// The places the field suggests for its draft: local matches at once,
+    /// then the geocoder's.
     pub(super) fn set_results(&mut self, endpoint: Endpoint, results: Vec<Place>) {
-        *self.results_mut(endpoint) = results;
+        let editing = self.focused == Some(endpoint);
+        let field = self.field_mut(endpoint);
+        field.results = results;
+        field.show_results(editing);
     }
 
-    fn results(&self, endpoint: Endpoint) -> &[Place] {
-        match endpoint {
-            Endpoint::Origin => &self.origin_results,
-            Endpoint::Destination => &self.destination_results,
-        }
+    /// The geocoder's answer for the field's draft (empty when it found
+    /// nothing or failed).
+    pub(super) fn finish_search(&mut self, endpoint: Endpoint, results: Vec<Place>) {
+        self.field_mut(endpoint).searched = true;
+        self.set_results(endpoint, results);
     }
 
     pub(super) fn dismiss(&mut self) {
         self.focused = None;
         self.deadline = None;
-        self.origin_input.set_focus(false);
-        self.destination_input.set_focus(false);
+        for field in [&mut self.origin, &mut self.destination] {
+            field.input.close();
+            field.input.set_focus(false);
+        }
     }
 
     pub(super) fn begin_edit(&mut self, endpoint: Endpoint) {
@@ -140,21 +207,8 @@ impl EndpointEditor {
 
     #[cfg(test)]
     pub(super) fn overlay_active(&self) -> bool {
-        let Some(endpoint) = self.focused else {
-            return false;
-        };
-        let rect = match endpoint {
-            Endpoint::Origin => self.origin_rect,
-            Endpoint::Destination => self.destination_rect,
-        };
-        rect.is_some() && !self.results(endpoint).is_empty()
-    }
-
-    fn query(&self, endpoint: Endpoint) -> &str {
-        match endpoint {
-            Endpoint::Origin => &self.origin_query,
-            Endpoint::Destination => &self.destination_query,
-        }
+        self.focused
+            .is_some_and(|endpoint| self.field(endpoint).input.is_open())
     }
 
     pub(super) fn take_due_search(&mut self, now: Instant) -> Option<EndpointEffect> {
@@ -164,40 +218,121 @@ impl EndpointEditor {
         }
         self.deadline = None;
         let endpoint = self.focused?;
-        let query = self.query(endpoint).trim().to_string();
+        let query = self.field(endpoint).query.trim().to_string();
         (!query.is_empty()).then_some(EndpointEffect::Search { endpoint, query })
     }
 
+    /// Route a key to the field being edited.
     pub(super) fn handle_key(
         &mut self,
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> Option<EndpointEffect> {
         let endpoint = self.focused?;
-        if matches!(
+        drive(
+            &mut self.field_mut(endpoint).input,
             event,
-            WindowEvent::KeyboardInput {
-                event: winit::event::KeyEvent {
-                    logical_key: Key::Named(NamedKey::Escape),
-                    ..
-                },
-                ..
-            }
-        ) {
+            scale,
+            modifiers,
+            doc,
+        );
+        self.reconcile(endpoint).or(Some(EndpointEffect::Handled))
+    }
+
+    /// Keep both fields' hover state current.
+    pub(super) fn forward_pointer(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: winit::event::Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.pointer = Point::new(position.x / scale, position.y / scale);
+        }
+        drive(&mut self.origin.input, event, scale, modifiers, doc);
+        drive(&mut self.destination.input, event, scale, modifiers, doc);
+    }
+
+    /// A press: the swap button, a field taking focus, or the field being
+    /// edited picking a suggestion (or letting go when the press is
+    /// elsewhere, which the caller then handles).
+    pub(super) fn pointer_press(
+        &mut self,
+        point: Point,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: winit::event::Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> Option<EndpointEffect> {
+        if self.swap_rect.is_some_and(|rect| rect.contains(point)) {
             self.dismiss();
-            return Some(EndpointEffect::Handled);
+            return Some(EndpointEffect::Swap);
         }
-        let input = self.input_mut(endpoint);
-        input.set_focus(true);
-        drive_text_input(input, event, scale, modifiers);
-        if input.take_submit() {
-            self.deadline = None;
-            let query = self.query(endpoint).trim().to_string();
-            return Some(EndpointEffect::Search { endpoint, query });
+        if let Some(endpoint) = self.focused {
+            let picked = {
+                let field = self.field_mut(endpoint);
+                drive(&mut field.input, event, scale, modifiers, doc);
+                field.input.take_outcome()
+            };
+            match picked {
+                AutocompleteOutcome::Accepted(value) => return self.accept(endpoint, &value),
+                AutocompleteOutcome::Cancelled => self.dismiss(),
+                AutocompleteOutcome::None => {
+                    if self
+                        .field(endpoint)
+                        .rect
+                        .is_some_and(|rect| rect.contains(point))
+                    {
+                        return Some(EndpointEffect::Handled);
+                    }
+                }
+            }
         }
-        let text = input.take_dirty()?;
-        text.clone_into(self.query_mut(endpoint));
+        for endpoint in [Endpoint::Origin, Endpoint::Destination] {
+            if self
+                .field(endpoint)
+                .rect
+                .is_some_and(|rect| rect.contains(point))
+            {
+                self.focus(endpoint);
+                drive(
+                    &mut self.field_mut(endpoint).input,
+                    event,
+                    scale,
+                    modifiers,
+                    doc,
+                );
+                return Some(EndpointEffect::Changed {
+                    endpoint,
+                    text: String::new(),
+                });
+            }
+        }
+        None
+    }
+
+    /// Fold the field's state into an effect: a changed draft, an accepted
+    /// suggestion (or a typed query to search), or a cancelled edit.
+    fn reconcile(&mut self, endpoint: Endpoint) -> Option<EndpointEffect> {
+        let field = self.field_mut(endpoint);
+        let text = field.input.text().to_string();
+        let outcome = field.input.take_outcome();
+        match outcome {
+            AutocompleteOutcome::Accepted(value) => return self.accept(endpoint, &value),
+            AutocompleteOutcome::Cancelled => {
+                self.dismiss();
+                return Some(EndpointEffect::Handled);
+            }
+            AutocompleteOutcome::None => {}
+        }
+        if text == field.query {
+            return None;
+        }
+        text.clone_into(&mut field.query);
+        field.searched = false;
         self.deadline = if text.trim().is_empty() {
             None
         } else {
@@ -206,83 +341,28 @@ impl EndpointEditor {
         Some(EndpointEffect::Changed { endpoint, text })
     }
 
-    pub(super) fn forward_pointer(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: winit::event::Modifiers,
-    ) {
-        drive_text_input(&mut self.origin_input, event, scale, modifiers);
-        drive_text_input(&mut self.destination_input, event, scale, modifiers);
-    }
-
-    pub(super) fn pointer_press(
-        &mut self,
-        point: Point,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: winit::event::Modifiers,
-    ) -> Option<EndpointEffect> {
-        let hit = self.hit_at(point)?;
-        match hit {
-            EndpointHit::Field(endpoint) => {
-                self.focus(endpoint);
-                let input = self.input_mut(endpoint);
-                input.set_focus(true);
-                drive_text_input(input, event, scale, modifiers);
-                Some(EndpointEffect::Changed {
-                    endpoint,
-                    text: String::new(),
-                })
-            }
-            EndpointHit::Pick(endpoint, index) => {
-                let place = self.results(endpoint).get(index).cloned()?;
-                self.results_mut(endpoint).clear();
-                self.dismiss();
-                Some(EndpointEffect::Pick { endpoint, place })
-            }
-            EndpointHit::Swap => {
-                self.dismiss();
-                Some(EndpointEffect::Swap)
-            }
-            EndpointHit::Consume => Some(EndpointEffect::Handled),
+    /// The field accepted `value`: a suggested place picks it; anything else
+    /// is a query to search for now.
+    fn accept(&mut self, endpoint: Endpoint, value: &str) -> Option<EndpointEffect> {
+        let field = self.field_mut(endpoint);
+        if let Some(place) = field.results.iter().find(|p| p.name == value).cloned() {
+            field.results.clear();
+            self.dismiss();
+            return Some(EndpointEffect::Pick { endpoint, place });
         }
-    }
-
-    fn hit_at(&self, point: Point) -> Option<EndpointHit> {
-        self.hits
-            .iter()
-            .rev()
-            .find(|(rect, _)| rect.contains(point))
-            .map(|(_, hit)| *hit)
+        self.deadline = None;
+        let query = value.trim().to_string();
+        (!query.is_empty()).then_some(EndpointEffect::Search { endpoint, query })
     }
 
     #[cfg(test)]
     pub(super) fn test_field_rect(&self, endpoint: Endpoint) -> Option<Rect> {
-        match endpoint {
-            Endpoint::Origin => self.origin_rect,
-            Endpoint::Destination => self.destination_rect,
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_pick_rect(&self, endpoint: Endpoint) -> Option<Rect> {
-        self.hits.iter().find_map(|(rect, hit)| {
-            matches!(hit, EndpointHit::Pick(candidate, _) if *candidate == endpoint)
-                .then_some(*rect)
-        })
+        self.field(endpoint).rect
     }
 
     #[cfg(test)]
     pub(super) fn test_swap_rect(&self) -> Option<Rect> {
-        self.hits
-            .iter()
-            .find_map(|(rect, hit)| matches!(hit, EndpointHit::Swap).then_some(*rect))
-    }
-
-    #[cfg(test)]
-    pub(super) fn test_top_hit_is_pick(&self, point: Point, endpoint: Endpoint) -> bool {
-        matches!(self.hit_at(point), Some(EndpointHit::Pick(candidate, _)) if candidate == endpoint)
+        self.swap_rect
     }
 
     #[cfg(test)]
@@ -292,25 +372,41 @@ impl EndpointEditor {
 
     #[cfg(test)]
     pub(super) fn test_results(&self, endpoint: Endpoint) -> &[Place] {
-        self.results(endpoint)
+        &self.field(endpoint).results
     }
 
     #[cfg(test)]
     pub(super) fn test_query(&self, endpoint: Endpoint) -> &str {
-        self.query(endpoint)
+        &self.field(endpoint).query
     }
 
     fn focus(&mut self, endpoint: Endpoint) {
         self.focused = Some(endpoint);
         self.deadline = None;
-        self.query_mut(endpoint).clear();
-        self.results_mut(endpoint).clear();
-        self.origin_input.set_focus(endpoint == Endpoint::Origin);
-        self.destination_input
-            .set_focus(endpoint == Endpoint::Destination);
-        self.input_mut(endpoint).set_text("");
+        let other = match endpoint {
+            Endpoint::Origin => Endpoint::Destination,
+            Endpoint::Destination => Endpoint::Origin,
+        };
+        let other = self.field_mut(other);
+        other.input.close();
+        other.input.set_focus(false);
+        let field = self.field_mut(endpoint);
+        field.query.clear();
+        field.results.clear();
+        field.searched = false;
+        field.input.set_text("");
+        field.input.begin_edit();
     }
 
+    /// How far the fields stand in from the content's leading edge: past
+    /// the endpoint markers, so what refines a field lines up with it.
+    pub(super) fn field_inset(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.metrics.icon_md) + f64::from(theme.tokens.spacing.s2)
+    }
+
+    /// Paint the From and To fields — the toolkit's own fields, each after
+    /// the marker it has on the map — and the swap button beside them.
+    /// Returns the y below them.
     pub(super) fn draw_fields(
         &mut self,
         scene: &mut Scene,
@@ -319,280 +415,125 @@ impl EndpointEditor {
         theme: &Theme,
         frame: &EndpointFrame<'_>,
     ) -> f64 {
-        self.hits.clear();
-        let colors = &theme.tokens.colors;
+        let sp = &theme.tokens.spacing;
+        let (s2, s3) = (f64::from(sp.s2), f64::from(sp.s3));
         let content = frame.content;
-        let y = frame.top;
-        let field_h = 40.0;
-        let swap_w = 34.0;
-        let fields_right = content.x1 - swap_w - 8.0;
-        let origin_rect = Rect::new(content.x0, y, fields_right, y + field_h);
-        self.origin_rect = Some(origin_rect);
-        let origin_inner = self.draw_field(
-            scene,
-            transform,
-            theme,
-            origin_rect,
-            theme.accent_primary,
-            Endpoint::Origin,
-        );
-        let origin_text = if self.focused == Some(Endpoint::Origin) {
-            self.origin_query.as_str()
-        } else {
-            frame.origin.unwrap_or("")
-        };
-        self.origin_input.set_text(origin_text);
-        self.origin_input
-            .set_focus(self.focused == Some(Endpoint::Origin));
-        self.origin_input.apply_layout_external(origin_inner);
-        self.origin_input
-            .draw(scene, transform, text, theme, &PresenceCtx::empty());
+        let field_h = ButtonFace::height(ControlSize::Regular, theme);
+        let marker_w = f64::from(theme.tokens.metrics.icon_md);
+        let side = field_h;
+        let x0 = content.x0 + Self::field_inset(theme);
+        let x1 = content.x1 - side - s2;
+        let pal = MapPalette::from_theme(theme);
 
-        let destination_y = y + field_h + f64::from(theme.tokens.spacing.s2);
-        let destination_rect = Rect::new(
-            content.x0,
-            destination_y,
-            fields_right,
-            destination_y + field_h,
-        );
-        self.destination_rect = Some(destination_rect);
-        let destination_inner = self.draw_field(
-            scene,
-            transform,
-            theme,
-            destination_rect,
-            colors.semantic.danger,
-            Endpoint::Destination,
-        );
-        let destination_text = if self.focused == Some(Endpoint::Destination) {
-            self.destination_query.as_str()
-        } else {
-            frame.destination.unwrap_or("")
-        };
-        self.destination_input.set_text(destination_text);
-        self.destination_input
-            .set_focus(self.focused == Some(Endpoint::Destination));
-        self.destination_input
-            .apply_layout_external(destination_inner);
-        self.destination_input
-            .draw(scene, transform, text, theme, &PresenceCtx::empty());
+        let origin_rect = Rect::new(x0, frame.top, x1, frame.top + field_h);
+        let destination_y = origin_rect.y1 + s2;
+        let destination_rect = Rect::new(x0, destination_y, x1, destination_y + field_h);
+        for (endpoint, rect, label, destination) in [
+            (Endpoint::Origin, origin_rect, frame.origin, false),
+            (
+                Endpoint::Destination,
+                destination_rect,
+                frame.destination,
+                true,
+            ),
+        ] {
+            let centre = Point::new(content.x0 + marker_w / 2.0, rect.center().y);
+            canvas::draw_endpoint_marker(scene, transform, centre, &pal, destination);
+            let editing = self.focused == Some(endpoint);
+            let field = self.field_mut(endpoint);
+            field.rect = Some(rect);
+            // A field shows its endpoint's name until it is being edited.
+            if !editing && field.input.text() != label.unwrap_or("") {
+                field.input.set_text(label.unwrap_or(""));
+            }
+            field.input.apply_layout_external(rect);
+            field
+                .input
+                .draw(scene, transform, text, theme, &PresenceCtx::empty());
+        }
 
         let swap = Rect::new(
-            content.x1 - swap_w,
-            y + field_h / 2.0,
+            content.x1 - side,
+            (origin_rect.center().y + destination_rect.center().y - side) / 2.0,
             content.x1,
-            destination_rect.y1 - field_h / 2.0,
+            (origin_rect.center().y + destination_rect.center().y + side) / 2.0,
         );
+        self.swap_rect = Some(swap);
         Button::paint(
             scene,
             transform,
             text,
             theme,
-            &ButtonFace::new(swap, "⇅")
-                .text_size(16.0)
-                .accessible_name("Swap origin and destination"),
+            &ButtonFace::icon_only(swap, Icon::ArrowUpDown, "Swap start and destination")
+                .role(ButtonRole::Plain)
+                .hovered(swap.contains(self.pointer)),
         );
-        self.hits.push((swap, EndpointHit::Swap));
-        destination_rect.y1 + f64::from(theme.tokens.spacing.s3)
+        destination_rect.y1 + s3
     }
 
-    fn draw_field(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        rect: Rect,
-        dot: vello::peniko::Color,
-        endpoint: Endpoint,
-    ) -> Rect {
-        let colors = &theme.tokens.colors;
-        // The field is the base tier seated in the panel with its derived
-        // edge; focus adds the toolkit's 2 px ring.
-        draw::edged(scene, transform, rect, 9.0, colors.surfaces.base);
-        if self.focused == Some(endpoint) {
-            draw::stroke_rrect(scene, transform, rect, 9.0, 2.0, theme.border_focus);
-        }
-        draw::fill_circle(
-            scene,
-            transform,
-            Point::new(rect.x0 + 16.0, rect.center().y),
-            4.0,
-            dot,
-        );
-        self.hits.push((rect, EndpointHit::Field(endpoint)));
-        Rect::new(rect.x0 + 26.0, rect.y0, rect.x1 - 12.0, rect.y1)
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one z-ordered dropdown paint pass; splitting its card and rows would require \
-                  duplicating the render context without creating an independently stateful part"
-    )]
+    /// The suggestions of the field being edited, in the toolkit's own list
+    /// under it.
     pub(super) fn draw_overlay(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
         theme: &Theme,
-        distance_anchor: LatLon,
     ) {
         let Some(endpoint) = self.focused else { return };
-        let Some(field) = (match endpoint {
-            Endpoint::Origin => self.origin_rect,
-            Endpoint::Destination => self.destination_rect,
-        }) else {
-            return;
-        };
-        let results = match endpoint {
-            Endpoint::Origin => &self.origin_results,
-            Endpoint::Destination => &self.destination_results,
-        };
-        let sp = &theme.tokens.spacing;
-        let top = field.y1 + f64::from(sp.s2);
-        let colors = &theme.tokens.colors;
-        if results.is_empty() {
-            if self.query(endpoint).trim().is_empty() {
-                return;
-            }
-            let card = Rect::new(field.x0, top, field.x1, top + 34.0);
-            draw::card(scene, transform, card, 12.0, colors.surfaces.raised);
-            self.hits.push((card, EndpointHit::Consume));
-            draw::text(
-                scene,
-                text,
-                transform,
-                "Searching…",
-                card.x0 + 12.0,
-                vmid(card.y0, card.height(), 12.0),
-                12.0,
-                theme.text_dim,
-            );
-            return;
-        }
-        // Same dropdown rhythm as the search overlay: 46 px row pitch, `s1`
-        // between hit rects, `s2` pad and `s2` under the field.
-        let row_pitch = 46.0;
-        let row_gap = f64::from(sp.s1);
-        let pad = f64::from(sp.s2);
-        let count = results.len().min(OVERLAY_MAX);
-        let card = Rect::new(
-            field.x0,
-            top,
-            field.x1,
-            top + pad * 2.0 + count as f64 * row_pitch - row_gap,
+        self.field_mut(endpoint).input.draw_overlay(
+            scene,
+            transform,
+            text,
+            theme,
+            &PresenceCtx::empty(),
         );
-        draw::card(scene, transform, card, 12.0, colors.surfaces.raised);
-        self.hits.push((card, EndpointHit::Consume));
-        let scale = text.text_scale();
-        let name_h = ui::text_metrics::line_height_px(13.0, scale);
-        let sub_h = ui::text_metrics::line_height_px(11.0, scale);
-        let mut y = top + pad;
-        for (index, place) in results.iter().take(count).enumerate() {
-            let rect = Rect::new(field.x0 + pad, y, field.x1 - pad, y + row_pitch - row_gap);
-            let name_y = rect.y0 + (rect.height() - name_h - sub_h) / 2.0;
-            draw::fill_circle(
-                scene,
-                transform,
-                Point::new(rect.x0 + 14.0, rect.center().y),
-                6.0,
-                canvas::category_color(theme, place.category),
-            );
-            let text_x = rect.x0 + 30.0;
-            let distance = geo::fmt_distance(geo::haversine_m(place.pos, distance_anchor));
-            let distance_w = draw::measure_w(text, &distance, 11.0) + 8.0;
-            draw::text_clip(
-                &mut PaintCtx::new(scene, transform, text, theme),
-                &place.name,
-                Point::new(text_x, name_y),
-                13.0,
-                theme.text_primary,
-                rect.x1 - text_x - distance_w,
-            );
-            draw::text_clip(
-                &mut PaintCtx::new(scene, transform, text, theme),
-                &place.address,
-                Point::new(text_x, name_y + name_h),
-                11.0,
-                theme.text_dim,
-                rect.x1 - text_x - distance_w,
-            );
-            draw::text_right(
-                scene,
-                text,
-                transform,
-                &distance,
-                rect.x1 - pad,
-                name_y + (name_h - sub_h) / 2.0,
-                11.0,
-                theme.accent_primary,
-            );
-            self.hits.push((rect, EndpointHit::Pick(endpoint, index)));
-            y += row_pitch;
-        }
-    }
-
-    fn input_mut(&mut self, endpoint: Endpoint) -> &mut TextInput {
-        match endpoint {
-            Endpoint::Origin => &mut self.origin_input,
-            Endpoint::Destination => &mut self.destination_input,
-        }
-    }
-
-    fn query_mut(&mut self, endpoint: Endpoint) -> &mut String {
-        match endpoint {
-            Endpoint::Origin => &mut self.origin_query,
-            Endpoint::Destination => &mut self.destination_query,
-        }
-    }
-
-    fn results_mut(&mut self, endpoint: Endpoint) -> &mut Vec<Place> {
-        match endpoint {
-            Endpoint::Origin => &mut self.origin_results,
-            Endpoint::Destination => &mut self.destination_results,
-        }
     }
 }
 
-fn endpoint_input(placeholder: &str) -> TextInput {
-    let mut input = TextInput::local()
-        // Route endpoints are the same structured place/address vocabulary as
-        // the top-level map search, never prose to spellcheck or autocorrect.
-        .with_kind(TextInputKind::Search)
-        .with_enter_submits(true)
-        .with_font_size(13.0);
-    input.set_plain_chrome(true);
-    input.set_placeholder(placeholder);
-    input
-}
-
-fn vmid(top: f64, height: f64, font_size: f64) -> f64 {
-    top + (height - font_size) / 2.0
+/// Drive one event through a hand-placed field: a press inside a field that
+/// is not being edited starts the edit first, so the caret lands where the
+/// press was.
+fn drive(
+    input: &mut Autocomplete,
+    event: &WindowEvent,
+    scale: f64,
+    modifiers: winit::event::Modifiers,
+    doc: &mut ui::widget::Edits<'_>,
+) {
+    if let WindowEvent::MouseInput {
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+        ..
+    } = event
+        && !input.is_editing()
+    {
+        return;
+    }
+    crate::hand_laid::drive(input, event, scale, modifiers, doc);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Category, LatLon};
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn endpoint_editor_owns_its_draft_debounce_dismiss_and_spellcheck() {
+    fn endpoint_editor_owns_its_draft_debounce_dismiss_and_suggestions() {
         // Phase `external_queries_replace_the_component_draft_without_drift`.
         {
             let mut editor = EndpointEditor::new();
             editor.sync_queries("Old origin", "Old destination");
             editor.sync_queries("Peer origin", "Peer destination");
-            assert_eq!(editor.query(Endpoint::Origin), "Peer origin");
-            assert_eq!(editor.query(Endpoint::Destination), "Peer destination");
+            assert_eq!(editor.test_query(Endpoint::Origin), "Peer origin");
+            assert_eq!(editor.test_query(Endpoint::Destination), "Peer destination");
         }
 
         // Phase `debounce_emits_one_typed_search_for_the_focused_endpoint`.
         {
             let mut editor = EndpointEditor::new();
             editor.focus(Endpoint::Origin);
-            editor.origin_query = "station".to_string();
+            editor.origin.query = "station".to_string();
             let now = ui::time::now();
             editor.deadline = Some(now);
             assert_eq!(
@@ -615,11 +556,36 @@ mod tests {
             assert!(!editor.has_pending_query());
         }
 
-        // Phase `route_endpoints_are_not_spellchecked_as_prose`.
+        // Phase `accepting_a_suggestion_picks_its_place`.
         {
-            let editor = EndpointEditor::new();
-            assert!(!editor.origin_input.spellcheck_enabled());
-            assert!(!editor.destination_input.spellcheck_enabled());
+            let mut editor = EndpointEditor::new();
+            editor.focus(Endpoint::Destination);
+            let place = Place::new(
+                "hbf",
+                "Hauptbahnhof",
+                Category::Transit,
+                "Bahnhofplatz 2",
+                LatLon::new(48.14, 11.56),
+            );
+            editor.set_results(Endpoint::Destination, vec![place.clone()]);
+            assert!(editor.overlay_active(), "the suggestions open");
+            assert_eq!(
+                editor.accept(Endpoint::Destination, "Hauptbahnhof"),
+                Some(EndpointEffect::Pick {
+                    endpoint: Endpoint::Destination,
+                    place,
+                })
+            );
+            assert!(!editor.is_focused(), "picking ends the edit");
+            // A typed value nothing suggested is a query to search for.
+            editor.focus(Endpoint::Origin);
+            assert_eq!(
+                editor.accept(Endpoint::Origin, "Ostbahnhof"),
+                Some(EndpointEffect::Search {
+                    endpoint: Endpoint::Origin,
+                    query: "Ostbahnhof".to_string(),
+                })
+            );
         }
     }
 }

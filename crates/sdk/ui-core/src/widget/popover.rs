@@ -1,74 +1,148 @@
-//! `Popover` — an anchored overlay **menu of selectable options**.
+//! `Popover`: the one anchored floating Panel.
 //!
-//! Where [`ContextMenu`](crate::widget::context_menu::ContextMenu) is an
-//! *action* list, this is the primitive for picking one option out of a
-//! short set next to the control that owns the value — a cycle-on-click
-//! pill, a units selector, a refresh-cadence menu.
+//! A popover opens next to the control that summoned it, on a preferred
+//! side, flipping to the opposite side when it would leave the window and
+//! sliding along the other axis to stay inside it. It is a floating Panel
+//! ([`super::floating_surface`]): panel radius, the blurred material, one
+//! soft shadow. It paints in the window's top layer
+//! ([`Widget::draw_overlay`]), so it is never clipped by, or drawn under,
+//! the pane it was opened from. While open it captures input: Escape or a
+//! click outside closes it, and the click does not reach what is behind.
 //!
-//! Provides once, for every consumer: anchored placement (flips above /
-//! clamps horizontally when there's no room below), a current selection
-//! distinct from the keyboard/hover highlight (so re-opening lands on the
-//! active value), full keyboard nav, focus capture while open
-//! ([`modal_capture`](Widget::modal_capture) / [`traps_focus`](Widget::traps_focus)),
-//! `Role::Menu` accessibility, and dismiss-on-outside-click.
+//! Two bodies:
 //!
-//! Usable two ways: mounted as a real tree widget, or driven by a
-//! hand-drawn host via [`Popover::open_at`], [`Popover::item_at`],
-//! [`Popover::move_highlight`], [`Popover::select`] and
-//! [`Popover::take_selection`].
+//! - An **option menu** ([`Popover::new`]): pick one of a short list of
+//!   options next to the control that owns the value (a refresh cadence, a
+//!   unit). The chosen option carries a check; the keyboard and pointer
+//!   highlight is the lift of the panel ground, never an accent fill. Full
+//!   keyboard navigation, and `Role::Menu` semantics.
+//! - **Any content** ([`Popover::with_content`]): a widget laid out at its
+//!   own size inside the panel's padding.
+//!
+//! Hosts that draw by hand drive an option menu through [`Popover::open_at`],
+//! [`Popover::item_at`], [`Popover::move_highlight`], [`Popover::select`]
+//! and [`Popover::take_selection`], and reach its paint through their own
+//! `draw_overlay` (or by returning it from `children_mut`).
 
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use crate::tokens::TextRole;
+use crate::widget::floating_surface;
+use crate::widget::{AppModel, ModelPath, TaffyTreeExt, Widget};
 
-/// Height of one option row.
-const ROW_H: f64 = 44.0;
-/// Vertical padding above the first / below the last row.
-const PAD_Y: f64 = 6.0;
-/// Horizontal padding inside a row (left of the check column, right of text).
-const PAD_X: f64 = 12.0;
-/// Width reserved at the left of every row for the selected check mark.
-const CHECK_W: f64 = 20.0;
-/// Gap between the anchor edge and the menu body.
-const GAP: f64 = 6.0;
-/// Floor on the menu width so a single short label still reads as a menu.
-const MIN_W: f64 = 160.0;
+/// Side of the anchor a popover prefers to open on. It flips to the
+/// opposite side when the window has no room there; see
+/// [`Popover::resolved_side`].
+pub use crate::widget::floating_surface::PopoverSide;
 
-/// An anchored overlay menu of selectable string options. See the module
-/// docs for the full contract.
-pub struct Popover {
+/// Which edge of its anchor a popover lines up with.
+pub use crate::widget::floating_surface::PanelAlign;
+
+/// The body of an option menu: no content widget.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoContent;
+
+impl Widget for NoContent {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        _node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.leaf_node(Style::default())
+    }
+    fn name(&self) -> &'static str {
+        "NoContent"
+    }
+}
+
+/// The options of an option menu and where the highlight and selection
+/// are.
+#[derive(Clone, Debug, Default)]
+struct Options {
     items: Vec<String>,
-    /// Accessible name for the menu as a whole (e.g. "Refresh interval").
+    /// Row the keyboard / pointer highlight sits on.
+    highlighted: usize,
+    /// The applied option (drawn with a check), if any.
+    selected: Option<usize>,
+    /// The row the person just chose, drained by `take_selection`.
+    pending: Option<usize>,
+}
+
+/// Geometry of an option menu, from the theme.
+struct MenuMetrics {
+    row: f64,
+    pad: f64,
+    text_x: f64,
+    check: f64,
+    min_width: f64,
+}
+
+impl MenuMetrics {
+    fn of(theme: &Theme) -> Self {
+        let t = &theme.tokens;
+        let check = f64::from(t.metrics.icon_sm);
+        Self {
+            // A menu row, the height every menu shares (HIG §9.5).
+            row: f64::from(t.metrics.menu_row_height),
+            pad: crate::widget::floating_surface::menu_inset(theme),
+            // Leading padding, the check column, then the label.
+            text_x: f64::from(t.spacing.s3) + check + f64::from(t.spacing.s2),
+            check,
+            min_width: f64::from(t.metrics.panel_width_utility) / 2.0,
+        }
+    }
+}
+
+/// An anchored floating Panel holding an option menu or any content widget.
+/// See the module docs for the contract.
+pub struct Popover<C: Widget = NoContent> {
+    content: C,
+    options: Option<Options>,
+    /// Accessible name of an option menu (e.g. "Refresh interval").
     label: Option<String>,
     open: bool,
-    /// The control the menu is anchored to (positions the body).
     anchor: Rect,
-    /// Bounds used for flip-above / horizontal-clamp resolution. Defaults to
-    /// a very large region so an un-configured popover honours "below".
-    viewport: Rect,
-    /// Resolved body rect, computed by [`Popover::place`] / `draw`.
+    side: PopoverSide,
+    resolved_side: PopoverSide,
+    fallback_side: Option<PopoverSide>,
+    /// Descriptive paint this panel should avoid when an alternate placement
+    /// genuinely fits. It never changes the anchor or hit testing.
+    avoid: Option<Rect>,
+    align: PanelAlign,
+    /// Bounds the panel stays inside. `None` uses the window the top layer
+    /// paints over.
+    viewport: Option<Rect>,
+    /// Prefer retaining the complete panel over preserving anchor separation
+    /// when neither side has enough room. Ordinary menus keep their policy.
+    confine_to_viewport: bool,
+    /// The window the top layer last painted over.
+    presented: Option<Rect>,
+    /// The panel, resolved by [`Self::place`] (also run by layout and paint).
     rect: Rect,
-    /// Row the keyboard / hover highlight sits on (index into `items`).
-    highlighted: usize,
-    /// The currently-applied option (drawn check-marked), if any.
-    selected: Option<usize>,
-    /// Last cursor position in logical coords (from `CursorMoved`).
+    on_dismiss: Option<Box<dyn FnMut()>>,
     last_cursor: Point,
-    /// One-shot channel: the row the user just chose, drained via
-    /// [`Popover::take_selection`].
-    pending: Option<usize>,
     layout_theme: Theme,
+    /// The content's own tree, when no host lays it out.
+    detached: Option<floating_surface::DetachedContent>,
+    /// The content's node in the host's tree, once a host has built it: a
+    /// field in it then takes focus like any other.
+    host_content: Option<NodeId>,
+    /// The content's size as the host measured it.
+    content_size: (f64, f64),
+    /// Where the content's top-left was last placed.
+    content_origin: Point,
+    /// The host must place the content again.
+    stale: bool,
 }
 
 impl Default for Popover {
@@ -77,22 +151,684 @@ impl Default for Popover {
     }
 }
 
-impl Popover {
-    /// A closed, empty popover with an infinite default viewport.
-    pub fn new() -> Self {
+impl<C: Widget> Popover<C> {
+    fn with_body(content: C, options: Option<Options>) -> Self {
         Self {
-            items: Vec::new(),
+            content,
+            options,
             label: None,
             open: false,
             anchor: Rect::ZERO,
-            viewport: Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6),
+            side: PopoverSide::Below,
+            resolved_side: PopoverSide::Below,
+            fallback_side: None,
+            avoid: None,
+            align: PanelAlign::Leading,
+            viewport: None,
+            confine_to_viewport: false,
+            presented: None,
             rect: Rect::ZERO,
-            highlighted: 0,
-            selected: None,
+            on_dismiss: None,
             last_cursor: Point::ZERO,
-            pending: None,
             layout_theme: Theme::dark(),
+            detached: None,
+            host_content: None,
+            content_size: (0.0, 0.0),
+            content_origin: Point::ZERO,
+            stale: false,
         }
+    }
+
+    /// Line the panel up with the anchor's trailing edge instead of its
+    /// leading edge: a popover from a button at the end of a header row.
+    #[must_use]
+    pub fn aligned(mut self, align: PanelAlign) -> Self {
+        self.align = align;
+        self
+    }
+
+    /// Keep a panel that fits the viewport entirely on screen, with the
+    /// shared theme edge margin, even when
+    /// neither side of its anchor has room. The caller must still size its
+    /// content to the viewport; this never shrinks or clips that content.
+    #[must_use]
+    pub fn confined_to_viewport(mut self) -> Self {
+        self.confine_to_viewport = true;
+        self
+    }
+
+    /// [`Self::aligned`] after construction.
+    pub fn set_align(&mut self, align: PanelAlign) {
+        self.align = align;
+    }
+
+    /// A closed popover showing `content` next to `anchor`.
+    pub fn with_content(content: C) -> Self {
+        Self::with_body(content, None)
+    }
+
+    /// Anchor the panel to `anchor` (window coordinates).
+    #[must_use]
+    pub fn anchored(mut self, anchor: Rect) -> Self {
+        self.anchor = anchor;
+        self
+    }
+
+    /// Prefer opening on `side` of the anchor (default [`PopoverSide::Below`]).
+    #[must_use]
+    pub fn side(mut self, side: PopoverSide) -> Self {
+        self.side = side;
+        self.resolved_side = side;
+        self
+    }
+
+    /// Try this axis when the ordinary preferred/opposite placement would
+    /// cover `avoid`. The fallback is used only when its measured panel fits
+    /// the viewport and is disjoint from the protected paint.
+    #[must_use]
+    pub fn fallback_side(mut self, side: PopoverSide) -> Self {
+        self.fallback_side = Some(side);
+        self
+    }
+
+    /// Protect exact painted geometry from an optional fallback placement.
+    /// This is presentation metadata, never an expanded input target.
+    pub fn set_avoid(&mut self, avoid: Option<Rect>) {
+        self.avoid = avoid;
+    }
+
+    /// Alias for a protected source-control/receipt footprint. This changes
+    /// only placement, never the anchor, input rectangle or authority.
+    pub fn set_protected_rect(&mut self, protected: Option<Rect>) {
+        self.set_avoid(protected);
+    }
+
+    /// Open or close at construction.
+    #[must_use]
+    pub fn open(mut self, open: bool) -> Self {
+        self.open = open;
+        self
+    }
+
+    /// Called when the popover closes itself: Escape, or a click outside.
+    #[must_use]
+    pub fn on_dismiss<F: FnMut() + 'static>(mut self, f: F) -> Self {
+        self.on_dismiss = Some(Box::new(f));
+        self
+    }
+
+    /// Keep the panel inside `viewport` rather than the window.
+    #[must_use]
+    pub fn with_viewport(mut self, viewport: Rect) -> Self {
+        self.viewport = Some(viewport);
+        self
+    }
+
+    #[must_use]
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    pub fn set_label(&mut self, label: impl Into<String>) {
+        self.label = Some(label.into());
+    }
+
+    /// [`Self::with_viewport`] after construction.
+    pub fn set_viewport(&mut self, viewport: Rect) {
+        self.viewport = Some(viewport);
+    }
+
+    /// Move the anchor (window coordinates).
+    pub fn set_anchor(&mut self, anchor: Rect) {
+        self.anchor = anchor;
+    }
+
+    pub fn set_open(&mut self, open: bool) {
+        if open && !self.open {
+            self.stale = self.host_content.is_some();
+        }
+        self.open = open;
+    }
+
+    /// Close (safe when already closed).
+    pub fn close(&mut self) {
+        self.open = false;
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// The resolved panel (valid after layout, [`Self::place`] or paint).
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// The side the panel opened on: the preferred one unless the window
+    /// had no room there.
+    pub fn resolved_side(&self) -> PopoverSide {
+        self.resolved_side
+    }
+
+    pub fn contains(&self, point: Point) -> bool {
+        self.open && self.rect.contains(point)
+    }
+
+    pub fn content(&self) -> &C {
+        &self.content
+    }
+
+    pub fn content_mut(&mut self) -> &mut C {
+        &mut self.content
+    }
+
+    /// Width available to the body inside the current placement viewport.
+    /// Hosts use this before measuring responsive content, not after clipping.
+    pub fn available_content_width(&self, theme: &Theme) -> f32 {
+        crate::num::f32_of_f64(
+            (self.room(theme).width() - 2.0 * self.padding(theme))
+                .floor()
+                .max(0.0),
+        )
+    }
+
+    fn padding(&self, theme: &Theme) -> f64 {
+        if self.options.is_some() {
+            MenuMetrics::of(theme).pad
+        } else {
+            f64::from(theme.tokens.spacing.s4)
+        }
+    }
+
+    /// Resolve the panel from the anchor, the body's size and the viewport.
+    /// Callable without a paint, so a hand-drawn host or a test can hit-test
+    /// right after opening.
+    pub fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        let viewport = self.room(theme);
+        self.place_in(viewport, tr, theme);
+    }
+
+    /// Where the panel may go: the given viewport, else the window the top
+    /// layer last painted over (less the edge margin every floating panel
+    /// keeps), else anywhere.
+    fn room(&self, theme: &Theme) -> Rect {
+        self.viewport
+            .map(|viewport| {
+                if self.confine_to_viewport {
+                    floating_surface::panel_room(viewport, theme)
+                } else {
+                    viewport
+                }
+            })
+            .or_else(|| {
+                self.presented
+                    .map(|window| floating_surface::panel_room(window, theme))
+            })
+            .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6))
+    }
+
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "the option count of a menu is far below f64's exact-integer range"
+    )]
+    fn place_in(&mut self, viewport: Rect, tr: &mut TextRenderer, theme: &Theme) {
+        let pad = self.padding(theme);
+        let (body_w, body_h) = if let Some(options) = &self.options {
+            let m = MenuMetrics::of(theme);
+            let style = theme.text(TextRole::Body);
+            let mut w = m.min_width.max(self.anchor.width() - pad * 2.0);
+            for label in &options.items {
+                let tw = f64::from(tr.measure_style(label, None, &style).0);
+                w = w.max(m.text_x + tw + f64::from(theme.tokens.spacing.s4));
+            }
+            (w, options.items.len().max(1) as f64 * m.row)
+        } else if self.host_content.is_some() {
+            // The host measured the content at its own width.
+            self.content_size
+        } else {
+            // Layout rounds the measured size to whole pixels, so text measured
+            // at its max-content width can come back a fraction short and wrap
+            // when laid out in exactly that width: give it the next pixel.
+            let (w, h) = self.measure_content(tr, theme);
+            (w + 1.0, h)
+        };
+        let (w, h) = (body_w.ceil() + pad * 2.0, body_h.ceil() + pad * 2.0);
+        let gap = f64::from(theme.tokens.spacing.s1);
+        let place = |side| {
+            floating_surface::place_aligned(self.anchor, (w, h), side, self.align, gap, viewport)
+        };
+        let confine = |rect: Rect| {
+            if !self.confine_to_viewport {
+                return rect;
+            }
+            let x = if w <= viewport.width() {
+                rect.x0.clamp(viewport.x0, viewport.x1 - w)
+            } else {
+                rect.x0
+            };
+            let y = if h <= viewport.height() {
+                rect.y0.clamp(viewport.y0, viewport.y1 - h)
+            } else {
+                rect.y0
+            };
+            Rect::new(x, y, x + w, y + h)
+        };
+        let (default_rect, default_side) = place(self.side);
+        let mut chosen = (confine(default_rect), default_side);
+        if let Some(avoid) = self.avoid
+            && chosen.0.intersect(avoid).area() > 0.0
+        {
+            for candidate_side in [Some(self.side.opposite()), self.fallback_side]
+                .into_iter()
+                .flatten()
+            {
+                let (candidate, resolved) = place(candidate_side);
+                let candidate = confine(candidate);
+                let contained = w <= viewport.width()
+                    && h <= viewport.height()
+                    && viewport.contains_rect(candidate);
+                if contained && candidate.intersect(avoid).area() == 0.0 {
+                    chosen = (candidate, resolved);
+                    break;
+                }
+            }
+        }
+        self.rect = chosen.0;
+        self.resolved_side = chosen.1;
+        if self.options.is_none() && self.host_content.is_none() {
+            self.place_content(tr, theme);
+        }
+    }
+
+    /// The content's own size, from its layout at max-content.
+    fn measure_content(&mut self, tr: &mut TextRenderer, theme: &Theme) -> (f64, f64) {
+        let available = Size {
+            width: taffy::AvailableSpace::MaxContent,
+            height: taffy::AvailableSpace::MaxContent,
+        };
+        floating_surface::DetachedContent::lay_out(&mut self.content, theme, available, tr).size()
+    }
+
+    /// Where the content's top-left belongs: inside the panel's padding.
+    fn content_target(&self, theme: &Theme) -> Point {
+        self.rect.inset(-self.padding(theme)).origin()
+    }
+
+    /// Lay the content out inside the panel's padding, in its own tree.
+    fn place_content(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        let inner = self.rect.inset(-self.padding(theme));
+        if inner.width() <= 0.0 || inner.height() <= 0.0 {
+            return;
+        }
+        let available = Size {
+            width: taffy::AvailableSpace::Definite(crate::num::f32_of_f64(inner.width())),
+            height: taffy::AvailableSpace::Definite(crate::num::f32_of_f64(inner.height())),
+        };
+        let content =
+            floating_surface::DetachedContent::lay_out(&mut self.content, theme, available, tr);
+        self.content
+            .apply_layout(&content.taffy, content.node, inner.origin());
+        self.content_origin = inner.origin();
+        self.detached = Some(content);
+    }
+
+    fn dismiss(&mut self) {
+        self.open = false;
+        if let Some(cb) = self.on_dismiss.as_mut() {
+            cb();
+        }
+    }
+
+    /// Forward `event` to the content; returns whether it consumed it. A
+    /// hosted popover's content is addressed by its node in the host's
+    /// tree, so a field's focus request names a node the window knows.
+    fn forward_to_content(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        floating_surface::DetachedContent::forward(
+            &mut self.content,
+            self.host_content,
+            self.detached.as_ref(),
+            event,
+            ctx,
+        )
+    }
+
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "idx is a row of this menu's own short option list"
+    )]
+    fn row_rect_in(&self, idx: usize, theme: &Theme) -> Rect {
+        let m = MenuMetrics::of(theme);
+        let y0 = self.rect.y0 + m.pad + idx as f64 * m.row;
+        Rect::new(self.rect.x0 + m.pad, y0, self.rect.x1 - m.pad, y0 + m.row)
+    }
+
+    fn paint_options(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(options) = &self.options else {
+            return;
+        };
+        let m = MenuMetrics::of(theme);
+        let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
+        let colors = &on_panel.tokens.colors;
+        let style = on_panel.text(TextRole::Body);
+        for (idx, label) in options.items.iter().enumerate() {
+            let row = self.row_rect_in(idx, theme);
+            // The armed row is the panel's strong lift, as in every menu
+            // (HIG §9.3); the applied option carries the check.
+            let ink = if idx == options.highlighted {
+                crate::widget::floating_surface::paint_armed_row(
+                    scene, transform, row, m.pad, theme,
+                )
+            } else {
+                colors.text_primary
+            };
+            if options.selected == Some(idx) {
+                let x = self.rect.x0 + f64::from(theme.tokens.spacing.s3);
+                let cy = row.center().y;
+                Self::check_mark(scene, transform, x, cy, m.check, ink);
+            }
+            let (_, lh) = tr.measure_style(label, None, &style);
+            let ty = crate::text_metrics::centered_text_top(row.y0, row.height(), f64::from(lh));
+            tr.draw_style(
+                scene,
+                label,
+                ink,
+                transform.pre_translate(Vec2::new(self.rect.x0 + m.text_x, ty)),
+                None,
+                &style,
+            );
+        }
+    }
+
+    fn check_mark(
+        scene: &mut Scene,
+        transform: Affine,
+        x: f64,
+        cy: f64,
+        size: f64,
+        color: vello::peniko::Color,
+    ) {
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            Rect::new(x, cy - size / 2.0, x + size, cy + size / 2.0),
+            crate::icons::Icon::Check,
+            color,
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+    }
+}
+
+/// The body of a prompt popover ([`Popover::prompt`]): a caption, one
+/// field and a hint under it. Enter submits what was typed; Escape closes
+/// the popover without it.
+pub struct PopoverPrompt {
+    caption: String,
+    hint: String,
+    input: crate::widget::TextInput,
+    submitted: Option<String>,
+    /// How many characters the field is sized for.
+    chars: usize,
+    rect: Rect,
+    theme: Theme,
+}
+
+impl PopoverPrompt {
+    fn new(caption: &str, placeholder: &str, hint: &str) -> Self {
+        let mut input = crate::widget::TextInput::local().with_placeholder(placeholder);
+        input.set_focus(true);
+        Self {
+            caption: caption.to_string(),
+            hint: hint.to_string(),
+            input,
+            submitted: None,
+            chars: 24,
+            rect: Rect::ZERO,
+            theme: Theme::dark(),
+        }
+    }
+
+    /// The field's text.
+    pub fn value(&self) -> &str {
+        self.input.value()
+    }
+
+    /// The field, for its kind, filter or mono face.
+    pub fn input_mut(&mut self) -> &mut crate::widget::TextInput {
+        &mut self.input
+    }
+
+    /// Replace the hint under the field (a range, or why the value is not
+    /// accepted).
+    pub fn set_hint(&mut self, hint: &str) {
+        hint.clone_into(&mut self.hint);
+    }
+
+    fn line(theme: &Theme, role: TextRole) -> f64 {
+        f64::from(theme.text(role).line_height_px())
+    }
+
+    fn gap(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.spacing.s2)
+    }
+
+    /// The prompt's size: the field is wide enough for `chars` characters of
+    /// body text, never narrower than a utility panel's half.
+    fn size(&self, theme: &Theme) -> (f64, f64) {
+        let em = f64::from(theme.text(TextRole::Body).size) * 0.6;
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a prompt's character count is small"
+        )]
+        let width =
+            (em * self.chars as f64).max(f64::from(theme.tokens.metrics.panel_width_utility) / 2.0);
+        let mut height = crate::widget::ControlSize::Regular.height(theme);
+        if !self.caption.is_empty() {
+            height += Self::line(theme, TextRole::Label) + Self::gap(theme);
+        }
+        if !self.hint.is_empty() {
+            height += Self::line(theme, TextRole::Caption) + Self::gap(theme);
+        }
+        (width, height)
+    }
+
+    fn field_rect(&self) -> Rect {
+        let theme = &self.theme;
+        let top = if self.caption.is_empty() {
+            self.rect.y0
+        } else {
+            self.rect.y0 + Self::line(theme, TextRole::Label) + Self::gap(theme)
+        };
+        Rect::new(
+            self.rect.x0,
+            top,
+            self.rect.x1,
+            top + crate::widget::ControlSize::Regular.height(theme),
+        )
+    }
+}
+
+impl Widget for PopoverPrompt {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.theme = theme.clone();
+        let (w, h) = self.size(theme);
+        let style = Style {
+            size: Size::from_lengths(crate::num::f32_of_f64(w), crate::num::f32_of_f64(h)),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        let field = self.field_rect();
+        self.input.apply_layout_external(field);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let colors = &theme.tokens.colors;
+        if !self.caption.is_empty() {
+            tr.draw_style(
+                scene,
+                &self.caption,
+                colors.text_primary,
+                transform.pre_translate(Vec2::new(self.rect.x0, self.rect.y0)),
+                Some(crate::num::f32_of_f64(self.rect.width())),
+                &theme.text(TextRole::Label),
+            );
+        }
+        self.input.draw(scene, transform, tr, theme, presence);
+        if !self.hint.is_empty() {
+            let y = self.field_rect().y1 + Self::gap(theme);
+            tr.draw_style(
+                scene,
+                &self.hint,
+                colors.text_dim,
+                transform.pre_translate(Vec2::new(self.rect.x0, y)),
+                Some(crate::num::f32_of_f64(self.rect.width())),
+                &theme.text(TextRole::Caption),
+            );
+        }
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Named(NamedKey::Enter),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            self.submitted = Some(self.input.value().to_string());
+            *ctx.handled = true;
+            return;
+        }
+        self.input.handle_event(event, ctx);
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.input.set_focus(focused);
+    }
+
+    fn is_focused(&self) -> bool {
+        self.input.is_focused()
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        Widget::ime_cursor_rect(&self.input)
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_cursor_rect()?;
+        self.input.ime_edit_fingerprint(key)
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        Widget::ime_purpose(&self.input)
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let mut node = Widget::accessibility(&self.input)?;
+        // The caption names the field; a placeholder is only an example
+        // of what goes in it.
+        if !self.caption.is_empty() {
+            node.name = Some(self.caption.clone());
+        }
+        if !self.hint.is_empty() {
+            node.description = Some(self.hint.clone());
+        }
+        Some(node)
+    }
+
+    fn name(&self) -> &'static str {
+        "PopoverPrompt"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+impl Popover<PopoverPrompt> {
+    /// A prompt next to the control that asks for one value ("Go to
+    /// offset"): `caption` over one field, `hint` under it. Enter submits
+    /// ([`Self::take_submitted`]), Escape or a click outside closes.
+    pub fn prompt(caption: &str, placeholder: &str, hint: &str) -> Self {
+        Self::with_content(PopoverPrompt::new(caption, placeholder, hint))
+    }
+
+    /// Size the field for `chars` characters (default 24).
+    #[must_use]
+    pub fn with_field_chars(mut self, chars: usize) -> Self {
+        self.content.chars = chars.max(4);
+        self
+    }
+
+    /// Configure the field: its kind, its id, a filter.
+    #[must_use]
+    pub fn with_field(
+        mut self,
+        configure: impl FnOnce(crate::widget::TextInput) -> crate::widget::TextInput,
+    ) -> Self {
+        let input = std::mem::replace(&mut self.content.input, crate::widget::TextInput::local());
+        self.content.input = configure(input);
+        self
+    }
+
+    /// Open at `anchor` with `initial` in the field, selected so typing
+    /// replaces it, and the field focused.
+    pub fn open_prompt(&mut self, anchor: Rect, initial: &str) {
+        self.set_anchor(anchor);
+        self.content.input.set_text(initial);
+        self.content.input.select_all();
+        self.content.input.set_focus(true);
+        self.content.submitted = None;
+        self.set_open(true);
+    }
+
+    /// What was submitted with Enter, once; the popover closes with it.
+    pub fn take_submitted(&mut self) -> Option<String> {
+        let submitted = self.content.submitted.take();
+        if submitted.is_some() {
+            self.open = false;
+        }
+        submitted
+    }
+}
+
+impl Popover {
+    /// A closed option menu with no options yet.
+    pub fn new() -> Self {
+        Self::with_body(NoContent, Some(Options::default()))
     }
 
     #[must_use]
@@ -105,223 +841,120 @@ impl Popover {
         self
     }
 
-    #[must_use]
-    pub fn with_label(mut self, label: impl Into<String>) -> Self {
-        self.label = Some(label.into());
-        self
+    fn options(&self) -> &Options {
+        static EMPTY: Options = Options {
+            items: Vec::new(),
+            highlighted: 0,
+            selected: None,
+            pending: None,
+        };
+        self.options.as_ref().unwrap_or(&EMPTY)
     }
 
-    /// Replace the option labels. Clamps the highlight into range.
+    fn options_mut(&mut self) -> &mut Options {
+        self.options.get_or_insert_with(Options::default)
+    }
+
+    /// Replace the options. Clamps the highlight into range.
     pub fn set_items<I, S>(&mut self, items: I)
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.items = items.into_iter().map(Into::into).collect();
-        if self.highlighted >= self.items.len() {
-            self.highlighted = self.items.len().saturating_sub(1);
+        let options = self.options_mut();
+        options.items = items.into_iter().map(Into::into).collect();
+        if options.highlighted >= options.items.len() {
+            options.highlighted = options.items.len().saturating_sub(1);
         }
     }
 
     pub fn items(&self) -> &[String] {
-        &self.items
+        &self.options().items
     }
 
-    pub fn set_label(&mut self, label: impl Into<String>) {
-        self.label = Some(label.into());
-    }
-
-    /// Override the viewport used for flip-above / clamp resolution — pass the
-    /// host window's inner rect so the menu never opens off-screen.
-    pub fn set_viewport(&mut self, viewport: Rect) {
-        self.viewport = viewport;
-    }
-
-    /// Open the menu anchored to `anchor`, with `selected` pre-highlighted.
-    /// The highlight starts on the selected row (or the first row when there
-    /// is no current selection) so keyboard use and the drawn check agree.
+    /// Open anchored to `anchor`, with `selected` checked and highlighted
+    /// (or the first row when nothing is selected).
     pub fn open_at(&mut self, anchor: Rect, selected: Option<usize>) {
         self.anchor = anchor;
-        self.selected = selected.filter(|&i| i < self.items.len());
-        self.highlighted = self
+        let options = self.options_mut();
+        options.selected = selected.filter(|&i| i < options.items.len());
+        options.highlighted = options
             .selected
             .unwrap_or(0)
-            .min(self.items.len().saturating_sub(1));
+            .min(options.items.len().saturating_sub(1));
+        options.pending = None;
         self.open = true;
-        self.pending = None;
-    }
-
-    /// Close the menu (safe when already closed).
-    pub fn close(&mut self) {
-        self.open = false;
-    }
-
-    pub fn is_open(&self) -> bool {
-        self.open
     }
 
     pub fn selected(&self) -> Option<usize> {
-        self.selected
+        self.options().selected
     }
 
     pub fn highlighted(&self) -> usize {
-        self.highlighted
+        self.options().highlighted
     }
 
-    /// The resolved body rect (valid after `place`/`draw`).
-    pub fn rect(&self) -> Rect {
-        self.rect
-    }
-
-    /// Move the highlight by `dir` (clamped to the ends, no wrap).
+    /// Move the highlight by `dir` rows, clamped to the ends.
     pub fn move_highlight(&mut self, dir: i32) {
-        if self.items.is_empty() {
+        let options = self.options_mut();
+        if options.items.is_empty() {
             return;
         }
-        let max = self.items.len().saturating_sub(1);
-        self.highlighted = if dir.is_negative() {
+        let max = options.items.len().saturating_sub(1);
+        options.highlighted = if dir.is_negative() {
             let step = usize::try_from(dir.unsigned_abs()).unwrap_or(usize::MAX);
-            self.highlighted.saturating_sub(step)
+            options.highlighted.saturating_sub(step)
         } else {
             let step = usize::try_from(dir).unwrap_or(0);
-            self.highlighted.saturating_add(step).min(max)
+            options.highlighted.saturating_add(step).min(max)
         };
     }
 
-    pub fn highlight_first(&mut self) {
-        self.highlighted = 0;
-    }
-
-    pub fn highlight_last(&mut self) {
-        self.highlighted = self.items.len().saturating_sub(1);
-    }
-
-    /// Record `idx` as selected + pending and close. Out-of-range indices
-    /// are ignored.
+    /// Record `idx` as selected and pending, and close. Out-of-range
+    /// indices are ignored.
     pub fn select(&mut self, idx: usize) {
-        if idx < self.items.len() {
-            self.selected = Some(idx);
-            self.highlighted = idx;
-            self.pending = Some(idx);
+        let options = self.options_mut();
+        if idx < options.items.len() {
+            options.selected = Some(idx);
+            options.highlighted = idx;
+            options.pending = Some(idx);
             self.open = false;
         }
     }
 
-    /// Choose the currently-highlighted option (Enter / click on the row).
+    /// Choose the highlighted option (Enter, or a click on the row).
     pub fn select_highlighted(&mut self) {
-        let idx = self.highlighted;
+        let idx = self.highlighted();
         self.select(idx);
     }
 
-    /// Drain the index of the option the user just chose. Returns `Some(idx)`
-    /// exactly once per selection, then `None`.
+    /// The option the person just chose, once.
     pub fn take_selection(&mut self) -> Option<usize> {
-        self.pending.take()
+        self.options_mut().pending.take()
     }
 
-    /// The option row under a logical `point`, if the menu is open and the
-    /// point lands inside the body.
+    /// The option row under `point`, while open.
     pub fn item_at(&self, point: Point) -> Option<usize> {
         if !self.open || !self.rect.contains(point) {
             return None;
         }
-        let rel = point.y - self.rect.y0 - PAD_Y;
-        if rel < 0.0 {
-            return None;
-        }
-        let row = (rel / ROW_H).floor();
-        // `point` is already checked against `self.rect` above, so `rel` —
-        // and therefore `row` — is bounded by the popover's own on-screen
-        // height and never approaches usize::MAX.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "row is non-negative (checked via `rel < 0.0` above) and \
-                      bounded by the popover's own on-screen height"
-        )]
-        let idx = row as usize;
-        (idx < self.items.len()).then_some(idx)
+        (0..self.items().len()).find(|&i| self.row_rect_in(i, &self.layout_theme).contains(point))
     }
 
-    /// Bounds of one option row after [`Self::place`] has resolved the menu.
-    /// Hand-drawn hosts and tests can synthesize a click without copying the
-    /// popover's private padding and row-height constants.
+    /// One option row after [`Self::place`], so a hand-drawn host or a test
+    /// can synthesize a click without restating the menu's metrics.
     pub fn item_rect(&self, index: usize) -> Option<Rect> {
-        if !self.open || index >= self.items.len() {
-            return None;
-        }
-        Some(self.row_rect(index))
-    }
-
-    pub fn contains(&self, point: Point) -> bool {
-        self.open && self.rect.contains(point)
-    }
-
-    /// Resolve `self.rect` from the anchor, measured option widths, and the
-    /// viewport. Callable standalone so a hand-drawn host — or a test — can
-    /// place the menu without a full draw.
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "n is the popover's own row count — never remotely close to \
-                  f64's exact-integer range"
-    )]
-    pub fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let fs = renderer_type_size(tr, theme.tokens.typography.scale.sm);
-        let mut w = MIN_W.max(self.anchor.width());
-        for label in &self.items {
-            let tw = f64::from(tr.measure(label, fs, None).0);
-            w = w.max(tw + CHECK_W + PAD_X * 2.0);
-        }
-        let n = self.items.len().max(1);
-        let h = PAD_Y * 2.0 + n as f64 * ROW_H;
-
-        let mut x0 = self.anchor.x0;
-        let mut y0 = self.anchor.y1 + GAP;
-        // Flip above the anchor when opening below would spill past the
-        // viewport and there IS room above.
-        if y0 + h > self.viewport.y1 && (self.anchor.y0 - GAP - h) >= self.viewport.y0 {
-            y0 = self.anchor.y0 - GAP - h;
-        }
-        // Clamp horizontally so the body stays fully inside the viewport.
-        if x0 + w > self.viewport.x1 {
-            x0 = (self.viewport.x1 - w).max(self.viewport.x0);
-        }
-        if x0 < self.viewport.x0 {
-            x0 = self.viewport.x0;
-        }
-        self.rect = Rect::new(x0, y0, x0 + w, y0 + h);
-    }
-
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "idx is a row index into this popover's own (short) item \
-                  list — never remotely close to f64's exact-integer range"
-    )]
-    fn row_rect(&self, idx: usize) -> Rect {
-        let y0 = self.rect.y0 + PAD_Y + idx as f64 * ROW_H;
-        Rect::new(self.rect.x0, y0, self.rect.x1, y0 + ROW_H)
-    }
-
-    fn draw_check(scene: &mut Scene, t: Affine, row: Rect, color: vello::peniko::Color) {
-        let cx = row.x0 + PAD_X + CHECK_W / 2.0 - 6.0;
-        let cy = row.center().y;
-        let mut path = BezPath::new();
-        path.move_to((cx - 4.0, cy));
-        path.line_to((cx - 1.0, cy + 3.5));
-        path.line_to((cx + 5.0, cy - 4.5));
-        scene.stroke(
-            &Stroke::new(1.8)
-                .with_caps(vello::kurbo::Cap::Round)
-                .with_join(vello::kurbo::Join::Round),
-            t,
-            color,
-            None,
-            &path,
-        );
+        (self.open && index < self.items().len())
+            .then(|| self.row_rect_in(index, &self.layout_theme))
     }
 }
 
-impl Widget for Popover {
+impl<C: Widget + 'static> Widget for Popover<C> {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        // Even when closed, so reopening shows a current frame.
+        self.content.sync(state, path);
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -329,118 +962,156 @@ impl Widget for Popover {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_theme = theme.clone();
-        // A zero-extent leaf: the body is positioned manually against the
-        // anchor + viewport in `place`, not by the parent's flexbox. Register
-        // in the node map so the host's overlay/hit sweeps still reach us.
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::length(0.0),
-                height: Dimension::length(0.0),
-            },
-            ..Default::default()
+        if self.options.is_some() {
+            // A zero-extent leaf out of the flow: the panel is placed against
+            // the anchor, not by the parent's layout, and takes no room or
+            // gap there. Registered so the host's sweeps reach it.
+            let node = taffy.leaf_node(Style {
+                position: taffy::Position::Absolute,
+                size: Size::from_lengths(0.0, 0.0),
+                ..Default::default()
+            });
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            return node;
+        }
+        // The content is laid out in the host's tree, out of flow, at its
+        // own (max-content) width: its fields focus like any other, and it
+        // takes no room from the row the popover is mounted in.
+        self.detached = None;
+        let content = self.content.build_layout(taffy, theme, node_map);
+        self.host_content = Some(content);
+        let width = self.presented.map_or(Dimension::auto(), |w| {
+            Dimension::length(crate::num::f32_of_f64(w.width()))
         });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            position: taffy::Position::Absolute,
+            inset: taffy::Rect {
+                left: taffy::LengthPercentageAuto::length(0.0),
+                top: taffy::LengthPercentageAuto::length(0.0),
+                right: taffy::LengthPercentageAuto::auto(),
+                bottom: taffy::LengthPercentageAuto::auto(),
+            },
+            size: Size {
+                width,
+                height: Dimension::auto(),
+            },
+            flex_direction: taffy::FlexDirection::Row,
+            align_items: Some(taffy::AlignItems::FlexStart),
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[content], node_map, self)
     }
 
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {
-        // Resolve the body rect so hit-testing works after layout even before
-        // the first draw. Preserve the active theme and text scale so the hit
-        // target matches the first painted frame under large text.
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, _origin: Point) {
+        if let Some(content) = taffy
+            .children(node)
+            .ok()
+            .and_then(|c| c.first().copied())
+            .filter(|&c| Some(c) == self.host_content)
+        {
+            let l = taffy.layout(content).copied().unwrap_or_default();
+            self.content_size = (f64::from(l.size.width), f64::from(l.size.height));
+            let theme = self.layout_theme.clone();
+            if self.open {
+                crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
+                    self.place(tr, &theme);
+                });
+            }
+            let target = self.content_target(&theme);
+            self.content.apply_layout(
+                taffy,
+                content,
+                Point::new(
+                    target.x - f64::from(l.location.x),
+                    target.y - f64::from(l.location.y),
+                ),
+            );
+            self.content_origin = target;
+            self.stale = false;
+            return;
+        }
+        // Resolve the panel so hit-testing works before the first paint, at
+        // the active theme and text scale.
         if self.open {
             let theme = self.layout_theme.clone();
             crate::text_render::with_layout_renderer(theme.text_scale, |tr| self.place(tr, &theme));
         }
     }
 
-    fn draw(
+    fn draw_overlay(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         if !self.open {
             return;
         }
-        self.place(text_renderer, theme);
-        let c = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.md);
-
-        // A floating Panel casts the `e4` tier (HIG §9.1) through the one
-        // shadow painter, so its shadow follows the panel's own outline and
-        // its strength comes from the theme rather than a literal black
-        // ring stack that weighed the same on a paper-white ground.
-        crate::surface::shadow(
-            scene,
-            transform,
-            self.rect,
-            radius,
-            &theme.tokens.elevation.e4,
-        );
-
-        // Panel role (HIG §9.1): the panel ground, walked clear of both the
-        // desktop and the window card, with the derived panel edge as a
-        // crisp 1 px inset stroke — never a declared `border_standard`,
-        // which is invisible on the dark preset's raised tier.
-        let shape = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            crate::chrome::panel_ground(theme),
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            crate::chrome::panel_border(theme),
-            None,
-            &crate::surface::edge_outline(self.rect, radius),
-        );
-
-        let fs = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        for (idx, label) in self.items.iter().enumerate() {
-            let row = self.row_rect(idx);
-            let is_hl = idx == self.highlighted;
-            if is_hl {
-                let hl = Rect::new(row.x0 + 4.0, row.y0 + 1.0, row.x1 - 4.0, row.y1 - 1.0);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    c.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-                    None,
-                    &RoundedRect::from_rect(hl, f64::from(theme.tokens.radii.sm)),
-                );
+        self.layout_theme = theme.clone();
+        if let Some(window) = presence.viewport.get() {
+            if self
+                .presented
+                .is_none_or(|w| (w.width() - window.width()).abs() > 0.5)
+            {
+                self.stale = self.host_content.is_some();
             }
-            let text_color = if is_hl {
-                c.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
-            } else {
-                c.text_primary
-            };
-            if self.selected == Some(idx) {
-                // The tick is a mark, not text, so it answers to the lower
-                // non-text floor — but it still has to answer to something.
-                let check_color = if is_hl {
-                    c.on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST)
-                } else {
-                    c.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-                };
-                Self::draw_check(scene, transform, row, check_color);
-            }
-            let (_lw, lh) = text_renderer.measure_weighted(label, fs, None, TextWeight::Medium);
-            let ty = row.center().y - f64::from(lh) / 2.0;
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                fs,
-                text_color,
-                transform.pre_translate(Vec2::new(row.x0 + PAD_X + CHECK_W, ty)),
-                None,
-                TextWeight::Medium,
-            );
+            self.presented = Some(window);
         }
+        let viewport = self.room(theme);
+        self.place_in(viewport, text_renderer, theme);
+        floating_surface::paint(scene, transform, self.rect, theme);
+        if self.options.is_some() {
+            self.paint_options(scene, transform, text_renderer, theme);
+        } else {
+            let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
+            // A hosted content follows the panel on the host's next layout
+            // pass; until then it is drawn where it belongs.
+            let shift = self.content_target(theme) - self.content_origin;
+            if shift.hypot() > 0.01 {
+                self.stale = true;
+            }
+            let transform = transform * Affine::translate(shift);
+            self.content
+                .draw(scene, transform, text_renderer, &on_panel, presence);
+            self.content
+                .draw_overlay(scene, transform, text_renderer, &on_panel, presence);
+        }
+    }
+
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut TextRenderer,
+    ) -> bool {
+        // The content's max-content width is bounded by the popover node:
+        // give it the window's width once the top layer has named it.
+        let (Some(window), true) = (self.presented, self.host_content.is_some()) else {
+            return false;
+        };
+        let Ok(mut style) = taffy.style(node).cloned() else {
+            return false;
+        };
+        let width = Dimension::length(crate::num::f32_of_f64(window.width()));
+        if style.size.width == width {
+            return false;
+        }
+        style.size.width = width;
+        taffy.set_style(node, style).is_ok()
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.stale || (self.open && self.options.is_none() && self.content.is_layout_dirty())
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.stale || (self.open && self.options.is_none() && self.content.layout_needs_measure())
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.open && (self.stale || self.content.needs_animation_frame())
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -449,10 +1120,20 @@ impl Widget for Popover {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                if let Some(idx) = self.item_at(self.last_cursor) {
-                    self.highlighted = idx;
+                self.last_cursor = ctx.logical(position);
+                if self.options.is_some() {
+                    let count = self.options.as_ref().map_or(0, |o| o.items.len());
+                    let hit = (0..count).find(|&i| {
+                        self.rect.contains(self.last_cursor)
+                            && self
+                                .row_rect_in(i, &self.layout_theme)
+                                .contains(self.last_cursor)
+                    });
+                    if let (Some(idx), Some(options)) = (hit, self.options.as_mut()) {
+                        options.highlighted = idx;
+                    }
+                } else {
+                    self.forward_to_content(event, ctx);
                 }
             }
             WindowEvent::KeyboardInput {
@@ -464,17 +1145,37 @@ impl Widget for Popover {
                     },
                 ..
             } => {
-                match key {
-                    Key::Named(NamedKey::ArrowDown) => self.move_highlight(1),
-                    Key::Named(NamedKey::ArrowUp) => self.move_highlight(-1),
-                    Key::Named(NamedKey::Home) => self.highlight_first(),
-                    Key::Named(NamedKey::End) => self.highlight_last(),
-                    Key::Named(NamedKey::Enter) => self.select_highlighted(),
-                    Key::Named(NamedKey::Escape) => self.close(),
-                    _ => {}
+                if matches!(key, Key::Named(NamedKey::Escape)) {
+                    self.dismiss();
+                } else if let Some(options) = self.options.as_mut() {
+                    let max = options.items.len().saturating_sub(1);
+                    match key {
+                        Key::Named(NamedKey::ArrowDown) => {
+                            options.highlighted = options.highlighted.saturating_add(1).min(max);
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            options.highlighted = options.highlighted.saturating_sub(1);
+                        }
+                        Key::Named(NamedKey::Home) => options.highlighted = 0,
+                        Key::Named(NamedKey::End) => options.highlighted = max,
+                        Key::Named(NamedKey::Enter) if !options.items.is_empty() => {
+                            let idx = options.highlighted;
+                            options.selected = Some(idx);
+                            options.pending = Some(idx);
+                            self.open = false;
+                        }
+                        _ => {}
+                    }
+                } else {
+                    self.forward_to_content(event, ctx);
                 }
-                // Focus capture: an open menu owns the keyboard. EVERY key press
-                // is consumed so nothing leaks to the app behind the overlay.
+                // An open popover owns the keyboard: nothing leaks behind it.
+                *ctx.handled = true;
+            }
+            WindowEvent::Ime(_) => {
+                if self.options.is_none() {
+                    self.forward_to_content(event, ctx);
+                }
                 *ctx.handled = true;
             }
             WindowEvent::MouseInput {
@@ -482,12 +1183,34 @@ impl Widget for Popover {
                 button: MouseButton::Left,
                 ..
             } => {
-                if let Some(idx) = self.item_at(self.last_cursor) {
-                    self.select(idx);
+                if !self.rect.contains(self.last_cursor) {
+                    // A click outside closes; it does not also hit what is
+                    // beneath.
+                    self.dismiss();
+                } else if let Some(options) = self.options.as_mut() {
+                    let theme = &self.layout_theme;
+                    let m = MenuMetrics::of(theme);
+                    let rel = self.last_cursor.y - self.rect.y0 - m.pad;
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "rel is checked non-negative and bounded by the panel height"
+                    )]
+                    let idx = (rel >= 0.0).then(|| (rel / m.row).floor() as usize);
+                    if let Some(idx) = idx.filter(|&i| i < options.items.len()) {
+                        options.selected = Some(idx);
+                        options.highlighted = idx;
+                        options.pending = Some(idx);
+                        self.open = false;
+                    }
                 } else {
-                    // Outside click dismisses; swallow it so the press that
-                    // closed the menu doesn't also hit whatever sits beneath.
-                    self.close();
+                    self.forward_to_content(event, ctx);
+                }
+                *ctx.handled = true;
+            }
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
+                if self.options.is_none() && self.rect.contains(self.last_cursor) {
+                    self.forward_to_content(event, ctx);
                 }
                 *ctx.handled = true;
             }
@@ -503,22 +1226,54 @@ impl Widget for Popover {
         self.rect
     }
 
-    /// An open popover traps the keyboard + swallows click-through, so it
-    /// participates in the host's modal-capture contract.
+    /// An open popover captures input, so the host's global shortcuts and
+    /// click-through stay off while it is up.
     fn modal_capture(&self) -> Option<Rect> {
         self.open.then_some(self.rect)
     }
 
-    /// An open popover captures focus so Tab/arrow shortcuts don't drive the
-    /// app behind it.
     fn traps_focus(&self) -> bool {
         self.open
     }
 
+    fn children(&self) -> Vec<&dyn Widget> {
+        if self.open && self.options.is_none() {
+            vec![&self.content]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        if self.open && self.options.is_none() {
+            visitor(&self.content);
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.open && self.options.is_none() {
+            vec![&mut self.content]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        let n = self.items.len();
-        let children = self
+        let Some(options) = self.options.as_ref() else {
+            // A labeled content panel needs its own stable semantic scope;
+            // a changing heading inside it is not the popup's identity.
+            return self.label.as_ref().map(|label| {
+                AccessNode::new(Role::Group)
+                    .with_name(label.clone())
+                    .with_state(AccessState {
+                        hidden: !self.open,
+                        ..Default::default()
+                    })
+            });
+        };
+        let n = options.items.len();
+        let children = options
             .items
             .iter()
             .enumerate()
@@ -526,12 +1281,12 @@ impl Widget for Popover {
                 AccessNode::new(Role::MenuItem)
                     .with_name(label.clone())
                     .with_position(i.saturating_add(1), n)
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.open && i == self.highlighted,
-                        selected: self.selected == Some(i),
-                        ..Default::default()
-                    })
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.open && i == options.highlighted)
+                            .selected(options.selected == Some(i)),
+                    )
             })
             .collect();
         Some(
@@ -547,302 +1302,236 @@ impl Widget for Popover {
     }
 }
 
+/// A button that opens a popover anchored to its own rect
+/// ([`crate::widget::Button::with_popover`]): a filter's options, a share
+/// sheet's details. A click, Enter or Space opens it and closes it again;
+/// the button reads as expanded while it is open.
+pub struct PopoverButton<C: Widget + 'static> {
+    button: crate::widget::Button,
+    popover: Popover<C>,
+    request: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl crate::widget::Button {
+    /// Make this button open `content` in a popover anchored to its own
+    /// rect.
+    #[must_use]
+    pub fn with_popover<C: Widget + 'static>(self, content: C) -> PopoverButton<C> {
+        let request = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = std::rc::Rc::clone(&request);
+        PopoverButton {
+            button: self.on_click(move || flag.set(true)),
+            popover: Popover::with_content(content),
+            request,
+        }
+    }
+}
+
+impl<C: Widget + 'static> PopoverButton<C> {
+    /// Prefer opening on `side` of the button.
+    #[must_use]
+    pub fn side(mut self, side: PopoverSide) -> Self {
+        self.popover = self.popover.side(side);
+        self
+    }
+
+    /// Line the popover up with the button's trailing edge.
+    #[must_use]
+    pub fn aligned(mut self, align: PanelAlign) -> Self {
+        self.popover.set_align(align);
+        self
+    }
+
+    pub fn popover(&self) -> &Popover<C> {
+        &self.popover
+    }
+
+    pub fn button_mut(&mut self) -> &mut crate::widget::Button {
+        &mut self.button
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.popover.is_open()
+    }
+
+    /// Open the popover at the button (a stage hook, a shortcut).
+    pub fn open(&mut self) {
+        self.popover.set_anchor(Widget::get_rect(&self.button));
+        self.popover.set_open(true);
+    }
+
+    pub fn close(&mut self) {
+        self.popover.close();
+    }
+
+    /// Answer the button's click (or its keyboard activation): open, or
+    /// close an open popover.
+    fn take_request(&mut self) {
+        if self.request.replace(false) {
+            if self.popover.is_open() {
+                self.popover.close();
+            } else {
+                self.open();
+            }
+        }
+    }
+
+    /// The button's and the popover's nodes under this widget's node.
+    fn nodes(taffy: &TaffyTree<()>, node: NodeId) -> Option<(NodeId, NodeId)> {
+        let children = taffy.children(node).ok()?;
+        Some((*children.first()?, *children.get(1)?))
+    }
+}
+
+impl<C: Widget + 'static> Widget for PopoverButton<C> {
+    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+        self.button.set_platform_conventions(conventions);
+        self.popover.set_platform_conventions(conventions);
+    }
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.button.sync(state, path);
+        self.popover.sync(state, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let button = self.button.build_layout(taffy, theme, node_map);
+        let popover = self.popover.build_layout(taffy, theme, node_map);
+        // The popover's node stands out of flow beside the button's, so the
+        // pair is as big as the button and the popover's content joins the
+        // window's tree (and its focus order) while it is open.
+        taffy.widget_node(Style::default(), &[button, popover], node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let at = crate::widget::layout_rect(taffy, node, origin).origin();
+        let Some((button, popover)) = Self::nodes(taffy, node) else {
+            return;
+        };
+        self.button.apply_layout(taffy, button, at);
+        self.popover.set_anchor(self.button.get_rect());
+        self.popover.apply_layout(taffy, popover, at);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        // A keyboard activation reaches the button through the host.
+        self.take_request();
+        self.button
+            .draw(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.button
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
+        self.popover.set_anchor(self.button.get_rect());
+        self.popover
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let nodes = Self::nodes(ctx.taffy, ctx.node_id);
+        let (button, popover) = nodes.unwrap_or((ctx.node_id, ctx.node_id));
+        if self.popover.is_open() {
+            self.popover
+                .handle_event(event, &mut ctx.reborrow(ctx.path, popover));
+            if !self.popover.is_open() {
+                // The press that closed it on the button must not reopen it.
+                self.request.set(false);
+            }
+            return;
+        }
+        self.button
+            .handle_event(event, &mut ctx.reborrow(ctx.path, button));
+        self.take_request();
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.button, &self.popover]
+    }
+
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        visitor(&self.button);
+        visitor(&self.popover);
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.button, &mut self.popover]
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.request.get() || self.popover.is_open() || self.button.needs_redraw()
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.popover.modal_capture()
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.popover.is_open() || self.button.wants_pointer_capture()
+    }
+
+    fn name(&self) -> &'static str {
+        "PopoverButton"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.button.get_rect()
+    }
+}
+
 #[cfg(test)]
-mod tests {
+#[path = "popover_tests.rs"]
+mod tests;
+
+#[cfg(test)]
+mod protected_placement_tests {
     use super::*;
-    use automerge::AutoCommit;
-    use winit::event::{DeviceId, KeyEvent};
-    use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
     #[test]
-    fn menu_pointer_selection_dismissal_and_targets() {
-        // Case `click_on_a_row_selects_it_click_outside_dismisses`.
-        {
-            let mut p = opened();
-            let row2 = p.item_rect(2).expect("published item geometry");
-            assert_eq!(p.item_at(row2.center()), Some(2));
-            assert!(p.item_rect(p.items().len()).is_none());
-            dispatch(&mut p, &cursor_at(row2.center()));
-            assert!(dispatch(&mut p, &left_press()), "row click consumed");
-            assert_eq!(p.take_selection(), Some(2), "clicking a row selects it");
-            assert!(!p.is_open());
-
-            // Re-open and click well outside → dismiss, no selection.
-            p.open_at(Rect::new(100.0, 40.0, 180.0, 68.0), Some(2));
-            let mut tr = TextRenderer::new();
-            p.place(&mut tr, &Theme::dark());
-            let outside = Point::new(p.rect().x1 + 80.0, p.rect().y1 + 80.0);
-            dispatch(&mut p, &cursor_at(outside));
-            assert!(dispatch(&mut p, &left_press()), "outside click swallowed");
-            assert!(!p.is_open(), "outside click dismisses");
-            assert_eq!(p.take_selection(), None, "no selection on dismiss");
-        }
-
-        // Case `option_rows_meet_the_shared_touch_target_floor`.
-        {
-            let p = opened();
-            assert!(p.row_rect(0).height() >= 44.0);
-            assert!(p.row_rect(4).height() >= 44.0);
-        }
-
-        // Case `retained_layout_keeps_the_active_theme_before_first_paint`.
-        {
-            let mut popover = opened();
-            let mut taffy = TaffyTree::new();
-            let mut map = HashMap::new();
-            popover.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
-            assert_eq!(popover.layout_theme.text_scale, 2.0);
-        }
-    }
-
-    fn synth_device() -> DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
-
-    fn opened() -> Popover {
-        let mut p = Popover::new()
-            .with_label("Refresh interval")
-            .with_items(["1s", "1.5s", "2s", "3s", "5s"]);
-        p.set_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
-        p.open_at(Rect::new(100.0, 40.0, 180.0, 68.0), Some(1));
-        // Resolve the body rect for hit-testing (no GPU needed).
-        let mut tr = TextRenderer::new();
-        p.place(&mut tr, &Theme::dark());
-        p
-    }
-
-    fn cursor_at(pt: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: synth_device(),
-            position: winit::dpi::PhysicalPosition::new(pt.x, pt.y),
-        }
-    }
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn key(named: NamedKey) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(named);
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-    fn char_key(s: &str) -> WindowEvent {
-        use winit::keyboard::SmolStr;
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Character(SmolStr::new(s));
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = Some(SmolStr::new(s));
-        WindowEvent::KeyboardInput {
-            device_id: synth_device(),
-            event: ev,
-            is_synthetic: false,
-        }
-    }
-
-    fn dispatch(p: &mut Popover, event: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        p.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
-    }
-
-    #[test]
-    fn menu_keyboard_moves_clamps_selects_and_swallows_keys() {
-        // Case `arrow_keys_move_highlight_and_are_consumed`.
-        {
-            let mut p = opened();
-            assert_eq!(p.highlighted(), 1, "opens highlighting the selected row");
-            assert!(
-                dispatch(&mut p, &key(NamedKey::ArrowDown)),
-                "ArrowDown consumed"
-            );
-            assert_eq!(p.highlighted(), 2);
-            assert!(
-                dispatch(&mut p, &key(NamedKey::ArrowUp)),
-                "ArrowUp consumed"
-            );
-            assert_eq!(p.highlighted(), 1);
-        }
-
-        // Case `home_and_end_jump_to_the_ends`.
-        {
-            let mut p = opened();
-            assert!(dispatch(&mut p, &key(NamedKey::End)));
-            assert_eq!(p.highlighted(), 4, "End jumps to the last row");
-            assert!(dispatch(&mut p, &key(NamedKey::Home)));
-            assert_eq!(p.highlighted(), 0, "Home jumps to the first row");
-        }
-
-        // Case `highlight_clamps_at_the_ends_without_wrapping`.
-        {
-            let mut p = opened();
-            for _ in 0..10 {
-                dispatch(&mut p, &key(NamedKey::ArrowDown));
-            }
-            assert_eq!(p.highlighted(), 4, "ArrowDown clamps at the last row");
-            for _ in 0..10 {
-                dispatch(&mut p, &key(NamedKey::ArrowUp));
-            }
-            assert_eq!(p.highlighted(), 0, "ArrowUp clamps at the first row");
-        }
-
-        // Case `enter_selects_the_highlight_closes_and_reports_it`.
-        {
-            let mut p = opened();
-            dispatch(&mut p, &key(NamedKey::ArrowDown)); // 1 -> 2
-            dispatch(&mut p, &key(NamedKey::ArrowDown)); // 2 -> 3
-            assert!(dispatch(&mut p, &key(NamedKey::Enter)), "Enter consumed");
-            assert!(!p.is_open(), "selecting closes the menu");
+    fn protected_measured_panel_uses_shared_opposite_placement_without_moving_anchor() {
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let anchor = Rect::new(350.0, 250.0, 370.0, 270.0);
+        let protected = Rect::new(375.0, 230.0, 700.0, 400.0);
+        for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
+            let mut panel = Popover::new()
+                .with_items(["Message", "Queue task", "Steer current task"])
+                .anchored(anchor)
+                .side(PopoverSide::Right)
+                .fallback_side(PopoverSide::Above)
+                .with_viewport(viewport)
+                .confined_to_viewport()
+                .open(true);
+            panel.set_protected_rect(Some(protected));
+            let room = panel.room(&theme);
+            let capacity = panel.available_content_width(&theme);
+            assert!(f64::from(capacity) <= room.width() - 2.0 * panel.padding(&theme));
+            panel.place(&mut TextRenderer::new(), &theme);
             assert_eq!(
-                p.take_selection(),
-                Some(3),
-                "the chosen index is reported once"
+                panel.anchor, anchor,
+                "placement never changes the source input locus"
             );
-            assert_eq!(p.take_selection(), None, "selection drains exactly once");
-            assert_eq!(
-                p.selected(),
-                Some(3),
-                "the applied option sticks as selected"
-            );
-        }
-
-        // Case `escape_closes_without_selecting`.
-        {
-            let mut p = opened();
-            assert!(dispatch(&mut p, &key(NamedKey::Escape)), "Esc consumed");
-            assert!(!p.is_open());
-            assert_eq!(p.take_selection(), None, "Esc makes no selection");
-        }
-
-        // Case `unrelated_keys_are_swallowed_not_leaked`.
-        {
-            fn unrelated_keys_are_swallowed_not_leaked() {
-                // Focus capture: any key press while open is consumed so it can't
-                // reach the app behind the overlay. A letter that maps to no action
-                // must still return `handled == true` and leave the menu open.
-                let mut p = opened();
-                assert!(
-                    dispatch(&mut p, &char_key("x")),
-                    "an unrelated key is swallowed"
-                );
-                assert!(p.is_open(), "a no-op key does not close the menu");
-                assert_eq!(p.take_selection(), None);
-                assert!(
-                    dispatch(&mut p, &key(NamedKey::Tab)),
-                    "Tab is swallowed too (no focus escape)"
-                );
-                assert!(p.is_open());
-            }
-            unrelated_keys_are_swallowed_not_leaked();
-        }
-    }
-
-    #[test]
-    fn menu_visibility_focus_trap_and_semantics() {
-        // Case `accessibility_reports_menu_with_positioned_items`.
-        {
-            use crate::a11y::Role;
-            let p = opened();
-            let node = Widget::accessibility(&p).expect("popover is semantic");
-            assert_eq!(node.role, Role::Menu);
-            assert_eq!(node.name.as_deref(), Some("Refresh interval"));
-            assert_eq!(node.state.expanded, Some(true), "open menu is expanded");
-            assert!(!node.state.hidden, "open menu is visible in the tree");
-            assert_eq!(node.children.len(), 5, "one MenuItem per option");
-            for (i, child) in node.children.iter().enumerate() {
-                assert_eq!(child.role, Role::MenuItem);
-                assert_eq!(child.pos_in_set, Some(i + 1));
-                assert_eq!(child.set_size, Some(5));
-            }
-            // The highlighted row carries focus; the selected row carries selected.
-            assert!(
-                node.children[1].state.focused,
-                "row 1 opens highlighted (== selected)"
-            );
-            assert!(
-                node.children[1].state.selected,
-                "row 1 is the current selection"
-            );
-            assert!(!node.children[0].state.focused);
-        }
-
-        // Case `closed_menu_is_hidden_and_paints_nothing`.
-        {
-            use vello_encoding::DrawTag;
-            let mut p = Popover::new().with_items(["a", "b"]);
-            let node = Widget::accessibility(&p).unwrap();
-            assert!(node.state.hidden, "closed menu is hidden from the tree");
-            assert_eq!(node.state.expanded, Some(false));
-
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            p.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let fills = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-            assert_eq!(fills, 0, "a closed popover emits no fills");
-        }
-
-        // Case `open_menu_traps_focus_and_captures_input`.
-        {
-            let p = opened();
-            assert!(Widget::traps_focus(&p), "open popover traps focus");
-            assert!(
-                Widget::modal_capture(&p).is_some(),
-                "open popover reports modal capture"
-            );
-            let closed = Popover::new();
-            assert!(!Widget::traps_focus(&closed));
-            assert!(Widget::modal_capture(&closed).is_none());
-        }
-
-        // Case `reopen_lands_the_highlight_on_the_current_selection`.
-        {
-            let mut p = opened();
-            p.select(3);
-            assert_eq!(p.take_selection(), Some(3));
-            p.open_at(Rect::new(100.0, 40.0, 180.0, 68.0), p.selected());
-            assert_eq!(
-                p.highlighted(),
-                3,
-                "re-opening highlights the applied option"
-            );
+            assert!(room.contains_rect(panel.rect()));
+            assert_eq!(panel.rect().intersect(protected).area(), 0.0);
+            assert_eq!(panel.resolved_side(), PopoverSide::Left);
         }
     }
 }

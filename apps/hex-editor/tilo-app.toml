@@ -1,9 +1,10 @@
 # Hex Editor — Tilo application manifest.
 #
-# Opens exactly one file, named on argv, and has no save path at all.
+# Opens one file — named on argv or chosen with the file picker — and saves
+# it back.
 #
-# Beyond the system read profile it needs, as a consented capability:
-# read on the file it was asked to open.
+# Beyond the system read profile it needs, as consented capabilities: read
+# on the file it was asked to open, and write where the person saves it.
 #
 
 
@@ -25,6 +26,9 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 optional = ["files.open", "files.save", "files.paths", "app-files"]
+
+[resources]
+kinds = ["hex-editor.document"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

@@ -28,10 +28,20 @@ fn fc(path: &str, area: ChangeArea, kind: ChangeKind, add: u32, del: u32) -> Fil
 /// Build the full sample model, with the graph lanes already assigned and a
 /// map of per-file diffs for the changed files.
 pub fn model() -> (RepoModel, DiffMap) {
-    let staged = sample_staged_changes();
-    let unstaged = sample_unstaged_changes();
-    let untracked = sample_untracked_changes();
     let diffs = sample_diffs();
+    let counted = |mut changes: Vec<FileChange>| {
+        // A row's line counts are the counts of the diff it opens.
+        for change in &mut changes {
+            if let Some(diff) = diffs.get(&DiffKey::for_area(change.area, change.path.clone())) {
+                change.additions = diff.additions();
+                change.deletions = diff.deletions();
+            }
+        }
+        changes
+    };
+    let staged = counted(sample_staged_changes());
+    let unstaged = counted(sample_unstaged_changes());
+    let untracked = counted(sample_untracked_changes());
 
     let mut commits = commit_history();
     let layout = graph::layout(&mut commits);
@@ -48,9 +58,11 @@ pub fn model() -> (RepoModel, DiffMap) {
         tags: sample_tags(),
         stashes: sample_stashes(),
         remotes: sample_remotes(),
+        worktrees: Vec::new(),
+        worktree_error: None,
         graph_width: layout.lanes,
-        author_name: "ada".into(),
-        author_email: "ada@example.com".into(),
+        author_name: MIRA.0.into(),
+        author_email: MIRA.1.into(),
     };
 
     (model, diffs)
@@ -161,10 +173,10 @@ fn sample_branches() -> Vec<Branch> {
             tip: "a1b2c3d".into(),
         },
         Branch {
-            name: "feature/wgpu-pipeline".into(),
+            name: "wgpu-pipeline".into(),
             is_head: false,
             is_remote: false,
-            upstream: Some("origin/feature/wgpu-pipeline".into()),
+            upstream: Some("origin/wgpu-pipeline".into()),
             ahead: 4,
             behind: 1,
             tip: "9f8e7d6".into(),
@@ -188,7 +200,7 @@ fn sample_branches() -> Vec<Branch> {
             tip: "7d6e5f4".into(),
         },
         Branch {
-            name: "origin/feature/wgpu-pipeline".into(),
+            name: "origin/wgpu-pipeline".into(),
             is_head: false,
             is_remote: true,
             upstream: None,
@@ -204,17 +216,17 @@ fn sample_tags() -> Vec<Tag> {
         Tag {
             name: "v0.4.0".into(),
             target: "7d6e5f4".into(),
-            message: Some("Release 0.4.0 — vello migration".into()),
+            message: Some("Moves scene encoding to vello 0.9".into()),
         },
         Tag {
             name: "v0.3.2".into(),
             target: "2c3d4e5".into(),
-            message: Some("Hotfix: text shaping".into()),
+            message: Some("Fixes the text shaping advance".into()),
         },
         Tag {
             name: "v0.3.0".into(),
             target: "8a9b0c1".into(),
-            message: None,
+            message: Some("First public build".into()),
         },
     ]
 }
@@ -223,13 +235,13 @@ fn sample_stashes() -> Vec<Stash> {
     vec![
         Stash {
             index: 0,
-            message: "WIP on main: experiment with msaa".into(),
+            message: "On main: Try the MSAA resolve path".into(),
             branch: "main".into(),
         },
         Stash {
             index: 1,
-            message: "WIP on feature/wgpu-pipeline: bind group cache".into(),
-            branch: "feature/wgpu-pipeline".into(),
+            message: "On wgpu-pipeline: Bind group cache experiment".into(),
+            branch: "wgpu-pipeline".into(),
         },
     ]
 }
@@ -254,136 +266,178 @@ fn rl(name: &str, kind: RefKind) -> RefLabel {
     }
 }
 
+/// The people who wrote the sample history: name and address.
+const MIRA: (&str, &str) = ("Mira Okafor", "mira.okafor@example.com");
+const ALEX: (&str, &str) = ("Alex Rivera", "alex.rivera@example.com");
+const PRIYA: (&str, &str) = ("Priya Nair", "priya.nair@example.com");
+
+const HOUR: i64 = 3_600;
+const DAY: i64 = 24 * HOUR;
+
+/// One sample commit, `ago` seconds before `now`.
+struct Sample<'a> {
+    id: &'a str,
+    summary: &'a str,
+    body: &'a str,
+    author: (&'a str, &'a str),
+    ago: i64,
+    parents: &'a [&'a str],
+    refs: Vec<RefLabel>,
+    files: Vec<FileChange>,
+}
+
+impl Sample<'_> {
+    fn build(self, now: i64) -> Commit {
+        let time = now - self.ago;
+        Commit {
+            id: self.id.to_string(),
+            summary: self.summary.to_string(),
+            body: self.body.to_string(),
+            author_name: self.author.0.to_string(),
+            author_email: self.author.1.to_string(),
+            when: ui::format::relative(self.ago),
+            time,
+            parents: self.parents.iter().map(|p| (*p).to_string()).collect(),
+            refs: self.refs,
+            lane: 0,
+            files: self.files,
+        }
+    }
+}
+
+/// A file a commit touched.
+fn touched(path: &str, kind: ChangeKind, add: u32, del: u32) -> FileChange {
+    fc(path, ChangeArea::Staged, kind, add, del)
+}
+
+/// Newest first; `parents` reference ids, structured so the graph uses two
+/// lanes with a merge. Times are relative to the toolkit clock, so a capture
+/// (whose clock is pinned) shows the same ages on every run.
 fn commit_history() -> Vec<Commit> {
-    let mut commits = commit_history_recent();
-    commits.extend(commit_history_older());
-    commits
+    let now = ui::clock::local_now().timestamp();
+    commit_history_recent()
+        .into_iter()
+        .chain(commit_history_older())
+        .map(|sample| sample.build(now))
+        .collect()
 }
 
 /// The four most recent commits: the wgpu-pipeline merge, its two-lane
-/// history, and the shared root they both branch from (part of
-/// [`commit_history`]). Newest-first; ids are short hex-ish strings and
-/// `parents` reference ids — structured to exercise 3 graph lanes.
-fn commit_history_recent() -> Vec<Commit> {
+/// history, and the commits both lanes branch from (part of
+/// [`commit_history`]).
+fn commit_history_recent() -> Vec<Sample<'static>> {
     vec![
-        Commit {
-            id: "a1b2c3d".into(),
-            summary: "Merge branch 'feature/wgpu-pipeline'".into(),
-            body: "Bring the new wgpu render pipeline onto main.\n\nReplaces the legacy blit path with a compute-driven\nblur and a reusable bind-group cache.".into(),
-            author_name: "ada".into(),
-            author_email: "ada@example.com".into(),
-            when: "2 hr ago".into(),
-            time: 1_719_750_000,
-            parents: vec!["b2c3d4e".into(), "9f8e7d6".into()],
+        Sample {
+            id: "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678",
+            summary: "Merge branch 'wgpu-pipeline'",
+            body: "Bring the new wgpu render pipeline onto main.\n\nReplaces the legacy blit path with a compute-driven\nblur and a reusable bind-group cache.",
+            author: MIRA,
+            ago: 2 * HOUR,
+            parents: &[
+                "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091a2b",
+                "9f8e7d6c5b4a39281706f5e4d3c2b1a098765432",
+            ],
             refs: vec![rl("HEAD", RefKind::Head), rl("main", RefKind::LocalBranch)],
-            lane: 0,
             files: vec![
-                FileChange { path: "src/render/pipeline.rs".into(), old_path: None, area: ChangeArea::Staged, kind: ChangeKind::Added, additions: 58, deletions: 0 },
+                touched("src/render/pipeline.rs", ChangeKind::Added, 58, 0),
+                touched("src/render/shaders/blur.wgsl", ChangeKind::Added, 37, 0),
+                touched("src/legacy/blit.rs", ChangeKind::Deleted, 0, 41),
             ],
         },
-        Commit {
-            id: "9f8e7d6".into(),
-            summary: "Add compute blur pass".into(),
-            body: "Implements a separable gaussian blur in WGSL driven\nfrom a compute pipeline.".into(),
-            author_name: "Alex Rivera".into(),
-            author_email: "alex@example.com".into(),
-            when: "5 hr ago".into(),
-            time: 1_719_739_000,
-            parents: vec!["3a2b1c0".into()],
-            refs: vec![rl("feature/wgpu-pipeline", RefKind::LocalBranch)],
-            lane: 1,
-            files: vec![],
+        Sample {
+            id: "9f8e7d6c5b4a39281706f5e4d3c2b1a098765432",
+            summary: "Add a compute blur pass",
+            body: "Implements a separable gaussian blur in WGSL, driven\nfrom a compute pipeline.",
+            author: ALEX,
+            ago: 5 * HOUR,
+            parents: &["3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b"],
+            refs: vec![rl("wgpu-pipeline", RefKind::LocalBranch)],
+            files: vec![
+                touched("src/render/shaders/blur.wgsl", ChangeKind::Added, 37, 0),
+                touched("src/render/scene.rs", ChangeKind::Modified, 12, 2),
+            ],
         },
-        Commit {
-            id: "b2c3d4e".into(),
-            summary: "Cache bind groups per material".into(),
-            body: String::new(),
-            author_name: "ada".into(),
-            author_email: "ada@example.com".into(),
-            when: "yesterday".into(),
-            time: 1_719_660_000,
-            parents: vec!["7d6e5f4".into()],
+        Sample {
+            id: "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091a2b",
+            summary: "Cache bind groups per material",
+            body: "",
+            author: MIRA,
+            ago: DAY + 3 * HOUR,
+            parents: &["7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e"],
             refs: vec![],
-            lane: 0,
-            files: vec![],
+            files: vec![touched(
+                "src/render/material.rs",
+                ChangeKind::Modified,
+                24,
+                9,
+            )],
         },
-        Commit {
-            id: "3a2b1c0".into(),
-            summary: "Sketch the pipeline builder".into(),
-            body: String::new(),
-            author_name: "Alex Rivera".into(),
-            author_email: "alex@example.com".into(),
-            when: "yesterday".into(),
-            time: 1_719_655_000,
-            parents: vec!["7d6e5f4".into()],
-            refs: vec![rl("origin/feature/wgpu-pipeline", RefKind::RemoteBranch)],
-            lane: 1,
-            files: vec![],
+        Sample {
+            id: "3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b",
+            summary: "Sketch the pipeline builder",
+            body: "",
+            author: ALEX,
+            ago: DAY + 5 * HOUR,
+            parents: &["7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e"],
+            refs: vec![rl("origin/wgpu-pipeline", RefKind::RemoteBranch)],
+            files: vec![touched("src/render/pipeline.rs", ChangeKind::Added, 31, 0)],
         },
     ]
 }
 
-/// The four older commits: the 0.4.0 release, the scene-leak fix branch,
-/// the text-shaping hotfix, and the initial skeleton (part of
-/// [`commit_history`]).
-fn commit_history_older() -> Vec<Commit> {
+/// The four older commits: the 0.4.0 release, the scene-leak fix, the
+/// text-shaping hotfix and the first commit (part of [`commit_history`]).
+fn commit_history_older() -> Vec<Sample<'static>> {
     vec![
-        Commit {
-            id: "7d6e5f4".into(),
-            summary: "Release 0.4.0 — vello migration".into(),
-            body: "Cuts over scene encoding to vello 0.9.".into(),
-            author_name: "ada".into(),
-            author_email: "ada@example.com".into(),
-            when: "2 days ago".into(),
-            time: 1_719_570_000,
-            parents: vec!["5c4b3a2".into()],
+        Sample {
+            id: "7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e",
+            summary: "Release 0.4.0",
+            body: "Cuts scene encoding over to vello 0.9.",
+            author: MIRA,
+            ago: 2 * DAY + 4 * HOUR,
+            parents: &["5c4b3a2f1e0d9c8b7a6f5e4d3c2b1a0f9e8d7c6b"],
             refs: vec![
                 rl("origin/main", RefKind::RemoteBranch),
                 rl("v0.4.0", RefKind::Tag),
             ],
-            lane: 0,
-            files: vec![],
+            files: vec![
+                touched("Cargo.toml", ChangeKind::Modified, 1, 1),
+                touched("CHANGELOG.md", ChangeKind::Modified, 14, 0),
+            ],
         },
-        Commit {
-            id: "5c4b3a2".into(),
-            summary: "Fix scene memory leak on resize".into(),
-            body:
-                "The encoded scene wasn't reset between frames when the\nsurface was reconfigured."
-                    .into(),
-            author_name: "Priya N.".into(),
-            author_email: "priya@example.com".into(),
-            when: "3 days ago".into(),
-            time: 1_719_480_000,
-            parents: vec!["2c3d4e5".into()],
+        Sample {
+            id: "5c4b3a2f1e0d9c8b7a6f5e4d3c2b1a0f9e8d7c6b",
+            summary: "Fix a scene memory leak on resize",
+            body: "The encoded scene wasn't reset between frames when the\nsurface was reconfigured.",
+            author: PRIYA,
+            ago: 3 * DAY + 2 * HOUR,
+            parents: &["2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d"],
             refs: vec![rl("fix/scene-leak", RefKind::LocalBranch)],
-            lane: 0,
-            files: vec![],
+            files: vec![touched("src/render/scene.rs", ChangeKind::Modified, 3, 1)],
         },
-        Commit {
-            id: "2c3d4e5".into(),
-            summary: "Hotfix: text shaping advance".into(),
-            body: String::new(),
-            author_name: "Priya N.".into(),
-            author_email: "priya@example.com".into(),
-            when: "4 days ago".into(),
-            time: 1_719_400_000,
-            parents: vec!["8a9b0c1".into()],
+        Sample {
+            id: "2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d",
+            summary: "Correct the text shaping advance",
+            body: "",
+            author: PRIYA,
+            ago: 4 * DAY + 6 * HOUR,
+            parents: &["8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b"],
             refs: vec![rl("v0.3.2", RefKind::Tag)],
-            lane: 0,
-            files: vec![],
+            files: vec![touched("src/text/shape.rs", ChangeKind::Modified, 6, 4)],
         },
-        Commit {
-            id: "8a9b0c1".into(),
-            summary: "Initial renderer skeleton".into(),
-            body: "First commit. Window, surface, clear color.".into(),
-            author_name: "ada".into(),
-            author_email: "ada@example.com".into(),
-            when: "1 week ago".into(),
-            time: 1_719_000_000,
-            parents: vec![],
+        Sample {
+            id: "8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b",
+            summary: "Create the renderer skeleton",
+            body: "Opens a window, configures the surface and clears it.",
+            author: MIRA,
+            ago: 8 * DAY,
+            parents: &[],
             refs: vec![rl("v0.3.0", RefKind::Tag)],
-            lane: 0,
-            files: vec![],
+            files: vec![
+                touched("Cargo.toml", ChangeKind::Added, 12, 0),
+                touched("src/main.rs", ChangeKind::Added, 48, 0),
+                touched("src/app.rs", ChangeKind::Added, 64, 0),
+            ],
         },
     ]
 }

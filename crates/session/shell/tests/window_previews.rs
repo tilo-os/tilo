@@ -15,14 +15,14 @@ use std::time::Instant;
 use shell::compositor::foreign::{self, store};
 use shell::compositor::frame::FrameBuilder;
 use shell::compositor::tab_binding;
-use shell::compositor::window_previews::WindowPreviewRenderer;
+use shell::compositor::window_previews::{PreviewBackend, WindowPreviewRenderer};
 use shell::shell::state::{TileContent, WorkspaceTree};
 use shell::shell::window_previews::{
     MAX_PREVIEW_HEIGHT, MAX_PREVIEW_WIDTH, MAX_PREVIEWS, REFRESH_INTERVAL, RENDERS_PER_REFRESH,
 };
 use tilo_desktop::window_switcher::WindowThumbnails as _;
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 const W: u32 = 1600;
 const H: u32 = 900;
@@ -105,21 +105,8 @@ fn open_overview(fb: &mut FrameBuilder, open: bool) {
 }
 
 fn key_event(key: Key, state: ElementState) -> WindowEvent {
-    // SAFETY: `KeyEvent` has a platform-private field and no public
-    // constructor; every field a handler reads is set below.
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = key;
-    event.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = KeyLocation::Standard;
-    event.state = state;
-    event.repeat = false;
-    event.text = None;
-    WindowEvent::KeyboardInput {
-        // SAFETY: an opaque id no handler inspects.
-        device_id: unsafe { std::mem::zeroed() },
-        event,
-        is_synthetic: false,
-    }
+    let event = ui::synthetic_input::key_event(key, None, state);
+    ui::synthetic_input::keyboard_input(event)
 }
 
 /// Press Tab with Alt held, and keep Alt down: the switcher opens.
@@ -135,7 +122,7 @@ fn hold_alt_tab(fb: &mut FrameBuilder) {
         let _ = fb.dispatch_event(
             &key_event(key, state),
             &alt,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &mut focus,
         );
@@ -179,6 +166,8 @@ fn a_client_window_gets_a_downscaled_live_preview_at_most_ten_times_a_second() {
         first.rendered >= 1,
         "the first round renders the client: {first:?}"
     );
+    // The render thread hands it back; the next round collects it.
+    renderer.settle(&mut fb);
     let previews = fb.host().window_previews();
     let (width, height) = previews.size(tab).expect("the client has a preview");
     // 1600×1000 is 16:10, scaled to fit the preview bound.
@@ -205,6 +194,7 @@ fn a_client_window_gets_a_downscaled_live_preview_at_most_ten_times_a_second() {
     store().publish_rgba(surface, &solid(800, 1000, (0x20, 0xB0, 0x40)), 800, 1000);
     let later = start + REFRESH_INTERVAL;
     let _ = renderer.refresh(&mut fb, later);
+    renderer.settle(&mut fb);
     let previews = fb.host().window_previews();
     let (width, height) = previews.size(tab).expect("still previewed");
     assert_eq!((width, height), (176, 220), "a tall window keeps its shape");
@@ -216,12 +206,15 @@ fn a_client_window_gets_a_downscaled_live_preview_at_most_ten_times_a_second() {
 
     // An unchanged buffer is not rendered again.
     let stamp = fb.host().window_preview_stamp(tab);
-    let _ = renderer.refresh(&mut fb, later + REFRESH_INTERVAL);
+    let unchanged = renderer.refresh(&mut fb, later + REFRESH_INTERVAL);
+    assert_eq!(unchanged.rendered, 0, "{unchanged:?}");
+    renderer.settle(&mut fb);
     assert_eq!(fb.host().window_preview_stamp(tab), stamp);
 
     // Closing the overview drops every preview and the GPU target.
     open_overview(&mut fb, false);
     let _ = renderer.refresh(&mut fb, later + REFRESH_INTERVAL * 2);
+    renderer.settle(&mut fb);
     let previews = fb.host().window_previews();
     let (emptied, memory_bytes) = (previews.is_empty(), previews.memory_bytes());
     drop(fb);
@@ -249,6 +242,7 @@ fn a_password_manager_never_gets_a_preview_and_the_switcher_says_so() {
     let start = Instant::now();
     for round in 0..6_u32 {
         let _ = renderer.refresh(&mut fb, start + REFRESH_INTERVAL * round);
+        renderer.settle(&mut fb);
     }
     let previews = fb.host().window_previews();
     assert!(previews.has(editor_tab), "an ordinary window is previewed");
@@ -302,6 +296,7 @@ fn previews_stay_within_their_memory_bound() {
             report.rendered <= RENDERS_PER_REFRESH,
             "a round renders a bounded number of windows: {report:?}"
         );
+        renderer.settle(&mut fb);
     }
     let previews = fb.host().window_previews();
     let (count, memory_bytes) = (previews.len(), previews.memory_bytes());
@@ -320,4 +315,79 @@ fn previews_stay_within_their_memory_bound() {
     for (surface, _) in &clients {
         store().forget(*surface);
     }
+}
+
+/// A backend whose renders wait until the test lets them go: what a busy or
+/// software GPU looks like to the render thread.
+struct Gated {
+    gate: std::sync::mpsc::Receiver<()>,
+    held: bool,
+}
+
+impl PreviewBackend for Gated {
+    fn render(&mut self, _scene: &vello::Scene, (width, height): (u32, u32)) -> Option<Vec<u8>> {
+        self.gate.recv().ok()?;
+        self.held = true;
+        let bytes = usize::try_from(width.saturating_mul(height).saturating_mul(4)).unwrap_or(0);
+        Some(vec![0x40; bytes])
+    }
+    fn release(&mut self) {
+        self.held = false;
+    }
+    fn holds_target(&self) -> bool {
+        self.held
+    }
+    fn unavailable(&self) -> bool {
+        false
+    }
+}
+
+/// The compositor thread hands a preview to the render thread and goes on:
+/// it never waits for the GPU to render or read it back. While the render is
+/// held up, rounds return at once, nothing is rendered twice, and the frame
+/// loop keeps the previous picture; once it finishes, a round collects it.
+#[test]
+fn a_preview_render_never_blocks_the_frame_loop() {
+    let surface = 0x9E_2001;
+    let mut fb = desktop(&[(surface, "org.example.slow")]);
+    let tab = tab_of(&fb, surface);
+    store().publish_rgba(surface, &solid(640, 400, (0x10, 0x20, 0x30)), 640, 400);
+    let (release, gate) = std::sync::mpsc::channel();
+    let mut renderer =
+        WindowPreviewRenderer::with_backend(move || Box::new(Gated { gate, held: false }));
+    open_overview(&mut fb, true);
+    let start = Instant::now();
+
+    // The render is held up for as long as the test likes; refresh returns.
+    // (The demo desktop's shell windows are previewed beside the client.)
+    let queued = renderer.refresh(&mut fb, start);
+    assert!(queued.rendered >= 1, "{queued:?}");
+    assert_eq!(renderer.in_flight(), queued.rendered);
+    assert!(
+        fb.host().window_previews().is_empty(),
+        "nothing rendered yet"
+    );
+    // Later rounds while those are still rendering neither wait nor ask again
+    // for a window already on its way.
+    for round in 1..4_u32 {
+        let report = renderer.refresh(&mut fb, start + REFRESH_INTERVAL * round);
+        assert_eq!(report.collected, 0, "{report:?}");
+        assert!(renderer.in_flight() >= queued.rendered);
+    }
+    assert!(!fb.host().window_previews().has(tab), "still not rendered");
+
+    // Let every render through, and collect them.
+    for _ in 0..64 {
+        release
+            .send(())
+            .expect("the render thread waits for the gate");
+    }
+    renderer.settle(&mut fb);
+    let _ = renderer.refresh(&mut fb, start + REFRESH_INTERVAL * 5);
+    let previews = fb.host().window_previews();
+    assert!(previews.has(tab), "the finished preview is collected");
+    let stamp = fb.host().window_preview_stamp(tab);
+    assert_eq!(stamp, Some(store().frame_seq(surface)));
+    drop(fb);
+    store().forget(surface);
 }

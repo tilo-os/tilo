@@ -20,32 +20,20 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
 use std::time::Duration;
 use tilo_automerge::ApplyIncoming;
+use tilo_automerge::ReadTyped as _;
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ROOT};
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay_on};
-
-fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
-    match doc.get(ROOT, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Str(v) => Some(v.to_string()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
 
 fn pending_count(dir: &std::path::Path) -> usize {
     std::fs::read_dir(dir).map_or(0, |rd| {
@@ -244,7 +232,7 @@ async fn never_simultaneously_online_devices_converge_across_host_restart() {
     // ---- B connects for the very first time, to the restarted host. ----
     let mut doc_b = catch_up_after_restart(addr2, &user, &b, WS).await;
 
-    assert_eq!(read_str(&doc_b, "note").as_deref(), Some("durable"));
+    assert_eq!(doc_b.str_at(&ROOT, "note").as_deref(), Some("durable"));
     assert_eq!(
         doc_a.get_heads(),
         doc_b.get_heads(),

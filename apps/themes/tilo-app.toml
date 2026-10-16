@@ -23,7 +23,10 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["settings"]
+optional = ["settings", "clipboard"]
+
+[resources]
+kinds = ["themes.studio"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

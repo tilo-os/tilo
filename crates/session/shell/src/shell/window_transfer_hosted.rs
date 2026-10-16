@@ -89,7 +89,7 @@ fn remove_card(st: &mut ChromeState, tab: TabId) {
         let mut tree = st.tree_mut();
         let removed = crate::shell::tab_binding::remove_tab(&mut tree, tab);
         if removed {
-            tree.flush_to_disk();
+            tree.queue_save();
         }
         removed
     };
@@ -316,16 +316,7 @@ fn accepted(
         return None;
     }
     set_note(st, tab, crate::shell::peer_windows::OPENING.to_string());
-    if let Err(reason) = launch(st, transfers, plan, tab, carried.instance, resume) {
-        roll_back(st, plan, Some(tab), &carried, &reason);
-        return None;
-    }
-    Some(Phase::Opening {
-        mode,
-        tab,
-        carried,
-        since: Instant::now(),
-    })
+    start(st, transfers, plan, mode, tab, carried, resume)
 }
 
 /// Whether the source changed after the transfer read it.
@@ -352,10 +343,7 @@ pub(super) fn kept_as_copy(st: &mut ChromeState, plan: &Plan, carried: &Carried)
         &plan.app_id,
         &plan.title,
         &carried.target,
-        t_args(
-            "window-transfer-receipt-copied",
-            &[("window", window.into()), ("from", from.into())],
-        ),
+        transferred(COPY_WINDOW_IN, &[("window", window), ("from", from)]),
     );
     st.push_warning_notification(
         t_args(
@@ -370,15 +358,15 @@ pub(super) fn kept_as_copy(st: &mut ChromeState, plan: &Plan, carried: &Carried)
 }
 
 /// The source as its old instance left it: up to its retirement stamp.
-fn read_last(
+pub(super) fn read_last(
     transfers: &WindowTransfers,
     plan: &Plan,
     carried: &Carried,
 ) -> Result<AutoCommit, String> {
     let room = plan.source.room.to_string();
     if !plan.source.hosted {
-        let source = NativeProfile::open(&carried.source_root, Some(&room))
-            .map_err(|_| t("window-transfer-failed-storage"))?;
+        let source =
+            source_profile(plan, carried).ok_or_else(|| t("window-transfer-failed-storage"))?;
         let read = match &carried.retired_at {
             Some(heads) => transfer::read_until(
                 source.store(),
@@ -417,59 +405,7 @@ fn read_last(
     Ok(doc)
 }
 
-/// Once the old instance has let go, bring over what it wrote after the
-/// transfer read it where that can be merged, and finish the move.
-pub(super) fn release(
-    st: &mut ChromeState,
-    transfers: &WindowTransfers,
-    plan: &Plan,
-    tab: TabId,
-    carried: Box<Carried>,
-    source_lost: bool,
-) -> Option<Phase> {
-    let released = if plan.source.hosted {
-        // Its writes go through the room's owner; it has let go once its
-        // window is gone.
-        source_lost || plan.surface.is_none() || tab_tile(st, plan.tab).is_none()
-    } else {
-        NativeProfile::open(&carried.source_root, Some(&plan.source.room.to_string()))
-            .ok()
-            .and_then(|source| {
-                transfer::writer_released(
-                    source.store(),
-                    &plan.app_id,
-                    source.workspace_id(),
-                    &carried.origin,
-                )
-                .ok()
-            })
-            .unwrap_or(true)
-    };
-    if !released {
-        return Some(Phase::Releasing { tab, carried });
-    }
-    let last = match read_last(transfers, plan, &carried) {
-        Ok(last) => last,
-        Err(reason) => {
-            failed(st, plan, &reason);
-            return None;
-        }
-    };
-    if transfer::changes_since(&last, &carried.known) == 0 {
-        finish_move(st, plan, &carried, false, source_lost);
-        return None;
-    }
-    if plan.destination.hosted {
-        // Only its owner's route writes a governed record; what the old
-        // window wrote in its last moments stays in the source's history.
-        finish_move(st, plan, &carried, false, source_lost);
-        late_edits_stay(st, plan);
-        return None;
-    }
-    merge_late(st, plan, tab, carried, last, source_lost)
-}
-
-fn late_edits_stay(st: &mut ChromeState, plan: &Plan) {
+pub(super) fn late_edits_stay(st: &mut ChromeState, plan: &Plan) {
     st.push_warning_notification(
         t_args(
             "window-transfer-late-edits-stay-title",

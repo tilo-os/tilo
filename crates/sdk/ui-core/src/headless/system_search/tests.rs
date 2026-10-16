@@ -1,4 +1,4 @@
-use super::super::{Key, NamedKey, State, key_event};
+use super::super::{Key, NamedKey, State, key_input};
 use super::*;
 use crate::search::system::SearchScope;
 
@@ -78,20 +78,16 @@ fn first_row(f: &FrameHarness) -> Rect {
         .unwrap()
 }
 fn move_pointer(f: &mut FrameHarness, x: f64, y: f64) {
-    f.send_host_event(&WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    });
+    f.send_host_event(&crate::synthetic_input::cursor_moved(x, y));
 }
 fn press(f: &mut FrameHarness, button: MouseButton) {
-    f.send_host_event(&WindowEvent::MouseInput {
-        device_id: winit::event::DeviceId::dummy(),
-        state: ElementState::Pressed,
+    f.send_host_event(&crate::synthetic_input::mouse_input(
+        ElementState::Pressed,
         button,
-    });
+    ));
 }
 fn enter(f: &mut FrameHarness) {
-    f.send_host_event(&key_event(
+    f.send_host_event(&key_input(
         &Key::Named(NamedKey::Enter),
         ElementState::Pressed,
     ));
@@ -123,7 +119,7 @@ fn global_search_owns_ime_and_restores_document_focus() {
     f.send_host_event(&WindowEvent::Ime(winit::event::Ime::Commit("Trip".into())));
     assert_eq!(f.global_search_query(), Some("Trip"));
     assert!(!f.inspection_json().unwrap().contains("Insert table"));
-    f.send_host_event(&key_event(
+    f.send_host_event(&key_input(
         &Key::Named(NamedKey::Escape),
         ElementState::Pressed,
     ));
@@ -546,11 +542,8 @@ fn mounted_provider_uses_exact_admitted_instance_and_current_permissions() {
     sources.tabs[0].instance_id = 11;
     f.replace_global_search_data(sources);
     assert!(!f.system_search.rows.is_empty());
-    *permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(None, "outsider"),
-        vec![],
-    )
-    .at_unix_time(100);
+    *permissions.borrow_mut() =
+        crate::permissions::PermissionContext::stranger("outsider").at_unix_time(100);
     // The painted hit is revalidated against current component authority at activation.
     enter(&mut f);
     assert!(f.take_global_search_intent().is_none());
@@ -596,11 +589,8 @@ fn layout_refreshes_content_without_retargeting_or_losing_keyboard_selection() {
     );
     f.open_global_search_all("body-only-query").unwrap();
     let old = f.a11y_node_named("Probe").unwrap();
-    *permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
-        crate::permissions::Actor::person(None, "outsider"),
-        vec![],
-    )
-    .at_unix_time(100);
+    *permissions.borrow_mut() =
+        crate::permissions::PermissionContext::stranger("outsider").at_unix_time(100);
     f.relayout();
     assert!(
         f.a11y_node_named("Probe").is_none(),
@@ -743,11 +733,10 @@ fn search_captures_host_and_direct_pointer_before_history_observation() {
             } else {
                 move_pointer(&mut f, history_button.x, history_button.y);
                 for state in [ElementState::Pressed, ElementState::Released] {
-                    f.send_host_event(&WindowEvent::MouseInput {
-                        device_id: winit::event::DeviceId::dummy(),
+                    f.send_host_event(&crate::synthetic_input::mouse_input(
                         state,
-                        button: MouseButton::Left,
-                    });
+                        MouseButton::Left,
+                    ));
                 }
             }
             assert!(

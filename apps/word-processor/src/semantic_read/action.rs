@@ -7,7 +7,8 @@ use tilo_actions::{
     ResultSpec,
 };
 use ui::semantic_document_read::{
-    MAX_REQUEST_BYTES, ReadPage, RegisteredSemanticReader, SemanticReadError,
+    ReadPage, RegisteredSemanticReader, SemanticReadError, decode_cursor, decode_request,
+    encode_cursor,
 };
 
 pub const OPERATION_TYPE: &str = "word-processor.read";
@@ -41,24 +42,15 @@ const DEFAULT_PAGE_SIZE: u8 = 64;
 
 /// Shape validation only; no supplied heads or cursor confer authority.
 fn validate_request(resource: &Resource, payload: &[u8]) -> Result<(), SemanticReadError> {
-    if payload.len() > MAX_REQUEST_BYTES {
-        return Err(SemanticReadError::Limit);
-    }
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
-    if resource.kind != "word_processor.document"
-        || resource.id.as_str() != "word-processor.document"
+    let request: Request = decode_request(payload)?;
+    let kind = <crate::model::Document as ui::tilo_resource::Resource>::KIND;
+    if resource.kind != kind
+        || resource.id.as_str() != kind
         || !(1..=64).contains(&request.page_size)
     {
         return Err(SemanticReadError::InvalidRequest);
     }
-    if let Some(cursor) = request.cursor {
-        if cursor.len() > 1024 {
-            return Err(SemanticReadError::Limit);
-        }
-        let _: super::Cursor =
-            serde_json::from_str(&cursor).map_err(|_| SemanticReadError::InvalidRequest)?;
-    }
+    decode_cursor::<super::Cursor>(request.cursor.as_deref())?;
     Ok(())
 }
 
@@ -121,7 +113,7 @@ pub fn spec() -> ActionSpec {
     crate::actions::continuation::pure(
         spec,
         "qualified-read-parameter-protocol.v1",
-        vec![b"word_processor.document".to_vec()],
+        vec![b"word-processor.document".to_vec()],
     )
 }
 
@@ -131,26 +123,14 @@ fn project(
     heads: &[automerge::ChangeHash],
     payload: &[u8],
 ) -> Result<ReadPage, SemanticReadError> {
-    let request: Request =
-        serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)?;
-    let cursor = request
-        .cursor
-        .as_deref()
-        .map(serde_json::from_str::<super::Cursor>)
-        .transpose()
-        .map_err(|_| SemanticReadError::InvalidRequest)?;
-    let limits = qdoc::semantic_read::Limits {
+    let request: Request = decode_request(payload)?;
+    let cursor: Option<super::Cursor> = decode_cursor(request.cursor.as_deref())?;
+    let limits = tilo_doc::semantic_read::Limits {
         items: usize::from(request.page_size),
-        ..qdoc::semantic_read::Limits::default()
+        ..tilo_doc::semantic_read::Limits::default()
     };
-    let page = super::read_text(document, heads, cursor.as_ref(), limits)
-        .map_err(|error| super::read_error(&error))?;
-    let next_cursor = page
-        .next
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()
-        .map_err(|_| SemanticReadError::Limit)?;
+    let page = super::read_text(document, heads, cursor.as_ref(), limits)?;
+    let next_cursor = encode_cursor(page.next.as_ref())?;
     let content = match request.format {
         Format::Markdown => {
             serde_json::json!({ "markdown": super::markdown::render(&page.segments) })
@@ -179,17 +159,7 @@ pub fn result_schema() -> &'static serde_json::Value {
             "markdown":{"type":"string"}
         }});
         let content = serde_json::json!({"oneOf":[markdown, segments]});
-        serde_json::json!({"type":"object","required":["version","record","basis","content","nextCursor"],"additionalProperties":false,"properties":{
-            "version":{"type":"integer","enum":[1]},
-            "record":{"type":"object","required":["roomId","appId","recordId"],"additionalProperties":false,"properties":{
-                "roomId":{"type":["string","null"],"format":"uuid"},"appId":{"type":"string","minLength":1,"maxLength":256},"recordId":{"type":"string","maxLength":512}
-            }},
-            "basis":{"type":"object","required":["heads"],"additionalProperties":false,"properties":{
-                "heads":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","pattern":"^[0-9a-f]{64}$"}}
-            }},
-            "content":content,
-            "nextCursor":{"type":["string","null"],"maxLength":1024}
-        }})
+        ui::semantic_document_read::result_schema(content, true)
     })
 }
 

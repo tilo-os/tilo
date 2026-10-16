@@ -1,10 +1,5 @@
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard"
 )]
@@ -43,6 +38,7 @@ fn tree() -> DesktopTree {
             active_tab: 9_007_199_254_741_001,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         }],
     }];
     DesktopTree {
@@ -175,8 +171,8 @@ struct OverlayApp {
     draws: std::rc::Rc<std::cell::Cell<usize>>,
 }
 impl ui::widget::Widget for OverlayApp {
-    fn next_wake_deadline(&self) -> Option<ui::clock::Instant> {
-        self.capture.then(ui::clock::Instant::now)
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.capture.then(ui::time::Instant::now)
     }
     fn modal_capture(&self) -> Option<vello::kurbo::Rect> {
         self.capture
@@ -206,15 +202,6 @@ impl ui::widget::Widget for OverlayApp {
     ) -> taffy::NodeId {
         self.leaf.build_layout(tree, theme, map)
     }
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut ui::TextRenderer,
-        _: &ui::Theme,
-        _: &ui::presence::PresenceCtx,
-    ) {
-    }
     fn draw_overlay(
         &mut self,
         _: &mut vello::Scene,
@@ -235,9 +222,6 @@ impl ui::widget::AppWidget for OverlayApp {
     }
     fn app_icon(&self) -> ui::widget::IconDescriptor {
         ui::widget::IconDescriptor::Named("overlay".into())
-    }
-    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
-        None
     }
 }
 struct Overlays(std::collections::HashMap<u64, std::rc::Rc<std::cell::Cell<usize>>>);
@@ -300,7 +284,7 @@ fn replacing_the_room_requires_fresh_component_contexts() {
     let records = RecordStore::in_memory();
     let mut surface =
         DesktopSurface::build(&tree, &records, &mut Unavailable, SurfaceChrome::default());
-    tree.workspaces[0].room = tilo_desktop_model::RoomId::new();
+    tree.workspaces[0].set_room(tilo_desktop_model::RoomId::new());
     assert_eq!(
         surface.reconcile(&tree, &records, &mut Unavailable),
         tilo_desktop::composition::ReconcileOutcome::RebuildRequired
@@ -409,7 +393,10 @@ fn flush_work_area_is_reachable_and_maximized_groups_stay_maximized() {
         &RecordStore::in_memory(),
         &mut Unavailable,
         SurfaceChrome {
-            work_area: tilo_desktop::composition::WorkArea::Flush { top: 12.0 },
+            work_area: tilo_desktop::composition::WorkArea::Flush {
+                top: 12.0,
+                bottom: 12.0,
+            },
             ..SurfaceChrome::default()
         },
     );

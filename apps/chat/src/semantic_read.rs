@@ -1,8 +1,10 @@
-//! Immutable message pages over `ChatDoc` storage. No action publication or caller authority is minted here.
+//! Immutable message pages over the chat record's storage: a channel's messages in the
+//! order of the record's message collection. No action publication or caller authority is
+//! minted here.
 pub mod action;
 use automerge::AutoCommit;
-use qdoc::semantic_read::{Basis, Limits, ReadError, TextPosition};
 use serde::{Deserialize, Serialize};
+use tilo_doc::semantic_read::{Basis, Limits, ReadError, TextPosition};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cursor {
@@ -30,11 +32,11 @@ pub struct Page {
     pub next: Option<Cursor>,
 }
 use automerge::{ObjType, ScalarValueRef};
-use qdoc::semantic_read::{
+use std::ops::ControlFlow;
+use tilo_doc::semantic_read::{
     json_len,
     source::{Source, Value},
 };
-use std::ops::ControlFlow;
 /// Read only the selected channel's canonical message list. A page retains at most the requested
 /// messages plus one lookahead; text is streamed element by element.
 ///
@@ -83,32 +85,44 @@ fn read_source(
     source
         .object(&channels, channel, ObjType::Map)?
         .ok_or(ReadError::Malformed)?;
-    let list = match source.object(&source.root(), "messages", ObjType::Map)? {
-        Some(messages) => source.object(&messages, channel, ObjType::List)?,
-        None => None,
-    };
+    // The record keeps every channel's messages in one collection, each
+    // item `{ k: order key, v: message }` under its id: this channel's, in
+    // collection order.
+    let mut rows = Vec::new();
+    if let Some(messages) = source.object(&source.root(), "messages", ObjType::Map)? {
+        let mut items = Vec::new();
+        source.map(&messages, &work, |id, value| {
+            if let Some(item) = value.object(ObjType::Map) {
+                items.push((id.to_owned(), item));
+            }
+            Ok(ControlFlow::Continue(()))
+        })?;
+        for (id, item) in items {
+            let Some(message) = source.object(&item, "v", ObjType::Map)? else {
+                continue;
+            };
+            if source.string(&message, "channel", 128)? != channel {
+                continue;
+            }
+            rows.push((source.string(&item, "k", 256)?, id, message));
+        }
+    }
+    rows.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
     let mut candidates = Vec::with_capacity(limits.items + 1);
     let mut cursor_found = cursor.is_none();
-    if let Some(list) = list {
-        source.list(&list, &work, |item| {
-            let object = item.value.object(ObjType::Map);
-            if let Some(cursor) = cursor {
-                if item.index == cursor.index {
-                    cursor_found = object.is_some();
-                }
-                if item.index < cursor.index || (item.index == cursor.index && cursor.finished) {
-                    return Ok(ControlFlow::Continue(()));
-                }
+    for (index, (_, id, message)) in rows.into_iter().enumerate() {
+        if let Some(cursor) = cursor {
+            if index == cursor.index {
+                cursor_found = true;
             }
-            if let Some(object) = object {
-                candidates.push((item.index, object));
+            if index < cursor.index || (index == cursor.index && cursor.finished) {
+                continue;
             }
-            Ok(if candidates.len() == limits.items + 1 {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            })
-        })?;
+        }
+        candidates.push((index, (id, message)));
+        if candidates.len() == limits.items + 1 {
+            break;
+        }
     }
     if !cursor_found {
         return Err(ReadError::InvalidCursor);
@@ -119,7 +133,7 @@ fn read_source(
         messages: Vec::with_capacity(limits.items),
         next: None,
     };
-    for (index, (row, message)) in candidates.iter().take(limits.items).enumerate() {
+    for (index, (row, (id, message))) in candidates.iter().take(limits.items).enumerate() {
         let position = cursor
             .filter(|c| c.index == *row && !c.finished)
             .map(|c| c.position)
@@ -146,7 +160,7 @@ fn read_source(
             Ok(())
         })?;
         page.messages.push(Message {
-            id: source.string(message, "id", 128)?,
+            id: id.clone(),
             author: source.string(message, "author", 256)?,
             ts,
             parent: source.string(message, "parent", 128)?,

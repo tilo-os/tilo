@@ -83,6 +83,13 @@ pub enum PointerSpace {
 pub const DIGEST_KEY_FIELD: &str = "@scope-digest";
 
 impl PresenceKey {
+    /// The key of the widget at `path`, or `None` for one without a presence path.
+    pub fn widget(path: &[PathSegment]) -> Option<Self> {
+        (!path.is_empty()).then(|| Self::Widget {
+            path: path.to_vec(),
+        })
+    }
+
     /// 16-byte digest of this key's canonical (postcard) encoding. Used where
     /// a scope does not fit a bounded carrier, e.g. the 64-byte LIVE_V1
     /// anchor, whose Writer keys can name 130-byte block ids.
@@ -321,8 +328,7 @@ mod view_key_tests {
         {
             let room = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_WORKSPACE_ID", room)
-                .remove("QUICK_CLUSTER_ID");
+            env.set("TILO_WORKSPACE_ID", room);
             assert_eq!(
                 PresenceKey::for_local_workspace(),
                 Some(PresenceKey::Workspace {
@@ -339,7 +345,7 @@ mod view_key_tests {
         // The nil uuid addresses nobody, so no workspace means no scope.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("TILO_WORKSPACE_ID").remove("QUICK_CLUSTER_ID");
+            env.remove("TILO_WORKSPACE_ID");
             assert!(crate::collaboration::local_cluster_id().is_nil());
             assert_eq!(PresenceKey::for_local_workspace(), None);
         }
@@ -349,7 +355,7 @@ mod view_key_tests {
         // literally would put every such app in one room.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("TILO_WORKSPACE_ID", "").remove("QUICK_CLUSTER_ID");
+            env.set("TILO_WORKSPACE_ID", "");
             assert_eq!(PresenceKey::for_local_workspace(), None);
         }
     }

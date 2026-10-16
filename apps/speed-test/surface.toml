@@ -1,0 +1,34 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "speed-test.results"
+label = "Internet speed test"
+version = 1
+fields = [
+  { path = "results", type = "Collection<Measurement>", readonly = true, stored = "collection" },
+  { path = "results.*.at_ms", type = "i64" },
+  { path = "results.*.ping", type = "f64" },
+  { path = "results.*.jitter", type = "f64" },
+  { path = "results.*.download", type = "f64" },
+  { path = "results.*.upload", type = "f64" },
+  { path = "results.*.server", type = "String" },
+  { path = "results.*.device", type = "String" },
+]
+
+[[resources.verbs]]
+id = "record"
+kind = "undoable"
+params = [
+  { name = "ping", required = true, schema = { type = "number" } },
+  { name = "jitter", required = true, schema = { type = "number" } },
+  { name = "download", required = true, schema = { type = "number" } },
+  { name = "upload", required = true, schema = { type = "number" } },
+  { name = "server", required = true, schema = { type = "string" } },
+  { name = "device", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "clear"
+destructive = true
+kind = "undoable"
+

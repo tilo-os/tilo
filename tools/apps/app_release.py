@@ -17,6 +17,7 @@ ROOT = TOOLS.parent
 if str(TOOLS) not in sys.path:
     sys.path.append(str(TOOLS))
 
+from ci import runner_labels
 from ci import workspace_graph as ci_select
 
 
@@ -28,12 +29,14 @@ BINARY_INPUTS = {
     "dist/apps/app-collections.toml",
     "tools/apps/app_package_isa.py",
     "tools/ci/rustc-thin-app-wrapper.sh",
+    "tools/ci/runtime-dylib-lazy-link.py",
     "os/scripts/build-thin-apps.sh",
     "os/Containerfile.builder",
     "os/external-assets/github-assets.tsv",
     "os/dev/cache-github-assets.sh",
     "tools/ci/check-build-env.sh",
     "tools/ci/resolve_builder.py",
+    "tools/ci/images.toml",
     "tools/ci/python.py",
     "tools/ci/sccache.sh",
     ".forgejo/actions/restore-cargo-downloads/action.yml",
@@ -43,6 +46,8 @@ PACKAGING_INPUTS = {
     "dist/apps/assemble-collection.sh",
     "tools/apps/assemble_app_collection.py",
     "os/scripts/bake-runtime-bundle.sh",
+    "os/scripts/collect-runtime-dependencies.py",
+    "os/scripts/stamp-runtime.sh",
     "tools/assemble_verified_apps.py",
     "tools/app_packaging_plan.py",
 }
@@ -51,11 +56,13 @@ VERIFICATION_INPUTS = {
     "tools/apps/app_release.py",
     "tools/ci/__init__.py",
     "tools/ci/workspace_graph.py",
+    "tools/ci/runner_labels.py",
     "tools/apps/app_channel_manifest.py",
     "tools/apps/canonical_app_verifier.py",
     "tools/apps/create_app_receipt.py",
     "tools/apps/final_app_receipt.py",
     "os/scripts/verify-elf-hardening.sh",
+    "os/scripts/verify-runtime-bundle-closure.sh",
     "tools/canonical_verifier_bundle.py",
     "tools/app_packaging_qualification.py",
     ".forgejo/workflows/release-apps.yml",
@@ -70,7 +77,17 @@ FULL_REBUILD_PREFIXES = (
 # These are explicitly built by package-apps.sh, not ordinary app dependencies.
 # A change reaching their graph affects the shared runtime or every emitted tapp.
 FLEET_BUILD_PACKAGES = {"runtime-dylib", "tilo-app-package-cli", "runtime-bundle"}
-OS_INTEGRATED_APPS = {"browser"}
+# Runtime engines are built with every runtime and signed into its
+# bundle, so a change reaching one changes the runtime every app names.
+ENGINES = "crates/runtime/engines"
+
+
+def runtime_engines(root: Path = ROOT) -> set[str]:
+    """The packages under crates/runtime/engines/, which build-thin-apps.sh builds."""
+    return {
+        tomllib.loads(manifest.read_text())["package"]["name"]
+        for manifest in sorted((root / ENGINES).glob("*/Cargo.toml"))
+    }
 
 
 def architecture_matrix(
@@ -96,10 +113,8 @@ def architecture_matrix(
         "include": [
             {
                 "arch": architecture,
-                "runner": "runner" if architecture == "x86_64" else "runner-arm64",
-                "build_runner": (
-                    "runner-large" if architecture == "x86_64" else "runner-large-arm64"
-                ),
+                "runner": runner_labels.NATIVE[architecture],
+                "build_runner": runner_labels.LARGE[architecture],
             }
             for architecture in architectures
         ]
@@ -262,9 +277,13 @@ def apps_from_changes(
             and not (path == "Cargo.lock" and lock_affected_packages is not None)
         )
         or path.startswith(GLOBAL_PREFIXES + FULL_REBUILD_PREFIXES)
+        # Thin apps and the runtime resolve the complete collection together.
+        # App dependency/feature changes can alter shared crate hashes even
+        # when the changed app is not a dependency of runtime-dylib itself.
+        or (path.startswith("apps/") and path.endswith("/Cargo.toml"))
         for path in paths
     ):
-        return sorted(set(catalog).difference(OS_INTEGRATED_APPS))
+        return sorted(catalog)
     selected = {
         parts[1]
         for path in paths
@@ -276,7 +295,7 @@ def apps_from_changes(
         packages, by_dir = ci_select.package_maps(metadata, root)
         if any(path.startswith(("apps/", "crates/", "fs/", "shell/"))
                and ci_select.owner_for(path, by_dir) is None for path in paths):
-            return sorted(set(catalog).difference(OS_INTEGRATED_APPS))
+            return sorted(catalog)
         seeds = {
             owner
             for path in paths
@@ -284,12 +303,12 @@ def apps_from_changes(
         }
         seeds.update(lock_affected_packages or ())
         affected = ci_select.closure(seeds, ci_select.reverse_dependencies(packages, root))
-        if affected & FLEET_BUILD_PACKAGES:
-            return sorted(set(catalog).difference(OS_INTEGRATED_APPS))
+        if affected & (FLEET_BUILD_PACKAGES | runtime_engines(root)):
+            return sorted(catalog)
         selected.update(
             name for name, app in catalog.items() if app["package"] in affected
         )
-    return sorted(selected.difference(OS_INTEGRATED_APPS))
+    return sorted(selected)
 
 
 def prior_collection_base(source: str, collection_builder: str, builder: str) -> str | None:
@@ -326,8 +345,6 @@ def plan(args: argparse.Namespace) -> dict:
     tag_app = app_from_tag(args.tag, catalog) if args.tag else None
     classification = {"binary": [], "packaging": [], "verification": []}
     if tag_app:
-        if tag_app in OS_INTEGRATED_APPS:
-            raise ValueError(f"{tag_app} is released by the OS-native integration pipeline")
         tag_version = args.tag.rsplit("-v", 1)[1]
         if catalog[tag_app]["version"] != tag_version:
             raise ValueError(
@@ -365,12 +382,6 @@ def plan(args: argparse.Namespace) -> dict:
     unknown = set(selected).difference(catalog)
     if unknown:
         raise ValueError(f"unknown apps: {', '.join(sorted(unknown))}")
-    integrated = set(selected).intersection(OS_INTEGRATED_APPS)
-    if integrated:
-        raise ValueError(
-            "OS-integrated apps cannot use the generic tapp builder: "
-            + ", ".join(sorted(integrated))
-        )
     features = cfg.get("features", {})
     for name in selected:
         cargo_manifest = args.root / "apps" / name / "Cargo.toml"

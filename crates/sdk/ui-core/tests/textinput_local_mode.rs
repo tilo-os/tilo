@@ -3,16 +3,6 @@
 //! `self.text`, the dirty flag flips, and `take_dirty` returns the
 //! new value exactly once.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use std::collections::HashMap;
 
 use automerge::AutoCommit;
@@ -60,7 +50,7 @@ fn local_textinput_reports_typing_but_not_programmatic_text() {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: tilo_ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

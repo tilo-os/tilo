@@ -9,7 +9,6 @@
 #![allow(
     clippy::arithmetic_side_effects,
     clippy::missing_errors_doc,
-    clippy::set_contains_or_insert,
     clippy::struct_excessive_bools,
     reason = "cryptographic sampling and expiry arithmetic are bounded; public errors are represented by BrokerError"
 )]
@@ -29,6 +28,18 @@ const GRANT_PREFIX: &str = "tilo-secret-grant:";
 const MAX_APP_ID_BYTES: usize = 255;
 const MAX_PURPOSE_BYTES: usize = 160;
 const MAX_ORIGIN_BYTES: usize = 2_048;
+
+#[path = "credential_owner.rs"]
+mod owner;
+pub use owner::CredentialOwner;
+
+#[path = "credential_pending.rs"]
+mod pending;
+pub use pending::CredentialProposal;
+
+#[cfg(test)]
+#[path = "credential_owner_tests.rs"]
+mod owner_tests;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -161,6 +172,10 @@ impl SecretStore {
             .get(&key)?
             .token
             .and_then(|json| serde_json::from_str(&json).ok())
+    }
+    fn contains(&self, id: &SecretId) -> bool {
+        self.vault
+            .contains(&AccountId::new(format!("{ITEM_PREFIX}{}", id.0)))
     }
 
     pub fn put(&mut self, item: &mut SecretItem) -> Result<(), BrokerError> {
@@ -300,11 +315,46 @@ struct GrantKey {
     app_id: String,
     item_id: SecretId,
     origin: Option<String>,
+    scope: Option<CredentialScope>,
 }
 
-/// One durable credential permission. It contains no secret material and is
-/// nevertheless kept inside the encrypted vault because the relationship
-/// between an application, account, and site is sensitive metadata.
+/// Frozen native resource identity. Metadata alone never admits its caller;
+/// the authenticated host validates ownership before requesting this grant.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialScope {
+    pub principal: String,
+    pub device: String,
+    pub service: String,
+    pub account: String,
+    pub generation: u64,
+}
+impl CredentialScope {
+    fn valid(&self) -> bool {
+        self.generation > 0
+            && [&self.principal, &self.device, &self.service, &self.account]
+                .iter()
+                .all(|value| {
+                    !value.is_empty()
+                        && value.len() <= 512
+                        && !value.chars().any(|c| c.is_control() || c.is_whitespace())
+                })
+    }
+}
+
+/// The permission's lifetime. Session permissions never enter the vault file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GrantLifetime {
+    #[default]
+    Persistent,
+    Session,
+}
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
+}
+
+/// A credential permission. Durable relationships are encrypted; session
+/// relationships stay in their original broker's memory.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CredentialGrant {
     id: String,
@@ -312,6 +362,10 @@ pub struct CredentialGrant {
     pub item_id: SecretId,
     pub origin: Option<String>,
     pub created_unix: u64,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub lifetime: GrantLifetime,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<CredentialScope>,
 }
 
 impl CredentialGrant {
@@ -322,7 +376,13 @@ impl CredentialGrant {
             item_id: key.item_id,
             origin: key.origin,
             created_unix: unix_now(),
+            lifetime: GrantLifetime::Persistent,
+            scope: key.scope,
         }
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     fn key(&self) -> GrantKey {
@@ -330,6 +390,7 @@ impl CredentialGrant {
             app_id: self.app_id.clone(),
             item_id: self.item_id.clone(),
             origin: self.origin.clone(),
+            scope: self.scope.clone(),
         }
     }
 
@@ -355,7 +416,8 @@ pub enum BrokerError {
 /// gesture can create a grant. `AllowOnce` is consumed immediately.
 pub struct CredentialBroker {
     store: SecretStore,
-    session_grants: BTreeSet<GrantKey>,
+    session_grants: BTreeMap<GrantKey, CredentialGrant>,
+    revision: u64,
 }
 
 /// A short-lived clipboard ownership lease. Callers clear the clipboard only
@@ -386,8 +448,59 @@ impl CredentialBroker {
     pub fn new(store: SecretStore) -> Self {
         Self {
             store,
-            session_grants: BTreeSet::new(),
+            session_grants: BTreeMap::new(),
+            revision: 0,
         }
+    }
+
+    /// Read only under an existing exact item/application/origin grant.
+    /// Background account startup and native I/O must use this door: no
+    /// permission callback runs and a consumed one-shot grant cannot restart.
+    pub fn request_existing(
+        &mut self,
+        request: &AccessRequest,
+    ) -> Result<Zeroizing<String>, BrokerError> {
+        self.request(request, |_, _| AccessDecision::Deny)
+    }
+    /// Read under an existing exact resource grant; legacy unscoped grants do
+    /// not authorize this door. No permission callback or implicit grant runs.
+    pub fn request_existing_scoped(
+        &mut self,
+        request: &AccessRequest,
+        scope: &CredentialScope,
+    ) -> Result<Zeroizing<String>, BrokerError> {
+        self.request_scoped(request, scope, |_, _, _| AccessDecision::Deny)
+    }
+
+    /// Read a private messaging profile key through its existing exact grant.
+    /// Profile custody requires the original system vault; local-file fallback
+    /// and ordinary password items never authorize this door. Private metadata
+    /// binds the item itself, independently of the permission grant.
+    pub fn request_existing_profile_key(
+        &mut self,
+        request: &AccessRequest,
+        scope: &CredentialScope,
+    ) -> Result<Zeroizing<String>, BrokerError> {
+        if self.store.custody() != SecretCustody::System
+            || self.store.recovery_error().is_some()
+            || request.app_id != "so.tilo.messages"
+            || !scope.valid()
+        {
+            return Err(BrokerError::Denied);
+        }
+        let mut item = self
+            .store
+            .get(&request.item_id)
+            .ok_or(BrokerError::NotFound)?;
+        // This metadata lookup does not return or retain another plaintext copy.
+        zeroize::Zeroize::zeroize(&mut item.password);
+        let bound = item.kind == SecretItemKind::Other
+            && item.fields.get("tilo.messaging.profile.scope")
+                == Some(&serde_json::to_string(scope).map_err(|_| BrokerError::CorruptItem)?);
+        if !bound {
+            return Err(BrokerError::Denied);
+        }
+        self.request_existing_scoped(request, scope)
     }
 
     /// Find logins eligible for an exact origin so an app can offer account
@@ -419,6 +532,34 @@ impl CredentialBroker {
     where
         F: FnOnce(&AccessRequest, &SecretItem) -> AccessDecision,
     {
+        self.request_in_scope(request, None, decide)
+    }
+    /// Request one native resource scope through the ordinary user decision door.
+    pub fn request_scoped<F>(
+        &mut self,
+        request: &AccessRequest,
+        scope: &CredentialScope,
+        decide: F,
+    ) -> Result<Zeroizing<String>, BrokerError>
+    where
+        F: FnOnce(&AccessRequest, &SecretItem, &CredentialScope) -> AccessDecision,
+    {
+        if !scope.valid() {
+            return Err(BrokerError::Denied);
+        }
+        self.request_in_scope(request, Some(scope.clone()), |request, item| {
+            decide(request, item, scope)
+        })
+    }
+    fn request_in_scope<F>(
+        &mut self,
+        request: &AccessRequest,
+        scope: Option<CredentialScope>,
+        decide: F,
+    ) -> Result<Zeroizing<String>, BrokerError>
+    where
+        F: FnOnce(&AccessRequest, &SecretItem) -> AccessDecision,
+    {
         validate_app_id(&request.app_id)?;
         validate_purpose(&request.purpose)?;
         let item = self
@@ -439,18 +580,22 @@ impl CredentialBroker {
             app_id: request.app_id.clone(),
             item_id: request.item_id.clone(),
             origin,
+            scope,
         };
-        if !self.session_grants.contains(&grant) && !self.store.has_persistent_grant(&grant) {
+        if !self.session_grants.contains_key(&grant) && !self.store.has_persistent_grant(&grant) {
             match decide(request, &item) {
                 AccessDecision::Deny => return Err(BrokerError::Denied),
                 AccessDecision::AllowOnce => {}
                 AccessDecision::AllowForSession => {
-                    self.session_grants.insert(grant);
+                    let mut permission = CredentialGrant::new(grant.clone());
+                    permission.lifetime = GrantLifetime::Session;
+                    self.session_grants.insert(grant, permission);
                 }
                 AccessDecision::AllowAlways => {
                     self.store.persist_grant(&CredentialGrant::new(grant))?;
                 }
             }
+            self.revision = self.revision.saturating_add(1);
         }
         Ok(Zeroizing::new(item.password))
     }
@@ -461,17 +606,59 @@ impl CredentialBroker {
         self.store.grants()
     }
 
+    /// Current exact relationships, including permissions for this session.
+    /// The IDs stay stable and no credential values are returned.
+    pub fn current_grants(&self) -> Vec<CredentialGrant> {
+        let mut grants: BTreeMap<_, _> = self
+            .store
+            .grants()
+            .into_iter()
+            .map(|grant| (grant.key(), grant))
+            .collect();
+        for (key, permission) in &self.session_grants {
+            grants
+                .entry(key.clone())
+                .or_insert_with(|| permission.clone());
+        }
+        grants.into_values().collect()
+    }
+
     /// Revoke every session and durable permission held by an application.
     pub fn revoke_app(&mut self, app_id: &str) -> Result<usize, BrokerError> {
-        self.session_grants.retain(|grant| grant.app_id != app_id);
-        self.store.revoke_app_grants(app_id)
+        let count = self
+            .current_grants()
+            .iter()
+            .filter(|grant| grant.app_id == app_id)
+            .count();
+        self.session_grants
+            .retain(|grant, _| grant.app_id != app_id);
+        self.revision = self.revision.saturating_add(1);
+        self.store.revoke_app_grants(app_id)?;
+        Ok(count)
     }
 
     /// Revoke one exact durable permission without affecting another account
     /// or another origin used by the same application.
     pub fn revoke_grant(&mut self, grant: &CredentialGrant) -> Result<bool, BrokerError> {
-        self.session_grants.remove(&grant.key());
-        self.store.revoke_grant(grant)
+        let key = grant.key();
+        if self
+            .session_grants
+            .get(&key)
+            .is_none_or(|current| current.id != grant.id)
+            && !self.store.grants().iter().any(|current| current == grant)
+        {
+            return Ok(false);
+        }
+        let session = self.session_grants.remove(&key).is_some();
+        let durable = self
+            .store
+            .remove_grants_matching(|candidate| candidate.key() == key)
+            > 0;
+        self.revision = self.revision.saturating_add(1);
+        if durable {
+            self.store.vault.try_save().map_err(BrokerError::Storage)?;
+        }
+        Ok(session || durable)
     }
 }
 

@@ -170,17 +170,26 @@ def file_hash(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def validate_host(manifest):
-    """Check copied native files and the final host's dynamic linker closure."""
+def validate_host(manifest, root=Path("/")):
+    """Check native files and their dynamic linker closure under `root`.
+
+    `root` is `/` for a booted host. The image build checks the Windows
+    compatibility payload before it is packed as a system extension, so there
+    the payload tree is `root` and its own library directories are searched in
+    addition to the base's.
+    """
     data = json.loads(manifest.read_text())
     if data["host_architecture"] == "x86_64" or data["provider"] == "none":
         return data
     for item in data["native_elfs"]:
-        path = Path("/") / item["path"]
+        path = root / item["path"]
         if file_hash(path) != item["sha256"]:
             raise ValueError(f"copied FEX ELF differs from validated artifact: {path}")
-        subprocess.run(["/lib/ld-linux-aarch64.so.1", "--list", str(path)],
-                       check=True, stdout=subprocess.DEVNULL)
+        command = ["/lib/ld-linux-aarch64.so.1"]
+        if root != Path("/"):
+            library_path = ":".join(str(root / "usr" / name) for name in ("lib64", "lib"))
+            command += ["--library-path", library_path]
+        subprocess.run([*command, "--list", str(path)], check=True, stdout=subprocess.DEVNULL)
     return {"validation": "native-dynamic-linker-closure", "files": len(data["native_elfs"])}
 
 
@@ -195,12 +204,13 @@ def main():
     parser.add_argument("--guest-root", type=Path)
     parser.add_argument("--source-pin", type=Path)
     parser.add_argument("--wine-pin", type=Path)
+    parser.add_argument("--root", type=Path, default=Path("/"))
     args = parser.parse_args()
     try:
         if args.action == "host":
             if args.manifest is None:
                 raise ValueError("host validation requires a manifest")
-            print(json.dumps(validate_host(args.manifest)))
+            print(json.dumps(validate_host(args.manifest, args.root)))
             return 0
         if args.action == "mode":
             print(mode(args.arch, args.fex_ref, args.guest_ref))

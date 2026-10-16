@@ -1,0 +1,489 @@
+//! Native task steps: followed by their host's answers rather than a timer,
+//! and run alongside each other when the model marks them standalone —
+//! with the same rules as a Task Center run's.
+
+use super::*;
+
+/// A native workspace task's run (`native:` lease, a control frontier the
+/// cancellation poll answers with): its steps are native children, each
+/// re-asked by its stable id to be observed.
+fn native_run_fixture(title: &str, world: World, turns: Vec<Vec<TurnEvent>>) -> Fixture {
+    let control = runtime_collab::TaskRunControl {
+        version: 1,
+        task_id: "task:loop".into(),
+        run_epoch: 1,
+        from_revision: 0,
+        applied_revision: 0,
+        latest_revision: 0,
+        directions: Vec::new(),
+        has_more: false,
+    };
+    let mut f = fixture(
+        title,
+        World {
+            native_control: Some(control),
+            ..world
+        },
+        turns,
+    );
+    f.run.lease = "native:00000000000000000000000000000000:0".into();
+    f.run.action_context = serde_json::to_value(
+        tilo_actions::ActionContext::default()
+            .with_purpose(title)
+            .with_group(f.run.task_id.as_str(), title, "task"),
+    )
+    .unwrap();
+    super::super::super::validate_task_run(&f.run).unwrap();
+    f
+}
+
+/// A native run's terminal report.
+fn native_terminal(sent: &[CollabRequest]) -> runtime_collab::TaskRunUpdate {
+    legacy_terminal(sent)
+}
+
+/// The children the agent started, in order: one `InvokeTaskAction` each
+/// with no wait (a re-ask always asks to be held).
+fn children_started(sent: &[CollabRequest]) -> Vec<tilo_actions::InvocationId> {
+    sent.iter()
+        .filter_map(|request| match request {
+            CollabRequest::InvokeTaskAction {
+                invocation,
+                wait: None,
+                ..
+            } => Some(*invocation),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Re-asks the agent sent for its children.
+fn reasks(sent: &[CollabRequest]) -> Vec<runtime_collab::TaskChildWait> {
+    sent.iter()
+        .filter_map(|request| match request {
+            CollabRequest::InvokeTaskAction {
+                wait: Some(wait), ..
+            } => Some(*wait),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Steps the model marks standalone, on records no running step acts on,
+/// start without waiting for the ones before them to settle. Each is still
+/// its own native child (its own request, id, admission and journal row),
+/// and the model reads their results in the order it wrote the calls.
+#[test]
+fn standalone_native_steps_run_alongside_each_other_in_plan_order() {
+    let settle = Duration::from_millis(300);
+    let mut f = native_run_fixture(
+        "post the standup change and start the agenda and the minutes",
+        World {
+            second_window: Some("doc-2"),
+            settle_after: Some(settle),
+            ..World::default()
+        },
+        vec![
+            turn(&three_records(true), 24),
+            turn(&[finish("Posted and started both documents.", true)], 64),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let world = f.world.borrow();
+    let started = &world.started;
+    assert_eq!(started.len(), 3, "{started:?}");
+    let first_settles = started[0].2;
+    for (action, began, _) in started {
+        assert!(
+            *began < first_settles,
+            "{action} waited for the first step to settle: {started:?}"
+        );
+    }
+    let children = children_started(&f.sent.borrow());
+    assert_eq!(children.len(), 3, "one request per step, nothing batched");
+    let distinct: HashSet<_> = children.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        3,
+        "each step is its own child: {children:?}"
+    );
+    let bodies = f.script.bodies.lock().unwrap().clone();
+    let results = tool_results(&bodies[1]);
+    let ids: Vec<&str> = results.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, ["call_0", "call_1", "call_2"], "plan order");
+    for (id, result) in &results {
+        assert_eq!(result["result"], "succeeded", "{id}: {result}");
+    }
+    assert_eq!(
+        native_terminal(&f.sent.borrow()),
+        runtime_collab::TaskRunUpdate::Succeeded {
+            message: "Posted and started both documents.".into()
+        }
+    );
+}
+
+/// An unmarked native step, or one on a record a running step acts on,
+/// starts only after every running step has settled.
+#[test]
+fn a_native_step_that_may_read_earlier_writes_waits_for_them() {
+    let settle = Duration::from_millis(150);
+    let mut f = native_run_fixture(
+        "post, write a heading, then type under it and confirm in Chat",
+        World {
+            settle_after: Some(settle),
+            ..World::default()
+        },
+        vec![
+            turn(
+                &[
+                    invoke_on(
+                        CHAT_PEER,
+                        "chat.channel:general",
+                        "post",
+                        &serde_json::json!({"message": "Writing the notes."}),
+                        true,
+                    ),
+                    invoke_on(
+                        PEER,
+                        DOC,
+                        "append-paragraph",
+                        &serde_json::json!({"text": "Notes"}),
+                        true,
+                    ),
+                    invoke_on(
+                        PEER,
+                        DOC,
+                        "type-text",
+                        &serde_json::json!({"text": " (draft)"}),
+                        true,
+                    ),
+                    invoke_on(
+                        CHAT_PEER,
+                        "chat.channel:general",
+                        "post",
+                        &serde_json::json!({"message": "Notes are drafted."}),
+                        false,
+                    ),
+                ],
+                24,
+            ),
+            turn(&[finish("Done.", true)], 64),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let world = f.world.borrow();
+    let started = &world.started;
+    let actions: Vec<&str> = started
+        .iter()
+        .map(|(action, _, _)| action.as_str())
+        .collect();
+    assert_eq!(actions, ["post", "append-paragraph", "type-text", "post"]);
+    assert!(started[1].1 < started[0].2, "standalone: alongside");
+    assert!(
+        started[2].1 >= started[0].2 && started[2].1 >= started[1].2,
+        "the same record waits for everything running: {started:?}"
+    );
+    assert!(
+        started[3].1 >= started[2].2,
+        "an unmarked step waits for the one before it: {started:?}"
+    );
+    assert_eq!(world.blocks[0].1, "Notes (draft)");
+    assert_eq!(world.posts, ["Writing the notes.", "Notes are drafted."]);
+}
+
+/// Cancelling the native run from Task Center stops every step still
+/// running, not only one being waited on: the host cancels each child when
+/// it reads the run cancelled, and the run ends cancelled.
+#[test]
+fn cancelling_a_native_task_stops_every_step_in_flight() {
+    let mut f = native_run_fixture(
+        "post the change and start the agenda",
+        World {
+            settle_after: Some(Duration::from_secs(20)),
+            cancel_after_steps: Some(2),
+            ..World::default()
+        },
+        vec![turn(
+            &[
+                invoke_on(
+                    CHAT_PEER,
+                    "chat.channel:general",
+                    "post",
+                    &serde_json::json!({"message": "Standup moved."}),
+                    true,
+                ),
+                invoke_on(
+                    PEER,
+                    DOC,
+                    "append-paragraph",
+                    &serde_json::json!({"text": "Agenda"}),
+                    true,
+                ),
+                finish("Done.", true),
+            ],
+            24,
+        )],
+    );
+    let began = ui::time::now();
+    f.session.run_task(&f.run).unwrap();
+    assert!(
+        began.elapsed() < Duration::from_secs(10),
+        "cancelled, not waited out: {:?}",
+        began.elapsed()
+    );
+    let world = f.world.borrow();
+    assert_eq!(world.started.len(), 2);
+    let started: HashSet<_> = children_started(&f.sent.borrow()).into_iter().collect();
+    let cancelled: HashSet<_> = world.cancelled.iter().copied().collect();
+    assert_eq!(cancelled, started, "every running child is cancelled");
+    assert!(matches!(
+        native_terminal(&f.sent.borrow()),
+        runtime_collab::TaskRunUpdate::Cancelled { .. }
+    ));
+}
+
+/// The host refusing one standalone native step (an authorization
+/// refusal) does not stop the others; an unmarked step is still skipped
+/// after a failure.
+#[test]
+fn a_refused_native_step_does_not_stop_the_others() {
+    let mut f = native_run_fixture(
+        "post the change and start the agenda",
+        World {
+            settle_after: Some(Duration::from_millis(100)),
+            deny: vec!["post".into()],
+            ..World::default()
+        },
+        vec![
+            turn(
+                &[
+                    invoke_on(
+                        CHAT_PEER,
+                        "chat.channel:general",
+                        "post",
+                        &serde_json::json!({"message": "Standup moved."}),
+                        true,
+                    ),
+                    invoke_on(
+                        PEER,
+                        DOC,
+                        "append-paragraph",
+                        &serde_json::json!({"text": "Agenda"}),
+                        true,
+                    ),
+                    invoke_on(
+                        PEER,
+                        DOC,
+                        "type-text",
+                        &serde_json::json!({"text": " for Monday"}),
+                        false,
+                    ),
+                ],
+                24,
+            ),
+            turn(&[finish("Started the agenda; I may not post.", true)], 64),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let world = f.world.borrow();
+    assert!(world.posts.is_empty(), "the refused post never ran");
+    assert_eq!(world.blocks, [("p1".to_owned(), "Agenda".to_owned())]);
+    let bodies = f.script.bodies.lock().unwrap().clone();
+    let results = tool_results(&bodies[1]);
+    assert_eq!(results[0].1["result"], "failed", "{:?}", results[0]);
+    assert!(
+        results[0].1["error"]
+            .as_str()
+            .unwrap()
+            .contains("permission denied"),
+        "{:?}",
+        results[0]
+    );
+    assert_eq!(results[1].1["result"], "succeeded", "{:?}", results[1]);
+    assert_eq!(results[2].1["result"], "not run", "{:?}", results[2]);
+    assert_eq!(
+        children_started(&f.sent.borrow()).len(),
+        2,
+        "each step asked the host on its own; the skipped one never"
+    );
+}
+
+/// A running native step is followed by its host's answer, not a timer:
+/// the one re-ask out is held until the child settles, so it is answered
+/// once, with the outcome, and no round trip comes back empty.
+#[test]
+fn a_native_step_is_answered_when_it_settles_not_on_a_timer() {
+    let mut f = native_run_fixture(
+        "post the change",
+        World {
+            settle_after: Some(Duration::from_millis(250)),
+            ..World::default()
+        },
+        vec![
+            turn(
+                &[invoke_on(
+                    CHAT_PEER,
+                    "chat.channel:general",
+                    "post",
+                    &serde_json::json!({"message": "Standup moved."}),
+                    false,
+                )],
+                24,
+            ),
+            turn(&[finish("Posted.", true)], 64),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let world = f.world.borrow();
+    assert_eq!(world.posts, ["Standup moved."]);
+    let reasks = reasks(&f.sent.borrow());
+    assert_eq!(
+        reasks.len(),
+        1,
+        "one held re-ask, answered when the child settled: {reasks:?}"
+    );
+    assert_eq!(reasks[0].seen, tilo_actions::remote::UpdateMark::Accepted);
+    assert!(reasks[0].wait_ms > 0);
+    assert_eq!(world.observations, 1);
+    assert_eq!(world.idle_observations, 0, "no answer came back empty");
+}
+
+/// A host from before held re-asks answers at once, with nothing new: the
+/// agent then re-asks at the old cadence, never in a loop.
+#[test]
+fn a_host_that_answers_reasks_at_once_is_paced_not_spun() {
+    let settle = Duration::from_millis(250);
+    let mut f = native_run_fixture(
+        "post the change",
+        World {
+            settle_after: Some(settle),
+            answers_reasks_at_once: true,
+            ..World::default()
+        },
+        vec![
+            turn(
+                &[invoke_on(
+                    CHAT_PEER,
+                    "chat.channel:general",
+                    "post",
+                    &serde_json::json!({"message": "Standup moved."}),
+                    false,
+                )],
+                24,
+            ),
+            turn(&[finish("Posted.", true)], 64),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let world = f.world.borrow();
+    assert_eq!(world.posts, ["Standup moved."]);
+    // One re-ask per 50 ms while the child runs, and the one that finds it
+    // settled; a loop would send thousands.
+    let most = usize::try_from(settle.as_millis() / 50).unwrap() + 3;
+    assert!(
+        (2..=most).contains(&world.observations),
+        "{} re-asks in {settle:?}",
+        world.observations
+    );
+}
+
+/// One measured run of the benchmark plan.
+struct Measured {
+    wall_ms: f64,
+    /// Host round trips while the steps ran that brought no news: re-asks
+    /// that found the child still running, and cancellation polls.
+    idle_per_step: f64,
+}
+
+/// The native benchmark: the three-step plan on three records, every step
+/// taking `settle` in its application, run as the model marks it
+/// (standalone) and unmarked (in order). Wall time is the whole task; idle
+/// wakeups are the host round trips per step that brought no news while a
+/// step ran. `TILO_AGENT_NATIVE_SAMPLES` names a directory to write the
+/// samples to (`pipelined.txt`, `sequential.txt` in ms per task, and
+/// `idle.txt` in idle round trips per step of the sequential plan), and
+/// `TILO_AGENT_NATIVE_REPS` how many runs of each to take.
+#[test]
+fn native_task_benchmark() {
+    use std::fmt::Write as _;
+    let settle = Duration::from_millis(100);
+    let reps: usize = std::env::var("TILO_AGENT_NATIVE_REPS")
+        .ok()
+        .and_then(|reps| reps.parse().ok())
+        .unwrap_or(3);
+    let run_once = |independent: bool| {
+        let mut f = native_run_fixture(
+            "post the standup change and start the agenda and the minutes",
+            World {
+                second_window: Some("doc-2"),
+                settle_after: Some(settle),
+                ..World::default()
+            },
+            vec![turn(
+                &[
+                    three_records(independent),
+                    vec![finish("Posted and started both documents.", true)],
+                ]
+                .concat(),
+                24,
+            )],
+        );
+        let began = std::time::Instant::now();
+        f.session.run_task(&f.run).unwrap();
+        let wall_ms = began.elapsed().as_secs_f64() * 1000.0;
+        let world = f.world.borrow();
+        assert_eq!(world.started.len(), 3);
+        assert!(matches!(
+            native_terminal(&f.sent.borrow()),
+            runtime_collab::TaskRunUpdate::Succeeded { .. }
+        ));
+        let idle = world.idle_observations + world.cancellation_checks;
+        Measured {
+            wall_ms,
+            idle_per_step: idle as f64 / 3.0,
+        }
+    };
+    let mut pipelined = Vec::new();
+    let mut sequential = Vec::new();
+    for _ in 0..reps {
+        pipelined.push(run_once(true));
+        sequential.push(run_once(false));
+    }
+    let median = |samples: &[f64]| {
+        let mut sorted = samples.to_vec();
+        sorted.sort_by(f64::total_cmp);
+        sorted[sorted.len() / 2]
+    };
+    let walls = |runs: &[Measured]| runs.iter().map(|run| run.wall_ms).collect::<Vec<_>>();
+    let idles = |runs: &[Measured]| runs.iter().map(|run| run.idle_per_step).collect::<Vec<_>>();
+    let (fast, slow) = (median(&walls(&pipelined)), median(&walls(&sequential)));
+    let idle = median(&idles(&sequential));
+    eprintln!(
+        "native agent task, 3 steps x {settle:?}: pipelined {fast:.1} ms, sequential {slow:.1} ms \
+         ({:.1} ms per step), {idle:.1} idle host round trips per step",
+        slow / 3.0
+    );
+    if let Ok(dir) = std::env::var("TILO_AGENT_NATIVE_SAMPLES") {
+        let dir = std::path::Path::new(&dir);
+        std::fs::create_dir_all(dir).unwrap();
+        for (name, samples) in [
+            ("pipelined", walls(&pipelined)),
+            ("sequential", walls(&sequential)),
+            ("idle", idles(&sequential)),
+        ] {
+            let mut lines = String::new();
+            for value in samples {
+                let _ = writeln!(lines, "{value:.3}");
+            }
+            std::fs::write(dir.join(format!("{name}.txt")), lines).unwrap();
+        }
+    }
+    // Three steps each settling in `settle` cannot finish in order in less
+    // than three times it; alongside each other they need it once.
+    let floor = settle.as_secs_f64() * 1000.0;
+    assert!(slow >= 3.0 * floor, "sequential {slow:.1} ms");
+    assert!(
+        fast < 2.0 * floor,
+        "pipelined {fast:.1} ms should need one settle ({floor} ms), not three"
+    );
+}

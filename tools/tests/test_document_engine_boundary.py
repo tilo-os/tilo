@@ -30,8 +30,8 @@ class DocumentEngineBoundaryTests(unittest.TestCase):
         root, baseline = self.fixture(
             {
                 "apps/editor/src/lib.rs": (
-                    "fn bold(dm: &mut qdoc::DocMut) {\n"
-                    "    dm.add_mark(\"b\", 0, 1, qdoc::schema::MARK_BOLD, true);\n"
+                    "fn bold(dm: &mut tilo_doc::DocMut) {\n"
+                    "    dm.add_mark(\"b\", 0, 1, tilo_doc::schema::MARK_BOLD, true);\n"
                     "}\n"
                 ),
             }
@@ -56,10 +56,10 @@ class DocumentEngineBoundaryTests(unittest.TestCase):
             {
                 "apps/editor/src/lib.rs": (
                     "fn f(doc: &automerge::AutoCommit, block: &automerge::ObjId) {\n"
-                    "    let _ = doc.get(block, qdoc::schema::BLOCK_TEXT);\n"
+                    "    let _ = doc.get(block, tilo_doc::schema::BLOCK_TEXT);\n"
                     "}\n"
                 ),
-                "apps/other/src/lib.rs": "use qdoc::schema::{KEY_HEADER, MARK_BOLD};\n",
+                "apps/other/src/lib.rs": "use tilo_doc::schema::{KEY_HEADER, MARK_BOLD};\n",
             }
         )
         reasons = sorted(v.path for v in boundary.audit(root, baseline))
@@ -68,14 +68,14 @@ class DocumentEngineBoundaryTests(unittest.TestCase):
     def test_engine_owners_tests_and_comments_are_exempt(self):
         root, baseline = self.fixture(
             {
-                "crates/doc/qdoc/src/model.rs": "use automerge::marks::ExpandMark;\n",
+                "crates/doc/tilo-doc/src/model.rs": "use automerge::marks::ExpandMark;\n",
                 "crates/sdk/ui-core/src/text.rs": "use automerge::marks::Mark;\n",
-                "apps/editor/tests/corrupt.rs": "const K: &str = qdoc::schema::BLOCK_ORDER;\n",
+                "apps/editor/tests/corrupt.rs": "const K: &str = tilo_doc::schema::BLOCK_ORDER;\n",
                 "apps/editor/src/lib.rs": (
-                    "// qdoc uses automerge::marks internally\n"
+                    "// tilo-doc uses automerge::marks internally\n"
                     "fn f() {}\n"
                     "#[cfg(test)]\n"
-                    "mod tests { const K: &str = qdoc::schema::BLOCK_TEXT; }\n"
+                    "mod tests { const K: &str = tilo_doc::schema::BLOCK_TEXT; }\n"
                 ),
             }
         )

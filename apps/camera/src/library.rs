@@ -10,7 +10,6 @@
 //!   * [`load_luma`]     — decode + downscale an image for the code scanner.
 
 use std::path::{Path, PathBuf};
-use ui::time::UNIX_EPOCH;
 
 use crate::frame::{self, FrameBuf};
 use crate::model::PhotoFormat;
@@ -84,16 +83,9 @@ fn encode_jpeg(frame: &FrameBuf) -> std::io::Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Decode `path` to a greyscale (luma) buffer, downscaled so its longest
-/// side is at most `max` pixels. Returns the buffer plus its dimensions.
-/// This is what the scanner feeds to the QR detector when scanning a code
-/// out of a portal-selected image (no camera required).
-pub fn load_luma(path: &Path, max: u32) -> Option<(Vec<u8>, usize, usize)> {
-    let bytes = crate::files::read_bounded(path, thumbnail::MAX_IMAGE_BYTES)?;
-    load_luma_bytes(&bytes, max)
-}
-
-/// Decode verified shared-media bytes into a bounded luma image. The shared
+/// Decode image bytes to a greyscale (luma) buffer, downscaled so its longest
+/// side is at most `max` pixels, plus its dimensions — what the scanner feeds
+/// to the QR detector when scanning a code out of a chosen image. The shared
 /// decoder reads the header first, so attacker-controlled dimensions are
 /// refused before any pixel is allocated even after the content store has
 /// verified the byte hash.
@@ -122,11 +114,9 @@ fn valid_frame(frame: &FrameBuf) -> bool {
 /// A filesystem-safe, sortable timestamp `YYYYMMDD_HHMMSS_mmm`. Shared by the
 /// photo and video writers so capture file names are consistent.
 pub fn timestamp_name() -> String {
-    let now = ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    let millis = now.subsec_millis();
+    let now_ms = ui::time::unix_now_ms();
+    let secs = now_ms / 1_000;
+    let millis = now_ms % 1_000;
     // Civil-date conversion (proleptic Gregorian) — avoids pulling in chrono.
     let days = (secs / 86_400) as i64;
     let rem = (secs % 86_400) as u32;
@@ -186,7 +176,8 @@ mod tests {
             let dir = tmp();
             let frame = crate::frame::viewfinder(2, 200, 120);
             let name = write_photo(&dir, &frame, PhotoFormat::Png).unwrap();
-            let (luma, tw, th) = load_luma(&dir.join(&name), 50).expect("luma");
+            let (luma, tw, th) =
+                load_luma_bytes(&std::fs::read(dir.join(&name)).unwrap(), 50).expect("luma");
             assert!(tw <= 50 && th <= 50, "downscaled to {tw}x{th}");
             assert_eq!(luma.len(), tw * th);
             std::fs::remove_dir_all(&dir).ok();

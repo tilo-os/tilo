@@ -1,14 +1,6 @@
 //! Music's cache, profile and local files by native path, through
 //! `tilo-files`.
 
-#![cfg_attr(
-    not(all(feature = "audio", feature = "live")),
-    allow(
-        dead_code,
-        reason = "downloads and staging need the audio and live features"
-    )
-)]
-
 use std::io;
 use std::path::Path;
 
@@ -81,11 +73,13 @@ fn common_root<'a>(a: &'a Path, b: &Path) -> Option<&'a Path> {
 }
 
 /// A file a download grows while playback follows it.
+#[cfg(all(feature = "audio", feature = "live"))]
 pub(crate) struct Growing {
     dir: tilo_files::Dir,
     name: tilo_files::VPath,
 }
 
+#[cfg(all(feature = "audio", feature = "live"))]
 impl Growing {
     /// Start `path` empty.
     pub(crate) fn create(path: &Path) -> io::Result<Self> {
@@ -100,6 +94,7 @@ impl Growing {
     }
 }
 
+#[cfg(all(feature = "audio", feature = "live"))]
 impl io::Write for Growing {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         blocking::append(&self.dir, &self.name, buf).map_err(io)?;

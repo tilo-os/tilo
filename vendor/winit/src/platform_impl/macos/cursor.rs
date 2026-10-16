@@ -184,7 +184,10 @@ pub(crate) fn invisible_cursor() -> Retained<NSCursor> {
 
     // Cache this for efficiency
     static CURSOR: OnceLock<CustomCursor> = OnceLock::new();
-    CURSOR.get_or_init(|| CustomCursor(new_invisible())).0.clone()
+    CURSOR
+        .get_or_init(|| CustomCursor(new_invisible()))
+        .0
+        .clone()
 }
 
 pub(crate) fn cursor_from_icon(icon: CursorIcon) -> Retained<NSCursor> {

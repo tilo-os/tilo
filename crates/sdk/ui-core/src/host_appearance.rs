@@ -1,8 +1,9 @@
 //! The appearance a standalone app takes from the operating system it runs
 //! on. Inside Tilo OS the shell supplies appearance through settings and
-//! nothing here runs; outside it, light/dark, the accent and the contrast
-//! and motion preferences follow the host, so an SDK app looks at home
-//! without choosing a colour of its own.
+//! nothing here runs; outside it, light/dark, the contrast and motion
+//! preferences follow the host, and the presence hue nearest the host's
+//! accent becomes the person's own colour (focus ring, caret, selection), so
+//! an SDK app looks at home without choosing a colour of its own.
 //!
 //! Light/dark comes from winit (`Window::theme`, `ThemeChanged`) where it
 //! reports one; `tilo_appearance` adds what the desktop itself reports, and
@@ -18,8 +19,11 @@ pub(crate) fn theme(host: HostAppearance) -> Theme {
         Some(Scheme::Light) => Theme::light(),
         Some(Scheme::Dark) | None => Theme::dark(),
     };
-    match host.accent {
-        Some(accent) => base.with_accent(accent),
+    let accent = host.accent.and_then(|[r, g, b]| {
+        crate::tokens::PresenceHue::nearest(vello::peniko::Color::from_rgb8(r, g, b))
+    });
+    match accent {
+        Some(hue) => base.with_your_colour(hue),
         None => base,
     }
 }
@@ -29,6 +33,17 @@ fn scheme(theme: winit::window::Theme) -> Scheme {
         winit::window::Theme::Light => Scheme::Light,
         winit::window::Theme::Dark => Scheme::Dark,
     }
+}
+
+/// The shell supplies this process's settings through its app-scoped
+/// collaboration channel, or the launcher names the session document for
+/// Settings. Both own the theme the shell chrome already paints from.
+/// Sandboxes clear `XDG_CURRENT_DESKTOP` and may not expose the host Settings
+/// portal; its unset scheme must not paint the dark fallback over the shell's
+/// configured theme.
+pub(crate) fn session_document_owns_appearance() -> bool {
+    crate::host::environment().session_settings.is_some()
+        || settings_store::installed_source().is_some()
 }
 
 /// Whether the host, not the Tilo shell, owns this process's appearance.
@@ -53,9 +68,15 @@ pub(crate) struct Source {
 }
 
 impl Source {
-    /// `None` inside Tilo OS. Start it under the app's wake scope: a platform
-    /// that reports changes itself wakes the event loop through it.
+    /// `None` when the shell's settings source or session document owns
+    /// appearance, and when the desktop is already Tilo. Otherwise the host
+    /// portal owns it.
+    /// Start it under the app's wake scope: a platform that reports changes
+    /// itself wakes the event loop through it.
     pub fn start() -> Option<Self> {
+        if session_document_owns_appearance() {
+            return None;
+        }
         let environment = crate::host::environment();
         host_owns_appearance(environment.desktop.as_deref()).then(|| Self {
             window_scheme: None,
@@ -102,7 +123,7 @@ impl Source {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tokens::colors::ACCENT_PRIMARY_IDX;
+    use crate::color::Oklch;
     use vello::peniko::Color;
 
     #[test]
@@ -114,37 +135,52 @@ mod tests {
             })
         };
         assert_eq!(theme(Some(Scheme::Light)).name, Theme::light().name);
-        assert_eq!(theme(Some(Scheme::Light)).bg_app, Theme::light().bg_app);
-        assert_eq!(theme(Some(Scheme::Dark)).bg_app, Theme::dark().bg_app);
-        assert_eq!(theme(None).bg_app, Theme::dark().bg_app);
         assert_eq!(
-            theme(None).accent_primary,
-            Theme::dark().accent_primary,
-            "no host accent keeps Tilo's own"
+            theme(Some(Scheme::Light)).tokens.colors.surfaces.content,
+            Theme::light().tokens.colors.surfaces.content
+        );
+        assert_eq!(
+            theme(Some(Scheme::Dark)).tokens.colors.surfaces.content,
+            Theme::dark().tokens.colors.surfaces.content
+        );
+        assert_eq!(
+            theme(None).tokens.colors.surfaces.content,
+            Theme::dark().tokens.colors.surfaces.content
+        );
+        assert_eq!(
+            theme(None).border_focus,
+            Theme::dark().border_focus,
+            "no host accent keeps the default colour"
         );
     }
 
     #[test]
-    fn host_accent_recolours_every_accent_token() {
+    fn the_host_accent_becomes_your_colour_at_presence_lightness() {
         let theme = theme(HostAppearance {
             scheme: Some(Scheme::Light),
             accent: Some([0xE0, 0x40, 0x80]),
             ..HostAppearance::default()
         });
         let accent = Color::from_rgb8(0xE0, 0x40, 0x80);
-        assert_eq!(theme.accent_primary, accent);
-        assert_eq!(theme.border_focus, accent);
-        assert_eq!(theme.tokens.colors.accent[ACCENT_PRIMARY_IDX], accent);
-        assert_eq!(theme.tokens.colors.border_focus, accent);
-        assert_ne!(theme.accent_hover, accent, "hover stays a distinct step");
-        assert_ne!(
-            theme.tokens.terminal_palette.ansi,
-            Theme::light().tokens.terminal_palette.ansi,
-            "derived palettes follow the new accent"
+        let you = theme.tokens.colors.intent.you;
+        assert_eq!(theme.border_focus, you);
+        let (a, y) = (Oklch::from_color(accent), Oklch::from_color(you));
+        let d = (a.h - y.h).rem_euclid(360.0);
+        assert!(
+            d.min(360.0 - d) <= 15.0,
+            "the presence hue nearest the host's is taken"
         );
         assert_eq!(
-            theme.bg_app,
-            Theme::light().bg_app,
+            Some(theme.tokens.colors.you),
+            crate::tokens::PresenceHue::nearest(accent)
+        );
+        assert!(
+            (y.l - theme.tokens.colors.presence.lightness).abs() < 0.01,
+            "at the presence lightness, not the host's"
+        );
+        assert_eq!(
+            theme.tokens.colors.surfaces.content,
+            Theme::light().tokens.colors.surfaces.content,
             "surfaces are untouched"
         );
     }
@@ -155,6 +191,46 @@ mod tests {
         assert!(!host_owns_appearance(Some("GNOME:Tilo")));
         assert!(host_owns_appearance(Some("GNOME")));
         assert!(host_owns_appearance(None));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_named_session_document_owns_appearance_and_an_absent_one_does_not() {
+        struct RestoreSource(Option<std::sync::Arc<dyn settings_store::SettingsSource>>);
+        impl Drop for RestoreSource {
+            fn drop(&mut self) {
+                settings_store::install_source(self.0.take());
+            }
+        }
+        let _restore = RestoreSource(settings_store::installed_source());
+        settings_store::install_source(None);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove(settings_store::SESSION_SETTINGS_ENV);
+        assert!(!session_document_owns_appearance());
+        env.set(
+            settings_store::SESSION_SETTINGS_ENV,
+            "/run/tilo/app/.config/tilo/settings.json",
+        );
+        assert!(session_document_owns_appearance());
+        env.set(settings_store::SESSION_SETTINGS_ENV, "");
+        assert!(
+            !session_document_owns_appearance(),
+            "an empty path is not a session document"
+        );
+
+        // A native app's sandbox has no session file or desktop name. Its
+        // app-scoped shell settings still own appearance, including a custom
+        // theme the host portal cannot describe.
+        env.remove("XDG_CURRENT_DESKTOP");
+        let appearance = serde_json::json!({"appearance": {"mode": "light"}});
+        settings_store::install_source(Some(std::sync::Arc::new(
+            settings_store::HostDocument::new(appearance.as_object().unwrap().clone(), |_| Ok(())),
+        )));
+        assert_eq!(Theme::configured().name, Theme::light().name);
+        assert!(
+            Source::start().is_none(),
+            "the native runner must not start a host fallback over the shell's settings"
+        );
     }
 
     /// A source with no desktop reading: winit and the launcher only.

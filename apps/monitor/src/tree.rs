@@ -1,7 +1,7 @@
 //! Process **tree** model: parent→child hierarchy + subtree roll-ups.
 //!
 //! The Processes tab can render the flat list as a tree keyed on each
-//! process's PPID, with expand/collapse triangles. Two roll-up modes drive
+//! process's PPID, with disclosure chevrons. Two roll-up modes drive
 //! what a parent row *displays*:
 //!
 //! * **Sum subtree** (default) — a collapsed parent shows the CPU% and
@@ -30,25 +30,6 @@ pub enum SumMode {
     PerProcess,
 }
 
-impl SumMode {
-    /// The mode this toggles to.
-    #[must_use]
-    pub fn toggled(self) -> SumMode {
-        match self {
-            SumMode::SumSubtree => SumMode::PerProcess,
-            SumMode::PerProcess => SumMode::SumSubtree,
-        }
-    }
-
-    /// Short label for the toolbar pill.
-    pub fn label(self) -> &'static str {
-        match self {
-            SumMode::SumSubtree => "Sum subtree",
-            SumMode::PerProcess => "Per-process",
-        }
-    }
-}
-
 /// One node in the process forest. `children` indexes back into the node
 /// arena; `cpu_subtree`/`mem_subtree` are the post-order roll-ups of this
 /// node + every descendant.
@@ -60,8 +41,6 @@ pub struct ProcNode {
     pub cpu_subtree: f32,
     /// Own memory + the memory of every descendant.
     pub mem_subtree: u64,
-    /// Number of descendants (transitive child count), for the row caption.
-    pub descendants: usize,
 }
 
 /// A built process forest: a flat arena of [`ProcNode`]s plus the indices of
@@ -88,7 +67,6 @@ impl Forest {
                 children: Vec::new(),
                 cpu_subtree: p.cpu,
                 mem_subtree: p.mem_bytes,
-                descendants: 0,
             })
             .collect();
 
@@ -173,7 +151,7 @@ impl Forest {
     }
 
     /// Post-order accumulate each node's own usage + all descendants into
-    /// `cpu_subtree`/`mem_subtree`/`descendants`. Iterative (explicit stack)
+    /// `cpu_subtree`/`mem_subtree`. Iterative (explicit stack)
     /// so a pathological deep tree can't blow the call stack, and cycle-safe
     /// via a visited guard (a corrupted ppid loop can't hang the UI).
     fn roll_up(&mut self) {
@@ -189,19 +167,16 @@ impl Forest {
                 let kids = node_i.children.clone();
                 let mut cpu = node_i.proc.cpu;
                 let mut mem = node_i.proc.mem_bytes;
-                let mut desc = 0usize;
                 for k in kids {
                     let Some(node_k) = self.nodes.get(k) else {
                         continue;
                     };
                     cpu += node_k.cpu_subtree;
                     mem += node_k.mem_subtree;
-                    desc += 1 + node_k.descendants;
                 }
                 if let Some(node_i) = self.nodes.get_mut(i) {
                     node_i.cpu_subtree = cpu;
                     node_i.mem_subtree = mem;
-                    node_i.descendants = desc;
                 }
             } else {
                 match visited.get_mut(i) {
@@ -218,16 +193,6 @@ impl Forest {
                 }
             }
         }
-    }
-
-    /// Every pid that has at least one child — the set the renderer draws an
-    /// expand/collapse triangle for.
-    pub fn parents(&self) -> Vec<u32> {
-        self.nodes
-            .iter()
-            .filter(|n| !n.children.is_empty())
-            .map(|n| n.proc.pid)
-            .collect()
     }
 }
 
@@ -264,16 +229,13 @@ pub struct Row {
     pub cpu: f32,
     pub mem_bytes: u64,
     pub threads: usize,
-    pub status: String,
     /// Indentation level (0 = root).
     pub depth: usize,
-    /// Whether this node has children (draw a triangle).
+    /// Whether this node has children (it shows a disclosure chevron).
     pub has_children: bool,
-    /// Whether this node is currently expanded (triangle direction + whether
+    /// Whether this node is currently expanded (chevron direction + whether
     /// children follow). Always `false` when `has_children` is false.
     pub expanded: bool,
-    /// Transitive descendant count, for the collapsed-parent caption.
-    pub descendants: usize,
 }
 
 /// Options driving `flatten`.
@@ -372,11 +334,9 @@ impl Forest {
                 cpu: 0.0,
                 mem_bytes: 0,
                 threads: 0,
-                status: String::new(),
                 depth: 0,
                 has_children: false,
                 expanded: false,
-                descendants: 0,
             };
         };
         let (cpu, mem) = match opts.sum_mode {
@@ -391,11 +351,9 @@ impl Forest {
             cpu,
             mem_bytes: mem,
             threads: n.proc.threads,
-            status: n.proc.status.clone(),
             depth: 0,
             has_children,
             expanded: false,
-            descendants: n.descendants,
         }
     }
 
@@ -574,7 +532,6 @@ mod tests {
             assert!((discord.cpu_subtree - 65.0).abs() < 1e-3, "cpu sum");
             let mem_mib = discord.mem_subtree / (1024 * 1024);
             assert_eq!(mem_mib, 100 + 500 + 300 + 60, "mem sum");
-            assert_eq!(discord.descendants, 3, "renderer+gpu+audio");
             // The grandchild rolls into the Renderer subtree too: 40 + 5 = 45.
             let renderer = f.nodes.iter().find(|n| n.proc.pid == 11).unwrap();
             assert!((renderer.cpu_subtree - 45.0).abs() < 1e-3);

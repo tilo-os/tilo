@@ -35,6 +35,7 @@ use tilo_actions::remote::ActionHost;
 
 pub const ADDRESS_ENV: &str = "TILO_RUNTIME_MCP_HTTP";
 pub const TOKEN_FILE_ENV: &str = "TILO_RUNTIME_MCP_HTTP_TOKEN_FILE";
+pub const ROOM_ENV: &str = "TILO_RUNTIME_MCP_ROOM";
 const SESSION_HEADER: &str = "mcp-session-id";
 const MAX_BODY_BYTES: usize = crate::mcp_process::MAX_REQUEST_BYTES;
 const MAX_SESSIONS: usize = 256;
@@ -47,6 +48,9 @@ const VIEWER_PREFIX: &str = "/viewer/invitations";
 pub struct Config {
     pub address: SocketAddr,
     pub token: Option<String>,
+    /// Explicit host-selected audience; validated against current admission
+    /// by `RuntimeServices` before the endpoint is created.
+    pub room: Option<String>,
 }
 
 impl Config {
@@ -56,7 +60,7 @@ impl Config {
     /// # Errors
     ///
     /// Rejects an unparsable address, an unreadable or empty token file, and a
-    /// non-loopback address without a token.
+    /// non-loopback address without a token, or a malformed room UUID.
     pub fn from_env() -> io::Result<Option<Self>> {
         let Some(address) = std::env::var_os(ADDRESS_ENV) else {
             return Ok(None);
@@ -68,15 +72,34 @@ impl Config {
         let token = std::env::var_os(TOKEN_FILE_ENV)
             .map(|path| read_token(Path::new(&path)))
             .transpose()?;
-        let config = Self { address, token };
+        let room = std::env::var_os(ROOM_ENV)
+            .map(|value| {
+                value
+                    .into_string()
+                    .map_err(|_| invalid(format!("{ROOM_ENV} must be a room UUID")))
+            })
+            .transpose()?;
+        let config = Self {
+            address,
+            token,
+            room,
+        };
         config.validate()?;
         Ok(Some(config))
     }
 
     /// # Errors
     ///
-    /// Rejects exposing the endpoint beyond loopback without a token.
+    /// Rejects exposing the endpoint beyond loopback without a token or a
+    /// non-canonical selected room UUID.
     pub fn validate(&self) -> io::Result<()> {
+        if self.room.as_deref().is_some_and(|room| {
+            uuid::Uuid::parse_str(room).map_or(true, |id| id.is_nil() || id.to_string() != room)
+        }) {
+            return Err(invalid(format!(
+                "{ROOM_ENV} must be a canonical non-nil room UUID"
+            )));
+        }
         if !self.address.ip().is_loopback() && self.token.is_none() {
             return Err(invalid(format!(
                 "{ADDRESS_ENV} beyond loopback requires {TOKEN_FILE_ENV}"
@@ -99,8 +122,19 @@ fn read_token(path: &Path) -> io::Result<String> {
 }
 
 struct Session<H> {
-    server: Arc<tokio::sync::Mutex<McpServer<H>>>,
+    retire: Option<Box<dyn FnOnce() + Send + Sync>>,
+    /// Shared, not locked: one session's requests overlap, so a
+    /// `tilo_status` answers while its `tilo_invoke` waits.
+    server: Arc<McpServer<H>>,
     last_used: Instant,
+}
+
+impl<H> Drop for Session<H> {
+    fn drop(&mut self) {
+        if let Some(retire) = self.retire.take() {
+            retire();
+        }
+    }
 }
 
 /// The per-endpoint state shared by every connection.
@@ -115,6 +149,9 @@ pub struct Endpoint<H> {
     watch: Option<Arc<WatchLease>>,
     sessions: Mutex<HashMap<String, Session<H>>>,
     open_files: Arc<crate::mcp::OpenFiles>,
+    /// Where sessions read the content actions produced.
+    media: std::sync::OnceLock<Arc<dyn crate::MediaReader>>,
+    session_factory: std::sync::OnceLock<crate::mcp::SessionFactory<H>>,
 }
 
 /// The only body `POST /watch` accepts.
@@ -174,7 +211,27 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
             watch,
             sessions: Mutex::new(HashMap::new()),
             open_files: Arc::default(),
+            media: std::sync::OnceLock::new(),
+            session_factory: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Let sessions answer with the content actions produced, read from
+    /// `media`. Set once, before the endpoint serves.
+    pub fn serve_media(&self, media: Option<Arc<dyn crate::MediaReader>>) {
+        if let Some(media) = media {
+            let _ = self.media.set(media);
+        }
+    }
+
+    /// Install the exact host-owned session factory before serving requests.
+    ///
+    /// # Errors
+    /// Rejects replacing an already installed session factory.
+    pub fn serve_sessions(&self, factory: crate::mcp::SessionFactory<H>) -> io::Result<()> {
+        self.session_factory
+            .set(factory)
+            .map_err(|_| io::Error::other("MCP session factory already set"))
     }
 
     /// Number of live sessions.
@@ -259,7 +316,7 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
             ViewerCall::Issue => viewer.issue(&body),
             ViewerCall::Revoke(id) => viewer.revoke(&id),
             ViewerCall::Role(id) => viewer.set_role(&id, &body),
-            ViewerCall::Renew(id) => viewer.renew(&id, &body, crate::viewer::now_ms()),
+            ViewerCall::Renew(id) => viewer.renew(&id, &body, tilo_clock::unix_now_ms()),
         })
         .await;
         match result {
@@ -300,7 +357,12 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         let (id, server, created) = match (session_id(headers), initialize) {
             (None, true) => match self.create(&request) {
                 Some((id, server)) => (id, server, true),
-                None => return plain(StatusCode::SERVICE_UNAVAILABLE, "too many MCP sessions"),
+                None => {
+                    return plain(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "MCP session admission or capacity unavailable",
+                    );
+                }
             },
             (Some(id), _) => match self.find(&id) {
                 Some(server) => (id, server, false),
@@ -308,7 +370,7 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
             },
             (None, false) => return plain(StatusCode::BAD_REQUEST, "missing Mcp-Session-Id"),
         };
-        let reply = server.lock().await.handle(request).await;
+        let reply = server.handle(request).await;
         let header = created.then_some(id.as_str());
         if let Some(reply) = reply {
             return json_response(StatusCode::OK, &reply, header);
@@ -322,19 +384,26 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         response
     }
 
-    fn create(
-        &self,
-        initialize: &Value,
-    ) -> Option<(String, Arc<tokio::sync::Mutex<McpServer<H>>>)> {
+    fn create(&self, initialize: &Value) -> Option<(String, Arc<McpServer<H>>)> {
         let id = uuid::Uuid::new_v4().to_string();
-        let server = Arc::new(tokio::sync::Mutex::new(
-            McpServer::new(self.host.clone(), self.room.clone(), self.actor.clone())
-                .with_agent_run(agent_run_id(&id), client_label(initialize))
-                .with_computer(self.computer.clone())
-                .with_open_files(Arc::clone(&self.open_files)),
-        ));
+        let server = match self.session_factory.get() {
+            Some(factory) => factory().ok()?,
+            None => McpServer::new(self.host.clone(), self.room.clone(), self.actor.clone()),
+        };
+        if !server.audience_matches(&self.room, &self.actor) {
+            return None;
+        }
+        let server = server
+            .with_agent_run(agent_run_id(&id), client_label(initialize))
+            .with_computer(self.computer.clone())
+            .with_open_files(Arc::clone(&self.open_files))
+            .with_media(self.media.get().cloned());
+        let caller = server.execution_caller();
+        let host = self.host.clone();
+        let server = Arc::new(server);
         let now = Instant::now();
         let session = Session {
+            retire: Some(Box::new(move || host.retire_execution(&caller))),
             server: Arc::clone(&server),
             last_used: now,
         };
@@ -381,9 +450,21 @@ impl<H: ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
         }
     }
 
-    fn find(&self, id: &str) -> Option<Arc<tokio::sync::Mutex<McpServer<H>>>> {
-        self.sessions.lock().ok()?.get_mut(id).map(|session| {
-            session.last_used = Instant::now();
+    fn find(&self, id: &str) -> Option<Arc<McpServer<H>>> {
+        let mut sessions = self.sessions.lock().ok()?;
+        let now = Instant::now();
+        if sessions
+            .get(id)
+            .is_some_and(|session| now.duration_since(session.last_used) >= SESSION_IDLE)
+        {
+            let retired = sessions.remove(id);
+            drop(sessions);
+            drop(retired);
+            self.release_agent(id);
+            return None;
+        }
+        sessions.get_mut(id).map(|session| {
+            session.last_used = now;
             Arc::clone(&session.server)
         })
     }
@@ -533,4 +614,4 @@ pub fn spawn<H: ActionHost + Clone + Send + Sync + 'static>(
 
 #[cfg(test)]
 #[path = "mcp_http_tests.rs"]
-mod tests;
+pub(crate) mod tests;

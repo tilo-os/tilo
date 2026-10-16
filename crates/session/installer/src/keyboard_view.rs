@@ -1,8 +1,8 @@
 //! [`KeyboardView`] — a live visual preview of the selected keyboard
 //! layout.
 //!
-//! It reads the chosen layout's *display name* from the CRDT (the same
-//! `installer.keymap` path the layout [`ui::widget::Dropdown`] writes to),
+//! It reads the chosen layout's *display name* from the wizard's view state
+//! (the same [`ui::LocalState`] the layout [`ui::widget::Dropdown`] edits),
 //! resolves it against [`crate::layouts`], and draws a keyboard — the
 //! number row, three letter rows and a spacebar row — as rounded key caps,
 //! each showing the glyph that physical key produces under the layout. The
@@ -18,12 +18,12 @@
 //! nothing is hard-coded.
 
 use std::collections::HashMap;
-use ui::doc::read_str_or_text;
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
 
 use ui::presence::PresenceCtx;
@@ -43,20 +43,29 @@ const ROWS: usize = 5;
 const STAGGER: [f64; 4] = [0.0, 0.5, 0.75, 1.25];
 
 pub struct KeyboardView {
-    /// CRDT path holding the selected layout's display name.
-    value_path: String,
+    /// The selected layout's display name.
+    selection: ui::LocalState<String>,
     /// Resolved layout to render (defaults to English / US).
     layout: &'static Layout,
     rect: Rect,
 }
 
 impl KeyboardView {
-    /// Build a preview reading the selected layout from `value_path`.
-    pub fn new(value_path: &str) -> Self {
-        Self {
-            value_path: value_path.to_string(),
+    /// Build a preview of the layout named by `selection`.
+    pub fn new(selection: &ui::LocalState<String>) -> Self {
+        let mut view = Self {
+            selection: selection.clone(),
             layout: layouts::default_layout(),
             rect: Rect::ZERO,
+        };
+        view.resolve();
+        view
+    }
+
+    /// Follow the selection; an unknown name keeps the current layout.
+    fn resolve(&mut self) {
+        if let Some(layout) = self.selection.with(|name| layouts::by_display_name(name)) {
+            self.layout = layout;
         }
     }
 
@@ -77,7 +86,13 @@ impl KeyboardView {
         shift: Option<&str>,
     ) {
         let cap = RoundedRect::from_rect(key, (theme.radius_standard * 0.6).max(2.0));
-        scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &cap);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &cap,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -121,14 +136,9 @@ impl KeyboardView {
 }
 
 impl Widget for KeyboardView {
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
+    fn sync(&mut self, _state: &AppModel, _root: &ModelPath) {
         // Re-resolve every sync so the preview tracks the dropdown live.
-        if let Some(name) = read_str_or_text(state, root, self.value_path.as_str())
-            && let Some(l) = layouts::by_display_name(&name)
-        {
-            self.layout = l;
-        }
+        self.resolve();
     }
 
     fn build_layout(
@@ -137,38 +147,10 @@ impl Widget for KeyboardView {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // `new_leaf` only errors for a corrupted tree; `Widget::build_layout`
-        // returns a bare `NodeId` across every implementor, so surfacing a
-        // theoretical error here would mean threading a `Result` through the
-        // whole toolkit for a branch that can't be taken.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh style cannot fail")]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(HEIGHT),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(crate::full_width_row(HEIGHT), node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `layout` only errors for a `NodeId` from a different tree, which
-        // never happens here since `node` is always the id this same widget
-        // received from its own `build_layout` call.
-        #[allow(clippy::unwrap_used, reason = "node always belongs to this tree")]
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-    }
+    ui::rect_geometry!();
 
     #[allow(
         clippy::similar_names,
@@ -186,10 +168,16 @@ impl Widget for KeyboardView {
             return;
         }
 
-        // Board background — surfaces.base, a shade below the card so the
-        // raised key caps pop.
+        // Board background — the window ground, a shade below the raised
+        // key caps so they pop.
         let board = RoundedRect::from_rect(self.rect, theme.radius_standard);
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &board);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.content,
+            None,
+            &board,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -239,72 +227,53 @@ impl Widget for KeyboardView {
     fn test_id(&self) -> Option<&str> {
         Some("keyboard_view")
     }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::transaction::Transactable;
-    use automerge::{AutoCommit, ObjId, ObjType, ReadDoc};
 
-    fn doc_with_keymap(value: &str) -> (AutoCommit, ObjId) {
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let obj = doc
-            .put_object(&root, "installer.keymap", ObjType::Text)
-            .unwrap();
-        let _ = doc.splice_text(&obj, 0, 0, value);
-        (doc, root)
+    fn sync(view: &mut KeyboardView) {
+        let doc = automerge::AutoCommit::new();
+        view.sync(&doc, &automerge::ROOT);
+        assert_eq!(automerge::ReadDoc::length(&doc, automerge::ROOT), 0);
     }
 
     #[test]
-    fn keyboard_view_follows_the_synced_layout_as_a_non_focusable_leaf() {
-        // Phase `defaults_to_us_before_any_sync`.
+    fn keyboard_view_follows_the_selected_layout_as_a_non_focusable_leaf() {
+        // Phase `defaults_to_us_without_a_known_selection`.
         {
-            let kv = KeyboardView::new("installer.keymap");
+            let kv = KeyboardView::new(&ui::LocalState::new(String::new()));
             assert_eq!(kv.layout_id(), "us");
         }
-        // Phase `sync_resolves_selected_layout`.
+        // Phase `resolves_the_selected_layout`.
         {
-            let mut kv = KeyboardView::new("installer.keymap");
-            let (mut doc, root) = doc_with_keymap("German (QWERTZ)");
-            kv.sync(&mut doc, &root);
+            let kv = KeyboardView::new(&ui::LocalState::new("German (QWERTZ)".into()));
             assert_eq!(kv.layout_id(), "de");
         }
         // Phase `sync_tracks_changes_live`.
         {
-            let mut kv = KeyboardView::new("installer.keymap");
-            let (mut doc, root) = doc_with_keymap("French (AZERTY)");
-            kv.sync(&mut doc, &root);
+            let selection = ui::LocalState::new("French (AZERTY)".to_string());
+            let mut kv = KeyboardView::new(&selection);
+            sync(&mut kv);
             assert_eq!(kv.layout_id(), "fr");
 
-            // Change the stored selection, re-sync → preview follows.
-            let (_, obj) = doc.get(&root, "installer.keymap").unwrap().unwrap();
-            let cur = doc.text(&obj).unwrap();
-            let _ = doc.splice_text(
-                &obj,
-                0,
-                ui::num::isize_of_usize(cur.chars().count()),
-                "Dvorak",
-            );
-            kv.sync(&mut doc, &root);
+            // Change the selection, re-sync → preview follows.
+            selection.set("Dvorak".to_string());
+            sync(&mut kv);
             assert_eq!(kv.layout_id(), "dvorak");
         }
         // Phase `unknown_value_keeps_current_layout`.
         {
-            let mut kv = KeyboardView::new("installer.keymap");
-            let (mut doc, root) = doc_with_keymap("Nonsense");
-            kv.sync(&mut doc, &root);
+            let selection = ui::LocalState::new("Nonsense".to_string());
+            let mut kv = KeyboardView::new(&selection);
+            sync(&mut kv);
             // Falls back to the default (no panic, no change to a bogus layout).
             assert_eq!(kv.layout_id(), "us");
         }
         // Phase `is_a_non_focusable_leaf`.
         {
-            let kv = KeyboardView::new("installer.keymap");
+            let kv = KeyboardView::new(&ui::LocalState::new(String::new()));
             assert!(!kv.is_focusable());
             assert!(kv.children().is_empty());
         }

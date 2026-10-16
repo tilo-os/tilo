@@ -99,9 +99,12 @@ pub enum FileCommand {
     UndoLastTrash,
     /// Copy / cut the selection into the clipboard.
     Copy,
+    /// Import the selected cloud entry once into the user's Downloads folder.
+    ImportOnceToDownloads,
     Cut,
     /// Paste the clipboard into the current directory.
     Paste,
+    RecoverClipboardTransfers,
     ExtractHere,
     /// Extract the archive currently being browsed. Unlike `ExtractHere`, this
     /// does not depend on a synthetic in-archive row being selected.
@@ -146,6 +149,12 @@ pub enum FileCommand {
     RevealInFolder(PathBuf),
     /// Remove `path` from the Recent list; the file itself is untouched.
     ForgetRecent(PathBuf),
+    /// Open what is wrong with the cloud account with this id (chosen from
+    /// the places list, where its folder is not mounted).
+    ShowRemoteAccount(String),
+    /// Read the cloud account with this id again (after the person signed in
+    /// elsewhere) and open its folder if it is now available.
+    RecheckRemoteAccount(String),
     /// Open the "New File" flyout populated from the Templates directory.
     /// Handled by the app's menu routing (opens a submenu), not applied.
     OpenTemplatesMenu,
@@ -160,10 +169,6 @@ pub enum FileCommand {
     /// Create a new file in the current directory by copying the given
     /// template file, then drop into inline-rename.
     NewFromTemplate(PathBuf),
-    /// Request the favourite context menu for the favourite at `path` (a
-    /// right-press on a sidebar favourite). The app opens a labelled menu with
-    /// the normal folder actions plus "Remove from Favourites".
-    OpenFavoriteMenu(PathBuf),
     /// Begin dragging a row out of the file list (a press that moved past the
     /// drag threshold). The app carries the row(s) as a floating ghost until
     /// they are dropped: onto a folder (or the parent) they move there; a single
@@ -237,7 +242,7 @@ pub enum FileCommand {
     /// Grant view access to one identity-layer-resolved human root. Names are
     /// intentionally not carried in the command or authority protocol.
     ShareWithPerson {
-        person: collab_types::Ed25519PublicKey,
+        person: fs_protocol::Ed25519PublicKey,
     },
     /// Submit one fully specified share-composer choice. The app dispatches
     /// the authority request on its background worker.
@@ -251,7 +256,7 @@ pub enum FileCommand {
     ShowHistory,
     /// Select an exact immutable version in the dedicated history sheet.
     SelectHistoryVersion {
-        version_id: collab_types::FileVersionId,
+        version_id: fs_protocol::FileVersionId,
     },
     /// Switch the history sheet between the selected version's details and a
     /// signed content/metadata identity comparison with the current version.
@@ -261,26 +266,26 @@ pub enum FileCommand {
     /// is an intent rather than a second, unsynchronised history implementation.
     ShowInWorkspaceActivity {
         record_id: String,
-        version_id: collab_types::FileVersionId,
+        version_id: fs_protocol::FileVersionId,
     },
     /// Restore one immutable version by appending a new Restore version.
     RestoreVersion {
-        version_id: collab_types::FileVersionId,
+        version_id: fs_protocol::FileVersionId,
     },
     /// Resolve one open conflict using the exact immutable member selected in
     /// the history projection. The filesystem revalidates it against current
     /// signed state before committing.
     ResolveConflict {
         conflict_id: uuid::Uuid,
-        strategy: collab_types::ConflictStrategy,
-        version_id: collab_types::FileVersionId,
+        strategy: fs_protocol::ConflictStrategy,
+        version_id: fs_protocol::FileVersionId,
     },
     /// Open a non-committing review step for an exact merge proposal.  The
     /// final action remains separately signed and re-runs the daemon's
     /// deterministic preflight, so a stale menu item cannot merge new data.
     ReviewConflictMerge {
         conflict_id: uuid::Uuid,
-        version_id: collab_types::FileVersionId,
+        version_id: fs_protocol::FileVersionId,
         other_device: [u8; 32],
     },
     CloseCollabPanel,

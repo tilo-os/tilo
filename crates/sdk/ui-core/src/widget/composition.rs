@@ -36,7 +36,7 @@ macro_rules! column {
 ///
 /// let actions = tilo_ui::row![
 ///     Text::new("status-ready"),
-///     Button::new("save", "save-label", None),
+///     Button::new("save", "save-label"),
 /// ];
 /// ```
 #[macro_export]
@@ -73,7 +73,7 @@ mod tests {
     fn layouts_accept_heterogeneous_or_no_children() {
         fn layouts_accept_heterogeneous_children_and_remain_concrete() {
             let column =
-                crate::column![Text::new("Title"), Button::new("save", "Save", None)].with_gap(7.0);
+                crate::column![Text::new("Title"), Button::new("save", "Save")].with_gap(7.0);
             let row = crate::row![Text::new("A"), Text::new("B")].no_wrap();
             let stack = crate::stack![Text::new("Back"), Text::new("Front")];
 

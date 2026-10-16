@@ -2,9 +2,6 @@
     test,
     allow(
         clippy::disallowed_methods,
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
@@ -16,7 +13,7 @@
     )
 )]
 
-//! App-scoped secret storage: one API on Linux, macOS and the web.
+//! App-scoped secret storage: one API on Linux, macOS, Windows and the web.
 //!
 //! A [`SecretStore`] belongs to one app ([`SecretStore::for_app`]); its keys
 //! name that app's secrets and no other app's. [`SecretStore::memory`] keeps
@@ -26,7 +23,13 @@
 //! |---|---|---|
 //! | Linux | the freedesktop Secret Service over D-Bus (GNOME Keyring, `KWallet`) | [`Protection::OsKeychain`] |
 //! | macOS | the login Keychain's generic passwords | [`Protection::OsKeychain`] |
+//! | Windows | generic credentials in the user's Credential Manager (DPAPI-encrypted, this machine only) | [`Protection::OsKeychain`] |
 //! | Web | AES-GCM under a non-extractable `CryptoKey`; key and ciphertext in `IndexedDB` | [`Protection::BrowserWrapped`] |
+//! | Linux, macOS with `TILO_SECRETS_DIR` | sealed owner-only files in that directory | [`Protection::LocalFile`] |
+//!
+//! [`SECRETS_DIR_ENV`] is for machines that have no keychain to unlock: a
+//! headless node or server. Every process given it keeps its secrets in that
+//! directory instead of the system store; see the `files` module.
 //!
 //! `BrowserWrapped` protects secrets at rest (a copied profile, a disk
 //! image), not against script running in the page's origin.
@@ -49,14 +52,27 @@ use zeroize::Zeroizing;
 
 mod caps;
 pub mod conformance;
+#[cfg(any(target_os = "windows", test))]
+mod credential;
+#[cfg(target_os = "linux")]
+mod device_proof;
+#[cfg(unix)]
+mod files;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub mod web;
+#[cfg(target_os = "windows")]
+mod windows;
 
-pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
+pub use caps::{Availability, Feature, Unsupported, availability, available};
+/// A process that holds the device identity proves it to
+/// `tilo-secret-service`, which cannot read a non-dumpable process's
+/// executable (see the module docs of `device_proof`).
+#[cfg(target_os = "linux")]
+pub use device_proof::{arm as arm_device_proof, prove as prove_device_caller};
 
 /// Secret bytes: wiped from memory on drop and never printed by `Debug`.
 #[derive(Clone, PartialEq, Eq)]
@@ -86,6 +102,9 @@ pub enum Protection {
     OsKeychain,
     /// Encrypted under a key the browser will not export; see the crate docs.
     BrowserWrapped,
+    /// Sealed in owner-only files under a key file beside them: as private
+    /// as the machine's disk and the Unix account that owns them.
+    LocalFile,
     /// In this process only; gone when it exits.
     Memory,
 }
@@ -151,24 +170,6 @@ pub trait SecretBackend: Send + Sync {
     fn probe(&self) -> Result<(), SecretError> {
         Ok(())
     }
-    /// The first secret an earlier tool stored under its own item
-    /// `attributes` (`secret-tool store --label=… <name> <value> …`). Only
-    /// the Secret Service has item attributes; other stores have none.
-    ///
-    /// # Errors
-    /// The store is unavailable or refused.
-    fn legacy_get(&self, attributes: &[(&str, &str)]) -> Result<Option<Secret>, SecretError> {
-        let _ = attributes;
-        Ok(None)
-    }
-    /// Delete every item carrying `attributes`; none is success.
-    ///
-    /// # Errors
-    /// The store is unavailable or refused.
-    fn legacy_delete(&self, attributes: &[(&str, &str)]) -> Result<(), SecretError> {
-        let _ = attributes;
-        Ok(())
-    }
 }
 
 #[derive(Clone)]
@@ -204,7 +205,7 @@ impl SecretStore {
             backend: THREAD_BACKEND
                 .with(|scoped| scoped.borrow().clone())
                 .or_else(|| PROCESS_BACKEND.get().cloned())
-                .map_or_else(system_backend, Backend::Sync),
+                .map_or_else(machine_backend, Backend::Sync),
         }
     }
 
@@ -326,50 +327,6 @@ impl SecretStore {
         self.sync()?.delete(&self.app, key)
     }
 
-    /// The secret under `key`, else one an earlier build stored in the
-    /// Secret Service under its own `legacy` item attributes, which is copied
-    /// under `key` and read back before it is returned. The legacy item stays
-    /// for older builds; [`delete_with_legacy_blocking`](Self::delete_with_legacy_blocking)
-    /// removes both. Stores without item attributes (the Keychain, the
-    /// browser) read `key` alone. Desktop code only.
-    ///
-    /// # Errors
-    /// As `get_blocking` and `put_blocking`, or the copy did not read back.
-    pub fn get_or_adopt_blocking(
-        &self,
-        key: &str,
-        legacy: &[(&str, &str)],
-        options: PutOptions,
-    ) -> Result<Option<Secret>, SecretError> {
-        if let Some(secret) = self.get_blocking(key)? {
-            return Ok(Some(secret));
-        }
-        let Some(adopted) = self.sync()?.legacy_get(legacy)? else {
-            return Ok(None);
-        };
-        self.put_blocking(key, adopted.expose(), options)?;
-        match self.get_blocking(key)? {
-            Some(stored) if stored == adopted => Ok(Some(adopted)),
-            _ => Err(SecretError::Failed(
-                "the secret store did not return the adopted secret".into(),
-            )),
-        }
-    }
-
-    /// Delete `key` and any item an earlier build stored under the `legacy`
-    /// attributes of [`get_or_adopt_blocking`](Self::get_or_adopt_blocking).
-    ///
-    /// # Errors
-    /// As `delete_blocking`.
-    pub fn delete_with_legacy_blocking(
-        &self,
-        key: &str,
-        legacy: &[(&str, &str)],
-    ) -> Result<(), SecretError> {
-        self.delete_blocking(key)?;
-        self.sync()?.legacy_delete(legacy)
-    }
-
     /// Whether the store answers on this session, blocking the calling
     /// thread. The web store always answers.
     ///
@@ -396,10 +353,110 @@ impl SecretStore {
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
             Backend::Web if web::mirrored() => Ok(&web::MirrorBackend),
             #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-            Backend::Web => Err(SecretError::Unsupported(caps::unsupported(
-                Feature::Blocking,
-            ))),
+            Backend::Web => Err(SecretError::Unsupported(Unsupported::of(Feature::Blocking))),
         }
+    }
+}
+
+impl SecretStore {
+    /// The secret one item of a document needs for `purpose`: a database
+    /// profile's password, a connection's SSH passphrase, an account's
+    /// one-time-password seed. The document names the item by its id and
+    /// never holds the secret; the secret stays in this store on this
+    /// device.
+    ///
+    /// `purpose` is one of the app's own fixed names and contains no `/`;
+    /// `item` is the item's id in the document.
+    #[must_use]
+    pub fn item(&self, purpose: &'static str, item: &str) -> ItemSecret {
+        debug_assert!(
+            !purpose.is_empty() && !purpose.contains('/'),
+            "an item secret's purpose is a plain name: {purpose:?}"
+        );
+        ItemSecret {
+            store: self.clone(),
+            key: format!("{purpose}/{item}"),
+            label: format!("{} {purpose} for {item}", self.app),
+        }
+    }
+}
+
+/// The secret of one document item in an app's [`SecretStore`]; see
+/// [`SecretStore::item`].
+#[derive(Clone, Debug)]
+pub struct ItemSecret {
+    store: SecretStore,
+    key: String,
+    label: String,
+}
+
+impl ItemSecret {
+    /// The store key: `<purpose>/<item id>`.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// The secret, or `None` when this device has none for the item.
+    ///
+    /// # Errors
+    /// The store is unavailable or refused.
+    pub async fn get(&self) -> Result<Option<Secret>, SecretError> {
+        self.store.get(&self.key).await
+    }
+
+    /// Keep `value` as the item's secret, replacing any earlier one.
+    ///
+    /// # Errors
+    /// The store is unavailable or refused.
+    pub async fn put(&self, value: &[u8]) -> Result<(), SecretError> {
+        let options = PutOptions {
+            label: Some(self.label.clone()),
+        };
+        self.store.put(&self.key, value, options).await
+    }
+
+    /// Forget the item's secret, as when the item is deleted.
+    ///
+    /// # Errors
+    /// The store is unavailable or refused.
+    pub async fn delete(&self) -> Result<(), SecretError> {
+        self.store.delete(&self.key).await
+    }
+
+    /// [`get`](Self::get), blocking the calling thread. Desktop code only.
+    ///
+    /// # Errors
+    /// As `get`, and [`Feature::Blocking`] unsupported on the web.
+    pub fn get_blocking(&self) -> Result<Option<Secret>, SecretError> {
+        self.store.get_blocking(&self.key)
+    }
+
+    /// [`put`](Self::put), blocking the calling thread. Desktop code only.
+    ///
+    /// # Errors
+    /// As `put`, and [`Feature::Blocking`] unsupported on the web.
+    pub fn put_blocking(&self, value: &[u8]) -> Result<(), SecretError> {
+        let options = PutOptions {
+            label: Some(self.label.clone()),
+        };
+        self.store.put_blocking(&self.key, value, options)
+    }
+
+    /// [`delete`](Self::delete), blocking the calling thread. Desktop code
+    /// only.
+    ///
+    /// # Errors
+    /// As `delete`, and [`Feature::Blocking`] unsupported on the web.
+    pub fn delete_blocking(&self) -> Result<(), SecretError> {
+        self.store.delete_blocking(&self.key)
+    }
+
+    /// Whether this device holds the item's secret, for availability such
+    /// as "secret present here". An unavailable store holds none.
+    #[must_use]
+    pub fn present_blocking(&self) -> bool {
+        matches!(self.get_blocking(), Ok(Some(_)))
     }
 }
 
@@ -500,6 +557,53 @@ async fn off_thread<T: Send + 'static>(
         })
 }
 
+/// Names the directory of a file-backed store that replaces the system
+/// store for every process given it.
+pub const SECRETS_DIR_ENV: &str = "TILO_SECRETS_DIR";
+
+/// The store the machine provides: the file-backed one where
+/// [`SECRETS_DIR_ENV`] names a directory, else the system's.
+fn machine_backend() -> Backend {
+    #[cfg(unix)]
+    if let Some(dir) = std::env::var_os(SECRETS_DIR_ENV).filter(|dir| !dir.is_empty()) {
+        static FILES: std::sync::OnceLock<Result<Arc<dyn SecretBackend>, SecretError>> =
+            std::sync::OnceLock::new();
+        let opened = FILES.get_or_init(|| {
+            files::FileStore::open(std::path::Path::new(&dir))
+                .map(|store| Arc::new(store) as Arc<dyn SecretBackend>)
+        });
+        return Backend::Sync(match opened {
+            Ok(store) => store.clone(),
+            Err(error) => Arc::new(Refused(error.clone())),
+        });
+    }
+    system_backend()
+}
+
+/// A configured store that could not be opened: every call says why,
+/// rather than falling back to another store.
+#[cfg(unix)]
+struct Refused(SecretError);
+
+#[cfg(unix)]
+impl SecretBackend for Refused {
+    fn protection(&self) -> Protection {
+        Protection::LocalFile
+    }
+    fn get(&self, _app: &str, _key: &str) -> Result<Option<Secret>, SecretError> {
+        Err(self.0.clone())
+    }
+    fn put(&self, _app: &str, _key: &str, _value: &[u8], _label: &str) -> Result<(), SecretError> {
+        Err(self.0.clone())
+    }
+    fn delete(&self, _app: &str, _key: &str) -> Result<(), SecretError> {
+        Err(self.0.clone())
+    }
+    fn probe(&self) -> Result<(), SecretError> {
+        Err(self.0.clone())
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn system_backend() -> Backend {
     Backend::Sync(Arc::new(linux::SecretService))
@@ -522,6 +626,21 @@ fn system_backend() -> Backend {
     Backend::Sync(Arc::new(macos::Keychain::new()))
 }
 
+/// As on macOS, a debug test build in the test environment never writes the
+/// user's own Credential Manager unless `TILO_SECRETS_SYSTEM_TEST` asks.
+#[cfg(target_os = "windows")]
+fn system_backend() -> Backend {
+    if cfg!(debug_assertions)
+        && std::env::var_os("TILO_TEST_ENVIRONMENT").is_some()
+        && std::env::var_os("TILO_SECRETS_SYSTEM_TEST").is_none()
+    {
+        return Backend::Sync(Arc::new(UnsupportedBackend(
+            "the test environment has no Credential Manager",
+        )));
+    }
+    Backend::Sync(Arc::new(windows::CredentialManager))
+}
+
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 fn system_backend() -> Backend {
     Backend::Web
@@ -530,6 +649,7 @@ fn system_backend() -> Backend {
 #[cfg(not(any(
     target_os = "linux",
     target_os = "macos",
+    target_os = "windows",
     all(target_arch = "wasm32", target_os = "unknown")
 )))]
 fn system_backend() -> Backend {
@@ -538,8 +658,8 @@ fn system_backend() -> Backend {
     )))
 }
 
-/// No secret store, and why: a target without one (Windows keeps DPAPI
-/// custody in `secret-vault` for now), or a macOS test environment.
+/// No secret store, and why: a target without one, or a macOS or Windows
+/// test environment.
 #[cfg(not(any(
     target_os = "linux",
     all(target_arch = "wasm32", target_os = "unknown")
@@ -629,91 +749,28 @@ mod tests {
         assert_eq!(a.get_blocking("token").unwrap().unwrap().expose(), b"a's");
     }
 
-    /// Secret Service item attributes, as `secret-tool` wrote them.
-    type Attributes = Vec<(String, String)>;
-
-    /// A memory store that also holds one item under Secret Service
-    /// attributes.
-    struct WithLegacy {
-        store: MemoryBackend,
-        legacy: Mutex<Option<(Attributes, Secret)>>,
-    }
-
-    impl WithLegacy {
-        fn matches(&self, attributes: &[(&str, &str)]) -> Option<Secret> {
-            let wanted: Attributes = attributes
-                .iter()
-                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
-                .collect();
-            let legacy = self.legacy.lock().unwrap().clone();
-            let (stored, secret) = legacy?;
-            (stored == wanted).then_some(secret)
-        }
-    }
-
-    impl SecretBackend for WithLegacy {
-        fn protection(&self) -> Protection {
-            Protection::Memory
-        }
-        fn get(&self, app: &str, key: &str) -> Result<Option<Secret>, SecretError> {
-            self.store.get(app, key)
-        }
-        fn put(&self, app: &str, key: &str, value: &[u8], label: &str) -> Result<(), SecretError> {
-            self.store.put(app, key, value, label)
-        }
-        fn delete(&self, app: &str, key: &str) -> Result<(), SecretError> {
-            self.store.delete(app, key)
-        }
-        fn legacy_get(&self, attributes: &[(&str, &str)]) -> Result<Option<Secret>, SecretError> {
-            Ok(self.matches(attributes))
-        }
-        fn legacy_delete(&self, attributes: &[(&str, &str)]) -> Result<(), SecretError> {
-            if self.matches(attributes).is_some() {
-                *self.legacy.lock().unwrap() = None;
-            }
-            Ok(())
-        }
-    }
-
     #[test]
-    fn a_legacy_item_is_adopted_under_the_key_and_deleted_with_it() {
-        const LEGACY: &[(&str, &str)] = &[("tilo-purpose", "p"), ("tilo-key", "k")];
-        let backend = Arc::new(WithLegacy {
-            store: MemoryBackend::default(),
-            legacy: Mutex::new(Some((
-                vec![
-                    ("tilo-purpose".into(), "p".into()),
-                    ("tilo-key".into(), "k".into()),
-                ],
-                Secret::new(b"old".to_vec()),
-            ))),
-        });
-        let store = SecretStore::with_backend("so.tilo.a", backend.clone());
+    fn item_secrets_are_kept_per_purpose_and_item() {
+        let store = SecretStore::memory("so.tilo.db-client");
+        let alpha = store.item("password", "profile-alpha");
+        let beta = store.item("password", "profile-beta");
+        let alpha_key = store.item("key-passphrase", "profile-alpha");
+        assert!(!alpha.present_blocking());
+        alpha.put_blocking(b"hunter2").unwrap();
+        assert!(alpha.present_blocking());
+        assert!(!beta.present_blocking());
+        assert!(!alpha_key.present_blocking());
+        assert_eq!(alpha.key(), "password/profile-alpha");
         assert_eq!(
             store
-                .get_or_adopt_blocking("new", &[("tilo-purpose", "other")], PutOptions::default())
-                .unwrap(),
-            None
+                .get_blocking("password/profile-alpha")
+                .unwrap()
+                .unwrap()
+                .expose(),
+            b"hunter2"
         );
-        let adopted = store
-            .get_or_adopt_blocking("new", LEGACY, PutOptions::default())
-            .unwrap()
-            .unwrap();
-        assert_eq!(adopted.expose(), b"old");
-        assert_eq!(store.get_blocking("new").unwrap().unwrap().expose(), b"old");
-        assert!(
-            backend.matches(LEGACY).is_some(),
-            "older builds still read theirs"
-        );
-        store.delete_with_legacy_blocking("new", LEGACY).unwrap();
-        assert_eq!(store.get_blocking("new").unwrap(), None);
-        assert!(backend.matches(LEGACY).is_none());
-        assert_eq!(
-            store
-                .get_or_adopt_blocking("new", LEGACY, PutOptions::default())
-                .unwrap(),
-            None
-        );
+        alpha.delete_blocking().unwrap();
+        assert_eq!(alpha.get_blocking().unwrap(), None);
     }
 
     #[test]
@@ -756,62 +813,5 @@ mod tests {
         let store = SecretStore::for_app("so.tilo.secrets-conformance");
         store.probe_blocking().unwrap();
         conformance::check_store_blocking(&store);
-    }
-
-    /// An item `secret-tool` stored before this crate existed is adopted from
-    /// the real Secret Service, and deleted with the adopted key.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn the_system_store_adopts_a_secret_tool_item_when_asked() {
-        use std::io::Write as _;
-        use std::process::{Command, Stdio};
-
-        if std::env::var_os("TILO_SECRETS_SYSTEM_TEST").is_none() {
-            return;
-        }
-        let nonce = format!("{}", std::process::id());
-        let legacy = [
-            ("tilo-purpose", "tilo-secrets-adoption-test"),
-            ("tilo-key", nonce.as_str()),
-        ];
-        let mut writer = Command::new("secret-tool")
-            .args(["store", "--label=tilo-secrets adoption test"])
-            .args(legacy.iter().flat_map(|(name, value)| [*name, *value]))
-            .stdin(Stdio::piped())
-            .spawn()
-            .expect("secret-tool is installed");
-        writer
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(b"pre-existing")
-            .unwrap();
-        assert!(writer.wait().unwrap().success());
-        let lookup = || {
-            Command::new("secret-tool")
-                .arg("lookup")
-                .args(legacy.iter().flat_map(|(name, value)| [*name, *value]))
-                .output()
-                .unwrap()
-                .stdout
-        };
-        assert_eq!(lookup(), b"pre-existing");
-
-        let store = SecretStore::for_app("so.tilo.secrets-adoption");
-        let adopted = store
-            .get_or_adopt_blocking("adopted", &legacy, PutOptions::default())
-            .unwrap()
-            .expect("the secret-tool item is found");
-        assert_eq!(adopted.expose(), b"pre-existing");
-        assert_eq!(
-            store.get_blocking("adopted").unwrap().unwrap().expose(),
-            b"pre-existing"
-        );
-        assert_eq!(lookup(), b"pre-existing", "older builds still read theirs");
-        store
-            .delete_with_legacy_blocking("adopted", &legacy)
-            .unwrap();
-        assert_eq!(store.get_blocking("adopted").unwrap(), None);
-        assert!(lookup().is_empty());
     }
 }

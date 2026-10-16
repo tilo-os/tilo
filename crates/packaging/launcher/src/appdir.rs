@@ -17,6 +17,16 @@
 //!
 //! A launch with no room gets the [`PERSONAL_ROOM`]: one directory like any
 //! other, unreachable from a workspace.
+//!
+//! ## The person's own records are one directory per app
+//!
+//! Some of an app's data belongs to the person rather than to any room:
+//! what they watched, the words they taught the keyboard. Those records
+//! live in the person's own room (`docs/architecture/storage.md`, "Person
+//! records") and must be one record on the device whatever room the app is
+//! opened in, so the launcher binds one more directory, the same for every
+//! room: `<data home>/tilo-person/<package>` at [`SANDBOX_PERSON_DIR`],
+//! named by [`PERSON_DIR_ENV`]. The app keeps nothing else there.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -38,6 +48,17 @@ pub const PERSONAL_ROOM: &str = "personal";
 
 /// Directory under the user's data home that holds every room.
 pub const ROOMS_DIR: &str = "tilo-rooms";
+
+/// Directory under the user's data home that holds each app's records of
+/// the person's own, shared by the app's launches in every room.
+pub const PERSON_DIR: &str = "tilo-person";
+
+/// Where the app's person directory appears inside the sandbox.
+pub const SANDBOX_PERSON_DIR: &str = "/run/tilo/person";
+
+/// Env var naming [`SANDBOX_PERSON_DIR`]; the toolkit keeps the person's
+/// records there (`ui::application::PERSON_DIR_ENV`, the same name).
+pub const PERSON_DIR_ENV: &str = "TILO_PERSON_DIR";
 
 /// Turn a workspace id into a single path component that cannot escape
 /// its parent.
@@ -85,7 +106,7 @@ fn hex_digest(raw: &str) -> String {
 /// The user's data home, as the *launcher's* own environment describes
 /// it. Mirrors `cli::data_home` so host and in-sandbox sides agree.
 pub fn host_data_home() -> Option<PathBuf> {
-    xdg_paths::xdg::data_home()
+    tilo_paths::xdg::data_home()
 }
 
 /// Host location of one package's directory in one room.
@@ -136,12 +157,69 @@ pub fn prepare_host_app_dir(
     let dir = host_app_dir(data_home, &room, package_id);
     std::fs::create_dir_all(&dir)?;
     // The XDG tree the environment will point at, created up front so a
-    // first-run write doesn't have to create its own parent.
-    for sub in [".local/share", ".local/state", ".config", ".cache"] {
-        std::fs::create_dir_all(dir.join(sub))?;
+    // first-run write doesn't have to create its own parent. The app owns
+    // this directory read-write, so a component it replaced with a symlink
+    // would send the unconfined launcher's `mkdir` wherever the link points;
+    // every component is checked to be a real directory first.
+    for sub in [
+        ".local",
+        ".local/share",
+        ".local/state",
+        ".config",
+        ".cache",
+    ] {
+        let path = dir.join(sub);
+        refuse_symlink(&path)?;
+        std::fs::create_dir_all(&path)?;
     }
     remove_startup_traces_from_home(&dir);
     Ok(dir)
+}
+
+/// Fails when `path` is a symbolic link, which only the sandboxed app could
+/// have put there.
+fn refuse_symlink(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} is a symbolic link; the app directory's XDG tree must be real directories",
+                path.display()
+            ),
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Host location of one package's person directory: the same for every
+/// room it is launched into.
+pub fn host_person_dir(data_home: &Path, package_id: &str) -> PathBuf {
+    data_home
+        .join(PERSON_DIR)
+        .join(sanitise_component(package_id))
+}
+
+/// Create the person directory this launch binds.
+///
+/// # Errors
+///
+/// Returns an error if the directory cannot be created; like the app
+/// directory, a launch that could not keep the person's records refuses
+/// rather than losing them.
+pub fn prepare_host_person_dir(data_home: &Path, package_id: &str) -> io::Result<PathBuf> {
+    let dir = host_person_dir(data_home, package_id);
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Bind the person directory into the sandbox and name it to the app.
+pub fn push_person_dir(argv: &mut Vec<String>, host_dir: &Path) {
+    argv.push("--bind".to_string());
+    argv.push(host_dir.display().to_string());
+    argv.push(SANDBOX_PERSON_DIR.to_string());
+    argv.push("--setenv".to_string());
+    argv.push(PERSON_DIR_ENV.to_string());
+    argv.push(SANDBOX_PERSON_DIR.to_string());
 }
 
 /// **Migration.** Startup traces used to be written at the top of the app
@@ -201,9 +279,46 @@ pub fn sandbox_env() -> Vec<(String, String)> {
     ]
 }
 
+/// Where the session `settings.json` is visible after [`push_session_settings_bind`].
+pub const SANDBOX_SESSION_SETTINGS: &str = "/run/tilo/app/.config/tilo/settings.json";
+
+/// Overlay the session `~/.config/tilo` tree on the remapped XDG path so
+/// Settings reads and writes the same document the compositor watches.
+/// Writers replace `settings.json` by rename, so the containing directory
+/// is bound, not the file inode.
+pub fn push_session_settings_bind(argv: &mut Vec<String>, host_tilo_config: &Path) {
+    argv.push("--bind".to_string());
+    argv.push(host_tilo_config.display().to_string());
+    argv.push(format!("{SANDBOX_APP_DIR}/.config/tilo"));
+    argv.push("--setenv".to_string());
+    argv.push("TILO_SESSION_SETTINGS".to_string());
+    argv.push(SANDBOX_SESSION_SETTINGS.to_string());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_symlinked_xdg_component_refuses_the_launch() {
+        let data = tempfile::tempdir().expect("data home");
+        let dir = prepare_host_app_dir(data.path(), Some("room"), "so.tilo.notes")
+            .expect("a fresh app directory");
+        let elsewhere = tempfile::tempdir().expect("a directory the app must not reach");
+        // The app replaced `.local` with a link to somewhere on the host.
+        std::fs::remove_dir_all(dir.join(".local")).expect("remove");
+        std::os::unix::fs::symlink(elsewhere.path(), dir.join(".local")).expect("plant");
+        let error = prepare_host_app_dir(data.path(), Some("room"), "so.tilo.notes")
+            .expect_err("a symlinked component must refuse the launch");
+        assert!(error.to_string().contains("symbolic link"), "{error}");
+        assert!(
+            std::fs::read_dir(elsewhere.path())
+                .expect("read")
+                .next()
+                .is_none(),
+            "nothing may be created through the link"
+        );
+    }
 
     #[test]
     fn app_directory_paths_are_confined_per_room_and_package() {
@@ -325,6 +440,22 @@ mod tests {
                 argv.windows(3)
                     .any(|w| w[0] == "--setenv" && w[1] == "HOME" && w[2] == SANDBOX_APP_DIR),
                 "HOME must point inside the app dir: {argv:?}"
+            );
+        }
+        // Phase `settings_session_store_overlays_the_remapped_xdg_path`.
+        {
+            let mut argv = Vec::new();
+            push_session_settings_bind(&mut argv, Path::new("/home/ada/.config/tilo"));
+            assert_eq!(
+                argv,
+                vec![
+                    "--bind",
+                    "/home/ada/.config/tilo",
+                    "/run/tilo/app/.config/tilo",
+                    "--setenv",
+                    "TILO_SESSION_SETTINGS",
+                    SANDBOX_SESSION_SETTINGS,
+                ]
             );
         }
         // Phase `preparing_the_directory_creates_the_xdg_tree`.

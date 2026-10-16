@@ -15,6 +15,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::compositor::{self as wl_compositor, BufferAssignment, SurfaceAttributes};
 
 use crate::compositor::cursor::{CursorBitmap, CursorShape, PointerImage};
+use tilo_lock::MutexRecover as _;
 
 pub struct ClientCursor {
     status: CursorImageStatus,
@@ -94,15 +95,11 @@ fn read_cursor_surface(surface: &WlSurface, output_scale: f64) -> Option<Arc<Cur
         let hotspot = states
             .data_map
             .get::<CursorImageSurfaceData>()
-            .map(|data| {
-                data.lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .hotspot
-            })
+            .map(|data| data.lock_recover().hotspot)
             .unwrap_or_default();
+        let scale = crate::compositor::state::committed_surface_scale(states);
         let mut attrs = states.cached_state.get::<SurfaceAttributes>();
         let current = attrs.current();
-        let buffer_scale = current.buffer_scale;
         let buffer = match &current.buffer {
             Some(BufferAssignment::NewBuffer(buffer)) => Some(buffer.clone()),
             Some(BufferAssignment::Removed) | None => None,
@@ -118,12 +115,15 @@ fn read_cursor_surface(surface: &WlSurface, output_scale: f64) -> Option<Arc<Cur
                     return None;
                 }
             };
+        // Buffer pixels per logical pixel: the buffer scale, or what a
+        // viewport makes of the buffer (a fractionally scaled client).
+        let density = scale.density(width, height).map_or(1.0, |(x, _)| x);
         CursorBitmap::from_client(
             &rgba,
             width,
             height,
             (hotspot.x, hotspot.y),
-            buffer_scale,
+            density,
             output_scale,
         )
         .map(Arc::new)

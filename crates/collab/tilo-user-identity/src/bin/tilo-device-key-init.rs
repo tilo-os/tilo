@@ -10,7 +10,7 @@ fn main() {
 }
 
 fn provision() -> Result<(), String> {
-    if unsafe { libc::geteuid() } != 0 {
+    if rustix::process::geteuid().as_raw() != 0 {
         return Err("must run as root".into());
     }
     let paths = IdentityPaths::default_system();
@@ -22,7 +22,8 @@ fn provision() -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::path::Path;

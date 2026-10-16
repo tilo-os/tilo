@@ -55,6 +55,25 @@ impl Commit {
         }
     }
 
+    fn validate_scope(&self, source: &DropboxSource) -> Result<()> {
+        if self.path.starts_with("id:") {
+            source.entry(&cloud_source::ItemId::new(self.path.clone()))?;
+        } else {
+            // Saved state is untrusted and may originate from another mount.
+            // Reject traversal before applying the path-prefix scope check.
+            if !self.path.starts_with('/') {
+                return Err(Error::NotFound);
+            }
+            for component in self.path.split('/').skip(1) {
+                crate::check_name(component)?;
+            }
+            if !source.within_root(&self.path.to_lowercase()) {
+                return Err(Error::NotFound);
+            }
+        }
+        Ok(())
+    }
+
     fn arg(&self) -> Value {
         let mode = match &self.mode {
             Mode::Add => json!({".tag": "add"}),
@@ -147,6 +166,7 @@ impl Upload {
 
     pub fn resume(source: DropboxSource, state: &UploadState) -> Result<Self> {
         let saved: Saved = serde_json::from_str(&state.0).map_err(|_| Error::SessionExpired)?;
+        saved.commit.validate_scope(&source)?;
         let hasher = saved
             .blocks
             .as_deref()
@@ -225,6 +245,7 @@ impl Upload {
     }
 
     fn upload_whole(&self, body: Vec<u8>) -> Result<Value> {
+        self.commit.validate_scope(&self.source)?;
         let mut arg = self.commit.arg();
         if let Some(object) = arg.as_object_mut() {
             object.insert("content_hash".into(), json!(content_hash(&body)));
@@ -299,6 +320,7 @@ impl UploadSession for Upload {
             (Some(value), _) => value.clone(),
             (None, None) if self.size == 0 => self.upload_whole(Vec::new())?,
             (None, Some(session)) if self.offset == self.size => {
+                self.commit.validate_scope(&self.source)?;
                 let mut arg = json!({
                     "cursor": {"session_id": session, "offset": self.offset},
                     "commit": self.commit.arg(),

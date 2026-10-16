@@ -17,6 +17,7 @@ use thiserror::Error;
 
 use crate::NamedShareEnvelopeV1;
 use crate::{RecordSubscription, RecordSubscriptionKey};
+use tilo_lock::MutexRecover as _;
 
 pub const RECIPIENT_MOUNT_READY_LINE: &str = "TILO_RECIPIENT_MOUNT_READY_V1";
 const RECIPIENT_MOUNT_READY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -141,10 +142,7 @@ impl RecipientMountSupervisor {
             return Err(RecipientMountError::ReadinessFailed);
         }
         let process_id = child.id();
-        self.children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key, child);
+        self.children.lock_recover().insert(key, child);
         drop(reservation);
         Ok(RecipientMountInfo {
             key,
@@ -160,10 +158,7 @@ impl RecipientMountSupervisor {
         mount_point: PathBuf,
         cache_dir: PathBuf,
     ) -> Result<Option<RecipientMountInfo>, RecipientMountError> {
-        let mut children = self
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut children = self.children.lock_recover();
         let process_id = match children.get_mut(&key) {
             Some(child) => match child.try_wait()? {
                 None => Some(child.id()),
@@ -238,10 +233,7 @@ impl RecipientMountSupervisor {
     ///
     /// Returns an error when child status cannot be queried.
     pub fn is_running(&self, key: RecordSubscriptionKey) -> Result<bool, RecipientMountError> {
-        let mut children = self
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut children = self.children.lock_recover();
         let running = match children.get_mut(&key) {
             Some(child) => Some(child.try_wait()?.is_none()),
             None => None,
@@ -263,11 +255,7 @@ impl RecipientMountSupervisor {
     ///
     /// Returns an error when child status, termination, or reaping fails.
     pub fn stop(&self, key: RecordSubscriptionKey) -> Result<bool, RecipientMountError> {
-        let child = self
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&key);
+        let child = self.children.lock_recover().remove(&key);
         let Some(mut child) = child else {
             return Ok(false);
         };
@@ -288,11 +276,7 @@ impl RecipientMountSupervisor {
         &self,
         key: RecordSubscriptionKey,
     ) -> Result<Option<std::process::ExitStatus>, RecipientMountError> {
-        let child = self
-            .children
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&key);
+        let child = self.children.lock_recover().remove(&key);
         let Some(mut child) = child else {
             return Ok(None);
         };
@@ -312,10 +296,7 @@ impl RecipientMountSupervisor {
         &self,
         key: RecordSubscriptionKey,
     ) -> Result<StartReservation<'_>, RecipientMountError> {
-        let mut starting = self
-            .starting
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut starting = self.starting.lock_recover();
         if !starting.insert(key) {
             return Err(RecipientMountError::StartInProgress);
         }
@@ -373,10 +354,7 @@ struct StartReservation<'a> {
 
 impl Drop for StartReservation<'_> {
     fn drop(&mut self) {
-        self.starting
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&self.key);
+        self.starting.lock_recover().remove(&self.key);
     }
 }
 
@@ -424,7 +402,7 @@ pub enum RecipientMountError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use collab_types::{
+    use fs_protocol::{
         FileInviteSpec, FileInviteSubject, FilePermission, FileRecordId, mint_bearer_file_invite,
     };
     use rand::{SeedableRng, rngs::StdRng};
@@ -567,21 +545,13 @@ mod tests {
                 std::thread::spawn(move || supervisor.start(&subscribed))
             };
             let deadline = tilo_test_env::hang_deadline();
-            while !supervisor
-                .starting
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains(&subscribed.key)
+            while !supervisor.starting.lock_recover().contains(&subscribed.key)
                 && std::time::Instant::now() < deadline
             {
                 std::thread::park_timeout(Duration::from_millis(5));
             }
             assert!(
-                supervisor
-                    .starting
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .contains(&subscribed.key),
+                supervisor.starting.lock_recover().contains(&subscribed.key),
                 "mount start did not acquire its reservation"
             );
 

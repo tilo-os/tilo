@@ -79,7 +79,7 @@ fn transform(entropy: &[u8], bytes: &[u8], protect: bool) -> io::Result<Zeroizin
 
 fn read_private(path: &Path) -> io::Result<Zeroizing<Vec<u8>>> {
     let mut bytes = Zeroizing::new(Vec::new());
-    private_fs::read(path)?
+    tilo_files::native::private::read(path)?
         .take(MAX_KEY_BLOB + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_KEY_BLOB {
@@ -102,9 +102,10 @@ pub(super) fn load_or_create_key(
     format: &VaultFormat,
     dir: &Path,
 ) -> io::Result<Zeroizing<[u8; KEY_LEN]>> {
-    private_fs::directory(dir)?;
-    let _lock =
-        advisory_lock::FileLock::exclusive(private_fs::lock_file(&dir.join("vault-key.lock"))?)?;
+    tilo_files::native::private::directory(dir)?;
+    let _lock = advisory_lock::FileLock::exclusive(tilo_files::native::private::lock_file(
+        &dir.join("vault-key.lock"),
+    )?)?;
     let protected_path = dir.join("vault.key.dpapi");
     match read_private(&protected_path) {
         Ok(bytes) => return decode_key(format.dpapi_entropy, &bytes),
@@ -122,7 +123,7 @@ pub(super) fn load_or_create_key(
         .try_fill_bytes(key.as_mut_slice())
         .map_err(|error| io::Error::other(error.to_string()))?;
     let protected = transform(format.dpapi_entropy, key.as_slice(), true)?;
-    private_fs::create_atomic(&protected_path, &protected)?;
+    tilo_files::native::private::create_atomic(&protected_path, &protected)?;
     let restored = decode_key(format.dpapi_entropy, &read_private(&protected_path)?)?;
     if restored.as_slice() != key.as_slice() {
         return Err(io::Error::other("published key differs from the original"));

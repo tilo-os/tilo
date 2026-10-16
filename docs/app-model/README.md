@@ -26,7 +26,7 @@ You give Tilo a manifest and a payload. In return:
   one writable directory and a fixed system read profile, and everything
   beyond that is a capability the user grants at runtime. Network egress is
   the one thing the manifest still scopes.
-- Your app can run on **stock Linux** too. The `runtime` SDK is graceful-
+- Your app can run on **stock Linux** too. The runtime crates are graceful-
   degradation-first: every service call returns `Result<T, NotAvailable>`
   and never panics, so the same binary is shippable as a Flatpak.
 - The **runtime is a separate bundle**. Your `.tapp` carries your code and
@@ -71,7 +71,7 @@ You give Tilo a manifest and a payload. In return:
 - **Shipping a CLI?** Read [`cli-apps.md`](./cli-apps.md).
 - **Wondering how a terminal has a shell at all,** when no app is granted an
   executable directory? Read [`ush.md`](./ush.md) — the runtime that hosts one,
-  and the `dsh` profile that trades its isolation for nested containers.
+  in a guest built from an [environment](./environments.md) record.
 - **Shipping a codec?** Read [`formats.md`](./formats.md).
 - **Distributing?** Read [`installation.md`](./installation.md) and
   [`cross-target.md`](./cross-target.md).

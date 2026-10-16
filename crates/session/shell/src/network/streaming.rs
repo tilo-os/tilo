@@ -57,6 +57,19 @@ pub enum InputEvent {
         surface: SurfaceIdWire,
         focused: bool,
     },
+    /// The wheel or a trackpad scrolled by `(dx, dy)` surface pixels, at
+    /// the peer's last pointer position.
+    PointerAxis { dx: f64, dy: f64 },
+    /// The peer pasted `text`: the session offers it as the clipboard, so
+    /// the window's own paste (a key chord that follows) reads it.
+    ClipboardText { text: String },
+    /// The peer closed its view of the window: the window is asked to
+    /// close, as a person's close of its tab does.
+    Close,
+    /// Text the peer's input method committed (a composed character, a
+    /// dictated phrase, an emoji): delivered into the focused field the way
+    /// an input method delivers it, not as key presses.
+    Text { text: String },
 }
 
 /// Wire-side surface id, duplicated to keep `InputEvent` free of a cross-module dependency; equal to [`crate::network::protocol::SurfaceId`].
@@ -185,6 +198,16 @@ impl ShareRegistry {
         }
     }
 
+    /// Number of live shares.
+    pub fn len(&self) -> usize {
+        self.shares.len()
+    }
+
+    /// Whether no share is live.
+    pub fn is_empty(&self) -> bool {
+        self.shares.is_empty()
+    }
+
     /// Mark every share read-only — the registry side of the kill switch. Returns how many shares lost write access.
     pub fn revoke_all_input(&mut self) -> usize {
         let mut revoked: usize = 0;
@@ -223,12 +246,14 @@ impl ShareRegistry {
     }
 }
 
-/// Outcome of a single `encode_tick` call; `Encoded` carries the NALU
-/// bytes, the rest are distinct no-bytes reasons for metrics (skipped vs. throttled).
+/// Outcome of a single `encode_tick` call; `Encoded` carries every access
+/// unit the encoder finished, the rest are distinct no-bytes reasons for
+/// metrics (skipped vs. throttled).
 #[derive(Debug)]
 pub enum EncodeTickOutcome {
-    /// A frame was encoded; carries the NALU payload.
-    Encoded(Vec<u8>),
+    /// A frame was encoded; carries the finished units in order (possibly
+    /// none yet, or an earlier frame's late unit with this one).
+    Encoded(Vec<media::EncodedUnit>),
     /// The throttle rejected this tick (last encode was less than the configured interval ago); no frame fetched.
     Throttled,
     /// The throttle was open but no new frame is staged — no commit since the previous take, or readback failed and emptied the tracker slot.
@@ -258,9 +283,9 @@ where
         return EncodeTickOutcome::NoFrame;
     };
     match encoder.encode(&rgba) {
-        Ok(nalus) => {
+        Ok(units) => {
             throttle.mark_encoded(now);
-            EncodeTickOutcome::Encoded(nalus)
+            EncodeTickOutcome::Encoded(units)
         }
         Err(err) => EncodeTickOutcome::EncodeFailed(err),
     }
@@ -406,9 +431,9 @@ mod tests {
         // PSNR-compared against the input (floor: 35 dB). `deposit_for_test` is
         // `#[cfg(test)]`-gated since production bytes arrive via a shm `wl_buffer`.
         {
-            use crate::network::decoder::VideoDecoder;
             use crate::network::surface_tracker::SurfaceTracker;
             use media::StreamCodec;
+            use tilo_callstream::surface_decoder::VideoDecoder;
 
             const W: u32 = 64;
             const H: u32 = 64;
@@ -438,10 +463,11 @@ mod tests {
             let outcome = encode_tick(&mut encoder, &mut throttle, Instant::now(), || {
                 tracker.take_latest(SURFACE).map(|frame| frame.rgba)
             });
-            let nalus = match outcome {
-                EncodeTickOutcome::Encoded(b) => b,
+            let units = match outcome {
+                EncodeTickOutcome::Encoded(units) => units,
                 other => panic!("expected Encoded, got {other:?}"),
             };
+            let nalus = &units.first().expect("the first frame's unit").data;
             assert!(!nalus.is_empty(), "encoder produced empty bitstream");
 
             // Tracker slot was drained — a second tick must report NoFrame (no new commit since the take).
@@ -458,7 +484,7 @@ mod tests {
 
             // Decode + PSNR check against the same floor as the gradient test.
             let mut decoder = VideoDecoder::new(StreamCodec::Vp9, false);
-            let frame = decoder.decode(&nalus).expect("decoder yields a frame");
+            let frame = decoder.decode(nalus).expect("decoder yields a frame");
             assert_eq!(frame.width, W);
             assert_eq!(frame.height, H);
 
@@ -469,8 +495,8 @@ mod tests {
             };
             let orig_rgb = strip_alpha(&input);
             let rgba = match &frame.pixels {
-                crate::network::decoder::DecodedPixels::Rgba8(b) => b,
-                other @ crate::network::decoder::DecodedPixels::P010 { .. } => {
+                tilo_callstream::surface_decoder::DecodedPixels::Rgba8(b) => b,
+                other @ tilo_callstream::surface_decoder::DecodedPixels::P010 { .. } => {
                     panic!("an SDR decoder returned non-RGBA pixels: {other:?}")
                 }
             };
@@ -834,7 +860,7 @@ mod tests {
             let display: Display<State> = Display::new().expect("wayland display");
             let mut state = State::new(event_loop.handle(), display.handle());
 
-            let kc: i32 = 30; // 'a' keycode
+            let kc: i32 = 30; // Linux evdev A maps to XKB keycode 38.
             assert!(
                 state.apply_remote_desktop_action(RemoteAction::KeyboardKeycode {
                     keycode: kc,
@@ -844,10 +870,8 @@ mod tests {
             {
                 let kb = state.seat.get_keyboard().expect("keyboard on seat");
                 assert!(
-                    kb.pressed_keys()
-                        .iter()
-                        .any(|k| u32::from(*k) == u32::try_from(kc).unwrap_or(0)),
-                    "keycode did not reach the seat keyboard",
+                    kb.pressed_keys().iter().any(|k| u32::from(*k) == 38),
+                    "evdev A must reach the seat as XKB A",
                 );
             }
             let _ = state.apply_remote_desktop_action(RemoteAction::KeyboardKeycode {
@@ -856,9 +880,7 @@ mod tests {
             });
             let kb = state.seat.get_keyboard().expect("keyboard on seat");
             assert!(
-                !kb.pressed_keys()
-                    .iter()
-                    .any(|k| u32::from(*k) == u32::try_from(kc).unwrap_or(0)),
+                !kb.pressed_keys().iter().any(|k| u32::from(*k) == 38),
                 "release must clear the pressed key",
             );
         }

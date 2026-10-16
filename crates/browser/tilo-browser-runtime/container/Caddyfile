@@ -1,0 +1,68 @@
+# The web entry: static files behind Cloudflare. Everything under /v/ is
+# named by its content and never changes; the entry pages and entry.json are
+# revalidated on every visit, so a new image takes effect at once.
+{
+	admin off
+	auto_https off
+	persist_config off
+	log {
+		format console
+		level WARN
+	}
+}
+
+:8080 {
+	header {
+		# The page holds the visitor's identity, so a first visit typed as
+		# http:// must never be answerable by whoever sits on the path:
+		# browsers keep to HTTPS for this host once they have seen this over
+		# HTTPS (over plain HTTP they ignore it). This host only, not its
+		# subdomains, which are workspace hosts with their own operators.
+		Strict-Transport-Security "max-age=31536000"
+		# Only this site and the site embedding its live preview, if one is
+		# configured (TILO_WEB_EMBEDDER, see entrypoint.sh; an embed posts its
+		# state to that site alone), may frame the app: an embed joins on the
+		# visitor's first click, which another site could otherwise take with
+		# a frame laid under its own page.
+		Content-Security-Policy "frame-ancestors {$TILO_WEB_FRAME_ANCESTORS:'self'}"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	# Written at start from the environment (entrypoint.sh).
+	handle /entry.json {
+		root * /tmp/tilo-web
+		header Cache-Control "no-cache"
+		file_server
+	}
+
+	handle /v/* {
+		root * /srv/tilo-web
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server {
+			precompressed zstd br
+		}
+	}
+
+	handle {
+		root * /srv/tilo-web
+		header Cache-Control "no-cache"
+		file_server {
+			precompressed zstd br
+		}
+	}
+
+	# No cache may keep an error, least of all one under /v/ as immutable: a
+	# file this image lacks may be served by the next pod. During a rolling
+	# update a page from a new pod asks an old one for the new version's
+	# files, and a cached 404 would outlive the rollout at that edge.
+	handle_errors {
+		header Cache-Control "no-store"
+		respond "{err.status_code} {err.status_text}" {err.status_code}
+	}
+}

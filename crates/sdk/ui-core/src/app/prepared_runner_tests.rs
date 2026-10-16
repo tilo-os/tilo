@@ -160,7 +160,7 @@ fn configured_theme_file_change_rethemes_an_open_app() {
 
     let write = |theme: &str| {
         let mut values = serde_json::Map::new();
-        values.insert("theme".into(), serde_json::Value::String(theme.into()));
+        values.insert("mode".into(), serde_json::Value::String(theme.into()));
         values.insert("high_contrast".into(), serde_json::Value::Bool(false));
         settings_store::update_section("appearance", values).expect("write appearance");
     };
@@ -178,7 +178,7 @@ fn configured_theme_file_change_rethemes_an_open_app() {
     );
     app.apply_configured_theme();
     app.rebuild_theme();
-    let dark_bg = app.theme.bg_app;
+    let dark_bg = app.theme.tokens.colors.surfaces.content;
     let dark_name = app.theme.name.clone();
 
     write("light");
@@ -189,13 +189,149 @@ fn configured_theme_file_change_rethemes_an_open_app() {
         app.reconcile_configured_theme(),
         "an appearance file write must retheme the next tick"
     );
-    let light_bg = app.theme.bg_app;
+    let light_bg = app.theme.tokens.colors.surfaces.content;
     assert_ne!(
         (light_bg, app.theme.name.as_str()),
         (dark_bg, dark_name.as_str()),
         "light and dark app chrome must not share colours"
     );
     assert_eq!(app.theme.name, Theme::light().name);
+}
+
+#[test]
+#[serial_test::serial(process_env)]
+fn settings_file_write_rethemes_the_sampled_app_surface() {
+    // U02 samples the open Settings window after writing the session
+    // settings file. Sandbox XDG is a private tree; the session document
+    // is the one the compositor watches. A write that leaves this surface
+    // on the old theme is the failure.
+    let session = tempfile::tempdir().expect("session settings");
+    let app_xdg = tempfile::tempdir().expect("sandboxed xdg");
+    let session_file = session.path().join("settings.json");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", app_xdg.path())
+        .set(settings_store::SESSION_SETTINGS_ENV, &session_file);
+
+    let write = |theme: &str| {
+        let mut values = serde_json::Map::new();
+        values.insert("mode".into(), serde_json::Value::String(theme.into()));
+        values.insert("high_contrast".into(), serde_json::Value::Bool(false));
+        settings_store::update_section("appearance", values).expect("write appearance");
+        assert_eq!(
+            settings_store::settings_path().as_deref(),
+            Some(session_file.as_path()),
+            "the write must land on the session document, not the remapped XDG copy"
+        );
+    };
+
+    write("dark");
+    let mut app = App::from_factory_with_inputs(
+        State::new(),
+        || Box::new(crate::widget::Column::new()),
+        || {
+            let mut inputs = AppConstructionInputs::controlled();
+            inputs.configured_theme = ConstructionValue::Lazy(Theme::configured);
+            inputs.theme_store_stamp = settings_store::stamp;
+            inputs
+        },
+    );
+    app.apply_configured_theme();
+    app.rebuild_theme();
+    let dark_bg = app.theme.tokens.colors.surfaces.content;
+    let dark_y = crate::a11y::relative_luminance(dark_bg);
+
+    write("light");
+    if let Some(due) = crate::time::now().checked_sub(std::time::Duration::from_millis(750)) {
+        app.last_theme_store_check = due;
+    }
+    assert!(
+        app.reconcile_configured_theme(),
+        "a session-file theme write must retheme the next tick"
+    );
+    let light_bg = app.theme.tokens.colors.surfaces.content;
+    let light_y = crate::a11y::relative_luminance(light_bg);
+    assert_ne!(
+        (light_bg, app.theme.name.as_str()),
+        (dark_bg, Theme::dark().name.as_str()),
+        "sampled app chrome must not stay on the old theme after a settings-file write"
+    );
+    assert!(
+        (light_y - dark_y).abs() > 0.15,
+        "light and dark sampled surfaces must not share luminance (light {light_y:.3}, dark {dark_y:.3})"
+    );
+    assert_eq!(app.theme.name, Theme::light().name);
+    assert!(
+        !app_xdg.path().join("tilo/settings.json").exists(),
+        "the remapped XDG copy must stay unused"
+    );
+}
+
+#[test]
+#[serial_test::serial(process_env)]
+fn settings_keeps_the_session_theme_when_the_host_scheme_is_unset() {
+    // The Settings sandbox clears the environment, so `XDG_CURRENT_DESKTOP`
+    // is unset and the Settings portal is not granted. The runner still
+    // re-applies that unset host reading after every session-file change.
+    // U02 samples the centre of that window: it stays on the dark raised
+    // surface unless the session document wins.
+    let session = tempfile::tempdir().expect("session settings");
+    let app_xdg = tempfile::tempdir().expect("sandboxed xdg");
+    let session_file = session.path().join("settings.json");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.remove("XDG_CURRENT_DESKTOP")
+        .set("XDG_CONFIG_HOME", app_xdg.path())
+        .set(settings_store::SESSION_SETTINGS_ENV, &session_file);
+
+    let write = |theme: &str| {
+        let mut values = serde_json::Map::new();
+        values.insert("mode".into(), serde_json::Value::String(theme.into()));
+        values.insert("high_contrast".into(), serde_json::Value::Bool(false));
+        settings_store::update_section("appearance", values).expect("write appearance");
+    };
+
+    write("dark");
+    let mut app = App::from_factory_with_inputs(
+        State::new(),
+        || Box::new(crate::widget::Column::new()),
+        || {
+            let mut inputs = AppConstructionInputs::controlled();
+            inputs.configured_theme = ConstructionValue::Lazy(Theme::configured);
+            inputs.theme_store_stamp = settings_store::stamp;
+            inputs
+        },
+    );
+    app.apply_configured_theme();
+    app.rebuild_theme();
+    let dark_raised = app.theme.tokens.colors.surfaces.raised;
+    let dark_y = crate::a11y::relative_luminance(dark_raised);
+
+    write("light");
+    if let Some(due) = crate::time::now().checked_sub(std::time::Duration::from_millis(750)) {
+        app.last_theme_store_check = due;
+    }
+    assert!(
+        app.reconcile_configured_theme(),
+        "the session file change must be noticed"
+    );
+    // Production re-applies the host reading on that same tick. With no
+    // portal, the reading is the unset scheme, which is painted as dark.
+    let _ = app.apply_host_appearance(crate::host_appearance::HostAppearance::default());
+
+    let raised = app.theme.tokens.colors.surfaces.raised;
+    let light_y = crate::a11y::relative_luminance(raised);
+    assert_ne!(
+        raised, dark_raised,
+        "Settings must not keep the previous raised surface after the session file changes"
+    );
+    assert!(
+        (light_y - dark_y).abs() > 0.15,
+        "the sampled Settings surface must change luminance (light {light_y:.3}, dark {dark_y:.3})"
+    );
+    assert_eq!(app.theme.name, Theme::light().name);
+    assert!(
+        crate::host_appearance::Source::start().is_none(),
+        "the session document owns appearance; the unset host portal must not start"
+    );
 }
 
 #[test]
@@ -227,7 +363,7 @@ fn prepared_presentation_replaces_effective_factors_across_runners_and_setters()
                 app.set_ui_scale(1.5);
                 app.set_ui_scale(1.5);
                 app.set_high_contrast(true);
-                assert_eq!(app.theme.name, "High Contrast");
+                assert_eq!(app.theme.name, "High contrast");
                 assert_eq!(app.theme.text_scale, 0.75);
                 assert_eq!(app.theme.ui_scale, 1.5);
                 app.set_high_contrast(false);
@@ -241,7 +377,8 @@ fn prepared_presentation_replaces_effective_factors_across_runners_and_setters()
                 app.close_components();
             } else {
                 let mut driver =
-                    crate::headless::Driver::from_component(component, (800, 600), inputs).unwrap();
+                    crate::headless::FrameHarness::from_component(component, (800, 600), inputs)
+                        .unwrap();
                 let observation = observed.borrow();
                 let (theme, renderer_scale) = observation.draws.last().unwrap();
                 assert_eq!(*renderer_scale, 1.5);
@@ -297,6 +434,7 @@ fn assert_saved_body(
 
 fn edit_bound_record(app: &mut App, binding: &crate::bound_dispatch::CallbackBinding) {
     let target = crate::bound_dispatch::BoundActionTarget {
+        input: crate::bound_dispatch::Input::Discrete,
         binding: binding.clone(),
         address: crate::bound_dispatch::BoundActionAddress {
             instance_id: binding.instance_id,
@@ -313,6 +451,24 @@ fn edit_bound_record(app: &mut App, binding: &crate::bound_dispatch::CallbackBin
         binding.records.save_status(&binding.checkout.id).unwrap(),
         crate::record::RecordSaveStatus::Saving
     );
+}
+
+#[test]
+fn native_idle_model_persists_a_bound_edit_before_any_close() {
+    let host = ProbeHost::new();
+    let component = editable_component(&host, 11);
+    let binding = component.callback_binding();
+    let mut app = App::from_component(component, runner_inputs()).unwrap();
+    assert_saved_body(&host, &binding, "initialized");
+
+    edit_bound_record(&mut app, &binding);
+    app.service_native_idle_model();
+
+    // Read the original writer's complete on-disk graph before close can flush it.
+    assert_saved_body(&host, &binding, "edited");
+    assert!(binding.lifetime.is_active());
+    assert!(app.component_close_reports().is_empty());
+    app.close_components();
 }
 
 #[test]
@@ -487,7 +643,7 @@ fn prepared_close_retains_the_original_store_and_rejects_stale_results() {
 
 enum Runner {
     App(Box<App>),
-    Driver(Box<crate::headless::Driver>),
+    FrameHarness(Box<crate::headless::FrameHarness>),
 }
 impl Runner {
     fn new(mode: u8, mut component: AppComponent) -> Self {
@@ -514,9 +670,13 @@ impl Runner {
                     },
                 )))
             }
-            _ => Self::Driver(Box::new(
-                crate::headless::Driver::from_component(component, (320, 180), runner_inputs())
-                    .unwrap(),
+            _ => Self::FrameHarness(Box::new(
+                crate::headless::FrameHarness::from_component(
+                    component,
+                    (320, 180),
+                    runner_inputs(),
+                )
+                .unwrap(),
             )),
         }
     }
@@ -538,7 +698,7 @@ impl Runner {
                     Err("action absent".into())
                 }
             }
-            Self::Driver(driver) => driver
+            Self::FrameHarness(driver) => driver
                 .invoke_bound_action(
                     &crate::bound_dispatch::BoundActionAddress {
                         instance_id: 11,
@@ -556,7 +716,7 @@ impl Runner {
                 app.close_components();
                 app.take_component_close_reports()
             }
-            Self::Driver(driver) => {
+            Self::FrameHarness(driver) => {
                 driver.close_components();
                 driver.take_component_close_reports()
             }
@@ -647,15 +807,12 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
             runner.invoke("edit").unwrap();
             assert_eq!(body(&host.records, &checkout), "edited");
             host.records
-                .read_history(&checkout.id, |_, history| {
-                    assert!(history.next_undo_in(&author(), 11).is_some());
+                .read_history(&checkout.id, |doc, history| {
+                    assert!(history.next_undo_in(doc, &author(), 11).is_some());
                 })
                 .unwrap();
-            *permissions.borrow_mut() = crate::permissions::PermissionContext::from_capabilities(
-                crate::permissions::Actor::person(None, "probe-author"),
-                vec![],
-            )
-            .at_unix_time(100);
+            *permissions.borrow_mut() =
+                crate::permissions::PermissionContext::stranger("probe-author").at_unix_time(100);
             assert!(runner.invoke("edit").is_err());
             assert_eq!(body(&host.records, &checkout), "edited");
             assert_eq!(
@@ -685,8 +842,12 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
             );
             host.records
                 .with_history(&checkout.id, |doc, history| {
-                    assert!(history.undo_in(doc, &author(), 11, None, None).is_some());
-                    assert!(history.next_undo_in(&author(), 11).is_none());
+                    assert!(
+                        history
+                            .undo_in(doc, &author(), 11, None, None, None)
+                            .is_some()
+                    );
+                    assert!(history.next_undo_in(doc, &author(), 11).is_none());
                 })
                 .unwrap();
             assert_eq!(body(&host.records, &checkout), "initialized");
@@ -712,7 +873,7 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
             .unwrap();
         let checkout = component.record().clone();
         let catalog = crate::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+            crate::font_catalog::checkout_root(),
             "de-DE",
         );
         let mut renderer = TextRenderer::with_font_catalog(&catalog).unwrap();
@@ -782,9 +943,13 @@ fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
         palette_frame(&mut app);
         assert!(app.text_renderer.cache_stats().1 > before.1);
         host.records
-            .read_history(&checkout.id, |_, history| {
+            .read_history(&checkout.id, |doc, history| {
                 assert_eq!(
-                    history.next_undo_in(&author(), 11).unwrap().author.as_ref(),
+                    history
+                        .next_undo_in(doc, &author(), 11)
+                        .unwrap()
+                        .author
+                        .as_ref(),
                     Some(&author())
                 );
             })
@@ -836,4 +1001,172 @@ fn activate_palette_action(app: &mut App, action: &str) {
             .unwrap()
             .activate_bound(&target)
     );
+}
+
+/// The component a window shows asking for another record of its app, as an
+/// app's own Open does: built through the same checked construction as the
+/// first, on the same store.
+fn request_another_record(component: &AppComponent) -> crate::record::RecordId {
+    let reopener = component.reopener();
+    let record = crate::record::RecordId::minted();
+    let (context, target) = reopener
+        .prepare(runner_probe_definition(), record.clone())
+        .unwrap();
+    let replacement = runner_probe_definition()
+        .instantiate(context, target, RestoreInput::None)
+        .unwrap();
+    reopener.replace(replacement, vec!["another".into()]);
+    record
+}
+
+#[test]
+fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
+    // Case `the_native_window_swaps_its_component_and_keeps_the_outgoing_writers_work`.
+    {
+        let host = ProbeHost::new();
+        let component = editable_component(&host, 31);
+        let first = component.callback_binding();
+        let wanted = request_another_record(&component);
+        let mut app = App::from_component(component, runner_inputs()).unwrap();
+        edit_bound_record(&mut app, &first);
+        assert!(
+            app.swap_requested_component(),
+            "the window shows another record"
+        );
+        assert!(!app.swap_requested_component(), "once");
+        let shown = app.root_widget.callback_binding().unwrap();
+        assert_eq!(shown.checkout.id, wanted);
+        assert!(
+            !first.lifetime.is_active(),
+            "the outgoing component is closed"
+        );
+        assert_saved_body(&host, &first, "edited");
+        assert_eq!(body(&shown.records, &shown.checkout), "initialized");
+        edit_bound_record(&mut app, &shown);
+        app.close_components();
+    }
+
+    // Case `a_withdrawn_request_leaves_the_window_as_it_is`.
+    {
+        let host = ProbeHost::new();
+        let component = editable_component(&host, 33);
+        let first = component.callback_binding();
+        let reopener = component.reopener();
+        let (context, target) = reopener
+            .prepare(runner_probe_definition(), crate::record::RecordId::minted())
+            .unwrap();
+        let replacement = runner_probe_definition()
+            .instantiate(context, target, RestoreInput::None)
+            .unwrap();
+        let outcome = reopener.replace(replacement, vec![]);
+        let mut app = App::from_component(component, runner_inputs()).unwrap();
+        assert!(outcome.withdraw(), "withdrawn before the host took it");
+        assert!(
+            !app.swap_requested_component(),
+            "the window keeps its record"
+        );
+        assert_eq!(
+            app.root_widget.callback_binding().unwrap().checkout.id,
+            first.checkout.id
+        );
+        assert!(first.lifetime.is_active());
+        assert!(matches!(outcome.get(), Some(Err(_))));
+        assert!(!outcome.withdraw(), "an answered request stays answered");
+        app.close_components();
+    }
+
+    // Case `a_tile_swaps_its_component_on_its_next_sync`.
+    {
+        let host = ProbeHost::new();
+        let component = editable_component(&host, 32);
+        let first = component.callback_binding();
+        let wanted = request_another_record(&component);
+        let mut tile = TileHost::from_component(component);
+        let mut state = crate::State::new();
+        // An operation the outgoing component admitted is answered when the
+        // tile swaps, never inherited by the component that takes its place.
+        let pending = tilo_actions::InvocationId::new();
+        let started = crate::widget::ResourceOperation::local(
+            pending,
+            tilo_actions::OperationKind::Effect,
+            "probe.pending",
+            &[],
+        )
+        .start(
+            &mut tile,
+            &mut crate::widget::Edits::lend(&mut state.doc),
+            &state.root,
+        )
+        .unwrap();
+        assert!(matches!(
+            started,
+            Some(crate::widget::ResourceOperationStart::Accepted)
+        ));
+        tile.sync(&state.doc, &state.root);
+        let shown = tile.callback_binding().unwrap();
+        assert_eq!(shown.checkout.id, wanted);
+        assert!(!first.lifetime.is_active());
+        let answer = tile
+            .poll_resource_operation(pending, false, &state.doc, &state.root)
+            .expect("the outgoing component's operation is answered");
+        assert!(answer.is_terminal());
+        crate::component_lifecycle::close_components(&mut tile);
+    }
+}
+
+#[cfg(feature = "native")]
+#[test]
+fn native_idle_model_wake_adopts_requested_component_before_draining() {
+    let host = ProbeHost::new();
+    let component = editable_component(&host, 91);
+    let first = component.callback_binding();
+    let retained_reopener = component.reopener();
+    let wanted = request_another_record(&component);
+    let mut app = App::from_component(component, runner_inputs()).unwrap();
+    edit_bound_record(&mut app, &first);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.wake_scope
+        .as_mut()
+        .unwrap()
+        .bind(move |event| {
+            tx.send(event).unwrap();
+        })
+        .unwrap();
+    app.wake_scope.as_ref().unwrap().handle().wake();
+    assert!(app.accept_wake(&rx.recv().unwrap()));
+    app.service_native_idle_model();
+    let shown = app.root_widget.callback_binding().unwrap();
+    assert_eq!(
+        shown.checkout.id, wanted,
+        "idle must adopt the checked replacement before syncing its owner"
+    );
+    assert!(
+        !first.lifetime.is_active(),
+        "old callback custody must retire"
+    );
+    assert_saved_body(&host, &first, "edited");
+    assert_eq!(body(&shown.records, &shown.checkout), "initialized");
+    let retained_id = crate::record::RecordId::minted();
+    let (retained, target) = retained_reopener
+        .prepare(runner_probe_definition(), retained_id.clone())
+        .expect("retirement preserves the authorized same-store preparation capability");
+    assert_eq!(retained.record().id, retained_id);
+    assert!(matches!(target, LaunchTarget::New));
+    drop(retained);
+    // A Reopener deliberately retains same-store capability; stale callback
+    // admission is its closed scoped wake, not permission to prepare a record.
+    app.update_native_model();
+    app.sync_model(false);
+    for _ in rx.try_iter() {}
+    first.lifetime.wake();
+    assert!(
+        matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+        "the outgoing callback must not wake the current owner"
+    );
+    assert!(!app.service_native_idle_model().changed);
+    assert_eq!(
+        app.root_widget.callback_binding().unwrap().checkout.id,
+        wanted
+    );
+    app.close_components();
 }

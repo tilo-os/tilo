@@ -27,6 +27,8 @@ const SUPPORTED: u32 = LOGOUT | USER_SWITCH | SUSPEND | IDLE;
 
 static SCREENSAVER_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SESSION_STATE_REVISION: AtomicU64 = AtomicU64::new(1);
+static SESSION_WAKE: std::sync::LazyLock<crate::idle_wake::IdleWake> =
+    std::sync::LazyLock::new(crate::idle_wake::IdleWake::default);
 
 /// Publish the compositor's authoritative lock state to Inhibit monitors.
 /// This contains no application-controlled data and is safe to call from the
@@ -34,39 +36,19 @@ static SESSION_STATE_REVISION: AtomicU64 = AtomicU64::new(1);
 pub fn publish_screensaver_state(active: bool) {
     if SCREENSAVER_ACTIVE.swap(active, Ordering::AcqRel) != active {
         SESSION_STATE_REVISION.fetch_add(1, Ordering::AcqRel);
+        SESSION_WAKE.poke();
     }
 }
 
 #[derive(Clone, Default)]
-#[cfg_attr(
-    not(target_os = "linux"),
-    expect(
-        dead_code,
-        reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-    )
-)]
 pub struct InhibitMonitorHandle(Arc<Mutex<HashSet<String>>>);
 
 pub struct InhibitBackend {
     #[cfg(target_os = "linux")]
     ctx: PortalContext,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     registry: InhibitRegistry,
     holds: Arc<Mutex<HashMap<String, InhibitToken>>>,
     monitors: InhibitMonitorHandle,
-    #[cfg_attr(
-        not(target_os = "linux"),
-        expect(
-            dead_code,
-            reason = "the authenticated Linux portal adapter consumes this shared model; retain its complete cross-host shape"
-        )
-    )]
     lifecycle: PortalLifecycle,
 }
 impl InhibitBackend {
@@ -120,8 +102,7 @@ impl InhibitBackend {
         flags: u32,
         options: HashMap<String, OwnedValue>,
     ) -> zbus::fdo::Result<()> {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let auth = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None)
+        let auth = authenticate_call(&self.ctx, &hdr, &app_id, None)
             .await
             .map_err(|_| zbus::fdo::Error::AccessDenied("untrusted portal caller".into()))?;
         if flags == 0 || flags & !SUPPORTED != 0 {
@@ -129,10 +110,7 @@ impl InhibitBackend {
                 "unknown inhibit flags".into(),
             ));
         }
-        let reason = options
-            .get("reason")
-            .and_then(|value| value.try_clone().ok())
-            .and_then(|value| String::try_from(value).ok())
+        let reason = crate::portal::option::<String>(&options, "reason")
             .filter(|value| valid_reason(value))
             .unwrap_or_else(|| format!("{} is active", auth.caller.app_id));
         let key = handle.to_string();
@@ -180,8 +158,7 @@ impl InhibitBackend {
         app_id: String,
         _window: String,
     ) -> u32 {
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let Ok(auth) = authenticate_call(&self.ctx, sender.as_ref(), &app_id, None).await else {
+        let Ok(auth) = authenticate_call(&self.ctx, &hdr, &app_id, None).await else {
             return 2;
         };
         let path = session.to_string();
@@ -252,9 +229,8 @@ pub fn spawn_state_emitter(connection: zbus::Connection, monitors: InhibitMonito
         .spawn(
             async move {
                 let mut seen = SESSION_STATE_REVISION.load(Ordering::Acquire);
-                let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
                 loop {
-                    interval.tick().await;
+                    SESSION_WAKE.wait().await;
                     let revision = SESSION_STATE_REVISION.load(Ordering::Acquire);
                     if revision == seen {
                         continue;

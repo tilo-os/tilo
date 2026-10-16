@@ -2,7 +2,7 @@
 use ui::headless::Framed;
 use ui::theme::Theme;
 use ui::widget::{BlockEditor, CursorPlacement, Widget};
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::event::{ElementState, Modifiers};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 struct Editor {
@@ -20,14 +20,12 @@ fn vertical_navigation_and_selection_keep_anchor_column_and_content() {
             0,
             3,
         );
-        fixture.editor.set_action_interception(true);
         fixture.editor.take_structure_dirty();
         fixture.editor.is_dirty();
         for shift in [false, true] {
             for key in [NamedKey::ArrowDown, NamedKey::ArrowDown, NamedKey::ArrowUp] {
-                fixture.editor.begin_action_intercept();
                 fixture.key(key, shift);
-                assert!(fixture.editor.take_intercepted_ops().is_empty());
+                assert!(fixture.editor.take_edit_ops().is_empty());
                 assert!(
                     !fixture.editor.is_dirty(),
                     "{key:?} must not report a content edit"
@@ -138,19 +136,8 @@ impl Editor {
     fn key(&mut self, key: NamedKey, shift: bool) {
         // winit keeps platform fields private; this matches the existing
         // headless keyboard fixtures used throughout the integration suite.
-        let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-        event.logical_key = Key::Named(key);
-        event.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        event.location = winit::keyboard::KeyLocation::Standard;
-        event.state = ElementState::Pressed;
-        event.text = None;
-        let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event,
-            is_synthetic: false,
-        };
+        let event = ui::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
+        let event = ui::synthetic_input::keyboard_input(event);
         let modifiers = Modifiers::from(if shift {
             ModifiersState::SHIFT
         } else {

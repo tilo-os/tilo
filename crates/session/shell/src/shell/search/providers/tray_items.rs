@@ -1,6 +1,6 @@
 //! Tray items and their menus as actions.
 //!
-//! Every status-notifier item the shell hosts ([`crate::tray`]) is one
+//! Every status-notifier item the shell hosts ([`tilo_tray_host`]) is one
 //! "Open" action, and every entry of its menu another — so "Quit Steam",
 //! "Lock database" or "Pause syncing" is reachable from the palette, the
 //! control socket, an agent or a screen reader, not only from a click on a
@@ -17,7 +17,7 @@ use crate::shell::chrome_state::Chrome;
 use crate::shell::i18n::{t, t_args};
 use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
-use crate::tray::{Tray, TrayItem, TrayRequest};
+use tilo_tray_host::{Tray, TrayItem, TrayRequest};
 
 pub const PROVIDER_ID: &str = "tray";
 
@@ -37,7 +37,7 @@ impl TrayItemsProvider {
 
     /// The session's tray.
     pub fn global() -> Self {
-        Self::new(Arc::clone(Tray::global()))
+        Self::new(Arc::clone(crate::tray::global()))
     }
 }
 
@@ -68,6 +68,7 @@ fn row(
     let tray = Arc::clone(tray);
     let key = item.key.clone();
     SearchResult {
+        shortcut: None,
         kind: ResourceKind::Action,
         operation_kind: tilo_actions::OperationKind::Effect,
         provider_id: PROVIDER_ID.into(),

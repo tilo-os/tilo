@@ -1,18 +1,19 @@
 //! Document marks transformed into renderable rich-text runs and annotations.
 
-use super::char_to_byte;
+use super::{byte_to_char, char_to_byte};
 use crate::num;
 use crate::review_overlay::{DELETION_RGB, INSERTION_RGB};
-use qdoc::document::MarkSpan;
-use qdoc::snapshot::{BlockView, NoteView};
 use std::collections::HashMap;
+use tilo_doc::document::{MarkSpan, MarkValue};
+use tilo_doc::snapshot::{BlockView, NoteView};
 use ui::richtext::{BaselineShift, FontFamily, RichSpan};
+use ui::text_edit::EditCore;
 
 pub(super) type BlockRuns = (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>);
 type ChangeDecoRanges = (Vec<(usize, usize)>, Vec<(usize, usize)>);
 
 /// True when a mark named `name` fully covers the half-open char range
-/// `[start, end)`. Same cover rule as `qdoc::model::has_mark_over`.
+/// `[start, end)`. Same cover rule as `tilo_doc::model::has_mark_over`.
 pub(super) fn marks_cover_range(marks: &[MarkSpan], name: &str, start: usize, end: usize) -> bool {
     marks
         .iter()
@@ -88,76 +89,28 @@ pub(super) fn parse_hex_rgb(value: &str) -> Option<[u8; 3]> {
     ui::color::parse_hex(value).map(ui::color::to_rgb8)
 }
 
-pub(super) fn block_runs(block: &BlockView) -> BlockRuns {
-    let chars: Vec<char> = block.text.chars().collect();
-    let len = chars.len();
-    // Run key: f32 size as bits so the tuple is comparable. Highlight (background)
-    // and super/subscript baseline join the key so a change in either splits runs.
-    let key = |i: usize| {
-        (
-            char_has(i, &block.marks, "strong"),
-            char_has(i, &block.marks, "em"),
-            char_font_size(i, &block.marks).map(f32::to_bits),
-            char_font_family(i, &block.marks),
-            char_color(i, &block.marks),
-            char_highlight(i, &block.marks),
-            char_baseline(i, &block.marks),
-        )
-    };
-    let mut runs = Vec::new();
-    for (i, j, k) in mark_style_segments(len, &block.marks, key) {
-        let (bold, italic, size_bits, family, color, background, baseline) = k;
-        runs.push(RichSpan {
-            text: chars.get(i..j).unwrap_or(&[]).iter().collect(),
-            bold,
-            italic,
-            size: size_bits.map(f32::from_bits),
-            family,
-            color,
-            background,
-            baseline,
-        });
-    }
-    if runs.is_empty() {
-        runs.push(RichSpan::new(""));
-    }
-    let deco = |name: &str| {
-        block
-            .marks
-            .iter()
-            .filter(|m| m.name == name)
-            .map(|m| {
-                (
-                    char_to_byte(&block.text, m.start),
-                    char_to_byte(&block.text, m.end),
-                )
-            })
-            .collect::<Vec<_>>()
-    };
-    // Links render underlined as well as blue.
-    let mut underlines = deco("underline");
-    underlines.extend(deco("link"));
-    (runs, underlines, deco("strike"))
-}
-pub(super) fn block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRuns {
-    if !show_markup {
-        return block_runs(block);
-    }
+/// Shape `block` into style runs plus underline and strike byte ranges.
+/// With `show_markup`, tracked insertions and deletions are tinted.
+pub(super) fn block_runs(block: &BlockView, show_markup: bool) -> BlockRuns {
     let chars: Vec<char> = block.text.chars().collect();
     let len = chars.len();
     // An `ins` run is green, a `del` run red.
     let track_color = |i: usize| -> Option<[u8; 3]> {
-        if char_has(i, &block.marks, qdoc::schema::MARK_INS) {
+        if !show_markup {
+            None
+        } else if char_has(i, &block.marks, tilo_doc::schema::MARK_INS) {
             Some(INSERTION_RGB)
-        } else if char_has(i, &block.marks, qdoc::schema::MARK_DEL) {
+        } else if char_has(i, &block.marks, tilo_doc::schema::MARK_DEL) {
             Some(DELETION_RGB)
         } else {
             None
         }
     };
-    // The run key now also folds in the tracked-change review colour, which
-    // overrides any explicit `color` mark over the same range (review colour
-    // wins for legibility).
+    // Run key: f32 size as bits so the tuple is comparable. Highlight
+    // (background) and super/subscript baseline join the key so a change in
+    // either splits runs. The tracked-change review colour overrides any
+    // explicit `color` mark over the same range (review colour wins for
+    // legibility).
     let key = |i: usize| {
         (
             char_has(i, &block.marks, "strong"),
@@ -181,6 +134,7 @@ pub(super) fn block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRu
             color,
             background,
             baseline,
+            kind: None,
         });
     }
     if runs.is_empty() {
@@ -199,6 +153,7 @@ pub(super) fn block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRu
             })
             .collect::<Vec<_>>()
     };
+    // Links render underlined as well as blue.
     let mut underlines = deco("underline");
     underlines.extend(deco("link"));
     let strikes = deco("strike");
@@ -206,7 +161,7 @@ pub(super) fn block_runs_markup(block: &BlockView, show_markup: bool) -> BlockRu
     // del) are *not* added here — they are drawn in the body pass in the review
     // colour (`draw_rich` paints these decorations in the block ink, which would
     // mismatch the coloured glyphs). Keeping them out of the shaped layout also
-    // keeps `block_runs`'s underline/strike contract unchanged.
+    // keeps the underline/strike ranges independent of review mode.
     (runs, underlines, strikes)
 }
 
@@ -225,8 +180,8 @@ pub(super) fn block_change_decos(block: &BlockView) -> ChangeDecoRanges {
             .collect::<Vec<_>>()
     };
     (
-        collect(qdoc::schema::MARK_INS),
-        collect(qdoc::schema::MARK_DEL),
+        collect(tilo_doc::schema::MARK_INS),
+        collect(tilo_doc::schema::MARK_DEL),
     )
 }
 
@@ -246,18 +201,21 @@ fn identified_ranges(block: &BlockView, names: &[&str]) -> Vec<(usize, usize, St
 }
 
 pub(super) fn block_change_ranges(block: &BlockView) -> Vec<(usize, usize, String)> {
-    identified_ranges(block, &[qdoc::schema::MARK_INS, qdoc::schema::MARK_DEL])
+    identified_ranges(
+        block,
+        &[tilo_doc::schema::MARK_INS, tilo_doc::schema::MARK_DEL],
+    )
 }
 pub(super) fn block_comment_ranges(block: &BlockView) -> Vec<(usize, usize, String)> {
-    identified_ranges(block, &[qdoc::schema::MARK_COMMENT])
+    identified_ranges(block, &[tilo_doc::schema::MARK_COMMENT])
 }
 
 fn is_page_number_field(index: usize, marks: &[MarkSpan]) -> bool {
     marks.iter().any(|mark| {
-        mark.name == qdoc::schema::MARK_FIELD
+        mark.name == tilo_doc::schema::MARK_FIELD
             && index >= mark.start
             && index < mark.end
-            && mark.value.as_str() == Some(qdoc::schema::FIELD_PAGE_NUMBER)
+            && mark.value.as_str() == Some(tilo_doc::schema::FIELD_PAGE_NUMBER)
     })
 }
 
@@ -305,6 +263,7 @@ fn running_head_runs_with(block: &BlockView, display: FieldDisplay) -> Vec<RichS
             color,
             background: None,
             baseline: BaselineShift::None,
+            kind: None,
         });
         start = end;
     }
@@ -321,6 +280,42 @@ pub(super) fn running_head_runs_editing(block: &BlockView) -> Vec<RichSpan> {
     running_head_runs_with(block, FieldDisplay::Placeholder)
 }
 
+/// `block` as it shows while the input method composes in it: the
+/// composition laid into the text at the caret and underlined, every mark
+/// moved with the text after it. A mark that runs up to the caret covers the
+/// composition too, so it reads in the style it will be typed in.
+pub(super) fn composed_block(block: &BlockView, core: &EditCore) -> BlockView {
+    let Some(preedit) = core.preedit_display_range(&block.text) else {
+        return block.clone();
+    };
+    let text = core.display_text(&block.text).into_owned();
+    let at = byte_to_char(&text, preedit.start);
+    let len = text
+        .get(preedit)
+        .map_or(0, |composed| composed.chars().count());
+    let shift = |offset: usize| if offset < at { offset } else { offset + len };
+    let mut marks: Vec<MarkSpan> = block
+        .marks
+        .iter()
+        .map(|mark| MarkSpan {
+            start: shift(mark.start),
+            end: shift(mark.end),
+            ..mark.clone()
+        })
+        .collect();
+    marks.push(MarkSpan {
+        start: at,
+        end: at + len,
+        name: "underline".to_owned(),
+        value: MarkValue::Bool(true),
+    });
+    BlockView {
+        text,
+        marks,
+        ..block.clone()
+    }
+}
+
 pub(super) fn block_note_refs(block: &BlockView) -> Vec<(usize, String)> {
     (0..block.text.chars().count())
         .filter_map(|index| {
@@ -328,7 +323,7 @@ pub(super) fn block_note_refs(block: &BlockView) -> Vec<(usize, String)> {
                 .marks
                 .iter()
                 .find(|mark| {
-                    mark.name == qdoc::schema::MARK_NOTE_REF
+                    mark.name == tilo_doc::schema::MARK_NOTE_REF
                         && index >= mark.start
                         && index < mark.end
                 })

@@ -17,7 +17,6 @@
     reason = "in a test these are the assertion, not a hazard; the counters and a 5 s deadline are far from overflow"
 )]
 
-use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::Instant;
@@ -28,11 +27,9 @@ use shell::compositor::text_commit::DeliveredText;
 use shell::shell::overlay_host::ShellOverlayHost;
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
-use ui::theme::Theme;
+use taffy::{NodeId, TaffyTree};
 use ui::widget::Widget;
-use vello::kurbo::Point;
-use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_surface};
+use wayland_client::protocol::{wl_compositor, wl_keyboard, wl_seat, wl_surface};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
 use wayland_protocols::wp::text_input::zv3::client::{
     zwp_text_input_manager_v3, zwp_text_input_v3,
@@ -41,8 +38,14 @@ use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_ba
 use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_manager_v2, zwp_input_method_v2,
 };
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::platform::wayland::private_text_input_protocol::{
+    tilo_text_input_manager_v1, tilo_text_input_v1,
+};
+
+use crate::support::host::{Layout, lay_out, press_key};
+use crate::support::wayland::{Globals as _, foreign_id};
 
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
@@ -61,27 +64,27 @@ struct Peer {
     done: u32,
     keys: Vec<u32>,
     activated: u32,
+    private_operations: Vec<(u32, u32)>,
 }
 
-impl Dispatch<wl_registry::WlRegistry, ()> for Peer {
+impl Dispatch<tilo_text_input_v1::TiloTextInputV1, ()> for Peer {
     fn event(
-        state: &mut Self,
-        _: &wl_registry::WlRegistry,
-        event: wl_registry::Event,
+        peer: &mut Self,
+        _: &tilo_text_input_v1::TiloTextInputV1,
+        event: tilo_text_input_v1::Event,
         (): &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            state.globals.push((name, interface, version));
-        }
+        let tilo_text_input_v1::Event::Operation { serial, kind, .. } = event else {
+            panic!("unexpected private text input event");
+        };
+        peer.private_operations.push((serial, u32::from(kind)));
     }
 }
+delegate_noop!(Peer: ignore tilo_text_input_manager_v1::TiloTextInputManagerV1);
+
+crate::support::wayland::test_client!(Peer);
 
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for Peer {
     fn event(
@@ -139,38 +142,8 @@ impl Dispatch<zwp_input_method_v2::ZwpInputMethodV2, ()> for Peer {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let zwp_input_method_v2::Event::Activate = event {
+        if matches!(event, zwp_input_method_v2::Event::Activate) {
             state.activated += 1;
-        }
-    }
-}
-
-impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Peer {
-    fn event(
-        _: &mut Self,
-        base: &xdg_wm_base::XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<xdg_surface::XdgSurface, ()> for Peer {
-    fn event(
-        _: &mut Self,
-        surface: &xdg_surface::XdgSurface,
-        event: xdg_surface::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
         }
     }
 }
@@ -194,15 +167,12 @@ impl Connected {
     where
         Peer: Dispatch<I, ()>,
     {
-        let (name, _, advertised) = self
+        let (name, version) = self
             .peer
-            .globals
-            .iter()
-            .find(|(_, name, _)| name == interface)
-            .unwrap_or_else(|| panic!("{interface} is not advertised"))
-            .clone();
+            .global(interface, version)
+            .unwrap_or_else(|| panic!("{interface} is not advertised"));
         let registry = self.conn.display().get_registry(&self.queue.handle(), ());
-        registry.bind(name, version.min(advertised), &self.queue.handle(), ())
+        registry.bind(name, version, &self.queue.handle(), ())
     }
 }
 
@@ -247,56 +217,16 @@ impl Harness {
         let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
         host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
             .expect("the built-in shortcut table is valid");
-        let mut h = Self {
+        let Layout { taffy, child_node } = lay_out(&mut host, W, H);
+        Self {
             display,
             state,
             clients: Vec::new(),
             host,
-            taffy: TaffyTree::new(),
-            child: NodeId::new(0),
+            taffy,
+            child: child_node,
             _event_loop: event_loop,
-        };
-        h.lay_out();
-        h
-    }
-
-    fn lay_out(&mut self) {
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = self.host.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        let mut tr = ui::text_render::TextRenderer::new();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(W),
-                    height: AvailableSpace::Definite(H),
-                },
-                |known, available, node_id, _, _| {
-                    node_map.get(&node_id).map_or(taffy::Size::ZERO, |&ptr| {
-                        // SAFETY: the pointers were collected from the live host
-                        // tree during this very layout pass.
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    })
-                },
-            )
-            .expect("compute_layout");
-        self.host.apply_layout(&taffy, child, Point::ORIGIN);
-        self.taffy = taffy;
-        self.child = child;
+        }
     }
 
     fn connect(&mut self, credential: Option<TrustedInputMethod>) -> usize {
@@ -371,39 +301,7 @@ impl Harness {
     }
 
     fn key(&mut self, logical: Key, mods: ModifiersState) {
-        // winit's `KeyEvent` carries a private platform field, so the struct is
-        // zero-initialised and every public field overwritten.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        let event = WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        };
-        let modifiers = Modifiers::from(mods);
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT.clone();
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        self.host.handle_event(
-            &event,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: self.child,
-                taffy: &self.taffy,
-            },
-        );
+        press_key(&mut self.host, &self.taffy, self.child, logical, mods);
     }
 
     fn type_text(&mut self, text: &str) {
@@ -459,6 +357,7 @@ impl Harness {
     ) -> Field {
         let client = self.connect(None);
         self.clients[client].peer.content = content;
+        let app_id = format!("org.example.Editor.{client}");
         let objects = {
             let c = &self.clients[client];
             let qh = c.queue.handle();
@@ -474,11 +373,11 @@ impl Harness {
             let surface = compositor.create_surface(&qh, ());
             let xdg = wm.get_xdg_surface(&surface, &qh, ());
             let top = xdg.get_toplevel(&qh, ());
-            top.set_app_id("org.example.Editor".into());
+            top.set_app_id(app_id.clone());
             (surface, text_input, xdg, top, keyboard)
         };
         self.pump();
-        let surface_id = foreign_id(&self.state, "org.example.Editor");
+        let surface_id = foreign_id(&self.state, &app_id);
         self.state.set_client_keyboard_focus(Some(surface_id));
         self.pump();
         Field {
@@ -493,24 +392,653 @@ impl Harness {
     }
 }
 
-fn foreign_id(state: &State, app_id: &str) -> u64 {
-    state
-        .workspace_tree
-        .read()
-        .desktop
-        .workspaces
-        .iter()
-        .flat_map(|workspace| workspace.strips.iter())
-        .flat_map(|strip| strip.window_groups.iter())
-        .flat_map(|group| group.tabs.iter())
-        .find_map(|tab| match &tab.tile {
-            shell::shell::state::TileContent::Foreign {
-                app_id: actual,
-                surface_id,
-            } if actual == app_id => Some(*surface_id),
-            _ => None,
-        })
-        .expect("foreign surface was adopted")
+#[test]
+fn dictation_streams_and_corrects_without_editing_until_one_utf8_commit() {
+    assert_dictation_foreign_commit(&["wrong hypothesis".into()], "Bonjour, 世界 👋");
+}
+
+#[test]
+fn dictation_paragraphs_reach_an_explicit_multiline_field_once_without_keys() {
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let field = h.field(Some((
+        zwp_text_input_v3::ContentHint::Multiline,
+        zwp_text_input_v3::ContentPurpose::Normal,
+    )));
+    let now = Instant::now();
+    let id = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(id, "First draft.\nAnother draft.".into(), now)
+        .unwrap();
+    h.pump();
+    assert!(h.peer(&field).committed.is_empty());
+    let final_text = "First paragraph.\n\nDeuxième paragraphe. 世界 👋";
+    h.state
+        .update_dictation(id, final_text.into(), now)
+        .unwrap();
+    h.state.finish_dictation(id, now).unwrap();
+    h.pump();
+    assert_eq!(h.peer(&field).committed, [Some(final_text.into())]);
+    assert!(h.peer(&field).keys.is_empty());
+    assert!(h.state.finish_dictation(id, now).is_err());
+    drop(h);
+}
+
+#[test]
+fn dictation_paragraphs_cannot_survive_multiline_policy_changes_or_enter_a_terminal() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let now = Instant::now();
+    let field = h.field(Some((
+        zwp_text_input_v3::ContentHint::Multiline,
+        zwp_text_input_v3::ContentPurpose::Normal,
+    )));
+    let id = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(id, "First.\nSecond.".into(), now)
+        .unwrap();
+    field.text_input().set_content_type(
+        zwp_text_input_v3::ContentHint::empty(),
+        zwp_text_input_v3::ContentPurpose::Normal,
+    );
+    field.text_input().commit();
+    h.pump();
+    assert_eq!(
+        h.state.finish_dictation(id, now),
+        Err(DictationError::TargetChanged)
+    );
+    assert!(h.peer(&field).committed.is_empty());
+    let terminal = h.field(Some((
+        zwp_text_input_v3::ContentHint::Multiline,
+        zwp_text_input_v3::ContentPurpose::Terminal,
+    )));
+    assert_eq!(
+        h.state.begin_dictation(now),
+        Err(DictationError::UnsupportedField)
+    );
+    assert!(h.peer(&terminal).committed.is_empty());
+    assert!(h.peer(&terminal).keys.is_empty());
+    drop(h);
+}
+
+#[test]
+fn public_aot_transcripts_reach_foreign_fields_without_committing_hallucinated_drafts() {
+    for row in super::input_method_wire::public_aot_transcripts() {
+        assert_dictation_foreign_commit(&row.drafts(), &row.raw_final);
+    }
+}
+
+#[test]
+fn public_image_transcripts_reach_foreign_fields_without_committing_drafts() {
+    for row in super::input_method_wire::public_image_transcripts() {
+        assert_dictation_foreign_commit(&row.drafts(), &row.raw_final);
+    }
+}
+
+#[test]
+fn public_image_transcripts_full_session_reaches_foreign_fields_once() {
+    for row in super::input_method_wire::public_long_image_transcripts() {
+        assert_dictation_foreign_commit(&row.drafts(), &row.raw_final);
+    }
+}
+
+#[test]
+fn public_image_transcripts_cannot_cross_focus_changes_or_canceled_session_boundaries() {
+    for row in super::input_method_wire::public_image_transcripts() {
+        let mut h = Harness::new();
+        let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+        let first = h.field(None);
+        let now = Instant::now();
+        let original = h.state.begin_dictation(now).unwrap();
+        for draft in row.drafts() {
+            h.state.update_dictation(original, draft, now).unwrap();
+        }
+        let second = h.field(None);
+        h.state.set_client_keyboard_focus(Some(first.surface_id));
+        h.pump();
+        assert!(
+            h.state
+                .update_dictation(original, row.raw_final.clone(), now)
+                .is_err()
+        );
+        assert!(h.state.finish_dictation(original, now).is_err());
+        let canceled = h.state.begin_dictation(now).unwrap();
+        h.state
+            .update_dictation(canceled, row.raw_final.clone(), now)
+            .unwrap();
+        assert!(h.state.cancel_dictation(canceled));
+        let current = h.state.begin_dictation(now).unwrap();
+        assert!(
+            h.state
+                .update_dictation(canceled, row.raw_final.clone(), now)
+                .is_err()
+        );
+        assert!(!h.state.cancel_dictation(canceled));
+        h.state
+            .update_dictation(current, row.raw_final.clone(), now)
+            .unwrap();
+        h.state.finish_dictation(current, now).unwrap();
+        h.pump();
+        assert_eq!(h.peer(&first).committed, [Some(row.raw_final)]);
+        assert!(h.peer(&second).committed.is_empty());
+        assert!(h.peer(&first).keys.is_empty() && h.peer(&second).keys.is_empty());
+        drop(h);
+    }
+}
+
+fn assert_dictation_foreign_commit(drafts: &[String], final_text: &str) {
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let field = h.field(None);
+    let now = Instant::now();
+    let id = h
+        .state
+        .begin_dictation(now)
+        .expect("ordinary editable field");
+    for draft in drafts {
+        h.state.update_dictation(id, draft.clone(), now).unwrap();
+        h.pump();
+        assert!(h.peer(&field).committed.is_empty(), "draft is not an edit");
+    }
+    h.state
+        .update_dictation(id, final_text.into(), now)
+        .unwrap();
+    h.state.finish_dictation(id, now).unwrap();
+    h.pump();
+    assert_eq!(h.peer(&field).committed, [Some(final_text.into())]);
+    assert!(h.peer(&field).keys.is_empty(), "no synthetic key events");
+    assert!(h.state.take_delivered_text().is_empty(), "no emoji recents");
+    assert!(
+        h.state.finish_dictation(id, now).is_err(),
+        "no double insertion"
+    );
+    assert_eq!(
+        h.state.input_method_owner_kind(),
+        Some(TrustedInputMethod::OnScreenKeyboard)
+    );
+    drop(h);
+}
+
+#[test]
+fn dictation_cancellation_and_late_callbacks_cannot_touch_a_new_session() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let field = h.field(None);
+    let now = Instant::now();
+    let old = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(old, "discard me".into(), now)
+        .unwrap();
+    assert_eq!(h.state.begin_dictation(now), Err(DictationError::Busy));
+    assert!(h.state.cancel_dictation(old));
+    let new = h.state.begin_dictation(now).unwrap();
+    assert_ne!(old, new);
+    assert!(!h.state.cancel_dictation(old));
+    assert_eq!(
+        h.state.update_dictation(old, "late".into(), now),
+        Err(DictationError::StaleSession)
+    );
+    h.state
+        .update_dictation(new, "keep me".into(), now)
+        .unwrap();
+    h.state.finish_dictation(new, now).unwrap();
+    h.pump();
+    assert_eq!(h.peer(&field).committed, [Some("keep me".into())]);
+    drop(h);
+}
+
+#[test]
+fn dictation_focus_away_and_back_never_revives_the_old_target() {
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let first = h.field(None);
+    let now = Instant::now();
+    let id = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(id, "private draft".into(), now)
+        .unwrap();
+    let second = h.field(None);
+    assert_ne!(first.surface_id, second.surface_id);
+    h.state.set_client_keyboard_focus(Some(first.surface_id));
+    h.pump();
+    assert!(h.state.finish_dictation(id, now).is_err());
+    h.pump();
+    assert!(h.peer(&first).committed.is_empty());
+    assert!(h.peer(&second).committed.is_empty());
+    drop(h);
+}
+
+#[test]
+fn dictation_rejects_field_and_caret_changes_within_the_same_surface() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let field = h.field(None);
+    let now = Instant::now();
+    let id = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(id, "stale edit position".into(), now)
+        .unwrap();
+    field
+        .text_input()
+        .set_surrounding_text("typed while recognizing".into(), 5, 5);
+    field.text_input().commit();
+    h.pump();
+    assert_eq!(
+        h.state.finish_dictation(id, now),
+        Err(DictationError::TargetChanged)
+    );
+    let id = h.state.begin_dictation(now).unwrap();
+    field.text_input().disable();
+    field.text_input().commit();
+    field.text_input().enable();
+    field.text_input().commit();
+    h.pump();
+    assert_eq!(
+        h.state.finish_dictation(id, now),
+        Err(DictationError::TargetChanged)
+    );
+    assert!(h.peer(&field).committed.is_empty());
+    drop(h);
+}
+
+#[test]
+fn dictation_rejects_secret_fields_and_an_unavailable_input_method() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let now = Instant::now();
+    assert_eq!(
+        h.state.begin_dictation(now),
+        Err(DictationError::InputMethodUnavailable)
+    );
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    for (hint, purpose) in [
+        (
+            zwp_text_input_v3::ContentHint::empty(),
+            zwp_text_input_v3::ContentPurpose::Password,
+        ),
+        (
+            zwp_text_input_v3::ContentHint::SensitiveData,
+            zwp_text_input_v3::ContentPurpose::Normal,
+        ),
+    ] {
+        let field = h.field(Some((hint, purpose)));
+        assert_eq!(
+            h.state.begin_dictation(now),
+            Err(DictationError::SensitiveField)
+        );
+        assert!(h.peer(&field).committed.is_empty());
+    }
+    drop(h);
+}
+
+#[test]
+fn dictation_terminal_purpose_requires_a_qualified_inner_editing_target() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let now = Instant::now();
+    for hint in [
+        zwp_text_input_v3::ContentHint::empty(),
+        zwp_text_input_v3::ContentHint::HiddenText,
+    ] {
+        let field = h.field(Some((hint, zwp_text_input_v3::ContentPurpose::Terminal)));
+        let expected = if hint.is_empty() {
+            DictationError::UnsupportedField
+        } else {
+            DictationError::SensitiveField
+        };
+        for _ in 0..2 {
+            assert_eq!(h.state.prepare_dictation(now), Err(expected));
+            assert_eq!(h.state.begin_dictation(now), Err(expected));
+        }
+        h.pump();
+        assert!(h.peer(&field).committed.is_empty());
+    }
+    let editable = h.field(None);
+    let id = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(id, "editable successor".into(), now)
+        .unwrap();
+    h.state.finish_dictation(id, now).unwrap();
+    h.pump();
+    assert_eq!(
+        h.peer(&editable).committed,
+        [Some("editable successor".into())]
+    );
+    drop(h);
+}
+
+#[test]
+fn dictation_editable_to_terminal_transition_cancels_and_does_not_revive() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let field = h.field(None);
+    let now = Instant::now();
+    let old = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(old, "must not reach process input".into(), now)
+        .unwrap();
+    field.text_input().set_content_type(
+        zwp_text_input_v3::ContentHint::empty(),
+        zwp_text_input_v3::ContentPurpose::Terminal,
+    );
+    field.text_input().commit();
+    h.pump();
+    assert_eq!(
+        h.state.check_dictation(old, now),
+        Err(DictationError::UnsupportedField)
+    );
+    assert_eq!(
+        h.state.finish_dictation(old, now),
+        Err(DictationError::StaleSession)
+    );
+    field.text_input().set_content_type(
+        zwp_text_input_v3::ContentHint::empty(),
+        zwp_text_input_v3::ContentPurpose::Normal,
+    );
+    field.text_input().commit();
+    h.pump();
+    let next = h.state.begin_dictation(now).unwrap();
+    assert_ne!(old, next);
+    assert!(!h.state.cancel_dictation(old));
+    assert_eq!(
+        h.state.update_dictation(old, "late callback".into(), now),
+        Err(DictationError::StaleSession)
+    );
+    assert!(h.state.cancel_dictation(next));
+    let final_id = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(final_id, "fresh edit".into(), now)
+        .unwrap();
+    h.state.finish_dictation(final_id, now).unwrap();
+    h.pump();
+    assert_eq!(h.peer(&field).committed, [Some("fresh edit".into())]);
+    drop(h);
+}
+
+#[test]
+fn dictation_idle_terminal_activation_refuses_before_recording() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let field = h.field(Some((
+        zwp_text_input_v3::ContentHint::empty(),
+        zwp_text_input_v3::ContentPurpose::Terminal,
+    )));
+    let id = h.state.prepare_dictation(Instant::now()).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        match h.state.advance_dictation_preparation(id, Instant::now()) {
+            Ok(false) => h.pump(),
+            Err(DictationError::UnsupportedField) => break,
+            other => panic!("unexpected terminal activation result: {other:?}"),
+        }
+        assert!(
+            Instant::now() < deadline,
+            "terminal purpose was not identified"
+        );
+    }
+    assert_eq!(
+        h.state.finish_dictation(id, Instant::now()),
+        Err(DictationError::StaleSession)
+    );
+    h.pump();
+    assert!(h.peer(&field).committed.is_empty());
+    drop(h);
+}
+
+#[test]
+fn dictation_private_warm_ack_does_not_mask_a_changed_targets_refusal() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    for (hint, purpose, expected) in [
+        (
+            zwp_text_input_v3::ContentHint::empty(),
+            zwp_text_input_v3::ContentPurpose::Terminal,
+            DictationError::UnsupportedField,
+        ),
+        (
+            zwp_text_input_v3::ContentHint::HiddenText,
+            zwp_text_input_v3::ContentPurpose::Password,
+            DictationError::SensitiveField,
+        ),
+    ] {
+        let field = h.field(None);
+        let client = &h.clients[field.client];
+        let manager = client.bind::<tilo_text_input_manager_v1::TiloTextInputManagerV1>(
+            "tilo_text_input_manager_v1",
+            1,
+        );
+        let private = manager.get_field(&field.objects.0, &client.queue.handle(), ());
+        private.update(vec![7; 32]);
+        h.pump();
+        let now = Instant::now();
+        let id = h.state.prepare_dictation(now).unwrap();
+        h.pump();
+        let (serial, kind) = *h.peer(&field).private_operations.last().unwrap();
+        assert_eq!(kind, u32::from(tilo_text_input_v1::Kind::Prepare));
+        field.text_input().set_content_type(hint, purpose);
+        field.text_input().commit();
+        private.acknowledge(serial, tilo_text_input_v1::Outcome::Accepted);
+        h.pump();
+        assert_eq!(
+            h.state.advance_dictation_preparation(id, now),
+            Err(expected)
+        );
+        assert_eq!(
+            h.state.finish_dictation(id, now),
+            Err(DictationError::StaleSession)
+        );
+        h.pump();
+        assert!(h.peer(&field).committed.is_empty());
+        assert!(h.peer(&field).private_operations.iter().all(|(_, kind)| {
+            *kind != u32::from(tilo_text_input_v1::Kind::Start)
+                && *kind != u32::from(tilo_text_input_v1::Kind::Final)
+        }));
+    }
+    drop(h);
+}
+
+#[test]
+fn dictation_bounds_silence_model_output_and_terminal_control_characters() {
+    use shell::compositor::dictation::{DictationError, MAX_DRAFT_BYTES, SESSION_WINDOW};
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let field = h.field(None);
+    let now = Instant::now();
+    let id = h.state.begin_dictation(now).unwrap();
+    h.state.finish_dictation(id, now).unwrap();
+    for draft in ["command\n", "command\r", "escape\u{1b}", "nul\0"] {
+        let id = h.state.begin_dictation(now).unwrap();
+        assert_eq!(
+            h.state.update_dictation(id, draft.into(), now),
+            Err(DictationError::ControlCharacter)
+        );
+        assert!(h.state.finish_dictation(id, now).is_err());
+    }
+    let id = h.state.begin_dictation(now).unwrap();
+    assert_eq!(
+        h.state
+            .update_dictation(id, "x".repeat(MAX_DRAFT_BYTES + 1), now),
+        Err(DictationError::DraftTooLarge)
+    );
+    let id = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(id, "too late".into(), now)
+        .unwrap();
+    assert_eq!(
+        h.state.check_dictation(id, now + SESSION_WINDOW),
+        Err(DictationError::TimedOut)
+    );
+    assert!(h.state.finish_dictation(id, now).is_err());
+    h.pump();
+    assert!(h.peer(&field).committed.is_empty());
+    drop(h);
+}
+
+#[test]
+fn dictation_rechecks_secret_content_and_input_method_ownership() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let field = h.field(None);
+    let now = Instant::now();
+    let id = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(id, "ordinary draft".into(), now)
+        .unwrap();
+    field.text_input().set_content_type(
+        zwp_text_input_v3::ContentHint::HiddenText,
+        zwp_text_input_v3::ContentPurpose::Password,
+    );
+    field.text_input().commit();
+    h.pump();
+    assert_eq!(
+        h.state.check_dictation(id, now),
+        Err(DictationError::SensitiveField)
+    );
+    assert!(h.state.finish_dictation(id, now).is_err());
+    field.text_input().set_content_type(
+        zwp_text_input_v3::ContentHint::empty(),
+        zwp_text_input_v3::ContentPurpose::Normal,
+    );
+    field.text_input().commit();
+    h.pump();
+    let id = h.state.begin_dictation(now).unwrap();
+    h.state
+        .update_dictation(id, "owner went away".into(), now)
+        .unwrap();
+    h.state.set_input_method_owner(None);
+    h.state
+        .set_input_method_owner(Some(TrustedInputMethod::OnScreenKeyboard));
+    assert_eq!(
+        h.state.finish_dictation(id, now),
+        Err(DictationError::StaleSession)
+    );
+    h.pump();
+    assert!(h.peer(&field).committed.is_empty());
+    drop(h);
+}
+
+#[test]
+fn dictation_prepares_an_idle_seat_and_releases_it_after_insertion() {
+    let mut h = Harness::new();
+    let field = h.field(None);
+    let now = Instant::now();
+    let id = h.state.prepare_dictation(now).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    while !h
+        .state
+        .advance_dictation_preparation(id, Instant::now())
+        .unwrap()
+    {
+        h.pump();
+        assert!(Instant::now() < deadline, "idle field did not activate");
+    }
+    h.state
+        .update_dictation(id, "Native dictation 👋".into(), Instant::now())
+        .unwrap();
+    h.state.finish_dictation(id, Instant::now()).unwrap();
+    h.pump();
+    assert_eq!(
+        h.peer(&field).committed,
+        [Some("Native dictation 👋".into())]
+    );
+    assert!(h.peer(&field).keys.is_empty());
+    assert_eq!(h.state.input_method_owner_kind(), None);
+    // The next request must establish its own trusted connection.
+    let next = h.state.prepare_dictation(Instant::now()).unwrap();
+    assert_ne!(id, next);
+    assert!(h.state.cancel_dictation(next));
+    drop(h);
+}
+
+#[test]
+fn dictation_preparation_is_cancellable_and_late_ticks_do_not_retarget() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let first = h.field(None);
+    let now = Instant::now();
+    let id = h.state.prepare_dictation(now).unwrap();
+    let second = h.field(None);
+    h.state.set_client_keyboard_focus(Some(first.surface_id));
+    h.pump();
+    assert_eq!(
+        h.state.advance_dictation_preparation(id, now),
+        Err(DictationError::StaleSession)
+    );
+    let next = h.state.prepare_dictation(now).unwrap();
+    assert!(!h.state.cancel_dictation(id));
+    assert!(h.state.cancel_dictation(next));
+    assert_eq!(
+        h.state.advance_dictation_preparation(next, now),
+        Err(DictationError::StaleSession)
+    );
+    assert!(h.peer(&first).committed.is_empty());
+    assert!(h.peer(&second).committed.is_empty());
+    drop(h);
+}
+
+#[test]
+fn dictation_keeps_its_target_across_unchanged_field_updates() {
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let field = h.field(None);
+    field.text_input().set_cursor_rectangle(5, 10, 1, 20);
+    field.text_input().commit();
+    h.pump();
+    let now = Instant::now();
+    let id = h.state.begin_dictation(now).unwrap();
+    field.text_input().set_cursor_rectangle(5, 10, 1, 20);
+    field.text_input().commit();
+    field.text_input().commit();
+    h.pump();
+    h.state
+        .update_dictation(id, "Still the same field.".into(), now)
+        .unwrap();
+    h.state.finish_dictation(id, now).unwrap();
+    h.pump();
+    assert_eq!(
+        h.peer(&field).committed,
+        [Some("Still the same field.".into())]
+    );
+    drop(h);
+}
+
+#[test]
+fn dictation_idle_activation_rejects_secrets_and_bounds_preparation_time() {
+    use shell::compositor::dictation::DictationError;
+    use shell::compositor::text_commit::DELIVERY_WINDOW;
+    let mut h = Harness::new();
+    let field = h.field(Some((
+        zwp_text_input_v3::ContentHint::HiddenText,
+        zwp_text_input_v3::ContentPurpose::Password,
+    )));
+    let id = h.state.prepare_dictation(Instant::now()).unwrap();
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        match h.state.advance_dictation_preparation(id, Instant::now()) {
+            Ok(false) => h.pump(),
+            Err(DictationError::SensitiveField) => break,
+            other => panic!("unexpected secret-field activation result: {other:?}"),
+        }
+        assert!(Instant::now() < deadline, "secret field was not identified");
+    }
+    assert!(h.state.finish_dictation(id, Instant::now()).is_err());
+    let now = Instant::now();
+    let id = h.state.prepare_dictation(now).unwrap();
+    assert_eq!(
+        h.state
+            .advance_dictation_preparation(id, now + DELIVERY_WINDOW),
+        Err(DictationError::TimedOut)
+    );
+    assert!(h.state.finish_dictation(id, now).is_err());
+    assert!(h.peer(&field).committed.is_empty());
+    drop(h);
 }
 
 #[test]
@@ -761,4 +1289,70 @@ fn the_picker_opens_at_the_caret_and_centred_when_the_field_reports_none() {
     );
 
     store().forget(field.surface_id);
+}
+
+fn route_picker_event(harness: &mut Harness, event: &WindowEvent) {
+    let modifiers = Modifiers::from(ModifiersState::empty());
+    let mut doc = automerge::AutoCommit::new();
+    let root = automerge::ROOT.clone();
+    let mut handled = false;
+    let mut focus: Option<NodeId> = None;
+    harness.host.handle_event(
+        event,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: ui::widget::Edits::lend(&mut doc),
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: harness.child,
+            taffy: &harness.taffy,
+        },
+    );
+}
+
+#[test]
+fn interrupted_pointer_pick_stays_with_the_open_picker() {
+    for focus_loss in [true, false] {
+        let mut h = Harness::new();
+        h.key(Key::Character(".".into()), ModifiersState::SUPER);
+        h.type_text("pizza");
+        let cell = h
+            .host
+            .emoji_picker()
+            .emoji_rect(0)
+            .expect("visible pizza")
+            .center();
+        route_picker_event(&mut h, &ui::synthetic_input::cursor_moved(cell.x, cell.y));
+        route_picker_event(&mut h, &ui::synthetic_input::mouse_press());
+        if focus_loss {
+            route_picker_event(&mut h, &WindowEvent::Focused(false));
+        } else {
+            h.key(Key::Character("a".into()), ModifiersState::CONTROL);
+            h.type_text("thumbs up");
+            assert_eq!(h.host.emoji_picker().selected(), Some("👍"));
+        }
+        route_picker_event(&mut h, &ui::synthetic_input::mouse_release());
+        assert!(
+            h.host.take_emoji_commits().is_empty(),
+            "an interrupted native pick cannot insert"
+        );
+        assert!(h.host.emoji_picker_open(), "cancel retains the search");
+        h.key(Key::Named(NamedKey::Escape), ModifiersState::empty());
+        assert!(
+            !h.host.emoji_picker_open(),
+            "Escape still closes the picker"
+        );
+        h.key(Key::Character(".".into()), ModifiersState::SUPER);
+        h.type_text("pizza");
+        h.key(Key::Named(NamedKey::Enter), ModifiersState::empty());
+        assert_eq!(
+            h.host.take_emoji_commits(),
+            ["🍕"],
+            "reopen/keyboard pick works once"
+        );
+        assert!(h.host.take_emoji_commits().is_empty());
+        drop(h);
+    }
 }

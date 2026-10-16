@@ -1,19 +1,18 @@
 //! Turning a live CRDT document into the rows the history widgets render.
 //!
-//! [`ActivityTimeline`](crate::widget::ActivityTimeline) and
-//! [`HistoryScrubber`](crate::widget::HistoryScrubber) both consume
-//! `Vec<HistoryEntry>` and are source-agnostic; this module is the producer,
+//! [`ActivityTimeline`](crate::widget::ActivityTimeline) consumes
+//! `Vec<HistoryEntry>` and is source-agnostic; this module is the producer,
 //! walking the change graph via [`tilo_resource::history::versions`] to emit one
 //! [`HistoryEntry`] per change with author, timestamp, op class, and a
 //! summary of what changed. It lives in `ui` (not a leaf crate) because
-//! both an app's scrubber and the compositor's room-level timeline need it.
+//! both an app's history and the compositor's room-level timeline need it.
 //!
 //! Two summary strategies, in order of preference: **structural**, which
-//! materialises the window with [`qdoc::snapshot::series`] and
+//! materialises the window with [`tilo_doc::snapshot::series`] and
 //! diffs snapshots for real per-paragraph insert/delete counts on
-//! documents carrying the `qdoc` schema; and **patch**, the fallback that
+//! documents carrying the `tilo-doc` schema; and **patch**, the fallback that
 //! reads the change's own patch set via `AutoCommit::diff`, weaker only in
-//! that it can't see qdoc-level concepts like comments or block moves.
+//! that it can't see tilo-doc-level concepts like comments or block moves.
 //! Neither path guesses — an indescribable change gets
 //! `"no visible change"` rather than an invented summary.
 //!
@@ -21,13 +20,14 @@
 //! it's content-addressed and stable across peers, letting
 //! [`heads_for_entry`] turn a clicked row back into a document state.
 
+use crate::num::i64_of_usize;
 use crate::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::collections::HashMap;
 
+use crate::widget::EntryKind;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjType, PatchAction, ReadDoc};
-use collab_types::{ArtifactKind, OpClass};
-use qdoc::snapshot::DocSnapshot;
+use collab_types::ArtifactKind;
+use tilo_doc::snapshot::DocSnapshot;
 
 use crate::widget::history::{HistoryEntry, HistoryEntryId};
 
@@ -37,24 +37,30 @@ pub mod detail;
 pub mod digest;
 pub mod facets;
 pub mod groups;
+mod log;
 pub mod narrative;
 pub mod revert;
 pub mod run_undo;
 pub mod runs;
 pub mod schema_ops;
 pub mod seen;
+pub mod sentence;
+pub mod steps;
+pub(crate) use authors::room_agents_revision;
 pub use authors::{
-    AuthorDirectory, UNKNOWN_AUTHOR_NAME, actor_handle, agent_display_label, agent_principal_name,
-    local_identity_author, participant_display_label, short_id, stable_hue,
+    AuthorDirectory, HistoryAgent, RosterAgent, UNKNOWN_AUTHOR_NAME, actor_handle,
+    agent_display_label, agent_principal_name, author_coloured, author_for_identity,
+    local_identity_author, participant_display_label, set_room_agents, short_id, stable_hue,
 };
 pub use compare::{CompareError, HistoryComparison, compare_entries};
-pub use detail::{HistoryResourceTarget, HistorySelectionDetail};
+pub use detail::{HistoryResourceTarget, HistorySelectionDetail, contains_opaque_id, human_label};
 pub use digest::{ActivityBrief, ActivityBriefAction, ActivityDigest};
-pub use facets::{HistoryFacetIndex, op_class_label};
+pub use facets::HistoryFacetIndex;
 pub use groups::{
     GROUPS_KEY, clear_name, close_range, is_group_marker, merge_named_ranges, move_named_boundary,
     name_range, read_named_ranges, split_named_range,
 };
+pub use log::HistoryLog;
 pub use narrative::{
     ActivityNarrator, GroundedNarrative, NarrativeRequest, NarrativeSource,
     deterministic_narrative, validate_narrative,
@@ -69,7 +75,10 @@ pub use runs::{
     AgentRun, RUNS_KEY, RunStep, forget_run, is_run_marker, read_runs, record_run,
     record_run_with_details, run_starting_at,
 };
-pub use schema_ops::{SchemaHistoryOp, SchemaObjectId, schema_operations_since};
+pub use schema_ops::{
+    SchemaChange, SchemaCreation, SchemaHistoryOp, SchemaObjectId, schema_changes_since,
+    schema_operations_since,
+};
 pub use seen::HistorySeenFrontier;
 
 /// The structural path materialises one snapshot per version, so cost is
@@ -101,18 +110,18 @@ pub fn committed_heads(doc: &AutoCommit) -> Vec<ChangeHash> {
     doc.base_heads()
 }
 
-/// Materialize a committed qdoc history entry without committing live edits.
+/// Materialize a committed tilo-doc history entry without committing live edits.
 /// An ID from another document returns `Ok(None)`.
 ///
 /// # Errors
-/// Returns the qdoc error if the selected version cannot be materialized.
+/// Returns the tilo-doc error if the selected version cannot be materialized.
 pub fn materialize_entry(
     doc: &mut AutoCommit,
     id: &HistoryEntryId,
-) -> Result<Option<DocSnapshot>, qdoc::DocError> {
+) -> Result<Option<DocSnapshot>, tilo_doc::DocError> {
     with_committed_history(doc, |doc| {
         version_index_for_entry(doc, id)
-            .map(|version| qdoc::snapshot::at(doc, version))
+            .map(|version| tilo_doc::snapshot::at(doc, version))
             .transpose()
     })
 }
@@ -125,7 +134,12 @@ pub struct HistorySource {
     max_entries: usize,
     record_genesis: bool,
     field_paths: bool,
+    pass_over: Option<PassOver>,
 }
+
+/// Which changes a [`HistorySource`] passes over; see
+/// [`HistorySource::passing_over`].
+pub type PassOver = fn(&automerge::Change) -> bool;
 
 impl Default for HistorySource {
     fn default() -> Self {
@@ -142,7 +156,25 @@ impl HistorySource {
             max_entries: DEFAULT_MAX_ENTRIES,
             record_genesis: true,
             field_paths: true,
+            pass_over: None,
         }
+    }
+
+    /// Pass over the changes `pass_over` names: they are part of the
+    /// document, and of the heads every later row is read at, but they make
+    /// no row and take no place in the window. For a document that also
+    /// keeps view state, such as which workspace a desktop shows, so that
+    /// moving the view neither shows up as history nor pushes what people
+    /// did out of the window. Decided from the change alone, so a reader
+    /// that reads the log from scratch decides it for every change.
+    #[must_use]
+    pub fn passing_over(mut self, pass_over: PassOver) -> Self {
+        self.pass_over = Some(pass_over);
+        self
+    }
+
+    fn passes_over(&self, change: &automerge::Change) -> bool {
+        self.pass_over.is_some_and(|pass_over| pass_over(change))
     }
 
     /// Describe a change that edited a document's fields by how many it
@@ -202,114 +234,12 @@ impl HistorySource {
     pub fn entries(&self, doc: &mut AutoCommit) -> Vec<HistoryEntry> {
         with_committed_history(doc, |doc| self.committed_entries(doc))
     }
-
-    fn committed_entries(&self, doc: &mut AutoCommit) -> Vec<HistoryEntry> {
-        let versions = tilo_resource::history::versions(doc);
-        if versions.is_empty() {
-            return Vec::new();
-        }
-        let start = versions.len().saturating_sub(self.max_entries);
-        let genesis_actor = crate::record::genesis_actor(doc).map(|actor| actor.to_hex_string());
-
-        // Plus the one before the window — the patch path diffs between
-        // consecutive frontiers.
-        let heads = prefix_heads_series(doc, start, versions.len());
-
-        // One replay of the change log yields every snapshot in the window,
-        // plus the one before it, so the first row still describes a delta.
-        let before_window = start.checked_sub(1);
-        let indices: Vec<usize> = before_window
-            .into_iter()
-            .chain(start..versions.len())
-            .collect();
-        let mut snapshots = qdoc::snapshot::series(doc, &indices).into_iter();
-        let mut prev_snapshot: Option<DocSnapshot> = match before_window {
-            None => Some(DocSnapshot::default()),
-            Some(_) => snapshots.next().flatten(),
-        };
-
-        let mut out = Vec::with_capacity(versions.len().saturating_sub(start));
-        for (index, v) in versions.iter().enumerate().skip(start) {
-            let cur_snapshot = snapshots.next().flatten();
-            let before = heads
-                .get(&index.wrapping_sub(1))
-                .cloned()
-                .unwrap_or_default();
-            let after = heads.get(&index).cloned().unwrap_or_default();
-            let (structural_summary, op_class, text_delta) = match (&prev_snapshot, &cur_snapshot) {
-                (Some(prev), Some(cur)) => structural_summary(prev, cur),
-                _ => patch_summary(doc, &before, &after, self.field_paths),
-            };
-            prev_snapshot = cur_snapshot;
-
-            // The schema genesis is a change nobody made — its containers are
-            // written by a fixed actor so two independently created documents
-            // merge instead of shadowing each other. Listing it would attribute
-            // a revision to a nonexistent person. Skipped here rather than in
-            // `versions`, which stays positional (`materialize_at` / `prefix_heads`
-            // address a change by its place).
-            if qdoc::model::is_schema_genesis(v) {
-                continue;
-            }
-            // A record's genesis is the same kind of change; so is a
-            // package-primary document's, which holds no identity to derive
-            // its actor from. The document's own history keeps it, marked,
-            // as the version to restore to.
-            let genesis =
-                genesis_actor.as_deref() == Some(v.actor.as_str()) || is_store_genesis(doc, v);
-            if genesis && !self.record_genesis {
-                continue;
-            }
-
-            // Naming a version (or recording a cross-app run) is a change but
-            // not a row — the name is already on screen as the band's title.
-            // Checked only when there's no other summary, so the common path
-            // pays no extra diff.
-            if structural_summary == NO_VISIBLE_CHANGE {
-                let patches = doc.diff(&before, &after);
-                if groups::is_group_marker(&patches) || runs::is_run_marker(&patches) {
-                    continue;
-                }
-            }
-
-            let context = if genesis {
-                Some(genesis_context())
-            } else {
-                v.message
-                    .as_deref()
-                    .and_then(tilo_actions::ActionContext::from_change_message)
-            };
-            let summary = context
-                .as_ref()
-                .and_then(tilo_actions::ActionContext::summary)
-                .unwrap_or(structural_summary);
-
-            out.push(HistoryEntry {
-                id: entry_id_from_hash(&v.hash.to_string()),
-                author: self.authors.resolve(&v.actor),
-                op_class,
-                artifact_kind: self.artifact_kind,
-                timestamp: timestamp_from_ms(v.time_ms),
-                summary,
-                text_delta,
-                // The scrubber re-derives state via `materialize_at` /
-                // `heads_for_entry` rather than cracking open a payload.
-                diff_payload: None,
-                // Projected from the broker's redaction log, keyed by
-                // artifact and not reachable from a bare document.
-                redaction: None,
-                context,
-            });
-        }
-        out
-    }
 }
 
 /// What a genesis row says: the document was created, by no one in
 /// particular.
 fn genesis_context() -> tilo_actions::ActionContext {
     tilo_actions::ActionContext {
-        action_label: crate::i18n::I18nManager::lookup_plain("history-genesis"),
         facets: vec![crate::widget::history::genesis_facet()],
         ..tilo_actions::ActionContext::default()
     }
@@ -318,12 +248,12 @@ fn genesis_context() -> tilo_actions::ActionContext {
 /// Whether `v` is the genesis of a document its store created: the root
 /// change, made at time zero, which stamps the store's schema along with the
 /// initial content. Nobody's edit writes the schema stamp.
-fn is_store_genesis(doc: &mut AutoCommit, v: &tilo_resource::history::Version) -> bool {
-    v.time_ms == 0
+fn is_store_genesis(doc: &mut AutoCommit, time_ms: i64, hash: &ChangeHash) -> bool {
+    time_ms == 0
         && doc
-            .get_change_by_hash(&v.hash)
-            .is_some_and(|change| change.deps().is_empty())
-        && doc.diff(&[], &[v.hash]).iter().any(|patch| {
+            .get_change_meta_by_hash(hash)
+            .is_some_and(|change| change.deps.is_empty())
+        && doc.diff(&[], &[*hash]).iter().any(|patch| {
             patch.obj == automerge::ROOT
                 && matches!(
                     &patch.action,
@@ -388,40 +318,6 @@ fn timestamp_from_ms(time_ms: i64) -> SystemTime {
         .unwrap_or(UNIX_EPOCH)
 }
 
-/// Versions `start - 1 ..= end - 1`, computed in one pass — `prefix_heads`
-/// re-reads the change list per call, so a timeline asking for every
-/// version builds the series from one read instead.
-fn prefix_heads_series(
-    doc: &mut AutoCommit,
-    start: usize,
-    end: usize,
-) -> HashMap<usize, Vec<ChangeHash>> {
-    let changes = doc.get_changes(&[]);
-    let mut out = HashMap::new();
-    let lo = start.saturating_sub(1);
-    for i in lo..end.min(changes.len()) {
-        // The loop bound guarantees `i < changes.len()`, so `..=i` is
-        // always in range; `get` plus `continue` keeps that provable
-        // rather than assumed.
-        let Some(prefix) = changes.get(..=i) else {
-            continue;
-        };
-        let depended_on: std::collections::HashSet<ChangeHash> = prefix
-            .iter()
-            .flat_map(|c| c.deps().iter().copied())
-            .collect();
-        out.insert(
-            i,
-            prefix
-                .iter()
-                .map(automerge::Change::hash)
-                .filter(|h| !depended_on.contains(h))
-                .collect(),
-        );
-    }
-    out
-}
-
 /// The op class follows what actually moved, in the order a reader cares
 /// about: a new comment is a comment even if it also touched text; content
 /// edits beat pure deletions; a reordering with no content change is a
@@ -429,32 +325,32 @@ fn prefix_heads_series(
 fn structural_summary(
     prev: &DocSnapshot,
     cur: &DocSnapshot,
-) -> (String, OpClass, Option<(usize, usize)>) {
-    let diff = qdoc::diff_snapshots(prev, cur);
+) -> (String, EntryKind, Option<(usize, usize)>) {
+    let diff = tilo_doc::diff_snapshots(prev, cur);
 
     let mut inserted = 0usize;
     let mut deleted = 0usize;
     let mut formatting = 0usize;
     for b in &diff.blocks {
         match b.op {
-            qdoc::BlockOp::Added => {
+            tilo_doc::BlockOp::Added => {
                 inserted =
                     inserted.saturating_add(b.new_text.as_deref().unwrap_or("").chars().count());
             }
-            qdoc::BlockOp::Removed => {
+            tilo_doc::BlockOp::Removed => {
                 deleted =
                     deleted.saturating_add(b.old_text.as_deref().unwrap_or("").chars().count());
             }
-            qdoc::BlockOp::Changed | qdoc::BlockOp::Equal => {
+            tilo_doc::BlockOp::Changed | tilo_doc::BlockOp::Equal => {
                 for r in &b.runs {
                     match r.op {
-                        qdoc::RunOp::Insert => {
+                        tilo_doc::RunOp::Insert => {
                             inserted = inserted.saturating_add(r.text.chars().count());
                         }
-                        qdoc::RunOp::Delete => {
+                        tilo_doc::RunOp::Delete => {
                             deleted = deleted.saturating_add(r.text.chars().count());
                         }
-                        qdoc::RunOp::Equal => {}
+                        tilo_doc::RunOp::Equal => {}
                     }
                 }
             }
@@ -486,50 +382,50 @@ fn structural_summary(
         } else {
             format!("+{comments} comments")
         };
-        return (s, OpClass::Comment, delta);
+        return (s, EntryKind::Comment, delta);
     }
     if pure_removal {
         return (
             plural_signed(negative_count(blocks_removed), "block"),
-            OpClass::Tombstone,
+            EntryKind::Delete,
             delta,
         );
     }
     if inserted > 0 || deleted > 0 {
         return (
             format!("+{inserted} -{deleted} chars"),
-            OpClass::Splice,
+            EntryKind::Text,
             delta,
         );
     }
     if blocks_added > 0 {
         return (
-            plural_signed(as_i64_count(blocks_added), "block"),
-            OpClass::Splice,
+            plural_signed(i64_of_usize(blocks_added), "block"),
+            EntryKind::Text,
             delta,
         );
     }
     if blocks_removed > 0 {
         return (
             plural_signed(negative_count(blocks_removed), "block"),
-            OpClass::Tombstone,
+            EntryKind::Delete,
             delta,
         );
     }
     if pure_reorder {
-        return ("reordered".to_string(), OpClass::Move, delta);
+        return ("reordered".to_string(), EntryKind::Move, delta);
     }
     if formatting > 0 {
         return (
             plural(formatting, "formatting change"),
-            OpClass::EditMeta,
+            EntryKind::Details,
             delta,
         );
     }
     if props > 0 {
-        return (plural(props, "property"), OpClass::EditMeta, delta);
+        return (plural(props, "property"), EntryKind::Details, delta);
     }
-    (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta, delta)
+    (NO_VISIBLE_CHANGE.to_string(), EntryKind::Details, delta)
 }
 
 /// Same set of top-level block ids but a different order — a move rather
@@ -563,12 +459,9 @@ pub fn change_summary(doc: &mut AutoCommit, from: &[ChangeHash], to: &[ChangeHas
     // which an undo control asking every frame cannot afford.
     if let [head] = to
         && !from.contains(head)
-        && let Some(summary) = doc
-            .get_change_meta_by_hash(head)
-            .and_then(|meta| meta.message.as_deref().map(str::to_owned))
-            .as_deref()
-            .and_then(tilo_actions::ActionContext::from_change_message)
-            .and_then(|context| context.summary())
+        && let Some(summary) = tilo_actions::entry_of(doc.committed_document(), *head)
+            .as_ref()
+            .and_then(sentence::step_summary)
     {
         return summary;
     }
@@ -576,19 +469,29 @@ pub fn change_summary(doc: &mut AutoCommit, from: &[ChangeHash], to: &[ChangeHas
 }
 
 /// Describe a change by reading its own patch set. The fallback for documents
-/// that don't carry the qdoc schema. With `paths`, edited fields are named by
+/// that don't carry the tilo-doc schema. With `paths`, edited fields are named by
 /// their document paths; without, counted.
 fn patch_summary(
     doc: &mut AutoCommit,
     before: &[ChangeHash],
     after: &[ChangeHash],
     paths: bool,
-) -> (String, OpClass, Option<(usize, usize)>) {
+) -> (String, EntryKind, Option<(usize, usize)>) {
     let patches = doc.diff(before, after);
+    summarize_patches(doc, &patches, paths)
+}
+
+/// [`patch_summary`] of patches already read; `doc` is a replica holding
+/// the objects they touch.
+fn summarize_patches(
+    doc: &AutoCommit,
+    patches: &[automerge::Patch],
+    paths: bool,
+) -> (String, EntryKind, Option<(usize, usize)>) {
     // A change that only named a version or recorded a run reports as
     // nothing visible, so the caller drops the row.
-    if groups::is_group_marker(&patches) || runs::is_run_marker(&patches) {
-        return (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta, None);
+    if groups::is_group_marker(patches) || runs::is_run_marker(patches) {
+        return (NO_VISIBLE_CHANGE.to_string(), EntryKind::Details, None);
     }
     let mut inserted = 0usize;
     let mut text_deleted = 0usize;
@@ -599,7 +502,7 @@ fn patch_summary(
     let mut marks = 0usize;
     let mut field_paths: Vec<String> = Vec::new();
 
-    for p in &patches {
+    for p in patches {
         if let Some(path) = field_path(p)
             && !field_paths.contains(&path)
         {
@@ -636,21 +539,21 @@ fn patch_summary(
     if inserted > 0 || text_deleted > 0 {
         return (
             format!("+{inserted} -{text_deleted} chars"),
-            OpClass::Splice,
+            EntryKind::Text,
             delta,
         );
     }
     if list_inserted > 0 {
         return (
-            plural_signed(as_i64_count(list_inserted), "item"),
-            OpClass::Splice,
+            plural_signed(i64_of_usize(list_inserted), "item"),
+            EntryKind::Text,
             delta,
         );
     }
     if list_deleted > 0 {
         return (
             plural_signed(negative_count(list_deleted), "item"),
-            OpClass::Tombstone,
+            EntryKind::Delete,
             delta,
         );
     }
@@ -659,9 +562,9 @@ fn patch_summary(
     {
         let removed = fields == 0;
         let class = if removed {
-            OpClass::Tombstone
+            EntryKind::Delete
         } else {
-            OpClass::EditMeta
+            EntryKind::Details
         };
         let label = if paths {
             edited_fields_label(first, rest.len(), removed)
@@ -671,12 +574,16 @@ fn patch_summary(
         return (label, class, delta);
     }
     if fields > 0 {
-        return (plural(fields, "field"), OpClass::EditMeta, delta);
+        return (plural(fields, "field"), EntryKind::Details, delta);
     }
     if marks > 0 {
-        return (plural(marks, "formatting change"), OpClass::EditMeta, delta);
+        return (
+            plural(marks, "formatting change"),
+            EntryKind::Details,
+            delta,
+        );
     }
-    (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta, delta)
+    (NO_VISIBLE_CHANGE.to_string(), EntryKind::Details, delta)
 }
 
 /// The dotted document path of the map entry `patch` writes, such as
@@ -737,18 +644,11 @@ fn plural(n: usize, noun: &str) -> String {
     }
 }
 
-/// Converts a count to a non-negative `i64` for [`plural_signed`],
-/// saturating at `i64::MAX` instead of risking a wrap — no realistic
-/// block/item/field count on a document gets anywhere near that bound.
-fn as_i64_count(n: usize) -> i64 {
-    i64::try_from(n).unwrap_or(i64::MAX)
-}
-
 /// Converts a count to a negative `i64` for [`plural_signed`]. Saturates at
-/// `i64::MIN` rather than risking overflow on the negation; unreachable in
-/// practice for the same reason as [`as_i64_count`].
+/// `i64::MIN` rather than risking overflow on the negation; no realistic
+/// count gets anywhere near that bound.
 fn negative_count(n: usize) -> i64 {
-    as_i64_count(n).checked_neg().unwrap_or(i64::MIN)
+    i64_of_usize(n).checked_neg().unwrap_or(i64::MIN)
 }
 
 fn plural_signed(n: i64, noun: &str) -> String {

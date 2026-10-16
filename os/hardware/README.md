@@ -33,6 +33,21 @@ system-firmware list. `firmware` maps local input basenames
 to unique paths under `/usr/lib/firmware/`; an empty mapping needs no local
 firmware manifest. Paths cannot be absolute, traverse directories, or contain
 shell metacharacters. Unknown fields and unsupported architectures fail.
+The optional `always_on` (version 2, default `false`) marks a board that is
+an always-on host rather than a personal computer; see the Orange Pi below.
+The optional `firmware_exclude` (version 2) names Fedora firmware RPMs the
+board layer removes (`os/dev/install-board-layer.sh`) because the board has no
+such hardware. Only packages in `FIRMWARE_PACKAGE_TREES`
+(`os/dev/hardware_profile.py`) are accepted, and a package whose firmware
+subtree the definition's own `system_firmware` or `firmware` names is refused.
+Generic images keep every package. lenovo-83ed drops about 190 MB this way.
+The optional `kernel_args` (version 2) lists kernel arguments the board
+needs, one unquoted token each. The preparer writes them to
+`/usr/lib/bootc/kargs.d/10-hardware-profile.toml`, after the image's own
+drop-ins, so they are sealed into the UKI command line and a console named
+there is the last `console=`, which the kernel makes `/dev/console`.
+The optional `internal_keyboards` (version 2) names built-in I2C or SPI
+keyboards libinput must treat as internal; see the Lenovo keyboard section.
 
 The reviewed definition is copied into the immutable rootfs beside the
 generated profile. The UKI builder checks both files' ownership and permissions,
@@ -41,12 +56,22 @@ path and hash. Adding a board does not add a new branch to the UKI builder.
 
 The first registered profile, `lenovo-83ed`, describes the Lenovo Yoga Slim 7x.
 Its kernel must supply `dtb/qcom/x1e80100-lenovo-yoga-slim7x.dtb`.
-The retained 7.2.5 RPM's MSM module contains the Adreno 740 firmware selection
-`a740_sqe.fw` (the inspected compressed module SHA-256 is
-`4d500d42033b9fa3df293dd3f8b71a50067bbb5ad9e9c2ffda16497a45f03267`).
-The profile therefore requires the distro-provided `qcom/a740_sqe.fw` and
-includes it in the initramfs so GPU initialization does not depend on the
-encrypted root already being mounted.
+Older MSM kernels request `a740_sqe.fw`; the installed 7.2.7 kernel requests
+`gen70500_sqe.fw`, `gen70500_gmu.bin`, and the X1E80100-specific
+`gen70500_zap.mbn`. The profile includes both generations' distro firmware
+in the initramfs. A physical first boot showed that checking only the older
+filename allowed the newer GPU's firmware request to fail before the encrypted
+root was available. Firmware presence must follow the actual kernel requests.
+
+The 83ED firmware publishes a TPM event log for its Qualcomm firmware TPM,
+which Linux has no driver for. `systemd-tpm2-generator` reads that as "a TPM
+whose driver has not loaded yet" and makes `sysinit.target` wait for
+`/dev/tpm0` and `/dev/tpmrm0` until the 45 second device timeout, once in the
+initrd and again after switch-root. On a physical first boot that held the
+splash for a minute and a half after the disk was unlocked. The profile's
+`systemd.tpm2_wait=0` turns that wait off for this board only. Boards whose
+TPM driver is a module (an I2C or SPI TPM) still need the wait, so it stays on
+everywhere else.
 
 ## Local firmware input
 
@@ -174,10 +199,43 @@ the chosen kernel and image packages.
 
 `orangepi-3b-v2-1` is the Xunlong Orange Pi 3B hardware revision v2.1
 (RK3566). The profile embeds `rockchip/rk3566-orangepi-3b-v2.1.dtb` and names
-the SD-card drivers the UKI needs before the root is mounted. It has no
-private firmware blob: Ethernet and the SD controller come from the device
-tree, and Wi-Fi firmware is the distro `linux-firmware` package when that
-package carries the AP6256 NVRAM for this board.
+the SD-card drivers the UKI needs before the root is mounted. The Wi-Fi
+driver (`mmc_core`, `cfg80211`, `brcmutil`, `brcmfmac`) is there too: the
+SDIO radio is enumerated by that same controller before the root is mounted,
+and nothing binds it later. So are the HDMI modules (`rockchipdrm`, `dw-hdmi`,
+`phy-rockchip-inno-hdmi`, `display-connector`); mainline U-Boot for this board
+has no video driver, so the monitor stays dark until Linux drives it.
+
+Fedora's `linux-firmware` does not ship the AP6256 files `brcmfmac` loads.
+`os/dev/fetch-orangepi-wifi-firmware.sh` stages Armbian's published
+`brcmfmac43456-sdio.{bin,clm_blob,txt}`, pinned by SHA-256 in
+`os/external-assets/github-assets.tsv`, into
+`os/hardware/firmware/orangepi-3b-v2-1/` with their manifest; the aarch64 dev
+lane runs it before building the board image. The SDIO node has no
+`brcm,board-type`, so the driver first asks for names carrying the machine's
+compatible string, `brcmfmac43456-sdio.xunlong,orangepi-3b-v2.1.*`; the
+profile installs both sets. The NVRAM text names Broadcom's sample MAC
+`00:90:4c:c5:12:38`; the image installs it without that line, so boards do
+not share one address. NetworkManager keeps the permanent MAC for `brcmfmac`
+(`os/etc/NetworkManager/conf.d/10-tilo-brcmfmac.conf`): the driver drops the
+link when the address is changed. The onboard Ethernet PHY drops the cable
+after idle while Energy Efficient Ethernet is on, so a NetworkManager
+dispatcher (`os/usr/lib/NetworkManager/dispatcher.d/10-tilo-disable-eee`)
+turns EEE off whenever `end0` comes up.
+
+The profile is `"always_on": true`. `os/dev/install-board-layer.sh` gives such
+a board image a session instead of a greeter:
+`tilo-board-headless-session@<account>.service`, enabled by the disk step for
+the account it creates, runs the person's Tilo session headless, and on the
+display while a sink is connected (`tilo-seat-session`). greetd and sleep are
+masked, chrony accepts the first NTS certificate before the clock can be
+checked against it (the board has no battery-backed clock), and
+`tilo-boot-health` judges the boot by that session.
+
+The board's debug UART is `ttyS2` at 1500000 baud (the device tree's
+`stdout-path`). The image's generic `console=` arguments override that
+path, so the profile names it in `kernel_args` as `console=ttyS2,1500000n8`,
+with `earlycon` so output starts before the UART driver binds.
 
 The disk puts a 15 MiB unformatted hole at the 1 MiB alignment so the ESP starts at LBA 32768. `idbloader.img` sits in the unpartitioned sectors before that hole, and `u-boot.itb` sits inside the hole. `os/dev/build-orangepi-uboot.sh`
 builds mainline U-Boot for `orangepi-3b-rk3566` and
@@ -186,11 +244,30 @@ builds mainline U-Boot for `orangepi-3b-rk3566` and
 UKI. The first partition must start at or after LBA 32768; a closer partition
 is refused before any loader byte is written.
 
-CI builds this profile from an explicit `workflow_dispatch` with
-`hardware_profile=orangepi-3b-v2-1` on the native ARM64 runner. The image is
-one aarch64 disk at generation 1. It does not enter the generic `latest` /
-`genN` series. Dispatch it with publication left off; a signed board channel
-is separate from that disk build.
+The main development ARM lane builds an unsigned, unvalidated Orange Pi disk
+candidate. It is not a release or an accepted device update.
+
+A signed source-pinned board image uses Build / OS's explicit main-branch
+`workflow_dispatch` with `release=true` and `hardware_profile=orangepi-3b-v2-1`.
+Leave Lenovo firmware inputs empty: Orange Pi firmware and loader inputs are
+checksum-pinned in the repository. The native release ARM lane independently
+rebuilds, seals and disk-installs the board image, then uses the existing release
+signer, SBOM, freshness and provenance checks. Promotion verifies the exact
+source, aarch64 profile and hardware-definition hash before publishing
+`code.tilo.so/tilo/tilo:orangepi-3b-v2-1-<full-source-commit>` by preserved digest.
+Registry/signing access failures stop the lane; no development trust is accepted.
+Orange Pi uses the ordinary public Tilo image repository with repository-pinned
+firmware. The owner-visibility restriction applies to independently imported Lenovo
+firmware; selecting Orange Pi cannot admit those Lenovo firmware inputs.
+
+This is a generation-1 immutable board reference, outside generic `latest` /
+`genN`. It neither changes the generic rollback floor nor automatically updates
+an installed board. A board DTB cannot boot QEMU virt: disk-install/reproduction
+checks are not physical boot qualification. Before activating it on hardware,
+verify the existing device's profile/DTB, authenticated update route, runtime
+cohort, retained previous deployment and recovery path, then physically test
+cold boot, display/input and update/rollback. Preserve device identity and data.
+No flash or device update is performed by promotion.
 
 ```sh
 TILO_BUILD_ARCH=aarch64 TILO_HARDWARE_PROFILE=orangepi-3b-v2-1 \
@@ -199,8 +276,8 @@ TILO_BUILD_ARCH=aarch64 TILO_HARDWARE_PROFILE=orangepi-3b-v2-1 \
 ```
 
 `TILO_BUILD_ARCH` is only for an x86 builder that emulates aarch64. A native
-ARM builder leaves it unset. CI dispatches `hardware_profile=orangepi-3b-v2-1`
-with publication left off.
+ARM builder leaves it unset. Local builds do not publish; use the explicit protected release dispatch above
+for a signed image.
 
 The update-reference binding covers image construction and initial installation.
 It does not prove that a later image published at that reference preserves the
@@ -232,3 +309,82 @@ image for the firmware, Wi-Fi plugin, and signed regulatory database, then
 verify Wi-Fi association, Bluetooth initialization/pairing, and suspend/resume
 on the laptop. The diagnostic runtime and QEMU tests cannot establish those
 physical-device results.
+
+### Wi-Fi before the root is open
+
+Sibling unlock (docs/device-reach.md) can join the owner's unlock Wi-Fi
+networks from the initramfs, so the profile carries the radio there. Its
+`system_firmware` adds the WCN7850's `ath12k/WCN7850/hw2.0/amss.bin`,
+`m3.bin` and `board-2.bin`, and the signed `regulatory.db` and
+`regulatory.db.p7s` cfg80211 loads. `board-2.bin` is one container for every
+WCN7850 board; it holds the entry ath12k builds for the Yoga's subsystem,
+`bus=pci,vendor=17cb,device=1107,subsystem-vendor=17aa,subsystem-device=e0e9,qmi-chip-id=2,qmi-board-id=255`
+(the device tree names no calibration variant), and the regulatory data it
+also reads. The `ncm865` firmware beside it is for another module and stays out.
+
+`boot_modules` names the drivers udev would otherwise find only after
+switch-root: `ath12k` and its PCI front end `ath12k_wifi7`, `mac80211`,
+`cfg80211`, the MHI bus and QRTR-over-MHI transport ath12k talks QMI over
+(`mhi`, `qrtr`, `qrtr-mhi`, `qmi_helpers`), the WCN7850 power sequencer
+(`pwrseq-qcom-wcn`), the PCI power-control driver that asks it to power the
+radio before the bus is scanned (`pci-pwrctrl-pwrseq`), and the PCIe PHY
+(`phy-qcom-qmp-pcie`). The PCIe controller driver (`CONFIG_PCIE_QCOM`) and
+the power-sequencing and PCI power-control cores are built in. Generic images
+carry none of this.
+
+`os/scripts/verify-board-initramfs.py` runs after dracut in every board
+build and reads the result back with `lsinitrd`: each profile firmware file
+and modular boot driver must be there, and when the sibling-unlock unit is,
+NetworkManager's Wi-Fi plugin, `wpa_supplicant` and its D-Bus activation file
+too. That proves the pieces are present. Only the laptop can show that the
+radio powers up, picks that board entry and associates before the root opens.
+
+### Lenovo 83ED Wi-Fi wake policy
+
+The optional version-2 `wifi_wake_on_wlan` field currently admits only numeric
+`0` on the exact Lenovo 83ED/aarch64/Yoga Slim 7x definition. The production
+profile preparer installs a NetworkManager connection default matching
+`driver:ath12k_wifi7_pci` into the selected board image. Generic images and
+other boards receive no such policy. No Wi-Fi power-save, autoconnect,
+credentials, or unrelated connection settings are changed.
+
+This prevents fresh/default WCN7850 profiles from enabling WoWLAN. It addresses
+an observed retained-firmware deep-resume failure (MHI resume followed by
+`ESHUTDOWN`), not a proven kernel repair. Physical non-WoW deep resume must
+still be tested on the laptop before claiming reconnection is fixed.
+
+As specified by [NetworkManager connection defaults](https://networkmanager.pages.freedesktop.org/NetworkManager/NetworkManager/NetworkManager.conf.html),
+an existing explicit `802-11-wireless.wake-on-wlan=0x8` (magic packet) wins over
+the generated default. The source did not create that explicit setting; do not
+rewrite every saved profile or disable functional wake on unrelated hardware.
+For an owner-approved diagnostic correction on this affected device, first
+identify its exact active NetworkManager UUID and read only that profile's wake
+field plus `iw phy <exact-phy> wowlan show`. Use numeric `0` with
+`nmcli connection modify uuid <exact-uuid> 802-11-wireless.wake-on-wlan 0`;
+`none` is not accepted by the installed nmcli. Then `iw phy <exact-phy> wowlan
+disable` clears the already-applied kernel trigger. Verify both readbacks before
+a controlled resume test. These commands require normal device-owner authority;
+the generated default neither executes them nor silently migrates explicit
+settings. A NetworkManager restart alone cannot repair an already failed MHI
+transport.
+
+### Lenovo 83ED keyboard and disable-while-typing
+
+libinput enables a touchpad's disable-while-typing only against a keyboard it
+tags internal, and its shipped quirks tag only PS/2 keyboards that way. The
+83ED's built-in keyboard is I2C HID (`hid-over-i2c 048D:8987`, bus `0x18`), so
+without help libinput never pairs it with the `0488:1054` touchpad and the
+Settings toggle has nothing to switch on.
+
+Each `internal_keyboards` entry names the keyboard's bus (`i2c` or `spi`),
+uppercase vendor and product ids, exact evdev name and the board's first
+device-tree `compatible` string. The preparer writes them, ANDed, into
+`/usr/share/libinput/50-tilo-<profile>.quirks` as
+`AttrKeyboardIntegration=internal`. Values are literal: no glob characters,
+so the section can match only that keyboard on that board. Entries require a
+device-tree profile; a firmware-described board would need a DMI match first.
+`/etc/libinput/local-overrides.quirks` stays the administrator's.
+
+On the laptop, `libinput quirks list /dev/input/event<N>` (libinput-utils)
+names the attribute for the keyboard node; with stock quirks alone it
+prints nothing.

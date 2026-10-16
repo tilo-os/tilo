@@ -147,12 +147,6 @@ pub enum RecordStatus {
     Removed,
 }
 
-fn now() -> u64 {
-    ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 /// Operation IDs become file names; allow only a UUID-like identifier.
 pub fn valid_operation_id(id: &str) -> bool {
     !id.is_empty()
@@ -206,7 +200,7 @@ impl Record {
         state: StepState,
         detail: serde_json::Map<String, serde_json::Value>,
     ) {
-        let at = now();
+        let at = ui::time::unix_now();
         if let Some(existing) = self.steps.iter_mut().find(|s| s.step == step) {
             existing.state = state;
             existing.at = at;
@@ -439,12 +433,16 @@ pub fn write_atomic(dir: &Path, name: &str, bytes: &[u8], public: bool) -> std::
     let path = dir.join(name);
     #[cfg(unix)]
     {
-        atomic_file::write_with_mode(&path, bytes, if public { 0o644 } else { 0o600 })
+        tilo_files::native::atomic::write_with_mode(
+            &path,
+            bytes,
+            if public { 0o644 } else { 0o600 },
+        )
     }
     #[cfg(not(unix))]
     {
         let _ = public;
-        atomic_file::write(&path, bytes)
+        tilo_files::native::atomic::write(&path, bytes)
     }
 }
 
@@ -459,8 +457,7 @@ mod secure {
         let io = |e: std::io::Error| format!("{}: {e}", dir.display());
         std::fs::create_dir_all(dir).map_err(io)?;
         let meta = std::fs::symlink_metadata(dir).map_err(io)?;
-        // SAFETY: geteuid has no preconditions.
-        let euid = unsafe { libc::geteuid() };
+        let euid = tilo_process::effective_uid();
         if !meta.is_dir() || meta.uid() != euid {
             return Err(format!(
                 "{} is not a directory owned by this helper",
@@ -782,16 +779,14 @@ mod tests {
                 tmp.path().join("op-user.json"),
             )
             .unwrap();
-            // SAFETY: geteuid has no preconditions.
-            if unsafe { libc::geteuid() } == 0 {
+            if tilo_process::effective_uid() == 0 {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o777))
                     .unwrap();
-                assert!(parent_open.load("op-user").is_err());
             } else {
                 assert!(store.load("op-user").is_err());
-                assert!(parent_open.load("op-user").is_err());
             }
+            assert!(parent_open.load("op-user").is_err());
         }
     }
 }

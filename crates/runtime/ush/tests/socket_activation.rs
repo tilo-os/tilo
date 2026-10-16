@@ -1,10 +1,3 @@
-#![allow(
-    clippy::expect_used,
-    clippy::panic,
-    clippy::unwrap_used,
-    reason = "integration-test assertions"
-)]
-
 use std::io::{BufRead, BufReader, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::{fs::MetadataExt, net::UnixListener, process::CommandExt};

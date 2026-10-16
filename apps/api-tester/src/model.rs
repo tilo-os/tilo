@@ -1,21 +1,30 @@
 //! Pure data model for the API tester.
 //!
 //! Everything here is plain Rust + serde — no rendering, no IO, no CRDT
-//! plumbing. The live document (collections, environments, history, the
-//! request currently being edited) is mirrored into an Automerge document
-//! by [`crate::doc`], which is what makes a workspace collaborative. This
-//! module is the in-memory source of truth the UI reads and the CRDT
-//! layer serialises.
+//! plumbing. The workspace (collections, environments, history, the request
+//! currently being edited) is stored as the record in [`crate::record`],
+//! which is what makes it collaborative; these are the values the window
+//! works on, projected from it. Credentials are the exception: a request's
+//! auth secret and a secret variable's value stay on the device
+//! ([`Auth::secret`], [`KeyValue::secret`]) and the record holds the rest.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Model};
 use uuid::Uuid;
 
-/// Identifier for a saved request, a collection, or an environment.
-pub type Id = Uuid;
+/// Identifier for a saved request, a collection, an environment or a sent
+/// request: its item in the record.
+pub type Id = ui::tilo_resource::Id;
+
+/// A fresh id for a value the window makes before the record has it.
+pub fn fresh_id() -> Id {
+    Id::from_raw(Uuid::new_v4().to_string())
+}
 
 /// HTTP verb. Ordered the way the method dropdown presents them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HttpMethod {
+    #[default]
     Get,
     Post,
     Put,
@@ -83,6 +92,10 @@ pub struct KeyValue {
     pub key: String,
     pub value: String,
     pub enabled: bool,
+    /// A variable whose value is a credential: the document holds its key and
+    /// this flag, and the value stays in the device's secret store.
+    #[serde(default)]
+    pub secret: bool,
 }
 
 impl KeyValue {
@@ -92,21 +105,20 @@ impl KeyValue {
             key: key.into(),
             value: value.into(),
             enabled: true,
+            secret: false,
         }
+    }
+
+    /// A row whose value is a credential kept on the device.
+    #[must_use]
+    pub fn secret(mut self) -> Self {
+        self.secret = true;
+        self
     }
 
     /// A blank, enabled row — the trailing "add a new pair" affordance.
     pub fn blank() -> Self {
-        Self {
-            id: Uuid::new_v4().to_string(),
-            key: String::new(),
-            value: String::new(),
-            enabled: true,
-        }
-    }
-
-    pub fn is_blank(&self) -> bool {
-        self.key.trim().is_empty() && self.value.trim().is_empty()
+        Self::new(String::new(), String::new())
     }
 }
 
@@ -135,19 +147,54 @@ impl Auth {
     /// Stable label for the Auth-mode selector.
     pub fn label(&self) -> &'static str {
         match self {
-            Auth::None => "No Auth",
-            Auth::Bearer { .. } => "Bearer Token",
-            Auth::Basic { .. } => "Basic Auth",
-            Auth::ApiKey { .. } => "API Key",
+            Auth::None => "No auth",
+            Auth::Bearer { .. } => "Bearer token",
+            Auth::Basic { .. } => "Basic auth",
+            Auth::ApiKey { .. } => "API key",
         }
     }
 
     pub const LABELS: [&'static str; 4] = ["No Auth", "Bearer Token", "Basic Auth", "API Key"];
+
+    /// The credential of this scheme: the token, the password, the key.
+    pub fn secret(&self) -> Option<&str> {
+        match self {
+            Auth::None => None,
+            Auth::Bearer { token } => Some(token),
+            Auth::Basic { password, .. } => Some(password),
+            Auth::ApiKey { value, .. } => Some(value),
+        }
+    }
+
+    /// This scheme with its credential replaced by `secret`.
+    #[must_use]
+    pub fn with_secret(&self, secret: &str) -> Self {
+        let secret = secret.to_owned();
+        match self {
+            Auth::None => Auth::None,
+            Auth::Bearer { .. } => Auth::Bearer { token: secret },
+            Auth::Basic { username, .. } => Auth::Basic {
+                username: username.clone(),
+                password: secret,
+            },
+            Auth::ApiKey { header, .. } => Auth::ApiKey {
+                header: header.clone(),
+                value: secret,
+            },
+        }
+    }
+
+    /// This scheme as the document holds it: everything but the credential.
+    #[must_use]
+    pub fn without_secret(&self) -> Self {
+        self.with_secret("")
+    }
 }
 
 /// How the request body is encoded. The Body tab switches between these.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BodyMode {
+    #[default]
     None,
     Json,
     Form,
@@ -204,7 +251,7 @@ impl RequestTab {
 pub enum ResponseView {
     Pretty,
     Raw,
-    Preview,
+    Headers,
 }
 
 impl ResponseView {
@@ -212,14 +259,14 @@ impl ResponseView {
         match self {
             ResponseView::Pretty => "Pretty",
             ResponseView::Raw => "Raw",
-            ResponseView::Preview => "Preview",
+            ResponseView::Headers => "Headers",
         }
     }
 
     pub const ALL: [ResponseView; 3] = [
         ResponseView::Pretty,
         ResponseView::Raw,
-        ResponseView::Preview,
+        ResponseView::Headers,
     ];
 }
 
@@ -245,7 +292,7 @@ impl Request {
     /// A fresh empty GET request.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: fresh_id(),
             name: name.into(),
             method: HttpMethod::Get,
             url: String::new(),
@@ -256,12 +303,6 @@ impl Request {
             body_text: String::new(),
             form: Vec::new(),
         }
-    }
-
-    /// Count of enabled key/value rows for a section — drives the little
-    /// count badge shown on each tab.
-    pub fn enabled_count(rows: &[KeyValue]) -> usize {
-        rows.iter().filter(|r| r.enabled && !r.is_blank()).count()
     }
 }
 
@@ -278,7 +319,7 @@ pub struct Collection {
 impl Collection {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: fresh_id(),
             name: name.into(),
             requests: Vec::new(),
             expanded: true,
@@ -299,7 +340,7 @@ pub struct Environment {
 impl Environment {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: fresh_id(),
             name: name.into(),
             variables: Vec::new(),
         }
@@ -315,8 +356,6 @@ pub struct HistoryEntry {
     pub status: u16,
     /// Round-trip time in milliseconds.
     pub duration_ms: u64,
-    /// Wall-clock label, e.g. "2m ago" — precomputed at record time.
-    pub when: String,
 }
 
 /// The outcome of a sent request, rendered by the response viewer.
@@ -398,22 +437,10 @@ mod tests {
         }
     }
 
-    /// The summaries the builder and response chrome display: enabled row
-    /// counts, status families, durations, and the bundled sample response.
+    /// The summaries the response chrome displays: status families,
+    /// durations, and the bundled sample response.
     #[test]
-    fn request_and_response_summaries_count_rows_bucket_statuses_and_format_durations() {
-        // Case "enabled count": skips disabled and blank rows.
-        let rows = vec![
-            KeyValue::new("a", "1"),
-            {
-                let mut r = KeyValue::new("b", "2");
-                r.enabled = false;
-                r
-            },
-            KeyValue::blank(),
-        ];
-        assert_eq!(Request::enabled_count(&rows), 1, "case enabled count");
-
+    fn response_summaries_bucket_statuses_and_format_durations() {
         // Case "status class": buckets by family.
         let mut r = ResponseData {
             status: 200,

@@ -12,12 +12,9 @@
 //! suite passing against a session it never touched.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -35,8 +32,8 @@ use std::time::{Duration, Instant, SystemTime};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use smithay::input::keyboard::xkb::keysyms;
 use threshold_identity::ThresholdIdentity;
+use tilo_identity_ceremony::IdentityRecord;
 use ui::clipboard::{ClipboardBackend, ClipboardTarget};
-use ui::widget::identity_flow::IdentityRecord;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer,
     wl_compositor::WlCompositor,
@@ -50,10 +47,18 @@ use wayland_client::protocol::{
     wl_seat::{self, WlSeat},
     wl_shm::{Format, WlShm},
     wl_shm_pool::WlShmPool,
+    wl_subcompositor::WlSubcompositor,
+    wl_subsurface::WlSubsurface,
     wl_surface::WlSurface,
     wl_touch::{self, WlTouch},
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
+use wayland_protocols::ext::data_control::v1::client::{
+    ext_data_control_device_v1::{self, ExtDataControlDeviceV1},
+    ext_data_control_manager_v1::ExtDataControlManagerV1,
+    ext_data_control_offer_v1::{self, ExtDataControlOfferV1},
+    ext_data_control_source_v1::{self, ExtDataControlSourceV1},
+};
 use wayland_protocols::wp::primary_selection::zv1::client::{
     zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1,
     zwp_primary_selection_device_v1::{self, ZwpPrimarySelectionDeviceV1},
@@ -61,9 +66,17 @@ use wayland_protocols::wp::primary_selection::zv1::client::{
     zwp_primary_selection_source_v1::{self, ZwpPrimarySelectionSourceV1},
 };
 use wayland_protocols::xdg::shell::client::{
+    xdg_popup::XdgPopup,
+    xdg_positioner::XdgPositioner,
     xdg_surface::{self, XdgSurface},
     xdg_toplevel::{self, XdgToplevel},
-    xdg_wm_base::{self, XdgWmBase},
+    xdg_wm_base::XdgWmBase,
+};
+use wayland_protocols_wlr::data_control::v1::client::{
+    zwlr_data_control_device_v1::{self, ZwlrDataControlDeviceV1},
+    zwlr_data_control_manager_v1::ZwlrDataControlManagerV1,
+    zwlr_data_control_offer_v1::{self, ZwlrDataControlOfferV1},
+    zwlr_data_control_source_v1::{self, ZwlrDataControlSourceV1},
 };
 
 /// The mime type Tilo offers text selections as. Must match
@@ -85,6 +98,13 @@ const FIXTURE_RECORD_SCOPE: &str = "00000000-0000-0000-0000-000000000000";
 /// once with its log, so this only decides when a stuck wait is called hung.
 fn deadline() -> Duration {
     tilo_test_env::hang_bound()
+}
+
+/// When an operation that started now has waited [`deadline`] long.
+fn deadline_end() -> Instant {
+    Instant::now()
+        .checked_add(deadline())
+        .expect("a representable deadline")
 }
 
 /// Spacing of the grid [`TestClient::pointer_target`] probes for a client.
@@ -113,12 +133,23 @@ fn dispatch_any(
     const PARK: Duration = Duration::from_millis(50);
     let mut guards = Vec::with_capacity(clients.len());
     let mut queued = false;
+    // Two clients can share one connection (one process, two windows). A read
+    // guard per queue would then deadlock: the first `read` waits for the
+    // second guard, held by this same thread. One guard per socket suffices;
+    // every queue is dispatched afterwards.
+    let mut sockets = Vec::with_capacity(clients.len());
     for client in clients.iter_mut() {
         client
             .queue
             .dispatch_pending(&mut client.state)
             .expect("dispatch queued client events");
         client.queue.flush().expect("flush client requests");
+        let socket = client.conn.backend().poll_fd().as_raw_fd();
+        if sockets.contains(&socket) {
+            guards.push(None);
+            continue;
+        }
+        sockets.push(socket);
         let guard = client.queue.prepare_read();
         queued |= guard.is_none();
         guards.push(guard);
@@ -237,7 +268,7 @@ impl Compositor {
         // short — `/run/user/$UID` also keeps a stray socket out of the repo.
         let runtime_dir = PathBuf::from(format!(
             "/run/user/{}/tilo-clip-{}-{}",
-            unsafe { libc::getuid() },
+            rustix::process::getuid().as_raw(),
             std::process::id(),
             next_id(),
         ));
@@ -265,6 +296,8 @@ impl Compositor {
         fixture_tree.desktop.workspaces[0].name = "Clipboard test desktop".into();
         shell::shell::persist::save_tree_to(&fixture_tree, &state_path)
             .expect("seed the clipboard e2e desktop");
+        // Let go of the file's writer lease: the compositor owns its session.
+        drop(std::mem::take(&mut fixture_tree.native_runtime));
         Self::seed_tab_records(&runtime_dir, &fixture_tree);
         let identity_root = Self::seed_identity(&runtime_dir);
 
@@ -448,7 +481,7 @@ impl Compositor {
             // one delivered to the wrong surface.
             .env(
                 "RUST_LOG",
-                "warn,smithay::wayland::selection=debug,shell=debug,file_explorer=debug",
+                "warn,smithay::wayland::selection=debug,shell=debug,file_explorer=debug,xwayland_satellite=debug",
             )
             // Removing both display variables is what keeps this suite from ever
             // reaching the developer's session — the compositor binds a fresh socket
@@ -715,7 +748,13 @@ impl Compositor {
             .lock()
             .map(|l| {
                 let start = l.len().saturating_sub(40);
-                l[start..].join("\n")
+                l[..start]
+                    .iter()
+                    .filter(|line| line.contains("Wayland client disconnected"))
+                    .chain(l[start..].iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n")
             })
             .unwrap_or_default()
     }
@@ -788,6 +827,20 @@ impl Compositor {
 
 impl Drop for Compositor {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            // Observe the owned child before cleanup kills it. A client's
+            // BrokenPipe alone cannot distinguish a compositor exit from a
+            // closed Wayland connection. Keep the original panic and never
+            // make diagnostics a second panic during unwinding.
+            use std::io::Write as _;
+            let status = self.child.try_wait();
+            let log: String = self.recent_log().chars().take(16_384).collect();
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "owned compositor status before failure cleanup: {status:?}\n\
+                 compositor disconnects and log tail (16384 characters):\n{log}"
+            );
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_dir_all(&self.runtime_dir);
@@ -924,6 +977,11 @@ struct ClientState {
 
     /// Set once `xdg_surface.configure` has been acked — the surface is mapped.
     configured: bool,
+    /// The newest non-zero size an `xdg_toplevel.configure` asked for.
+    toplevel_size: Option<(i32, i32)>,
+    /// The configure size a buffer was last attached for, so each new
+    /// configure is answered once.
+    answered_size: Option<(i32, i32)>,
     /// Set while this client holds keyboard focus, which gates `set_selection`.
     keyboard_focused: bool,
     /// The compositor requested that this exact xdg toplevel exit.  `close`
@@ -942,12 +1000,32 @@ struct ClientState {
     keyboard_repeat_info: Option<(i32, i32)>,
     /// Latest serial from any input event, for requests that need one.
     last_serial: u32,
+    /// Serial of the newest key *press* — what Electron and Chromium hand to
+    /// `set_selection` when Ctrl+C triggers a copy.
+    last_key_press_serial: Option<u32>,
+    /// wlr data-control (clipboard-manager protocol), bound on the privileged socket only.
+    control_manager: Option<ZwlrDataControlManagerV1>,
+    control_device: Option<ZwlrDataControlDeviceV1>,
+    /// The offer last announced as the clipboard / primary selection, with its mimes.
+    control_clipboard: Option<(ZwlrDataControlOfferV1, ControlMimes)>,
+    control_primary: Option<(ZwlrDataControlOfferV1, ControlMimes)>,
+    control_selection_events: usize,
+    control_pending_offer: Option<ZwlrDataControlOfferV1>,
+    /// ext-data-control, the standardised successor, bound on the privileged socket only.
+    ext_manager: Option<ExtDataControlManagerV1>,
+    ext_device: Option<ExtDataControlDeviceV1>,
+    ext_clipboard: Option<(ExtDataControlOfferV1, ControlMimes)>,
+    ext_primary: Option<(ExtDataControlOfferV1, ControlMimes)>,
+    ext_pending_offer: Option<ExtDataControlOfferV1>,
+    subcompositor: Option<WlSubcompositor>,
     /// Set once the pointer entered this surface — the implicit grab `start_drag` needs.
     pointer_entered: bool,
     pointer_button_serial: Option<u32>,
     /// Set after the seat advertised touch and this client issued
     /// `wl_seat.get_touch`; injection tests wait for this protocol precondition.
     touch_bound: bool,
+    /// Never ask for a `wl_touch`, like a toolkit without touch support.
+    refuse_touch: bool,
     /// Exact `wl_touch` events observed on the client connection.
     touch_events: Vec<TouchTrace>,
     /// Pointer traffic observed after the test clears setup noise.
@@ -977,6 +1055,9 @@ struct ClientState {
     source_cancelled: bool,
 }
 
+/// Mime types one wlr data-control offer advertises.
+type ControlMimes = Arc<Mutex<Vec<String>>>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TouchTrace {
     Down(i32),
@@ -996,14 +1077,144 @@ struct TestClient {
     toplevel: Option<XdgToplevel>,
     data_device: Option<WlDataDevice>,
     primary_device: Option<ZwpPrimarySelectionDeviceV1>,
+    /// Popups this client keeps mapped, destroyed by [`Self::dismiss_popups`].
+    popups: Vec<(XdgPopup, XdgSurface, WlSurface)>,
     app_id: String,
+}
+
+/// MIME-specific data from one actual Wayland source. Held descriptors model
+/// a copying application that never finishes its transfer.
+type HeldClipboardPipes = Arc<Mutex<Vec<(String, OwnedFd)>>>;
+
+struct RichSource {
+    html: String,
+    plain: String,
+    held: Option<HeldClipboardPipes>,
+}
+
+/// Keep the source responsive while the sink maps/focuses its window. The
+/// production reader's deadline must not depend on the test's dispatch order.
+struct ServingClipboard {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ServingClipboard {
+    fn start(mut client: TestClient, payload: RichSource) -> Self {
+        let held = payload.held.clone();
+        let manager = client.state.data_manager.as_ref().expect("data manager");
+        let source = manager.create_data_source(&client.qh, payload);
+        source.offer("text/html".into());
+        source.offer(TEXT_MIME.into());
+        client
+            .data_device
+            .as_ref()
+            .expect("source data device")
+            .set_selection(Some(&source), client.state.last_serial);
+        client.roundtrip();
+        if let Some(held) = held {
+            // The compositor mirrors each advertised MIME before the sink
+            // exists. Complete those requests first so later held pipes are
+            // unambiguously the app worker's own paired transfer.
+            client.wait_until(
+                |state| {
+                    state.send_requests.iter().any(|mime| mime == "text/html")
+                        && state.send_requests.iter().any(|mime| mime == TEXT_MIME)
+                },
+                "compositor mirror did not request both advertised formats",
+            );
+            held.lock().expect("mirror pipes").clear();
+        }
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            let started = Instant::now();
+            while !worker_stop.load(std::sync::atomic::Ordering::Acquire)
+                && started.elapsed() < deadline()
+            {
+                dispatch_any(&mut [&mut client], None, Duration::from_millis(5));
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for ServingClipboard {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let result = thread.join();
+            if !std::thread::panicking() {
+                result.expect("clipboard source dispatch thread");
+            }
+        }
+    }
+}
+
+fn wait_for_clipboard(client: &mut TestClient, condition: impl Fn() -> bool, failure: &str) {
+    wait_for_clipboard_before(client, condition, failure, tilo_test_env::hang_deadline());
+}
+
+fn wait_for_clipboard_before(
+    client: &mut TestClient,
+    condition: impl Fn() -> bool,
+    failure: &str,
+    end: Instant,
+) {
+    // Retain the successful production read: another short-budget read can
+    // return None even after the selection was observed.
+    let mut observed = condition();
+    while !observed && Instant::now() < end {
+        dispatch_any(&mut [&mut *client], None, Duration::from_millis(5));
+        observed = condition();
+    }
+    assert!(
+        Instant::now() < end,
+        "{failure}: fixture exceeded its deadline"
+    );
+    assert!(observed, "{failure}");
+}
+
+fn cancellation_clipboard(app: &TestClient) -> (ui::clipboard::WaylandClipboard, Instant) {
+    // The fixture's absolute failure deadline precedes transfer expiry. A
+    // successful clear therefore proves cancellation rather than a timer firing.
+    let end = tilo_test_env::hang_deadline();
+    let read_budget = deadline().checked_mul(2).expect("cancellation read budget");
+    let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test_with_read_budget(
+        app.conn.clone(),
+        read_budget,
+    );
+    assert!(
+        clipboard.wait_ready_for_wayland_test(end.saturating_duration_since(Instant::now())),
+        "clipboard worker did not bind its devices before fixture focus"
+    );
+    (clipboard, end)
 }
 
 impl TestClient {
     fn new(conn: Connection, app_id: &str) -> Self {
+        Self::with_state(conn, app_id, ClientState::default())
+    }
+
+    /// A client whose toolkit has no touch support: it never asks the seat
+    /// for a `wl_touch`.
+    fn without_touch(conn: Connection, app_id: &str) -> Self {
+        Self::with_state(
+            conn,
+            app_id,
+            ClientState {
+                refuse_touch: true,
+                ..ClientState::default()
+            },
+        )
+    }
+
+    fn with_state(conn: Connection, app_id: &str, mut state: ClientState) -> Self {
         let mut queue: EventQueue<ClientState> = conn.new_event_queue();
         let qh = queue.handle();
-        let mut state = ClientState::default();
         let _registry = conn.display().get_registry(&qh, ());
         // First roundtrip collects the global advertisements; the second lets
         // the binds made while handling them complete.
@@ -1019,6 +1230,7 @@ impl TestClient {
             toplevel: None,
             data_device: None,
             primary_device: None,
+            popups: Vec::new(),
             app_id: app_id.to_string(),
         }
     }
@@ -1049,7 +1261,13 @@ impl TestClient {
     fn roundtrip(&mut self) {
         self.queue
             .roundtrip(&mut self.state)
-            .expect("client roundtrip");
+            .unwrap_or_else(|error| {
+                panic!(
+                    "client roundtrip: app_id={} error={error:?} protocol_error={:?}",
+                    self.app_id,
+                    self.conn.protocol_error()
+                )
+            });
     }
 
     fn clear_keyboard_trace(&mut self) {
@@ -1142,16 +1360,64 @@ impl TestClient {
     /// `wl_pointer.enter` is the only authority, so a strip-layout change moves
     /// the drag with it instead of aiming at chrome.
     fn pointer_target(&mut self, compositor: &Compositor) -> (f64, f64) {
-        if let Some(p) = self.try_pointer_target(compositor) {
+        self.pointer_target_servicing_peer(compositor, None)
+    }
+
+    fn pointer_target_with_peer(
+        &mut self,
+        compositor: &Compositor,
+        peer: &mut TestClient,
+    ) -> (f64, f64) {
+        self.pointer_target_servicing_peer(compositor, Some(peer))
+    }
+
+    fn pointer_target_servicing_peer(
+        &mut self,
+        compositor: &Compositor,
+        peer: Option<&mut TestClient>,
+    ) -> (f64, f64) {
+        if let Some(p) = self.try_pointer_target(compositor, peer) {
             return p;
         }
         let (w, h) = compositor.size;
         panic!(
             "`{}` never received a pointer enter anywhere on a {w}x{h} screen, so its \
-             window is not on screen and no drag could be aimed at it.\n{}",
+             window is not on screen and no drag could be aimed at it.\n\
+             laid-out client surfaces (x, y, w, h): {:?}\n{}",
             self.app_id,
+            compositor.foreign_surface_rects(),
             compositor.debug_state(),
         );
+    }
+
+    /// Answer the compositor's configures with buffers of the asked size,
+    /// as an application does, until the compositor shows this window: a
+    /// window still waiting for a frame that fits its tab is not on screen,
+    /// so no pointer reaches it.
+    fn present(&mut self, compositor: &Compositor, surface_id: u64) {
+        let mut answered = None;
+        let started = Instant::now();
+        loop {
+            self.pump();
+            if let Some(size) = self.state.toplevel_size
+                && answered != Some(size)
+            {
+                self.attach_buffer(size.0, size.1);
+                answered = Some(size);
+                self.state.answered_size = Some(size);
+            }
+            if foreign_frame_presented(compositor, surface_id) {
+                self.step("presented");
+                return;
+            }
+            assert!(
+                started.elapsed() < deadline(),
+                "`{}` (surface {surface_id}) was never shown after answering its configures \
+                 (waited out the hang bound).\n{}",
+                self.app_id,
+                compositor.debug_state(),
+            );
+        }
     }
 
     /// [`Self::pointer_target`] without the panic.
@@ -1161,7 +1427,11 @@ impl TestClient {
     /// laid-out client surface are tried first, which finds the same first
     /// point as a whole-screen scan without moving the pointer across every
     /// empty cell; the whole screen is still scanned when that finds nothing.
-    fn try_pointer_target(&mut self, compositor: &Compositor) -> Option<(f64, f64)> {
+    fn try_pointer_target(
+        &mut self,
+        compositor: &Compositor,
+        mut peer: Option<&mut TestClient>,
+    ) -> Option<(f64, f64)> {
         // A point found while the strip still scrolls is stale once it stops.
         compositor.wait_for_layout_to_settle(
             |name| name.starts_with("foreign-surface-"),
@@ -1178,11 +1448,12 @@ impl TestClient {
             })
         };
         if !surfaces.is_empty()
-            && let Some(point) = self.scan_pointer_grid(compositor, near_a_surface)
+            && let Some(point) =
+                self.scan_pointer_grid(compositor, near_a_surface, peer.as_deref_mut())
         {
             return Some(point);
         }
-        self.scan_pointer_grid(compositor, |_, _| true)
+        self.scan_pointer_grid(compositor, |_, _| true, peer)
     }
 
     /// Move the pointer over the screen's grid points that `visit` admits, in
@@ -1192,6 +1463,7 @@ impl TestClient {
         &mut self,
         compositor: &Compositor,
         visit: impl Fn(f64, f64) -> bool,
+        mut peer: Option<&mut TestClient>,
     ) -> Option<(f64, f64)> {
         let (w, h) = compositor.size;
         self.state.pointer_entered = false;
@@ -1202,6 +1474,12 @@ impl TestClient {
                 if visit(f64::from(x), f64::from(y)) {
                     compositor.pointer_move(f64::from(x), f64::from(y));
                     self.pump();
+                    if let Some(peer) = peer.as_deref_mut() {
+                        // The target's sync already follows this motion on the
+                        // server. Drain the peer without adding another serial
+                        // server roundtrip for every grid point.
+                        dispatch_any(&mut [peer], None, Duration::ZERO);
+                    }
                     if self.state.pointer_entered {
                         self.step(&format!("receives pointer input at ({x}, {y})"));
                         return Some((f64::from(x), f64::from(y)));
@@ -1214,9 +1492,24 @@ impl TestClient {
         None
     }
 
+    /// Service the other application while pointer scans deliver events to it.
+    fn scan_pointer_grid_with_peer(
+        &mut self,
+        compositor: &Compositor,
+        visit: impl Fn(f64, f64) -> bool,
+        peer: &mut TestClient,
+    ) -> Option<(f64, f64)> {
+        self.scan_pointer_grid(compositor, visit, Some(peer))
+    }
+
     /// Attach an opaque `wl_shm` buffer and commit, so the compositor has real
     /// content to size and composite the tile from.
     fn attach_buffer(&mut self, width: i32, height: i32) {
+        let surface = self.surface.clone().expect("surface exists once mapped");
+        self.attach_buffer_to(&surface, width, height);
+    }
+
+    fn attach_buffer_to(&mut self, surface: &WlSurface, width: i32, height: i32) {
         use std::os::unix::io::AsFd;
         let shm = self
             .state
@@ -1253,7 +1546,6 @@ impl TestClient {
             (),
         );
         let buffer = pool.create_buffer(0, width, height, stride, Format::Argb8888, &self.qh, ());
-        let surface = self.surface.clone().expect("surface exists once mapped");
         surface.attach(Some(&buffer), 0, 0);
         surface.damage(0, 0, width, height);
         surface.commit();
@@ -1289,11 +1581,41 @@ impl TestClient {
         panic!("{what} (waited out the hang bound, app_id {})", self.app_id);
     }
 
+    /// Attach a buffer of the newest configured size, once per size.
+    fn answer_configure(&mut self) {
+        let Some(size) = self.state.toplevel_size else {
+            return;
+        };
+        if self.state.answered_size == Some(size) || self.surface.is_none() {
+            return;
+        }
+        self.state.answered_size = Some(size);
+        self.attach_buffer(size.0, size.1);
+    }
+
     /// Pump without requiring progress, for waits on something outside this client.
+    ///
+    /// Answers each new `xdg_toplevel.configure` with a buffer of the asked
+    /// size, as an application does. The compositor shows a window only once
+    /// a frame fits its tab, and while another window opens the strip
+    /// reconfigures the tab frame by frame; a client that keeps its first
+    /// buffer is never shown (no pointer ever enters it) whenever its commit
+    /// lands mid-animation, which a loaded machine makes common.
     fn pump(&mut self) {
+        self.pump_roundtrip();
+        self.answer_configure();
+    }
+
+    fn pump_roundtrip(&mut self) {
         self.queue
             .roundtrip(&mut self.state)
-            .expect("client roundtrip while pumping");
+            .unwrap_or_else(|error| {
+                panic!(
+                    "client roundtrip while pumping: app_id={} error={error:?} protocol_error={:?}",
+                    self.app_id,
+                    self.conn.protocol_error()
+                )
+            });
     }
 
     /// Cooperate with an `xdg_toplevel.close` by destroying in reverse
@@ -1400,6 +1722,46 @@ impl TestClient {
         drop(write_fd);
         self.conn.flush().expect("flush the receive request");
         drain(read_fd, self, peer)
+    }
+}
+
+#[test]
+fn clipboard_mirror_never_requests_gtk_save_targets_as_payload() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.gtk-clipboard-source");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
+    let manager = client.state.data_manager.clone().expect("data manager");
+    let device = client.data_device.clone().expect("data device");
+
+    for payload in ["first GTK copy", "replacement GTK copy"] {
+        let source = manager.create_data_source(&client.qh, payload.to_owned());
+        source.offer(TEXT_MIME.to_owned());
+        source.offer("SAVE_TARGETS".to_owned());
+        device.set_selection(Some(&source), client.state.last_serial);
+        client.roundtrip();
+        wait_for_clipboard(
+            &mut client,
+            || compositor.chrome_paste(false).as_deref() == Some(payload),
+            "chrome never observed the current GTK-style selection",
+        );
+        assert!(
+            client
+                .state
+                .send_requests
+                .iter()
+                .any(|mime| mime == TEXT_MIME),
+            "the live client must supply the clipboard bytes"
+        );
+        assert!(
+            !client
+                .state
+                .send_requests
+                .iter()
+                .any(|mime| mime == "SAVE_TARGETS"),
+            "SAVE_TARGETS is a clipboard-manager operation, not a data format: {:?}",
+            client.state.send_requests
+        );
     }
 }
 
@@ -1540,6 +1902,9 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         let mut app = TestClient::new(compositor.connect(), "org.tilo.test.app-clipboard");
         app.assert_is_tilo_compositor();
         let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+        // Seat callbacks bind the publication worker's keyboard and device.
+        // Fence those real bindings before mapping acquires focus and copy.
+        assert!(clipboard.wait_ready_for_wayland_test(deadline()));
         app.map_window(&compositor);
 
         // This is the app-side backend, not HostClipboard: its publication worker
@@ -1547,6 +1912,17 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         // focused seat before accepting the queued copy.
         assert!(clipboard.set_text(ClipboardTarget::Clipboard, "app caption"));
         assert!(clipboard.set_image(2, 1, &[0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40]));
+        // Publication is queued to the app clipboard worker. Keep its seat
+        // focused until the actual protocol selection advertises the image;
+        // opening the sink first can revoke its copy serial before publication.
+        app.wait_until(
+            |s| {
+                s.clipboard_offer_mimes
+                    .iter()
+                    .any(|mime| mime == "image/png")
+            },
+            "the app clipboard worker never published its PNG selection",
+        );
 
         let mut sink = TestClient::new(compositor.connect(), "org.tilo.test.app-sink");
         sink.assert_is_tilo_compositor();
@@ -1560,6 +1936,766 @@ fn clipboard_crosses_between_clients_and_in_process_chrome_as_text_and_png() {
         );
         assert_eq!(sink.read_clipboard(None), "app caption");
     }
+}
+
+#[test]
+fn native_borrowed_display_pastes_the_compositors_current_selection() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.native-paste");
+    client.assert_is_tilo_compositor();
+    // This is the native runner's constructor, including its smithay-clipboard
+    // readers, rather than the publication-only protocol fixture constructor.
+    // SAFETY: client owns the display and outlives this backend.
+    let clipboard =
+        unsafe { ui::clipboard::WaylandClipboard::new(client.conn.backend().display_ptr().cast()) };
+    assert!(clipboard.wait_ready_for_wayland_test(deadline()));
+    client.map_window(&compositor);
+    compositor.key("a");
+    client.roundtrip();
+    let payload = "https://example.com/native-paste";
+    compositor.chrome_copy(payload, false);
+    // Each read is bounded by the UI's short read budget; a loaded runner can
+    // need several before the compositor serves the selection. Once the real
+    // reader observes it, another poll must not discard that observation.
+    let observed_payload = std::cell::Cell::new(false);
+    wait_for_clipboard_before(
+        &mut client,
+        || {
+            assert!(
+                !observed_payload.get(),
+                "polling continued after the native reader observed the selection"
+            );
+            let matches = clipboard.text(ClipboardTarget::Clipboard).as_deref() == Some(payload);
+            if matches {
+                observed_payload.set(true);
+            }
+            matches
+        },
+        "the actual native reader lost a selection published by the compositor",
+        tilo_test_env::hang_deadline(),
+    );
+    assert_eq!(
+        clipboard
+            .request_text(ClipboardTarget::Clipboard)
+            .recv_timeout(deadline())
+            .expect("explicit native paste reply")
+            .as_deref(),
+        Some(payload),
+        "explicit paste must read the focused compositor selection"
+    );
+}
+
+#[test]
+#[should_panic(expected = "missing native selection: fixture exceeded its deadline")]
+fn native_borrowed_display_wait_refuses_a_missing_selection() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.native-missing-paste");
+    client.assert_is_tilo_compositor();
+    // SAFETY: client owns the display and outlives this backend.
+    let clipboard =
+        unsafe { ui::clipboard::WaylandClipboard::new(client.conn.backend().display_ptr().cast()) };
+    assert!(clipboard.wait_ready_for_wayland_test(deadline()));
+    client.map_window(&compositor);
+    client.roundtrip();
+    assert_eq!(clipboard.text(ClipboardTarget::Clipboard), None);
+    wait_for_clipboard_before(
+        &mut client,
+        || clipboard.text(ClipboardTarget::Clipboard).is_some(),
+        "missing native selection",
+        Instant::now() + Duration::from_millis(100),
+    );
+}
+
+#[test]
+fn wayland_rich_clipboard_pairs_one_offer_and_clears_on_focus_loss() {
+    let compositor = Compositor::start();
+    let mut source = TestClient::new(compositor.connect(), "org.tilo.test.rich-source");
+    source.assert_is_tilo_compositor();
+    source.map_window(&compositor);
+    let _serving = ServingClipboard::start(
+        source,
+        RichSource {
+            html: "<p><strong>文🙂</strong></p>".into(),
+            plain: "same offer: 文🙂".into(),
+            held: None,
+        },
+    );
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.rich-sink");
+    app.assert_is_tilo_compositor();
+    let (clipboard, end) = cancellation_clipboard(&app);
+    app.map_window(&compositor);
+    // Exercise the real worker alongside the app's own connection and queue.
+    wait_for_clipboard_before(
+        &mut app,
+        || clipboard.rich_text().is_some(),
+        "rich offer missing",
+        end,
+    );
+    let offer = clipboard.rich_text().expect("completed rich offer");
+    assert_eq!(offer.html, "<p><strong>文🙂</strong></p>");
+    assert_eq!(offer.plain.as_deref(), Some("same offer: 文🙂"));
+
+    let mut other = TestClient::new(compositor.connect(), "org.tilo.test.rich-focus-loss");
+    other.map_window(&compositor);
+    app.wait_until(|state| !state.keyboard_focused, "sink did not lose focus");
+    wait_for_clipboard_before(
+        &mut app,
+        || clipboard.rich_text().is_none(),
+        "rich cache survived Leave",
+        end,
+    );
+}
+
+#[test]
+fn wayland_rich_clipboard_replacement_keeps_ordinary_plain_paste() {
+    let compositor = Compositor::start();
+    let mut source = TestClient::new(compositor.connect(), "org.tilo.test.rich-replace-source");
+    source.map_window(&compositor);
+    let _serving = ServingClipboard::start(
+        source,
+        RichSource {
+            html: "<b>old</b>".into(),
+            plain: "old fallback".into(),
+            held: None,
+        },
+    );
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.rich-replace-sink");
+    app.assert_is_tilo_compositor();
+    let (clipboard, end) = cancellation_clipboard(&app);
+    app.map_window(&compositor);
+    wait_for_clipboard_before(
+        &mut app,
+        || clipboard.rich_text().is_some(),
+        "initial rich offer missing",
+        end,
+    );
+
+    let previous = app.state.clipboard_offer.clone();
+    compositor.chrome_copy("replacement plain 文🙂", false);
+    app.wait_until(
+        |state| state.clipboard_offer != previous,
+        "replacement offer missing",
+    );
+    assert_eq!(app.read_clipboard(None), "replacement plain 文🙂");
+    wait_for_clipboard_before(
+        &mut app,
+        || clipboard.rich_text().is_none(),
+        "superseded rich offer survived",
+        end,
+    );
+}
+
+/// A copy outlives the program that made it (`wl-copy`, a closed window):
+/// Tilo takes the finished selection over, as GNOME/KDE's clipboard manager
+/// does, instead of leaving "Nothing is copied" behind.
+#[test]
+fn clipboard_survives_its_source_client_exiting() {
+    let compositor = Compositor::start();
+    let mut source = TestClient::new(compositor.connect(), "org.tilo.test.persist-source");
+    source.map_window(&compositor);
+    source.set_clipboard("outlives the copier");
+    // Let the compositor finish mirroring and take the selection over.
+    let mut reader = TestClient::new(compositor.connect(), "org.tilo.test.persist-reader");
+    reader.map_window(&compositor);
+    assert_eq!(
+        reader.read_clipboard(Some(&mut source)),
+        "outlives the copier"
+    );
+    let deadline = Instant::now() + deadline();
+    while compositor.chrome_paste(false).as_deref() != Some("outlives the copier") {
+        assert!(Instant::now() < deadline, "mirror never received the copy");
+        source.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    // The copier goes away entirely.
+    drop(source);
+    let mut late = TestClient::new(compositor.connect(), "org.tilo.test.persist-late");
+    late.map_window(&compositor);
+    assert_eq!(late.read_clipboard(None), "outlives the copier");
+    assert_eq!(
+        compositor.chrome_paste(false).as_deref(),
+        Some("outlives the copier")
+    );
+}
+
+/// An X11 program (the Chromium flatpak runs under Xwayland) owning the
+/// CLIPBOARD: serves `TARGETS` and the text targets from a thread until
+/// dropped.
+struct X11ClipboardOwner {
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for X11ClipboardOwner {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Connect to the workspace's private X display.
+fn x11_connect(compositor: &Compositor) -> x11rb::rust_connection::RustConnection {
+    let (display, authority) = private_xwayland_connection(compositor).expect("private display");
+    let number = display.trim_start_matches(':').to_string();
+    let cookie_file = std::fs::read(&authority).expect("read Xauthority");
+    let cookie = cookie_file[cookie_file.len().saturating_sub(16)..].to_vec();
+    let stream = UnixStream::connect(format!("/tmp/.X11-unix/X{number}")).expect("X socket");
+    let (stream, _) = x11rb::rust_connection::DefaultStream::from_unix_stream(stream).unwrap();
+    x11rb::rust_connection::RustConnection::connect_to_stream_with_auth_info(
+        stream,
+        0,
+        b"MIT-MAGIC-COOKIE-1".to_vec(),
+        cookie,
+    )
+    .expect("X handshake")
+}
+
+/// Paste the X11 CLIPBOARD as UTF-8 text, the way a second X11 program
+/// (another browser tab process, say) does: through the X server.
+fn x11_paste(compositor: &Compositor) -> String {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::Event;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, CreateWindowAux, WindowClass};
+    let conn = x11_connect(compositor);
+    let screen = &conn.setup().roots[0];
+    let window = conn.generate_id().unwrap();
+    conn.create_window(
+        0,
+        window,
+        screen.root,
+        0,
+        0,
+        10,
+        10,
+        0,
+        WindowClass::INPUT_ONLY,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    let atom = |name: &[u8]| conn.intern_atom(false, name).unwrap().reply().unwrap().atom;
+    let (clipboard, utf8, prop) = (
+        atom(b"CLIPBOARD"),
+        atom(b"UTF8_STRING"),
+        atom(b"TILO_PASTE"),
+    );
+    conn.convert_selection(window, clipboard, utf8, prop, x11rb::CURRENT_TIME)
+        .unwrap();
+    conn.flush().unwrap();
+    let end = Instant::now()
+        .checked_add(deadline())
+        .expect("a representable deadline");
+    loop {
+        assert!(
+            Instant::now() < end,
+            "the X11 paste never got a SelectionNotify\nselection/X11 log lines:\n{}",
+            compositor
+                .full_log()
+                .lines()
+                .filter(|l| {
+                    let l = l.to_ascii_lowercase();
+                    l.contains("selection") || l.contains("satellite") || l.contains("x11")
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let Some(event) = conn.poll_for_event().unwrap() else {
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
+        };
+        assert!(
+            !matches!(event, Event::Error(_)),
+            "the X server rejected a paste request: {event:?}"
+        );
+        if let Event::SelectionNotify(notify) = event {
+            assert_ne!(
+                notify.property,
+                0,
+                "the X11 paste was refused (nothing copied)\nselection/X11 log lines:\n{}",
+                compositor
+                    .full_log()
+                    .lines()
+                    .filter(|l| {
+                        let l = l.to_ascii_lowercase();
+                        l.contains("selection") || l.contains("satellite") || l.contains("x11")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            let reply = conn
+                .get_property(true, window, prop, AtomEnum::ANY, 0, u32::MAX / 4)
+                .unwrap()
+                .reply()
+                .unwrap();
+            return String::from_utf8(reply.value).expect("utf-8 paste");
+        }
+    }
+}
+
+/// Connect to the workspace's private X display, map a window carrying the
+/// launch activation token (so Tilo focuses it like any launched app) and wait
+/// until it has keyboard focus. Returns the connection plus its window.
+fn x11_focused_window(
+    compositor: &Compositor,
+    native: &mut TestClient,
+    token: &str,
+) -> (x11rb::rust_connection::RustConnection, u32) {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{
+        AtomEnum, ConnectionExt as _, CreateWindowAux, PropMode, WindowClass,
+    };
+    use x11rb::wrapper::ConnectionExt as _;
+    let conn = x11_connect(compositor);
+    let screen = &conn.setup().roots[0];
+    let window = conn.generate_id().unwrap();
+    conn.create_window(
+        screen.root_depth,
+        window,
+        screen.root,
+        0,
+        0,
+        200,
+        100,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    let atom = |name: &[u8]| conn.intern_atom(false, name).unwrap().reply().unwrap().atom;
+    let utf8 = atom(b"UTF8_STRING");
+    conn.change_property8(
+        PropMode::REPLACE,
+        window,
+        AtomEnum::WM_NAME,
+        utf8,
+        b"x11 copier",
+    )
+    .unwrap();
+    conn.change_property8(
+        PropMode::REPLACE,
+        window,
+        atom(b"_NET_STARTUP_ID"),
+        utf8,
+        token.as_bytes(),
+    )
+    .unwrap();
+    // Ask for FocusIn: Xwayland sends it once satellite holds Wayland keyboard
+    // focus, which is what lets satellite make a copy the selection owner. A
+    // program copies after it has focus, so the test must not copy before.
+    conn.change_window_attributes(
+        window,
+        &x11rb::protocol::xproto::ChangeWindowAttributesAux::new()
+            .event_mask(x11rb::protocol::xproto::EventMask::FOCUS_CHANGE),
+    )
+    .unwrap();
+    conn.map_window(window).unwrap();
+    conn.flush().unwrap();
+    native.wait_until(
+        |state| !state.keyboard_focused,
+        "the X11 copier window never took keyboard focus",
+    );
+    // Paint something: a real program draws, and satellite only attaches a
+    // buffer (which is what lets Tilo show and focus the window) once the
+    // window has content.
+    let gc = conn.generate_id().unwrap();
+    conn.create_gc(
+        gc,
+        window,
+        &x11rb::protocol::xproto::CreateGCAux::new().foreground(screen.white_pixel),
+    )
+    .unwrap();
+    let paint = |conn: &x11rb::rust_connection::RustConnection| {
+        conn.poly_fill_rectangle(
+            window,
+            gc,
+            &[x11rb::protocol::xproto::Rectangle {
+                x: 0,
+                y: 0,
+                width: 200,
+                height: 100,
+            }],
+        )
+        .unwrap();
+        conn.flush().unwrap();
+    };
+    paint(&conn);
+    // Wait for Wayland keyboard focus on satellite's surface for this window
+    // and for it to hold: a window that has just opened is resized to its tab,
+    // which briefly unmaps it, and a program copies once its window has
+    // settled, not mid-resize. The X server reports the window as the input
+    // focus once satellite holds Wayland focus.
+    let probe = x11_connect(compositor);
+    let end = deadline_end();
+    let mut last_paint = Instant::now();
+    let mut focused_since: Option<Instant> = None;
+    loop {
+        assert!(
+            Instant::now() < end,
+            "the X11 window never held keyboard focus: satellite never got (or kept) Wayland keyboard focus\n{}",
+            compositor.recent_log()
+        );
+        if last_paint.elapsed() > Duration::from_millis(500) {
+            paint(&conn);
+            last_paint = Instant::now();
+        }
+        let focus = probe.get_input_focus().unwrap().reply().unwrap().focus;
+        if focus == window {
+            let since = *focused_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= Duration::from_millis(400) {
+                break;
+            }
+        } else {
+            focused_since = None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    (conn, window)
+}
+
+fn serve_x11_clipboard(
+    conn: x11rb::rust_connection::RustConnection,
+    window: u32,
+    text: String,
+) -> X11ClipboardOwner {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::Event;
+    use x11rb::protocol::xproto::{
+        AtomEnum, ConnectionExt as _, EventMask, PropMode, SELECTION_NOTIFY_EVENT,
+        SelectionNotifyEvent,
+    };
+    use x11rb::wrapper::ConnectionExt as _;
+    let atom = |name: &[u8]| conn.intern_atom(false, name).unwrap().reply().unwrap().atom;
+    let clipboard = atom(b"CLIPBOARD");
+    let targets = atom(b"TARGETS");
+    let utf8 = atom(b"UTF8_STRING");
+    let mime = atom(b"text/plain;charset=utf-8");
+    let timestamp = atom(b"TIMESTAMP");
+    conn.set_selection_owner(window, clipboard, x11rb::CURRENT_TIME)
+        .unwrap();
+    conn.flush().unwrap();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let thread = std::thread::spawn(move || {
+        while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+            let Ok(Some(event)) = conn.poll_for_event() else {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            };
+            let Event::SelectionRequest(request) = event else {
+                continue;
+            };
+            let property = if request.property == 0 {
+                request.target
+            } else {
+                request.property
+            };
+            let served = if request.target == targets {
+                conn.change_property32(
+                    PropMode::REPLACE,
+                    request.requestor,
+                    property,
+                    AtomEnum::ATOM,
+                    &[targets, timestamp, utf8, AtomEnum::STRING.into(), mime],
+                )
+                .is_ok()
+            } else if request.target == utf8 || request.target == mime {
+                conn.change_property8(
+                    PropMode::REPLACE,
+                    request.requestor,
+                    property,
+                    utf8,
+                    text.as_bytes(),
+                )
+                .is_ok()
+            } else if request.target == u32::from(AtomEnum::STRING) {
+                conn.change_property8(
+                    PropMode::REPLACE,
+                    request.requestor,
+                    property,
+                    AtomEnum::STRING,
+                    text.as_bytes(),
+                )
+                .is_ok()
+            } else {
+                false
+            };
+            let notify = SelectionNotifyEvent {
+                response_type: SELECTION_NOTIFY_EVENT,
+                sequence: 0,
+                time: request.time,
+                requestor: request.requestor,
+                selection: request.selection,
+                target: request.target,
+                property: if served { property } else { 0 },
+            };
+            let _ = conn.send_event(false, request.requestor, EventMask::NO_EVENT, notify);
+            let _ = conn.flush();
+        }
+    });
+    X11ClipboardOwner {
+        stop,
+        thread: Some(thread),
+    }
+}
+
+/// The browser path: an X11 program copies (through satellite) and a native
+/// Wayland terminal pastes, both while the X11 program is alive and after it
+/// is gone, for a short string and a long one.
+#[test]
+fn x11_clipboard_source_pastes_into_a_wayland_client() {
+    for text in [
+        "short from x11".to_string(),
+        "long x11 line. ".repeat(20_000),
+    ] {
+        let compositor = Compositor::start_host_desktop();
+        let mut native = TestClient::new(compositor.connect(), "org.tilo.test.x11-paste-native");
+        native.map_window(&compositor);
+        let token = compositor.mint_host_launch_activation("org.example.x11-copier", "X11 copier");
+        assert!(
+            Path::new("/usr/bin/xwayland-satellite").is_file(),
+            "xwayland-satellite is not installed, so no X11 clipboard path can be tested"
+        );
+        let (conn, window) = x11_focused_window(&compositor, &mut native, &token);
+        let owner = serve_x11_clipboard(conn, window, text.clone());
+        // The copy lands while the X11 window is focused; opening another
+        // window first would take focus before satellite's request arrives.
+        let end = Instant::now() + deadline();
+        while compositor.chrome_paste(false).as_deref() != Some(text.as_str()) {
+            assert!(
+                Instant::now() < end,
+                "the compositor never received the X11 copy\n{}",
+                compositor.recent_log()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut terminal = TestClient::new(compositor.connect(), "org.tilo.test.alacritty");
+        terminal.map_window(&compositor);
+        assert_eq!(
+            terminal.read_clipboard(None),
+            text,
+            "paste while the X11 owner lives"
+        );
+        // Tilo has mirrored it by now; the X11 program exits.
+        let deadline = Instant::now() + deadline();
+        while compositor.chrome_paste(false).as_deref() != Some(text.as_str()) {
+            assert!(
+                Instant::now() < deadline,
+                "mirror never received the X11 copy"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        drop(owner);
+        let mut late = TestClient::new(compositor.connect(), "org.tilo.test.alacritty-late");
+        late.map_window(&compositor);
+        let pasted = late.read_clipboard(None);
+        assert_eq!(
+            pasted,
+            text,
+            "paste after the X11 owner exited\nselection log:\n{}",
+            compositor
+                .full_log()
+                .lines()
+                .filter(|l| l.contains("shell::selection") || l.contains("selection source"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+}
+
+/// Same-app copy/paste in a Wayland host app: the source client reads its own
+/// selection back, before and after Tilo has mirrored/taken it over, and a
+/// second client of the same app sees it too.
+#[test]
+fn a_wayland_client_pastes_its_own_copy() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.same-app");
+    app.map_window(&compositor);
+    app.set_clipboard("same app copy");
+    assert_eq!(app.read_clipboard(None), "same app copy");
+    let deadline = Instant::now() + deadline();
+    while compositor.chrome_paste(false).as_deref() != Some("same app copy") {
+        assert!(Instant::now() < deadline, "mirror never received the copy");
+        app.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    app.pump();
+    assert_eq!(app.read_clipboard(None), "same app copy");
+    app.set_clipboard("second copy");
+    assert_eq!(app.read_clipboard(None), "second copy");
+}
+
+/// Host app (X11 under satellite) <-> host app (X11) and Wayland <-> X11:
+/// ownership moves through Tilo, never resurrecting an older copy.
+#[test]
+fn x11_clipboard_pastes_into_x11_and_wayland_into_x11() {
+    assert!(
+        Path::new("/usr/bin/xwayland-satellite").is_file(),
+        "xwayland-satellite is not installed, so no X11 clipboard path can be tested"
+    );
+    let compositor = Compositor::start_host_desktop();
+    let mut native = TestClient::new(compositor.connect(), "org.tilo.test.x11-x11-native");
+    native.map_window(&compositor);
+    let token = compositor.mint_host_launch_activation("org.example.x11-copier", "X11 copier");
+    let (conn, window) = x11_focused_window(&compositor, &mut native, &token);
+    let owner = serve_x11_clipboard(conn, window, "x11 to x11".to_string());
+    // Another X11 program of the same display pastes.
+    assert_eq!(x11_paste(&compositor), "x11 to x11");
+    // Satellite logs this when the compositor has taken the copy over and
+    // handed it back: from here the X11 CLIPBOARD is served from Tilo's mirror.
+    compositor.wait_for_log(
+        &["Clipboard set from Wayland"],
+        "the compositor never took the X11 copy over",
+    );
+    assert_eq!(
+        x11_paste(&compositor),
+        "x11 to x11",
+        "after Tilo took the selection over"
+    );
+    drop(owner);
+    // The owner exited; the copy survives for an X11 program that is focused
+    // afterwards (satellite only holds the compositor's selection while it
+    // has keyboard focus).
+    let token = compositor.mint_host_launch_activation("org.example.x11-second", "X11 second");
+    let (_second, _second_window) = x11_focused_window(&compositor, &mut native, &token);
+    assert_eq!(
+        x11_paste(&compositor),
+        "x11 to x11",
+        "after the X11 owner exited"
+    );
+    // The user opens a native app and copies there ...
+    let mut terminal = TestClient::new(compositor.connect(), "org.tilo.test.x11-x11-terminal");
+    terminal.map_window(&compositor);
+    let serial = press_ctrl_c(&compositor, &mut terminal);
+    terminal.copy_with_serial("wayland to x11", serial);
+    // ... then pastes into an X11 program that has just been focused.
+    let token = compositor.mint_host_launch_activation("org.example.x11-paster", "X11 paster");
+    let (_conn, _window) = x11_focused_window(&compositor, &mut terminal, &token);
+    assert_eq!(x11_paste(&compositor), "wayland to x11");
+}
+
+#[test]
+fn wayland_rich_clipboard_null_selection_clears_completed_offer() {
+    let compositor = Compositor::start();
+    let mut source = TestClient::new(compositor.connect(), "org.tilo.test.rich-null-source");
+    source.map_window(&compositor);
+    let _serving = ServingClipboard::start(
+        source,
+        RichSource {
+            html: "<b>before NULL</b>".into(),
+            plain: "before NULL".into(),
+            held: None,
+        },
+    );
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.rich-null-sink");
+    app.assert_is_tilo_compositor();
+    let (clipboard, end) = cancellation_clipboard(&app);
+    app.map_window(&compositor);
+    wait_for_clipboard_before(
+        &mut app,
+        || clipboard.rich_text().is_some(),
+        "initial rich offer missing",
+        end,
+    );
+    app.data_device
+        .as_ref()
+        .expect("data device")
+        .set_selection(None, app.state.last_serial);
+    app.roundtrip();
+    app.wait_until(
+        |state| state.clipboard_offer.is_none(),
+        "NULL selection missing",
+    );
+    wait_for_clipboard_before(
+        &mut app,
+        || clipboard.rich_text().is_none(),
+        "NULL selection retained rich data",
+        end,
+    );
+}
+
+#[test]
+fn wayland_rich_clipboard_deadline_closes_stalled_pipe_and_rejects_late_bytes() {
+    use std::io::Write as _;
+    use std::os::fd::AsRawFd as _;
+    let compositor = Compositor::start();
+    let held = Arc::new(Mutex::new(Vec::new()));
+    let mut source = TestClient::new(compositor.connect(), "org.tilo.test.rich-stall-source");
+    source.map_window(&compositor);
+    let _serving = ServingClipboard::start(
+        source,
+        RichSource {
+            html: "<b>late</b>".into(),
+            plain: "late".into(),
+            held: Some(Arc::clone(&held)),
+        },
+    );
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.rich-stall-sink");
+    app.assert_is_tilo_compositor();
+    let clipboard = ui::clipboard::WaylandClipboard::new_for_wayland_test(app.conn.clone());
+    assert!(
+        clipboard.wait_ready_for_wayland_test(deadline()),
+        "clipboard worker did not bind its devices before fixture focus"
+    );
+    app.map_window(&compositor);
+    wait_for_clipboard(
+        &mut app,
+        || {
+            let pipes = held.lock().expect("held pipes");
+            let paired = pipes.iter().any(|(mime, _)| mime == "text/html")
+                && pipes.iter().any(|(mime, _)| mime == TEXT_MIME);
+            drop(pipes);
+            paired
+        },
+        "worker did not request both formats",
+    );
+    // No focus/selection change occurs here: closure must come from the
+    // production deadline, not from a later replacement or test teardown.
+    wait_for_clipboard(
+        &mut app,
+        || {
+            let pipes = held.lock().expect("held pipes");
+            let closed = pipes.iter().all(|(_, fd)| {
+                let mut poll = libc::pollfd {
+                    fd: fd.as_raw_fd(),
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                // SAFETY: the mutex keeps the descriptor alive for this pollfd.
+                let ready = unsafe { libc::poll(&raw mut poll, 1, 0) };
+                assert!(ready >= 0, "poll held producer pipe");
+                ready > 0 && poll.revents & libc::POLLERR != 0
+            });
+            drop(pipes);
+            closed
+        },
+        "deadline did not close both stalled readers",
+    );
+    let expired_pipes = std::mem::take(&mut *held.lock().expect("held pipes"));
+    for (mime, fd) in expired_pipes {
+        let error = std::fs::File::from(fd)
+            .write_all(b"late")
+            .expect_err("expired pipe must be closed");
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "late {mime} data"
+        );
+    }
+    assert!(clipboard.rich_text().is_none());
+    let previous = app.state.clipboard_offer.clone();
+    compositor.chrome_copy("after stalled source", false);
+    app.wait_until(
+        |state| state.clipboard_offer != previous,
+        "post-timeout offer missing",
+    );
+    assert_eq!(app.read_clipboard(None), "after stalled source");
+    assert!(clipboard.rich_text().is_none());
 }
 
 /// A `wl_touch` client sees the partial two-contact stream, then exactly
@@ -1677,6 +2813,51 @@ fn a_touch_tap_on_a_client_activates_it_once() {
         "a tap already delivered as wl_touch must not also click the client: {:?}",
         client.state.pointer_events
     );
+}
+
+/// A client that never asked for `wl_touch` still works under a finger: a
+/// tap on it arrives as exactly one pointer click, and no touch traffic.
+#[test]
+fn a_touch_tap_on_a_client_without_wl_touch_is_one_click() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::without_touch(compositor.connect(), "org.tilo.test.touch-less");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
+    client.roundtrip();
+    assert!(!client.state.touch_bound);
+    let (x, y) = client.pointer_target(&compositor);
+    client.clear_touch_and_pointer_trace();
+
+    compositor.touch("e2e-panel", 0, "down", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    compositor.touch("e2e-panel", 0, "up", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    client.wait_until(
+        |state| {
+            state
+                .pointer_events
+                .iter()
+                .filter(|e| **e == "button")
+                .count()
+                >= 2
+        },
+        "the touch-less client never received the tap as a click",
+    );
+    client.roundtrip();
+    client.roundtrip();
+
+    let buttons = client
+        .state
+        .pointer_events
+        .iter()
+        .filter(|event| **event == "button")
+        .count();
+    assert_eq!(
+        buttons, 2,
+        "one press and one release: {:?}",
+        client.state.pointer_events
+    );
+    assert!(client.state.touch_events.is_empty());
 }
 
 /// The desktop help overlay speaks the input language in use. A headless
@@ -1837,6 +3018,15 @@ impl Dispatch<WlRegistry, ()> for ClientState {
             "wl_shm" => {
                 state.shm = Some(registry.bind(name, 1, qh, ()));
             }
+            "ext_data_control_manager_v1" => {
+                state.ext_manager = Some(registry.bind(name, version.min(1), qh, ()));
+            }
+            "wl_subcompositor" => {
+                state.subcompositor = Some(registry.bind(name, 1, qh, ()));
+            }
+            "zwlr_data_control_manager_v1" => {
+                state.control_manager = Some(registry.bind(name, version.min(2), qh, ()));
+            }
             _ => {}
         }
     }
@@ -1864,7 +3054,7 @@ impl Dispatch<WlSeat, ()> for ClientState {
                 if caps.contains(wl_seat::Capability::Pointer) {
                     seat.get_pointer(qh, ());
                 }
-                if caps.contains(wl_seat::Capability::Touch) {
+                if caps.contains(wl_seat::Capability::Touch) && !state.refuse_touch {
                     state.touch = Some(seat.get_touch(qh, ()));
                     state.touch_bound = true;
                 }
@@ -1920,6 +3110,9 @@ impl Dispatch<WlKeyboard, ()> for ClientState {
                     key_state,
                     wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed)
                 );
+                if pressed {
+                    state.last_key_press_serial = Some(serial);
+                }
                 state.keyboard_events.push((key, pressed));
             }
             wl_keyboard::Event::Modifiers { serial, .. } => state.last_serial = serial,
@@ -1991,20 +3184,7 @@ impl Dispatch<WlTouch, ()> for ClientState {
     }
 }
 
-impl Dispatch<XdgWmBase, ()> for ClientState {
-    fn event(
-        _: &mut Self,
-        wm_base: &XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            wm_base.pong(serial);
-        }
-    }
-}
+crate::support::wayland::test_client!(ClientState: ping);
 
 impl Dispatch<XdgSurface, ()> for ClientState {
     fn event(
@@ -2031,8 +3211,12 @@ impl Dispatch<XdgToplevel, ()> for ClientState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if matches!(event, xdg_toplevel::Event::Close) {
-            state.toplevel_close_requested = true;
+        match event {
+            xdg_toplevel::Event::Close => state.toplevel_close_requested = true,
+            xdg_toplevel::Event::Configure { width, height, .. } if width > 0 && height > 0 => {
+                state.toplevel_size = Some((width, height));
+            }
+            _ => {}
         }
     }
 }
@@ -2110,6 +3294,30 @@ impl Dispatch<WlDataOffer, ()> for ClientState {
                 state.dnd_offer_mimes.push(mime_type);
             } else {
                 state.clipboard_offer_mimes.push(mime_type);
+            }
+        }
+    }
+}
+
+impl Dispatch<WlDataSource, RichSource> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &WlDataSource,
+        event: wl_data_source::Event,
+        payload: &RichSource,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_data_source::Event::Send { mime_type, fd } = event {
+            state.send_requests.push(mime_type.clone());
+            if let Some(held) = &payload.held {
+                held.lock()
+                    .expect("held producer pipes")
+                    .push((mime_type, fd));
+            } else if mime_type == "text/html" {
+                write_and_close(fd, &payload.html);
+            } else if mime_type == TEXT_MIME {
+                write_and_close(fd, &payload.plain);
             }
         }
     }
@@ -2203,6 +3411,157 @@ impl Dispatch<ZwpPrimarySelectionSourceV1, String> for ClientState {
     }
 }
 
+impl Dispatch<ZwlrDataControlDeviceV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &ZwlrDataControlDeviceV1,
+        event: zwlr_data_control_device_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_data_control_device_v1::Event::DataOffer { id } => {
+                state.control_pending_offer = Some(id);
+            }
+            zwlr_data_control_device_v1::Event::Selection { id } => {
+                state.control_selection_events = state.control_selection_events.saturating_add(1);
+                state.control_pending_offer = None;
+                state.control_clipboard = id.map(|offer| {
+                    let mimes = offer.data::<ControlMimes>().cloned().unwrap_or_default();
+                    (offer, mimes)
+                });
+            }
+            zwlr_data_control_device_v1::Event::PrimarySelection { id } => {
+                state.control_pending_offer = None;
+                state.control_primary = id.map(|offer| {
+                    let mimes = offer.data::<ControlMimes>().cloned().unwrap_or_default();
+                    (offer, mimes)
+                });
+            }
+            _ => {}
+        }
+    }
+
+    wayland_client::event_created_child!(ClientState, ZwlrDataControlDeviceV1, [
+        zwlr_data_control_device_v1::EVT_DATA_OFFER_OPCODE
+            => (ZwlrDataControlOfferV1, ControlMimes::default()),
+    ]);
+}
+
+impl Dispatch<ZwlrDataControlOfferV1, ControlMimes> for ClientState {
+    fn event(
+        _: &mut Self,
+        _: &ZwlrDataControlOfferV1,
+        event: zwlr_data_control_offer_v1::Event,
+        mimes: &ControlMimes,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwlr_data_control_offer_v1::Event::Offer { mime_type } = event {
+            mimes.lock().expect("control offer mimes").push(mime_type);
+        }
+    }
+}
+
+impl Dispatch<ZwlrDataControlSourceV1, String> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &ZwlrDataControlSourceV1,
+        event: zwlr_data_control_source_v1::Event,
+        served_text: &String,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_data_control_source_v1::Event::Send { mime_type, fd } => {
+                state.send_requests.push(mime_type);
+                write_and_close(fd, served_text);
+            }
+            zwlr_data_control_source_v1::Event::Cancelled => state.source_cancelled = true,
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ExtDataControlDeviceV1, ()> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &ExtDataControlDeviceV1,
+        event: ext_data_control_device_v1::Event,
+        (): &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_data_control_device_v1::Event::DataOffer { id } => {
+                state.ext_pending_offer = Some(id);
+            }
+            ext_data_control_device_v1::Event::Selection { id } => {
+                state.ext_pending_offer = None;
+                state.ext_clipboard = id.map(|offer| {
+                    let mimes = offer.data::<ControlMimes>().cloned().unwrap_or_default();
+                    (offer, mimes)
+                });
+            }
+            ext_data_control_device_v1::Event::PrimarySelection { id } => {
+                state.ext_pending_offer = None;
+                state.ext_primary = id.map(|offer| {
+                    let mimes = offer.data::<ControlMimes>().cloned().unwrap_or_default();
+                    (offer, mimes)
+                });
+            }
+            _ => {}
+        }
+    }
+
+    wayland_client::event_created_child!(ClientState, ExtDataControlDeviceV1, [
+        ext_data_control_device_v1::EVT_DATA_OFFER_OPCODE
+            => (ExtDataControlOfferV1, ControlMimes::default()),
+    ]);
+}
+
+impl Dispatch<ExtDataControlOfferV1, ControlMimes> for ClientState {
+    fn event(
+        _: &mut Self,
+        _: &ExtDataControlOfferV1,
+        event: ext_data_control_offer_v1::Event,
+        mimes: &ControlMimes,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let ext_data_control_offer_v1::Event::Offer { mime_type } = event {
+            mimes.lock().expect("control offer mimes").push(mime_type);
+        }
+    }
+}
+
+impl Dispatch<ExtDataControlSourceV1, String> for ClientState {
+    fn event(
+        state: &mut Self,
+        _: &ExtDataControlSourceV1,
+        event: ext_data_control_source_v1::Event,
+        served_text: &String,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            ext_data_control_source_v1::Event::Send { mime_type, fd } => {
+                state.send_requests.push(mime_type);
+                write_and_close(fd, served_text);
+            }
+            ext_data_control_source_v1::Event::Cancelled => state.source_cancelled = true,
+            _ => {}
+        }
+    }
+}
+
+delegate_noop!(ClientState: ignore ExtDataControlManagerV1);
+delegate_noop!(ClientState: ignore WlSubcompositor);
+delegate_noop!(ClientState: ignore WlSubsurface);
+delegate_noop!(ClientState: ignore XdgPositioner);
+delegate_noop!(ClientState: ignore XdgPopup);
+delegate_noop!(ClientState: ignore ZwlrDataControlManagerV1);
 delegate_noop!(ClientState: ignore WlCompositor);
 delegate_noop!(ClientState: ignore WlSurface);
 delegate_noop!(ClientState: ignore WlDataDeviceManager);
@@ -2216,7 +3575,17 @@ delegate_noop!(ClientState: ignore WlBuffer);
 fn write_and_close(fd: OwnedFd, text: &str) {
     use std::io::Write;
     let mut file = std::fs::File::from(fd);
-    let _ = file.write_all(text.as_bytes());
+    // A real application serves a large offer from a thread: the pipe holds
+    // 64 KiB, and the reader in these tests is dispatched by the same thread
+    // that answers `send`, so a blocking write of more than that deadlocks.
+    if text.len() > 16 * 1024 {
+        let bytes = text.as_bytes().to_vec();
+        std::thread::spawn(move || {
+            let _ = file.write_all(&bytes);
+        });
+    } else {
+        let _ = file.write_all(text.as_bytes());
+    }
 }
 
 // Tests
@@ -2459,10 +3828,6 @@ fn private_x11_activation_facts(compositor: &Compositor) -> Vec<(u32, bool, bool
 /// heavyweight graphical process, but it is a genuine compatibility lane:
 /// private HOME/XDG state, Tilo-created Xauthority, no inherited display or
 /// D-Bus session, and a child process group that is always torn down.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "the timeout is a fixed, short test-fixture deadline"
-)]
 fn private_xwayland_connection(compositor: &Compositor) -> Option<(String, PathBuf)> {
     let bridge = compositor.runtime_dir.join("tilo-session/xwayland");
     let deadline = tilo_test_env::hang_deadline();
@@ -3251,6 +4616,8 @@ fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart(
         first_surface, selected_surface,
         "the compositor must namespace equal protocol ids by client connection"
     );
+    first.present(&compositor, first_surface);
+    selected.present(&compositor, selected_surface);
     let initial = compositor.workspace_tree();
 
     // These go through the native test-control executor, its real
@@ -3422,10 +4789,6 @@ fn real_same_app_windows_close_exact_surface_without_resurrection_after_restart(
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn toolkit_globals_are_advertised_and_privileged_protocols_stay_socket_only() {
     // Phase `compositor_advertises_the_globals_a_toolkit_requires`.
     // A real toolkit must find every global it treats as mandatory — GTK
@@ -3645,17 +5008,9 @@ fn client_text_drag_on_a_tiled_edge_opens_a_new_group() {
     let mut target = TestClient::new(compositor.connect(), "org.tilo.test.dnd-target");
     target.assert_is_tilo_compositor();
     target.map_window(&compositor);
+    fit_tiled_drag_clients(&compositor, &mut source, &mut target);
 
-    // Click the source once before measuring anything — clicking raises its
-    // window group, which scrolls the strip, so a position measured before
-    // the click is stale afterward.
-    let settle_point = source.pointer_target(&compositor);
-    compositor.pointer_move(settle_point.0, settle_point.1);
-    compositor.pointer_button(true);
-    compositor.pointer_button(false);
-
-    let target_point = target.pointer_target(&compositor);
-    let source_point = source.pointer_target(&compositor);
+    let (target_point, source_point) = tiled_drag_points(&compositor, &mut source, &mut target);
     let before = tree_shape(&compositor.workspace_tree());
 
     // Press inside the source tile for a real implicit grab; the serial must
@@ -3749,6 +5104,130 @@ fn client_text_drag_on_a_tiled_edge_opens_a_new_group() {
         [opened_title.as_str()],
         "the outer edge creates a singleton sibling group"
     );
+}
+
+/// Measure both clients only after source focus has applied its strip scroll.
+fn tiled_drag_points(
+    compositor: &Compositor,
+    source: &mut TestClient,
+    target: &mut TestClient,
+) -> ((f64, f64), (f64, f64)) {
+    // Click the source once before measuring anything — clicking raises its
+    // window group, which scrolls the strip, so a position measured before
+    // the click is stale afterward.
+    let settle_point = source.pointer_target_with_peer(compositor, target);
+    compositor.pointer_move(settle_point.0, settle_point.1);
+    compositor.pointer_button(true);
+    compositor.pointer_button(false);
+
+    assert_tiled_drag_clients_visible(compositor);
+    let target_point = target.pointer_target_with_peer(compositor, source);
+    let source_point = source.pointer_target_with_peer(compositor, target);
+    (target_point, source_point)
+}
+
+/// Separate groups are not enough: two normal widths consume more than one
+/// strip, so focusing the source can scroll the target's client pixels away.
+/// Use the production persisted resize path, then answer its real configures.
+fn fit_tiled_drag_clients(
+    compositor: &Compositor,
+    source: &mut TestClient,
+    target: &mut TestClient,
+) {
+    compositor.set_group_width(250);
+    let source_id = wait_for_foreign_surface_count(
+        compositor,
+        &source.app_id,
+        1,
+        "the drag source must occupy exactly one live surface",
+    )[0];
+    let target_id = wait_for_foreign_surface_count(
+        compositor,
+        &target.app_id,
+        1,
+        "the drag target must occupy exactly one live surface",
+    )[0];
+    source.present(compositor, source_id);
+    target.present(compositor, target_id);
+    compositor.wait_for_layout_to_settle(
+        |name| name.starts_with("foreign-surface-"),
+        "both resized drag clients",
+    );
+    assert_tiled_drag_clients_visible(compositor);
+}
+
+fn assert_tiled_drag_clients_visible(compositor: &Compositor) {
+    let rects = ["org.tilo.test.dnd-source", "org.tilo.test.dnd-target"].map(|app_id| {
+        let id = wait_for_foreign_surface_count(
+            compositor,
+            app_id,
+            1,
+            "each drag client must have exactly one live surface",
+        )[0];
+        compositor
+            .named_rect(&format!("foreign-surface-{id}"))
+            .expect("each drag client's own surface must have a laid-out rect")
+    });
+    let (width, height) = compositor.size;
+    assert!(
+        rects.iter().all(|[x, y, w, h]| {
+            *x >= 0.0 && *y >= 0.0 && x + w <= f64::from(width) && y + h <= f64::from(height)
+        }),
+        "both drag clients must remain fully on screen, including after source focus: \
+         {rects:?}.\n{}",
+        compositor.debug_state(),
+    );
+}
+
+/// A second native application keeps receiving input while the first discovers
+/// its pointer target. Both connections must remain usable after repeated real
+/// pointer scans; a single test thread must service both applications.
+#[test]
+fn pointer_discovery_keeps_another_tiled_client_connected() {
+    let compositor = Compositor::start();
+    compositor.place_next_window("org.tilo.test.pointer-discovery-peer");
+    let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.pointer-discovery-peer");
+    peer.map_window(&compositor);
+    compositor.place_next_window("org.tilo.test.pointer-discovery-target");
+    let mut target = TestClient::new(
+        compositor.connect(),
+        "org.tilo.test.pointer-discovery-target",
+    );
+    target.map_window(&compositor);
+    let point = peer.pointer_target(&compositor);
+    compositor.pointer_move(point.0, point.1);
+    compositor.pointer_button(true);
+    compositor.pointer_button(false);
+    peer.pump();
+    let point = peer.pointer_target(&compositor);
+    target.pump();
+    peer.clear_touch_and_pointer_trace();
+
+    let started = Instant::now();
+    for _ in 0..512 {
+        let found = target.scan_pointer_grid_with_peer(
+            &compositor,
+            |x, y| x == point.0 && (y == point.1 || y == point.1 + 40.0),
+            &mut peer,
+        );
+        if found.is_some() {
+            peer.pump();
+        }
+        assert!(
+            found.is_none(),
+            "pointer scans over the peer must not enter this tiled client"
+        );
+        assert!(
+            started.elapsed() < deadline(),
+            "pointer discovery exceeded its existing hang bound"
+        );
+    }
+    peer.pump();
+    assert!(
+        peer.state.pointer_events.contains(&"motion"),
+        "the other client must receive the actual pointer scans"
+    );
+    target.pump();
 }
 
 impl Compositor {
@@ -4179,7 +5658,7 @@ fn group_for_tab_title(
 fn a_file_dragged_out_of_hosted_files_opens_in_the_target_window_group() {
     let home = PathBuf::from(format!(
         "/run/user/{}/tilo-dnd-home-{}-{}",
-        unsafe { libc::getuid() },
+        rustix::process::getuid().as_raw(),
         std::process::id(),
         next_id(),
     ));
@@ -4328,6 +5807,21 @@ fn spawn_word_processor(
     (app, app_log)
 }
 
+/// Whether the compositor shows client surface `surface_id`'s window.
+fn foreign_frame_presented(compositor: &Compositor, surface_id: u64) -> bool {
+    compositor
+        .control(&serde_json::json!({ "op": "foreign_frames" }))
+        .get("foreign_frames")
+        .and_then(|payload| payload.get("frames"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|frames| {
+            frames.iter().any(|frame| {
+                frame.get("surface_id").and_then(serde_json::Value::as_u64) == Some(surface_id)
+                    && frame.get("presented").and_then(serde_json::Value::as_bool) == Some(true)
+            })
+        })
+}
+
 /// Whether any client surface has presented a frame yet.
 fn any_foreign_frame_presented(compositor: &Compositor) -> bool {
     compositor
@@ -4391,7 +5885,7 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
 
     let home = PathBuf::from(format!(
         "/run/user/{}/tilo-dnd-wp-{}-{}",
-        unsafe { libc::getuid() },
+        rustix::process::getuid().as_raw(),
         std::process::id(),
         next_id(),
     ));
@@ -4483,4 +5977,825 @@ fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
         compositor.recent_log()
     );
     let _ = std::fs::remove_dir_all(&home);
+}
+
+// Realistic-client selection tests.
+//
+// Electron and Chromium never copy with whatever serial happens to be lying
+// around: they call `set_selection` with the serial of the key press (or
+// button press) that triggered the copy, and advertise several text aliases.
+// These tests drive that exact protocol pattern from plain protocol clients.
+
+/// What Chromium advertises for a plain-text copy.
+const ELECTRON_TEXT_MIMES: [&str; 3] = [TEXT_MIME, "text/plain", "text/html"];
+
+/// The copy key chord, sent through the compositor's real input path.
+fn press_ctrl_c(compositor: &Compositor, client: &mut TestClient) -> u32 {
+    client.clear_keyboard_trace();
+    client.state.last_key_press_serial = None;
+    for (op, key) in [("key_down", "Control"), ("key_down", "c")] {
+        let response = compositor.control(&serde_json::json!({ "op": op, "key": key }));
+        assert!(
+            response.get("ok").is_some(),
+            "{op} {key} refused: {response:?}"
+        );
+    }
+    client.wait_until(
+        |s| s.last_key_press_serial.is_some() && s.keyboard_events.len() >= 2,
+        "the focused client never received the Ctrl+C key press, so there is no serial to copy with",
+    );
+    let serial = client.state.last_key_press_serial.expect("key serial");
+    for (op, key) in [("key_up", "c"), ("key_up", "Control")] {
+        let response = compositor.control(&serde_json::json!({ "op": op, "key": key }));
+        assert!(
+            response.get("ok").is_some(),
+            "{op} {key} refused: {response:?}"
+        );
+    }
+    client.wait_for_keyboard_events(4);
+    serial
+}
+
+impl TestClient {
+    /// `wl_data_device.set_selection` with an explicit serial and several aliases.
+    fn copy_with_serial(&mut self, text: &str, serial: u32) {
+        let mgr = self.state.data_manager.clone().expect("data manager");
+        let device = self.data_device.clone().expect("data device");
+        let source = mgr.create_data_source(&self.qh, text.to_string());
+        for mime in ELECTRON_TEXT_MIMES {
+            source.offer(mime.to_string());
+        }
+        device.set_selection(Some(&source), serial);
+        self.roundtrip();
+    }
+
+    fn copy_primary_with_serial(&mut self, text: &str, serial: u32) {
+        let mgr = self.state.primary_manager.clone().expect("primary manager");
+        let device = self.primary_device.clone().expect("primary device");
+        let source = mgr.create_source(&self.qh, text.to_string());
+        for mime in ELECTRON_TEXT_MIMES {
+            source.offer(mime.to_string());
+        }
+        device.set_selection(Some(&source), serial);
+        self.roundtrip();
+    }
+
+    /// Bind wlr data-control on a privileged connection.
+    fn bind_data_control(&mut self) {
+        let manager = self
+            .state
+            .control_manager
+            .clone()
+            .expect("the privileged socket advertises zwlr_data_control_manager_v1");
+        let seat = self.state.seat.clone().expect("seat");
+        self.state.control_device = Some(manager.get_data_device(&seat, &self.qh, ()));
+        self.roundtrip();
+    }
+
+    fn control_read(&mut self, primary: bool, owner: &mut TestClient) -> String {
+        self.wait_until(
+            |s| {
+                let slot = if primary {
+                    &s.control_primary
+                } else {
+                    &s.control_clipboard
+                };
+                slot.as_ref()
+                    .is_some_and(|(_, m)| !m.lock().expect("mimes").is_empty())
+            },
+            "data-control never announced a selection",
+        );
+        let slot = if primary {
+            self.state.control_primary.clone()
+        } else {
+            self.state.control_clipboard.clone()
+        };
+        let (offer, _) = slot.expect("offer");
+        let (read_fd, write_fd) = make_pipe();
+        offer.receive(TEXT_MIME.to_string(), write_fd.as_fd_ref());
+        drop(write_fd);
+        self.conn.flush().expect("flush receive");
+        String::from_utf8(drain_bytes(read_fd, self, Some(owner))).expect("utf-8")
+    }
+}
+
+/// Electron/Chromium pattern: Ctrl+C reaches the client, which sets the
+/// selection with that key press's serial, then pastes into itself and into a
+/// second client.
+#[test]
+fn a_client_copying_with_its_ctrl_c_key_serial_pastes_into_itself_and_a_peer() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.electron-like");
+    app.map_window(&compositor);
+    let serial = press_ctrl_c(&compositor, &mut app);
+    app.copy_with_serial("copied with the key serial", serial);
+    app.copy_primary_with_serial("primary with the key serial", serial);
+    assert_eq!(
+        app.read_clipboard(None),
+        "copied with the key serial",
+        "the app could not paste its own copy"
+    );
+    assert_eq!(app.read_primary(None), "primary with the key serial");
+    let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.electron-peer");
+    peer.map_window(&compositor);
+    assert_eq!(
+        peer.read_clipboard(Some(&mut app)),
+        "copied with the key serial",
+        "a second client could not paste the copy"
+    );
+    assert_eq!(
+        peer.read_primary(Some(&mut app)),
+        "primary with the key serial"
+    );
+}
+
+/// 1Password's shape: one Wayland connection (one process) with two toplevels
+/// under different app ids. Copy from either, paste in either, and in a
+/// separate client.
+#[test]
+fn two_windows_of_one_client_copy_and_paste_between_each_other() {
+    let compositor = Compositor::start();
+    let conn = compositor.connect();
+    let mut vault = TestClient::new(conn.clone(), "com.onepassword.OnePassword");
+    vault.map_window(&compositor);
+    let mut quick = TestClient::new(conn, "1password");
+    quick.map_window(&compositor);
+    let serial = press_ctrl_c(&compositor, &mut quick);
+    quick.copy_with_serial("from the second window", serial);
+    assert_eq!(quick.read_clipboard(None), "from the second window");
+    assert_eq!(
+        vault.read_clipboard(Some(&mut quick)),
+        "from the second window",
+        "the other window of the same process could not paste"
+    );
+    // Now copy from the window that is not the keyboard-focused surface's own
+    // toplevel; the process still owns keyboard focus.
+    let serial = vault
+        .state
+        .last_key_press_serial
+        .unwrap_or(vault.state.last_serial);
+    // The second window still holds the first copy's offer; drop it so the
+    // read below waits for the new selection instead of reading a stale one.
+    quick.state.clipboard_selection_seen = false;
+    quick.state.clipboard_offer = None;
+    quick.state.clipboard_offer_mimes.clear();
+    vault.copy_with_serial("from the first window", serial);
+    assert_eq!(
+        quick.read_clipboard(Some(&mut vault)),
+        "from the first window"
+    );
+    let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.alacritty-peer");
+    peer.map_window(&compositor);
+    assert_eq!(
+        peer.read_clipboard(Some(&mut vault)),
+        "from the first window"
+    );
+}
+
+/// Focus is taken by compositor chrome (Quick Settings) and given back; the
+/// first copy after the focus returns uses the serial of a key routed in the
+/// new focus epoch.
+#[test]
+fn copy_works_after_chrome_took_and_returned_keyboard_focus() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.chrome-roundtrip");
+    app.map_window(&compositor);
+    let first = press_ctrl_c(&compositor, &mut app);
+    app.copy_with_serial("before chrome", first);
+    assert_eq!(app.read_clipboard(None), "before chrome");
+
+    compositor.modifiers(false, false, false, true);
+    compositor.key("q");
+    compositor.modifiers(false, false, false, false);
+    wait_for_overlay(
+        &compositor,
+        "quick_settings",
+        "Super+Q did not open Quick Settings",
+    );
+    app.wait_until(
+        |s| !s.keyboard_focused,
+        "chrome did not take keyboard focus",
+    );
+    compositor.key("Escape");
+    app.wait_until(|s| s.keyboard_focused, "focus never returned to the app");
+
+    let second = press_ctrl_c(&compositor, &mut app);
+    app.copy_with_serial("after chrome", second);
+    assert_eq!(app.read_clipboard(None), "after chrome");
+    let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.chrome-roundtrip-peer");
+    peer.map_window(&compositor);
+    assert_eq!(peer.read_clipboard(Some(&mut app)), "after chrome");
+}
+
+/// Focus moves A -> B -> back to A (B closes). A's next copy must be accepted
+/// and reach a third client.
+#[test]
+fn copy_works_after_focus_moved_away_and_came_back() {
+    let compositor = Compositor::start();
+    let mut a = TestClient::new(compositor.connect(), "org.tilo.test.focus-a");
+    a.map_window(&compositor);
+    let serial = press_ctrl_c(&compositor, &mut a);
+    a.copy_with_serial("first from a", serial);
+    let mut b = TestClient::new(compositor.connect(), "org.tilo.test.focus-b");
+    b.map_window(&compositor);
+    assert_eq!(b.read_clipboard(Some(&mut a)), "first from a");
+    let serial = press_ctrl_c(&compositor, &mut b);
+    b.copy_with_serial("from b", serial);
+    assert_eq!(b.read_clipboard(None), "from b");
+    // Super+Left walks focus back to the first group.
+    compositor.modifiers(false, false, false, true);
+    compositor.key("ArrowLeft");
+    compositor.modifiers(false, false, false, false);
+    a.wait_until(|s| s.keyboard_focused, "focus never returned to a");
+    let serial = press_ctrl_c(&compositor, &mut a);
+    a.copy_with_serial("second from a", serial);
+    assert_eq!(a.read_clipboard(None), "second from a");
+    let mut c = TestClient::new(compositor.connect(), "org.tilo.test.focus-c");
+    c.map_window(&compositor);
+    assert_eq!(c.read_clipboard(Some(&mut a)), "second from a");
+}
+
+/// A clipboard manager (wlr data-control, privileged socket only) sees a
+/// client's copy and can set the selection a focused client pastes.
+#[test]
+fn wlr_data_control_sees_client_copies_and_sets_pasteable_selections() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.control-app");
+    app.map_window(&compositor);
+    let mut manager = TestClient::new(compositor.connect_privileged(), "org.tilo.test.manager");
+    manager.bind_data_control();
+    let serial = press_ctrl_c(&compositor, &mut app);
+    app.copy_with_serial("seen by the manager", serial);
+    app.copy_primary_with_serial("primary seen by the manager", serial);
+    assert_eq!(manager.control_read(false, &mut app), "seen by the manager");
+    assert_eq!(
+        manager.control_read(true, &mut app),
+        "primary seen by the manager"
+    );
+
+    let mgr = manager.state.control_manager.clone().expect("manager");
+    let device = manager.state.control_device.clone().expect("device");
+    let source = mgr.create_data_source(&manager.qh, "set by the manager".to_string());
+    source.offer(TEXT_MIME.to_string());
+    device.set_selection(Some(&source));
+    manager.roundtrip();
+    app.state.clipboard_selection_seen = false;
+    app.wait_until(
+        |s| s.clipboard_selection_seen && s.clipboard_offer_mimes.iter().any(|m| m == TEXT_MIME),
+        "the focused client was never offered the manager's selection",
+    );
+    assert_eq!(app.read_clipboard(Some(&mut manager)), "set by the manager");
+}
+
+/// An X11 program (via satellite) and a Wayland program trade the clipboard
+/// repeatedly, each side copying with its own focus, in both directions.
+#[test]
+fn x11_and_wayland_clients_trade_copies_in_both_directions() {
+    // No skip: a missing satellite is a failing environment, not a pass.
+    assert!(
+        Path::new("/usr/bin/xwayland-satellite").is_file(),
+        "xwayland-satellite is not installed, so no X11 clipboard path can be tested"
+    );
+    let compositor = Compositor::start_host_desktop();
+    let mut native = TestClient::new(compositor.connect(), "org.tilo.test.trade-native");
+    native.map_window(&compositor);
+    let serial = press_ctrl_c(&compositor, &mut native);
+    native.copy_with_serial("wayland one", serial);
+
+    // An X11 program is focused and pastes what the Wayland app copied.
+    let token = compositor.mint_host_launch_activation("org.example.x11-copier", "X11 copier");
+    let (conn, window) = x11_focused_window(&compositor, &mut native, &token);
+    assert_eq!(x11_paste(&compositor), "wayland one", "wayland -> x11");
+    // It copies in turn; a Wayland client that maps later (the terminal) pastes.
+    let owner = serve_x11_clipboard(conn, window, "x11 two".to_string());
+    // The copy lands while the X11 window is focused; wait for the compositor
+    // to hold it before another window opens and takes focus.
+    let end = Instant::now() + deadline();
+    while compositor.chrome_paste(false).as_deref() != Some("x11 two") {
+        assert!(
+            Instant::now() < end,
+            "the compositor never received the X11 copy\n{}",
+            compositor.recent_log()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut terminal = TestClient::new(compositor.connect(), "org.tilo.test.trade-terminal");
+    terminal.map_window(&compositor);
+    assert_eq!(terminal.read_clipboard(None), "x11 two", "x11 -> wayland");
+    drop(owner);
+    // The terminal copies again, and a freshly focused X11 program pastes it.
+    let serial = press_ctrl_c(&compositor, &mut terminal);
+    terminal.copy_with_serial("wayland three", serial);
+    let token = compositor.mint_host_launch_activation("org.example.x11-paster", "X11 paster");
+    let (_conn, _window) = x11_focused_window(&compositor, &mut terminal, &token);
+    assert_eq!(
+        x11_paste(&compositor),
+        "wayland three",
+        "wayland -> x11 again"
+    );
+}
+
+// Remaining realistic cases and refusal logging.
+
+impl Compositor {
+    /// The compositor's whole captured log, not just its tail.
+    fn full_log(&self) -> String {
+        self.log.lock().map(|l| l.join("\n")).unwrap_or_default()
+    }
+
+    /// Wait for a log line containing every fragment of `needles`.
+    fn wait_for_log(&self, needles: &[&str], what: &str) {
+        let end = deadline_end();
+        loop {
+            let log = self.full_log();
+            if log
+                .lines()
+                .any(|line| needles.iter().all(|needle| line.contains(needle)))
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < end,
+                "{what}: no compositor log line with {needles:?}\n{}",
+                self.recent_log()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+}
+
+impl TestClient {
+    /// Like [`Self::copy_with_serial`] but hands back the source, so a test can
+    /// destroy it the way Electron does.
+    fn copy_keeping_source(&mut self, text: &str, serial: u32) -> WlDataSource {
+        let mgr = self.state.data_manager.clone().expect("data manager");
+        let device = self.data_device.clone().expect("data device");
+        let source = mgr.create_data_source(&self.qh, text.to_string());
+        for mime in ELECTRON_TEXT_MIMES {
+            source.offer(mime.to_string());
+        }
+        device.set_selection(Some(&source), serial);
+        self.roundtrip();
+        source
+    }
+
+    /// Map an `xdg_popup` with a keyboard grab over the main window, the way a
+    /// context menu or a Quick Access panel does.
+    fn map_grabbing_popup(&mut self) -> WlSurface {
+        let wm = self.state.wm_base.clone().expect("xdg_wm_base");
+        let wl_compositor = self.state.compositor.clone().expect("wl_compositor");
+        let seat = self.state.seat.clone().expect("seat");
+        let positioner = wm.create_positioner(&self.qh, ());
+        positioner.set_size(120, 60);
+        positioner.set_anchor_rect(10, 10, 10, 10);
+        let surface = wl_compositor.create_surface(&self.qh, ());
+        let xdg = wm.get_xdg_surface(&surface, &self.qh, ());
+        let popup = xdg.get_popup(self.xdg_surface.as_ref(), &positioner, &self.qh, ());
+        popup.grab(&seat, self.state.last_serial);
+        surface.commit();
+        self.roundtrip();
+        self.roundtrip();
+        self.attach_buffer_to(&surface, 120, 60);
+        positioner.destroy();
+        self.popups.push((popup, xdg, surface.clone()));
+        surface
+    }
+
+    /// Close every popup, as a menu does when it is dismissed.
+    fn dismiss_popups(&mut self) {
+        for (popup, xdg, surface) in self.popups.drain(..) {
+            popup.destroy();
+            xdg.destroy();
+            surface.destroy();
+        }
+        self.roundtrip();
+    }
+
+    fn bind_ext_data_control(&mut self) {
+        let manager = self
+            .state
+            .ext_manager
+            .clone()
+            .expect("the privileged socket advertises ext_data_control_manager_v1");
+        let seat = self.state.seat.clone().expect("seat");
+        self.state.ext_device = Some(manager.get_data_device(&seat, &self.qh, ()));
+        self.roundtrip();
+    }
+
+    fn ext_read(&mut self, primary: bool, owner: &mut TestClient) -> String {
+        self.wait_until(
+            |s| {
+                let slot = if primary {
+                    &s.ext_primary
+                } else {
+                    &s.ext_clipboard
+                };
+                slot.as_ref()
+                    .is_some_and(|(_, m)| !m.lock().expect("mimes").is_empty())
+            },
+            "ext-data-control never announced a selection",
+        );
+        let slot = if primary {
+            self.state.ext_primary.clone()
+        } else {
+            self.state.ext_clipboard.clone()
+        };
+        let (offer, _) = slot.expect("offer");
+        let (read_fd, write_fd) = make_pipe();
+        offer.receive(TEXT_MIME.to_string(), write_fd.as_fd_ref());
+        drop(write_fd);
+        self.conn.flush().expect("flush receive");
+        String::from_utf8(drain_bytes(read_fd, self, Some(owner))).expect("utf-8")
+    }
+}
+
+/// A copy from a client that does not hold keyboard focus is refused, and the
+/// refusal is logged with the reason, the client and who does hold focus.
+#[test]
+fn a_selection_from_an_unfocused_client_is_refused_and_logged() {
+    let compositor = Compositor::start();
+    let mut behind = TestClient::new(compositor.connect(), "org.tilo.test.unfocused-copier");
+    behind.map_window(&compositor);
+    let stale_serial = behind.state.last_serial;
+    let mut front = TestClient::new(compositor.connect(), "org.tilo.test.focus-holder");
+    front.map_window(&compositor);
+    behind.wait_until(
+        |s| !s.keyboard_focused,
+        "the first client kept keyboard focus",
+    );
+
+    behind.copy_with_serial("must not land", stale_serial);
+    behind.copy_primary_with_serial("must not land either", stale_serial);
+    compositor.wait_for_log(
+        &[
+            "selection refused",
+            "client does not hold keyboard focus",
+            "wl_data_device",
+        ],
+        "the refused clipboard copy was not logged",
+    );
+    compositor.wait_for_log(
+        &["selection refused", "zwp_primary_selection_device_v1"],
+        "the refused primary copy was not logged",
+    );
+    compositor.wait_for_log(
+        &[
+            "selection refused",
+            "org.tilo.test.unfocused-copier",
+            "org.tilo.test.focus-holder",
+        ],
+        "the refusal did not name the client and the focus holder",
+    );
+    assert_ne!(
+        compositor.chrome_paste(false).as_deref(),
+        Some("must not land"),
+        "a client without keyboard focus set the clipboard"
+    );
+}
+
+/// Quick Access / context-menu pattern: the main window is not where the key
+/// lands; a grabbing popup of the same client is. Copy still works.
+#[test]
+fn copy_from_a_client_with_a_grabbing_popup_pastes_everywhere() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.popup-copier");
+    app.map_window(&compositor);
+    let _popup = app.map_grabbing_popup();
+    let serial = press_ctrl_c(&compositor, &mut app);
+    app.copy_with_serial("copied under a popup grab", serial);
+    assert_eq!(app.read_clipboard(None), "copied under a popup grab");
+    // The menu closes (a new window would dismiss it) before the next window opens.
+    app.dismiss_popups();
+    let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.popup-peer");
+    peer.map_window(&compositor);
+    assert_eq!(
+        peer.read_clipboard(Some(&mut app)),
+        "copied under a popup grab"
+    );
+}
+
+/// A copy triggered by a click on a "Copy" button carries the pointer-button
+/// serial; no key event is involved.
+#[test]
+fn copy_triggered_by_a_pointer_click_pastes_everywhere() {
+    let compositor = Compositor::start();
+    compositor.place_next_window("org.tilo.test.click-copier");
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.click-copier");
+    app.map_window(&compositor);
+    let point = app.pointer_target(&compositor);
+    app.state.pointer_button_serial = None;
+    compositor.pointer_move(point.0, point.1);
+    compositor.pointer_button(true);
+    app.wait_until(
+        |s| s.pointer_button_serial.is_some(),
+        "the client never received the pointer press",
+    );
+    let serial = app.state.pointer_button_serial.expect("button serial");
+    compositor.pointer_button(false);
+    app.copy_with_serial("copied by a click", serial);
+    assert_eq!(app.read_clipboard(None), "copied by a click");
+    let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.click-peer");
+    peer.map_window(&compositor);
+    assert_eq!(peer.read_clipboard(Some(&mut app)), "copied by a click");
+}
+
+/// The copying surface is a subsurface of the focused toplevel.
+#[test]
+fn copy_from_a_client_with_a_subsurface_pastes_everywhere() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.subsurface-copier");
+    app.map_window(&compositor);
+    let sub_compositor = app.state.subcompositor.clone().expect("wl_subcompositor");
+    let wl_compositor = app.state.compositor.clone().expect("wl_compositor");
+    let child = wl_compositor.create_surface(&app.qh, ());
+    let subsurface = sub_compositor.get_subsurface(
+        &child,
+        app.surface.as_ref().expect("parent surface"),
+        &app.qh,
+        (),
+    );
+    subsurface.set_position(20, 20);
+    subsurface.set_desync();
+    app.attach_buffer_to(&child, 64, 64);
+    app.surface.as_ref().expect("parent").commit();
+    app.roundtrip();
+    let serial = press_ctrl_c(&compositor, &mut app);
+    app.copy_with_serial("copied beside a subsurface", serial);
+    assert_eq!(app.read_clipboard(None), "copied beside a subsurface");
+    let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.subsurface-peer");
+    peer.map_window(&compositor);
+    assert_eq!(
+        peer.read_clipboard(Some(&mut app)),
+        "copied beside a subsurface"
+    );
+}
+
+/// A client that copies the instant its toplevel exists, before the first
+/// configure and before it has keyboard focus, is refused (and says so in the
+/// log); the first copy it makes with a real key serial still works.
+#[test]
+fn copy_before_first_configure_is_refused_and_the_next_copy_still_works() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.eager-copier");
+    // Bind the devices and create the toplevel, but do not wait for anything.
+    let wl_compositor = app.state.compositor.clone().expect("wl_compositor");
+    let wm_base = app.state.wm_base.clone().expect("xdg_wm_base");
+    let seat = app.state.seat.clone().expect("seat");
+    app.data_device = app
+        .state
+        .data_manager
+        .clone()
+        .map(|mgr| mgr.get_data_device(&seat, &app.qh, ()));
+    let surface = wl_compositor.create_surface(&app.qh, ());
+    let xdg_surface = wm_base.get_xdg_surface(&surface, &app.qh, ());
+    let toplevel = xdg_surface.get_toplevel(&app.qh, ());
+    toplevel.set_app_id(app.app_id.clone());
+    surface.commit();
+    app.surface = Some(surface);
+    app.xdg_surface = Some(xdg_surface);
+    app.toplevel = Some(toplevel);
+    app.copy_with_serial("too early", 0);
+    compositor.wait_for_log(
+        &["selection refused", "org.tilo.test.eager-copier"],
+        "the premature copy was not reported",
+    );
+    // Finish mapping; the normal path must be unaffected by the early attempt.
+    app.primary_device = app
+        .state
+        .primary_manager
+        .clone()
+        .map(|mgr| mgr.get_device(&seat, &app.qh, ()));
+    app.wait_until(|s| s.configured, "no configure");
+    app.attach_buffer(320, 240);
+    app.wait_until(|s| s.keyboard_focused, "no keyboard focus");
+    let serial = press_ctrl_c(&compositor, &mut app);
+    app.copy_with_serial("on time", serial);
+    assert_eq!(app.read_clipboard(None), "on time");
+}
+
+/// A copy bigger than most pastes but within the mirror limit crosses to a
+/// peer and into chrome intact; one beyond the limit is dropped from the
+/// mirror with a log line while the live client-to-client paste still works.
+#[test]
+fn large_offers_cross_and_oversized_ones_are_dropped_with_a_logged_reason() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.large-copier");
+    app.map_window(&compositor);
+    let large = "0123456789abcdef".repeat(256 * 1024); // 4 MiB
+    let serial = press_ctrl_c(&compositor, &mut app);
+    app.copy_with_serial(&large, serial);
+    let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.large-peer");
+    peer.map_window(&compositor);
+    assert_eq!(peer.read_clipboard(Some(&mut app)).len(), large.len());
+
+    let huge = "0123456789abcdef".repeat(768 * 1024); // 12 MiB, over the limit
+    let mut app2 = TestClient::new(compositor.connect(), "org.tilo.test.huge-copier");
+    app2.map_window(&compositor);
+    let serial = press_ctrl_c(&compositor, &mut app2);
+    app2.copy_with_serial(&huge, serial);
+    // The source has to keep being dispatched: the compositor's pull is a
+    // `send` request it must answer.
+    let end = Instant::now() + deadline();
+    while !compositor
+        .full_log()
+        .contains("selection source exceeded the mirror size limit")
+    {
+        assert!(
+            Instant::now() < end,
+            "an oversized selection was dropped silently\n{}",
+            compositor.recent_log()
+        );
+        app2.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Electron destroys its data source once it is done with it. By then Tilo has
+/// mirrored the bytes and keeps the clipboard alive.
+#[test]
+fn a_destroyed_source_does_not_take_the_clipboard_with_it() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.source-destroyer");
+    app.map_window(&compositor);
+    let serial = press_ctrl_c(&compositor, &mut app);
+    let source = app.copy_keeping_source("outlives its source", serial);
+    let end = Instant::now() + deadline();
+    while compositor.chrome_paste(false).as_deref() != Some("outlives its source") {
+        assert!(Instant::now() < end, "the mirror never received the copy");
+        app.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    app.pump();
+    source.destroy();
+    app.roundtrip();
+    let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.source-destroyer-peer");
+    peer.map_window(&compositor);
+    assert_eq!(peer.read_clipboard(Some(&mut app)), "outlives its source");
+}
+
+/// ext-data-control, the standardised clipboard-manager protocol, behaves like
+/// the wlr one.
+#[test]
+fn ext_data_control_sees_client_copies_and_sets_pasteable_selections() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.ext-control-app");
+    app.map_window(&compositor);
+    let mut manager = TestClient::new(compositor.connect_privileged(), "org.tilo.test.ext-manager");
+    manager.bind_ext_data_control();
+    let serial = press_ctrl_c(&compositor, &mut app);
+    app.copy_with_serial("seen by the ext manager", serial);
+    app.copy_primary_with_serial("primary seen by the ext manager", serial);
+    assert_eq!(manager.ext_read(false, &mut app), "seen by the ext manager");
+    assert_eq!(
+        manager.ext_read(true, &mut app),
+        "primary seen by the ext manager"
+    );
+
+    let mgr = manager.state.ext_manager.clone().expect("manager");
+    let device = manager.state.ext_device.clone().expect("device");
+    let source = mgr.create_data_source(&manager.qh, "set by the ext manager".to_string());
+    source.offer(TEXT_MIME.to_string());
+    device.set_selection(Some(&source));
+    manager.roundtrip();
+    app.state.clipboard_selection_seen = false;
+    app.state.clipboard_offer = None;
+    app.state.clipboard_offer_mimes.clear();
+    assert_eq!(
+        app.read_clipboard(Some(&mut manager)),
+        "set by the ext manager"
+    );
+}
+
+/// 1Password's Quick Access copies a password, then its window (or helper
+/// process) goes away. The copy carries the password-manager hint format, and
+/// the paste must still work afterwards.
+#[test]
+fn a_password_manager_copy_survives_its_client_disconnecting() {
+    let compositor = Compositor::start();
+    let mut vault = TestClient::new(compositor.connect(), "com.onepassword.OnePassword");
+    vault.map_window(&compositor);
+    let serial = press_ctrl_c(&compositor, &mut vault);
+    let mgr = vault.state.data_manager.clone().expect("data manager");
+    let device = vault.data_device.clone().expect("data device");
+    let source = mgr.create_data_source(&vault.qh, "ssh-ed25519 AAAA-key".to_string());
+    for mime in [TEXT_MIME, "text/plain", "x-kde-passwordManagerHint"] {
+        source.offer(mime.to_string());
+    }
+    device.set_selection(Some(&source), serial);
+    vault.roundtrip();
+    let end = Instant::now() + deadline();
+    while compositor.chrome_paste(false).as_deref() != Some("ssh-ed25519 AAAA-key") {
+        assert!(Instant::now() < end, "the mirror never received the copy");
+        vault.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // No reader pastes in between: the helper exits right after copying.
+    std::thread::sleep(Duration::from_millis(300));
+    vault.pump();
+    drop(source);
+    drop(vault);
+    let mut late = TestClient::new(compositor.connect(), "org.tilo.test.alacritty-after-vault");
+    late.map_window(&compositor);
+    assert_eq!(late.read_clipboard(None), "ssh-ed25519 AAAA-key");
+    assert!(
+        !compositor.full_log().contains("ssh-ed25519"),
+        "the copied secret reached the compositor log"
+    );
+}
+
+/// A Wayland client copies with its key serial and disconnects; a later client
+/// pastes.
+#[test]
+fn a_copy_made_with_a_key_serial_survives_the_client_disconnecting() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.copy-then-exit");
+    app.map_window(&compositor);
+    let serial = press_ctrl_c(&compositor, &mut app);
+    app.copy_with_serial("copied then gone", serial);
+    let end = Instant::now() + deadline();
+    while compositor.chrome_paste(false).as_deref() != Some("copied then gone") {
+        assert!(Instant::now() < end, "the mirror never received the copy");
+        app.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    app.pump();
+    drop(app);
+    let mut late = TestClient::new(compositor.connect(), "org.tilo.test.after-exit");
+    late.map_window(&compositor);
+    assert_eq!(late.read_clipboard(None), "copied then gone");
+}
+
+/// Chromium and Electron offer internal formats next to the text. They can
+/// read back empty; they must not stop the copy from outliving its source.
+#[test]
+fn a_copy_with_an_empty_internal_format_survives_the_client_disconnecting() {
+    let compositor = Compositor::start();
+    let mut app = TestClient::new(compositor.connect(), "org.tilo.test.chromium-like");
+    app.map_window(&compositor);
+    let serial = press_ctrl_c(&compositor, &mut app);
+    let mgr = app.state.data_manager.clone().expect("data manager");
+    let device = app.data_device.clone().expect("data device");
+    let source = mgr.create_data_source(
+        &app.qh,
+        RichSource {
+            html: String::new(),
+            plain: "chromium text".to_string(),
+            held: None,
+        },
+    );
+    source.offer(TEXT_MIME.to_string());
+    source.offer("chromium/x-internal-source-rfh-token".to_string());
+    device.set_selection(Some(&source), serial);
+    app.roundtrip();
+    let end = Instant::now() + deadline();
+    while compositor.chrome_paste(false).as_deref() != Some("chromium text") {
+        assert!(Instant::now() < end, "the mirror never received the copy");
+        app.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    app.pump();
+    drop(source);
+    drop(app);
+    let mut late = TestClient::new(compositor.connect(), "org.tilo.test.after-chromium");
+    late.map_window(&compositor);
+    assert_eq!(late.read_clipboard(None), "chromium text");
+}
+
+/// Closing the focused window gives keyboard focus back to the window that
+/// had it before: the next keystrokes must go somewhere.
+#[test]
+fn closing_a_wayland_window_returns_keyboard_focus_to_the_previous_one() {
+    let compositor = Compositor::start();
+    let mut a = TestClient::new(compositor.connect(), "org.tilo.test.focus-return-a");
+    a.map_window(&compositor);
+    let mut b = TestClient::new(compositor.connect(), "org.tilo.test.focus-return-b");
+    b.map_window(&compositor);
+    a.wait_until(|s| !s.keyboard_focused, "A kept focus when B opened");
+    b.destroy_toplevel();
+    a.wait_until(
+        |s| s.keyboard_focused,
+        "keyboard focus never returned to the window that had it before B closed",
+    );
+}
+
+/// Same, with an X11 window (through satellite) as the one that closes.
+#[test]
+fn closing_an_x11_window_returns_keyboard_focus_to_the_previous_wayland_window() {
+    assert!(
+        Path::new("/usr/bin/xwayland-satellite").is_file(),
+        "xwayland-satellite is not installed, so no X11 path can be tested"
+    );
+    let compositor = Compositor::start_host_desktop();
+    let mut a = TestClient::new(compositor.connect(), "org.tilo.test.focus-return-x11-a");
+    a.map_window(&compositor);
+    let token = compositor.mint_host_launch_activation("org.example.x11-closer", "X11 closer");
+    let (conn, _window) = x11_focused_window(&compositor, &mut a, &token);
+    drop(conn);
+    a.wait_until(
+        |s| s.keyboard_focused,
+        "keyboard focus never returned to the Wayland window after the X11 window closed",
+    );
 }

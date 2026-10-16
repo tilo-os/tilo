@@ -24,16 +24,11 @@ use std::sync::Arc;
 
 use account_custody::icloud::WebICloud;
 use account_custody::{Custodian, OAuthCloud, Registration};
-use automerge::AutoCommit;
-use automerge::transaction::Transactable as _;
 use cloud_source::StaticCredential;
 use fs::cloud::{CloudService, CloudVolume, InProcessLauncher, ServiceConfig};
 use settings::accounts::{AccountKind, AccountRoot};
-use settings::panes::accounts::{
-    AccountViewCommand, AccountsPane, BrowserOpener, REMOVE_CONFIRM_KEY,
-};
+use settings::panes::accounts::{AccountViewCommand, AccountsPane, BrowserOpener};
 use tilo_oauth::fake::FakeAuthorizationServer;
-use ui::widget::Widget as _;
 
 /// Plays the system browser, following redirects back to the loopback
 /// listener.
@@ -205,29 +200,19 @@ fn icloud(root: &AccountRoot) -> Case {
     }
 }
 
-fn command(
-    pane: &mut AccountsPane,
-    commands: &ui::LocalState<Option<AccountViewCommand>>,
-    doc: &mut AutoCommit,
-    command: AccountViewCommand,
-) {
-    commands.set(Some(command));
-    pane.sync(doc, &automerge::ROOT);
+fn command(pane: &mut AccountsPane, command: AccountViewCommand) {
+    pane.command(command);
+    let _ = pane.poll();
 }
 
 /// Connect the account through the Settings pane, as the controls do.
-fn sign_in(
-    case: &Case,
-    pane: &mut AccountsPane,
-    commands: &ui::LocalState<Option<AccountViewCommand>>,
-    doc: &mut AutoCommit,
-) {
-    command(pane, commands, doc, AccountViewCommand::Add(case.kind));
+fn sign_in(case: &Case, pane: &mut AccountsPane) {
+    command(pane, AccountViewCommand::Add(case.kind));
     assert!(pane.sign_in_open());
     if let Some((apple_id, password, _)) = case.icloud {
         pane.set_sign_in_fields_for_test("", "", apple_id, password);
     }
-    command(pane, commands, doc, AccountViewCommand::Submit);
+    command(pane, AccountViewCommand::Submit);
     assert!(
         pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
         "the sign-in step never reported back within the hang bound"
@@ -239,7 +224,7 @@ fn sign_in(
             pane.sign_in_message_for_test()
         );
         pane.set_sign_in_code_for_test(code);
-        command(pane, commands, doc, AccountViewCommand::Submit);
+        command(pane, AccountViewCommand::Submit);
         assert!(
             pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
             "the sign-in step never reported back within the hang bound"
@@ -294,14 +279,11 @@ fn on_server(
 
 fn run(case: &Case, root_dir: &Path, root: &AccountRoot) {
     let home = tempfile::tempdir().unwrap();
-    let commands = ui::LocalState::new(None);
     let mut pane = AccountsPane::in_root(root.clone())
-        .with_command_state(&commands)
         .with_custodian(case.custodian.clone())
         .with_browser_opener(Arc::new(Browser));
-    let mut doc = AutoCommit::new();
 
-    sign_in(case, &mut pane, &commands, &mut doc);
+    sign_in(case, &mut pane);
     let store = root.store();
     let account = store
         .list(&accounts::AccountTypeId::from(case.kind.type_id()))
@@ -331,6 +313,8 @@ fn run(case: &Case, root_dir: &Path, root: &AccountRoot) {
             mounts_root: home.path().join("Remote"),
             state_root: home.path().join("state"),
             refresher: Arc::new(case.custodian.clone()),
+            control_socket: None,
+            file_socket: None,
         },
         Box::new(launcher.clone()),
     );
@@ -369,15 +353,7 @@ fn run(case: &Case, root_dir: &Path, root: &AccountRoot) {
     // Removing the account in Settings unmounts it and drops its cache.
     let state_dir = home.path().join("state");
     assert!(state_dir.read_dir().unwrap().next().is_some());
-    doc.put(
-        &automerge::ROOT,
-        format!("settings.accounts.remove.{}", account.id.as_str()),
-        true,
-    )
-    .unwrap();
-    pane.sync(&mut doc, &automerge::ROOT);
-    doc.put(&automerge::ROOT, REMOVE_CONFIRM_KEY, true).unwrap();
-    pane.sync(&mut doc, &automerge::ROOT);
+    pane.remove(account.id.as_str()).unwrap();
     assert!(
         root.store().get(&account.id).is_none(),
         "removed in Settings"
@@ -445,19 +421,11 @@ fn a_dropbox_code_can_be_pasted_when_every_registered_port_is_taken() {
         .with_provider(OAuthCloud::Dropbox, auth.provider(), registration)
         .with_storage_config(OAuthCloud::Dropbox, serde_json::to_value(config).unwrap());
     let browser = Arc::new(Recorder(std::sync::Mutex::new(Vec::new())));
-    let commands = ui::LocalState::new(None);
     let mut pane = AccountsPane::in_root(root.clone())
-        .with_command_state(&commands)
         .with_custodian(custodian)
         .with_browser_opener(Arc::clone(&browser) as Arc<dyn BrowserOpener>);
-    let mut doc = AutoCommit::new();
-    command(
-        &mut pane,
-        &commands,
-        &mut doc,
-        AccountViewCommand::Add(AccountKind::Dropbox),
-    );
-    command(&mut pane, &commands, &mut doc, AccountViewCommand::Submit);
+    command(&mut pane, AccountViewCommand::Add(AccountKind::Dropbox));
+    command(&mut pane, AccountViewCommand::Submit);
     assert!(pane.sign_in_awaiting_code_for_test());
     let url = browser.0.lock().unwrap()[0].clone();
     assert!(
@@ -467,7 +435,7 @@ fn a_dropbox_code_can_be_pasted_when_every_registered_port_is_taken() {
     // The person reads the code off Dropbox's page and pastes it.
     let code = tilo_oauth::fake::browse(&url).unwrap();
     pane.set_sign_in_code_for_test(&code);
-    command(&mut pane, &commands, &mut doc, AccountViewCommand::Submit);
+    command(&mut pane, AccountViewCommand::Submit);
     assert!(
         pane.finish_sign_in_step_for_test(tilo_test_env::hang_bound()),
         "the sign-in step never reported back within the hang bound"

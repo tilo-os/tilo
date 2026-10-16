@@ -5,11 +5,6 @@ edition = "2024"
 publish.workspace = true
 license.workspace = true
 
-# The history tests include ui-core's shared conformance suite, which takes
-# merges through tilo-automerge; machete does not follow `include!`.
-[package.metadata.cargo-machete]
-ignored = ["tilo-automerge"]
-
 [lib]
 name = "calculator"
 path = "src/lib.rs"
@@ -32,7 +27,6 @@ android = []
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-tilo-actions = { path = "../../crates/collab/actions" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
 serde.workspace = true
@@ -42,7 +36,6 @@ winit.workspace = true
 taffy.workspace = true
 
 [dev-dependencies]
-tilo-automerge.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]

@@ -22,6 +22,8 @@ pub struct Suggestion {
     pub score: f32,
     /// The chip inserts an emoji the word stands for rather than a word.
     pub emoji: bool,
+    /// An explicit personal hint, revalidated before insertion.
+    pub personal: bool,
 }
 
 impl Suggestion {
@@ -30,6 +32,7 @@ impl Suggestion {
             word: word.into(),
             score,
             emoji: false,
+            personal: false,
         }
     }
 
@@ -39,6 +42,16 @@ impl Suggestion {
             word: emoji.into(),
             score: 0.0,
             emoji: true,
+            personal: false,
+        }
+    }
+
+    pub fn personal(word: impl Into<String>) -> Self {
+        Self {
+            word: word.into(),
+            score: 1.0,
+            emoji: false,
+            personal: true,
         }
     }
 }

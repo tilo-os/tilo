@@ -18,17 +18,10 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-# Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-files = { path = "../../crates/platform/tilo-files" }
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
-# TOTP secrets are sealed at rest with XChaCha20-Poly1305 under a key held by
-# Secret Service, DPAPI or an owner-only local file.
-tilo-secret-vault = { path = "../../crates/system/secret-vault" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Tilo resource and action model for replayable account mutations.
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
-tilo-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
@@ -51,16 +44,15 @@ rqrr = { workspace = true, default-features = true }
 image = { workspace = true, features = ["png", "jpeg"] }
 
 # Host-native screenshot/photo selection uses the XDG file portal.
-# `zeroize` clears decrypted vault plaintext and derived HMAC keys.
+# `zeroize` clears derived HMAC keys.
 zeroize.workspace = true
 
 [dev-dependencies]
-# Tests stage key files through the vault's own private-file checks.
-private-fs = { path = "../../crates/system/private-fs" }
 # Render otpauth QR codes in tests to exercise the rqrr decode path.
 qrcode.workspace = true
 image = { workspace = true, features = ["png", "jpeg"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [lints]
 workspace = true

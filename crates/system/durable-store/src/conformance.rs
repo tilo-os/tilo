@@ -3,10 +3,7 @@
 //! the store value) so hosts cannot drift apart on ordering, ownership or
 //! durability.
 #![allow(
-    clippy::panic,
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::missing_panics_doc,
     reason = "a conformance suite reports violations by failing its assertions"
 )]

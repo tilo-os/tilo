@@ -112,7 +112,6 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             development_app_id: text("QUICK_APP_ID"),
             app_name: text("TILO_APP_NAME"),
             workspace_id: text("TILO_WORKSPACE_ID"),
-            cluster_id: text("QUICK_CLUSTER_ID"),
             user_id: text("TILO_USER_ID"),
             presence_handle: text("TILO_PRESENCE_HANDLE"),
             account_name: text("USER"),
@@ -125,6 +124,8 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             user_home: path("TILO_USER_HOME"),
             home: path("HOME"),
             config_home: path("XDG_CONFIG_HOME"),
+            cache_home: path("XDG_CACHE_HOME"),
+            pipeline_seed: path("TILO_PIPELINE_SEED_DIR"),
         },
         accessibility: crate::host::AccessibilityInputs {
             screen_reader: flag(&["TILO_A11Y_SCREEN_READER", "TILO_SCREEN_READER"]),
@@ -141,7 +142,6 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             debug_overlay: crate::env::var_os("TILO_UI_DEBUG").is_some(),
             perf_log: ui_set("TILO_UI_PERF"),
             disable_scroll_fast_path: ui_set("TILO_UI_NO_SCROLL_OPT"),
-            disable_split_cache: ui_set("TILO_UI_NO_SPLIT_CACHE"),
             gpu_timestamps: std::env::var("VELLO_GPU_TIMESTAMPS").is_ok_and(|v| v == "1"),
             gpu_dispatch_timestamps: std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS")
                 .is_ok_and(|v| v == "1"),
@@ -150,6 +150,9 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             presentation_profile: presentation_profile_requested(
                 std::env::var("TILO_PROFILE_PRESENTATION").ok().as_deref(),
                 std::env::var_os("TILO_NATIVE_SCENARIO").as_deref(),
+            ),
+            presentation_timing: presentation_timing_requested(
+                std::env::var("TILO_PROFILE_PRESENTATION").ok().as_deref(),
             ),
             window_no_activate: std::env::var("TILO_PROFILE_WINDOW_NO_ACTIVATE").as_deref()
                 == Ok("1"),
@@ -161,7 +164,14 @@ pub fn process_environment() -> crate::host::HostEnvironment {
         },
         dev_session: path("TILO_DEV_SESSION"),
         ui_graph_dir: path("TILO_UI_GRAPH_DIR"),
+        // `settings_store::SESSION_SETTINGS_ENV`. Empty is unset.
+        session_settings: path("TILO_SESSION_SETTINGS"),
     }
+}
+
+/// Ordinary timing diagnostics require explicit opt-in without a synthetic scenario.
+fn presentation_timing_requested(profile: Option<&str>) -> bool {
+    profile == Some("1")
 }
 
 /// Presentation profiling needs an explicit `profile == "1"` and a native
@@ -208,6 +218,14 @@ impl MediaSessionFactory for super::mpris::DesktopMediaSessions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordinary_presentation_timing_requires_explicit_host_diagnostics() {
+        assert!(presentation_timing_requested(Some("1")));
+        for value in [None, Some(""), Some("0"), Some("true")] {
+            assert!(!presentation_timing_requested(value));
+        }
+    }
 
     #[test]
     fn presentation_profile_requires_a_native_scenario_and_explicit_feedback() {

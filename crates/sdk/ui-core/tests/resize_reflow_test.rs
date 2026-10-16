@@ -12,11 +12,7 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -27,7 +23,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
 use tilo_ui::i18n::I18nManager;
-use tilo_ui::permissions::PermissionContext;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -57,9 +52,9 @@ fn build_tree() -> Box<dyn Widget> {
             .push(Box::new(Text::new("para")))
             .push(Box::new(
                 Row::new()
-                    .push(Box::new(Button::new("b7", "seven", None)))
-                    .push(Box::new(Button::new("b8", "eight", None)))
-                    .push(Box::new(Button::new("b9", "nine", None))),
+                    .push(Box::new(Button::new("b7", "seven")))
+                    .push(Box::new(Button::new("b8", "eight")))
+                    .push(Box::new(Button::new("b9", "nine"))),
             )),
     )
 }
@@ -107,7 +102,6 @@ struct Harness {
     tr: TextRenderer,
     theme: Theme,
     presence: PresenceCtx,
-    perms: PermissionContext,
     scene: Scene,
 }
 
@@ -127,7 +121,6 @@ impl Harness {
             tr: TextRenderer::new(),
             theme,
             presence: PresenceCtx::default(),
-            perms: PermissionContext::permissive(),
             scene: Scene::new(),
         }
     }
@@ -148,13 +141,12 @@ impl Harness {
     /// from the shaped-glyph cache for THIS draw only.
     fn draw(&mut self) -> (u64, u64) {
         self.scene.reset();
-        self.root.draw_with_presence(
+        self.root.draw(
             &mut self.scene,
             Affine::IDENTITY,
             &mut self.tr,
             &self.theme,
             &self.presence,
-            &self.perms,
         );
         let (h, m, _ns) = self.tr.take_shape_stats();
         (h, m)

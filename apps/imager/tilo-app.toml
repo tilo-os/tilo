@@ -1,4 +1,4 @@
-# Disk Imager — Tilo application manifest.
+# Tilo Installer — Tilo application manifest.
 #
 # The sandboxed tapp uses the host file chooser and keeps destructive writing
 # behind the application's allow-gate. Without a narrow raw-device portal the
@@ -9,7 +9,7 @@
 
 [package]
 id       = "so.tilo.imager"
-name     = "Disk Imager"
+name     = "Tilo Installer"
 category = "System"
 version  = "0.1.0"
 kind     = "app"
@@ -18,7 +18,7 @@ platforms = ["linux", "macos"]
 platform-reason = "Installs Tilo: writes OS images to block devices and configures each host OS's bootloader and firmware."
 
 [package.names]
-de = "Laufwerksabbilder"
+de = "Tilo Installer"
 
 [package.isa]
 x86_64 = "v3"
@@ -28,7 +28,10 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["files.paths", "processes"]
-optional = ["files.open", "app-files", "network.http", "threads"]
+optional = ["files.open", "app-files", "network.http", "threads", "open-uri"]
+
+[resources]
+kinds = ["imager.sources"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

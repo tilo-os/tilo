@@ -94,7 +94,7 @@ pub fn ensure_collaboration_identity_for_legacy_linux_host(
 /// because this is a compatibility migration for that section, not a global
 /// settings-document schema version.
 const HOST_INPUT_MIGRATION_VERSION_KEY: &str = "host_input_migration_version";
-const HOST_INPUT_MIGRATION_VERSION: u64 = 4;
+const HOST_INPUT_MIGRATION_VERSION: u64 = 5;
 
 /// Process-global entry point. Resolves the user's XDG config dir from
 /// `$XDG_CONFIG_HOME` (falling back to `$HOME/.config`) and creates
@@ -123,22 +123,60 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 /// Returns an error when the shared settings store cannot persist the imported
 /// values. Missing schemas or unreadable host values are ignored individually.
 pub fn import_host_input_settings() -> Result<(), Box<dyn Error>> {
-    let existing = settings_store::load_section("input");
-    let updates = host_input_migration_updates(&existing, gsettings_get);
-    if updates.is_empty() {
+    use settings_store::hardware::INPUT_SECTION;
+    // Ask the host outside the settings lock: every read starts a process.
+    // The import is then decided again under the lock against the section as
+    // it stands, so a choice saved in the meantime still wins.
+    let mut host = std::collections::HashMap::new();
+    let mut ask_host = |schema: &str, key: &str| {
+        let value = gsettings_get(schema, key);
+        host.insert((schema.to_string(), key.to_string()), value.clone());
+        value
+    };
+    // The layout the machine was installed with stands in for a GNOME
+    // session that lists no sources, as GNOME itself falls back to it.
+    let system = settings_store::keyboard_sources::system_sources();
+    let existing = settings_store::load_section(INPUT_SECTION);
+    if host_input_migration_updates(&existing, &mut ask_host, &system).is_empty() {
         return Ok(());
     }
-    settings_store::update_section("input", updates)?;
-    tracing::info!(
-        version = HOST_INPUT_MIGRATION_VERSION,
-        "firstboot: migrated host input settings"
-    );
+    let mut imported = false;
+    settings_store::update_section_with(
+        INPUT_SECTION,
+        &settings_store::ChangeOrigin::action(HOST_INPUT_IMPORT_ORIGIN),
+        &mut |existing| {
+            let updates = host_input_migration_updates(
+                existing,
+                |schema, key| {
+                    host.get(&(schema.to_string(), key.to_string()))
+                        .cloned()
+                        .flatten()
+                },
+                &system,
+            );
+            imported = !updates.is_empty();
+            updates
+        },
+    )?;
+    if imported {
+        tracing::info!(
+            version = HOST_INPUT_MIGRATION_VERSION,
+            "firstboot: migrated host input settings"
+        );
+    }
     Ok(())
 }
 
+/// The change origin the host input import records.
+const HOST_INPUT_IMPORT_ORIGIN: &str = "firstboot.import-host-input";
+
+/// What the import adds to `existing`: host values read through `read`
+/// (`gsettings get`), with `system` (the machine's keyboard layouts) used
+/// when the host names no keyboard sources.
 fn host_input_migration_updates(
     existing: &serde_json::Map<String, serde_json::Value>,
     mut read: impl FnMut(&str, &str) -> Option<String>,
+    system: &[String],
 ) -> serde_json::Map<String, serde_json::Value> {
     if existing
         .get(HOST_INPUT_MIGRATION_VERSION_KEY)
@@ -154,7 +192,7 @@ fn host_input_migration_updates(
         host_read_succeeded |= value.is_some();
         value
     };
-    let mut updates = host_keyboard_updates(existing, &mut tracked_read);
+    let mut updates = host_keyboard_updates(existing, &mut tracked_read, system);
     updates.extend(host_pointer_updates(existing, &mut tracked_read));
     updates.extend(host_key_repeat_updates(existing, &mut tracked_read));
 
@@ -191,8 +229,9 @@ fn host_input_settings_complete(existing: &serde_json::Map<String, serde_json::V
 fn host_keyboard_updates(
     existing: &serde_json::Map<String, serde_json::Value>,
     read: &mut impl FnMut(&str, &str) -> Option<String>,
+    system: &[String],
 ) -> serde_json::Map<String, serde_json::Value> {
-    let mut input = host_layout_updates(existing, read);
+    let mut input = host_layout_updates(existing, read, system);
     // The same whole-section writers store `compose_key: null`, meaning "no
     // compose key chosen", so null is as unowned as absent.
     if existing
@@ -206,15 +245,23 @@ fn host_keyboard_updates(
     input
 }
 
+/// The host's keyboard sources: GNOME's list, else the machine's layouts
+/// (`XKB_DEFAULT_*`, localed). Without either the section stays unset and
+/// the compositor follows the machine at runtime.
 fn host_layout_updates(
     existing: &serde_json::Map<String, serde_json::Value>,
     read: &mut impl FnMut(&str, &str) -> Option<String>,
+    system: &[String],
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut input = serde_json::Map::new();
-    let Some(raw_sources) = read("org.gnome.desktop.input-sources", "sources") else {
-        return input;
+    let gnome = read("org.gnome.desktop.input-sources", "sources")
+        .map(|raw| parse_gnome_xkb_sources(&raw))
+        .unwrap_or_default();
+    let source_ids = if gnome.is_empty() {
+        system.to_vec()
+    } else {
+        gnome
     };
-    let source_ids = parse_gnome_xkb_sources(&raw_sources);
     let Some(active) = source_ids.first() else {
         return input;
     };
@@ -424,7 +471,7 @@ pub fn run_with_env(
 /// Compute the tilo-desktop config dir (`<config-base>/tilo-desktop`) following the same XDG fallback rules the peer-sync marker uses.
 fn resolve_config_dir(xdg_config_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
     Some(
-        xdg_paths::xdg::Base::Config
+        tilo_paths::xdg::Base::Config
             .resolve_from(xdg_config_home, home)?
             .join("tilo-desktop"),
     )
@@ -439,6 +486,76 @@ fn ensure_dirs(config_dir: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    /// The import on a machine that names no keyboard layout of its own.
+    fn migration_updates(
+        existing: &serde_json::Map<String, serde_json::Value>,
+        read: impl FnMut(&str, &str) -> Option<String>,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        host_input_migration_updates(existing, read, &[])
+    }
+
+    fn keyboard_updates(
+        existing: &serde_json::Map<String, serde_json::Value>,
+        read: &mut impl FnMut(&str, &str) -> Option<String>,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        host_keyboard_updates(existing, read, &[])
+    }
+
+    #[test]
+    fn the_machine_layout_seeds_an_unset_or_unowned_us_keyboard() {
+        let system = ["de:nodeadkeys".to_string()];
+        let gnome_has_none = |schema: &str, key: &str| match (schema, key) {
+            ("org.gnome.desktop.input-sources", "sources") => Some("@a(ss) []".into()),
+            _ => None,
+        };
+        // A fresh section, GNOME listing nothing: the installed layout.
+        let seeded = host_input_migration_updates(&serde_json::Map::new(), gnome_has_none, &system);
+        assert_eq!(
+            seeded.get("keyboard_layout"),
+            Some(&serde_json::json!("de:nodeadkeys"))
+        );
+        assert_eq!(
+            seeded.get("keyboard_layouts"),
+            Some(&serde_json::json!(["de:nodeadkeys"]))
+        );
+        // Version four already ran but left the whole-section writers' `us`.
+        let stale = serde_json::Map::from_iter([
+            ("keyboard_layout".into(), serde_json::json!("us")),
+            ("keyboard_layouts".into(), serde_json::json!(["us"])),
+            (
+                HOST_INPUT_MIGRATION_VERSION_KEY.into(),
+                serde_json::json!(4),
+            ),
+        ]);
+        let repaired = host_input_migration_updates(&stale, |_, _| None, &system);
+        assert_eq!(
+            repaired.get("keyboard_layouts"),
+            Some(&serde_json::json!(["de:nodeadkeys"]))
+        );
+        // GNOME's own list still wins over the machine's.
+        let gnome = host_input_migration_updates(
+            &serde_json::Map::new(),
+            |schema, key| {
+                (schema == "org.gnome.desktop.input-sources" && key == "sources")
+                    .then(|| "[('xkb', 'fr')]".into())
+            },
+            &system,
+        );
+        assert_eq!(
+            gnome.get("keyboard_layouts"),
+            Some(&serde_json::json!(["fr"]))
+        );
+        // A layout the person chose is never replaced.
+        let chosen = serde_json::Map::from_iter([
+            ("keyboard_layout".into(), serde_json::json!("us")),
+            ("keyboard_layouts".into(), serde_json::json!(["us", "fr"])),
+        ]);
+        assert!(
+            !host_input_migration_updates(&chosen, |_, _| None, &system)
+                .contains_key("keyboard_layouts")
+        );
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -452,20 +569,14 @@ mod tests {
             assert_eq!(host_pointer_speed(1.0), 1.0);
             assert_eq!(host_pointer_speed(4.0), 1.0);
         }
-        // Phase `host_input_migration_splits_legacy_scroll_and_is_idempotent`.
+        // Phase `host_input_migration_imports_per_device_scroll_and_is_idempotent`.
         {
-            let legacy =
-                serde_json::Map::from_iter([("natural_scroll".into(), serde_json::json!(true))]);
-            let updates =
-                host_input_migration_updates(&legacy, |schema, key| match (schema, key) {
-                    ("org.gnome.desktop.peripherals.touchpad", "natural-scroll") => {
-                        Some("true".into())
-                    }
-                    ("org.gnome.desktop.peripherals.mouse", "natural-scroll") => {
-                        Some("false".into())
-                    }
-                    _ => None,
-                });
+            let existing = serde_json::Map::new();
+            let updates = migration_updates(&existing, |schema, key| match (schema, key) {
+                ("org.gnome.desktop.peripherals.touchpad", "natural-scroll") => Some("true".into()),
+                ("org.gnome.desktop.peripherals.mouse", "natural-scroll") => Some("false".into()),
+                _ => None,
+            });
             assert_eq!(
                 updates.get("touchpad_natural_scroll"),
                 Some(&serde_json::json!(true))
@@ -479,12 +590,9 @@ mod tests {
                 Some(&serde_json::json!(HOST_INPUT_MIGRATION_VERSION))
             );
 
-            let mut migrated = legacy;
+            let mut migrated = existing;
             migrated.extend(updates);
-            assert!(
-                host_input_migration_updates(&migrated, |_, _| panic!("must not read twice"))
-                    .is_empty()
-            );
+            assert!(migration_updates(&migrated, |_, _| panic!("must not read twice")).is_empty());
         }
         // Phase `host_pointer_import_keeps_device_classes_independent`.
         {
@@ -520,7 +628,7 @@ mod tests {
                 ("mouse_natural_scroll".into(), serde_json::json!(true)),
                 ("touchpad_pointer_speed".into(), serde_json::json!(0.8)),
             ]);
-            let updates = host_input_migration_updates(&existing, |_, key| match key {
+            let updates = migration_updates(&existing, |_, key| match key {
                 "natural-scroll" => Some("true".into()),
                 "speed" => Some("-0.5".into()),
                 _ => None,
@@ -543,7 +651,7 @@ mod tests {
                     serde_json::json!(2),
                 ),
             ]);
-            let repaired = host_input_migration_updates(&stale, |schema, key| {
+            let repaired = migration_updates(&stale, |schema, key| {
                 (schema == "org.gnome.desktop.input-sources" && key == "sources")
                     .then(|| "[('xkb', 'de+nodeadkeys')]".into())
             });
@@ -569,7 +677,7 @@ mod tests {
                     serde_json::json!(3),
                 ),
             ]);
-            let repaired = host_input_migration_updates(&null_compose, |schema, key| {
+            let repaired = migration_updates(&null_compose, |schema, key| {
                 (schema == "org.gnome.desktop.input-sources" && key == "xkb-options")
                     .then(|| "['compose:rwin']".into())
             });
@@ -590,7 +698,7 @@ mod tests {
                     serde_json::json!(2),
                 ),
             ]);
-            let preserved = host_input_migration_updates(&explicit, |schema, key| {
+            let preserved = migration_updates(&explicit, |schema, key| {
                 (schema == "org.gnome.desktop.input-sources" && key == "sources")
                     .then(|| "[('xkb', 'de+nodeadkeys')]".into())
             });
@@ -605,16 +713,15 @@ mod tests {
                 ("compose_key".into(), serde_json::Value::Null),
                 ("key_repeat".into(), serde_json::json!(0.5)),
             ]);
-            let imported =
-                host_input_migration_updates(&defaults, |schema, key| match (schema, key) {
-                    ("org.gnome.desktop.input-sources", "sources") => {
-                        Some("[('xkb', 'de+nodeadkeys')]".into())
-                    }
-                    ("org.gnome.desktop.input-sources", "xkb-options") => {
-                        Some("['compose:rwin']".into())
-                    }
-                    _ => None,
-                });
+            let imported = migration_updates(&defaults, |schema, key| match (schema, key) {
+                ("org.gnome.desktop.input-sources", "sources") => {
+                    Some("[('xkb', 'de+nodeadkeys')]".into())
+                }
+                ("org.gnome.desktop.input-sources", "xkb-options") => {
+                    Some("['compose:rwin']".into())
+                }
+                _ => None,
+            });
             assert_eq!(
                 imported.get("keyboard_layouts"),
                 Some(&serde_json::json!(["de:nodeadkeys"]))
@@ -636,7 +743,7 @@ mod tests {
         // Phase `host_keyboard_import_is_complete_and_never_overwrites_tilo_choices`.
         {
             let empty = serde_json::Map::new();
-            let imported = host_keyboard_updates(&empty, &mut |_, key| match key {
+            let imported = keyboard_updates(&empty, &mut |_, key| match key {
                 "sources" => Some("[('xkb', 'de+nodeadkeys'), ('xkb', 'us')]".into()),
                 "xkb-options" => Some("['compose:rwin']".into()),
                 _ => None,
@@ -659,23 +766,20 @@ mod tests {
                 ("compose_key".into(), serde_json::json!("caps")),
             ]);
             assert!(
-                host_keyboard_updates(&existing, &mut |_, _| Some("[('xkb', 'de')]".into()))
-                    .is_empty(),
+                keyboard_updates(&existing, &mut |_, _| Some("[('xkb', 'de')]".into())).is_empty(),
                 "an existing Tilo keyboard selection must win as one coherent preference"
             );
         }
         // Phase `host_repeat_import_preserves_exact_values_and_disabled_state`.
         {
             let enabled =
-                host_input_migration_updates(&serde_json::Map::new(), |schema, key| {
-                    match (schema, key) {
-                        ("org.gnome.desktop.peripherals.keyboard", "repeat") => Some("true".into()),
-                        ("org.gnome.desktop.peripherals.keyboard", "delay") => Some("300".into()),
-                        ("org.gnome.desktop.peripherals.keyboard", "repeat-interval") => {
-                            Some("25".into())
-                        }
-                        _ => None,
+                migration_updates(&serde_json::Map::new(), |schema, key| match (schema, key) {
+                    ("org.gnome.desktop.peripherals.keyboard", "repeat") => Some("true".into()),
+                    ("org.gnome.desktop.peripherals.keyboard", "delay") => Some("300".into()),
+                    ("org.gnome.desktop.peripherals.keyboard", "repeat-interval") => {
+                        Some("25".into())
                     }
+                    _ => None,
                 });
             assert_eq!(
                 enabled.get("key_repeat_delay_ms"),
@@ -686,7 +790,7 @@ mod tests {
                 Some(&serde_json::json!(40))
             );
 
-            let disabled = host_input_migration_updates(&serde_json::Map::new(), |schema, key| {
+            let disabled = migration_updates(&serde_json::Map::new(), |schema, key| {
                 (schema == "org.gnome.desktop.peripherals.keyboard" && key == "repeat")
                     .then(|| "false".into())
             });
@@ -698,10 +802,10 @@ mod tests {
         // Phase `unavailable_host_settings_are_retried_instead_of_marked_complete`.
         {
             let existing = serde_json::Map::new();
-            let unavailable = host_input_migration_updates(&existing, |_, _| None);
+            let unavailable = migration_updates(&existing, |_, _| None);
             assert!(unavailable.is_empty());
 
-            let retried = host_input_migration_updates(&existing, |schema, key| {
+            let retried = migration_updates(&existing, |schema, key| {
                 (schema == "org.gnome.desktop.input-sources" && key == "sources")
                     .then(|| "[('xkb', 'de+nodeadkeys')]".into())
             });

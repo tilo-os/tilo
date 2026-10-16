@@ -19,7 +19,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
@@ -49,7 +49,6 @@ jobs:
           - arch: aarch64
             runner: runner-arm64
     env:
-      CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '4'
       CARGO_TERM_COLOR: never
@@ -82,7 +81,7 @@ jobs:
           cmp "target/verifier-bundle/$VERIFIER_ARCH.tar.gz" "target/verifier-repeat/$VERIFIER_ARCH.tar.gz"
           cmp "target/verifier-bundle/$VERIFIER_ARCH.tar.descriptor.json" "target/verifier-repeat/$VERIFIER_ARCH.tar.descriptor.json"
       - name: Retain unpublished platform bundle and descriptor
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: canonical-verifiers-${{ matrix.arch }}-${{ github.sha }}
           if-no-files-found: error

@@ -8,7 +8,6 @@
 //! ([`tilo_seal::Label::ChannelMlsState`]) holding the `OpenMLS` provider
 //! storage, signer, group id, epoch and the member's content keyring.
 
-use std::fs;
 use std::path::Path;
 
 use openmls::prelude::{GroupId, MlsGroup, SignatureScheme};
@@ -25,6 +24,14 @@ use crate::{ChannelGroup, Error, Result};
 
 const STATE_VERSION: u8 = 2;
 const MAX_SEALED_STATE: u64 = 64 * 1024 * 1024;
+
+/// The sealed state at `path`, refused beyond [`MAX_SEALED_STATE`].
+fn read_sealed(path: &Path) -> Result<Vec<u8>> {
+    let too_large = Error::InvalidState("sealed state exceeds 64 MiB".into());
+    tilo_files::native::bounded::read_or(path, MAX_SEALED_STATE, too_large)?
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound).into())
+}
+
 /// Record bound into every state envelope, so the file cannot be swapped
 /// with another sealed value under the same vault key.
 const STATE_RECORD: &[u8] = b"channel-crypto/member-state";
@@ -106,12 +113,28 @@ impl ChannelGroup {
     ///
     /// Returns an explicit serialization, encryption, lock, or I/O error.
     pub fn save_sealed(&self, path: &Path, key: &VaultKey) -> Result<()> {
+        let sealed = self.seal(key)?;
+        tilo_files::native::atomic::write_private(path, &sealed).map_err(Error::Io)
+    }
+
+    /// This group's state sealed under `key`, as [`Self::save_sealed`]
+    /// writes it, for a store that is not a file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an explicit serialization or encryption error.
+    pub fn seal(&self, key: &VaultKey) -> Result<Vec<u8>> {
         let mut state = self.snapshot()?;
         let encoded = postcard::to_allocvec(&state);
         state.zeroize_secret_material();
         let plaintext =
             Zeroizing::new(encoded.map_err(|error| Error::Serialization(error.to_string()))?);
-        write_sealed(path, key, STATE_RECORD, &plaintext)
+        tilo_seal::envelope::seal(
+            &key.0,
+            Context::new(Label::ChannelMlsState, STATE_RECORD),
+            &plaintext,
+        )
+        .map_err(|_| Error::StateCrypto("state encryption failed"))
     }
 
     fn snapshot(&self) -> Result<StateV2> {
@@ -152,15 +175,23 @@ impl ChannelGroup {
     /// Returns an explicit authentication, decoding, consistency, or I/O
     /// error. It never substitutes a new group.
     pub fn load_sealed(path: &Path, key: &VaultKey) -> Result<Self> {
-        let metadata = fs::metadata(path)?;
-        if metadata.len() > MAX_SEALED_STATE {
+        Self::open_sealed(&read_sealed(path)?, key)
+    }
+
+    /// Restore a group from what [`Self::seal`] produced, with the checks of
+    /// [`Self::load_sealed`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::load_sealed`].
+    pub fn open_sealed(sealed: &[u8], key: &VaultKey) -> Result<Self> {
+        if u64::try_from(sealed.len()).unwrap_or(u64::MAX) > MAX_SEALED_STATE {
             return Err(Error::InvalidState("sealed state exceeds 64 MiB".into()));
         }
-        let bytes = fs::read(path)?;
         let plaintext = tilo_seal::envelope::open(
             &key.0,
             Context::new(Label::ChannelMlsState, STATE_RECORD),
-            &bytes,
+            sealed,
         )
         .map_err(|_| Error::StateCrypto("state authentication failed"))?;
         let state: StateV2 = postcard::from_bytes(&plaintext)
@@ -315,14 +346,11 @@ impl MemberRecordWire {
 impl MemberRecord {
     pub(crate) fn save_sealed(&self, path: &Path, key: &VaultKey) -> Result<()> {
         let sealed = self.seal(key)?;
-        atomic_file::write_private(path, &sealed).map_err(Error::Io)
+        tilo_files::native::atomic::write_private(path, &sealed).map_err(Error::Io)
     }
 
     pub(crate) fn load_sealed(path: &Path, key: &VaultKey) -> Result<Self> {
-        if fs::metadata(path)?.len() > MAX_SEALED_STATE {
-            return Err(Error::InvalidState("sealed state exceeds 64 MiB".into()));
-        }
-        Self::open_sealed(&fs::read(path)?, key)
+        Self::open_sealed(&read_sealed(path)?, key)
     }
 
     /// This record sealed under `key`, as [`Self::save_sealed`] writes it.
@@ -396,14 +424,4 @@ impl MemberRecord {
             MemberRecordWire::Removed => Ok(Self::Removed),
         }
     }
-}
-
-fn write_sealed(path: &Path, key: &VaultKey, record: &[u8], plaintext: &[u8]) -> Result<()> {
-    let sealed = tilo_seal::envelope::seal(
-        &key.0,
-        Context::new(Label::ChannelMlsState, record),
-        plaintext,
-    )
-    .map_err(|_| Error::StateCrypto("state encryption failed"))?;
-    atomic_file::write_private(path, &sealed).map_err(Error::Io)
 }

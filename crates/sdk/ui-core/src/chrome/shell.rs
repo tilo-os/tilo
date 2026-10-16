@@ -7,22 +7,13 @@
 //! without a per-theme branch.
 
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Shape};
+use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, RoundedRectRadii, Shape};
 use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
 
 use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
 use crate::tokens::Colors;
 use crate::tokens::colors::HAIRLINE_MIN_DELTA;
-
-/// Opacity shared by every [`ChromeRole::Bar`] and [`ChromeRole::Panel`]
-/// surface — kept opaque because nothing here can blur a *backdrop* (vello
-/// only blurs shapes), so translucency is just contrast loss that varies
-/// with what's behind it: on the light palette the quick-settings panel
-/// measured `#ffffff` over a window and `#f7f7f7` over the desktop, one
-/// surface reading as two colours. Depth instead comes from the modal
-/// scrim, [`panel_ground`]/[`panel_border`], and the `e4` shadow.
-pub const CHROME_SURFACE_ALPHA: f32 = 1.0;
 
 /// Alpha of the hairline that gives a lifted control a defined edge.
 pub const HAIRLINE_ALPHA: u8 = 26;
@@ -82,22 +73,23 @@ impl ChromeRole {
         let radii = &theme.tokens.radii;
         match self {
             ChromeRole::Bar => 0.0,
-            ChromeRole::Panel | ChromeRole::Object => f64::from(radii.xl),
-            ChromeRole::Control => f64::from(radii.lg),
+            ChromeRole::Panel => f64::from(radii.panel),
+            ChromeRole::Object => f64::from(radii.tile),
+            ChromeRole::Control => f64::from(radii.control),
             ChromeRole::Selector => (height / 2.0).max(0.0),
         }
     }
 
-    /// Surface colour at chrome opacity where the role is translucent.
-    /// Reads the *semantic* surface tokens, never a ramp slot, so it
-    /// survives a theme whose author never saw this code.
+    /// The role's opaque surface colour. Reads the *semantic* surface
+    /// tokens, never a ramp slot, so it survives a theme whose author never
+    /// saw this code. A Panel's body is painted in the floating material
+    /// ([`crate::floating_surface::paint_material`]); this is the colour
+    /// that material tints with, and what it is where blur is unavailable.
     pub fn surface(self, theme: &Theme) -> Color {
         let colors = &theme.tokens.colors;
         match self {
-            ChromeRole::Bar | ChromeRole::Panel => {
-                panel_ground(theme).with_alpha_factor(CHROME_SURFACE_ALPHA)
-            }
-            ChromeRole::Object => colors.surfaces.window_card,
+            ChromeRole::Bar | ChromeRole::Panel => panel_ground(theme),
+            ChromeRole::Object => colors.surfaces.content,
             // Body is state: see `selection_tier`.
             ChromeRole::Control | ChromeRole::Selector => Color::TRANSPARENT,
         }
@@ -143,6 +135,26 @@ pub struct SelectionTier {
     pub scale: f64,
 }
 
+impl SelectionTier {
+    /// Paint this tier on `rect` rounded by `radius`: the fill unless it is
+    /// transparent, the border on the edge, and the inner glow one pixel
+    /// inside it.
+    pub fn paint(&self, scene: &mut Scene, transform: Affine, rect: Rect, radius: f64) {
+        let shape = RoundedRect::from_rect(rect, radius);
+        if self.fill.components[3] > 0.0 {
+            scene.fill(Fill::NonZero, transform, self.fill, None, &shape);
+        }
+        let hairline = vello::kurbo::Stroke::new(1.0);
+        if let Some(border) = self.border {
+            scene.stroke(&hairline, transform, border, None, &shape);
+        }
+        if let Some(glow) = self.inner_glow {
+            let inner = RoundedRect::from_rect(rect.inset(-1.0), (radius - 1.0).max(0.0));
+            scene.stroke(&hairline, transform, glow, None, &inner);
+        }
+    }
+}
+
 /// Resolve one control's appearance. **This is the only way the shell
 /// expresses "which one is chosen"** — active tab, active workspace,
 /// active strip, selected row, chosen scope chip, current power profile.
@@ -184,28 +196,31 @@ pub fn selection_tier(theme: &Theme, state: SelectionState) -> SelectionTier {
     }
 }
 
-/// Alpha ladder a lift walks when the base lift does not register on the
-/// ground a control actually sits on. The first step is the control
-/// hairline; the ladder only climbs where the ground is itself a wash of
-/// the same magnitude (a dark `panel_ground`, a near-black high-contrast
-/// base).
-pub const LIFT_ALPHA_STEPS: &[u8] = &[26, 40, 56, 72, 92, 120, 150];
+/// Smallest OKLCH lightness step between a selected row and the ground it
+/// stands on for the selection to read. Lightness, not relative
+/// luminance: luminance compresses at the dark end, where a perfectly
+/// visible step measures under a light-theme threshold.
+pub const SELECTION_MIN_STEP: f32 = 0.06;
+
+/// Where the rest face of a control with its own floor sits on the ramp
+/// [`selection_floor_ramp`] walks from the ground.
+pub const FLOOR_IDLE_T: f32 = 0.35;
+/// Where its hovered face sits.
+pub const FLOOR_HOVER_T: f32 = 0.65;
 
 /// [`selection_tier`] for a control that sits on `ground` rather than on
-/// `surfaces.base` — a menu row on [`panel_ground`], a list row on a
-/// raised sidebar, a card on a sheet. The lift is measured against that
-/// ground: the base lift is kept where it registers there, so every chosen
-/// control stays in one family, and otherwise the tier walks
-/// [`LIFT_ALPHA_STEPS`] until it does. Hover is halfway from the ground to
-/// the active fill, as it is on the base.
+/// `surfaces.base`: a list row on a sidebar, a menu row on
+/// [`panel_ground`], a card on a sheet. The active fill is one surface
+/// step of that ground ([`Colors::lift_on`]) and hover is half a step, so
+/// a selection is the same lift on every ground, including a raised or
+/// white one where a lift of the desktop would vanish into it.
 pub fn selection_tier_on(theme: &Theme, state: SelectionState, ground: Color) -> SelectionTier {
     let colors = &theme.tokens.colors;
     let lifted = state.active || state.pressed;
-    let active = lift_on(colors, ground);
     let fill = if lifted {
-        active
+        colors.lift_on(ground, 1.0)
     } else if state.hover {
-        crate::tokens::colors::mix8(ground, active, HOVER_LIFT_T)
+        colors.lift_on(ground, HOVER_LIFT_T)
     } else {
         Color::TRANSPARENT
     };
@@ -217,24 +232,121 @@ pub fn selection_tier_on(theme: &Theme, state: SelectionState, ground: Color) ->
     }
 }
 
-/// The active-tier fill on `ground`: `Colors::lift(1.0)` where that clears
-/// the ground by the hairline threshold, else the first ladder step that does.
-fn lift_on(colors: &Colors, ground: Color) -> Color {
-    use crate::a11y::relative_luminance;
-    let registers =
-        |c: Color| (relative_luminance(c) - relative_luminance(ground)).abs() >= HAIRLINE_MIN_DELTA;
-    let base_lift = colors.lift(1.0);
-    if registers(base_lift) {
-        return base_lift;
+/// How far a row's hover and selection lift, and a zebra stripe, bleed past
+/// the column's content edge on each side (`s2`).
+///
+/// One edge rule holds for every content list: a row's text, a section's
+/// title, a property list's labels and a table's first column all start on
+/// the column's content edge, and the lift stands `row_bleed` outside it, so
+/// text never moves when its row is selected and a list lines up with the
+/// headings around it. A face takes the row's outer rect (the content edge
+/// grown by the bleed); a retained row grows its own layout box by it.
+pub fn row_bleed(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.s2)
+}
+
+/// The content edge of a window's overview or content column, from the
+/// column's leading edge: where the shell starts the column's header title,
+/// and so where the column's rows, headings and fields start their text.
+/// A list painted edge to edge in a column puts its rows' outer rects at
+/// `column_gutter - row_bleed`.
+pub fn column_gutter(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.rhythm.group)
+}
+
+/// Paint the selection of one row of a list: the hover or active lift of
+/// `ground` ([`selection_tier_on`]) on `rect` with the item radius
+/// (`radii.item`), and nothing for an idle row. A row is a lift with
+/// primary ink and nothing else: no hue, no border, no leading bar.
+///
+/// `rect` is the row's outer rect: the column's content edge grown by
+/// [`row_bleed`]. `NavList`, `TreeView`, [`super::paint_nav_row`], `ListRow`,
+/// `VirtualList` and `DataTable` all paint through here, and a painted app's
+/// own rows do too.
+pub fn paint_row_selection(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    state: SelectionState,
+    ground: Color,
+    theme: &Theme,
+) {
+    paint_row_selection_joined(scene, transform, rect, state, ground, theme, RowJoin::NONE);
+}
+
+/// Which neighbours of a selected row are selected too. A run of selected
+/// rows reads as one lift: the corners where two lifted rows meet are
+/// square, so the run has no notch between its rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RowJoin {
+    /// The row above is lifted too.
+    pub above: bool,
+    /// The row below is lifted too.
+    pub below: bool,
+}
+
+impl RowJoin {
+    pub const NONE: Self = Self {
+        above: false,
+        below: false,
+    };
+
+    pub fn new(above: bool, below: bool) -> Self {
+        Self { above, below }
     }
-    let mut last = base_lift;
-    for alpha in LIFT_ALPHA_STEPS {
-        last = crate::tokens::colors::composite(Colors::hairline_on(ground, *alpha), ground);
-        if registers(last) {
-            return last;
-        }
+}
+
+/// [`paint_row_selection`] for a row inside a run of selected rows: the
+/// corners shared with a lifted neighbour are square, so adjacent selected
+/// rows join into one lift (a multi-selection in a mail list).
+pub fn paint_row_selection_joined(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    state: SelectionState,
+    ground: Color,
+    theme: &Theme,
+    join: RowJoin,
+) {
+    if !(state.active || state.pressed || state.hover) || rect.width() <= 0.0 {
+        return;
     }
-    last
+    let fill = selection_tier_on(theme, state, ground).fill;
+    let radius = f64::from(theme.tokens.radii.item).min(rect.height() / 2.0);
+    let top = if join.above { 0.0 } else { radius };
+    let bottom = if join.below { 0.0 } else { radius };
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        fill,
+        None,
+        &RoundedRect::from_rect(
+            rect,
+            vello::kurbo::RoundedRectRadii::new(top, top, bottom, bottom),
+        ),
+    );
+}
+
+/// The face of a control that has its own floor (a filled rest face rather
+/// than a transparent one), for `state`, standing on `ground`: one ordered
+/// ramp from the ground, so rest, hover and active are each further from
+/// the ground than the last on every material, and no state mixes a floor
+/// with the transparent tier.
+pub fn selection_floor_ramp(theme: &Theme, state: SelectionState, ground: Color) -> Color {
+    let t = if state.active || state.pressed {
+        1.0
+    } else if state.hover {
+        FLOOR_HOVER_T
+    } else {
+        FLOOR_IDLE_T
+    };
+    theme.tokens.colors.lift_on(ground, t)
+}
+
+/// OKLCH lightness distance between two colours.
+pub fn lightness_step(a: Color, b: Color) -> f32 {
+    use crate::color::Oklch;
+    (Oklch::from_color(a).l - Oklch::from_color(b).l).abs()
 }
 
 // ---------- glass ----------
@@ -493,7 +605,7 @@ pub fn panel_ground(theme: &Theme) -> Color {
     let colors = &theme.tokens.colors;
     let base = colors.surfaces.base;
     let declared = colors.surfaces.overlay;
-    let grounds = [base, colors.surfaces.window_card];
+    let grounds = [base, colors.surfaces.content];
     let clears = |c: Color| {
         grounds
             .iter()
@@ -546,7 +658,7 @@ pub fn panel_shadow(
     if intensity <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    let e = &theme.tokens.elevation.e4;
+    let e = &theme.tokens.elevation.floating;
     // The visible falloff ends about 2.5 standard deviations out; the ring
     // is given a little more than that so nothing is clipped mid-ramp.
     let reach = crate::surface::std_dev_for(e.blur) * 3.0 + f64::from(e.offset_y);
@@ -566,6 +678,31 @@ pub fn panel_shadow(
     token.color = token.color.with_alpha_factor(intensity.clamp(0.0, 1.0));
     crate::surface::shadow(scene, transform, rect, radius, &token);
     scene.pop_layer();
+}
+
+/// Paint a floating [`ChromeRole::Panel`] body: its shadow at
+/// `shadow_intensity`, the [`panel_ground`] fill and the 1 px
+/// [`panel_border`], all at the Panel radius. Returns the body's outline
+/// for callers that clip their content to it.
+pub fn paint_panel(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    theme: &Theme,
+    shadow_intensity: f32,
+) -> RoundedRect {
+    let radius = ChromeRole::Panel.radius(theme, rect.height());
+    panel_shadow(scene, transform, rect, radius, theme, shadow_intensity);
+    let body = RoundedRect::from_rect(rect, radius);
+    scene.fill(Fill::NonZero, transform, panel_ground(theme), None, &body);
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        panel_border(theme),
+        None,
+        &body,
+    );
+    body
 }
 
 /// A separator or edge drawn on a chrome surface. Derived against the
@@ -653,27 +790,39 @@ pub fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f3
 /// Must mirror the shader: soft light against black is `Cb²` (W3C
 /// compositing) composited `lerp(Cb, Cb², αs)`, then an ordinary
 /// source-over of the theme's scrim hue for the level stage.
+pub fn scrim_maps(value: u8, strength: f32, theme: &Theme) -> u8 {
+    let hue = theme.tokens.colors.surfaces.scrim.to_rgba8();
+    // The scrim hue is a near-neutral by construction, so its own relative
+    // luminance is the proxy for "the grey it adds".
+    let hue_grey =
+        (0.2126 * f64::from(hue.r) + 0.7152 * f64::from(hue.g) + 0.0722 * f64::from(hue.b)) / 255.0;
+    scrim_value(f64::from(value) / 255.0, strength, hue_grey)
+}
+
+/// What [`fill_scrim`] does to one 8-bit channel behind it, given that
+/// channel of the scrim hue: the same tone and level stages, for a host
+/// that composites a scrim on the CPU (a cached frame) instead of through
+/// the shader.
+#[must_use]
+pub fn scrim_channel(value: u8, strength: f32, hue: u8) -> u8 {
+    scrim_value(f64::from(value) / 255.0, strength, f64::from(hue) / 255.0)
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "explicitly clamped to 0.0..=1.0 immediately before the *255.0 scale, \
               so the final value is always within 0..=255"
 )]
-pub fn scrim_maps(value: u8, strength: f32, theme: &Theme) -> u8 {
+fn scrim_value(v: f64, strength: f32, hue: f64) -> u8 {
     let strength = f64::from(strength.clamp(0.0, 1.0));
-    let v = f64::from(value) / 255.0;
     let tone = (strength * 255.0).round().clamp(0.0, 255.0) / 255.0;
     let toned = v * (1.0 - tone) + v * v * tone;
     let level = (strength * f64::from(SCRIM_LEVEL_SHARE) * 255.0)
         .round()
         .clamp(0.0, 255.0)
         / 255.0;
-    let hue = theme.tokens.colors.surfaces.scrim.to_rgba8();
-    // The scrim hue is a near-neutral by construction, so its own relative
-    // luminance is the proxy for "the grey it adds".
-    let hue_grey =
-        (0.2126 * f64::from(hue.r) + 0.7152 * f64::from(hue.g) + 0.0722 * f64::from(hue.b)) / 255.0;
-    let out = toned * (1.0 - level) + hue_grey * level;
+    let out = toned * (1.0 - level) + hue * level;
     (out.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
@@ -846,24 +995,24 @@ mod tests {
     #[test]
     fn selection_tiers_register_progressively_without_the_accent() {
         // Case `selection_tier_on_registers_on_every_ground_it_is_asked_about`:
-        // Per theme: a fixed white wash would pass this on dark and fail on
-        // light.
+        // per theme and per ground a list can stand on, the active lift is a
+        // visible lightness step and hover sits between it and the ground. A
+        // fixed white wash would pass on dark and vanish on a white well.
         {
-            use crate::a11y::relative_luminance;
-            for (name, theme) in [
-                ("dark", Theme::dark()),
-                ("light", Theme::light()),
-                ("high-contrast", Theme::high_contrast()),
-            ] {
+            for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                let name = theme.name.clone();
                 let colors = &theme.tokens.colors;
                 let grounds = [
                     ("base", colors.surfaces.base),
+                    ("content", colors.surfaces.content),
+                    ("sidebar", colors.surfaces.sidebar),
+                    ("inspector", colors.surfaces.inspector),
                     ("raised", colors.surfaces.raised),
                     ("panel_ground", panel_ground(&theme)),
+                    ("white", Color::WHITE),
+                    ("black", Color::BLACK),
                 ];
                 for (ground_name, ground) in grounds {
-                    let delta =
-                        |c: Color| (relative_luminance(c) - relative_luminance(ground)).abs();
                     let active =
                         selection_tier_on(&theme, SelectionState::active(true), ground).fill;
                     let hover =
@@ -876,24 +1025,27 @@ mod tests {
                         idle.components[3], 0.0,
                         "{name}/{ground_name}: idle is transparent"
                     );
+                    let step = lightness_step(active, ground);
                     assert!(
-                        delta(active) >= HAIRLINE_MIN_DELTA,
-                        "{name}/{ground_name}: active lift must register on its ground (Δ {:.4})",
-                        delta(active)
+                        step >= SELECTION_MIN_STEP,
+                        "{name}/{ground_name}: active lift must read on its ground (ΔL {step:.3})"
                     );
+                    // Half a step can round to the ground itself in 8-bit
+                    // sRGB at the black end; it never passes the full step.
+                    let half = lightness_step(hover, ground);
                     assert!(
-                        delta(hover) > 0.0 && delta(hover) < delta(active),
+                        half < step,
                         "{name}/{ground_name}: hover sits between the ground and the active tier"
                     );
-                }
-                // On the base the ground-aware tier is the base tier, so the two
-                // vocabularies agree wherever the shell already uses the latter.
-                let base = colors.surfaces.base;
-                if delta_on(base, colors.lift(1.0)) >= HAIRLINE_MIN_DELTA {
-                    assert_eq!(
-                        selection_tier_on(&theme, SelectionState::active(true), base).fill,
-                        selection_tier(&theme, SelectionState::active(true)).fill,
-                        "{name}: base tier unchanged"
+                    // A floored control's ramp is ordered from the same ground.
+                    let ramp =
+                        |state| lightness_step(selection_floor_ramp(&theme, state, ground), ground);
+                    let rest = ramp(SelectionState::default());
+                    let hovered = ramp(SelectionState::new(false, true, false));
+                    let chosen = ramp(SelectionState::active(true));
+                    assert!(
+                        rest < hovered && hovered < chosen,
+                        "{name}/{ground_name}: floor ramp {rest} {hovered} {chosen}"
                     );
                 }
             }
@@ -936,7 +1088,7 @@ mod tests {
         // Case `selection_never_uses_the_accent`.
         {
             for (name, theme) in themes() {
-                let accent = theme.tokens.colors.accent[5];
+                let accent = theme.tokens.colors.intent.inverted;
                 for state in [
                     SelectionState::active(true),
                     SelectionState::new(false, true, false),
@@ -970,11 +1122,6 @@ mod tests {
         }
     }
 
-    fn delta_on(ground: Color, c: Color) -> f64 {
-        use crate::a11y::relative_luminance;
-        (relative_luminance(c) - relative_luminance(ground)).abs()
-    }
-
     #[test]
     fn chrome_radii_and_surfaces_follow_the_theme() {
         // Case `a_selector_is_a_capsule_at_every_height`.
@@ -998,10 +1145,10 @@ mod tests {
             let radii = &theme.tokens.radii;
             let on_scale = [
                 0.0,
-                f64::from(radii.sm),
-                f64::from(radii.md),
-                f64::from(radii.lg),
-                f64::from(radii.xl),
+                f64::from(radii.detail),
+                f64::from(radii.control),
+                f64::from(radii.tile),
+                f64::from(radii.panel),
             ];
             for role in [
                 ChromeRole::Bar,
@@ -1110,6 +1257,24 @@ mod tests {
             / 255.0;
         let out = (f64::from(v) / 255.0) * (1.0 - a) + grey * a;
         (out.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+
+    #[test]
+    fn a_dark_theme_scrim_dims_the_mid_tones_of_dark_content() {
+        // Over dark content the grounds are near black and cannot give up
+        // much; a sheet reads as lifted only when the rows, panels and map
+        // roads in the mid tones move. The dark theme's strength makes them.
+        let dark = Theme::dark();
+        let light = Theme::light();
+        let strength = |t: &Theme| t.tokens.colors.surfaces.scrim_strength;
+        assert!(strength(&dark) > strength(&light));
+        for v in [64u8, 96, 128] {
+            let drop = lstar(v) - lstar(scrim_maps(v, strength(&dark), &dark));
+            assert!(
+                drop >= 15.0,
+                "a dark-theme scrim takes only {drop:.1} L* off a mid tone at {v}"
+            );
+        }
     }
 
     #[test]
@@ -1314,7 +1479,9 @@ pub const RIBBON_SEG_H_FOCUSED: f64 = 40.0;
 /// rects tile without overlapping, so a click near a boundary belongs to
 /// exactly one strip.
 pub const RIBBON_GAP: f64 = RIBBON_HIT_W - RIBBON_SEG_H;
-pub const RIBBON_MARGIN: f64 = 5.0;
+/// Flush with the screen's right edge: the segments are an edge mark, and
+/// a gap between them and the edge read as a stray, misplaced control.
+pub const RIBBON_MARGIN: f64 = 0.0;
 /// Minimum pointer target (HIG §9.6) — the segment itself is 6 px wide.
 pub const RIBBON_HIT_W: f64 = 32.0;
 
@@ -1344,26 +1511,45 @@ fn ribbon_fill(theme: &Theme, focused: bool, hover: bool) -> Color {
     Colors::hairline_on(theme.tokens.colors.surfaces.base, alpha)
 }
 
+/// Length of a run of `count` segments `gap` apart along a ribbon or rail,
+/// each `segment` long except the one at `focused_index`, which is
+/// `focused_segment`.
+fn segments_extent(
+    count: usize,
+    focused_index: usize,
+    segment: f64,
+    focused_segment: f64,
+    gap: f64,
+) -> f64 {
+    if count == 0 {
+        return 0.0;
+    }
+    let focused = usize::from(focused_index < count);
+    // `count >= 1` here (checked above), and `focused` is 0 or 1, so this
+    // never underflows; saturating_sub documents that rather than relying on
+    // the reader to re-derive it.
+    let plain = count.saturating_sub(focused);
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "tab/strip counts are tiny, far below where f64 loses \
+                  integer precision"
+    )]
+    {
+        plain as f64 * segment
+            + focused as f64 * focused_segment
+            + (count.saturating_sub(1)) as f64 * gap
+    }
+}
+
 impl StripRibbon {
     pub fn extent(&self) -> f64 {
-        if self.count == 0 {
-            return 0.0;
-        }
-        let focused = usize::from(self.focused < self.count);
-        // `self.count >= 1` here (checked above), and `focused` is 0 or 1, so
-        // this never underflows; saturating_sub documents that rather than
-        // relying on the reader to re-derive it.
-        let plain = self.count.saturating_sub(focused);
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "tab/strip counts are tiny, far below where f64 loses \
-                      integer precision"
-        )]
-        {
-            plain as f64 * RIBBON_SEG_H
-                + focused as f64 * RIBBON_SEG_H_FOCUSED
-                + (self.count.saturating_sub(1)) as f64 * RIBBON_GAP
-        }
+        segments_extent(
+            self.count,
+            self.focused,
+            RIBBON_SEG_H,
+            RIBBON_SEG_H_FOCUSED,
+            RIBBON_GAP,
+        )
     }
 
     pub fn segment_rect(&self, i: usize) -> Option<Rect> {
@@ -1389,14 +1575,15 @@ impl StripRibbon {
         Some(Rect::new(x0, y, x1, y + h))
     }
 
-    /// Widened past the visible segment to the minimum pointer target.
+    /// Widened past the visible segment to the minimum pointer target,
+    /// inward from the screen edge the segment sits on.
     pub fn hit_rect(&self, i: usize) -> Option<Rect> {
         let seg = self.segment_rect(i)?;
-        let cx = seg.center().x;
+        let x1 = self.content.x1;
         Some(Rect::new(
-            cx - RIBBON_HIT_W / 2.0,
+            x1 - RIBBON_HIT_W,
             seg.y0 - RIBBON_GAP / 2.0,
-            cx + RIBBON_HIT_W / 2.0,
+            x1,
             seg.y1 + RIBBON_GAP / 2.0,
         ))
     }
@@ -1424,8 +1611,9 @@ impl StripRibbon {
                 theme,
                 SelectionState::new(i == self.focused, hover == Some(i), false),
             );
-            let shape =
-                RoundedRect::from_rect(seg, ChromeRole::Selector.radius(theme, seg.height()));
+            // Square where it meets the screen edge, rounded inward.
+            let r = ChromeRole::Selector.radius(theme, seg.width());
+            let shape = RoundedRect::from_rect(seg, RoundedRectRadii::new(r, 0.0, 0.0, r));
             let fill = ribbon_fill(theme, i == self.focused, hover == Some(i));
             scene.fill(
                 Fill::NonZero,
@@ -1472,7 +1660,9 @@ pub const RAIL_SEG_H: f64 = 6.0;
 pub const RAIL_SEG_W: f64 = 22.0;
 pub const RAIL_SEG_W_FOCUSED: f64 = 40.0;
 pub const RAIL_GAP: f64 = RAIL_HIT_H - RAIL_SEG_W;
-pub const RAIL_MARGIN: f64 = 10.0;
+/// Flush with the screen's bottom edge, for the same reason as
+/// [`RIBBON_MARGIN`]; ten pixels up it floated over the windows' bottom margin.
+pub const RAIL_MARGIN: f64 = 0.0;
 /// Minimum pointer target (HIG §9.6) across the rail's short axis.
 pub const RAIL_HIT_H: f64 = 32.0;
 
@@ -1507,24 +1697,13 @@ impl StripRail {
     }
 
     pub fn extent(&self) -> f64 {
-        if self.count == 0 {
-            return 0.0;
-        }
-        let focused = usize::from(self.focused < self.count);
-        // `self.count >= 1` here (checked above), and `focused` is 0 or 1, so
-        // this never underflows; saturating_sub documents that rather than
-        // relying on the reader to re-derive it.
-        let plain = self.count.saturating_sub(focused);
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "tab/strip counts are tiny, far below where f64 loses \
-                      integer precision"
-        )]
-        {
-            plain as f64 * RAIL_SEG_W
-                + focused as f64 * RAIL_SEG_W_FOCUSED
-                + (self.count.saturating_sub(1)) as f64 * RAIL_GAP
-        }
+        segments_extent(
+            self.count,
+            self.focused,
+            RAIL_SEG_W,
+            RAIL_SEG_W_FOCUSED,
+            RAIL_GAP,
+        )
     }
 
     pub fn segment_rect(&self, i: usize) -> Option<Rect> {
@@ -1551,15 +1730,15 @@ impl StripRail {
     }
 
     /// Widened past the visible segment to the minimum pointer target
-    /// across the rail's short axis.
+    /// across the rail's short axis, upward from the screen's bottom edge.
     pub fn hit_rect(&self, i: usize) -> Option<Rect> {
         let seg = self.segment_rect(i)?;
-        let cy = seg.center().y;
+        let y1 = self.content.y1;
         Some(Rect::new(
             seg.x0 - RAIL_GAP / 2.0,
-            cy - RAIL_HIT_H / 2.0,
+            y1 - RAIL_HIT_H,
             seg.x1 + RAIL_GAP / 2.0,
-            cy + RAIL_HIT_H / 2.0,
+            y1,
         ))
     }
 
@@ -1586,8 +1765,9 @@ impl StripRail {
                 continue;
             };
             let present = self.visible.contains(&i);
-            let shape =
-                RoundedRect::from_rect(seg, ChromeRole::Selector.radius(theme, seg.height()));
+            // Square where it meets the screen edge, rounded inward.
+            let r = ChromeRole::Selector.radius(theme, seg.height());
+            let shape = RoundedRect::from_rect(seg, RoundedRectRadii::new(r, r, 0.0, 0.0));
             let fill = rail_fill(theme, i == self.focused, hover == Some(i), present);
             scene.fill(
                 Fill::NonZero,
@@ -1654,8 +1834,14 @@ mod rail_tests {
             assert!(
                 rects
                     .iter()
-                    .all(|s| (s.y1 - (r.content.y1 - RAIL_MARGIN)).abs() < f64::EPSILON),
-                "every segment sits on the rail's baseline"
+                    .all(|s| (s.y1 - r.content.y1).abs() < f64::EPSILON),
+                "every segment sits flush on the screen's bottom edge"
+            );
+            assert!(
+                (0..4).all(|i| r
+                    .hit_rect(i)
+                    .is_some_and(|h| (h.y1 - r.content.y1).abs() < f64::EPSILON)),
+                "each target runs to the edge, so the pointer pinned there hits it"
             );
         }
 
@@ -1867,6 +2053,23 @@ mod ribbon_tests {
         {
             let r = ribbon(3, 1);
             assert_eq!(r.hit(Point::new(400.0, 470.0)), None);
+        }
+
+        // Case `segments_and_targets_sit_flush_on_the_right_edge`.
+        {
+            let r = ribbon(3, 1);
+            for i in 0..3 {
+                let seg = r.segment_rect(i).unwrap();
+                let hit = r.hit_rect(i).unwrap();
+                assert!(
+                    (seg.x1 - r.content.x1).abs() < f64::EPSILON,
+                    "segment {i} {seg:?}"
+                );
+                assert!(
+                    (hit.x1 - r.content.x1).abs() < f64::EPSILON,
+                    "target {i} {hit:?}"
+                );
+            }
         }
     }
 }

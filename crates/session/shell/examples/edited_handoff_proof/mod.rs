@@ -5,12 +5,12 @@ use super::{
     PublishedAction, PublishedSurface, Result, Session, Stdio, WRITER, emit, json, wait_action,
 };
 use std::path::Path;
-use std::sync::PoisonError;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
     InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
 };
 use tilo_automerge::ApplyIncoming;
+use tilo_lock::MutexRecover as _;
 use ui::collaboration::{CollabRequest, CollaborationManager};
 
 const CALLER: &str = "dev.tilo.edited-handoff-proof";
@@ -62,7 +62,7 @@ pub(super) fn helper(root: &Path, route: &str, denied: bool) -> Result<()> {
                     finished = Some(json!({"id": invocation.0.to_string(), "update": update}));
                 } else {
                     manager.send(CollabRequest::RemoteAction {
-                        message: RemoteActionMessage::Observe { invocation },
+                        message: RemoteActionMessage::observe(invocation),
                     });
                 }
             }
@@ -85,6 +85,7 @@ fn invoke_request(
 ) -> Result<InvokeRequest> {
     let field = |name: &'static str| request.get(name).ok_or_else(|| format!("missing {name}"));
     Ok(InvokeRequest {
+        on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {
             provider: field("peer")?.as_u64().ok_or("missing peer")?.to_string(),
@@ -102,6 +103,8 @@ fn invoke_request(
         context: None,
         confirmation: None,
         revision: None,
+        wait_ms: None,
+        appearance: None,
     })
 }
 
@@ -202,11 +205,11 @@ pub(super) fn run(root: &Path, photos: PathBuf, writer: PathBuf) -> Result<()> {
         .workspaces
         .first_mut()
         .ok_or("default workspace tree has no workspace")?;
-    workspace.grant_capability(shell::shell::state::CapOverride::membership(
-        shell::shell::state::Subject::agent(READER),
-        workspace.room.to_string(),
-        shell::shell::state::Verb::Read,
-    ));
+    workspace.admit_agent_preset(
+        READER,
+        tilo_action_policy::roles::AgentPreset::Observer,
+        &tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner),
+    );
     shell::shell::persist::save_tree_to(&tree, &state_path)?;
     let session = Session::start(root)?;
     let captured = Arc::new(Mutex::new(Vec::new()));
@@ -218,8 +221,7 @@ pub(super) fn run(root: &Path, photos: PathBuf, writer: PathBuf) -> Result<()> {
                 && let CollabEvent::Document { envelope, .. } = event
             {
                 received
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
+                    .lock_recover()
                     .push((route.clone(), envelope.clone()));
             }
         }),
@@ -472,8 +474,8 @@ pub(super) fn run(root: &Path, photos: PathBuf, writer: PathBuf) -> Result<()> {
                 _ => return Err("unexpected encrypted proof document".into()),
             }
         }
-        if let Ok(model) = qdoc::model::open(&doc, &automerge::ROOT) {
-            let images: Vec<_> = qdoc::model::materialize(&doc, &model)
+        if let Ok(model) = tilo_doc::model::open(&doc, &automerge::ROOT) {
+            let images: Vec<_> = tilo_doc::model::materialize(&doc, &model)
                 .blocks
                 .into_iter()
                 .filter(|block| block.kind == "image")
@@ -481,13 +483,13 @@ pub(super) fn run(root: &Path, photos: PathBuf, writer: PathBuf) -> Result<()> {
             if images.len() > 1 {
                 return Err("unexpected extra Writer image blocks".into());
             }
-            if let Some(block) = images
-                .first()
-                .filter(|block| block.attrs.get("blob") == Some(&qdoc::AttrVal::Str(hash.into())))
-            {
-                if block.attrs.get("width") != Some(&qdoc::AttrVal::Int(i64::from(edited.width())))
+            if let Some(block) = images.first().filter(|block| {
+                block.attrs.get("blob") == Some(&tilo_doc::AttrVal::Str(hash.into()))
+            }) {
+                if block.attrs.get("width")
+                    != Some(&tilo_doc::AttrVal::Int(i64::from(edited.width())))
                     || block.attrs.get("height")
-                        != Some(&qdoc::AttrVal::Int(i64::from(edited.height())))
+                        != Some(&tilo_doc::AttrVal::Int(i64::from(edited.height())))
                 {
                     return Err("Writer dimensions mismatch".into());
                 }

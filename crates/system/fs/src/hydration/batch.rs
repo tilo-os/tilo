@@ -20,6 +20,7 @@ use iroh_blobs::get::fsm::{self, EndBlobNext, RequestCounters};
 use iroh_blobs::protocol::{ChunkRanges, ChunkRangesSeq, GetManyRequest};
 
 use super::{Bytes, Duration, EndpointAddr, Hash, Hydrator, Instant, Result, anyhow};
+use tilo_lock::RwLockRecover as _;
 
 /// Blobs requested in one `GetMany`.
 pub const BATCH_BLOBS: usize = 512;
@@ -305,10 +306,7 @@ impl Hydrator {
             return (HashSet::new(), 0, Some(store_error));
         }
         {
-            let mut sources = self
-                .remote_sources
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut sources = self.remote_sources.write_recover();
             for hash in &got {
                 sources.insert(*hash, peer.clone());
             }
@@ -367,10 +365,7 @@ impl Hydrator {
     ) -> Result<()> {
         let hashes: Vec<Hash> = blobs.iter().map(|(hash, _)| *hash).collect();
         self.store.store_fetched_batch(blobs).await?;
-        let mut sources = self
-            .remote_sources
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut sources = self.remote_sources.write_recover();
         for hash in hashes {
             sources.insert(hash, peer.clone());
         }

@@ -11,6 +11,13 @@ use super::KeyModifiers;
 
 /// Upper bound on an outline as it crosses the engine boundary.
 pub const MAX_OUTLINE_BYTES: usize = 256 * 1024;
+/// Upper bound on structured reply data (`PageReply::data`), serialised.
+pub const MAX_DATA_BYTES: usize = 256 * 1024;
+/// Bounds of a settle wait, milliseconds.
+pub const MIN_SETTLE_QUIET_MS: u32 = 50;
+pub const MAX_SETTLE_MS: u32 = 20_000;
+/// Largest viewport coordinate an `At` names, CSS pixels.
+const MAX_COORDINATE: f64 = 100_000.0;
 /// Upper bound on the text one fill may insert.
 pub const MAX_FILL_BYTES: usize = 64 * 1024;
 /// Upper bound on the options one select may choose.
@@ -21,15 +28,21 @@ const MAX_REF_BYTES: usize = 40;
 const MAX_MESSAGE_BYTES: usize = 1024;
 const MAX_CODE_BYTES: usize = 64;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum PageRequest {
     /// A compact accessibility outline of the document. Interactive elements
     /// carry the refs every other request addresses.
     Outline,
     /// A trusted pointer click at the element's visible centre.
     Click { element: String },
-    /// Replace an editable element's contents with `text`.
-    Fill { element: String, text: String },
+    /// Replace an editable element's contents with `text`. A password or
+    /// card field is refused unless `secret` says the caller means it, and
+    /// then the text is a secret the caller keeps out of logs.
+    Fill {
+        element: String,
+        text: String,
+        secret: bool,
+    },
     /// Choose `<select>` options by value or visible label.
     Select {
         element: String,
@@ -40,8 +53,25 @@ pub enum PageRequest {
         element: Option<String>,
         key: PageKey,
     },
-    /// Submit the element's form through the page's own validation.
-    Submit { element: String },
+    /// Submit the element's form through the page's own validation. A form
+    /// that sends its data to another site than the page's is refused unless
+    /// `cross_origin` says the caller means it.
+    Submit { element: String, cross_origin: bool },
+    /// What changed in the outline since this tab's last read or changes:
+    /// lines added (`+`) and removed (`-`), or the whole outline when the
+    /// document is new.
+    Changes,
+    /// The element a click at viewport point (`x`, `y`) in CSS pixels would
+    /// hit, and the nearest interactive element holding it.
+    At { x: f64, y: f64 },
+    /// Wait until the document has stopped changing for `quiet_ms` and has
+    /// loaded, or `timeout_ms` passed.
+    Settle { quiet_ms: u32, timeout_ms: u32 },
+    /// Console messages and uncaught errors after sequence number `since`.
+    Console { since: u64 },
+    /// Network requests after sequence number `since`: method, URL, type,
+    /// status and failure, never headers, bodies or cookies.
+    Network { since: u64 },
 }
 
 impl PageRequest {
@@ -53,12 +83,23 @@ impl PageRequest {
             Self::Select { .. } => "select",
             Self::Press { .. } => "press",
             Self::Submit { .. } => "submit",
+            Self::Changes => "changes",
+            Self::At { .. } => "at",
+            Self::Settle { .. } => "settle",
+            Self::Console { .. } => "console",
+            Self::Network { .. } => "network",
         }
     }
 
     pub fn element(&self) -> Option<&str> {
         match self {
-            Self::Outline | Self::Press { element: None, .. } => None,
+            Self::Outline
+            | Self::Press { element: None, .. }
+            | Self::Changes
+            | Self::At { .. }
+            | Self::Settle { .. }
+            | Self::Console { .. }
+            | Self::Network { .. } => None,
             Self::Click { element }
             | Self::Fill { element, .. }
             | Self::Select { element, .. }
@@ -66,7 +107,7 @@ impl PageRequest {
                 element: Some(element),
                 ..
             }
-            | Self::Submit { element } => Some(element),
+            | Self::Submit { element, .. } => Some(element),
         }
     }
 
@@ -88,7 +129,22 @@ impl PageRequest {
                         .all(|value| value.len() <= MAX_SELECT_VALUE_BYTES)
             }
             Self::Press { key, .. } => PageKey::parse(&key.chord()).as_ref() == Some(key),
-            Self::Outline | Self::Click { .. } | Self::Submit { .. } => true,
+            Self::At { x, y } => [x, y]
+                .iter()
+                .all(|v| v.is_finite() && (0.0..=MAX_COORDINATE).contains(*v)),
+            Self::Settle {
+                quiet_ms,
+                timeout_ms,
+            } => {
+                (MIN_SETTLE_QUIET_MS..=MAX_SETTLE_MS).contains(quiet_ms)
+                    && (*quiet_ms..=MAX_SETTLE_MS).contains(timeout_ms)
+            }
+            Self::Outline
+            | Self::Click { .. }
+            | Self::Submit { .. }
+            | Self::Changes
+            | Self::Console { .. }
+            | Self::Network { .. } => true,
         }
     }
 }
@@ -191,8 +247,12 @@ pub struct PageReply {
     /// The main document's URL when the request finished.
     pub url: String,
     pub message: String,
-    /// Present for [`PageRequest::Outline`].
+    /// Present for [`PageRequest::Outline`], and the line diff for
+    /// [`PageRequest::Changes`].
     pub outline: Option<String>,
+    /// Structured findings: the element at a point, how a settle went, log
+    /// entries. Always page content, so never trusted as instructions.
+    pub data: Option<serde_json::Value>,
     /// The request started a main-frame navigation.
     pub navigated: bool,
     /// That navigation had not finished loading when the engine answered.
@@ -234,7 +294,10 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
         command["element"] = element.into();
     }
     match request {
-        PageRequest::Fill { text, .. } => command["text"] = text.as_str().into(),
+        PageRequest::Fill { text, secret, .. } => {
+            command["text"] = text.as_str().into();
+            command["secret"] = (*secret).into();
+        }
         PageRequest::Select { values, .. } => command["values"] = values.clone().into(),
         PageRequest::Press { key, .. } => {
             command["key"] = key.key.as_str().into();
@@ -243,7 +306,24 @@ pub(crate) fn encode_request(request_id: u32, request: &PageRequest) -> serde_js
             command["alt"] = key.modifiers.alt.into();
             command["meta"] = key.modifiers.meta.into();
         }
-        PageRequest::Outline | PageRequest::Click { .. } | PageRequest::Submit { .. } => {}
+        PageRequest::Submit { cross_origin, .. } => {
+            command["cross_origin"] = (*cross_origin).into()
+        }
+        PageRequest::At { x, y } => {
+            command["x"] = (*x).into();
+            command["y"] = (*y).into();
+        }
+        PageRequest::Settle {
+            quiet_ms,
+            timeout_ms,
+        } => {
+            command["quiet_ms"] = (*quiet_ms).into();
+            command["timeout_ms"] = (*timeout_ms).into();
+        }
+        PageRequest::Console { since } | PageRequest::Network { since } => {
+            command["since"] = (*since).into();
+        }
+        PageRequest::Outline | PageRequest::Click { .. } | PageRequest::Changes => {}
     }
     command
 }
@@ -268,10 +348,21 @@ pub(crate) fn decode_result(
             _ => Some(bounded("outline", MAX_OUTLINE_BYTES)?),
         };
         let navigated = value["navigated"].as_bool()?;
+        let data = match &value["data"] {
+            serde_json::Value::Null => None,
+            data @ serde_json::Value::Object(_) => {
+                if runtime_collab::wire_json_len(data) > MAX_DATA_BYTES {
+                    return None;
+                }
+                Some(data.clone())
+            }
+            _ => return None,
+        };
         Ok(PageReply {
             url: bounded("url", 8192)?,
             message,
             outline,
+            data,
             navigated,
             loading: navigated && value["loading"].as_bool()?,
         })
@@ -328,14 +419,16 @@ mod tests {
             assert!(
                 PageRequest::Fill {
                     element: element.clone(),
-                    text: "hello".into()
+                    text: "hello".into(),
+                    secret: false,
                 }
                 .valid()
             );
             assert!(
                 !PageRequest::Fill {
                     element: element.clone(),
-                    text: "x".repeat(MAX_FILL_BYTES + 1)
+                    text: "x".repeat(MAX_FILL_BYTES + 1),
+                    secret: false,
                 }
                 .valid()
             );
@@ -375,6 +468,74 @@ mod tests {
                 },
             );
             assert_eq!(command["values"], serde_json::json!(["NL"]));
+        }
+        // phase: agent_requests_name_their_arguments_and_bounds
+        {
+            let at = encode_request(9, &PageRequest::At { x: 12.5, y: 40.0 });
+            assert_eq!(
+                at,
+                serde_json::json!({"op":"page","request_id":9,"action":"at","x":12.5,"y":40.0})
+            );
+            let settle = PageRequest::Settle {
+                quiet_ms: 500,
+                timeout_ms: 10_000,
+            };
+            assert!(settle.valid());
+            assert_eq!(encode_request(10, &settle)["timeout_ms"], 10_000);
+            assert_eq!(
+                encode_request(11, &PageRequest::Network { since: 42 })["since"],
+                42
+            );
+            assert_eq!(
+                encode_request(
+                    12,
+                    &PageRequest::Submit {
+                        element: "d1e2".into(),
+                        cross_origin: true,
+                    }
+                )["cross_origin"],
+                true
+            );
+            for bad in [
+                PageRequest::At { x: -1.0, y: 0.0 },
+                PageRequest::At {
+                    x: f64::NAN,
+                    y: 0.0,
+                },
+                PageRequest::Settle {
+                    quiet_ms: 10,
+                    timeout_ms: 1000,
+                },
+                PageRequest::Settle {
+                    quiet_ms: 500,
+                    timeout_ms: 100,
+                },
+                PageRequest::Settle {
+                    quiet_ms: 500,
+                    timeout_ms: MAX_SETTLE_MS + 1,
+                },
+            ] {
+                assert!(!bad.valid(), "{bad:?}");
+            }
+            assert!(PageRequest::Changes.element().is_none());
+        }
+        // phase: findings_decode_as_data_within_their_bound
+        {
+            let reply = |data: serde_json::Value| {
+                serde_json::json!({"request_id":3,"ok":true,"message":"2 requests","url":"https://a.test/",
+                    "navigated":false,"loading":false,"outline":null,"data":data})
+            };
+            let (_, result) = decode_result(&reply(
+                serde_json::json!({"entries":[{"url":"https://a.test/x"}]}),
+            ))
+            .expect("decodes");
+            assert_eq!(
+                result.expect("succeeded").data,
+                Some(serde_json::json!({"entries":[{"url":"https://a.test/x"}]}))
+            );
+            assert!(decode_result(&reply(serde_json::json!("not an object"))).is_none());
+            let huge = "x".repeat(MAX_DATA_BYTES);
+            assert!(decode_result(&reply(serde_json::json!({"text": huge}))).is_none());
         }
         // phase: results_decode_within_bounds
         {

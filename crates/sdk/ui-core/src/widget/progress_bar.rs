@@ -6,12 +6,13 @@
 //! (30 % of the track) across the track on a 2 s period — the position
 //! fraction is `start.elapsed().as_secs_f32() % 2.0 / 2.0`.
 //!
-//! The widget is a pure leaf: it does not read or write the CRDT, has no
-//! children, is not focusable, and has no event handling. State (the
-//! `progress` float and the `indeterminate` flag) lives on the widget
-//! struct itself, mutated by the parent via `set_progress`. The animation
-//! reference `start` is captured at construction and is the only piece of
-//! frame-derived state the widget keeps.
+//! The fill is progress (the inverted fill) unless the bar shows a measured
+//! level ([`ProgressBar::level`]) or a status ([`ProgressBar::tone`]). Under
+//! reduced motion and the capture clock the indeterminate segment holds
+//! still in the middle of the track, so a screenshot is the same every run.
+//!
+//! [`ProgressBarFace`] paints the same bar for a host that paints into a
+//! `Scene`.
 use crate::time::Instant;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -22,14 +23,8 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-
-/// Default visible height of the track. Picked to match the concept's
-/// `h-2` progress bars (8 px in Tailwind's spacing scale). `f32` because
-/// its only use is a taffy `Dimension`, which is `f32`-typed.
-const TRACK_HEIGHT: f32 = 8.0;
 
 /// Width of the moving segment in indeterminate mode, expressed as a
 /// fraction of the track width. `0.3` keeps the affordance readable on
@@ -40,8 +35,151 @@ const INDETERMINATE_SEGMENT_FRAC: f64 = 0.3;
 /// from the left edge to the right edge of the track.
 const INDETERMINATE_PERIOD_SECS: f32 = 2.0;
 
+/// What a bar's fill means.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum BarFill {
+    /// Progress toward done: the inverted fill.
+    Progress,
+    /// A measured level that turns warning and danger past its thresholds.
+    Level(crate::widget::GaugeThresholds),
+    /// A status.
+    Tone(crate::widget::Tone),
+}
+
+/// Immediate-mode progress bar, for a host that paints into a `Scene`.
+#[derive(Clone, Copy, Debug)]
+pub struct ProgressBarFace {
+    /// `None` while indeterminate.
+    progress: Option<f32>,
+    started: Option<Instant>,
+    fill: BarFill,
+}
+
+impl ProgressBarFace {
+    /// A determinate bar `progress` full (clamped to `0..=1`).
+    #[must_use]
+    pub fn new(progress: f32) -> Self {
+        Self {
+            progress: Some(if progress.is_finite() {
+                progress.clamp(0.0, 1.0)
+            } else {
+                0.0
+            }),
+            started: None,
+            fill: BarFill::Progress,
+        }
+    }
+
+    /// An indeterminate bar whose segment has been sweeping since `started`.
+    #[must_use]
+    pub fn indeterminate(started: Instant) -> Self {
+        Self {
+            progress: None,
+            started: Some(started),
+            fill: BarFill::Progress,
+        }
+    }
+
+    /// A fill that means a status.
+    #[must_use]
+    pub fn tone(mut self, tone: crate::widget::Tone) -> Self {
+        self.fill = BarFill::Tone(tone);
+        self
+    }
+
+    /// A measured level (a disk, a quota) that turns warning and danger.
+    #[must_use]
+    pub fn level(mut self, thresholds: crate::widget::GaugeThresholds) -> Self {
+        self.fill = BarFill::Level(thresholds);
+        self
+    }
+
+    /// The track's height in `theme`.
+    #[must_use]
+    pub fn height(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.spacing.s2)
+    }
+
+    fn fill_colour(&self, theme: &Theme) -> vello::peniko::Color {
+        match self.fill {
+            BarFill::Progress => theme.tokens.colors.intent.inverted,
+            BarFill::Level(thresholds) => {
+                thresholds.color(theme, self.progress.unwrap_or_default())
+            }
+            BarFill::Tone(tone) => tone.colour(theme),
+        }
+    }
+
+    /// Where the indeterminate segment's leading edge is, `0..1` of its
+    /// travel. Still, in the middle, under reduced motion and the capture
+    /// clock.
+    fn phase(&self, theme: &Theme) -> f64 {
+        match self.started {
+            Some(started) if !theme.reduce_motion && !crate::time::wall_frozen() => f64::from(
+                (started.elapsed().as_secs_f32() % INDETERMINATE_PERIOD_SECS)
+                    / INDETERMINATE_PERIOD_SECS,
+            ),
+            _ => 0.5,
+        }
+    }
+
+    /// Paint the bar into `rect` (its track spans the rect). Returns the
+    /// painted fill or segment, `Rect::ZERO` when nothing is filled.
+    pub fn paint(&self, ctx: &mut crate::paint::PaintCtx<'_>, rect: Rect) -> Rect {
+        let theme = ctx.theme;
+        let transform = ctx.transform;
+        // A detail inside its row: the detail radius. The track is a lift
+        // of the ground, as a slider's unfilled half is, so it reads on
+        // every material; the raised tier is white on white in light.
+        let radius = f64::from(theme.tokens.radii.detail).min(rect.height() / 2.0);
+        ctx.scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.intent.selection,
+            None,
+            &RoundedRect::from_rect(rect, radius),
+        );
+        let fill = self.fill_colour(theme);
+        let track_width = rect.width();
+        let filled = match self.progress {
+            None => {
+                let segment_width = track_width * INDETERMINATE_SEGMENT_FRAC;
+                let travel = track_width + segment_width;
+                let segment_x0 = rect.x0 - segment_width + self.phase(theme) * travel;
+                let x0 = segment_x0.max(rect.x0);
+                let x1 = (segment_x0 + segment_width).min(rect.x1);
+                if x1 > x0 {
+                    Rect::new(x0, rect.y0, x1, rect.y1)
+                } else {
+                    Rect::ZERO
+                }
+            }
+            // Skipped at zero (rather than a zero-width rect) so an empty
+            // bar paints its track alone.
+            Some(progress) if progress > 0.0 => Rect::new(
+                rect.x0,
+                rect.y0,
+                rect.x0 + f64::from(progress) * track_width,
+                rect.y1,
+            ),
+            Some(_) => Rect::ZERO,
+        };
+        if !filled.is_zero_area() {
+            ctx.scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                fill,
+                None,
+                &RoundedRect::from_rect(filled, radius),
+            );
+        }
+        filled
+    }
+}
+
 pub struct ProgressBar {
     progress: f32,
+    fill: BarFill,
     indeterminate: bool,
     rect: Rect,
     start: Instant,
@@ -65,6 +203,7 @@ impl ProgressBar {
     pub fn new(progress: f32) -> Self {
         Self {
             progress: progress.clamp(0.0, 1.0),
+            fill: BarFill::Progress,
             indeterminate: false,
             rect: Rect::ZERO,
             start: crate::time::now(),
@@ -83,6 +222,7 @@ impl ProgressBar {
     pub fn indeterminate() -> Self {
         Self {
             progress: 0.0,
+            fill: BarFill::Progress,
             indeterminate: true,
             rect: Rect::ZERO,
             start: crate::time::now(),
@@ -102,6 +242,33 @@ impl ProgressBar {
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
+    }
+
+    /// A fill that means a status (a failed transfer stays danger).
+    #[must_use]
+    pub fn tone(mut self, tone: crate::widget::Tone) -> Self {
+        self.fill = BarFill::Tone(tone);
+        self
+    }
+
+    /// A measured level (a disk, a quota) that turns warning and danger
+    /// past `thresholds`.
+    #[must_use]
+    pub fn level(mut self, thresholds: crate::widget::GaugeThresholds) -> Self {
+        self.fill = BarFill::Level(thresholds);
+        self
+    }
+
+    fn face(&self) -> ProgressBarFace {
+        let face = if self.indeterminate {
+            ProgressBarFace::indeterminate(self.start)
+        } else {
+            ProgressBarFace::new(self.progress)
+        };
+        ProgressBarFace {
+            fill: self.fill,
+            ..face
+        }
     }
 
     /// Set the accessible label (see [`with_label`](Self::with_label)).
@@ -156,19 +323,6 @@ impl ProgressBar {
             self.progress
         }
     }
-
-    /// Whether the bar is in indeterminate mode.
-    pub fn is_indeterminate(&self) -> bool {
-        self.indeterminate
-    }
-
-    /// Position fraction `[0.0, 1.0)` of the indeterminate segment's
-    /// **left edge** along the track, computed from `start.elapsed()`.
-    /// Exposed for tests that need to pin animation phase without
-    /// inspecting the rendered scene.
-    fn indeterminate_phase(&self) -> f32 {
-        (self.start.elapsed().as_secs_f32() % INDETERMINATE_PERIOD_SECS) / INDETERMINATE_PERIOD_SECS
-    }
 }
 
 /// Rounds an already-clamped `[0, 100]` percentage to a whole-number
@@ -193,28 +347,21 @@ impl Widget for ProgressBar {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(TRACK_HEIGHT),
+                height: Dimension::length(crate::num::f32_of_f64(ProgressBarFace::height(theme))),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.dirty = true;
     }
 
@@ -222,61 +369,17 @@ impl Widget for ProgressBar {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        _text_renderer: &mut TextRenderer,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
-        self.reduce_motion = theme.reduce_motion;
-        // The track is always painted: it provides the visual anchor
-        // even at `progress == 0.0`. The fill is conditional — see
-        // `progress_bar_at_zero_paints_no_fill` for the contract.
-        let radius = f64::from(theme.tokens.radii.md);
-        let track_shape = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &track_shape,
+        self.reduce_motion = theme.reduce_motion || crate::time::wall_frozen();
+        let segment_width = self.rect.width() * INDETERMINATE_SEGMENT_FRAC;
+        let current_segment = self.face().paint(
+            &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            self.rect,
         );
-
-        let track_width = self.rect.width();
-        let accent = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX];
-
         if self.indeterminate {
-            // Slide a fixed-width segment across the track. Phase [0,1)
-            // drives its left edge from `-segment_width` (off-screen
-            // left) to `track_width` (off-screen right) each period.
-            let segment_width = track_width * INDETERMINATE_SEGMENT_FRAC;
-            let travel = track_width + segment_width;
-            // With reduced motion the segment holds at a fixed position
-            // instead of sweeping across the track: the bar still reads as
-            // busy, but nothing moves.
-            let phase = if theme.reduce_motion {
-                (segment_width / 2.0) / travel
-            } else {
-                f64::from(self.indeterminate_phase())
-            };
-            let segment_x0 = self.rect.x0 - segment_width + phase * travel;
-            let segment_x1 = segment_x0 + segment_width;
-            // Clip the segment to the track so the rounded ends never
-            // poke past the track edges.
-            let clipped_x0 = segment_x0.max(self.rect.x0);
-            let clipped_x1 = segment_x1.min(self.rect.x1);
-            let current_segment = if clipped_x1 > clipped_x0 {
-                let segment_rect = Rect::new(clipped_x0, self.rect.y0, clipped_x1, self.rect.y1);
-                let segment_shape = RoundedRect::from_rect(segment_rect, radius);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    accent,
-                    None,
-                    &segment_shape,
-                );
-                segment_rect
-            } else {
-                Rect::ZERO
-            };
             self.damage = match (
                 self.last_segment.is_zero_area(),
                 current_segment.is_zero_area(),
@@ -297,27 +400,8 @@ impl Widget for ProgressBar {
                 }
             };
             self.last_segment = current_segment;
-        } else if self.progress > 0.0 {
-            // Determinate fill, width `progress * track_width`. Skipped
-            // entirely at `progress == 0.0` (rather than a zero-width
-            // rect) so the COLOR-draw-tag count can distinguish empty
-            // from non-empty bars at the encoding level in tests.
-            let fill_width = f64::from(self.progress) * track_width;
-            let fill_rect = Rect::new(
-                self.rect.x0,
-                self.rect.y0,
-                self.rect.x0 + fill_width,
-                self.rect.y1,
-            );
-            let fill_shape = RoundedRect::from_rect(fill_rect, radius);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                accent,
-                None,
-                &fill_shape,
-            );
         }
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     fn name(&self) -> &'static str {
@@ -335,10 +419,7 @@ impl Widget for ProgressBar {
         // labelled bar is a polite live region keyed by its name, so progress
         // updates announce without moving focus.
         let mut node = if self.indeterminate {
-            AccessNode::new(Role::ProgressBar).with_state(AccessState {
-                busy: true,
-                ..Default::default()
-            })
+            AccessNode::new(Role::ProgressBar).with_state(AccessState::new().busy(true))
         } else {
             let pct = pct_to_i64((self.progress.clamp(0.0, 1.0) * 100.0).round());
             AccessNode::new(Role::ProgressBar).with_value(format!("{pct}%"))
@@ -384,52 +465,11 @@ impl Widget for ProgressBar {
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
-    }
 }
 
 impl crate::presence::capability::PublishesPresence for ProgressBar {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 

@@ -258,26 +258,29 @@ fn later_writers(
     doc: &mut AutoCommit,
     after: &[ChangeHash],
     by: Option<&str>,
+    invoker: Option<&str>,
     created: &HashSet<ObjId>,
 ) -> HashMap<Slot, String> {
     let versions = tilo_resource::history::versions(doc);
     let start_at = first_index_after(doc, after, versions.len());
     let mut out: HashMap<Slot, String> = HashMap::new();
-    // `i` is more than an array subscript here -- `prefix_heads(doc, i)` and
-    // `i - 1`/`i == 0` need the absolute version index itself, so an
-    // `.iter().enumerate()` rewrite would just reconstruct `i` from the
-    // enumerated offset for no clarity gain.
-    #[allow(
-        clippy::needless_range_loop,
-        reason = "the absolute history index drives prefix-head reconstruction"
-    )]
     for i in start_at..versions.len() {
         // `i` is always `< versions.len()` by the loop bound; retain the
         // checked access for a panic-free path.
         let Some(v) = versions.get(i).cloned() else {
             continue;
         };
-        if by.is_some_and(|b| b.eq_ignore_ascii_case(&v.actor)) {
+        // The same writer, or the same authenticated invoker writing from
+        // another of their writers (a mount, a device, their undo), builds
+        // on nobody else's work.
+        if by.is_some_and(|b| b.eq_ignore_ascii_case(&v.actor))
+            || invoker.is_some_and(|invoker| {
+                v.context
+                    .as_ref()
+                    .and_then(|context| context.invoker.as_ref())
+                    .is_some_and(|other| other.actor == invoker)
+            })
+        {
             continue;
         }
         let lo = if i == 0 {
@@ -477,7 +480,7 @@ pub fn plan_revert(
     let forward = doc.diff(&before, &after);
     let created = objects_created(&forward);
     let inverse = doc.diff(&after, &before);
-    let later = later_writers(doc, &after, by, &created);
+    let later = later_writers(doc, &after, by, None, &created);
     Ok(classify(doc, inverse, &later, &after, covered, authors).0)
 }
 
@@ -504,7 +507,7 @@ pub fn revert_run(
     let forward = doc.diff(&before, &after);
     let created = objects_created(&forward);
     let inverse = doc.diff(&after, &before);
-    let later = later_writers(doc, &after, by, &created);
+    let later = later_writers(doc, &after, by, None, &created);
     let (mut outcome, patches) = classify(doc, inverse, &later, &after, covered, authors);
 
     if !patches.iter().any(|(_, apply)| *apply) {
@@ -516,6 +519,50 @@ pub fn revert_run(
     write_selected_patches(doc, patches, &before, &after);
     outcome.wrote = doc.pending_ops() > pending_before;
     Ok(outcome)
+}
+
+/// Undo several changes, each on its own, into one open transaction:
+/// `changes` pairs each change with the actor hex whose work it is, newest
+/// first. Every revert is planned before any is written, because reading
+/// the history closes the open transaction, which would commit the first
+/// revert as a change of its own.
+///
+/// As with [`revert_run`] the caller commits, and must consult each
+/// outcome's [`RevertOutcome::kept`] before saying "undone".
+///
+/// # Errors
+///
+/// [`RevertError::UnknownRun`] when a change is not in `doc`.
+pub fn revert_changes(
+    doc: &mut AutoCommit,
+    changes: &[(ChangeHash, String)],
+    authors: &AuthorDirectory,
+) -> Result<Vec<RevertOutcome>, RevertError> {
+    let mut plans = Vec::with_capacity(changes.len());
+    for (hash, actor) in changes {
+        let run = ChangeRun::single(entry_id_from_hash(&hash.to_string()));
+        let (before, after, covered) = run_bounds(doc, &run)?;
+        let forward = doc.diff(&before, &after);
+        let created = objects_created(&forward);
+        let inverse = doc.diff(&after, &before);
+        let invoker = tilo_actions::entry_of(doc.committed_document(), *hash)
+            .and_then(|context| context.invoker)
+            .map(|invoker| invoker.actor);
+        let later = later_writers(doc, &after, Some(actor), invoker.as_deref(), &created);
+        let (outcome, patches) = classify(doc, inverse, &later, &after, covered, authors);
+        plans.push((outcome, patches, before, after));
+    }
+    Ok(plans
+        .into_iter()
+        .map(|(mut outcome, patches, before, after)| {
+            if patches.iter().any(|(_, apply)| *apply) {
+                let pending_before = doc.pending_ops();
+                write_selected_patches(doc, patches, &before, &after);
+                outcome.wrote = doc.pending_ops() > pending_before;
+            }
+            outcome
+        })
+        .collect())
 }
 
 /// The contiguous run of changes authored by `actor_hex`, ending at the
@@ -530,7 +577,7 @@ pub fn latest_run_by(doc: &mut AutoCommit, actor_hex: &str) -> Option<ChangeRun>
     // Schema genesis is written by a fixed actor nobody is, so inverting it
     // would take the document's containers with it.
     let mine = |v: &tilo_resource::history::Version| {
-        !qdoc::model::is_schema_genesis(v) && v.actor.eq_ignore_ascii_case(actor_hex)
+        !tilo_doc::model::is_schema_genesis(v) && v.actor.eq_ignore_ascii_case(actor_hex)
     };
     let last = versions.iter().rposition(mine)?;
     let mut first = last;

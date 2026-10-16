@@ -109,6 +109,8 @@
 #[cfg(feature = "wgpu")]
 mod bump_budget;
 mod debug;
+#[cfg(feature = "wgpu")]
+mod image_source;
 mod recording;
 mod render;
 mod scene;
@@ -144,8 +146,16 @@ use peniko::ImageData;
 #[cfg(feature = "wgpu")]
 pub use wgpu;
 
+#[cfg(feature = "wgpu")]
+pub use image_source::ImageSource;
 pub use scene::{DrawGlyphs, Scene};
+pub use vello_encoding::ImageCacheStats;
 pub use vello_encoding::{FontEmbolden, Glyph, NormalizedCoord};
+/// A stable identity of the compute shaders this build of vello creates
+/// pipelines from: a pipeline cache kept across processes is only valid for
+/// the fingerprint it was filled with.
+#[cfg(feature = "wgpu")]
+pub use vello_shaders::SOURCE_FINGERPRINT as SHADER_FINGERPRINT;
 
 use low_level::ShaderId;
 #[cfg(feature = "wgpu")]
@@ -165,6 +175,27 @@ use std::{borrow::Cow, num::NonZeroUsize, sync::atomic::AtomicBool};
 use wgpu::{Device, Queue, TextureView};
 #[cfg(all(feature = "wgpu", feature = "wgpu-profiler"))]
 use wgpu_profiler::{GpuProfiler, GpuProfilerSettings};
+
+/// Supplies the pixels of an image drawn with an empty blob — one whose
+/// pixels live in a texture overridden on another renderer (see
+/// [`Renderer::override_image`]) — to a renderer that has no override for
+/// it. Given the blob id, it returns the image's tightly packed pixels.
+#[cfg(feature = "wgpu")]
+pub type ExternalImageSource = fn(u64) -> Option<Vec<u8>>;
+
+#[cfg(feature = "wgpu")]
+static EXTERNAL_IMAGE_SOURCE: std::sync::OnceLock<ExternalImageSource> = std::sync::OnceLock::new();
+
+/// Install the process's [`ExternalImageSource`]. The first one installed stays.
+#[cfg(feature = "wgpu")]
+pub fn set_external_image_source(source: ExternalImageSource) {
+    let _ = EXTERNAL_IMAGE_SOURCE.set(source);
+}
+
+#[cfg(feature = "wgpu")]
+pub(crate) fn external_image_pixels(id: u64) -> Option<Vec<u8>> {
+    EXTERNAL_IMAGE_SOURCE.get().and_then(|source| source(id))
+}
 
 /// Represents the anti-aliasing method to use during a render pass.
 ///
@@ -1188,6 +1219,35 @@ pub struct RenderParams {
     pub antialiasing_method: AaConfig,
 }
 
+/// Which of its pipelines [`Renderer::new_deferring`] builds before it
+/// returns (Tilo patch). A deferred pipeline is built by
+/// [`Renderer::start_deferred_pipelines`]' background thread, or by the first
+/// render that dispatches it; no dispatch ever runs without its pipeline.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PipelineDeferral {
+    /// Every pipeline, as [`Renderer::new`].
+    #[default]
+    None,
+    /// Only the pipelines a full frame on the default path dispatches. The
+    /// three-level path-tag scan, the GPU draw reduce and leaf (while the CPU
+    /// draw prefix serves), the indirect path stages (while the direct ones
+    /// serve), the clip reduce and the sparse fine stage wait.
+    Unused,
+    /// None: for a caller that rasterizes its frames another way and renders
+    /// with vello only now and then.
+    All,
+}
+
+/// [`Renderer::deferred_pipelines`]: what a deferring renderer has not built.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeferredPipelines {
+    /// Deferred pipelines not installed yet.
+    pub pending: usize,
+    /// Deferred pipelines a render needed before the background thread had
+    /// built them, so it built them itself.
+    pub built_inline: u64,
+}
+
 #[cfg(feature = "wgpu")]
 /// Options which are set at renderer creation time, used in [`Renderer::new`].
 pub struct RendererOptions {
@@ -1622,18 +1682,162 @@ pub(crate) fn sparse_coarse_adaptive_selection(
 
 #[cfg(feature = "wgpu")]
 impl Renderer {
+    /// Run every GPU pipeline's first dispatch now, spread over this device and up to
+    /// `helpers` more opened by `open_device`, each driven from its own thread.
+    ///
+    /// Mesa's CPU Vulkan driver (lavapipe) compiles a pipeline's machine code on its first
+    /// dispatch, so a cold first frame compiles every stage one after another. It also keeps the
+    /// code in its shader disk cache, shared by every device in the process. This dispatches the
+    /// largest pipeline here while the helpers take the rest, whose code this device then reads
+    /// from the cache. When that one dispatch finds its code already compiled, the cache is warm
+    /// and the helpers stop before compiling anything.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn precompile_pipelines(
+        &self,
+        device: &Device,
+        queue: &Queue,
+        helpers: usize,
+        open_device: &(dyn Fn() -> Option<(Device, Queue)> + Sync),
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// A dispatch this quick found its code compiled already.
+        const COMPILED: std::time::Duration = std::time::Duration::from_millis(50);
+
+        let order = self.engine.precompile_order();
+        let Some((&largest, rest)) = order.split_first() else {
+            return;
+        };
+        let (use_cpu, antialiasing_support) =
+            (self.options.use_cpu, self.options.antialiasing_support);
+        let next = AtomicUsize::new(0);
+        let warm = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            for _ in 0..helpers.min(rest.len()) {
+                let (next, warm) = (&next, &warm);
+                let _ = std::thread::Builder::new()
+                    .name("vello pipeline precompile".into())
+                    .spawn_scoped(scope, move || {
+                        let Some((device, queue)) = open_device() else {
+                            return;
+                        };
+                        if warm.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let options = RendererOptions {
+                            use_cpu,
+                            antialiasing_support,
+                            num_init_threads: NonZeroUsize::new(1),
+                            pipeline_cache: None,
+                        };
+                        let Ok(helper) = Self::new(&device, options) else {
+                            return;
+                        };
+                        // The same order as `order`: both renderers registered the same shaders.
+                        let helper_order = helper.engine.precompile_order();
+                        while !warm.load(Ordering::Relaxed)
+                            && let Some(&index) =
+                                helper_order.get(1 + next.fetch_add(1, Ordering::Relaxed))
+                        {
+                            helper.engine.dispatch_empty(&device, &queue, index);
+                        }
+                    });
+            }
+            let started = std::time::Instant::now();
+            self.engine.dispatch_empty(device, queue, largest);
+            if started.elapsed() < COMPILED {
+                warm.store(true, Ordering::Relaxed);
+            }
+        });
+    }
+
     /// Creates a new renderer for the specified device.
     pub fn new(device: &Device, options: RendererOptions) -> Result<Self> {
+        Self::new_deferring(device, options, PipelineDeferral::None)
+    }
+
+    /// [`Self::new`], building before it returns only the pipelines
+    /// `deferral` does not defer (Tilo patch). Call
+    /// [`Self::start_deferred_pipelines`] once the first frame is out.
+    pub fn new_deferring(
+        device: &Device,
+        mut options: RendererOptions,
+        mut deferral: PipelineDeferral,
+    ) -> Result<Self> {
         let mut engine = WgpuEngine::new(options.use_cpu, options.pipeline_cache.clone());
         engine.initialize_gpu_timestamps(device);
+        // The GL backend has one context, and every pipeline compile holds
+        // its lock. Worker threads only queue on that lock, and a slow driver
+        // keeps one waiting past wgpu-hal's lock timeout, which panics. A
+        // background build of deferred pipelines would be such a worker.
+        if device.adapter_info().backend == wgpu::Backend::Gl {
+            options.num_init_threads = NonZeroUsize::new(1);
+            deferral = PipelineDeferral::None;
+        }
         // If we are running in parallel (i.e. the number of threads is not 1)
         if options.num_init_threads != NonZeroUsize::new(1) {
             #[cfg(not(target_arch = "wasm32"))]
             engine.use_parallel_initialisation();
         }
-        let shaders = shaders::full_shaders(device, &mut engine, &options)?;
+        engine.set_pipeline_deferral(deferral);
+        engine.set_deferred_build_threads(options.num_init_threads.map_or(1, NonZeroUsize::get));
+        let shaders = shaders::full_shaders(device, &mut engine, &options);
+        // Shaders registered later (canonical segment order, replays) build
+        // when they are added, as before.
+        engine.set_pipeline_deferral(PipelineDeferral::None);
+        let shaders = shaders?;
         #[cfg(not(target_arch = "wasm32"))]
         engine.build_shaders_if_needed(device, options.num_init_threads);
+        Self::with_engine(device, options, engine, shaders)
+    }
+
+    /// Creates a new renderer for the specified device, compiling its
+    /// pipelines with [`Device::create_compute_pipeline_async`] (Tilo patch).
+    ///
+    /// On WebGPU the browser then compiles them in parallel on worker
+    /// threads, instead of one after another on its GPU process's main
+    /// thread. That thread also serves the page's frames and every other
+    /// page using the GPU process: a software rasteriser (SwiftShader)
+    /// spends seconds per vello pipeline there, and in Chromium a page whose
+    /// earlier WebGPU context is torn down meanwhile blocks its own main
+    /// thread until the GPU process gets to it. Other backends create the
+    /// pipelines synchronously, one after another.
+    pub async fn new_async(device: &Device, options: RendererOptions) -> Result<Self> {
+        Self::new_async_deferring(device, options, PipelineDeferral::None).await
+    }
+
+    /// [`Self::new_async`], awaiting only the pipelines `deferral` does not
+    /// defer (Tilo patch). Call [`Self::start_deferred_pipelines_async`] once
+    /// the first frame is out; a render that dispatches a deferred pipeline
+    /// before it is compiled creates that pipeline itself.
+    pub async fn new_async_deferring(
+        device: &Device,
+        options: RendererOptions,
+        mut deferral: PipelineDeferral,
+    ) -> Result<Self> {
+        let mut engine = WgpuEngine::new(options.use_cpu, options.pipeline_cache.clone());
+        engine.initialize_gpu_timestamps(device);
+        // As in `new_deferring`: GL compiles under one context lock.
+        if device.adapter_info().backend == wgpu::Backend::Gl {
+            deferral = PipelineDeferral::None;
+        }
+        engine.defer_shader_initialisation();
+        engine.set_pipeline_deferral(deferral);
+        let shaders = shaders::full_shaders(device, &mut engine, &options);
+        engine.set_pipeline_deferral(PipelineDeferral::None);
+        let shaders = shaders?;
+        engine.build_shaders_async(device).await;
+        Self::with_engine(device, options, engine, shaders)
+    }
+
+    fn with_engine(
+        device: &Device,
+        options: RendererOptions,
+        engine: WgpuEngine,
+        shaders: FullShaders,
+    ) -> Result<Self> {
+        #[cfg(feature = "debug_layers")]
+        let mut engine = engine;
         #[cfg(feature = "debug_layers")]
         let debug = debug::DebugRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm, &mut engine);
         let mut budget = bump_budget::BudgetTracker::new();
@@ -1669,6 +1873,40 @@ impl Renderer {
         })
     }
 
+    /// Build the pipelines [`Self::new_deferring`] deferred, in the background
+    /// on the renderer's init threads: those a full frame on the default path
+    /// dispatches first, the largest of each group first. Renders install them
+    /// as they arrive, and wait for one they dispatch. `built`
+    /// runs once every one is built (on that thread), or at once when nothing
+    /// was deferred: the moment to keep a pipeline cache. A second call does
+    /// nothing and drops its `built`.
+    pub fn start_deferred_pipelines(
+        &mut self,
+        device: &Device,
+        built: impl FnOnce() + Send + 'static,
+    ) {
+        self.engine
+            .start_deferred_pipelines(device, Box::new(built));
+    }
+
+    /// Start compiling the pipelines [`Self::new_async_deferring`] deferred,
+    /// through the device's asynchronous pipeline creation, without waiting
+    /// for them (Tilo patch). Renders install each once it is compiled. A
+    /// second call does nothing.
+    pub fn start_deferred_pipelines_async(&mut self, device: &Device) {
+        self.engine.start_deferred_pipelines_async(device);
+    }
+
+    /// The pipelines [`Self::new_deferring`] deferred that are not installed
+    /// yet, and how many a render had to build itself.
+    pub fn deferred_pipelines(&mut self) -> DeferredPipelines {
+        let (pending, built_inline) = self.engine.deferred_pipeline_counts();
+        DeferredPipelines {
+            pending,
+            built_inline,
+        }
+    }
+
     /// Return the GPU allocations whose byte sizes are directly known to the
     /// renderer. This is intended for performance budgets and diagnostics.
     pub fn memory_stats(&self) -> RendererMemoryStats {
@@ -1694,6 +1932,20 @@ impl Renderer {
         self.resolver.set_image_atlas_max(max_size);
     }
 
+    /// The image atlas's side and the images resident in it, with the CPU
+    /// pixels they keep alive. The atlas texture itself is in
+    /// [`Self::memory_stats`]' `image_bytes`.
+    pub fn image_cache_stats(&self) -> ImageCacheStats {
+        self.resolver.image_cache_stats()
+    }
+
+    /// Images went for good (a window closed): an image atlas far bigger
+    /// than what is still drawn comes down within the next few renders,
+    /// not after sixty, so a desktop that goes idle gives the memory back.
+    pub fn shrink_image_atlas_soon(&mut self) {
+        self.resolver.shrink_image_atlas_soon();
+    }
+
     /// Grow the bump buffers at most once, straight to the
     /// [`Self::set_bump_budget_limit`] total, instead of doubling as a scene
     /// fills up. Each growth reallocates every buffer, which a browser's GPU
@@ -1716,6 +1968,32 @@ impl Renderer {
     /// transition and prevents obsolete size classes living forever.
     pub fn trim_pooled_buffers(&mut self) {
         self.engine.clear_pool();
+    }
+
+    /// Hand back scratch a busier scene needed once the scene has stayed
+    /// smaller (off by default): pooled buffers no render has taken for a
+    /// while are destroyed, and the bump reservation comes down to a few
+    /// times what recent dense frames used. Without it a renderer that once
+    /// drew a busy scene keeps that scene's working memory for good.
+    pub fn set_shrink_scratch(&mut self, enabled: bool) {
+        self.budget.set_shrink(enabled);
+        self.engine
+            .set_pool_keep(enabled.then_some(wgpu_engine::POOL_KEEP_RECORDINGS));
+    }
+
+    /// The scene got smaller for good (a window closed): with
+    /// [`Self::set_shrink_scratch`], scratch comes down within the next few
+    /// renders rather than after a hundred, so a desktop that goes idle
+    /// gives the memory back.
+    pub fn shrink_scratch_soon(&mut self) {
+        self.budget.shrink_soon();
+        self.engine.shrink_pool_soon();
+    }
+
+    /// Times the bump reservation shrank ([`Self::set_shrink_scratch`]):
+    /// each dropped every buffer pooled at the larger sizes.
+    pub fn scratch_shrinks(&self) -> u64 {
+        self.budget.shrinks()
     }
 
     /// Whether shared compute-pass encoding is effective for future recordings.
@@ -1766,6 +2044,25 @@ impl Renderer {
     #[doc(hidden)]
     pub fn defer_bump_readback_enabled(&self) -> bool {
         !self.options.use_cpu && self.defer_bump_readback
+    }
+
+    /// Sum every tile's segments in a fixed order, so repeated renders of one
+    /// scene are bit-identical regardless of GPU scheduling. Same as
+    /// `VELLO_CANONICAL_SEGMENT_ORDER=1`; recompiles the shader set.
+    ///
+    /// # Errors
+    /// Returns an error if the shader set fails to compile.
+    #[doc(hidden)]
+    pub fn enable_canonical_segment_order(&mut self, device: &Device) -> Result<()> {
+        if self.engine.canonical_segment_order_enabled() {
+            return Ok(());
+        }
+        self.engine.enable_canonical_segment_order();
+        self.shaders = shaders::full_shaders(device, &mut self.engine, &self.options)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.engine
+            .build_shaders_if_needed(device, self.options.num_init_threads);
+        Ok(())
     }
 
     /// Override deferred synchronous bump readback for a differential oracle.
@@ -2355,7 +2652,7 @@ impl Renderer {
             &mut self.profiler,
         )?;
         if let Some(bump_buf) = bump_buf {
-            self.budget.begin_readback(&self.engine, bump_buf);
+            self.budget.begin_dense_readback(&self.engine, bump_buf);
         }
         self.last_canonical_segment_order_selected = canonical_segment_order_selected;
         self.last_area_ppt8_selected = area_ppt8_selected;
@@ -2428,21 +2725,19 @@ impl Renderer {
             *target.as_image().unwrap(),
             texture,
         )];
-        let submission = self
-            .engine
-            .run_recording_with_post_render_checked_indexed(
-                device,
-                queue,
-                &self.recording,
-                &external_resources,
-                "render_to_texture",
-                post_render,
-                before_submit,
-                #[cfg(feature = "wgpu-profiler")]
-                &mut self.profiler,
-            )?;
+        let submission = self.engine.run_recording_with_post_render_checked_indexed(
+            device,
+            queue,
+            &self.recording,
+            &external_resources,
+            "render_to_texture",
+            post_render,
+            before_submit,
+            #[cfg(feature = "wgpu-profiler")]
+            &mut self.profiler,
+        )?;
         if let Some(bump_buf) = bump_buf {
-            self.budget.begin_readback(&self.engine, bump_buf);
+            self.budget.begin_dense_readback(&self.engine, bump_buf);
         }
         self.last_canonical_segment_order_selected = canonical;
         self.last_area_ppt8_selected = ppt8;
@@ -3420,6 +3715,43 @@ impl Renderer {
         }
     }
 
+    /// Draw `image` from `source` (Tilo patch): its pixels are drawn into the
+    /// atlas slot through a render pass whenever the image is written there,
+    /// so `source` may be any colour format the device samples (a `Bgra8Unorm`
+    /// Wayland client buffer, imported as it is) and may be drawn opaque.
+    /// `None` stops drawing it from a source. Takes precedence over
+    /// [`override_image`](Self::override_image). Returns the previous source.
+    ///
+    /// `source.texture` must have the [`wgpu::TextureUsages::TEXTURE_BINDING`]
+    /// flag and hold the image's extent at `source.origin`. It is read only
+    /// while the image is written into the atlas: on its first draw, after
+    /// this call, and when the atlas is repacked. Keep it readable while any
+    /// scene that draws `image` can still be rendered.
+    pub fn draw_image_from(
+        &mut self,
+        image: &ImageData,
+        source: Option<ImageSource>,
+    ) -> Option<ImageSource> {
+        self.resolver.mark_image_dirty(image);
+        match source {
+            Some(source) => self
+                .engine
+                .image_sources
+                .sources
+                .insert(image.data.id(), source),
+            None => self.engine.image_sources.sources.remove(&image.data.id()),
+        }
+    }
+
+    /// Images drawn into the atlas from an [`ImageSource`] since this renderer
+    /// was made, and the bytes those draws wrote (Tilo patch).
+    pub fn image_source_writes(&self) -> (u64, u64) {
+        (
+            self.engine.image_sources.writes,
+            self.engine.image_sources.bytes,
+        )
+    }
+
     /// Marks `image` as dirty in the atlas cache, so its override texture will be recopied on
     /// the next render that uses it.
     ///
@@ -3803,6 +4135,44 @@ mod tests {
     }
 
     #[test]
+    fn asynchronous_pipeline_creation_renders_what_synchronous_creation_renders() {
+        let (device, queue) = checked_bump_device();
+        let render = |renderer: &mut Renderer| {
+            let (texture, target) = damage_target_with_size(&device, &queue, 16, 16);
+            renderer
+                .render_to_texture(
+                    &device,
+                    &queue,
+                    &solid_scene(),
+                    &target,
+                    &checked_bump_params(),
+                )
+                .unwrap();
+            let (rows, stride) = readback_texture_rows(&device, &queue, &texture, 16, 16);
+            rows.chunks(stride)
+                .flat_map(|row| row[..16 * 4].to_vec())
+                .collect::<Vec<u8>>()
+        };
+        let mut synchronous = Renderer::new(
+            &device,
+            RendererOptions {
+                num_init_threads: NonZeroUsize::new(1),
+                ..RendererOptions::default()
+            },
+        )
+        .unwrap();
+        let mut asynchronous =
+            block_on(Renderer::new_async(&device, RendererOptions::default())).unwrap();
+        let expected = render(&mut synchronous);
+        assert_eq!(
+            expected,
+            vec![255; 16 * 16 * 4],
+            "the solid white scene must cover the target"
+        );
+        assert_eq!(render(&mut asynchronous), expected);
+    }
+
+    #[test]
     fn checked_bump_pending_retains_download_and_overflow() {
         use bump_budget::test_helpers::{pending_proxy, set_ready};
         let (device, queue) = checked_bump_device();
@@ -3857,6 +4227,63 @@ mod tests {
         assert_eq!(
             renderer.poll_bump_budget(&device),
             Ok(BumpBudgetPoll::Complete { overflowed: false })
+        );
+    }
+
+    /// One filled zigzag across a 512x512 target: 2000 nearly horizontal
+    /// edges, each crossing about 32 tiles, so about 64K segments from a
+    /// single path and very few lines.
+    fn zigzag_scene() -> Scene {
+        let mut path = BezPath::new();
+        path.move_to((8.0, 4.0));
+        for i in 0..2000_u32 {
+            let x = if i % 2 == 0 { 504.0 } else { 8.0 };
+            path.line_to((x, 4.0 + f64::from(i) * 0.25));
+        }
+        path.close_path();
+        let mut scene = Scene::new();
+        scene.fill(Fill::NonZero, Affine::IDENTITY, Color::WHITE, None, &path);
+        scene
+    }
+
+    /// The segments buffer holds fewer elements per byte than the counts
+    /// buffer, so a binding limit can cap it below counts that fit. That
+    /// frame must report its overflow, so the caller repaints, instead of
+    /// drawing with segments written past the end of their buffer.
+    #[test]
+    fn segments_capped_by_the_binding_limit_report_their_overflow() {
+        let (device, queue) = checked_bump_device();
+        let params = RenderParams {
+            base_color: Color::BLACK,
+            width: 512,
+            height: 512,
+            antialiasing_method: AaConfig::Area,
+        };
+        let (_texture, view) = damage_target_with_size(&device, &queue, 512, 512);
+        let scene = zigzag_scene();
+        let overflows = |renderer: &mut Renderer| {
+            renderer
+                .render_to_texture(&device, &queue, &scene, &view, &params)
+                .unwrap();
+            renderer.settle_bump_budget(&device)
+        };
+
+        let mut roomy = Renderer::new(&device, RendererOptions::default()).unwrap();
+        assert!(!overflows(&mut roomy), "the scene fits a renderer's floors");
+
+        let mut capped = Renderer::new(&device, RendererOptions::default()).unwrap();
+        capped.budget.set_device_limits(&wgpu::Limits {
+            max_storage_buffer_binding_size: 1 << 20,
+            max_buffer_size: 1 << 20,
+            ..device.limits()
+        });
+        assert!(
+            overflows(&mut capped),
+            "an overflow past the cap is reported"
+        );
+        assert!(
+            overflows(&mut capped),
+            "a cap that cannot grow keeps reporting, frame after frame"
         );
     }
 
@@ -6031,6 +6458,163 @@ mod tests {
             }
         }
         panic!("dense reference remained overflowed after bounded recovery");
+    }
+
+    const SCRATCH_SIDE: u32 = 512;
+
+    fn scratch_params() -> RenderParams {
+        RenderParams {
+            base_color: Color::TRANSPARENT,
+            width: SCRATCH_SIDE,
+            height: SCRATCH_SIDE,
+            antialiasing_method: AaConfig::Area,
+        }
+    }
+
+    /// Eight bands of long zigzags: far more path segments than a 512x512
+    /// viewport's floors reserve, so the bump reservation grows for them.
+    fn busy_scene() -> Scene {
+        let mut scene = Scene::new();
+        for band in 0..8_u32 {
+            let top = 4.0 + f64::from(band) * 63.0;
+            let mut path = BezPath::new();
+            path.move_to((8.0, top));
+            for i in 0..2000_u32 {
+                let x = if i % 2 == 0 { 504.0 } else { 8.0 };
+                path.line_to((x, top + f64::from(i) * 0.03));
+            }
+            path.close_path();
+            scene.fill(Fill::NonZero, Affine::IDENTITY, Color::WHITE, None, &path);
+        }
+        scene
+    }
+
+    /// What is left once the busy part is gone: a backdrop and one shape.
+    fn light_scene() -> Scene {
+        let side = f64::from(SCRATCH_SIDE);
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(0x1A, 0x1B, 0x26),
+            None,
+            &Rect::new(0.0, 0.0, side, side),
+        );
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::WHITE,
+            None,
+            &kurbo::Circle::new((side / 2.0, side / 2.0), side / 5.0),
+        );
+        scene
+    }
+
+    /// A renderer as a compositor makes one: segments summed in a fixed
+    /// order, so repeated renders of a scene are bit-identical, and scratch
+    /// shrinking as `shrink` says.
+    fn scratch_renderer(device: &Device, shrink: bool) -> Renderer {
+        let mut renderer = Renderer::new(device, RendererOptions::default()).unwrap();
+        renderer.enable_canonical_segment_order(device).unwrap();
+        renderer.set_shrink_scratch(shrink);
+        renderer
+    }
+
+    /// Render `scene` densely into `target`, overflow recovery included, and
+    /// read the pixels back.
+    fn scratch_pixels(
+        renderer: &mut Renderer,
+        device: &Device,
+        queue: &Queue,
+        target: &(wgpu::Texture, TextureView),
+        scene: &Scene,
+    ) -> Vec<u8> {
+        render_dense_with_recovery(renderer, device, queue, scene, &target.1, &scratch_params());
+        readback_texture_rows(device, queue, &target.0, SCRATCH_SIDE, SCRATCH_SIDE).0
+    }
+
+    // Catches scratch that stays sized for the busiest scene a renderer
+    // drew, and a shrink that changes a pixel of the lighter scene or of the
+    // busy one drawn again after it.
+    #[test]
+    fn shrunk_scratch_draws_the_same_pixels_and_holds_less() {
+        let (device, queue) = checked_bump_device();
+        let target = damage_target_with_size(&device, &queue, SCRATCH_SIDE, SCRATCH_SIDE);
+        let mut renderer = scratch_renderer(&device, true);
+        let busy = scratch_pixels(&mut renderer, &device, &queue, &target, &busy_scene());
+        let at_peak = renderer.memory_stats();
+        renderer.shrink_scratch_soon();
+        let mut light = Vec::new();
+        for _ in 0..3 {
+            light = scratch_pixels(&mut renderer, &device, &queue, &target, &light_scene());
+        }
+        let after = renderer.memory_stats();
+        let shrinks = renderer.scratch_shrinks();
+        assert_eq!(shrinks, 1, "one shrink, two frames into the light scene");
+        assert!(
+            after.bump_budget_bytes * 8 <= at_peak.bump_budget_bytes * 7,
+            "the reservation came down: {} bytes at the busy scene, {} after",
+            at_peak.bump_budget_bytes,
+            after.bump_budget_bytes,
+        );
+        assert!(
+            after.pooled_buffer_bytes < at_peak.pooled_buffer_bytes,
+            "the pool came down: {} bytes at the busy scene, {} after",
+            at_peak.pooled_buffer_bytes,
+            after.pooled_buffer_bytes,
+        );
+        let mut fresh = scratch_renderer(&device, false);
+        let reference = scratch_pixels(&mut fresh, &device, &queue, &target, &light_scene());
+        let alike = light == reference;
+        assert!(alike, "the shrunk renderer draws the light scene alike");
+        // The busy scene drawn again fits what one shrink left: its first
+        // frame renders whole, without an overflow to repaint.
+        renderer
+            .render_to_texture(&device, &queue, &busy_scene(), &target.1, &scratch_params())
+            .unwrap();
+        let overflowed = renderer.settle_bump_budget(&device);
+        assert!(
+            !overflowed,
+            "the busy scene's first frame after the shrink overflowed"
+        );
+        let again = readback_texture_rows(&device, &queue, &target.0, SCRATCH_SIDE, SCRATCH_SIDE);
+        assert!(again.0 == busy, "and draws the busy scene alike");
+    }
+
+    // Catches size classes a busier scene asked for kept in the pool for
+    // good: a renderer that opted in destroys what no recording takes, and
+    // keeps exactly what each frame takes.
+    #[test]
+    fn pooled_buffers_no_recording_takes_are_destroyed() {
+        let (device, queue) = checked_bump_device();
+        let target = damage_target_with_size(&device, &queue, SCRATCH_SIDE, SCRATCH_SIDE);
+        let pooled_after = |shrink: bool, first: Option<&Scene>, frames: u64| {
+            let mut renderer = scratch_renderer(&device, shrink);
+            if let Some(first) = first {
+                scratch_pixels(&mut renderer, &device, &queue, &target, first);
+            }
+            for _ in 0..frames {
+                render_dense_with_recovery(
+                    &mut renderer,
+                    &device,
+                    &queue,
+                    &light_scene(),
+                    &target.1,
+                    &scratch_params(),
+                );
+            }
+            renderer.memory_stats().pooled_buffer_bytes
+        };
+        let frames = wgpu_engine::POOL_KEEP_RECORDINGS + 1;
+        let light_only = pooled_after(true, None, frames);
+        // The zigzag stays within the viewport's floors: only the classes
+        // its encoding asked for differ from the light scene's.
+        let zigzag = zigzag_scene();
+        assert!(
+            pooled_after(false, Some(&zigzag), frames) > light_only,
+            "upstream keeps the zigzag's classes, so this test can see them go"
+        );
+        assert_eq!(pooled_after(true, Some(&zigzag), frames), light_only);
     }
 
     fn solid_scene() -> Scene {

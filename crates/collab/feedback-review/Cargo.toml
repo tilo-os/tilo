@@ -1,0 +1,22 @@
+[package]
+name = "tilo-feedback-review"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Portable feedback privacy review contract and deterministic redaction floor."
+
+[dependencies]
+# Its detectors run in the browser start module; all patterns are ASCII.
+regex-lite.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

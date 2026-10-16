@@ -25,6 +25,7 @@ use wire_frame::{FrameError, Framing};
 use crate::acl::{Access, AclHandle, IdentityKey};
 use crate::namespace::{ContentAuthority, Namespace};
 use crate::sync::SyncHandle;
+use tilo_lock::MutexRecover as _;
 
 /// The ACL this service enforces and the identity it answers for — an [`AclHandle`], not a value, so it doesn't freeze mount-time policy.
 pub type Enforcement = Option<(AclHandle, IdentityKey)>;
@@ -68,7 +69,7 @@ pub enum Resp {
     NotFound,
     /// Boxed: a full document snapshot dwarfs every other variant, and this
     /// enum sits inline in [`Result`]s the caller passes around by value.
-    Snapshot(Box<qdoc::DocSnapshot>),
+    Snapshot(Box<tilo_doc::DocSnapshot>),
     Inserted {
         block: String,
     },
@@ -120,9 +121,7 @@ fn apply(
     namespace: &Arc<Mutex<Namespace>>,
     enforcement: &Enforcement,
 ) -> (Resp, Vec<u8>) {
-    let mut ns = namespace
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut ns = namespace.lock_recover();
     if ns.content_authority() == ContentAuthority::SignedRecords {
         return (
             Resp::Err("signed document operation protocol required".into()),
@@ -237,16 +236,10 @@ async fn handle_conn(
     let push_tx = tx.clone();
     let poll_ns = namespace.clone();
     let notifier = tokio::spawn(async move {
-        let mut last = poll_ns
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .heads();
+        let mut last = poll_ns.lock_recover().heads();
         loop {
             tokio::time::sleep(Duration::from_millis(150)).await;
-            let now = poll_ns
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .heads();
+            let now = poll_ns.lock_recover().heads();
             if now != last {
                 last = now;
                 // Coalesce: drop the signal if the client is backed up (it re-reads latest next time); stop if it's gone.
@@ -352,7 +345,7 @@ impl Client {
     /// # Errors
     ///
     /// Returns an error if the request can't be sent or the response can't be read.
-    pub async fn snapshot(&mut self, ino: u64) -> std::io::Result<Option<qdoc::DocSnapshot>> {
+    pub async fn snapshot(&mut self, ino: u64) -> std::io::Result<Option<tilo_doc::DocSnapshot>> {
         match self.request(&Req::Snapshot { ino }).await? {
             Resp::Snapshot(s) => Ok(Some(*s)),
             _ => Ok(None),
@@ -421,7 +414,7 @@ impl Client {
     /// Returns an error if the connection is lost or a malformed frame is read.
     pub async fn wait_changed(&mut self) -> std::io::Result<()> {
         loop {
-            if let Resp::Changed = read_msg(&mut self.stream).await? {
+            if matches!(read_msg(&mut self.stream).await?, Resp::Changed) {
                 return Ok(());
             }
         }
@@ -507,7 +500,9 @@ mod tests {
         // Phase `the_control_socket_is_not_a_way_around_the_view`.
         // A document outside the view can't be opened, and can't be told apart from one that doesn't exist (`Open` answers `NotFound` either way).
         {
-            use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
+            use collab_types::{
+                Access as CapAccess, CapOverride, Ed25519PublicKey, Effect, Scope, Subject,
+            };
 
             const ALICE: IdentityKey = [0xA1; 32];
 
@@ -533,7 +528,7 @@ mod tests {
                     Subject::User(Ed25519PublicKey(ALICE)),
                     Scope::FsPath("/shared".into()),
                     Effect::Grant,
-                    Verb::Read,
+                    CapAccess::Read,
                 )],
                 &[],
                 None,
@@ -617,7 +612,9 @@ mod tests {
         // Phase `a_read_participant_cannot_author_over_the_socket`.
         // A read participant sees the document but cannot author it.
         {
-            use collab_types::{CapOverride, Ed25519PublicKey, Effect, Scope, Subject, Verb};
+            use collab_types::{
+                Access as CapAccess, CapOverride, Ed25519PublicKey, Effect, Scope, Subject,
+            };
 
             const ALICE: IdentityKey = [0xA1; 32];
 
@@ -635,7 +632,7 @@ mod tests {
                 Subject::User(Ed25519PublicKey(ALICE)),
                 Scope::FsPath("/shared".into()),
                 Effect::Grant,
-                Verb::Read,
+                CapAccess::Read,
             );
             let acl = WorkspaceAcl::from_capabilities(ALICE, &[read_cap], &[], None);
 
@@ -674,7 +671,7 @@ mod tests {
                 Subject::User(Ed25519PublicKey(ALICE)),
                 Scope::FsPath("/shared".into()),
                 Effect::Grant,
-                Verb::Write,
+                CapAccess::Write,
             );
             let rw = WorkspaceAcl::from_capabilities(ALICE, &[write_cap], &[], None);
             let sock2 = dir.path().join("rw.sock");

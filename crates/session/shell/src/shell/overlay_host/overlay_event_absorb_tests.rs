@@ -9,12 +9,19 @@ use crate::shell::state::WorkspaceTree;
 use std::cell::RefCell;
 use std::collections::HashMap as StdHashMap;
 use std::rc::Rc;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
+use tilo_desktop::i18n::t as desktop_text;
+use ui::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::Affine;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+
+#[path = "notification_header_tests.rs"]
+mod notification_header_tests;
+#[path = "overlay_event_absorb_tests/picker_scroll_tests.rs"]
+mod picker_scroll_tests;
 
 /// Mock content widget recording every [`Widget::handle_event`] call by
 /// event-variant name, so tests can assert which events reached it —
@@ -41,36 +48,13 @@ impl Widget for RecordingContent {
         node_map: &mut StdHashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+            size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
-        let node = taffy.new_leaf(style).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-    }
-
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
+    ui::rect_geometry!();
 
     fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut ui::widget::EventCtx<'_>) {
         let label = match event {
@@ -91,10 +75,6 @@ impl Widget for RecordingContent {
 
     fn name(&self) -> &'static str {
         "RecordingContent"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 
@@ -141,6 +121,7 @@ impl crate::shell::search::SearchProvider for DirectoryPaletteFixtureProvider {
             return Vec::new();
         }
         vec![crate::shell::search::SearchResult {
+            shortcut: None,
             kind: crate::shell::search::ResourceKind::Action,
             operation_kind: tilo_actions::OperationKind::View,
             provider_id: "directory-fixture".into(),
@@ -204,7 +185,7 @@ impl crate::shell::search::SearchProvider for AppSourceFilterFixtureProvider {
                 self.id(),
                 "fixture-host-app",
                 "Open Host fixture",
-                Some("System · unconfined host app".into()),
+                Some("Not sandboxed · System".into()),
                 100,
                 |_, _, _| {},
             ));
@@ -240,10 +221,7 @@ pub(super) fn lay_out_host_with_theme(
     let viewport = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(f64_to_f32_lossy(vw)),
-                    height: Dimension::length(f64_to_f32_lossy(vh)),
-                },
+                size: Size::from_lengths(ui::num::f32_of_f64(vw), ui::num::f32_of_f64(vh)),
                 ..Default::default()
             },
             &[child],
@@ -255,8 +233,8 @@ pub(super) fn lay_out_host_with_theme(
         .compute_layout_with_measure(
             viewport,
             Size {
-                width: AvailableSpace::Definite(f64_to_f32_lossy(vw)),
-                height: AvailableSpace::Definite(f64_to_f32_lossy(vh)),
+                width: AvailableSpace::Definite(ui::num::f32_of_f64(vw)),
+                height: AvailableSpace::Definite(ui::num::f32_of_f64(vh)),
             },
             |known, avail, node_id, _, _| {
                 if let Some(&ptr) = measure_map.get(&node_id) {
@@ -410,15 +388,12 @@ fn directory_action_rows_paint_label_and_subtitle_at_normal_and_narrow_sizes() {
 }
 
 fn cursor_moved_at(p: Point) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: PhysicalPosition::new(p.x, p.y),
-    }
+    ui::synthetic_input::cursor_moved(p.x, p.y)
 }
 
 fn touch_at(id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowEvent {
     WindowEvent::Touch(winit::event::Touch {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         phase,
         location: PhysicalPosition::new(x, y),
         force: None,
@@ -426,13 +401,9 @@ fn touch_at(id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowE
     })
 }
 
-fn left_button_released() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::{
+    mouse_press as left_button_pressed, mouse_release, mouse_release as left_button_released,
+};
 
 fn pump(h: &mut AbsorbHarness, event: &WindowEvent) -> bool {
     pump_with_modifiers(h, event, winit::event::Modifiers::default())
@@ -443,24 +414,11 @@ fn pump_with_modifiers(
     event: &WindowEvent,
     modifiers: winit::event::Modifiers,
 ) -> bool {
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT.clone();
-    let mut focus: Option<NodeId> = None;
-    let mut handled = false;
-    h.host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: &mut doc,
-            path: &root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: h.root_node,
-            taffy: &h.taffy,
-        },
-    );
-    handled
+    ui::testing::Dispatch::new()
+        .modifiers(modifiers)
+        .layout(&h.taffy, h.root_node)
+        .send(&mut h.host, event)
+        .handled
 }
 
 #[test]
@@ -471,7 +429,23 @@ fn pump_with_modifiers(
 fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
     fn first_local_key_releases_follow_without_also_running_a_shell_chord() {
         let mut h = build_harness();
+        // Follow now requires a live participant. Exercise the key handoff
+        // against an admitted roster entry, not an already-disconnected id.
+        {
+            let state = h.chrome.borrow();
+            let mut tree = state.tree_mut();
+            let workspace = &mut tree.desktop.workspaces[0];
+            let tab = workspace.strips[0].window_groups[0].active_tab;
+            workspace.collaborators.push(
+                crate::shell::state::Collaborator::with_active_tab("ada", "Ada", tab)
+                    .with_session(77),
+            );
+        }
         h.host.set_followed_peer(Some("ada".into()));
+        assert!(
+            h.host.followed_peer.is_some(),
+            "fixture is following a live peer"
+        );
         let before = h.chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0]
             .tabs
             .len();
@@ -678,42 +652,16 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
     touchscreen_swipes_take_strips_with_three_fingers_and_workspaces_with_four();
 }
 
-fn left_button_pressed() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_press;
 
 fn key_pressed(key: Key) -> WindowEvent {
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = key;
-    event.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = KeyLocation::Standard;
-    event.state = ElementState::Pressed;
-    event.repeat = false;
-    event.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event,
-        is_synthetic: false,
-    }
+    let event = ui::synthetic_input::key_event(key, None, ElementState::Pressed);
+    ui::synthetic_input::keyboard_input(event)
 }
 
 fn key_released(key: Key) -> WindowEvent {
-    let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-    event.logical_key = key;
-    event.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    event.location = KeyLocation::Standard;
-    event.state = ElementState::Released;
-    event.repeat = false;
-    event.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event,
-        is_synthetic: false,
-    }
+    let event = ui::synthetic_input::key_event(key, None, ElementState::Released);
+    ui::synthetic_input::keyboard_input(event)
 }
 
 /// One production paint, so the chip / scope rects a click router
@@ -736,7 +684,7 @@ fn paint_then_click(h: &mut AbsorbHarness, point_of: impl Fn(&ShellOverlayHost) 
     paint(h);
     let p = point_of(&h.host);
     pump(h, &cursor_moved_at(p));
-    pump(h, &left_button_pressed());
+    pump(h, &mouse_press());
 }
 
 /// Paint, re-lay-out, paint again — the two-frame settle the shell
@@ -780,8 +728,9 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         );
 
         let large = Theme::dark().with_text_scale(2.0);
-        let size = SearchFilters::filter_label_size(&large, &tr);
-        let (_, lh) = tr.measure_weighted("Ag", size, None, TextWeight::Medium);
+        // The palette's filter rows grow with the text scale it lays out at.
+        let row_h = row_h * f64::from(large.text_scale);
+        let (_, lh) = tr.measure_style("Ag", None, &SearchFilters::filter_label_style(&large));
         let at_large = SearchFilters::filter_control_height(&large, &mut tr, row_h);
         assert!(
             at_large > at_base,
@@ -833,7 +782,12 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         let (kinds_group, scope_group) = (&filters.children[0], &filters.children[1]);
 
         let kinds = h.host.search_registry.registered_kinds();
-        assert_eq!(kinds_group.children.len(), kinds.len() + 1);
+        let more_painted = h.host.search_filters.search_more_rect.area() > 0.0;
+        assert_eq!(
+            kinds_group.children.len(),
+            kinds.len() + 1 + usize::from(more_painted),
+            "All, every kind, and More when the row overflowed"
+        );
         let all = &kinds_group.children[0];
         assert_eq!(all.role, Role::ToggleButton);
         assert_eq!(all.name.as_deref(), Some("Filter: All"));
@@ -877,6 +831,14 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
                 "a chip must not publish the bare kind label — a window title may share it"
             );
             assert_eq!(chip.state.checked, Some(false));
+            let pill = h.host.search_filters.search_chip_rects[i];
+            if pill.area() <= 0.0 {
+                assert!(
+                    chip.state.hidden,
+                    "a kind behind More stays named but hidden until More opens"
+                );
+                continue;
+            }
             let target = chip
                 .bounds
                 .map(ui::AccessBounds::to_rect)
@@ -887,9 +849,8 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
                 "chip {i} carries its pointer target"
             );
             assert!(
-                pill_inside_target(h.host.search_filters.search_chip_rects[i], target),
-                "chip {i}'s target {target:?} must wrap its pill {:?} to the {floor} px floor",
-                h.host.search_filters.search_chip_rects[i]
+                pill_inside_target(pill, target),
+                "chip {i}'s target {target:?} must wrap its pill {pill:?} to the {floor} px floor"
             );
             assert_eq!(
                 h.host
@@ -903,6 +864,14 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
                 ),
                 "chip {i} carries a single-segment address: {:?}",
                 chip.action_target
+            );
+        }
+        if more_painted {
+            let more = kinds_group.children.last().expect("More is last");
+            assert_eq!(more.name.as_deref(), Some("Filter: More"));
+            assert_eq!(
+                more.bounds.map(ui::AccessBounds::to_rect),
+                Some(h.host.search_filters.search_more_hit_rect())
             );
         }
 
@@ -1038,8 +1007,8 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
             let label = h
                 .host
                 .search_scope_pill_label(h.host.search_scope_list()[idx]);
-            let size = SearchFilters::filter_label_size(&theme, &tr);
-            let (w, _) = tr.measure_weighted(&label, size, None, TextWeight::Medium);
+            let style = SearchFilters::filter_label_style(&theme);
+            let (w, _) = tr.measure_style(&label, None, &style);
             assert!(
                 f64::from(w) + f64::from(theme.tokens.spacing.s2) <= seg.width(),
                 "{label:?} ({w} px) fits its segment {seg:?} whole"
@@ -1115,9 +1084,16 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
             h.host.search_filters.search_all_chip_hit_rect(),
         )];
         for i in 0..h.host.search_filters.search_chip_rects.len() {
+            let pill = h.host.search_filters.search_chip_rects[i];
+            if pill.area() <= 0.0 {
+                continue;
+            }
+            targets.push((pill, h.host.search_filters.search_chip_hit_rect(i)));
+        }
+        if h.host.search_filters.search_more_rect.area() > 0.0 {
             targets.push((
-                h.host.search_filters.search_chip_rects[i],
-                h.host.search_filters.search_chip_hit_rect(i),
+                h.host.search_filters.search_more_rect,
+                h.host.search_filters.search_more_hit_rect(),
             ));
         }
         for idx in 0..h.host.search_scope_list().len() {
@@ -1160,8 +1136,7 @@ fn filter_band_controls_are_bounded_semantic_targets_that_lift_on_selection() {
         let idle = ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(false));
         assert_eq!(chosen.fill, colors.lift(1.0));
         assert_ne!(
-            chosen.fill,
-            colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+            chosen.fill, colors.intent.inverted,
             "a chosen chip is lifted, not accent-filled"
         );
         assert!(chosen.border.is_some() && chosen.inner_glow.is_some());
@@ -1235,7 +1210,11 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             );
         }
         assert!(h.host.palette.get_rect().y1 <= 684.0);
-        let size = theme.tokens.typography.scale.xs / tr.text_scale();
+        assert!(
+            h.host.search_filters.search_more_rect.area() > 0.0,
+            "2× text on a compact card must keep leftover kinds behind More"
+        );
+        let style = SearchFilters::filter_label_style(&theme);
         for (kind, rect) in h
             .host
             .search_registry
@@ -1243,7 +1222,10 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             .iter()
             .zip(&h.host.search_filters.search_chip_rects)
         {
-            let (w, height) = tr.measure(&kind.localized_label(), size, None);
+            if rect.area() <= 0.0 {
+                continue;
+            }
+            let (w, height) = tr.measure_style(&kind.localized_label(), None, &style);
             assert!(
                 f64::from(w) + f64::from(theme.tokens.spacing.s3) / 2.0 <= rect.width(),
                 "{} needs readable width: {:?}",
@@ -1259,7 +1241,7 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
         }
         for (i, scope) in h.host.search_scope_list().iter().enumerate() {
             let label = h.host.search_scope_pill_label(*scope);
-            let (w, height) = tr.measure(&label, size, None);
+            let (w, height) = tr.measure_style(&label, None, &style);
             let rect = h.host.search_filters.search_scope_pill_rect(i);
             assert!(
                 f64::from(w) + 10.0 <= rect.width(),
@@ -1304,6 +1286,23 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
                     .map(crate::shell::search::ResourceKindText::localized_label)
                     .zip(rects.iter().copied()),
             );
+            if painted.iter().any(|(_, r)| r.area() <= 0.0) {
+                assert!(
+                    h.host.search_filters.search_more_rect.area() > 0.0,
+                    "at {vw}x{vh} leftover kinds must sit behind More"
+                );
+                h.host.search_filters.more_open = true;
+                settle(&mut h, vw, vh);
+                let opened = &h.host.search_filters.search_chip_rects;
+                assert!(
+                    opened.iter().all(|r| r.area() > 0.0),
+                    "at {vw}x{vh} every kind is clickable once More is open"
+                );
+            }
+            let painted: Vec<(String, Rect)> = painted
+                .into_iter()
+                .filter(|(_, r)| r.area() > 0.0)
+                .collect();
             for (label, r) in &painted {
                 assert!(
                     r.area() > 0.0,
@@ -1364,14 +1363,31 @@ fn launcher_chips_fit_and_stay_reachable_at_every_width_and_text_size() {
             h.host.active_kind_filter.is_empty(),
             "the palette starts unfiltered"
         );
+        if h.host
+            .search_filters
+            .search_chip_rects
+            .last()
+            .is_some_and(|rect| rect.area() <= 0.0)
+        {
+            let more = h.host.search_filters.search_more_rect;
+            assert!(more.area() > 0.0, "the last kind is reached through More");
+            pump(&mut h, &cursor_moved_at(more.center()));
+            pump(&mut h, &mouse_press());
+            h.host.search_filters.more_open = true;
+            settle(&mut h, vw, vh);
+        }
         let target = *h
             .host
             .search_filters
             .search_chip_rects
             .last()
             .expect("the last kind must have been painted");
+        assert!(
+            target.area() > 0.0,
+            "opening More must give the last kind a clickable rect"
+        );
         pump(&mut h, &cursor_moved_at(target.center()));
-        pump(&mut h, &left_button_pressed());
+        pump(&mut h, &mouse_press());
 
         assert_eq!(
             h.host.active_kind_filter,
@@ -1431,15 +1447,27 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
         let mut h = build_harness();
         h.host.set_palette_visible(true);
         h.host.force_palette_settled();
+        settle(&mut h, 1600.0, 900.0);
 
         assert!(
             h.host.active_kind_filter.is_empty(),
             "the palette starts unfiltered"
         );
+        if !h
+            .host
+            .search_filters
+            .search_chip_rects
+            .iter()
+            .any(|rect| rect.area() > 0.0)
+        {
+            h.host.search_filters.more_open = true;
+            settle(&mut h, 1600.0, 900.0);
+        }
         paint_then_click(&mut h, |host| {
             host.search_filters
                 .search_chip_rects
-                .first()
+                .iter()
+                .find(|rect| rect.area() > 0.0)
                 .copied()
                 .expect("the chip strip must have painted at least one chip")
                 .center()
@@ -1485,6 +1513,7 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
         h.host.active_kind_filter = app_kind_filter();
         h.host.set_palette_visible(true);
         h.host.force_palette_settled();
+        settle(&mut h, 1600.0, 900.0);
 
         let host_chip = h
             .host
@@ -1493,6 +1522,15 @@ fn palette_chips_and_scopes_filter_without_dismissing_and_enter_activates_the_se
             .iter()
             .position(|kind| *kind == ResourceKind::HostApplication)
             .expect("Host Apps chip is registered");
+        if h.host
+            .search_filters
+            .search_chip_rects
+            .get(host_chip)
+            .is_some_and(|rect| rect.area() <= 0.0)
+        {
+            h.host.search_filters.more_open = true;
+            settle(&mut h, 1600.0, 900.0);
+        }
         paint_then_click(&mut h, |host| {
             host.search_filters.search_chip_rects[host_chip].center()
         });
@@ -1671,7 +1709,7 @@ fn open_overlays_absorb_their_input_and_leave_the_rest_to_content() {
         pump(&mut h, &cursor_moved_at(p));
         h.log.borrow_mut().clear();
 
-        let released = left_button_released();
+        let released = mouse_release();
         let handled = pump(&mut h, &released);
 
         assert!(
@@ -1753,7 +1791,7 @@ fn open_overlays_absorb_their_input_and_leave_the_rest_to_content() {
         let _ = pump(&mut h, &cursor_moved_at(p));
         h.log.borrow_mut().clear();
         assert!(
-            !pump(&mut h, &left_button_pressed()),
+            !pump(&mut h, &mouse_press()),
             "a click in the old Help-pill corner must not be claimed by shell chrome"
         );
         assert!(
@@ -1796,7 +1834,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
             .expect("the visible Power tile has semantic geometry");
 
         let _ = pump(&mut h, &cursor_moved_at(power.center()));
-        assert!(pump(&mut h, &left_button_pressed()));
+        assert!(pump(&mut h, &mouse_press()));
         assert!(h.host.layers.power_menu.is_open());
         assert!(!h.chrome.borrow().overlays.quick_settings);
     }
@@ -1817,7 +1855,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
             .transform_quick_settings_point_for_test(stable_power.center(), Instant::now());
 
         let _ = pump(&mut h, &cursor_moved_at(painted_power));
-        assert!(pump(&mut h, &left_button_pressed()));
+        assert!(pump(&mut h, &mouse_press()));
         assert!(
             h.host.layers.power_menu.is_open(),
             "clicking the visibly transformed Power tile must open its menu"
@@ -1841,6 +1879,7 @@ fn quick_settings_power_tile_and_drill_ins_own_their_pointer_input() {
                     ssid: format!("Network {index}"),
                     signal: 3,
                     secure: false,
+                    security: os_actions::WifiSecurity::Open,
                     connected: false,
                 })
                 .collect();
@@ -1957,7 +1996,6 @@ fn open_notification_history(h: &mut AbsorbHarness, count: usize, vw: f64, vh: f
 )]
 fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
     #[allow(
-        clippy::arithmetic_side_effects,
         clippy::unchecked_time_subtraction,
         reason = "the deterministic notification-age fixture subtracts known earlier test instants"
     )]
@@ -1973,7 +2011,7 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
         );
         assert_eq!(
             tilo_desktop::notifications::accessible_description(&notification, now),
-            "Warning. From System. 3 min ago. Failed"
+            "Warning. 3 min ago. Failed"
         );
     }
 
@@ -1991,11 +2029,7 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
             );
 
             assert!(pump(&mut h, &cursor_moved_at(panel.center())));
-            let wheel = WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
-                delta: MouseScrollDelta::LineDelta(0.0, -2.0),
-                phase: winit::event::TouchPhase::Moved,
-            };
+            let wheel = ui::synthetic_input::mouse_wheel(0.0, -2.0);
             assert!(pump(&mut h, &wheel), "notification wheel must be consumed");
             assert_eq!(
                 h.host.notification_center.first_visible_row(),
@@ -2070,7 +2104,7 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
                 .as_deref()
                 .expect("every retained card exposes its hierarchy");
             assert!(
-                description.starts_with("Error. From System. ")
+                description.starts_with("Error. ")
                     && description.contains("Detailed recovery guidance")
                     && description.contains(&notification.body),
                 "retained cards must expose the same severity, age, source, and body hierarchy as the visual rows; got {description:?}"
@@ -2110,10 +2144,7 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
     /// rows above it.
     fn notification_history_reserves_the_pager_only_when_it_overflows() {
         let theme = Theme::dark();
-        let type_px = (
-            theme.tokens.typography.scale.xs,
-            theme.tokens.typography.scale.sm,
-        );
+        let type_px = tilo_desktop::notifications::CenterLayout::type_lines(&theme);
         let fits = tilo_desktop::notifications::CenterLayout::preferred_height(3, 3, type_px);
         let short = tilo_desktop::notifications::CenterLayout::new(
             Rect::new(0.0, 0.0, 400.0, fits),
@@ -2248,10 +2279,6 @@ fn notification_history_is_labelled_navigable_paged_and_recoverably_cleared() {
 /// the normal event tests above.
 #[test]
 #[ignore = "visual review: needs an offscreen wgpu adapter and writes PNGs"]
-#[allow(
-    clippy::expect_used,
-    reason = "the opt-in visual harness must fail loudly for a missing GPU or output directory"
-)]
 fn render_notification_history_accessibility_matrix_at_1x() {
     use std::path::PathBuf;
     use ui::offscreen::OffscreenRenderer;
@@ -2331,10 +2358,6 @@ fn render_notification_history_accessibility_matrix_at_1x() {
 /// ground, so a row is a surface on the panel on both presets (HIG
 /// §9.5); the same holds for a notification-history row.
 #[test]
-#[allow(
-    clippy::expect_used,
-    reason = "a review fixture must fail loudly for a missing GPU or output directory"
-)]
 #[expect(
     clippy::too_many_lines,
     reason = "an end-to-end test scenario that reads top to bottom"
@@ -2348,6 +2371,11 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
             ssid: ssid.into(),
             signal,
             secure,
+            security: if secure {
+                os_actions::WifiSecurity::Wpa2
+            } else {
+                os_actions::WifiSecurity::Open
+            },
             connected,
         }
     }
@@ -2459,7 +2487,7 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
         std::fs::create_dir_all(&dir).expect("fixture directory");
         let ground = theme.tokens.colors.surfaces.base;
         let floor = qs::control_fill(&theme, false);
-        let panel_ground = panel_surface(&theme, POPOVER_SURFACE_ALPHA);
+        let panel_ground = ui::chrome::shell::panel_ground(&theme);
         for (name, arrange) in scenes {
             let mut harness = build_harness_sized(vw, vh);
             arrange(&mut harness);
@@ -2546,8 +2574,23 @@ fn s1_review_fixtures_are_written_in_dark_and_light() {
         assert!(path.is_file(), "fixture missing: {}", path.display());
         let layout = harness.host.qs_notification_layout();
         assert_eq!(harness.host.qs_notification_visible_rows(), 3);
+        let last = {
+            let chrome = harness
+                .host
+                .chrome
+                .as_ref()
+                .expect("the harness has chrome");
+            harness
+                .host
+                .notification_center
+                .semantic_rects(&ChromeNotifications::new(chrome), &layout, "")
+                .into_iter()
+                .find(|(name, _)| name == "notification_row[2]")
+                .expect("the last row shows")
+                .1
+        };
         assert!(
-            (layout.panel().y1 - layout.row(2).y1 - qs::PANEL_PAD).abs() < 1e-6,
+            (layout.panel().y1 - last.y1 - qs::PANEL_PAD).abs() < 1e-6,
             "{theme_name}: a history that fits ends on the panel padding, not a pager band: {:?}",
             layout.panel()
         );
@@ -2576,7 +2619,7 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
         assert!(!lens.contains(workspace_point));
         pump(&mut h, &cursor_moved_at(workspace_point));
         h.log.borrow_mut().clear();
-        assert!(!pump(&mut h, &left_button_pressed()));
+        assert!(!pump(&mut h, &mouse_press()));
         assert!(
             h.log
                 .borrow()
@@ -2594,42 +2637,138 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
         assert_eq!(lens.y1, 680.0);
     }
 
-    fn compact_shortcut_help_keeps_content_inside_a_comfortable_footer_inset() {
-        let h = build_harness_sized(800.0, 600.0);
-        let panel = h.host.shortcut_help_panel_rect();
-        let done = h.host.shortcut_help_done_rect();
-        assert_eq!(panel.x0, 32.0);
-        assert_eq!(panel.x1, 768.0);
-        assert_eq!(panel.y0, 32.0);
-        assert_eq!(panel.y1, 568.0);
-        assert!(done.y0 >= panel.y0 + 16.0);
-        assert!(done.y1 <= panel.y1 - 18.0);
-
-        let body_bottom = panel.y1 - 22.0;
-        let body_top = panel.y0 + 88.0;
-        let navigation_height = 154.0;
-        let essentials_y = body_top + navigation_height + 12.0;
-        let compact_final_pill_bottom =
-            essentials_y + 18.0 + 29.0 + 5.0 * shortcut_reference_step(true) + 31.0;
-        assert!(
-            compact_final_pill_bottom <= body_bottom,
-            "compact help's final recovery shortcut must fit without clipping: pill={compact_final_pill_bottom}, body={body_bottom}"
-        );
-    }
-
-    fn wide_shortcut_help_remains_a_contextual_card() {
-        let h = build_harness_sized(1280.0, 800.0);
-        let panel = h.host.shortcut_help_panel_rect();
-        assert_eq!(panel.width(), 960.0);
-        assert_eq!(panel.height(), 600.0);
-        assert!(panel.x0 >= 150.0 && panel.x1 <= 1130.0);
-        assert!(panel.y0 >= 100.0 && panel.y1 <= 700.0);
-    }
-
     workspace_lens_leaves_wide_workspace_visible_and_interactive();
     workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs();
-    compact_shortcut_help_keeps_content_inside_a_comfortable_footer_inset();
-    wide_shortcut_help_remains_a_contextual_card();
+}
+
+#[test]
+fn compact_shortcut_help_fits_the_window_and_scrolls_its_body() {
+    let (vw, vh) = (800.0, 600.0);
+    let mut h = build_harness_sized(vw, vh);
+    h.chrome.borrow_mut().overlays.shortcut_help = true;
+    settle(&mut h, vw, vh);
+    let panel = h.host.shortcut_help_panel_rect();
+    let done = h.host.shortcut_help_done_rect();
+    assert_eq!(panel.x0, 32.0);
+    assert_eq!(panel.x1, 768.0);
+    assert_eq!(panel.y0, 32.0);
+    assert_eq!(panel.y1, 568.0);
+    assert!(done.y0 >= panel.y0 + 16.0);
+    assert!(done.y1 <= panel.y1 - 18.0);
+    // The content is taller than an 800x600 window, so the body scrolls
+    // instead of overflowing its panel.
+    assert!(h.host.shortcut_guide_max_scroll > 0.0);
+    // Everything is reachable by scrolling: the scroll range is exactly
+    // the content that does not fit, so the last row ends at the body's
+    // bottom edge when scrolled to the end, and scrolling past it is
+    // clamped rather than leaving blank space or clipping a row.
+    let body_h = panel.height() - 98.0 - 22.0;
+    let note_lines = shortcut_note_lines(
+        shortcut_action_summary(&h.host.shortcut_config).is_some(),
+        h.host.desktop_controls.config().vim_mode,
+    );
+    let content_h = shortcut_guide_content_height(
+        panel.width() - 48.0,
+        SHORTCUT_GUIDE_ROWS.len(),
+        note_lines,
+        h.host.shortcut_navigation_step,
+    );
+    assert!(
+        (h.host.shortcut_guide_max_scroll - (content_h - body_h)).abs() < 1e-6,
+        "scroll range {} must equal the overflow {}",
+        h.host.shortcut_guide_max_scroll,
+        content_h - body_h
+    );
+    h.host.shortcut_guide_scroll = f64::MAX;
+    settle(&mut h, vw, vh);
+    assert_eq!(
+        h.host.shortcut_guide_scroll, h.host.shortcut_guide_max_scroll,
+        "scrolling past the end clamps to the last row"
+    );
+    h.host.shortcut_guide_scroll = 0.0;
+    settle(&mut h, vw, vh);
+    let painted: Vec<_> = h.host.shortcut_binding_rects.clone();
+    let body = Rect::new(
+        panel.x0 + 24.0,
+        panel.y0 + 98.0,
+        panel.x1 - 24.0,
+        panel.y1 - 22.0,
+    );
+    assert!(
+        painted
+            .iter()
+            .all(|(_, rect)| rect.y0 >= body.y0 - 6.0 && rect.y1 <= body.y1 + 6.0),
+        "pointer targets stay inside the visible body"
+    );
+}
+
+#[test]
+fn wide_shortcut_help_is_exactly_as_tall_as_its_content() {
+    let (vw, vh) = (1280.0, 1000.0);
+    let mut h = build_harness_sized(vw, vh);
+    h.chrome.borrow_mut().overlays.shortcut_help = true;
+    settle(&mut h, vw, vh);
+    let panel = h.host.shortcut_help_panel_rect();
+    assert_eq!(panel.width(), 960.0);
+    assert!(
+        panel.height() < vh - 64.0,
+        "a tall window keeps the card intrinsic"
+    );
+    assert!(panel.x0 >= 150.0 && panel.x1 <= 1130.0);
+    assert!(panel.y0 >= 32.0 && panel.y1 <= vh - 32.0);
+    assert_eq!(
+        h.host.shortcut_guide_max_scroll, 0.0,
+        "nothing to scroll when the whole guide fits"
+    );
+}
+
+/// Every anchored shell overlay stays inside the window at every size from a
+/// phone-class window to the desktop: the regression net for placement that
+/// runs off a short or narrow window.
+#[test]
+fn anchored_overlays_stay_inside_the_window_at_every_size() {
+    for (vw, vh) in [
+        (640.0, 400.0),
+        (800.0, 600.0),
+        (900.0, 520.0),
+        (1280.0, 800.0),
+        (1472.0, 920.0),
+    ] {
+        let window = Rect::new(0.0, 0.0, vw, vh);
+        let mut h = build_harness_sized(vw, vh);
+        {
+            let mut chrome = h.chrome.borrow_mut();
+            chrome.overlays.shortcut_help = true;
+        }
+        settle(&mut h, vw, vh);
+        let guide = h.host.shortcut_help_panel_rect();
+        assert!(
+            guide.x0 >= window.x0
+                && guide.x1 <= window.x1
+                && guide.y0 >= window.y0
+                && guide.y1 <= window.y1,
+            "shortcut guide {guide:?} leaves {window:?}"
+        );
+        h.chrome.borrow_mut().overlays.shortcut_help = false;
+        h.chrome.borrow_mut().overlays.quick_settings = true;
+        settle(&mut h, vw, vh);
+        let qs = h.host.quick_settings_rect();
+        assert!(
+            qs.x0 >= window.x0 && qs.x1 <= window.x1 && qs.y0 >= window.y0 && qs.y1 <= window.y1,
+            "quick settings {qs:?} leaves {window:?}"
+        );
+        h.chrome.borrow_mut().overlays.quick_settings = false;
+        h.chrome.borrow_mut().overlays.ws_settings = true;
+        settle(&mut h, vw, vh);
+        let lens = h.host.ws_settings_rect();
+        assert!(
+            lens.x0 >= window.x0
+                && lens.x1 <= window.x1
+                && lens.y0 >= window.y0
+                && lens.y1 <= window.y1,
+            "workspace lens {lens:?} leaves {window:?}"
+        );
+    }
 }
 
 #[test]
@@ -2675,4 +2814,1127 @@ fn shortcut_guide_tab_stops_only_land_on_painted_bindings() {
         focused, painted,
         "Tab walks the painted bindings in painted order"
     );
+}
+
+#[test]
+fn notification_reader_native_keys_scroll_back_cancel_and_pointer_are_modal() {
+    let (width, height) = (960.0, 540.0);
+    let mut h = build_harness_sized(width, height);
+    open_notification_history(&mut h, 18, width, height);
+    let id = h.chrome.borrow_mut().push_notification_full(
+        tilo_desktop::notifications::Notification::new(
+            "Recovery instructions",
+            "Your document is safe. Reopen Search and try the application again.\n".repeat(30),
+        ),
+    );
+    h.chrome.borrow_mut().dismiss_notification(id);
+    settle(&mut h, width, height);
+    let original = h.chrome.borrow().notification_history().len();
+    let live_before: Vec<_> = h
+        .chrome
+        .borrow()
+        .notifications()
+        .iter()
+        .map(|n| n.id)
+        .collect();
+    for key in [NamedKey::ArrowDown, NamedKey::Enter] {
+        assert!(pump(&mut h, &key_pressed(Key::Named(key))));
+    }
+    assert!(h.host.notification_center.is_reading());
+    settle(&mut h, width, height);
+    let region = h
+        .host
+        .primary_vertical_scroll()
+        .expect("reader exposes accessible scrolling");
+    assert!(region.metrics.max_scroll() > 0.0);
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::End))));
+    let at_end = h.host.primary_vertical_scroll().unwrap();
+    assert_eq!(at_end.metrics.offset, at_end.metrics.max_scroll());
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::PageUp))));
+    assert!(h.host.primary_vertical_scroll().unwrap().metrics.offset < at_end.metrics.offset);
+    for key in [NamedKey::Enter, NamedKey::Delete] {
+        assert!(pump(&mut h, &key_pressed(Key::Named(key))));
+        assert!(h.host.notification_center.is_reading());
+        assert_eq!(h.chrome.borrow().notification_history().len(), original);
+    }
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(!h.host.notification_center.is_reading());
+    assert!(matches!(
+        h.chrome.borrow().quick_settings.current_level(),
+        crate::shell::quick_settings::QsLevel::Notifications
+    ));
+    settle(&mut h, width, height);
+    let read = h
+        .host
+        .quick_settings_semantic_rects()
+        .into_iter()
+        .find(|(name, _)| name == "quick_settings_notification_row[0]")
+        .expect("the row stays the way into the reader after returning")
+        .1;
+    assert!(pump(
+        &mut h,
+        &ui::synthetic_input::cursor_moved(read.center().x, read.center().y)
+    ));
+    assert!(pump(&mut h, &mouse_press()));
+    assert!(h.host.notification_center.is_reading());
+    settle(&mut h, width, height);
+    let back = h.host.qs_notification_back_rect();
+    assert!(pump(
+        &mut h,
+        &ui::synthetic_input::cursor_moved(back.center().x, back.center().y)
+    ));
+    assert!(pump(&mut h, &mouse_press()));
+    assert!(!h.host.notification_center.is_reading());
+    assert_eq!(h.chrome.borrow().notification_history().len(), original);
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(matches!(
+        h.chrome.borrow().quick_settings.current_level(),
+        crate::shell::quick_settings::QsLevel::Root
+    ));
+    assert_eq!(
+        h.chrome
+            .borrow()
+            .notifications()
+            .iter()
+            .map(|n| n.id)
+            .collect::<Vec<_>>(),
+        live_before,
+        "covered banners never receive history presses"
+    );
+    assert!(
+        h.log.borrow().is_empty(),
+        "reader input cannot reach application content"
+    );
+}
+
+#[test]
+fn notification_reader_native_capture_and_resize_keep_the_last_line_reachable() {
+    let out = std::env::var_os("TILO_NOTIFICATION_READER_SHOTS").map_or_else(
+        || std::path::PathBuf::from("target/notification-reader-native"),
+        std::path::PathBuf::from,
+    );
+    std::fs::create_dir_all(&out).unwrap();
+    let variants = vec![
+        ("dark", Theme::dark()),
+        ("light", Theme::light()),
+        ("high-contrast", Theme::high_contrast()),
+        ("large-text", Theme::dark().with_text_scale(2.0)),
+        (
+            "ui-text",
+            Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+        ),
+    ];
+    for (name, theme) in variants {
+        let (width, height) = (960_u32, 540_u32);
+        let mut h = build_harness_sized(f64::from(width), f64::from(height));
+        open_notification_history(&mut h, 18, f64::from(width), f64::from(height));
+        let id = h.chrome.borrow_mut().push_notification_full(
+            tilo_desktop::notifications::Notification::new(
+                "Complete recovery instructions",
+                format!(
+                    "{}\nRecovery complete: your document is safe.",
+                    "Your document is safe. Reopen Search and try the app again.\n".repeat(24)
+                ),
+            ),
+        );
+        h.chrome.borrow_mut().dismiss_notification(id);
+        settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
+        for key in [NamedKey::Tab, NamedKey::Enter] {
+            assert!(pump(&mut h, &key_pressed(Key::Named(key))));
+        }
+        assert!(h.host.notification_center.is_reading());
+        settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
+        let mut renderer = offscreen::OffscreenRenderer::new(width, height);
+        for state in ["reading-start", "reading-end", "back-focused", "resized"] {
+            match state {
+                "reading-end" => {
+                    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::End))));
+                }
+                "back-focused" => {
+                    assert!(h.host.focus_synthetic_accessibility(&[0, 0, 0]));
+                }
+                "resized" => {
+                    settle_with_theme(&mut h, 800.0, 480.0, &theme);
+                    assert!(h.host.focus_synthetic_accessibility(&[0, 0, 1]));
+                    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::End))));
+                }
+                _ => {}
+            }
+            let scene = paint_scene(&mut h, &theme);
+            let region = h
+                .host
+                .primary_vertical_scroll()
+                .expect("complete reader scroll surface");
+            assert!(region.metrics.offset <= region.metrics.max_scroll());
+            if state == "reading-end" || state == "resized" {
+                assert_eq!(region.metrics.offset, region.metrics.max_scroll());
+            }
+            let path = out.join(format!("{name}-{state}.png"));
+            if state == "resized" {
+                offscreen::OffscreenRenderer::new(800, 480).render_png(
+                    &scene,
+                    theme.tokens.colors.surfaces.base,
+                    &path,
+                );
+            } else {
+                renderer.render_png(&scene, theme.tokens.colors.surfaces.base, &path);
+            }
+        }
+        assert_eq!(
+            h.chrome.borrow().notification_history().last().unwrap().id,
+            id
+        );
+    }
+}
+
+#[path = "launcher_recovery_tests.rs"]
+mod launcher_recovery_tests;
+
+#[path = "launcher_ranking_tests.rs"]
+mod launcher_ranking_tests;
+
+struct HoverRefreshProvider {
+    revision: Rc<std::cell::Cell<u64>>,
+    activated: Rc<RefCell<Vec<String>>>,
+}
+
+impl crate::shell::search::SearchProvider for HoverRefreshProvider {
+    fn id(&self) -> &'static str {
+        "refreshing-panes"
+    }
+    fn name(&self) -> &'static str {
+        "Pane refresh fixture"
+    }
+    fn resource_kinds(&self) -> &[crate::shell::search::ResourceKind] {
+        &[crate::shell::search::ResourceKind::Application]
+    }
+    fn search_revision(&self, _: &crate::shell::search::SearchContext<'_>) -> String {
+        self.revision.get().to_string()
+    }
+    fn query(
+        &self,
+        _: crate::shell::search::SearchContext<'_>,
+    ) -> Vec<crate::shell::search::SearchResult> {
+        let ids = if self.revision.get() == 0 {
+            vec!["Appearance", "Network"]
+        } else {
+            vec!["Bluetooth", "Appearance", "Network"]
+        };
+        ids.into_iter()
+            .enumerate()
+            .map(|(index, id)| {
+                let activated = Rc::clone(&self.activated);
+                crate::shell::search::SearchResult::nullary(
+                    crate::shell::search::ResourceKind::Application,
+                    self.id(),
+                    id,
+                    id,
+                    None,
+                    100_i32
+                        .checked_sub(i32::try_from(index).unwrap())
+                        .expect("three fixture rows fit the score range"),
+                    move |_, _, _| activated.borrow_mut().push(id.to_owned()),
+                )
+            })
+            .collect()
+    }
+}
+
+struct HoverRefreshFixture {
+    h: AbsorbHarness,
+    revision: Rc<std::cell::Cell<u64>>,
+    activated: Rc<RefCell<Vec<String>>>,
+}
+
+fn hover_refresh_fixture(width: f64, height: f64) -> HoverRefreshFixture {
+    let revision = Rc::new(std::cell::Cell::new(0));
+    let activated = Rc::new(RefCell::new(Vec::new()));
+    let mut h = build_harness_sized(width, height);
+    h.host
+        .search_registry
+        .register(Rc::new(HoverRefreshProvider {
+            revision: Rc::clone(&revision),
+            activated: Rc::clone(&activated),
+        }));
+    h.host.active_kind_filter = vec![crate::shell::search::ResourceKind::Application];
+    h.host.set_palette_visible(true);
+    h.host.set_palette_focus(true);
+    h.host.force_palette_settled();
+    h.host.palette.set_query("fixture");
+    h.host
+        .refresh_search_results(&AutoCommit::new(), &automerge::ROOT);
+    settle(&mut h, width, height);
+    h.log.borrow_mut().clear();
+    HoverRefreshFixture {
+        h,
+        revision,
+        activated,
+    }
+}
+
+#[test]
+fn palette_background_refresh_preserves_hovered_action_identity() {
+    let HoverRefreshFixture {
+        mut h,
+        revision,
+        activated,
+    } = hover_refresh_fixture(1600.0, 900.0);
+    let network = h
+        .host
+        .search_results
+        .iter()
+        .position(|row| row.id == "Network")
+        .expect("Network is initially published");
+    let target = h
+        .host
+        .palette
+        .row_rect(network)
+        .expect("the row is painted")
+        .center();
+    assert!(pump(&mut h, &cursor_moved_at(target)));
+    assert_eq!(
+        h.host.palette.selected_id(),
+        Some(format!("result:{network}").as_str())
+    );
+    assert!(
+        h.log.borrow().is_empty(),
+        "hover must not reach app content"
+    );
+    assert!(pump(&mut h, &left_button_released()));
+    assert!(
+        h.log.borrow().is_empty(),
+        "release must not reach app content"
+    );
+    assert!(
+        activated.borrow().is_empty(),
+        "hover and release do not invoke actions"
+    );
+    revision.set(1);
+    h.host
+        .refresh_search_results(&AutoCommit::new(), &automerge::ROOT);
+    let selected = h
+        .host
+        .palette
+        .selected_id()
+        .expect("selection survives refresh");
+    let index: usize = selected.strip_prefix("result:").unwrap().parse().unwrap();
+    assert_eq!(
+        h.host.search_results[index].id, "Network",
+        "background catalogue arrival must not replace the hovered action"
+    );
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter))));
+    assert_eq!(&*activated.borrow(), &["Network"]);
+}
+
+#[test]
+fn covering_workspace_settings_keeps_pointer_priority_over_palette_rows() {
+    let HoverRefreshFixture {
+        mut h, activated, ..
+    } = hover_refresh_fixture(900.0, 600.0);
+    let network = h
+        .host
+        .search_results
+        .iter()
+        .position(|row| row.id == "Network")
+        .unwrap();
+    let row = h
+        .host
+        .palette
+        .row_rect(network)
+        .expect("published row is painted");
+    let overlap = row.intersect(h.host.ws_settings_rect());
+    assert!(
+        overlap.area() > 0.0,
+        "the modal must cover the actual palette row"
+    );
+    let before = h.host.palette.selected_id().unwrap().to_owned();
+    h.chrome.borrow_mut().overlays.ws_settings = true;
+    assert!(pump(&mut h, &cursor_moved_at(overlap.center())));
+    assert_eq!(h.host.palette.selected_id(), Some(before.as_str()));
+    assert!(
+        h.log.borrow().is_empty(),
+        "covered input must not reach app content"
+    );
+    assert!(activated.borrow().is_empty());
+    h.chrome.borrow_mut().overlays.ws_settings = false;
+    assert!(pump(&mut h, &cursor_moved_at(row.center())));
+    assert_eq!(
+        h.host.palette.selected_id(),
+        Some(format!("result:{network}").as_str())
+    );
+    assert!(h.log.borrow().is_empty());
+}
+
+// Deterministic owned-room fixture: no policy override and no ambient identity.
+fn workspace_name_owner_harness(width: f64, height: f64) -> (AbsorbHarness, tempfile::TempDir) {
+    let profile = tempfile::tempdir().unwrap();
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    tree.adopt_ownerless_workspaces(&"shell-fixture".to_string());
+    let inputs = crate::shell::hosted_inputs::HostedTileInputs::fixture_in(profile.path()).unwrap();
+    let chrome = ChromeState::new_with_fixture_handle(tree.shared(), inputs);
+    assert!(is_active_workspace_owner(&chrome.borrow()));
+    let log = Rc::new(RefCell::new(Vec::new()));
+    let mut host = ShellOverlayHost::new(Box::new(RecordingContent::new(log.clone())))
+        .with_chrome(chrome.clone());
+    let (taffy, root_node) = lay_out_host(&mut host, width, height);
+    (
+        AbsorbHarness {
+            host,
+            chrome,
+            taffy,
+            root_node,
+            log,
+        },
+        profile,
+    )
+}
+
+#[test]
+fn workspace_name_pointer_keys_cancel_reopen_resize_and_commit() {
+    let (mut h, _profile) = workspace_name_owner_harness(1600.0, 900.0);
+    h.chrome
+        .borrow_mut()
+        .open_workspace_settings(WsTab::General);
+    h.host.force_ws_settings_settled();
+    settle(&mut h, 1600.0, 900.0);
+    let original = h
+        .chrome
+        .borrow()
+        .tree()
+        .desktop
+        .active_workspace()
+        .unwrap()
+        .name
+        .clone();
+    let point = h.host.workspace_settings_overlay.name_rect().center();
+    assert!(pump(&mut h, &cursor_moved_at(point)));
+    assert!(pump(&mut h, &mouse_press()));
+    assert!(pump(&mut h, &mouse_release()));
+    assert_eq!(
+        h.chrome.borrow().editing_workspace_name.as_deref(),
+        Some(original.as_str())
+    );
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Home))));
+    assert_eq!(h.chrome.borrow().editing_workspace_name_selection.cursor, 0);
+    assert!(pump(&mut h, &key_pressed(Key::Character("prefix ".into()))));
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::End))));
+    assert!(h.host.commit_into_chrome_field(" 家"));
+    settle(&mut h, 600.0, 700.0);
+    assert!(
+        h.chrome
+            .borrow()
+            .editing_workspace_name
+            .as_ref()
+            .unwrap()
+            .ends_with(" 家")
+    );
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(h.chrome.borrow().editing_workspace_name.is_none());
+    assert!(h.chrome.borrow().overlays.ws_settings);
+    assert_eq!(
+        h.chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .name,
+        original
+    );
+    let point = h.host.workspace_settings_overlay.name_rect().center();
+    assert!(pump(&mut h, &cursor_moved_at(point)));
+    assert!(pump(&mut h, &mouse_press()));
+    assert!(pump(&mut h, &mouse_release()));
+    assert!(pump_with_modifiers(
+        &mut h,
+        &key_pressed(Key::Character("a".into())),
+        winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
+    ));
+    assert!(pump(
+        &mut h,
+        &key_pressed(Key::Character("Renamed 家".into()))
+    ));
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter))));
+    assert!(h.chrome.borrow().editing_workspace_name.is_none());
+    assert_eq!(
+        h.chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .name,
+        "Renamed 家"
+    );
+    let mut held_enter = key_pressed(Key::Named(NamedKey::Enter));
+    if let WindowEvent::KeyboardInput { event, .. } = &mut held_enter {
+        event.repeat = true;
+    }
+    assert!(pump(&mut h, &held_enter));
+    assert!(pump(&mut h, &key_released(Key::Named(NamedKey::Enter))));
+    assert_eq!(
+        h.chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .unwrap()
+            .name,
+        "Renamed 家"
+    );
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(!h.chrome.borrow().overlays.ws_settings);
+    assert!(
+        h.log.borrow().is_empty(),
+        "modal rename input cannot reach app content"
+    );
+}
+
+fn assert_workspace_control_label_pixels(
+    path: &std::path::Path,
+    bounds: Rect,
+    clip: Rect,
+    minimum_contrast: u8,
+) {
+    let image = image::open(path).unwrap().to_rgba8();
+    let (mut low, mut high, mut observed) = (u8::MAX, 0_u8, 0_usize);
+    for (x, y, pixel) in image.enumerate_pixels() {
+        let point = Point::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
+        if bounds.contains(point) && clip.contains(point) {
+            low = low.min(pixel.0[1]);
+            high = high.max(pixel.0[1]);
+            observed = observed.saturating_add(1);
+        }
+    }
+    assert!(observed > 100, "control must be visible");
+    assert!(
+        high.saturating_sub(low) >= minimum_contrast,
+        "control label must contrast with its fill"
+    );
+}
+
+#[test]
+fn workspace_name_native_render_and_resize_matrix() {
+    let out = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../target/workspace-name-native");
+    std::fs::create_dir_all(&out).unwrap();
+    for (label, width, height, theme) in [
+        ("dark", 1280_u32, 800_u32, Theme::dark()),
+        ("light-narrow", 600, 700, Theme::light()),
+        (
+            "ui-text",
+            1280,
+            800,
+            Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+        ),
+    ] {
+        let (mut h, _profile) = workspace_name_owner_harness(f64::from(width), f64::from(height));
+        h.chrome
+            .borrow_mut()
+            .open_workspace_settings(WsTab::General);
+        h.host.force_ws_settings_settled();
+        settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
+        let point = h.host.workspace_settings_overlay.name_rect().center();
+        assert!(pump(&mut h, &cursor_moved_at(point)));
+        assert!(pump(&mut h, &mouse_press()));
+        assert!(pump(&mut h, &mouse_release()));
+        assert!(h.chrome.borrow().editing_workspace_name.is_some());
+        assert!(pump_with_modifiers(
+            &mut h,
+            &key_pressed(Key::Character("a".into())),
+            winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL)
+        ));
+        assert!(
+            h.host
+                .commit_into_chrome_field(&format!("Project {} final name", "W".repeat(38)))
+        );
+        let mut renderer = offscreen::OffscreenRenderer::new(width, height);
+        for state in ["end", "selected-home"] {
+            if state == "selected-home" {
+                assert!(pump_with_modifiers(
+                    &mut h,
+                    &key_pressed(Key::Named(NamedKey::Home)),
+                    winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT)
+                ));
+                assert_eq!(h.chrome.borrow().editing_workspace_name_selection.cursor, 0);
+                assert!(
+                    !h.chrome
+                        .borrow()
+                        .editing_workspace_name_selection
+                        .is_collapsed()
+                );
+            }
+            settle_with_theme(&mut h, f64::from(width), f64::from(height), &theme);
+            let scene = paint_scene(&mut h, &theme);
+            let path = out.join(format!("{label}-{state}.png"));
+            renderer.render_png(&scene, vello::peniko::Color::BLACK, &path);
+            let invite = h.host.workspace_settings_overlay.invite_rect();
+            let inset = 8.0 * f64::from(theme.ui_scale);
+            assert_workspace_control_label_pixels(
+                &path,
+                Rect::new(
+                    invite.x0 + inset,
+                    invite.y0 + inset,
+                    invite.x1 - inset,
+                    invite.y1 - inset,
+                ),
+                h.host.workspace_settings_overlay.general_body_rect(),
+                80,
+            );
+            let panel = h.host.workspace_settings_overlay.rect();
+            let mut footer_text = TextRenderer::new();
+            let (hint_width, hint_height) = footer_text.measure_style(
+                &desktop_text("workspace-settings-edit-hint"),
+                None,
+                &theme.text(TextRole::Caption),
+            );
+            let inset = f64::from(theme.tokens.spacing.s6);
+            let footer = Rect::new(
+                panel.x1 - inset - f64::from(hint_width),
+                panel.y1 - inset - f64::from(hint_height),
+                panel.x1 - inset,
+                panel.y1 - inset,
+            );
+            assert!(
+                h.host.workspace_settings_overlay.general_body_rect().y1
+                    + f64::from(theme.tokens.spacing.s2)
+                    <= footer.y0 + 0.01
+            );
+            assert_workspace_control_label_pixels(&path, footer, panel, 40);
+            assert!(std::fs::metadata(path).unwrap().len() > 1024);
+        }
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+        assert!(h.chrome.borrow().editing_workspace_name.is_none());
+    }
+}
+
+#[test]
+fn workspace_name_submit_ownership_ends_on_release_focus_loss_and_fresh_press() {
+    for reset in ["release", "focus-loss", "fresh-press"] {
+        let (mut h, _profile) = workspace_name_owner_harness(1280.0, 800.0);
+        h.chrome
+            .borrow_mut()
+            .open_workspace_settings(WsTab::General);
+        h.host.force_ws_settings_settled();
+        settle(&mut h, 1280.0, 800.0);
+        let point = h.host.workspace_settings_overlay.name_rect().center();
+        assert!(pump(&mut h, &cursor_moved_at(point)));
+        assert!(pump(&mut h, &mouse_press()));
+        assert!(pump(&mut h, &mouse_release()));
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter))));
+        let mut held = key_pressed(Key::Named(NamedKey::Enter));
+        if let WindowEvent::KeyboardInput { event, .. } = &mut held {
+            event.repeat = true;
+        }
+        assert!(pump(&mut h, &held));
+        assert!(h.log.borrow().is_empty());
+        match reset {
+            "release" => {
+                assert!(pump(&mut h, &key_released(Key::Named(NamedKey::Enter))));
+            }
+            "focus-loss" => {
+                let _ = pump(&mut h, &WindowEvent::Focused(false));
+                h.log.borrow_mut().clear();
+            }
+            _ => {}
+        }
+        assert!(!pump(&mut h, &key_pressed(Key::Named(NamedKey::Enter))));
+        assert_eq!(
+            h.log.borrow().as_slice(),
+            ["Other"],
+            "a fresh key still reaches app content beside the contextual lens"
+        );
+        assert!(h.chrome.borrow().overlays.ws_settings);
+    }
+}
+
+#[test]
+fn notification_banner_completed_click_and_interrupted_gestures() {
+    for interruption in ["outside", "escape", "focus", "resize", "retired"] {
+        let mut h = build_harness_sized(960.0, 540.0);
+        let id = h.chrome.borrow_mut().push_notification_full(
+            tilo_desktop::notifications::Notification::new(
+                "Backup failed",
+                "Try again from Search.",
+            ),
+        );
+        let theme = Theme::dark().with_reduce_motion(true);
+        settle_with_theme(&mut h, 960.0, 540.0, &theme);
+        let point = h.host.notification_stack.rect().center();
+        pump(&mut h, &cursor_moved_at(point));
+        assert!(pump(&mut h, &left_button_pressed()));
+        assert_eq!(
+            h.chrome.borrow().notifications().len(),
+            1,
+            "a press must not activate or retire the banner: {interruption}"
+        );
+        match interruption {
+            "outside" => {
+                pump(&mut h, &cursor_moved_at(Point::new(80.0, 400.0)));
+            }
+            "escape" => {
+                assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+            }
+            "focus" => {
+                pump(&mut h, &WindowEvent::Focused(false));
+            }
+            "resize" => {
+                settle_with_theme(&mut h, 780.0, 540.0, &theme);
+            }
+            "retired" => {
+                h.chrome.borrow_mut().dismiss_notification(id);
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            pump(&mut h, &left_button_released()),
+            "the banner owns its release"
+        );
+        assert_eq!(
+            h.chrome.borrow().notifications().len(),
+            usize::from(interruption != "retired")
+        );
+        assert!(
+            !h.log
+                .borrow()
+                .iter()
+                .any(|event| event == "MouseInput::Released"),
+            "an interrupted banner release must not reach content"
+        );
+        pump(&mut h, &cursor_moved_at(Point::new(80.0, 400.0)));
+        h.log.borrow_mut().clear();
+        pump(&mut h, &left_button_pressed());
+        pump(&mut h, &left_button_released());
+        assert!(
+            h.log
+                .borrow()
+                .iter()
+                .any(|event| event == "MouseInput::Released"),
+            "the next ordinary desktop click is not captured"
+        );
+        if interruption != "retired" {
+            settle_with_theme(&mut h, 780.0, 540.0, &theme);
+            let point = h.host.notification_stack.rect().center();
+            pump(&mut h, &cursor_moved_at(point));
+            assert!(pump(&mut h, &left_button_pressed()));
+            assert!(pump(&mut h, &left_button_released()));
+            assert!(h.chrome.borrow().notifications().is_empty());
+            assert_eq!(h.chrome.borrow().notification_history().len(), 1);
+        }
+    }
+}
+
+fn capture_banner_pointer_state(
+    h: &mut AbsorbHarness,
+    theme: &Theme,
+    width: u32,
+    path: &std::path::Path,
+) {
+    let bounds = h.host.notification_stack.rect();
+    let mut scene = Scene::new();
+    h.host.notification_stack.draw(
+        &ChromeNotifications::new(&h.chrome),
+        &mut scene,
+        Affine::translate((24.0 - bounds.x0, 24.0 - bounds.y0)),
+        &mut TextRenderer::new(),
+        theme,
+    );
+    offscreen::OffscreenRenderer::new(width, 300).render_png(
+        &scene,
+        theme.tokens.colors.surfaces.base,
+        path,
+    );
+    assert!(path.is_file(), "the banner capture must exist");
+}
+
+fn banner_pointer_capture_variants() -> [(&'static str, Theme, f64, u32); 6] {
+    [
+        ("dark", Theme::dark(), 640.0, 440),
+        ("light", Theme::light(), 640.0, 440),
+        ("large-text", Theme::dark().with_text_scale(2.0), 640.0, 440),
+        (
+            "contrast",
+            Theme::high_contrast().with_text_scale(2.0),
+            640.0,
+            440,
+        ),
+        (
+            "combined",
+            Theme::dark().with_ui_scale(1.5).with_text_scale(1.3),
+            800.0,
+            440,
+        ),
+        ("narrow", Theme::light().with_text_scale(2.0), 320.0, 320),
+    ]
+}
+
+#[test]
+fn notification_banner_pointer_feedback_matches_shared_close_face() {
+    let out = std::env::var_os("TILO_BANNER_POINTER_EVIDENCE").map_or_else(
+        || std::path::PathBuf::from("target/banner-pointer-review"),
+        std::path::PathBuf::from,
+    );
+    std::fs::create_dir_all(&out).unwrap();
+    let mut missing_feedback = Vec::new();
+    for (name, theme, viewport, width) in banner_pointer_capture_variants() {
+        let theme = theme.with_reduce_motion(true);
+        let mut h = build_harness_sized(viewport, 540.0);
+        h.chrome.borrow_mut().push_notification_full(
+            tilo_desktop::notifications::Notification::new(
+                "Backup failed",
+                "Try again from Search.",
+            )
+            .with_app_name("Files")
+            .with_severity(tilo_desktop::notifications::NotificationSeverity::Error),
+        );
+        settle_with_theme(&mut h, viewport, 540.0, &theme);
+        let card = h.host.notification_stack.rect();
+        assert!(card.area() > 0.0);
+        let hit = ui::widget::toast::paint_card(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &theme,
+            card,
+            &ui::widget::toast::ToastCard::new(
+                "Backup failed",
+                ui::widget::toast::ToastKind::Error,
+            )
+            .body("Try again from Search.")
+            .caption("Files")
+            .closable(true),
+        );
+        let idle = out.join(format!("{name}-idle.png"));
+        capture_banner_pointer_state(&mut h, &theme, width, &idle);
+        pump(&mut h, &cursor_moved_at(hit.close_rect.center()));
+        let hover = out.join(format!("{name}-hover.png"));
+        capture_banner_pointer_state(&mut h, &theme, width, &hover);
+        if std::fs::read(&idle).unwrap() == std::fs::read(&hover).unwrap() {
+            missing_feedback.push(name);
+        }
+        assert!(pump(&mut h, &left_button_pressed()));
+        assert_eq!(h.chrome.borrow().notifications().len(), 1);
+        capture_banner_pointer_state(
+            &mut h,
+            &theme,
+            width,
+            &out.join(format!("{name}-pressed.png")),
+        );
+        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+        assert!(pump(&mut h, &left_button_released()));
+        assert_eq!(
+            h.chrome.borrow().notifications().len(),
+            1,
+            "cancelled close gestures retain the error"
+        );
+    }
+    assert!(
+        missing_feedback.is_empty(),
+        "the actual banner pointer path must feed shared close hover: {missing_feedback:?}"
+    );
+}
+
+#[test]
+fn notification_banner_lost_release_does_not_capture_a_fresh_content_click() {
+    for lost_focus in [true, false] {
+        let mut h = build_harness_sized(960.0, 540.0);
+        h.chrome.borrow_mut().push_notification_full(
+            tilo_desktop::notifications::Notification::new(
+                "Backup failed",
+                "Try again from Search.",
+            ),
+        );
+        let theme = Theme::dark().with_reduce_motion(true);
+        settle_with_theme(&mut h, 960.0, 540.0, &theme);
+        let point = h.host.notification_stack.rect().center();
+        pump(&mut h, &cursor_moved_at(point));
+        assert!(pump(&mut h, &left_button_pressed()));
+        if lost_focus {
+            pump(&mut h, &WindowEvent::Focused(false));
+            pump(&mut h, &WindowEvent::Focused(true));
+        }
+        // The old release is absent. A fresh click belongs to content.
+        pump(&mut h, &cursor_moved_at(Point::new(8.0, 400.0)));
+        h.log.borrow_mut().clear();
+        pump(&mut h, &left_button_pressed());
+        assert!(
+            h.log
+                .borrow()
+                .iter()
+                .any(|event| event == "MouseInput::Pressed")
+        );
+        pump(&mut h, &left_button_released());
+        assert!(
+            h.log
+                .borrow()
+                .iter()
+                .any(|event| event == "MouseInput::Released"),
+            "a lost banner release cannot steal a fresh click: lost_focus={lost_focus}"
+        );
+        assert_eq!(h.chrome.borrow().notifications().len(), 1);
+        assert!(h.chrome.borrow().notification_history().is_empty());
+    }
+}
+
+fn qs_details_focused(node: &ui::a11y::AccessNode, name: &str) -> bool {
+    (node.name.as_deref() == Some(name) && node.state.focused)
+        || node
+            .children
+            .iter()
+            .any(|child| qs_details_focused(child, name))
+}
+fn qs_details_tap(h: &mut AbsorbHarness, key: NamedKey) -> bool {
+    let handled = pump(h, &key_pressed(Key::Named(key)));
+    pump(h, &key_released(Key::Named(key)));
+    handled
+}
+
+fn open_radio_details_in_harness(
+    h: &mut AbsorbHarness,
+    input: &str,
+    name: &str,
+    target: &str,
+    action_id: &str,
+) {
+    match input {
+        "keyboard" => {
+            for _ in 0..32 {
+                assert!(qs_details_tap(h, NamedKey::Tab));
+                if qs_details_focused(&h.host.accessibility().unwrap(), name) {
+                    break;
+                }
+            }
+            assert!(qs_details_focused(&h.host.accessibility().unwrap(), name));
+            assert!(qs_details_tap(h, NamedKey::Enter));
+        }
+        "accessibility" => {
+            let index = h
+                .host
+                .qs_root
+                .accessibility_snapshot(&h.chrome.borrow().quick_settings)
+                .children
+                .iter()
+                .position(|node| node.name.as_deref() == Some(name))
+                .expect("details accessibility child");
+            assert!(focus_quick_settings_accessibility(&mut h.host, &[index]));
+            assert!(qs_details_tap(h, NamedKey::Enter));
+        }
+        "semantic" => {
+            let provider = crate::shell::search::providers::actions::ActionsProvider::new();
+            let document = AutoCommit::new();
+            let results = crate::shell::search::SearchProvider::query(
+                &provider,
+                crate::shell::search::SearchContext {
+                    query_scope: None,
+                    include_programmatic: false,
+                    needle: "",
+                    wanted: &[crate::shell::search::ResourceKind::Action],
+                    chrome: &h.chrome.borrow(),
+                    doc: &document,
+                    doc_root: &automerge::ROOT,
+                },
+            );
+            let result = results
+                .iter()
+                .find(|result| result.id == action_id)
+                .expect("published details action");
+            let mut document = AutoCommit::new();
+            (result.on_open)(
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &h.chrome,
+                &tilo_actions::ActionArgs::none(),
+            )
+            .unwrap();
+        }
+        _ => {
+            let rect = h
+                .host
+                .quick_settings_semantic_rects()
+                .into_iter()
+                .find_map(|(id, rect)| (id == target).then_some(rect))
+                .expect("painted details target");
+            pump(h, &cursor_moved_at(rect.center()));
+            assert!(pump(h, &left_button_pressed()));
+            assert!(pump(h, &left_button_released()));
+        }
+    }
+}
+
+#[test]
+fn radio_details_use_native_keyboard_pointer_and_action_routes() {
+    for (name, target, action_id, level) in [
+        (
+            "Wi-Fi networks",
+            "quick_settings_network_details",
+            "quick-settings.network",
+            crate::shell::quick_settings::QsLevel::Wifi,
+        ),
+        (
+            "Bluetooth devices",
+            "quick_settings_bluetooth_details",
+            "quick-settings.bluetooth",
+            crate::shell::quick_settings::QsLevel::Bluetooth,
+        ),
+    ] {
+        for input in ["keyboard", "pointer", "accessibility", "semantic"] {
+            let actions = super::qs_device_state_tests::Recorder::default();
+            let mut h = build_harness_sized(1000.0, 980.0);
+            h.host = h.host.with_qs_actions(Box::new(actions.clone()));
+            h.host.qs_root = crate::shell::quick_settings::root::QuickSettingsRoot::default();
+            {
+                let mut state = h.chrome.borrow_mut();
+                state.overlays.quick_settings = true;
+                state.quick_settings = crate::shell::chrome_state::QuickSettingsState::fixture();
+                state.quick_settings.radios.wifi_available = true;
+                state.quick_settings.bluetooth_available = true;
+            }
+            h.host.force_quick_settings_settled();
+            settle(&mut h, 1000.0, 980.0);
+            open_radio_details_in_harness(&mut h, input, name, target, action_id);
+            assert_eq!(
+                h.chrome.borrow().quick_settings.current_level(),
+                &level,
+                "{input}"
+            );
+            assert!(
+                actions.calls().is_empty(),
+                "details navigation must not write radio state"
+            );
+            assert!(qs_details_tap(&mut h, NamedKey::Escape));
+            assert_eq!(
+                h.chrome.borrow().quick_settings.current_level(),
+                &crate::shell::quick_settings::QsLevel::Root
+            );
+            assert!(h.chrome.borrow().overlays.quick_settings);
+            settle(&mut h, 780.0, 920.0);
+            if input == "keyboard" {
+                assert!(qs_details_tap(&mut h, NamedKey::Enter));
+                assert_eq!(h.chrome.borrow().quick_settings.current_level(), &level);
+                assert!(qs_details_tap(&mut h, NamedKey::Escape));
+            }
+            assert!(qs_details_tap(&mut h, NamedKey::Escape));
+            assert!(!h.chrome.borrow().overlays.quick_settings);
+            assert!(
+                actions.calls().is_empty(),
+                "cancel and resize never toggle a device"
+            );
+        }
+    }
+}
+
+#[test]
+fn radio_details_navigation_owns_its_release_after_escape() {
+    let actions = super::qs_device_state_tests::Recorder::default();
+    let mut h = build_harness_sized(1000.0, 980.0);
+    h.host = h.host.with_qs_actions(Box::new(actions.clone()));
+    {
+        let mut state = h.chrome.borrow_mut();
+        state.overlays.quick_settings = true;
+        state.quick_settings.radios.wifi_available = true;
+    }
+    h.host.force_quick_settings_settled();
+    settle(&mut h, 1000.0, 980.0);
+    let rect = h
+        .host
+        .quick_settings_semantic_rects()
+        .into_iter()
+        .find_map(|(id, rect)| (id == "quick_settings_network_details").then_some(rect))
+        .expect("Wi-Fi details");
+    pump(&mut h, &cursor_moved_at(rect.center()));
+    assert!(pump(&mut h, &left_button_pressed()));
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+    assert!(!h.chrome.borrow().overlays.quick_settings);
+    pump(&mut h, &cursor_moved_at(Point::new(8.0, 900.0)));
+    let releases = || {
+        h.log
+            .borrow()
+            .iter()
+            .filter(|name| *name == "MouseInput::Released")
+            .count()
+    };
+    let before = releases();
+    assert!(pump(&mut h, &left_button_released()));
+    assert_eq!(
+        h.log
+            .borrow()
+            .iter()
+            .filter(|name| *name == "MouseInput::Released")
+            .count(),
+        before
+    );
+    assert!(actions.calls().is_empty());
+    // The next ordinary desktop click remains deliverable.
+    pump(&mut h, &left_button_pressed());
+    pump(&mut h, &left_button_released());
+    assert!(
+        h.log
+            .borrow()
+            .iter()
+            .filter(|name| *name == "MouseInput::Released")
+            .count()
+            > before
+    );
+}
+
+#[test]
+fn radio_details_lost_release_does_not_capture_a_fresh_content_click() {
+    for lost_focus in [true, false] {
+        for target in [
+            "quick_settings_network_details",
+            "quick_settings_bluetooth_details",
+        ] {
+            let actions = super::qs_device_state_tests::Recorder::default();
+            let mut h = build_harness_sized(1000.0, 980.0);
+            h.host = h.host.with_qs_actions(Box::new(actions.clone()));
+            {
+                let mut state = h.chrome.borrow_mut();
+                state.overlays.quick_settings = true;
+                state.quick_settings.radios.wifi_available = true;
+                state.quick_settings.bluetooth_available = true;
+            }
+            h.host.force_quick_settings_settled();
+            settle(&mut h, 1000.0, 980.0);
+            let rect = h
+                .host
+                .quick_settings_semantic_rects()
+                .into_iter()
+                .find_map(|(id, rect)| (id == target).then_some(rect))
+                .expect("radio details");
+            pump(&mut h, &cursor_moved_at(rect.center()));
+            assert!(pump(&mut h, &left_button_pressed()));
+            if lost_focus {
+                pump(&mut h, &WindowEvent::Focused(false));
+                pump(&mut h, &WindowEvent::Focused(true));
+            }
+            assert!(qs_details_tap(&mut h, NamedKey::Escape));
+            assert!(qs_details_tap(&mut h, NamedKey::Escape));
+            assert!(!h.chrome.borrow().overlays.quick_settings);
+            // The navigation release is deliberately absent. The next press
+            // begins an independent content gesture, with or without focus loss.
+            pump(&mut h, &cursor_moved_at(Point::new(8.0, 900.0)));
+            h.log.borrow_mut().clear();
+            pump(&mut h, &left_button_pressed());
+            assert!(
+                h.log
+                    .borrow()
+                    .iter()
+                    .any(|event| event == "MouseInput::Pressed"),
+                "the fresh content press is delivered: {target}, lost_focus={lost_focus}"
+            );
+            pump(&mut h, &left_button_released());
+            assert!(
+                h.log
+                    .borrow()
+                    .iter()
+                    .any(|event| event == "MouseInput::Released"),
+                "its matching release must also arrive: {target}, lost_focus={lost_focus}"
+            );
+            assert!(
+                actions.calls().is_empty(),
+                "navigation never writes a radio"
+            );
+        }
+    }
 }

@@ -1,4 +1,5 @@
 //! Distinct structural-owner checks; collaborator roles remain unchanged.
+use super::facades::PeerGovernance;
 use super::{DeviceCert, Role, StatePeer, SystemTime};
 
 impl StatePeer {
@@ -27,7 +28,7 @@ impl StatePeer {
         }
         self.certificate(&cert.device_public_key, now)?;
         match self.permissions(cert.device_public_key, now) {
-            Ok((role, _, _)) => Ok(role),
+            Ok(member) => Ok(member.role),
             Err(error)
                 if error.contains("no room membership") && self.has_governed_admission(cert) =>
             {
@@ -35,35 +36,6 @@ impl StatePeer {
             }
             Err(error) => Err(error),
         }
-    }
-
-    /// Check a verified membership refresh of the room owner.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the refreshed device is not a current owner device.
-    pub fn verify_owner_refresh(
-        &self,
-        membership: &crate::join::VerifiedMembership,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        let role = self.current_membership_role(membership, now)?;
-        self.require_structural_owner(membership.device_cert(), role, now)
-    }
-
-    /// Rechecks current owner membership for an already committed receipt.
-    /// The caller must independently bind the receipt's original scope and proof.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `certificate` is not a current owner device at `now`.
-    pub fn verify_current_owner(
-        &self,
-        certificate: &DeviceCert,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        let role = self.current_certificate_role(certificate, now)?;
-        self.require_structural_owner(certificate, role, now)
     }
 
     fn require_structural_owner(
@@ -77,6 +49,36 @@ impl StatePeer {
         }
         self.certificate(&self.core.authority.device_public_key, now)?;
         Ok(())
+    }
+}
+impl PeerGovernance<'_> {
+    /// Check a verified membership refresh of the room owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the refreshed device is not a current owner device.
+    pub fn verify_owner_refresh(
+        self,
+        membership: &crate::join::VerifiedMembership,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let role = self.peer.current_membership_role(membership, now)?;
+        self.peer
+            .require_structural_owner(membership.device_cert(), role, now)
+    }
+    /// Rechecks current owner membership for an already committed receipt.
+    /// The caller must independently bind the receipt's original scope and proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `certificate` is not a current owner device at `now`.
+    pub fn verify_current_owner(
+        self,
+        certificate: &DeviceCert,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let role = self.peer.current_certificate_role(certificate, now)?;
+        self.peer.require_structural_owner(certificate, role, now)
     }
 }
 

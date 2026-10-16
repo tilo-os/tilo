@@ -8,18 +8,14 @@
 //! offscreen tests. Set `TILO_UI_SCREENSHOT_DIR=<path>` to dump a PNG.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use crate::support::offscreen::OffscreenRenderer;
 use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use tilo_ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -32,13 +28,6 @@ use tilo_ui::widget::{Column, Scrollable, Text, Widget};
 const W: u32 = 400;
 const H: u32 = 300;
 const BG: [u8; 4] = [0x0f, 0x17, 0x2a, 0xff];
-
-fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        OffscreenRenderer::new(w, h)
-    }))
-    .ok()
-}
 
 /// Tall column of left-aligned text, far taller than the viewport so the
 /// vertical scrollbar must appear.
@@ -105,7 +94,7 @@ fn right_edge_non_bg(rgba: &[u8], strip: u32) -> usize {
 
 #[test]
 fn scrollbar_paints_along_right_edge() {
-    let Some(mut renderer) = try_new_renderer(W, H) else {
+    let Some(mut renderer) = OffscreenRenderer::try_new(W, H).ok() else {
         eprintln!("no wgpu adapter — skipping scrollbar_paints_along_right_edge");
         return;
     };

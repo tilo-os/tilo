@@ -1,16 +1,6 @@
 //! Interaction tests for shell chrome widgets (`OverviewView`, the search
 //! palette, `QuickSettings`, `WorkspaceSettings`, `SidebarWheelDisc`, `TopBar`, …).
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use shell::shell::state::FreshId as _;
 use shell::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
@@ -52,17 +42,6 @@ fn overview_opens_by_cmd_tab_activates_on_click_and_uses_a_large_header() {
         assert_eq!(tree.desktop.active, b_id);
     }
 
-    // Phase `cmd_tab_toggles_overview`.
-    {
-        use shell::shell::Shell;
-        use shell::shell::test_support::{Mods, key_press};
-        let mut shell = Shell::new_for_test();
-        shell.dispatch_key(key_press("Tab", Mods::CMD));
-        assert!(shell.overview_visible());
-        shell.dispatch_key(key_press("Tab", Mods::CMD));
-        assert!(!shell.overview_visible());
-    }
-
     // Phase `overview_header_font_size_is_at_least_32px`.
     // The overview opens by naming the room you are in — the largest thing
     // on the panel. Pinned at >= 32px so a later step down to
@@ -82,21 +61,28 @@ fn overview_opens_by_cmd_tab_activates_on_click_and_uses_a_large_header() {
 }
 
 #[test]
-fn cmd_k_opens_and_escape_closes_search() {
-    use shell::shell::Shell;
-    use shell::shell::test_support::{Mods, key_press};
-    let mut shell = Shell::new_for_test();
-    shell.dispatch_key(key_press("K", Mods::CMD));
-    assert!(shell.search_visible());
-    shell.dispatch_key(key_press("Escape", Mods::NONE));
-    assert!(!shell.search_visible());
+fn super_space_opens_and_escape_closes_search() {
+    use shell::shell::overlay_host::ShellOverlayHost;
+    let tree = WorkspaceTree::bootstrap_demo();
+    let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+    host.set_shortcut_config(settings_store::hardware::ShortcutConfig::default())
+        .unwrap();
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        host,
+        (1280, 800),
+        ui::theme::Theme::dark(),
+    );
+    assert!(!frame.root::<ShellOverlayHost>().palette_visible());
+    frame.set_modifiers(&["super".to_owned()]);
+    frame.key("Space");
+    assert!(frame.root::<ShellOverlayHost>().palette_visible());
+    frame.set_modifiers(&[]);
+    frame.key("Escape");
+    assert!(!frame.root::<ShellOverlayHost>().palette_visible());
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
     // Phase `workspace_settings_general_edits_name_and_removes_collaborator`.
     {
@@ -118,17 +104,20 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
 
     // Phase `workspace_settings_members_tab_reads_the_real_roster`.
     {
-        // What a member may do is the verb on their membership capability,
+        // What a member may do is their role in the room,
         // and that is what the Members pane renders.
-        use shell::shell::state::{CapOverride, CapRole, Subject, Verb, Workspace, WorkspaceId};
+        use shell::shell::state::{CapRole, Workspace, WorkspaceId};
         use tilo_desktop::workspace_settings::{WsTab, members_pane_rows};
         let host_str = "host".to_string();
         let mut ws = Workspace::new(WorkspaceId::new(), "Design");
         ws.set_owner("host");
-        let room = ws.id.raw().to_string();
-        ws.grant_as(
+        ws.govern_as_at(
             &host_str,
-            CapOverride::membership(Subject::person("viewer-user"), room, Verb::Read),
+            tilo_action_policy::Change::AddMember {
+                person: ("viewer-user").to_string(),
+                role: tilo_action_policy::Role::Viewer,
+            },
+            tilo_clock::unix_now(),
         )
         .expect("the owner may write a membership");
 
@@ -149,7 +138,7 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
     // Phase `workspace_settings_permissions_tab_lists_granted_capabilities`.
     {
         use shell::shell::state::{
-            CapOverride, Expiry, Scope, Subject, Verb, Workspace, WorkspaceId,
+            Access, CapOverride, Expiry, Scope, Subject, Workspace, WorkspaceId,
         };
         use tilo_desktop::workspace_settings::{SubjectKind, WsTab, permissions_pane_layout};
         let host_str = "host".to_string();
@@ -160,7 +149,7 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
             CapOverride::grant(
                 Subject::app("Terminal"),
                 Scope::FsPath("/var/workspace".into()),
-                Verb::Write,
+                Access::Write,
             )
             .expiring(Expiry::EndOfSession),
         )
@@ -189,25 +178,9 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
         assert!(layout.choice_rect.area() > 0.0);
         assert!(layout.submit_rect.area() > 0.0);
     }
-
-    // Phase `workspace_rename_fires_info_toast`.
-    {
-        use shell::shell::Shell;
-        use ui::widget::toast::ToastKind;
-        let mut shell = Shell::new_for_test();
-        let b0 = shell.toast_count();
-        shell.simulate_rename_active_workspace("New Name");
-        let kinds: Vec<ToastKind> = shell.toast_kinds();
-        assert!(kinds.iter().any(|kind| matches!(kind, ToastKind::Info)));
-        assert_eq!(shell.toast_count(), b0 + 1);
-    }
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn topbar_chrome_renders_tray_avatars_clock_glyph_and_dots() {
     // Phase `topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues`.
     {
@@ -308,58 +281,60 @@ fn topbar_chrome_renders_tray_avatars_clock_glyph_and_dots() {
     }
 }
 
-#[test]
-fn shell_root_starts_closed_and_routes_wheel_gear_and_right_click() {
-    // Phase `shell_root_starts_with_every_overlay_closed`.
-    {
-        use shell::shell::Shell;
-        let shell = Shell::new_for_test();
-        assert!(!shell.overview_visible());
-        assert!(!shell.quick_settings_visible());
-    }
-
-    // Phase `sidebar_wheel_event_routes_through_shell`.
-    {
-        use shell::shell::Shell;
-        let mut shell = Shell::new_for_test();
-        assert_eq!(shell.append_empty_strip_for_test("Second"), 1);
-        assert_eq!(shell.active_strip_index(), 0);
-        assert_eq!(shell.simulate_sidebar_wheel(1), 1);
-        assert_eq!(shell.active_strip_index(), 1);
-        assert_eq!(shell.simulate_sidebar_wheel(-1), 0);
-        assert_eq!(shell.active_strip_index(), 0);
-        assert!(!shell.search_visible());
-        assert!(!shell.overview_visible());
-    }
-
-    // Phase `tray_gear_toggles_quick_settings_via_shell`.
-    {
-        use shell::shell::Shell;
-        let mut shell = Shell::new_for_test();
-        assert!(!shell.quick_settings_visible());
-        shell.simulate_tray_gear_click();
-        assert!(shell.quick_settings_visible());
-        shell.simulate_tray_gear_click();
-        assert!(!shell.quick_settings_visible());
-    }
-
-    // Phase `right_click_on_tile_opens_default_context_menu`.
-    {
-        use shell::shell::Shell;
-        let mut shell = Shell::new_for_test();
-        assert!(!shell.context_menu_is_open());
-        shell.simulate_right_click_on_active_tile([120.0, 200.0]);
-        assert!(shell.context_menu_is_open());
-        assert_eq!(shell.context_menu_position(), Some([120.0, 200.0]));
-        let labels = shell.context_menu_labels();
-        assert!(labels.iter().any(|l| l == "Close Tab"));
-        assert!(labels.iter().any(|l| l == "Split Right"));
-        assert!(labels.iter().any(|l| l == "Move to New Group"));
-    }
+fn topbar_editor_actions(frame: &ui::headless::FrameHarness) -> Vec<ui::a11y::AccessNode> {
+    frame
+        .focus_access_nodes()
+        .into_iter()
+        .flat_map(|node| node.children)
+        .filter(|node| {
+            node.action_target.as_deref().is_some_and(|target| {
+                target.starts_with("topbar:editor:") && target != "topbar:editor:open"
+            })
+        })
+        .collect()
 }
 
-// Shell-level global hotkeys + shell routing
-
-// Tooltip wiring: topbar workspace-name button tooltip
-
-// ContextMenu wiring: right-click on tile -> default menu
+#[test]
+fn topbar_editor_semantic_open_focus_resize_and_escape_use_the_native_host() {
+    use shell::shell::overlay_host::ShellOverlayHost;
+    use ui::{a11y::Action, headless::FrameHarness, state::State, theme::Theme};
+    let tree = WorkspaceTree::bootstrap_demo();
+    let (host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+    let mut frame = FrameHarness::for_root(State::new(), host, (1280, 800), Theme::dark());
+    frame
+        .perform_semantic_named("topbar:editor:open", None, &Action::Activate)
+        .unwrap();
+    let controls = topbar_editor_actions(&frame);
+    assert!(
+        !controls.is_empty(),
+        "the production editor publishes actions"
+    );
+    for control in controls {
+        let bounds = control.bounds.expect("painted editor bounds").to_rect();
+        assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
+    }
+    assert!(frame.inspection_json().unwrap().contains("Edit top bar"));
+    let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../target/topbar-editor-native");
+    std::fs::create_dir_all(&out).unwrap();
+    frame.render_png(&out.join("native-open.png"));
+    frame.resize((640, 600)).unwrap();
+    frame.render_png(&out.join("native-resized-open.png"));
+    let open = frame.render_rgba();
+    frame.key("Escape");
+    let closed = frame.render_rgba();
+    assert!(topbar_editor_actions(&frame).is_empty());
+    assert!(
+        ui::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(&open, &closed) > 2000,
+        "Esc removes the actual editor pixels"
+    );
+    frame.render_png(&out.join("native-resized-closed.png"));
+    assert!(!frame.root::<ShellOverlayHost>().palette_visible());
+    assert!(!chrome.borrow().overlays.overview);
+    // Registry requests use the same production native adapter.
+    chrome.borrow_mut().request_topbar_editor();
+    frame.relayout();
+    assert!(!topbar_editor_actions(&frame).is_empty());
+    frame.key("Escape");
+    assert!(topbar_editor_actions(&frame).is_empty());
+}

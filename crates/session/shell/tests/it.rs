@@ -27,8 +27,10 @@ mod support;
 mod active_group_wireup_test;
 #[path = "advertised_globals.rs"]
 mod advertised_globals;
-#[path = "apps_integration.rs"]
-mod apps_integration;
+#[path = "agent_door_e2e.rs"]
+mod agent_door_e2e;
+#[path = "argb_opaque_region.rs"]
+mod argb_opaque_region;
 #[path = "blend_layer_cost.rs"]
 mod blend_layer_cost;
 #[path = "bluetooth_pairing.rs"]
@@ -59,6 +61,8 @@ mod continuity_suggestion_flow;
 mod control_socket_test;
 #[path = "controller_navigation.rs"]
 mod controller_navigation;
+#[path = "cpu_raster_parity.rs"]
+mod cpu_raster_parity;
 #[path = "cross_strip_drag.rs"]
 mod cross_strip_drag;
 #[path = "cursor_protocol.rs"]
@@ -67,6 +71,8 @@ mod cursor_protocol;
 mod dbus_runtime_context;
 #[path = "desktop_env_interactions.rs"]
 mod desktop_env_interactions;
+#[path = "desktop_smoke.rs"]
+mod desktop_smoke;
 #[path = "display_layout_switcher.rs"]
 mod display_layout_switcher;
 #[path = "dmabuf_commit_barrier.rs"]
@@ -75,10 +81,10 @@ mod dmabuf_commit_barrier;
 mod dmabuf_direct_capture_path;
 #[path = "dmabuf_feedback_protocol.rs"]
 mod dmabuf_feedback_protocol;
+#[path = "dmabuf_scanout_feedback.rs"]
+mod dmabuf_scanout_feedback;
 #[path = "document_open_e2e.rs"]
 mod document_open_e2e;
-#[path = "drm_backend_boot.rs"]
-mod drm_backend_boot;
 #[path = "e2e_shell_flows.rs"]
 mod e2e_shell_flows;
 #[path = "emoji_picker_commit.rs"]
@@ -119,18 +125,28 @@ mod headless_examples_smoke;
 mod identity_startup;
 #[path = "idle_inhibit_protocol.rs"]
 mod idle_inhibit_protocol;
+#[path = "idle_memory.rs"]
+mod idle_memory;
 #[path = "idle_settles.rs"]
 mod idle_settles;
+#[path = "idle_wakeups.rs"]
+mod idle_wakeups;
 #[path = "input_device_settings.rs"]
 mod input_device_settings;
 #[path = "input_method_wire.rs"]
 mod input_method_wire;
 #[path = "interaction_test.rs"]
 mod interaction_test;
+#[path = "key_repeat_wire.rs"]
+mod key_repeat_wire;
 #[path = "keyboard_focus_wire.rs"]
 mod keyboard_focus_wire;
+#[path = "keyboard_layout_wire.rs"]
+mod keyboard_layout_wire;
 #[path = "leak_probe.rs"]
 mod leak_probe;
+#[path = "legacy_window_between_devices.rs"]
+mod legacy_window_between_devices;
 #[path = "lock_screen_visual.rs"]
 mod lock_screen_visual;
 #[path = "maximize_persist_wireup_test.rs"]
@@ -163,6 +179,8 @@ mod permissions_tab_test;
 mod persisted_app_placeholders;
 #[path = "pointer_lock_protocol.rs"]
 mod pointer_lock_protocol;
+#[path = "popover_pointer_routing.rs"]
+mod popover_pointer_routing;
 #[path = "portal_file_chooser_e2e.rs"]
 mod portal_file_chooser_e2e;
 #[path = "portal_grant_reaches_sandbox.rs"]
@@ -177,24 +195,32 @@ mod presenter_screen;
 mod qs_actions_click_routing;
 #[path = "real_apps_visual.rs"]
 mod real_apps_visual;
-#[path = "remote_cursors_test.rs"]
-mod remote_cursors_test;
+#[path = "remote_typing_wire.rs"]
+mod remote_typing_wire;
+#[path = "removed_run_modes.rs"]
+mod removed_run_modes;
 #[path = "reopen_closed_tab.rs"]
 mod reopen_closed_tab;
 #[path = "runtime_daemon_process.rs"]
 mod runtime_daemon_process;
 #[path = "sandbox_check.rs"]
 mod sandbox_check;
+#[path = "scale_precedes_configure.rs"]
+mod scale_precedes_configure;
 #[path = "server_side_decorations.rs"]
 mod server_side_decorations;
 #[path = "session_lock_e2e.rs"]
 mod session_lock_e2e;
+#[path = "session_lock_recovery.rs"]
+mod session_lock_recovery;
 #[path = "shell_chrome_test.rs"]
 mod shell_chrome_test;
 #[path = "shell_narration.rs"]
 mod shell_narration;
 #[path = "shell_state_test.rs"]
 mod shell_state_test;
+#[path = "shm_readback.rs"]
+mod shm_readback;
 #[path = "sidebar_wheel_disc_snapshot.rs"]
 mod sidebar_wheel_disc_snapshot;
 #[path = "speaker_calibration_fabric.rs"]
@@ -203,14 +229,16 @@ mod speaker_calibration_fabric;
 mod speaker_clock_policy;
 #[path = "state_file_format.rs"]
 mod state_file_format;
+#[path = "strip_holds_still.rs"]
+mod strip_holds_still;
 #[path = "strip_navigation.rs"]
 mod strip_navigation;
 #[path = "surface_substream_e2e.rs"]
 mod surface_substream_e2e;
-#[path = "system_monitor_test.rs"]
-mod system_monitor_test;
 #[path = "tilo_e2e_test.rs"]
 mod tilo_e2e_test;
+#[path = "top_chrome_stack.rs"]
+mod top_chrome_stack;
 #[path = "toplevel_configure_states.rs"]
 mod toplevel_configure_states;
 #[path = "toplevel_icon_protocol.rs"]
@@ -221,6 +249,8 @@ mod transient_sheets;
 mod two_netns_share;
 #[path = "wayland_test.rs"]
 mod wayland_test;
+#[path = "wheel_scroll_wire.rs"]
+mod wheel_scroll_wire;
 #[path = "window_previews.rs"]
 mod window_previews;
 #[path = "window_switcher.rs"]
@@ -229,5 +259,14 @@ mod window_switcher;
 mod window_transfer_flow;
 #[path = "workspace_settings_state_test.rs"]
 mod workspace_settings_state_test;
+#[path = "workspace_switch_cost.rs"]
+mod workspace_switch_cost;
 #[path = "xdg_activation.rs"]
 mod xdg_activation;
+
+#[path = "vulkan_present_damage.rs"]
+mod vulkan_present_damage;
+
+#[cfg(feature = "test-support")]
+#[path = "network_cost_boundary.rs"]
+mod network_cost_boundary;

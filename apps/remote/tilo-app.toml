@@ -25,7 +25,10 @@ aarch64 = "aarch64"
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
 required = ["network.sockets"]
-optional = ["files.paths", "app-files", "threads"]
+optional = ["files.paths", "app-files", "threads", "secrets", "settings"]
+
+[resources]
+kinds = ["remote.connection-list"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -53,6 +56,8 @@ landlock   = "strict"
 mode = "off"
 
 [sandbox.portals]
+# Connection passwords and key passphrases live in the host's secret store.
+secrets = "via-host"
 
 [sandbox.services]
 collab = "optional@1"

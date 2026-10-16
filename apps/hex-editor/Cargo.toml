@@ -1,6 +1,7 @@
 [package]
 name = "hex-editor"
 version = "0.1.0"
+description = "Hex editor: edits a file's bytes as a collaborative record"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
@@ -18,13 +19,10 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-# Canonical resource-operation types and local invocation contracts. Raw bytes
-# and their undo history are deliberately never replicated through this crate.
-tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 vello.workspace = true
@@ -33,6 +31,7 @@ taffy.workspace = true
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

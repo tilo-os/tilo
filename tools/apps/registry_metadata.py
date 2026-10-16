@@ -5,7 +5,7 @@ The registry is deliberately not an app's source of truth for product copy.
 This tool joins checked-in copy with the package manifest and publishes a
 small, owned artwork bundle alongside the immutable `.tapp` artifacts. Every
 entry gets an English fallback, a non-empty icon, and an accurate list of UI
-languages. Existing checked-in screenshots are included when they exist;
+languages. Checked-in and checksum-pinned archived screenshots are included;
 otherwise a generated, product-specific SVG remains a useful, accessible card
 instead of a blank placeholder.
 """
@@ -65,10 +65,7 @@ def manifest(root: Path, app: str) -> dict:
 
 
 def fleet(root: Path) -> list[str]:
-    # Browser is an OS-integrated WPE application, deliberately outside the
-    # independently downloadable app fleet.
-    return sorted(path.parent.name for path in (root / "apps").glob("*/tilo-app.toml")
-                  if path.parent.name != "browser")
+    return sorted(path.parent.name for path in (root / "apps").glob("*/tilo-app.toml"))
 
 
 def languages(root: Path, app: str) -> list[str]:
@@ -114,6 +111,31 @@ def screenshots(root: Path, app: str) -> list[Path]:
                   if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"})[:4]
 
 
+def archived_screenshots(root: Path, app: str) -> list[dict]:
+    archive = root / "apps" / app / "shots" / "archive.json"
+    if not archive.is_file():
+        return []
+    rows = json.loads(archive.read_text(encoding="utf-8"))
+    if not isinstance(rows, list):
+        die(f"{archive}: expected a screenshot list")
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            die(f"{archive}: expected screenshot records")
+        name, sha, size = row.get("name"), row.get("sha256"), row.get("bytes")
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+\.(png|jpg|jpeg|webp)", name):
+            die(f"{archive}: invalid screenshot filename")
+        if name in seen or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+            die(f"{archive}: duplicate screenshot or invalid SHA-256")
+        if type(size) is not int or not 0 < size <= 32 * 1024 * 1024:
+            die(f"{archive}: invalid screenshot byte length")
+        expected = f"{PUBLIC_IMAGE_HOST}artifacts/tilo/generic/tilo-app-metadata/{sha}/{name}"
+        if row.get("url") != expected:
+            die(f"{archive}: screenshot must use its immutable public artifact URL")
+        seen.add(name)
+    return rows
+
+
 def build_one(root: Path, app: str, copy: dict[str, str], media_base: str,
               output: Path, media_dir: Path) -> None:
     package = manifest(root, app)
@@ -125,11 +147,22 @@ def build_one(root: Path, app: str, copy: dict[str, str], media_base: str,
     images = [{
         "kind": "icon", "url": f"{media_base}/{icon_file}", "alt": f"{name} icon",
     }]
-    for number, source in enumerate(screenshots(root, app), start=1):
-        filename = f"{key}-screenshot-{number}{source.suffix.lower()}"
-        shutil.copyfile(source, media_dir / filename)
+    sources = {path.name: {"path": path} for path in screenshots(root, app)}
+    for archived in archived_screenshots(root, app):
+        if archived["name"] in sources:
+            die(f"{app}: screenshot exists both locally and in the archive")
+        sources[archived["name"]] = archived
+    for number, filename in enumerate(sorted(sources)[:4], start=1):
+        source = sources[filename]
+        if "path" in source:
+            local = source["path"]
+            destination = f"{key}-screenshot-{number}{local.suffix.lower()}"
+            shutil.copyfile(local, media_dir / destination)
+            image_url = f"{media_base}/{destination}"
+        else:
+            image_url = source["url"]
         images.append({
-            "kind": "screenshot", "url": f"{media_base}/{filename}",
+            "kind": "screenshot", "url": image_url,
             "alt": f"{name} screenshot {number}",
         })
     entry = {

@@ -199,10 +199,7 @@ impl ExportSettings {
         } else {
             String::new()
         };
-        format!(
-            "{:.0} Mbit/s{audio}, size not predictable here",
-            self.resolution.target_mbps(),
-        )
+        format!("{:.0} Mbit/s{audio}", self.resolution.target_mbps())
     }
 
     pub fn suggested_filename(&self, project: &str) -> String {
@@ -563,10 +560,6 @@ impl ExportJob {
     /// looking like a finished render.
     pub fn cancel(&self) {
         self.shared.cancel.store(true, Ordering::Relaxed);
-    }
-
-    pub fn was_cancelled(&self) -> bool {
-        self.shared.cancel.load(Ordering::Relaxed)
     }
 
     /// Block until the worker finishes, returning its outcome. Mostly for
@@ -1512,7 +1505,6 @@ mod tests {
             fps: 0.0,
             palette: 0,
             path: tone.to_string_lossy().into_owned(),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         });
         let tid = Uuid::new_v4();
@@ -2004,9 +1996,16 @@ mod tests {
                 };
                 let d = pipeline_desc(&s, 1920, 1080, "/tmp/o");
                 let bps = (resolution.target_mbps() * 1_000_000.0) as u64;
+                // The rate is written in the selected encoder's own units —
+                // bits for openh264 and libvpx, kilobits for x264 and every
+                // hardware encoder — so which number appears depends on what
+                // this machine has installed. Ask the selection for it rather
+                // than assuming the bits-per-second baseline.
+                let (sel, _, _) = encode_chain(container);
+                let arg = sel.spec.bitrate_arg(bps);
                 assert!(
-                    d.contains(&format!("={bps} !")),
-                    "{container:?} at {} must encode at the quoted {bps} bps: {d}",
+                    d.contains(&format!("{} {arg} !", sel.spec.element)),
+                    "{container:?} at {} must encode at the quoted {bps} bps ({arg}): {d}",
                     resolution.label(),
                 );
                 // 10s at that bitrate, in megabytes, video only.
@@ -2113,7 +2112,6 @@ mod tests {
             fps: 30.0,
             palette: 3,
             path: path.to_string(),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         });
         let tid = Uuid::new_v4();
@@ -2163,7 +2161,6 @@ mod tests {
                 fps: 30.0,
                 palette: 3,
                 path: String::new(),
-                hydration: crate::media::Hydration::Local,
                 text: Some(TextSource::new("EXPORT")),
                 ..Default::default()
             });
@@ -2302,7 +2299,8 @@ mod tests {
                 id: uuid::Uuid::new_v4(),
                 kind: crate::model::EffectKind::Grayscale,
                 amount: 1.0,
-            }];
+            }]
+            .into();
 
             let dir = std::env::temp_dir();
             let pid = std::process::id();
@@ -2380,7 +2378,8 @@ mod tests {
                         id: uuid::Uuid::new_v4(),
                         kind: crate::model::EffectKind::Invert,
                         amount: 1.0,
-                    }];
+                    }]
+                    .into();
                 }
                 p
             };
@@ -2491,7 +2490,6 @@ mod tests {
             fps: f64::from(generated_clip::FPS),
             palette: 3,
             path: path.to_string_lossy().into_owned(),
-            hydration: crate::media::Hydration::Local,
             ..Default::default()
         });
         let tid = Uuid::new_v4();

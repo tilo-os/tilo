@@ -25,6 +25,8 @@ pub enum ConfigError {
     DuplicateName(String),
     #[error("registry '{0}' is not configured")]
     NotFound(String),
+    #[error("'{0}' is the last repository; disable it instead (`app repo disable '{0}'`)")]
+    LastRegistry(String),
     #[error("the registry URL must be credential-free HTTPS (or loopback HTTP for development)")]
     InvalidUrl,
     #[error("a non-placeholder owner key of 64 hexadecimal characters is required")]
@@ -41,15 +43,18 @@ pub enum ConfigError {
 /// config file; this is only used to seed the default `registries.toml`.
 pub const DEFAULT_REGISTRY_BASE_URL: &str = "https://apps.tilo.so";
 
+/// Names the official registry owner key file instead of the image's.
+pub const OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV: &str = "TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH";
+
 /// Pinned Tilo-main owner identity. Installed images can rotate the public trust
 /// input without rebuilding app packages. A missing/placeholder value disables
 /// the default registry rather than substituting a developer key or TOFU.
 ///
-/// `TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH` names another key file in a
-/// developer build only (see [`crate::dev_env`]).
+/// [`OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV`] names another key file in a
+/// developer build only (see [`package_store::dev_env`]).
 pub fn official_owner_pubkey() -> Option<String> {
-    let path = official_owner_key_path_from(crate::dev_env::dev_override(
-        crate::dev_env::OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
+    let path = official_owner_key_path_from(package_store::dev_env::dev_override(
+        OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
     ));
     let value = fs::read_to_string(path).ok()?;
     let value = value.trim().to_ascii_lowercase();
@@ -134,7 +139,7 @@ pub fn config_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("TILO_STORE_CONFIG_DIR") {
         return Some(PathBuf::from(dir));
     }
-    xdg_paths::AppDirs::new("tilo-store").config()
+    tilo_paths::AppDirs::new("tilo-store").config()
 }
 
 /// Cache dir (`$XDG_CACHE_HOME/tilo-store`). Downloaded `.tapp`s are
@@ -143,7 +148,7 @@ pub fn cache_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("TILO_STORE_CACHE_DIR") {
         return Some(PathBuf::from(dir));
     }
-    xdg_paths::AppDirs::new("tilo-store").cache()
+    tilo_paths::AppDirs::new("tilo-store").cache()
 }
 
 /// The path `registries.toml` lives at, when a config dir resolves.
@@ -172,26 +177,41 @@ pub fn load_registries_no_seed() -> RegistriesFile {
 ///
 /// The seed is written to disk on first read so users can hand-edit
 /// it. If the write fails (e.g. a read-only home in a sandbox) we
-/// still return the seeded shape from memory.
+/// still return the seeded shape from memory. A file that cannot be
+/// read or parsed is the user's to fix: it answers with the seed
+/// too, but is never overwritten, so a typo cannot cost them their
+/// registries.
 pub fn load_registries() -> RegistriesFile {
     let Some(dir) = config_dir() else {
         return RegistriesFile::seeded();
     };
     let path = dir.join("registries.toml");
-    if let Ok(text) = fs::read_to_string(&path)
-        && let Ok(mut parsed) = toml::from_str::<RegistriesFile>(&text)
-    {
-        if refresh_official_pin(&mut parsed)
-            && let Ok(updated) = toml::to_string_pretty(&parsed)
-        {
-            let _ = atomic_file::write(&path, updated.as_bytes());
-        }
-        return parsed;
-    }
+    let seed_on_disk = match fs::read_to_string(&path) {
+        Ok(text) => match toml::from_str::<RegistriesFile>(&text) {
+            // A file listing no registry at all is the seed of a reader that
+            // could not see the image's trust anchor, not a choice: the way
+            // to stop using a registry is to disable it, which keeps its row.
+            Ok(parsed) if parsed.registries.is_empty() => true,
+            Ok(mut parsed) => {
+                if refresh_official_pin(&mut parsed)
+                    && let Ok(updated) = toml::to_string_pretty(&parsed)
+                {
+                    let _ = tilo_files::native::atomic::write(&path, updated.as_bytes());
+                }
+                return parsed;
+            }
+            Err(_) => false,
+        },
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    };
     let seeded = RegistriesFile::seeded();
-    if let Ok(text) = toml::to_string_pretty(&seeded) {
-        let _ = fs::create_dir_all(&dir);
-        let _ = fs::write(&path, text);
+    // Without the trust anchor there is nothing to write down; the next
+    // reader that can see it seeds the file.
+    if seed_on_disk
+        && !seeded.registries.is_empty()
+        && let Ok(text) = toml::to_string_pretty(&seeded)
+    {
+        let _ = tilo_files::native::atomic::write_creating_parent(&path, text.as_bytes());
     }
     seeded
 }
@@ -224,7 +244,7 @@ fn refresh_official_pin(registries: &mut RegistriesFile) -> bool {
 pub fn save_registries(registries: &RegistriesFile) -> Result<(), ConfigError> {
     let path = registries_path().ok_or(ConfigError::NoConfigDir)?;
     let text = toml::to_string_pretty(registries)?;
-    atomic_file::write_creating_parent(&path, text.as_bytes())?;
+    tilo_files::native::atomic::write_creating_parent(&path, text.as_bytes())?;
     Ok(())
 }
 
@@ -281,11 +301,15 @@ pub fn add_registry(
 ///
 /// Returns [`ConfigError::NotFound`] when there is no exact name match.
 pub fn remove_registry(registries: &mut RegistriesFile, name: &str) -> Result<(), ConfigError> {
-    let before = registries.registries.len();
-    registries.registries.retain(|r| r.name != name);
-    if registries.registries.len() == before {
+    if !registries.registries.iter().any(|r| r.name == name) {
         return Err(ConfigError::NotFound(name.to_string()));
     }
+    // An empty list reads as unconfigured and seeds the official registry
+    // again, so the last row is switched off rather than removed.
+    if registries.registries.len() == 1 {
+        return Err(ConfigError::LastRegistry(name.to_string()));
+    }
+    registries.registries.retain(|r| r.name != name);
     Ok(())
 }
 
@@ -317,7 +341,7 @@ mod tests {
     fn the_official_registry_key_and_pin_follow_the_build_and_exact_match() {
         // Phase `a_release_build_reads_the_images_official_owner_key`.
         {
-            use crate::dev_env::{OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV, dev_override_from};
+            use package_store::dev_env::dev_override_from;
             let gated = dev_override_from(
                 false,
                 OFFICIAL_REGISTRY_OWNER_KEY_PATH_ENV,
@@ -424,6 +448,49 @@ mod tests {
                 "a disabled registry is not consulted"
             );
         }
+        // Phase `an_empty_list_is_seeded_and_no_trust_writes_nothing`.
+        // A sandboxed reader that could not see the trust anchor once wrote
+        // `registry = []`; that file is the unconfigured state, not a choice.
+        {
+            let td = TempDir::new().unwrap();
+            let _g = scoped_dir(&td);
+            std::fs::write(td.path().join("registries.toml"), "registry = []\n").unwrap();
+            let regs = load_registries();
+            assert_eq!(regs.registries.len(), 1);
+            assert_eq!(regs.registries[0].name, "Tilo main");
+            let written = std::fs::read_to_string(td.path().join("registries.toml")).unwrap();
+            assert!(written.contains("Tilo main"), "{written}");
+
+            let bare = TempDir::new().unwrap();
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_STORE_CONFIG_DIR", bare.path()).set(
+                "TILO_OFFICIAL_REGISTRY_OWNER_KEY_PATH",
+                bare.path().join("missing.pub"),
+            );
+            assert!(load_registries().registries.is_empty());
+            assert!(
+                !bare.path().join("registries.toml").exists(),
+                "without the trust anchor no empty list is written down"
+            );
+        }
+        // Phase `a_file_that_does_not_parse_is_never_overwritten`.
+        {
+            let td = TempDir::new().unwrap();
+            let _g = scoped_dir(&td);
+            let broken =
+                "[[registry]]\nname = \"my mirror\"\nbase_url = \"https://mirror.example.com\n";
+            std::fs::write(td.path().join("registries.toml"), broken).unwrap();
+            let regs = load_registries();
+            assert_eq!(
+                regs.registries[0].name, "Tilo main",
+                "the seed answers in memory"
+            );
+            assert_eq!(
+                std::fs::read_to_string(td.path().join("registries.toml")).unwrap(),
+                broken,
+                "the user's file is left for them to fix"
+            );
+        }
         // Phase `no_seed_read_never_writes_a_file`.
         // The compositor's read must not materialise a config file — a
         // background timer that writes `~/.config` is a side effect the
@@ -469,8 +536,19 @@ mod tests {
             set_registry_enabled(&mut regs, "team", false).unwrap();
             save_registries(&regs).unwrap();
             assert_eq!(load_registries(), regs);
+            assert!(matches!(
+                remove_registry(&mut regs, "team"),
+                Err(ConfigError::LastRegistry(_))
+            ));
+            add_registry(
+                &mut regs,
+                "mirror",
+                "https://mirror.example",
+                &"cd".repeat(32),
+            )
+            .unwrap();
             remove_registry(&mut regs, "team").unwrap();
-            assert!(regs.registries.is_empty());
+            assert_eq!(regs.registries.len(), 1);
         }
         // Phase `registry_mutations_reject_ambiguous_input`.
         {

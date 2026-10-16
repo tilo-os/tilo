@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
 //! Where a Sheets launch keeps its workbook.
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -32,6 +32,8 @@ fn launch(host: &Path, env: &[(&str, &str)]) {
         .current_dir(host)
         .env("TILO_PACKAGE_ID", "so.tilo.sheets")
         .envs(env.iter().copied())
+        .arg("--data-dir")
+        .arg(host)
         .arg("--headless-drive")
         .arg(serde_json::json!({"actions": [], "dump": host.join("dump.json")}).to_string())
         .stdin(Stdio::null())
@@ -56,7 +58,7 @@ fn record_dirs(root: &Path) -> Vec<String> {
 
 /// Launched into a room, Sheets opens the room's default record, the one
 /// every other device's first Sheets window (a browser's too) opens, so
-/// they edit one workbook.
+/// they edit one workbook. Nothing beside it holds a copy of the workbook.
 #[test]
 fn a_room_launch_opens_the_rooms_default_record() {
     let temp = tempfile::tempdir().unwrap();
@@ -71,4 +73,8 @@ fn a_room_launch_opens_the_rooms_default_record() {
     let dirs = record_dirs(&host);
     let room_default = ui::record::RecordId::room_default().storage_key();
     assert!(dirs.contains(&room_default), "{dirs:?}");
+    assert!(
+        !host.join("tilo/sheets/workbook.automerge").exists(),
+        "the workbook is the record, not a file of the app's own"
+    );
 }

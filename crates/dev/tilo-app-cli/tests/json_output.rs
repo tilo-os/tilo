@@ -28,6 +28,160 @@ fn document(output: &Output) -> Value {
 }
 
 #[test]
+fn guides_work_offline_outside_an_app_and_emit_only_the_requested_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_tilo-app"))
+            .args(args)
+            .current_dir(dir.path())
+            .env("PATH", dir.path())
+            .env("CARGO", dir.path().join("missing-cargo"))
+            .env_remove("TILO_UI_PATH")
+            .output()
+            .unwrap()
+    };
+    let index = run(&["guide", "--json"]);
+    assert!(index.status.success(), "{index:?}");
+    let index = document(&index);
+    let topics = index["result"]["topics"].as_array().unwrap();
+    assert_eq!(topics.len(), 7);
+    for topic in topics {
+        let id = topic["id"].as_str().unwrap();
+        let human = run(&["guide", id]);
+        assert!(human.status.success(), "{human:?}");
+        let human = String::from_utf8(human.stdout).unwrap();
+        let output = run(&["guide", id, "--json"]);
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            output.stderr.is_empty(),
+            "guide text is not duplicated to stderr"
+        );
+        let guide = document(&output);
+        assert_eq!(guide["command"], "guide");
+        assert_eq!(guide["result"]["topic"], id);
+        assert_eq!(guide["result"]["format"], "markdown");
+        assert_eq!(guide["result"]["content"], human);
+        assert!(human.starts_with("# "));
+        assert!(human.contains("tilo-app "));
+        assert!(human.len() < 3500, "one task should stay small: {id}");
+    }
+    for alias in ["undo", "history", "sync"] {
+        let output = run(&["guide", alias, "--json"]);
+        assert!(output.status.success(), "{alias}: {output:?}");
+        assert!(output.stderr.is_empty());
+        let guide = document(&output);
+        assert_eq!(guide["result"]["topic"], "collaborate");
+        assert_eq!(
+            guide["result"]["source"],
+            "docs/developers/tasks/collaborate.md"
+        );
+        let content = guide["result"]["content"].as_str().unwrap();
+        assert!(content.contains("--from-example shared-checklist"));
+        assert!(content.contains("undo_takes_back_only_my_own_actions"));
+        assert!(content.contains("host integration tests"));
+    }
+    for alias in ["network", "http", "fetch", "metered", "offline"] {
+        let output = run(&["guide", alias, "--json"]);
+        assert!(output.status.success(), "{alias}: {output:?}");
+        let guide = document(&output);
+        assert_eq!(guide["result"]["topic"], "network");
+        assert_eq!(
+            guide["result"]["source"],
+            "docs/developers/tasks/network.md"
+        );
+        let content = guide["result"]["content"].as_str().unwrap();
+        assert!(content.contains("tilo-app add capability network.http"));
+        assert!(content.contains("error_for_status"));
+        assert!(content.contains("permission grant"));
+        assert!(content.contains("lossless hints"));
+        assert!(content.contains("false answer stays unknown"));
+    }
+    assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    let invalid = run(&["guide", "unknown", "--json"]);
+    assert!(!invalid.status.success());
+    let error = document(&invalid);
+    assert_eq!(error["ok"], false);
+    let message = error["usage"].as_str().unwrap();
+    for topic in [
+        "start",
+        "actions",
+        "collaborate",
+        "permissions",
+        "network",
+        "verify",
+        "publish",
+    ] {
+        assert!(
+            message.contains(topic),
+            "usage error suggests {topic}: {error}"
+        );
+    }
+}
+
+#[test]
+fn guides_permissions_aliases_are_offline_and_explain_live_refusal() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_tilo-app"))
+            .args(args)
+            .current_dir(dir.path())
+            .env("PATH", dir.path())
+            .env("CARGO", dir.path().join("missing-cargo"))
+            .env_remove("TILO_UI_PATH")
+            .output()
+            .unwrap()
+    };
+    for alias in ["permissions", "roles", "access"] {
+        let output = run(&["guide", alias, "--json"]);
+        assert!(output.status.success(), "{alias}: {output:?}");
+        assert!(output.stderr.is_empty());
+        let guide = document(&output);
+        assert_eq!(guide["result"]["topic"], "permissions");
+        assert_eq!(
+            guide["result"]["source"],
+            "docs/developers/tasks/permissions.md"
+        );
+        let content = guide["result"]["content"].as_str().unwrap();
+        assert!(content.contains("ActionKind::Outside"));
+        assert!(content.contains("set_role"));
+        assert!(content.contains("invoke"));
+        assert!(content.contains("outside the replicated resource"));
+        assert!(content.contains("host integration"));
+    }
+    assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+}
+
+#[test]
+fn github_ci_reports_both_workflows_without_extra_json_output() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("tilo-app.toml"), "").unwrap();
+    let args = ["add", "ci", "--forge", "github", "--dry-run"];
+    let human = tilo_app(dir.path(), &args);
+    assert!(human.status.success(), "{human:?}");
+    let text = String::from_utf8(human.stdout).unwrap();
+    assert!(text.contains("tilo.yml"));
+    assert!(text.contains("tilo-build.yml"));
+    let mut args = args.to_vec();
+    args.push("--json");
+    let output = tilo_app(dir.path(), &args);
+    assert!(output.status.success(), "{output:?}");
+    let report = document(&output);
+    assert_eq!(report["ok"], true);
+    assert_eq!(report["result"]["written"], false);
+    for field in ["path", "reusable_path"] {
+        assert!(Path::new(report["result"][field].as_str().unwrap()).is_absolute());
+    }
+    assert!(!dir.path().join(".github").exists());
+    let output = tilo_app(dir.path(), &["add", "ci", "--forge", "github", "--json"]);
+    assert!(output.status.success(), "{output:?}");
+    let report = document(&output);
+    assert_eq!(report["result"]["written"], true);
+    for field in ["path", "reusable_path"] {
+        assert!(Path::new(report["result"][field].as_str().unwrap()).is_file());
+    }
+}
+
+#[test]
 fn new_dry_run_lists_every_planned_file_in_both_modes() {
     let dir = tempfile::tempdir().unwrap();
     let human = tilo_app(dir.path(), &["new", "notes", "--dry-run"]);
@@ -83,6 +237,96 @@ fn templates_are_listed_in_both_modes() {
 }
 
 #[test]
+fn focused_examples_show_one_example_offline_outside_a_checkout() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_tilo-app"))
+        .args(["examples", "shared-checklist", "--json"])
+        .current_dir(dir.path())
+        .env("PATH", dir.path())
+        .env("CARGO", dir.path().join("missing-cargo"))
+        .env_remove("TILO_UI_PATH")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        output.stderr.is_empty(),
+        "metadata is not duplicated to stderr"
+    );
+    let result = document(&output);
+    assert_eq!(result["command"], "examples");
+    assert_eq!(result["result"]["example"]["name"], "shared-checklist");
+    assert!(result["result"]["examples"].is_null());
+    assert!(
+        result["result"]["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|file| file == "tests/app.rs")
+    );
+    assert_eq!(
+        result["result"]["create_command"],
+        "tilo-app new NAME --from-example shared-checklist"
+    );
+    assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+}
+
+#[test]
+fn focused_examples_emit_exact_embedded_tests_once_in_each_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let args = ["examples", "shared-checklist", "--file", "tests/app.rs"];
+    let human = tilo_app(dir.path(), &args);
+    assert!(human.status.success(), "{human:?}");
+    let expected = include_str!("../../../../examples/apps/shared-checklist/tests/app.rs");
+    assert_eq!(human.stdout, expected.as_bytes());
+    let mut args = args.to_vec();
+    args.push("--json");
+    let output = tilo_app(dir.path(), &args);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        output.stderr.is_empty(),
+        "source is not duplicated to stderr"
+    );
+    let result = document(&output);
+    assert_eq!(result["result"]["file"], "tests/app.rs");
+    assert_eq!(result["result"]["content"], expected);
+    assert_eq!(result["result"]["example"]["name"], "shared-checklist");
+}
+
+#[test]
+fn focused_examples_refuse_unknown_files_without_reading_the_filesystem() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("outside.txt"), "outside example fixture").unwrap();
+    for path in ["outside.txt", "../../Cargo.toml", "/etc/passwd"] {
+        let output = tilo_app(
+            dir.path(),
+            &["examples", "shared-checklist", "--file", path, "--json"],
+        );
+        assert!(!output.status.success());
+        let report = document(&output);
+        assert_eq!(report["ok"], false);
+        assert_eq!(report["command"], "examples");
+        let error = report["error"].as_str().unwrap();
+        assert!(error.contains("choose one of:"));
+        assert!(error.contains("src/lib.rs"));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("outside example fixture"));
+    }
+    let missing_name = tilo_app(
+        dir.path(),
+        &["examples", "--file", "tests/app.rs", "--json"],
+    );
+    assert!(!missing_name.status.success());
+    assert_eq!(document(&missing_name)["ok"], false);
+    let unknown = tilo_app(dir.path(), &["examples", "unknown", "--json"]);
+    assert!(!unknown.status.success());
+    assert!(
+        document(&unknown)["error"]
+            .as_str()
+            .unwrap()
+            .contains("shared-checklist")
+    );
+}
+
+#[test]
 fn examples_are_listed_in_both_modes() {
     let dir = tempfile::tempdir().unwrap();
     let human = tilo_app(dir.path(), &["examples"]);
@@ -93,6 +337,10 @@ fn examples_are_listed_in_both_modes() {
 
     let output = tilo_app(dir.path(), &["examples", "--json"]);
     assert!(output.status.success());
+    assert!(
+        output.stderr.is_empty(),
+        "example list is not duplicated to stderr"
+    );
     let report = document(&output);
     assert_eq!(report["ok"], true);
     let examples = report["result"]["examples"].as_array().unwrap();
@@ -200,5 +448,63 @@ fn a_failed_verdict_still_carries_its_report() {
     assert!(
         checks.iter().any(|check| check["status"] == "fail"),
         "{report}"
+    );
+}
+
+// Fonts are hidden by pointing the XDG directories at an empty one; macOS
+// keeps its fonts in system folders no environment variable moves.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+fn missing_fonts_are_reported_before_any_cargo_quality_command() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let checkout = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .unwrap();
+    let app = dir.path().join("demo");
+    let new = Command::new(env!("CARGO_BIN_EXE_tilo-app"))
+        .args(["new", "demo", "--id", "org.example.demo", "--directory"])
+        .arg(&app)
+        .arg("--ui-path")
+        .arg(checkout.join("crates/sdk/ui-core"))
+        .current_dir(dir.path())
+        .env_remove("TILO_UI_PATH")
+        .output()
+        .unwrap();
+    assert!(new.status.success(), "{new:?}");
+
+    let marker = dir.path().join("cargo-invoked");
+    let cargo = dir.path().join("cargo-guard");
+    std::fs::write(&cargo, "#!/bin/sh\n: > \"$CARGO_GUARD_MARKER\"\nexit 91\n").unwrap();
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = Command::new(checkout.join("tools/with-test-environment.sh"))
+        .arg("env")
+        .arg(format!("XDG_DATA_DIRS={}", dir.path().display()))
+        .arg(format!("XDG_DATA_HOME={}", dir.path().display()))
+        .arg(env!("CARGO_BIN_EXE_tilo-app"))
+        .args(["check", "--json"])
+        .arg(&app)
+        .env("CARGO", &cargo)
+        .env("CARGO_GUARD_MARKER", &marker)
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    let report = document(&output);
+    assert_eq!(report["ok"], false);
+    assert!(
+        report.to_string().contains("google-noto-sans-fonts"),
+        "{report}"
+    );
+    assert!(
+        report
+            .to_string()
+            .contains("runtime fonts preflight failed"),
+        "{report}"
+    );
+    assert!(
+        !marker.exists(),
+        "Cargo ran before the missing-font diagnosis"
     );
 }

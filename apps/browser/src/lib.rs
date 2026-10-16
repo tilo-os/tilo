@@ -5,9 +5,9 @@
     reason = "migration stack lint debt is scoped to this target"
 )]
 
-//! Quick Browser library root. The binary is a thin shim over the
-//! `BrowserWidget` exported here so the `--shots` mode can construct
-//! the whole chrome without booting an event loop.
+//! Browser library root: the [`BrowserShell`] framework app, whose surface
+//! is a [`BrowserWindow`] showing one [`BrowserWidget`] page. Other pages are
+//! other Browser instances in the desktop's tabs.
 //!
 //! The browser is deliberately small: it is chrome (address bar,
 //! navigation, progress, filter loading) around the `ui` toolkit's
@@ -28,11 +28,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -44,38 +40,40 @@ pub mod address_overlay;
 pub mod autofill;
 mod back_hold;
 pub mod blocker;
-pub mod browser_tab_strip;
-pub mod browser_tabs;
 pub mod browser_widget;
+pub mod browser_window;
 pub mod browsing_mode;
-/// Zero-copy WebView compositor — needs the WPE engine's dmabuf import.
-#[cfg(feature = "wpe")]
-pub mod compositor;
 mod credentials;
+pub mod crx;
 mod daily_controls;
 pub mod downloads;
+pub mod effects;
+mod engine_setup;
+mod extension_controller;
+mod extension_host;
+mod extension_toolbar;
 pub mod extensions;
 pub mod history;
 pub mod library;
 mod native_blocker;
+mod notice;
+pub mod omnibox;
 mod page_menu;
 pub mod private_window;
+pub mod resource;
+mod rows;
 pub mod search_provider;
-pub mod session;
 pub mod settings;
 mod site_controls;
 pub mod storage;
+pub mod web_store;
 
-pub use browser_tab_strip::BrowserTabStrip;
-pub use browser_tabs::BrowserTabs;
 pub use browser_widget::BrowserWidget;
+pub use browser_window::BrowserWindow;
 
 mod capabilities;
-/// Production Browser root used by the normal launcher, headless tooling,
-/// and certification. Launch-specific URI handling remains in the binary;
-/// this deliberately creates the same safe default profile a user gets when
-/// opening Browser without a target.
-#[must_use]
-pub fn app_root() -> BrowserWidget {
-    BrowserWidget::new()
-}
+mod live_capture;
+
+pub use resource::{Browser, BrowserShell};
+
+ui::dev_reload_entry!(BrowserShell);

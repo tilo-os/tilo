@@ -17,15 +17,18 @@ pub struct KeysArgs {
 
 #[derive(Subcommand)]
 enum KeysCommand {
-    /// Create a publisher key. An existing key is never replaced.
-    New {
-        /// Where to write it; defaults to `$XDG_CONFIG_HOME/tilo/publisher-key.json`.
+    /// Create a publisher key in this machine's secret store. An existing
+    /// key is never replaced.
+    New,
+    /// Print the key's public half and the line that proves a namespace.
+    Show {
+        /// A key file; defaults to `$TILO_PUBLISHER_KEY`, then the secret store.
         #[arg(long)]
         key: Option<PathBuf>,
     },
-    /// Print the key's public half and the line that proves a namespace.
-    Show {
-        /// The key file; defaults to `$TILO_PUBLISHER_KEY`, then the default path.
+    /// Print the key's secret hex seed, for a CI secret.
+    Export {
+        /// A key file; defaults to `$TILO_PUBLISHER_KEY`, then the secret store.
         #[arg(long)]
         key: Option<PathBuf>,
     },
@@ -75,19 +78,22 @@ pub struct PublishArgs {
 }
 
 pub fn run_keys(args: KeysArgs) -> Result<Value> {
+    let store = key::machine_store();
     let key = match args.command {
-        KeysCommand::New { key: path } => {
-            let path = path
-                .or_else(key::default_path)
-                .ok_or_else(|| anyhow!("no configuration directory; pass --key"))?;
-            let created = key::create(&path)?;
+        KeysCommand::New => {
+            let created = key::create(&store)?;
             eprintln!(
-                "[tilo-app] wrote {}; back it up, it is the only copy",
-                path.display()
+                "[tilo-app] stored the key in the secret store; back it up with `tilo-app keys export`, it is the only copy"
             );
             created
         }
-        KeysCommand::Show { key: path } => key::resolve(path.as_deref())?,
+        KeysCommand::Show { key: path } => key::resolve(path.as_deref(), &store)?,
+        KeysCommand::Export { key: path } => {
+            let key = key::resolve(path.as_deref(), &store)?;
+            println!("{}", hex::encode(key.to_bytes()));
+            eprintln!("[tilo-app] this is your secret key: put it only in a CI secret or a backup");
+            return Ok(json!({"public_key": key::public_hex(&key)}));
+        }
     };
     let public = key::public_hex(&key);
     let token = proof_token(&public);
@@ -98,7 +104,7 @@ pub fn run_keys(args: KeysArgs) -> Result<Value> {
 }
 
 pub fn run_apply(args: ApplyArgs) -> Result<Value> {
-    let key = key::resolve(args.key.as_deref())?;
+    let key = key::resolve(args.key.as_deref(), &key::machine_store())?;
     let client = RegistryClient::resolve(args.registry.as_deref())?;
     let public = key::public_hex(&key);
     if args.status {
@@ -136,7 +142,7 @@ pub fn run_apply(args: ApplyArgs) -> Result<Value> {
 }
 
 pub fn run_publish(args: PublishArgs) -> Result<Value> {
-    let key = key::resolve(args.key.as_deref())?;
+    let key = key::resolve(args.key.as_deref(), &key::machine_store())?;
     let client = RegistryClient::resolve(args.registry.as_deref())?;
     let packages = if args.packages.is_empty() {
         dist_packages(&std::env::current_dir()?.join("dist"))?
@@ -163,6 +169,7 @@ pub fn run_publish(args: PublishArgs) -> Result<Value> {
         &bytes,
         args.arch.as_deref(),
         metadata.as_ref(),
+        &registry_types::retention::RetentionPolicy::default(),
     )?;
     let mut published = Vec::new();
     for (package, outcome) in packages.iter().zip(outcomes) {

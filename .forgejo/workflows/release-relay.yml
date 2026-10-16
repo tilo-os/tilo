@@ -16,43 +16,57 @@ on:
       - ".forgejo/workflows/release-relay.yml"
       - "Cargo.lock"
       - "Cargo.toml"
+      - "crates/collab/action-policy/**"
       - "crates/collab/actions/**"
       - "crates/collab/automation/**"
+      - "crates/collab/channel-crypto/**"
       - "crates/collab/collab-types/**"
       - "crates/collab/neighbour-wire/**"
       - "crates/collab/threshold-identity/**"
+      - "crates/collab/tilo-identity-ceremony/**"
       - "crates/collab/tilo-peer-state/**"
+      - "crates/collab/tilo-unlock-protocol/**"
       - "crates/collab/tilo-user-identity/**"
+      - "crates/collab/workspace-join/**"
       - "crates/doc/bounded-zip/**"
-      - "crates/doc/qdoc-codecs/**"
-      - "crates/doc/qdoc/**"
+      - "crates/doc/tilo-doc-codecs/**"
+      - "crates/doc/tilo-doc/**"
       - "crates/doc/tilo-automerge-isolate/**"
       - "crates/doc/tilo-automerge/**"
       - "crates/hosting/tilo-delivery-protocol/**"
       - "crates/hosting/tilo-relay-client/**"
       - "crates/hosting/tilo-relay-protocol/**"
+      - "crates/hosting/tilo-relay-session/**"
       - "crates/hosting/tilo-relay/**"
+      - "crates/hosting/tilo-relay-shell/**"
+      - "crates/hosting/tilo-relay-store/**"
       - "crates/media/thumbnail/**"
+      - "crates/packaging/app-registry/**"
       - "crates/packaging/launcher/**"
       - "crates/packaging/package-store/**"
       - "crates/packaging/registry-types/**"
       - "crates/packaging/runtime-bundle/**"
       - "crates/packaging/tilo-app-package/**"
       - "crates/platform/tilo-clock/**"
+      - "crates/platform/tilo-lock/**"
       - "crates/platform/tilo-files/**"
       - "crates/platform/tilo-net/**"
       - "crates/platform/tilo-paths/**"
+      - "crates/platform/tilo-platform-caps/**"
       - "crates/platform/tilo-rt/**"
+      - "crates/platform/tilo-wake/**"
+      - "crates/platform/tilo-lock/**"
       - "crates/platform/tilo-secrets/**"
+      - "crates/runtime/egress/**"
       - "crates/runtime/runtime-fs/**"
       - "crates/runtime/runtime-identity/**"
       - "crates/runtime/runtime-portal/**"
+      - "crates/runtime/tilo-identity-host/**"
       - "crates/sdk/tilo-resource-macros/**"
       - "crates/sdk/tilo-resource/**"
       - "crates/session/desktop-model/**"
       - "crates/system/accounts/**"
       - "crates/system/advisory-lock/**"
-      - "crates/system/atomic-file/**"
       - "crates/system/bounded-command/**"
       - "crates/system/cloud-source-dav/**"
       - "crates/system/cloud-source-dropbox/**"
@@ -60,25 +74,39 @@ on:
       - "crates/system/cloud-source-icloud/**"
       - "crates/system/cloud-source-onedrive/**"
       - "crates/system/cloud-source/**"
+      - "crates/system/endpoint-reachability/**"
       - "crates/system/content/**"
       - "crates/system/desktop-entry/**"
       - "crates/system/desktop-policy/**"
       - "crates/system/fs-content/**"
       - "crates/system/fs-native/**"
+      - "crates/system/fs-protocol/**"
       - "crates/system/fs/**"
       - "crates/system/power/**"
-      - "crates/system/private-fs/**"
       - "crates/system/sandbox-core/**"
       - "crates/system/secret-vault/**"
       - "crates/system/tilo-dav/**"
       - "crates/system/tilo-native-certs/**"
+      - "crates/system/tilo-nm/**"
       - "crates/system/tilo-seal/**"
+      - "crates/system/tilo-startup-metrics/**"
       - "crates/system/wire-frame/**"
-      - "crates/system/xdg-paths/**"
       - "crates/workspace-hack/**"
+      - "crates/packaging/oci-images/**"
+      - "crates/runtime/cli/**"
+      - "crates/runtime/egress/**"
+      - "crates/runtime/env-tools/**"
+      - "crates/runtime/environment/**"
+      - "crates/runtime/legacy-agent-protocol/**"
+      - "crates/runtime/legacy-vm/**"
+      - "crates/system/libvirt-domain/**"
+      - "crates/runtime/ush/**"
+      - "crates/system/app-state/**"
+      - "crates/system/durable-store/**"
       - "keys/cosign.pub"
       - "os/base-snapshot.env"
       - "os/containers/tilo-relay/**"
+      - "os/dev/await-rpm-snapshot.sh"
       - "os/dev/cache-github-assets.sh"
       - "os/dev/install-cached-cosign.sh"
       - "os/dev/resolve-rpm-snapshot.sh"
@@ -87,7 +115,10 @@ on:
       - "os/dev/verify-rpm-snapshot-package-set.sh"
       - "os/tests/test_rpm_snapshot_buildkit.py"
       - "vendor/automerge/**"
+      - "vendor/iroh/**"
+      - "vendor/iroh-gossip/**"
       - "vendor/genawaiter-proc-macro/**"
+      - "vendor/netwatch/**"
       - "vendor/wayland-backend/**"
   pull_request:
     branches: ["main"]
@@ -98,43 +129,57 @@ on:
       - ".forgejo/workflows/release-relay.yml"
       - "Cargo.lock"
       - "Cargo.toml"
+      - "crates/collab/action-policy/**"
       - "crates/collab/actions/**"
       - "crates/collab/automation/**"
+      - "crates/collab/channel-crypto/**"
       - "crates/collab/collab-types/**"
       - "crates/collab/neighbour-wire/**"
       - "crates/collab/threshold-identity/**"
+      - "crates/collab/tilo-identity-ceremony/**"
       - "crates/collab/tilo-peer-state/**"
+      - "crates/collab/tilo-unlock-protocol/**"
       - "crates/collab/tilo-user-identity/**"
+      - "crates/collab/workspace-join/**"
       - "crates/doc/bounded-zip/**"
-      - "crates/doc/qdoc-codecs/**"
-      - "crates/doc/qdoc/**"
+      - "crates/doc/tilo-doc-codecs/**"
+      - "crates/doc/tilo-doc/**"
       - "crates/doc/tilo-automerge-isolate/**"
       - "crates/doc/tilo-automerge/**"
       - "crates/hosting/tilo-delivery-protocol/**"
       - "crates/hosting/tilo-relay-client/**"
       - "crates/hosting/tilo-relay-protocol/**"
+      - "crates/hosting/tilo-relay-session/**"
       - "crates/hosting/tilo-relay/**"
+      - "crates/hosting/tilo-relay-shell/**"
+      - "crates/hosting/tilo-relay-store/**"
       - "crates/media/thumbnail/**"
+      - "crates/packaging/app-registry/**"
       - "crates/packaging/launcher/**"
       - "crates/packaging/package-store/**"
       - "crates/packaging/registry-types/**"
       - "crates/packaging/runtime-bundle/**"
       - "crates/packaging/tilo-app-package/**"
       - "crates/platform/tilo-clock/**"
+      - "crates/platform/tilo-lock/**"
       - "crates/platform/tilo-files/**"
       - "crates/platform/tilo-net/**"
       - "crates/platform/tilo-paths/**"
+      - "crates/platform/tilo-platform-caps/**"
       - "crates/platform/tilo-rt/**"
+      - "crates/platform/tilo-wake/**"
+      - "crates/platform/tilo-lock/**"
       - "crates/platform/tilo-secrets/**"
+      - "crates/runtime/egress/**"
       - "crates/runtime/runtime-fs/**"
       - "crates/runtime/runtime-identity/**"
       - "crates/runtime/runtime-portal/**"
+      - "crates/runtime/tilo-identity-host/**"
       - "crates/sdk/tilo-resource-macros/**"
       - "crates/sdk/tilo-resource/**"
       - "crates/session/desktop-model/**"
       - "crates/system/accounts/**"
       - "crates/system/advisory-lock/**"
-      - "crates/system/atomic-file/**"
       - "crates/system/bounded-command/**"
       - "crates/system/cloud-source-dav/**"
       - "crates/system/cloud-source-dropbox/**"
@@ -142,25 +187,39 @@ on:
       - "crates/system/cloud-source-icloud/**"
       - "crates/system/cloud-source-onedrive/**"
       - "crates/system/cloud-source/**"
+      - "crates/system/endpoint-reachability/**"
       - "crates/system/content/**"
       - "crates/system/desktop-entry/**"
       - "crates/system/desktop-policy/**"
       - "crates/system/fs-content/**"
       - "crates/system/fs-native/**"
+      - "crates/system/fs-protocol/**"
       - "crates/system/fs/**"
       - "crates/system/power/**"
-      - "crates/system/private-fs/**"
       - "crates/system/sandbox-core/**"
       - "crates/system/secret-vault/**"
       - "crates/system/tilo-dav/**"
       - "crates/system/tilo-native-certs/**"
+      - "crates/system/tilo-nm/**"
       - "crates/system/tilo-seal/**"
+      - "crates/system/tilo-startup-metrics/**"
       - "crates/system/wire-frame/**"
-      - "crates/system/xdg-paths/**"
       - "crates/workspace-hack/**"
+      - "crates/packaging/oci-images/**"
+      - "crates/runtime/cli/**"
+      - "crates/runtime/egress/**"
+      - "crates/runtime/env-tools/**"
+      - "crates/runtime/environment/**"
+      - "crates/runtime/legacy-agent-protocol/**"
+      - "crates/runtime/legacy-vm/**"
+      - "crates/system/libvirt-domain/**"
+      - "crates/runtime/ush/**"
+      - "crates/system/app-state/**"
+      - "crates/system/durable-store/**"
       - "keys/cosign.pub"
       - "os/base-snapshot.env"
       - "os/containers/tilo-relay/**"
+      - "os/dev/await-rpm-snapshot.sh"
       - "os/dev/cache-github-assets.sh"
       - "os/dev/install-cached-cosign.sh"
       - "os/dev/resolve-rpm-snapshot.sh"
@@ -169,7 +228,10 @@ on:
       - "os/dev/verify-rpm-snapshot-package-set.sh"
       - "os/tests/test_rpm_snapshot_buildkit.py"
       - "vendor/automerge/**"
+      - "vendor/iroh/**"
+      - "vendor/iroh-gossip/**"
       - "vendor/genawaiter-proc-macro/**"
+      - "vendor/netwatch/**"
       - "vendor/wayland-backend/**"
   workflow_dispatch:
     inputs:
@@ -185,7 +247,7 @@ concurrency:
 jobs:
   signing-preflight:
     if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
@@ -207,11 +269,12 @@ jobs:
   ensure-rpms:
     # Forgejo does not supply OIDC credentials to expanded reusable jobs, so
     # build-rpms.yml owns all signing as a standalone main workflow. Resolve
-    # only its exact content fingerprint here; never fall back to a stale tag.
+    # only its exact content fingerprint here, waiting while a build-rpms.yml
+    # main run builds it; never fall back to a stale tag.
     runs-on: runner-quality
-    timeout-minutes: 40
+    timeout-minutes: 180
     container:
-      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: registry.tilo.so/tilo/ci-control@sha256:0f205596aa1753a7ca1f2f496aa25095f68668ff80a28acbfdc6d0f35f6dcfde
     outputs:
       rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}
     steps:
@@ -233,25 +296,15 @@ jobs:
               sudo -n dnf install -y "${missing[@]}"
             fi
           fi
-      # build-rpms.yml publishes the snapshot for a new package set on the same
-      # push; wait for it rather than fail.
       - name: Resolve the exact signed RPM snapshot fingerprint
         id: resolve
         if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
-          deadline=$((SECONDS + 1800))
-          while :; do
-            status=0
-            ./os/dev/resolve-rpm-snapshot.sh --exists || status=$?
-            [ "$status" -eq 0 ] && break
-            if [ "$status" -ne 1 ] || [ "$SECONDS" -ge "$deadline" ]; then
-              echo "::error::no signed RPM snapshot for $(./os/dev/resolve-rpm-snapshot.sh --tag) (build-rpms.yml)"
-              exit 1
-            fi
-            sleep 30
-          done
-          ./os/dev/resolve-rpm-snapshot.sh
+          ./os/dev/await-rpm-snapshot.sh || {
+            echo "::error::no signed RPM snapshot for $(./os/dev/resolve-rpm-snapshot.sh --tag) (build-rpms.yml)"
+            exit 1
+          }
 
   build-and-push:
     needs: [signing-preflight, ensure-rpms]
@@ -270,7 +323,6 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.REGISTRY_TOKEN }}
           persist-credentials: false
 
       - name: Verify the relay-only Compose contract

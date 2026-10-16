@@ -27,12 +27,14 @@ use shell::shell::state::{
     WorkspaceId, WorkspaceTree,
 };
 use shell::shell::topbar_chrome::{TOPBAR_HEIGHT_PX, TopBarChrome};
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use ui::synthetic_input::PointerAction;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{Modifiers, MouseButton, WindowEvent};
+
+use crate::support::host;
 
 const W: f32 = 1280.0;
 const H: f32 = 800.0;
@@ -71,6 +73,7 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
             active_tab: gid.saturating_mul(10).saturating_add(1),
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         })
         .collect();
 
@@ -107,12 +110,9 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
 
 struct Layout {
     taffy: TaffyTree<()>,
-    #[allow(
-        dead_code,
-        reason = "The fixture retains the root layout node even when a test inspects only its child."
-    )]
-    root_node: NodeId,
     child_node: NodeId,
+    theme: Theme,
+    input_scale: f64,
 }
 
 /// Usable strip width at the fixture's viewport (window minus the
@@ -126,6 +126,10 @@ fn usable_strip_px(host: &mut ShellOverlayHost, strip_id: StripId) -> f64 {
 }
 
 fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
+    lay_out_host_with_theme(host, Theme::dark(), 1.0)
+}
+
+fn lay_out_host_with_theme(host: &mut ShellOverlayHost, theme: Theme, input_scale: f64) -> Layout {
     // What the compositor does before every build: name the display, so
     // window-group width fractions resolve against it rather than the
     // toolkit's fallback.
@@ -135,45 +139,12 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
         f64::from(W),
         f64::from(H),
     )]);
-    let theme = Theme::dark();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-    let root_node = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(W),
-                    height: Dimension::length(H),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    let mut tr = ui::text_render::TextRenderer::new();
-    let measure_map = node_map.clone();
-    taffy
-        .compute_layout_with_measure(
-            root_node,
-            Size {
-                width: AvailableSpace::Definite(W),
-                height: AvailableSpace::Definite(H),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .expect("compute_layout");
-    host.apply_layout(&taffy, child, Point::ORIGIN);
+    let host::Layout { taffy, child_node } = host::lay_out_with_theme(host, W, H, &theme);
     Layout {
         taffy,
-        root_node,
-        child_node: child,
+        child_node,
+        theme,
+        input_scale,
     }
 }
 
@@ -204,23 +175,11 @@ fn dispatch_with_modifiers(
     event: &WindowEvent,
     modifiers: Modifiers,
 ) {
-    let mut doc = automerge::AutoCommit::new();
-    let doc_root = automerge::ROOT.clone();
-    let mut handled = false;
-    let mut focus: Option<NodeId> = None;
-    host.handle_event(
-        event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: &mut doc,
-            path: &doc_root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: layout.child_node,
-            taffy: &layout.taffy,
-        },
-    );
+    ui::testing::Dispatch::new()
+        .scale_factor(layout.input_scale)
+        .modifiers(modifiers)
+        .layout(&layout.taffy, layout.child_node)
+        .send(host, event);
 }
 
 fn dispatch(host: &mut ShellOverlayHost, layout: &Layout, event: &WindowEvent) {
@@ -246,21 +205,19 @@ fn reveal_tab_chips(host: &mut ShellOverlayHost, layout: &Layout, strip_id: Stri
         .expect("a pill")
         .center();
     cursor(host, layout, pill);
-    // The curve is created by the layout pass that first sees the new hover
-    // target, so it has to exist before it can be held.
-    let _layout = lay_out_host(host);
-    let intended = host
+    // A pill opens once the pointer has rested on it for the hover dwell.
+    let dwelt = host
         .group_at_for_tests(strip_id, 0)
         .expect("hovered group")
         .bar_mut_for_tests()
-        .hold_hover_intent_at(std::time::Duration::from_millis(201));
-    assert!(
-        intended,
-        "hovering the pill armed no intent dwell, so there is nothing to reveal",
-    );
-    // Once the intent clock has elapsed, the next layout starts the reveal
-    // curve. Hold that separate curve to its end before placing the chip rects.
-    let layout = lay_out_host(host);
+        .elapse_hover_dwell();
+    assert!(dwelt, "resting on the pill opened nothing to reveal");
+    // The curve is created by the layout pass that first sees the new hover
+    // target, so it has to exist before it can be held.
+    let _layout = lay_out_host_with_theme(host, layout.theme.clone(), layout.input_scale);
+    // The next layout starts the reveal curve. Hold that curve to its end
+    // before placing the chip rects.
+    let layout = lay_out_host_with_theme(host, layout.theme.clone(), layout.input_scale);
     let mut held = false;
     if let Some(row) = host.group_row_mut_for_tests(strip_id) {
         for g in &mut row.groups {
@@ -274,17 +231,14 @@ fn reveal_tab_chips(host: &mut ShellOverlayHost, layout: &Layout, strip_id: Stri
         "hovering the pill started no reveal, so there is nothing to click",
     );
     let _ = layout;
-    lay_out_host(host)
+    lay_out_host_with_theme(host, layout.theme.clone(), layout.input_scale)
 }
 
 fn cursor(host: &mut ShellOverlayHost, layout: &Layout, p: Point) {
     dispatch(
         host,
         layout,
-        &WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(p.x, p.y),
-        },
+        &PointerAction::MoveTo(p).event(layout.input_scale),
     );
 }
 
@@ -292,11 +246,7 @@ fn press(host: &mut ShellOverlayHost, layout: &Layout) {
     dispatch(
         host,
         layout,
-        &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
+        &PointerAction::Press(MouseButton::Left).event(layout.input_scale),
     );
 }
 
@@ -304,25 +254,99 @@ fn release(host: &mut ShellOverlayHost, layout: &Layout) {
     dispatch(
         host,
         layout,
-        &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
+        &PointerAction::Release(MouseButton::Left).event(layout.input_scale),
     );
 }
 
+/// Paint explicitly before inspecting targets; inspection itself never prepares them.
+fn paint_group(host: &mut ShellOverlayHost, layout: &Layout, strip_id: StripId) {
+    host.group_at_for_tests(strip_id, 0)
+        .expect("group to paint")
+        .draw(
+            &mut vello::Scene::new(),
+            vello::kurbo::Affine::IDENTITY,
+            &mut ui::text_render::TextRenderer::new(),
+            &layout.theme,
+            &ui::presence::PresenceCtx::default(),
+        );
+}
+
 fn press_with_modifiers(host: &mut ShellOverlayHost, layout: &Layout, modifiers: Modifiers) {
-    dispatch_with_modifiers(
-        host,
-        layout,
-        &WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-        modifiers,
-    );
+    dispatch_with_modifiers(host, layout, &ui::synthetic_input::mouse_press(), modifiers);
+}
+
+#[test]
+fn painted_window_controls_survive_cancel_and_scale_changes() {
+    for theme in [Theme::dark(), Theme::light().with_text_scale(2.0)] {
+        let (tree, strip_id, _) = single_strip_tree(&[1]);
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let layout = lay_out_host_with_theme(&mut host, theme.clone(), 1.5);
+        let layout = reveal_tab_chips(&mut host, &layout, strip_id);
+        let maximize = host
+            .active_window_bounds()
+            .unwrap()
+            .maximize
+            .expect("revealed Expand");
+        cursor(&mut host, &layout, maximize.center());
+        press(&mut host, &layout);
+        release(&mut host, &layout);
+        host.tick_pending_maximize_harvest_for_tests();
+        let layout = lay_out_host_with_theme(&mut host, theme.clone(), 1.5);
+        let unpainted = host.active_window_bounds().expect("active group");
+        assert!(
+            unpainted.restore.is_none(),
+            "inspection must not paint or reveal"
+        );
+        assert_eq!(host.active_window_bounds(), Some(unpainted));
+        cursor(
+            &mut host,
+            &layout,
+            Point::new(unpainted.group.center().x, unpainted.group.y0 + 1.0),
+        );
+        paint_group(&mut host, &layout, strip_id);
+        let bounds = host.active_window_bounds().expect("painted active group");
+        let restore = bounds.restore.expect("painted Restore");
+        let client = bounds.client.expect("active client");
+        assert!(restore.y1 <= client.y0);
+        assert_eq!(host.active_window_control_rects().unwrap().1, restore);
+        cursor(&mut host, &layout, restore.center());
+        press(&mut host, &layout);
+        assert!(host.group_at_for_tests(strip_id, 0).unwrap().maximized);
+        dispatch(
+            &mut host,
+            &layout,
+            &PointerAction::Leave.event(layout.input_scale),
+        );
+        release(&mut host, &layout);
+        host.tick_pending_maximize_harvest_for_tests();
+        assert!(host.group_at_for_tests(strip_id, 0).unwrap().maximized);
+
+        cursor(&mut host, &layout, restore.center());
+        paint_group(&mut host, &layout, strip_id);
+        press(&mut host, &layout);
+        let scaled = lay_out_host_with_theme(&mut host, theme.with_text_scale(1.3), 2.0);
+        paint_group(&mut host, &scaled, strip_id);
+        let target = host
+            .active_window_bounds()
+            .unwrap()
+            .restore
+            .expect("new painted Restore");
+        cursor(&mut host, &scaled, target.center());
+        release(&mut host, &scaled);
+        host.tick_pending_maximize_harvest_for_tests();
+        assert!(
+            host.group_at_for_tests(strip_id, 0).unwrap().maximized,
+            "a scale change must cancel the old held gesture"
+        );
+
+        cursor(&mut host, &scaled, target.center());
+        press(&mut host, &scaled);
+        assert!(host.group_at_for_tests(strip_id, 0).unwrap().maximized);
+        release(&mut host, &scaled);
+        host.tick_pending_maximize_harvest_for_tests();
+        assert!(!host.group_at_for_tests(strip_id, 0).unwrap().maximized);
+        assert!(!chrome.borrow().is_fullscreen());
+    }
 }
 
 // 1. Horizontal window-group resize
@@ -470,7 +494,7 @@ fn resize_handles_persist_clamped_redistributed_group_widths() {
         // neighbour keeps its own width in the unbounded strip.
         cursor(&mut host, &layout, Point::new(cx, cy));
         press(&mut host, &layout);
-        cursor(&mut host, &layout, Point::new(cx + 5000.0, cy));
+        cursor(&mut host, &layout, Point::new(cx + 200_000.0, cy));
         release(&mut host, &layout);
 
         host.tick_pending_width_harvest_for_tests();
@@ -974,19 +998,13 @@ fn drops_and_the_tab_search_chip_open_the_right_app() {
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn expand_restore_and_workspace_switch_change_what_is_rendered() {
-    // Phase `expand_maximizes_into_the_work_area_beside_the_wheel`.
+    // Phase `expand_maximizes_into_the_work_area_and_tucks_the_wheel_away`.
     // Clicking a tab's Expand chip maximizes it inside the desktop work area:
-    // the top bar and the workspace wheel stay, because they say where you are.
+    // the top bar stays, and the workspace wheel is tucked away.
     {
         let (tree, strip_id, _ids) = single_strip_tree(&[100, 200]);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let layout = lay_out_host(&mut host);
-        let tiled_left = host
-            .group_at_for_tests(strip_id, 0)
-            .expect("group after layout")
-            .get_rect()
-            .x0;
-
         assert!(
             !chrome.borrow().is_fullscreen(),
             "nothing holds the output at boot",
@@ -1025,11 +1043,11 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             .sidebar_rect_for_tests()
             .expect("the desktop has a wheel");
         assert!(
-            sidebar.area() > 0.0,
-            "the radial workspace switcher must stay while a window is maximized; \
+            sidebar.area() == 0.0,
+            "the radial workspace switcher is tucked away while a window is expanded; \
              got {sidebar:?}",
         );
-        let topbar_height = laid_out_topbar_height(chrome);
+        let topbar_height = laid_out_topbar_height(chrome.clone());
         assert_approx_eq!(
             topbar_height,
             f64::from(TOPBAR_HEIGHT_PX),
@@ -1048,13 +1066,8 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         );
         assert_approx_eq!(
             maximized.x0,
-            tiled_left,
-            "a maximized group starts where the strip's first window does, beside the wheel"
-        );
-        assert!(
-            maximized.x0 >= sidebar.x1,
-            "the maximized group must not lie under the wheel; group={maximized:?} \
-             wheel={sidebar:?}"
+            0.0,
+            "an expanded group owns the left edge: no gutter is left where the wheel was"
         );
         assert_approx_eq!(
             maximized.x1,
@@ -1069,16 +1082,72 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         let app = group
             .active_host_rect_for_tests()
             .expect("maximized group's active app");
+        // The SDK owns the theme-dependent system lane policy; the hidden
+        // tab strip itself still reserves no height.
         assert_eq!(
-            app, maximized,
-            "the hidden tab strip must reserve no space inside the maximized group",
+            app,
+            vello::kurbo::Rect::new(
+                maximized.x0,
+                maximized.y0 + ui::widget::maximized_chrome_height(&layout2.theme),
+                maximized.x1,
+                maximized.y1,
+            ),
+            "the client must fill exactly the area below compact system controls",
         );
-        let _ = &layout2;
+        assert_approx_eq!(
+            group.bar_for_tests().get_rect().height(),
+            0.0,
+            "the hidden tab strip must reserve no height",
+        );
+
+        // Reveal through the host's pointer route at the group's actual,
+        // nonzero origin. Painting must produce a usable Restore target.
+        cursor(
+            &mut host,
+            &layout2,
+            Point::new(maximized.center().x, maximized.y0 + 1.0),
+        );
+        paint_group(&mut host, &layout2, strip_id);
+        let bounds = host.active_window_bounds().expect("painted active group");
+        let restore = bounds.restore.expect("painted Restore target");
+        assert_eq!(bounds.client, Some(app));
+        assert!(
+            restore.area() > 0.0,
+            "Restore must reveal below the OS top bar"
+        );
+        assert!(
+            restore.y0 >= maximized.y0,
+            "Restore must stay below the OS top bar",
+        );
+        assert!(
+            restore.y1 <= app.y0,
+            "Restore must stay clear of the client header",
+        );
+        assert!(
+            restore.x0 >= maximized.x0 && restore.x1 <= maximized.x1,
+            "Restore must stay inside the maximized group",
+        );
+        let client_top = (restore.y1 + ui::widget::tabs::TAB_PILL_INSET_Y).ceil();
+        assert_eq!(
+            app,
+            ui::kurbo::Rect::new(maximized.x0, client_top, maximized.x1, maximized.y1),
+            "the client fills exactly the group below painted system chrome",
+        );
+        cursor(&mut host, &layout2, restore.center());
+        press(&mut host, &layout2);
+        release(&mut host, &layout2);
+        host.tick_pending_maximize_harvest_for_tests();
+        assert!(
+            !chrome.borrow().is_fullscreen(),
+            "the painted Restore target must work"
+        );
+        assert!(!host.group_at_for_tests(strip_id, 0).unwrap().maximized);
     }
 
-    // Phase `the_workspace_switcher_stays_through_maximize_and_restore`.
-    // Maximizing and restoring an expanded group keeps the sidebar laid out
-    // on every frame, rather than leaving its taffy node at `display:none`.
+    // Phase `the_workspace_switcher_is_tucked_while_expanded_and_returns_on_restore`.
+    // An expanded group tucks the sidebar away; restoring it lays the sidebar
+    // out again on the first frame, rather than leaving its taffy node at
+    // `display:none`.
     {
         let (tree, strip_id, _ids) = single_strip_tree(&[100]);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
@@ -1098,8 +1167,8 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
         let maximized_layout = lay_out_host(&mut host);
         assert!(chrome.borrow().is_fullscreen());
         assert!(
-            host.sidebar_rect_for_tests().unwrap().area() > 0.0,
-            "the switcher stays while the group is maximized",
+            host.sidebar_rect_for_tests().unwrap().area() == 0.0,
+            "the switcher is tucked away while the group is expanded",
         );
 
         // Queue the same one-shot toggle the Restore button publishes, then
@@ -1169,6 +1238,7 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             active_tab: 3001,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         };
         let group_400 = WindowGroup {
             id: 400,
@@ -1176,6 +1246,7 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
             active_tab: 4001,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         };
         let ws_b = Workspace {
             strips: vec![Strip {
@@ -1275,6 +1346,7 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
                     active_tab: tab_id,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 },
             );
             t.desktop.set_active_group(strip_id, id);
@@ -1405,11 +1477,7 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
         dispatch(
             &mut host,
             &layout,
-            &WindowEvent::MouseWheel {
-                device_id: unsafe { std::mem::zeroed() },
-                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
-                phase: winit::event::TouchPhase::Moved,
-            },
+            &ui::synthetic_input::mouse_wheel(0.0, -3.0),
         );
         // Give any wrongly-started eased travel every chance to show itself
         // before reading the position.
@@ -1491,8 +1559,8 @@ fn pointer_focus_keeps_native_card_in_place_but_keyboard_focus_reveals_it() {
     press(&mut host, &layout);
     release(&mut host, &layout);
     // Drive the actual native per-frame focus marker and intent harvest.
-    let mut doc = automerge::AutoCommit::new();
-    host.update(&mut doc, &automerge::ROOT);
+    let doc = automerge::AutoCommit::new();
+    host.update(&doc, &automerge::ROOT);
     host.tick_scroll_active_into_view_for_tests();
     host.group_row_mut_for_tests(strip)
         .unwrap()
@@ -1528,3 +1596,177 @@ fn pointer_focus_keeps_native_card_in_place_but_keyboard_focus_reveals_it() {
 // 3. Horizontal strip scroll
 
 // 4. Drag-file-to-open
+
+// ---------------------------------------------------------------------------
+// Resizing from every window edge, first and last included
+// ---------------------------------------------------------------------------
+
+/// Three narrow groups: all fit on screen, none is special.
+fn narrow_strip() -> (WorkspaceTree, StripId, Vec<GroupId>) {
+    let (mut tree, strip_id, ids) = single_strip_tree(&[100, 200, 300]);
+    for g in &mut tree.desktop.workspaces[0].strips[0].window_groups {
+        g.width = WindowWidth::Narrow;
+    }
+    (tree, strip_id, ids)
+}
+
+fn on_screen_widths(host: &mut ShellOverlayHost, strip_id: StripId) -> Vec<f64> {
+    (0..3)
+        .map(|i| {
+            host.group_at_for_tests(strip_id, i)
+                .unwrap()
+                .get_rect()
+                .width()
+        })
+        .collect()
+}
+
+/// Press at `from`, drag `dx` along the real input path, release, and
+/// return the on-screen widths after the frame loop's next layout.
+fn drag_from(
+    from: impl Fn(&mut ShellOverlayHost, StripId) -> Point,
+    dx: f64,
+    shift: bool,
+) -> (Vec<f64>, Vec<f64>) {
+    use winit::keyboard::ModifiersState;
+    let (tree, strip_id, _ids) = narrow_strip();
+    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+    let before = on_screen_widths(&mut host, strip_id);
+    let at = from(&mut host, strip_id);
+    let mods = if shift {
+        Modifiers::from(ModifiersState::SHIFT)
+    } else {
+        Modifiers::default()
+    };
+    cursor(&mut host, &layout, at);
+    press_with_modifiers(&mut host, &layout, mods);
+    cursor(&mut host, &layout, Point::new(at.x + dx, at.y));
+    release(&mut host, &layout);
+    let _ = lay_out_host(&mut host);
+    let after = on_screen_widths(&mut host, strip_id);
+    (before, after)
+}
+
+fn group_rect(host: &mut ShellOverlayHost, strip_id: StripId, i: usize) -> vello::kurbo::Rect {
+    host.group_at_for_tests(strip_id, i).unwrap().get_rect()
+}
+
+fn assert_widths(before: &[f64], after: &[f64], delta: [f64; 3], what: &str) {
+    for i in 0..3 {
+        assert!(
+            (after[i] - (before[i] + delta[i])).abs() <= 1.5,
+            "{what}: group {i} went {} -> {}, expected {:+} (before {before:?}, after {after:?})",
+            before[i],
+            after[i],
+            delta[i],
+        );
+    }
+}
+
+#[test]
+fn first_window_right_edge_resizes_and_pushes_neighbours() {
+    // Inside the painted grip, 2 px from the edge.
+    let (b, a) = drag_from(
+        |h, s| {
+            let r = group_rect(h, s, 0);
+            Point::new(r.x1 - 2.0, r.center().y)
+        },
+        40.0,
+        false,
+    );
+    assert_widths(&b, &a, [40.0, 0.0, 0.0], "first window, right grip");
+    // On the seam between the first and second window.
+    let (b, a) = drag_from(
+        |h, s| {
+            let r = group_rect(h, s, 0);
+            Point::new(r.x1 + 4.0, r.center().y)
+        },
+        40.0,
+        false,
+    );
+    assert_widths(&b, &a, [40.0, 0.0, 0.0], "first window, seam");
+}
+
+#[test]
+fn last_window_right_edge_resizes() {
+    // The last window ends 16 px short of the output edge, and the pointer
+    // cannot leave the output, so the drag stays within it.
+    let (b, a) = drag_from(
+        |h, s| {
+            let r = group_rect(h, s, 2);
+            Point::new(r.x1 - 2.0, r.center().y)
+        },
+        12.0,
+        false,
+    );
+    assert_widths(&b, &a, [0.0, 0.0, 12.0], "last window, right grip");
+}
+
+#[test]
+fn first_window_left_edge_can_be_grabbed_and_resizes_it() {
+    // Dragging the left edge towards the window's centre narrows it, away
+    // from the centre widens it. Neighbours keep their widths.
+    let grab = |h: &mut ShellOverlayHost, s: StripId| {
+        let r = group_rect(h, s, 0);
+        Point::new(r.x0 + 2.0, r.center().y)
+    };
+    let (b, a) = drag_from(grab, 40.0, false);
+    assert_widths(&b, &a, [-40.0, 0.0, 0.0], "first window, left edge inward");
+    let (b, a) = drag_from(grab, -40.0, false);
+    assert_widths(&b, &a, [40.0, 0.0, 0.0], "first window, left edge outward");
+}
+
+#[test]
+fn middle_window_edges_resize_plain_and_zero_sum_with_shift() {
+    // The seam's right half is the middle window's left edge; the seam is
+    // the first window's trailing edge, so the first window follows it.
+    let left_edge = |h: &mut ShellOverlayHost, s: StripId| {
+        let r = group_rect(h, s, 1);
+        Point::new(r.x0 + 2.0, r.center().y)
+    };
+    let (b, a) = drag_from(left_edge, 40.0, false);
+    assert_widths(&b, &a, [40.0, 0.0, 0.0], "middle window left edge");
+    let (b, a) = drag_from(left_edge, 40.0, true);
+    assert_widths(&b, &a, [40.0, -40.0, 0.0], "middle window left edge, shift");
+    let right_edge = |h: &mut ShellOverlayHost, s: StripId| {
+        let r = group_rect(h, s, 1);
+        Point::new(r.x1 - 2.0, r.center().y)
+    };
+    let (b, a) = drag_from(right_edge, 40.0, false);
+    assert_widths(&b, &a, [0.0, 40.0, 0.0], "middle window right edge");
+    let (b, a) = drag_from(right_edge, 40.0, true);
+    assert_widths(
+        &b,
+        &a,
+        [0.0, 40.0, -40.0],
+        "middle window right edge, shift",
+    );
+}
+
+#[test]
+fn every_window_edge_has_the_same_grab_zone() {
+    let (tree, strip_id, _ids) = narrow_strip();
+    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+    let zone = ui::widget::RESIZE_HANDLE_PX;
+    for i in 0..3 {
+        let r = group_rect(&mut host, strip_id, i);
+        let g = host.group_at_for_tests(strip_id, i).unwrap();
+        let lead = g.leading_resize_grab_rect().expect("leading grip");
+        let trail = g.resize_grab_rect().expect("trailing grip");
+        assert_approx_eq!(lead.width(), zone, "group {i} leading zone");
+        assert_approx_eq!(trail.width(), zone, "group {i} trailing zone");
+        assert_approx_eq!(lead.x0, r.x0);
+        assert_approx_eq!(trail.x1, r.x1);
+    }
+    // The seam hit zone is exactly the two neighbouring grips plus the gap.
+    let gap = group_rect(&mut host, strip_id, 1).x0 - group_rect(&mut host, strip_id, 0).x1;
+    let seam = host
+        .group_row_mut_for_tests(strip_id)
+        .unwrap()
+        .handle_at(0)
+        .unwrap()
+        .get_rect();
+    assert_approx_eq!(seam.width(), 2.0 * zone + gap, "seam zone");
+}

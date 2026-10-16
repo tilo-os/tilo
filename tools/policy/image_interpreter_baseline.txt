@@ -1,0 +1,12 @@
+# Interpreter scripts the OS image still ships from os/usr and os/etc
+# (tools/policy/check_image_interpreters.py, docs/policies.md).
+#
+# Every entry predates the rule that runtime code in the image is compiled.
+# This list only shrinks: port or delete a script, then remove its line (the
+# check fails on a line whose path no longer holds one). A new line is an
+# exception made in review, with the reason after `#`.
+#
+# path  # what it does, and so what porting it touches
+os/usr/libexec/tilo-installer-code-protocol.py  # installer, dev VMs only: named-file protocol for helper refresh
+os/usr/libexec/tilo-installer-code-refresh.py  # installer, dev VMs only: refreshes allowlisted helpers
+os/usr/libexec/tilo-installer-dev-target-uki.py  # installer, CI development targets only: unsigned target UKI

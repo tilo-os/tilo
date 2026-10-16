@@ -1,522 +1,371 @@
-//! Region & Formats pane — the editor for the **shared region store**.
+//! Region & Formats pane — the editor for the person's **locale**.
 //!
-//! This panel edits [`crate::region::RegionSettings`], the global per-user
-//! locale document persisted at
-//! [`RegionSettings::store_path`] (`~/.config/tilo/settings.json`). The
-//! Sheets app reads `locale.currency` / `locale.date_format` /
-//! `locale.time_format` for its cell formatting, and the Weather app reads
-//! `locale.measurement` for its °C/°F + km/h vs mph toggle. Editing here is
-//! the single source of truth those apps follow.
+//! This panel edits [`tilo_locale::Locale`], the `locale` section of the
+//! person's settings, which every app's toolkit follows. The Sheets app reads
+//! `locale.currency` / `locale.date_format` / `locale.time_format` for its
+//! cell formatting, and the Weather app reads `locale.measurement` for its
+//! °C/°F + km/h vs mph toggle. Editing here is the single source of truth
+//! those apps follow.
 //!
-//! Each control is a `Dropdown` bound to a CRDT key; `sync` reads the key,
-//! maps the selected string back to the typed enum, and persists the store.
-//! On first sync it seeds the dropdowns from the loaded store so they rest
-//! on the user's current preference (or the sample default under `--shots`).
+//! Each control is a `Dropdown` bound to its field of the section, mapping the
+//! shown label to the stored value; the pane shows what the section holds,
+//! whoever changed it.
 
-use std::collections::HashMap;
-use ui::doc::read_str;
-use ui::widget::{AppModel, ModelPath};
+use ui::LocalState;
+use ui::widget::{AppModel, Dropdown, ModelPath, Widget};
 
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
-use taffy::{NodeId, TaffyTree};
-use tracing::warn;
-use ui::theme::Theme;
-use ui::widget::{Dropdown, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use crate::host::{Followed, PaneCx};
+use crate::i18n::t;
+use crate::widgets::{Item, card, choice_row, note, rows};
+use tilo_locale::{Currency, DateStyle, FirstDayOfWeek, Locale, Measurement, NumberStyle};
+use ui::clock::TimeStyle;
 
-use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_text_action};
-use crate::region::{
-    Currency, DateStyle, FirstDayOfWeek, Measurement, NumberStyle, RegionSettings, TimeStyle,
-};
-use crate::widgets::{
-    caption, card, choice_row, choice_row_stacked, choice_rows_stack_below, rows,
-};
-
-pub const CURRENCY_KEY: &str = "region.currency";
-pub const DATE_KEY: &str = "region.date_format";
-pub const TIME_KEY: &str = "region.time_format";
-pub const MEASUREMENT_KEY: &str = "region.measurement";
-pub const NUMBER_STYLE_KEY: &str = "region.number_style";
-pub const FIRST_DAY_KEY: &str = "region.first_day";
-
-pub struct RegionPane {
-    settings: RegionSettings,
-    needs_seed: bool,
-    commit_context_pending: bool,
-    actions: ui::ActionHost,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
-    /// The content width the host expects to give this pane, for the first
-    /// frame (before `apply_layout` has recorded a rect) — a cold `--shots`
-    /// frame or a fresh navigation. After that the pane's own rect decides.
-    width_hint: Option<f32>,
+fn date_label(style: DateStyle) -> String {
+    t(match style {
+        DateStyle::Iso => "settings-region-date-iso",
+        DateStyle::Us => "settings-region-date-us",
+        DateStyle::Eu => "settings-region-date-eu",
+        DateStyle::Long => "settings-region-date-long",
+    })
 }
 
-impl Default for RegionPane {
-    fn default() -> Self {
-        Self::new()
+fn date_from_shown(label: &str) -> Option<DateStyle> {
+    DateStyle::ALL
+        .iter()
+        .copied()
+        .find(|style| style.label() == label || date_label(*style) == label)
+}
+
+fn time_label(style: TimeStyle) -> String {
+    t(match style {
+        TimeStyle::H24 => "settings-region-time-24",
+        TimeStyle::H12 => "settings-region-time-12",
+    })
+}
+
+fn time_from_shown(label: &str) -> Option<TimeStyle> {
+    TimeStyle::ALL
+        .iter()
+        .copied()
+        .find(|style| style.label() == label || time_label(*style) == label)
+}
+
+fn measure_label(measure: Measurement) -> String {
+    t(match measure {
+        Measurement::Metric => "settings-region-measure-metric",
+        Measurement::Imperial => "settings-region-measure-imperial",
+    })
+}
+
+fn measure_from_shown(label: &str) -> Option<Measurement> {
+    Measurement::ALL
+        .iter()
+        .copied()
+        .find(|measure| measure.label() == label || measure_label(*measure) == label)
+}
+
+fn weekday_label(day: FirstDayOfWeek) -> String {
+    t(match day {
+        FirstDayOfWeek::Monday => "settings-region-weekday-monday",
+        FirstDayOfWeek::Sunday => "settings-region-weekday-sunday",
+        FirstDayOfWeek::Saturday => "settings-region-weekday-saturday",
+    })
+}
+
+fn weekday_from_shown(label: &str) -> Option<FirstDayOfWeek> {
+    FirstDayOfWeek::ALL
+        .iter()
+        .copied()
+        .find(|day| day.label() == label || weekday_label(*day) == label)
+}
+
+/// What the pane's choosers show.
+struct Shown {
+    currency: LocalState<String>,
+    date: LocalState<String>,
+    time: LocalState<String>,
+    measurement: LocalState<String>,
+    number_style: LocalState<String>,
+    first_day: LocalState<String>,
+}
+
+impl Shown {
+    fn of(locale: Locale) -> Self {
+        let text = || LocalState::new(String::new());
+        let shown = Self {
+            currency: text(),
+            date: text(),
+            time: text(),
+            measurement: text(),
+            number_style: text(),
+            first_day: text(),
+        };
+        shown.show(locale);
+        shown
     }
+
+    fn show(&self, locale: Locale) {
+        self.currency.set(locale.currency.code().to_owned());
+        self.date.set(date_label(locale.date_format));
+        self.time.set(time_label(locale.time_format));
+        self.measurement.set(measure_label(locale.measurement));
+        self.number_style
+            .set(locale.number_style.label().to_owned());
+        self.first_day.set(weekday_label(locale.first_day_of_week));
+    }
+}
+
+pub struct RegionPane {
+    cx: PaneCx,
+    locale: Followed<Locale>,
+    shown: Shown,
+    composed: ui::widget::Composed,
 }
 
 impl RegionPane {
-    pub fn new() -> Self {
-        Self::with_settings(RegionSettings::load())
-    }
-
-    /// Construct from explicit settings — used by tests and the
-    /// deterministic `--shots` render.
-    pub fn with_settings(settings: RegionSettings) -> Self {
+    /// The pane over `cx`'s locale.
+    pub fn new(cx: PaneCx) -> Self {
+        let locale = cx.follow::<Locale>();
+        let shown = Shown::of(*locale.get());
         Self {
-            settings,
-            needs_seed: true,
-            commit_context_pending: false,
-            actions: ui::ActionHost::new(),
-            composed: None,
-            rect: Rect::ZERO,
-            width_hint: None,
+            cx,
+            locale,
+            shown,
+            composed: ui::widget::Composed::default(),
         }
     }
 
-    /// Seed the width the pane composes for until its first `apply_layout`.
-    #[must_use]
-    pub fn with_width_hint(mut self, width: f32) -> Self {
-        self.width_hint = Some(width);
-        self
+    pub fn locale(&self) -> Locale {
+        *self.locale.get()
     }
 
-    pub fn settings(&self) -> RegionSettings {
-        self.settings
-    }
-
-    /// The width the host makes available to the pane. Prefer the host hint:
-    /// an intrinsic child rect may shrink to the stacked chooser width and
-    /// must not then force the next composition to stay stacked.
-    fn layout_width(&self) -> Option<f32> {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a logical-pixel width comfortably representable by f32"
-        )]
-        let allocated = (self.rect.width() > 0.0).then_some(self.rect.width() as f32);
-        self.width_hint.or(allocated)
-    }
-
-    /// Whether the Formats card composes its choosers beneath their labels.
-    /// One decision for the whole card, so no row is left inline while its
-    /// neighbours wrap.
-    fn stack_choices(&self) -> bool {
-        self.layout_width()
-            .is_some_and(|width| width < choice_rows_stack_below())
-    }
-
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one declarative card list mirroring the visible Region & Formats pane"
+    )]
     fn build_composition(&self) -> Box<dyn Widget> {
-        let choice: fn(&str, Box<dyn Widget>) -> Box<dyn Widget> = if self.stack_choices() {
-            choice_row_stacked
-        } else {
-            choice_row
+        let loc = *self.locale.get();
+        let cx = &self.cx;
+        let shown = &self.shown;
+        let dropdown = |options: Vec<String>, state: &LocalState<String>, id: &str| {
+            let placeholder = state.get();
+            Dropdown::from_state(options, state)
+                .with_id(id)
+                .with_placeholder(&placeholder)
+                .fill()
         };
-        let loc = self.settings.locale;
 
         // Currency dropdown — options are ISO codes (the stored form).
-        let currency_opts: Vec<String> =
-            Currency::ALL.iter().map(|c| c.code().to_string()).collect();
-        let currency = Dropdown::new(currency_opts, "region.currency.edit")
-            .with_id("region.currency")
-            .with_placeholder(loc.currency.code());
+        let currency = cx.bind_field_with(
+            dropdown(
+                Currency::ALL.iter().map(|c| c.code().to_string()).collect(),
+                &shown.currency,
+                "region.currency",
+            ),
+            Locale::paths().currency,
+            |code: String| {
+                Currency::from_code(&code).ok_or_else(|| format!("`{code}` is not offered"))
+            },
+        );
+        let date = cx.bind_field_with(
+            dropdown(
+                DateStyle::ALL.iter().copied().map(date_label).collect(),
+                &shown.date,
+                "region.date",
+            ),
+            Locale::paths().date_format,
+            |shown: String| {
+                date_from_shown(&shown).ok_or_else(|| format!("`{shown}` is not offered"))
+            },
+        );
+        let time = cx.bind_field_with(
+            dropdown(
+                TimeStyle::ALL.iter().copied().map(time_label).collect(),
+                &shown.time,
+                "region.time",
+            ),
+            Locale::paths().time_format,
+            |shown: String| {
+                time_from_shown(&shown).ok_or_else(|| format!("`{shown}` is not offered"))
+            },
+        );
+        let units = cx.bind_field_with(
+            dropdown(
+                Measurement::ALL
+                    .iter()
+                    .copied()
+                    .map(measure_label)
+                    .collect(),
+                &shown.measurement,
+                "region.measurement",
+            ),
+            Locale::paths().measurement,
+            |shown: String| {
+                measure_from_shown(&shown).ok_or_else(|| format!("`{shown}` is not offered"))
+            },
+        );
+        let number_style = cx.bind_field_with(
+            dropdown(
+                NumberStyle::ALL
+                    .iter()
+                    .map(|style| style.label().to_string())
+                    .collect(),
+                &shown.number_style,
+                "region.number_style",
+            ),
+            Locale::paths().number_style,
+            |shown: String| {
+                NumberStyle::ALL
+                    .into_iter()
+                    .find(|style| style.label() == shown)
+                    .ok_or_else(|| format!("`{shown}` is not offered"))
+            },
+        );
+        let first_day = cx.bind_field_with(
+            dropdown(
+                FirstDayOfWeek::ALL
+                    .iter()
+                    .copied()
+                    .map(weekday_label)
+                    .collect(),
+                &shown.first_day,
+                "region.first_day",
+            ),
+            Locale::paths().first_day_of_week,
+            |shown: String| {
+                weekday_from_shown(&shown).ok_or_else(|| format!("`{shown}` is not offered"))
+            },
+        );
 
-        let date_opts: Vec<String> = DateStyle::ALL
-            .iter()
-            .map(|d| d.label().to_string())
-            .collect();
-        let date = Dropdown::new(date_opts, "region.date_format.edit")
-            .with_id("region.date")
-            .with_placeholder(loc.date_format.label());
-
-        let time_opts: Vec<String> = TimeStyle::ALL
-            .iter()
-            .map(|t| t.label().to_string())
-            .collect();
-        let time = Dropdown::new(time_opts, "region.time_format.edit")
-            .with_id("region.time")
-            .with_placeholder(loc.time_format.label());
-
-        let unit_opts: Vec<String> = Measurement::ALL
-            .iter()
-            .map(|m| m.label().to_string())
-            .collect();
-        let units = Dropdown::new(unit_opts, "region.measurement.edit")
-            .with_id("region.measurement")
-            .with_placeholder(loc.measurement.label());
-
-        let number_style = Dropdown::new(
-            NumberStyle::ALL
-                .iter()
-                .map(|style| style.label().to_string())
-                .collect(),
-            "region.number_style.edit",
-        )
-        .with_id("region.number_style")
-        .with_placeholder(loc.number_style.label());
-
-        let first_day = Dropdown::new(
-            FirstDayOfWeek::ALL
-                .iter()
-                .map(|day| day.label().to_string())
-                .collect(),
-            "region.first_day.edit",
-        )
-        .with_id("region.first_day")
-        .with_placeholder(loc.first_day_of_week.label());
-
+        let currency_title = t("settings-region-currency");
+        let date_title = t("settings-region-date-format");
+        let time_title = t("settings-region-time-format");
+        let measure_title = t("settings-region-measurement");
+        let number_title = t("settings-region-number-format");
+        let first_title = t("settings-region-first-day");
         let formats = card(
-            "Formats",
+            &t("settings-region-formats-card"),
             rows(vec![
-                choice("Currency", Box::new(currency)),
-                choice("Date format", Box::new(date)),
-                choice("Time format", Box::new(time)),
-                choice("Measurement", Box::new(units)),
-                choice("Number format", Box::new(number_style)),
-                choice("First day of week", Box::new(first_day)),
+                choice_row(&currency_title, Box::new(currency)),
+                choice_row(&date_title, Box::new(date)),
+                choice_row(&time_title, Box::new(time)),
+                choice_row(&measure_title, Box::new(units)),
+                choice_row(&number_title, Box::new(number_style)),
+                choice_row(&first_title, Box::new(first_day)),
             ]),
         );
 
-        // A live preview of the chosen formats, so the effect is visible.
+        let amount = loc.number_style.amount(loc.currency.symbol());
+        let temp = t(match loc.measurement {
+            Measurement::Metric => "settings-region-preview-c",
+            Measurement::Imperial => "settings-region-preview-f",
+        });
+        let week_starts = weekday_label(loc.first_day_of_week);
         let preview = card(
-            "Preview",
+            &t("settings-region-preview-card"),
             rows(vec![
-                preview_line("Amount", &loc.number_style.amount(loc.currency.symbol())),
-                preview_line("Date", loc.date_format.example()),
-                preview_line("Time", loc.time_format.example()),
+                preview_line(&t("settings-region-preview-amount"), &amount),
                 preview_line(
-                    "Temperature",
-                    match loc.measurement {
-                        Measurement::Metric => "21 \u{00B0}C",
-                        Measurement::Imperial => "70 \u{00B0}F",
-                    },
+                    &t("settings-region-preview-date"),
+                    loc.date_format.example(),
                 ),
-                preview_line("Calendar week starts", loc.first_day_of_week.label()),
+                preview_line(
+                    &t("settings-region-preview-time"),
+                    loc.time_format.example(),
+                ),
+                preview_line(&t("settings-region-preview-temp"), &temp),
+                preview_line(&t("settings-region-preview-week"), &week_starts),
             ]),
         );
 
         let explainer = card(
-            "Shared with your apps",
-            rows(vec![caption(
-                "Sheets uses these formats for cells; Weather uses the \
-                 measurement setting for its units. Changes here apply \
-                 everywhere those apps read the shared locale.",
-            )]),
+            &t("settings-region-shared-card"),
+            rows(vec![note(&t("settings-region-shared-body"))]),
         );
 
         crate::widgets::cards(vec![formats, preview, explainer])
     }
-
-    fn draft_key(canonical: &str) -> String {
-        format!("{canonical}.edit")
-    }
-
-    fn dispatch(&mut self, state: &mut AutoCommit, action: &SettingsAction) {
-        self.actions.dispatch_with_context(
-            state,
-            SETTINGS_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.settings", "Settings", action),
-        );
-    }
-
-    fn reconcile(
-        &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        key: &str,
-        current: &str,
-    ) -> (String, bool) {
-        let canonical = read_str(state, root, key).unwrap_or_else(|| current.to_string());
-        let draft_key = Self::draft_key(key);
-        let draft = read_str(state, root, &draft_key).unwrap_or_else(|| canonical.clone());
-        if canonical != current {
-            let _ = state.put(root, draft_key, canonical.as_str());
-            (canonical, true)
-        } else if draft != canonical {
-            self.dispatch(state, &set_text_action(key, draft.clone()));
-            (draft, true)
-        } else {
-            (current.to_string(), false)
-        }
-    }
-}
-
-/// The Region & Formats pane, composed for the content width the host expects
-/// to allocate (`None` composes for a wide pane), so the first frame already
-/// lays the Formats card out for a phone-width screen (stacked choosers) or a
-/// wide one (label beside chooser).
-pub fn build_for_width(width_hint: Option<f32>) -> Box<dyn Widget> {
-    // Under --shots / fresh installs, load() returns defaults; that's a
-    // perfectly realistic populated state (USD / ISO / 24h / Metric).
-    let pane = RegionPane::new();
-    Box::new(match width_hint {
-        Some(width) => pane.with_width_hint(width),
-        None => pane,
-    })
 }
 
 impl Widget for RegionPane {
-    ui::provides!(dyn ui::undo::UndoPoints);
-
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
-        if self.needs_seed {
-            let loc = self.settings.locale;
-            for (key, value) in [
-                (CURRENCY_KEY, loc.currency.code()),
-                (DATE_KEY, loc.date_format.label()),
-                (TIME_KEY, loc.time_format.label()),
-                (MEASUREMENT_KEY, loc.measurement.label()),
-                (NUMBER_STYLE_KEY, loc.number_style.label()),
-                (FIRST_DAY_KEY, loc.first_day_of_week.label()),
-            ] {
-                self.dispatch(state, &set_text_action(key, value));
-            }
-            self.needs_seed = false;
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        if self.locale.refresh() {
+            self.shown.show(*self.locale.get());
+            // The preview card follows the values.
+            self.composed.invalidate();
         }
-
-        let mut changed = false;
-
-        let currency_now = self.settings.locale.currency.code();
-        let (code, did_change) = self.reconcile(state, root, CURRENCY_KEY, currency_now);
-        changed |= did_change;
-        if let Some(c) = Currency::from_code(&code)
-            && c != self.settings.locale.currency
-        {
-            self.settings.locale.currency = c;
-            changed = true;
-        }
-        let date_now = self.settings.locale.date_format.label();
-        let (label, did_change) = self.reconcile(state, root, DATE_KEY, date_now);
-        changed |= did_change;
-        if let Some(d) = DateStyle::ALL.iter().find(|d| d.label() == label)
-            && *d != self.settings.locale.date_format
-        {
-            self.settings.locale.date_format = *d;
-            changed = true;
-        }
-        let time_now = self.settings.locale.time_format.label();
-        let (label, did_change) = self.reconcile(state, root, TIME_KEY, time_now);
-        changed |= did_change;
-        if let Some(t) = TimeStyle::ALL.iter().find(|t| t.label() == label)
-            && *t != self.settings.locale.time_format
-        {
-            self.settings.locale.time_format = *t;
-            changed = true;
-        }
-        let measure_now = self.settings.locale.measurement.label();
-        let (label, did_change) = self.reconcile(state, root, MEASUREMENT_KEY, measure_now);
-        changed |= did_change;
-        if let Some(m) = Measurement::ALL.iter().find(|m| m.label() == label)
-            && *m != self.settings.locale.measurement
-        {
-            self.settings.locale.measurement = *m;
-            changed = true;
-        }
-        let style_now = self.settings.locale.number_style.label();
-        let (label, did_change) = self.reconcile(state, root, NUMBER_STYLE_KEY, style_now);
-        changed |= did_change;
-        if let Some(style) = NumberStyle::ALL.iter().find(|style| style.label() == label)
-            && *style != self.settings.locale.number_style
-        {
-            self.settings.locale.number_style = *style;
-            changed = true;
-        }
-        let first_day_now = self.settings.locale.first_day_of_week.label();
-        let (label, did_change) = self.reconcile(state, root, FIRST_DAY_KEY, first_day_now);
-        changed |= did_change;
-        if let Some(day) = FirstDayOfWeek::ALL.iter().find(|day| day.label() == label)
-            && *day != self.settings.locale.first_day_of_week
-        {
-            self.settings.locale.first_day_of_week = *day;
-            changed = true;
-        }
-
-        if changed && let Err(e) = self.settings.save() {
-            warn!(target: "tilo::settings", op = "region_save", error = %e, "failed to persist region settings");
-        }
-
-        if let Some(c) = &mut self.composed {
-            c.sync(state, root);
-        }
+        self.composed.sync(state, root);
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let was_handled = *ctx.handled;
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-        self.commit_context_pending |= !was_handled && *ctx.handled;
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
+    crate::panes::composed_pane!();
 
     fn name(&self) -> &'static str {
         "RegionPane"
     }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
 }
 
-impl ui::undo::UndoPoints for RegionPane {
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
-        crate::panes::preference_commit_context(
-            pending,
-            "region",
-            "Region & formats",
-            "Change region preferences",
-        )
-    }
-}
-
-fn preview_line(label: &str, value: &str) -> crate::widgets::El {
+fn preview_line(label: &str, value: &str) -> Item {
     crate::widgets::value_row(label, value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::region::Locale;
+    use crate::resource::SettingsShell;
+    use ui::prelude::TestApp;
 
-    /// Seeding, currency/date/time/unit edits and ignoring unknown values.
+    /// Each format is the person's `locale` section, written in the
+    /// cross-app shape Sheets and Weather read; a value outside the offered
+    /// ones is refused and changes nothing.
     #[test]
-    fn region_pane_seeds_and_applies_known_choices() {
-        // Case `seed_writes_current_settings_into_crdt`.
-        {
-            let mut pane = RegionPane::with_settings(RegionSettings {
-                locale: Locale {
-                    currency: Currency::EUR,
-                    ..Default::default()
-                },
-            });
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            assert_eq!(read_str(&doc, &root, CURRENCY_KEY).as_deref(), Some("EUR"));
-        }
+    fn region_effects_write_the_locale() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        let locale_field = |app: &mut TestApp<SettingsShell>, field: &str, value: &str| {
+            crate::host::testing::edit_field(app, "settings.locale", field, value)
+        };
+        locale_field(&mut app, "currency", "JPY").unwrap();
+        locale_field(&mut app, "date_format", "EU").unwrap();
+        locale_field(&mut app, "time_format", "H12").unwrap();
+        locale_field(&mut app, "measurement", "imperial").unwrap();
+        locale_field(&mut app, "first_day_of_week", "sunday").unwrap();
+        let settings = app.settings::<Locale>();
+        let locale = settings.get();
+        assert_eq!(locale.currency, Currency::JPY);
+        assert_eq!(locale.date_format, DateStyle::Eu);
+        assert_eq!(locale.time_format, TimeStyle::H12);
+        assert_eq!(locale.measurement, Measurement::Imperial);
+        assert_eq!(locale.first_day_of_week, FirstDayOfWeek::Sunday);
+        let section = settings.document().section("locale");
+        assert_eq!(section["currency"], "JPY");
+        assert_eq!(section["date_format"], "EU");
+        assert_eq!(section["time_format"], "H12");
 
-        // Case `changing_currency_key_updates_settings`.
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let mut pane = RegionPane::with_settings(RegionSettings::default());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            // Simulate the dropdown writing a new currency code.
-            let _ = doc.put(&root, CURRENCY_KEY, "JPY");
-            pane.sync(&mut doc, &root);
-            assert_eq!(pane.settings().locale.currency, Currency::JPY);
-        }
+        assert!(locale_field(&mut app, "currency", "not-a-currency").is_err());
+        assert_eq!(app.settings::<Locale>().get(), locale);
+    }
 
-        // Case `changing_date_and_time_and_units_updates_settings`.
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let mut pane = RegionPane::with_settings(RegionSettings::default());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, DATE_KEY, DateStyle::Eu.label());
-            let _ = doc.put(&root, TIME_KEY, TimeStyle::H12.label());
-            let _ = doc.put(&root, MEASUREMENT_KEY, Measurement::Imperial.label());
-            pane.sync(&mut doc, &root);
-            assert_eq!(pane.settings().locale.date_format, DateStyle::Eu);
-            assert_eq!(pane.settings().locale.time_format, TimeStyle::H12);
-            assert_eq!(pane.settings().locale.measurement, Measurement::Imperial);
-        }
-
-        // Case `unknown_dropdown_value_is_ignored`.
-        {
-            // The pane persists through the per-user settings file.
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let mut pane = RegionPane::with_settings(RegionSettings::default());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, CURRENCY_KEY, "not-a-currency");
-            pane.sync(&mut doc, &root);
-            // Stayed at the default.
-            assert_eq!(pane.settings().locale.currency, Currency::USD);
-        }
+    /// The pane shows the stored locale and follows a change made elsewhere.
+    #[test]
+    fn the_pane_follows_the_locale() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        cx.settings::<Locale>()
+            .set(&Locale {
+                currency: Currency::EUR,
+                ..Locale::default()
+            })
+            .unwrap();
+        let mut pane = RegionPane::new(cx.clone());
+        assert_eq!(pane.shown.currency.get(), "EUR");
+        cx.settings::<Locale>()
+            .update(|locale| locale.measurement = Measurement::Imperial)
+            .unwrap();
+        let doc = ui::automerge::AutoCommit::new();
+        pane.sync(&doc, &ui::automerge::ROOT);
+        assert_eq!(pane.locale().measurement, Measurement::Imperial);
+        assert_eq!(
+            pane.shown.measurement.get(),
+            measure_label(Measurement::Imperial)
+        );
     }
 }

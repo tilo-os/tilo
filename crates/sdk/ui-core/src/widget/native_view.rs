@@ -17,9 +17,9 @@ use winit::event::WindowEvent;
 
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::{Element, NativeViewLifecycle, TaffyTreeExt, Widget};
 
 /// Live parent-window context supplied before a native view is shown.
@@ -350,13 +350,13 @@ impl Widget for NativeView {
         }
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(fallback) = &mut self.fallback {
             fallback.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.fallback
             .as_mut()
             .is_some_and(|fallback| fallback.update(state, path))
@@ -381,25 +381,15 @@ impl Widget for NativeView {
         });
         self.fallback_node = child;
         let children = child.into_iter().collect::<Vec<_>>();
-        let node = taffy.parent_node(
-            Style {
-                size: self.requested_size,
-                ..Default::default()
-            },
-            &children,
-        );
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: self.requested_size,
+            ..Default::default()
+        };
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.sync_geometry();
         if let (Some(fallback), Some(child)) = (&mut self.fallback, self.fallback_node) {
             fallback.apply_layout(taffy, child, origin);
@@ -434,7 +424,7 @@ impl Widget for NativeView {
             return;
         }
 
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -454,13 +444,13 @@ impl Widget for NativeView {
             reason = "the native fallback width is bounded by the on-screen widget rectangle"
         )]
         let max_width = (self.rect.width() - 24.0).max(0.0) as f32;
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             label,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
             theme.tokens.colors.text_dim,
             transform.pre_translate((self.rect.x0 + 12.0, self.rect.y0 + 12.0).into()),
             Some(max_width),
+            &theme.text(TextRole::Caption),
         );
     }
 
@@ -475,8 +465,7 @@ impl Widget for NativeView {
             return;
         }
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+            self.last_cursor = ctx.logical(position);
         }
         let pointer_event = matches!(
             event,
@@ -627,7 +616,7 @@ impl Widget for NativeView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use crate::testing::Dispatch;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -780,47 +769,13 @@ mod tests {
             ));
             let mut taffy = TaffyTree::new();
             let node = taffy.leaf_node(Style::default());
-            let mut state = AutoCommit::new();
-            let mut handled = false;
-            let mut focus = None;
-            let modifiers = winit::event::Modifiers::default();
-            let cursor = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: winit::dpi::PhysicalPosition::new(40.0, 70.0),
-            };
-            view.handle_event(
-                &cursor,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: &mut state,
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            let press = WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: winit::event::ElementState::Pressed,
-                button: winit::event::MouseButton::Left,
-            };
-            view.handle_event(
-                &press,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &modifiers,
-                    state: &mut state,
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
-            assert!(handled);
-            assert_eq!(focus, Some(node));
+            let mut at_node = Dispatch::new().layout(&taffy, node);
+            let cursor = crate::synthetic_input::cursor_moved(40.0, 70.0);
+            at_node.send(&mut view, &cursor);
+            let press = crate::synthetic_input::mouse_press();
+            let pressed = at_node.send(&mut view, &press);
+            assert!(pressed.handled);
+            assert_eq!(pressed.focus_target, Some(node));
             assert!(
                 calls
                     .borrow()

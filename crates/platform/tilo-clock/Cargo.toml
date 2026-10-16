@@ -9,16 +9,21 @@ repository.workspace = true
 homepage.workspace = true
 description = "The sanctioned monotonic and wall clocks on every target, Unix-time helpers, and an injectable millisecond Clock with fixed and manual test clocks."
 
+[features]
+# Scoped monotonic readings for deterministic input and deadline tests only.
+test-support = []
+
 [lib]
 name = "tilo_clock"
 path = "src/lib.rs"
 
 # A std-only leaf: apps, daemons and protocol crates all read the time, so it
 # must not pull anything in. The browser has no std clock; there the page's
-# clocks back the same re-exported types through `web-time`.
+# clocks back the same re-exported types through `web-time`. A `tilo_no_js`
+# build has no page to ask and keeps `std::time`'s types.
 [dependencies]
 
-[target.'cfg(target_family = "wasm")'.dependencies]
+[target.'cfg(all(target_family = "wasm", not(tilo_no_js)))'.dependencies]
 web-time = "1"
 
 [lints]

@@ -25,6 +25,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "threads"]
 
+[resources]
+kinds = ["slides.deck", "tilo.rich-text"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
@@ -56,7 +59,6 @@ file-chooser = "via-host"
 [sandbox.services]
 collab = "optional@1"
 tilo-fs = "optional@1"
-spellcheck = "optional@1"
 
 [entrypoint]
 bin             = "bin/slides"

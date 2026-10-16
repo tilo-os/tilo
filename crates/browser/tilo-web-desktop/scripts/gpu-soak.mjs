@@ -6,10 +6,10 @@
 // down. Never point this at Safari or Playwright's WebKit.
 //
 // usage: node gpu-soak.mjs URL [WINDOWS] [MINUTES]
-//   URL      a desktop page: build.sh's desktop output (…/index.html, where
+//   URL      a desktop page: build.sh's desktop output (the page root …/, where
 //            windows are opened through globalThis.tiloMount) or a console
 //            page that mounts host.mjs (its existing room is soaked)
-//   WINDOWS  windows to open on index.html (default 60)
+//   WINDOWS  windows to open on the desktop page (default 60)
 //   MINUTES  soak time after the windows are open (default 3)
 //   VIEWPORT logical page size (default 3008x1692: a 6K Retina display) at
 //            DPR (default 2), emulated. Emulation does not scale the canvas's
@@ -142,7 +142,7 @@ let s;
 for (let i = 0; i < 120; i++) {
   await sleep(1000);
   s = await evaluate(sample);
-  if (s.phase === 'failed' || s.alert || (s.frames > 0 && (s.windows !== null || !url.endsWith('index.html')))) break;
+  if (s.phase === 'failed' || s.alert || (s.frames > 0 && (s.windows !== null || !new URL(url).pathname.endsWith('/')))) break;
 }
 const samples = [];
 const record = label => evaluate(sample).then(v => { samples.push({label, t: Date.now(), ...v}); console.log(JSON.stringify({label, ...v, queueMs: v.queueMs})); return v; });

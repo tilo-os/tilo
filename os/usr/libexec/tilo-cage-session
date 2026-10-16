@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Launch a greeter or installer in cage. Native ARM KVM's 2D virtio GPU
+# requires software rendering together with legacy DRM modesetting; physical
+# GPUs keep their normal renderer and atomic modesetting path.
+#
+# The cursor follows the same split. Physical machines use the hardware
+# cursor plane: wlroots' composited software cursor repaints only the
+# pointer's latest rectangle into whichever swapchain buffer comes next, so
+# on real hardware (msm on the Yoga) the screen kept a trail of old pointer
+# stamps and flickered between buffers on every motion. QEMU's virtio-gpu
+# alone needs the software cursor: its hardware cursor shows Y-flipped and
+# offset under `gtk,gl=on` while input lands at the true position, and a
+# leftover cursor plane bleeds into the session compositor.
+set -euo pipefail
+
+if (( $# < 1 )); then
+  echo 'usage: tilo-cage-session PROGRAM [ARGS...]' >&2
+  exit 2
+fi
+
+# greetd starts its session with stdout and stderr on the login VT. Whatever
+# this script, cage, wlroots, libseat or the program print would land on the
+# console before the greeter's first frame (libseat's seat message on every
+# boot), and a greeter error would be lost with the console instead of being
+# kept. So everything after this point goes to the journal, under the
+# program's name (`journalctl -t tilo-greeter`), stderr at warning. The script
+# re-runs itself under systemd-cat so its own messages go there too;
+# systemd-cat execs it, so no process stays in between. Without a journal to
+# write to (a rescue shell, a test), or when the caller collects the output
+# itself and says so with TILO_CAGE_SESSION_KEEP_OUTPUT=1, it stays where it was.
+journal_socket="${TILO_JOURNAL_STDOUT_SOCKET:-/run/systemd/journal/stdout}"
+if [[ -z ${TILO_CAGE_SESSION_KEEP_OUTPUT:-} && -S $journal_socket ]]; then
+  export TILO_CAGE_SESSION_KEEP_OUTPUT=1
+  exec systemd-cat --identifier="${1##*/}" --stderr-priority=warning \
+    -- "$BASH" "${BASH_SOURCE[0]}" "$@"
+fi
+unset TILO_CAGE_SESSION_KEEP_OUTPUT
+
+drm_sysfs="${TILO_DRM_SYSFS:-/sys/class/drm}"
+for card in "$drm_sysfs"/card[0-9]*; do
+  if [[ -f $card/device/uevent ]] && grep -qx 'PCI_ID=1AF4:1050' "$card/device/uevent"; then
+    export WLR_RENDERER=pixman WLR_DRM_NO_ATOMIC=1 WLR_NO_HARDWARE_CURSORS=1
+    if [[ $(uname -m) == aarch64 ]]; then
+      # LLVM's named Neoverse model assumes SVE even when KVM masks it.
+      # The baseline JIT keeps the accelerated guest and its 2D display usable.
+      cpu_shim=/usr/lib/tilo/virtio-gallivm-cpu.so
+      [[ -s $cpu_shim ]] || { echo 'missing ARM virtual graphics CPU shim' >&2; exit 1; }
+      export LD_PRELOAD="$cpu_shim${LD_PRELOAD:+:$LD_PRELOAD}"
+    fi
+    break
+  fi
+done
+
+# The greeter keeps its startup record where tilo-boot-health can read it: the
+# record is complete once the greeter has presented its first frame, which is
+# how the boot assessment tells a greeter on screen from one that crash-loops
+# while greetd stays active. The directory is the greeter user's own
+# (tmpfiles.d/tilo.conf), so nothing else can claim the greeter drew. The
+# health check reads it without privileges, so a stricter session umask must
+# not make it unreadable; the greeter user keeps nothing private.
+greeter_record_dir="${TILO_GREETER_RECORD_DIR:-/run/tilo-greeter}"
+if [[ ${1##*/} == tilo-greeter && -z ${TILO_STARTUP_METRICS_PATH:-} && -d $greeter_record_dir ]]; then
+  export TILO_STARTUP_METRICS_PATH="$greeter_record_dir/startup-metrics.json"
+  umask 0022
+fi
+
+exec "${TILO_CAGE:-/usr/bin/cage}" -s -- "$@"

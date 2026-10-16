@@ -1,8 +1,7 @@
 use crate::component_support::*;
-use notes::{actions, doc::NotesDoc, markdown};
+use notes::{markdown, read};
 use ui::widget::{BlockEditor, BlockKind};
 
-#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn soft_and_hard_line_breaks_round_trip_in_paragraphs_and_lists() {
     eprintln!("phase shift_enter_is_one_durable_text_block_in_paragraphs_and_lists");
@@ -13,23 +12,17 @@ fn soft_and_hard_line_breaks_round_trip_in_paragraphs_and_lists() {
             ("1. Alpha", "numbered:0"),
             ("- [ ] Alpha", "checklist:0:0"),
         ] {
-            let f = LegacyFixture::rich();
+            let f = NotebookFixture::rich();
             f.write_page(f.child, source.as_bytes());
-            let checkout = imported(&f);
+            let checkout = notebook(&f);
             let block = f
                 .records
                 .read(&checkout.id, |doc| {
-                    NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone()
+                    read::page_block_snapshots(doc, f.child)[0].0.clone()
                 })
                 .unwrap();
             let mut live = driver(&f, 81, &checkout);
-            invoke(
-                &mut live,
-                81,
-                actions::block_resource_id(f.child, &block),
-                "open",
-                None,
-            );
+            open_note(&mut live, 81, f.child, Some(&block));
             let rect = semantic_rect(&live, &format!("notes.block:{block}"));
             live.click_at(rect.x0 + 8.0, rect.center().y);
             live.key("End");
@@ -47,12 +40,12 @@ fn soft_and_hard_line_breaks_round_trip_in_paragraphs_and_lists() {
             f.records
                 .read(&checkout.id, |doc| {
                     assert_eq!(
-                        NotesDoc::page_block_snapshots(doc, f.child),
+                        read::page_block_snapshots(doc, f.child),
                         vec![(block.clone(), "Alpha\nBeta".into())]
                     );
                     assert_eq!(kind_at(doc, f.child, 0), expected_kind);
                     let mut editor = BlockEditor::new();
-                    editor.present_blocks(&NotesDoc::page_blocks(doc, f.child));
+                    editor.present_blocks(&read::page_blocks(doc, f.child));
                     let specs = markdown::blocks_to_specs(editor.blocks());
                     let exported = markdown::serialize(&specs);
                     assert_eq!(markdown::parse(&exported), specs, "{exported:?}");

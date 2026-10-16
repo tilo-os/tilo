@@ -43,6 +43,8 @@ EOF
 cat >"$work/bin/python3" <<'EOF'
 #!/bin/bash
 if [[ ${1:-} == -u && ${2:-} == */hold-loop-partition-nodes.py ]]; then shift; fi
+if [[ ${1:-} == */check-composefs-verity.py ]]; then exit 0; fi
+if [[ ${1:-} == */check-disk-sectors.py ]]; then exit 0; fi
 if [[ ${1:-} == */hold-loop-partition-nodes.py ]]; then
   printf 'READY\n'
   read -r release
@@ -54,6 +56,7 @@ EOF
 cat >"$work/bin/mount" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"$MOCK_MOUNTS"
+[ "${1:-}" != -o ] || shift 2
 case "${1:-}" in
   /dev/loop-testp2) mkdir -p "$2/state/deploy/test/etc" ;;
 esac
@@ -85,6 +88,7 @@ else
   cp -a "$MOCK_FAT/." "$destination"
 fi
 EOF
+printf '#!/bin/sh\nexit 0\n' >"$work/bin/btrfs"
 chmod +x "$work/bin/"*
 
 PATH="$work/bin:$PATH" MOCK_OUTPUT="$work/output" MOCK_FAT="$work/fat" \

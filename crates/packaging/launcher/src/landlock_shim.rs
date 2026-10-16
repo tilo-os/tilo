@@ -196,10 +196,28 @@ pub fn ruleset_spec(args: &ShimArgs) -> RulesetSpec {
 /// the calling process — never call it from unit tests.
 fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, LandlockBuildError> {
     sandbox_core::landlock::restrict_self(&ruleset_spec(args), |path, e| {
-        eprintln!(
-            "tilo-sandbox-exec: skipping rule for {} (open failed: {e})",
+        if let Some(line) = skipped_rule_notice(path, e) {
+            eprintln!("{line}");
+        }
+    })
+}
+
+/// What to print when a rule's path cannot be opened. A path that does not
+/// exist is the ordinary case: the plan lists optional device nodes
+/// (`/dev/nvidia*`, `/usr/share/nvidia`) that most machines lack, and such a
+/// path is unreachable and cannot be granted, so there is nothing to report.
+/// Printing it on every launch buried the one line that explained a failed
+/// launch in the session log. Any other open failure (permissions, I/O) is
+/// still reported.
+fn skipped_rule_notice(path: &std::path::Path, error: &landlock::PathFdError) -> Option<String> {
+    let missing = std::error::Error::source(error)
+        .and_then(|source| source.downcast_ref::<std::io::Error>())
+        .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
+    (!missing).then(|| {
+        format!(
+            "tilo-sandbox-exec: skipping rule for {} (open failed: {error})",
             path.display()
-        );
+        )
     })
 }
 
@@ -341,6 +359,8 @@ fn spawn_relay(gate: &std::path::Path, port: u16) {
               return an error to"
 )]
 pub fn run_sandbox_exec(args: &[String]) -> ! {
+    // Bubblewrap's set-up is done once this runs inside the sandbox.
+    let entered = tilo_startup_metrics::handoff_entry("sandbox-entered");
     let parsed = match ShimArgs::parse(args) {
         Ok(p) => p,
         Err(e) => {
@@ -385,7 +405,7 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
         std::process::exit(126);
     }
 
-    exec_real_command(&parsed.command)
+    exec_real_command(&parsed.command, entered.as_deref())
 }
 
 #[allow(
@@ -394,7 +414,7 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
               command or terminate the process. There is no caller to \
               return an error to"
 )]
-fn exec_real_command(command: &[String]) -> ! {
+fn exec_real_command(command: &[String], entered: Option<&str>) -> ! {
     let Some(program) = command.first() else {
         eprintln!("tilo-sandbox-exec: empty command");
         std::process::exit(2);
@@ -422,14 +442,103 @@ fn exec_real_command(command: &[String]) -> ! {
         .chain(std::iter::once(std::ptr::null()))
         .collect();
 
-    // SAFETY: cprogram + argv_ptrs are valid null-terminated strings; argv_ptrs
-    // is null-terminated. execvp either replaces the image or returns -1.
+    let environment = exec_environment(entered);
+    let env_ptrs: Option<Vec<*const libc::c_char>> = environment.as_ref().map(|env| {
+        env.iter()
+            .map(|value| value.as_ptr())
+            .chain(std::iter::once(std::ptr::null()))
+            .collect()
+    });
+    // SAFETY: program, argv and optional environment are live null-terminated
+    // CString arrays. Both exec calls preserve the existing signal dispositions
+    // and replace this process, or return -1. Cache setup adds no ambient fd.
     unsafe {
-        libc::execvp(cprogram.as_ptr(), argv_ptrs.as_ptr());
+        if let Some(envp) = &env_ptrs {
+            libc::execvpe(cprogram.as_ptr(), argv_ptrs.as_ptr(), envp.as_ptr());
+        } else {
+            libc::execvp(cprogram.as_ptr(), argv_ptrs.as_ptr());
+        }
     }
     let err = std::io::Error::last_os_error();
     eprintln!("tilo-sandbox-exec: execvp {program:?} failed: {err}");
     std::process::exit(2);
+}
+
+type Environment = std::collections::BTreeMap<std::ffi::OsString, std::ffi::OsString>;
+
+/// The app's environment when the shim changes it (the Mesa seed, the startup
+/// marks); `None` passes this process's own on unchanged.
+fn exec_environment(entered: Option<&str>) -> Option<Vec<CString>> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mesa = mesa_environment();
+    let marks = std::env::var(tilo_startup_metrics::LAUNCHER_MARKS_ENV).ok();
+    if mesa.is_none() && marks.is_none() {
+        return None;
+    }
+    let mut env = mesa.unwrap_or_else(|| std::env::vars_os().collect());
+    if let Some(marks) = marks {
+        // The launcher asked for startup timing: say when the sandbox began
+        // and when it hands over, so the app can tell bubblewrap, this shim
+        // and its own loader apart.
+        env.insert(
+            tilo_startup_metrics::LAUNCHER_MARKS_ENV.into(),
+            with_shim_marks(marks, entered).into(),
+        );
+    }
+    env.into_iter()
+        .map(|(key, value)| {
+            let mut entry = key.as_bytes().to_vec();
+            entry.push(b'=');
+            entry.extend_from_slice(value.as_bytes());
+            CString::new(entry)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+}
+
+/// `marks` with the shim's `entered` mark and an exec mark for now appended.
+fn with_shim_marks(mut marks: String, entered: Option<&str>) -> String {
+    let exec = tilo_startup_metrics::handoff_entry("sandbox-exec");
+    for entry in [entered, exec.as_deref()].into_iter().flatten() {
+        marks.push(',');
+        marks.push_str(entry);
+    }
+    marks
+}
+
+fn mesa_environment() -> Option<Environment> {
+    if std::env::var_os(crate::mesa_seed::CONSUME_ENV).as_deref() != Some(std::ffi::OsStr::new("1"))
+    {
+        return None;
+    }
+    let source =
+        std::path::PathBuf::from(std::env::var_os(crate::gpu::PIPELINE_SEED_ENV)?).join("mesa");
+    let cache = std::path::Path::new(crate::appdir::SANDBOX_APP_DIR).join(".cache/mesa-session");
+    if let Err(error) = crate::mesa_seed::prepare(&source, &cache) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("tilo-sandbox-exec: Mesa seed unavailable ({error}); compiling normally");
+        }
+        return None;
+    }
+    let mut env: Environment = std::env::vars_os().collect();
+    for name in [
+        "MESA_DISK_CACHE_SINGLE_FILE",
+        "MESA_DISK_CACHE_MULTI_FILE",
+        "MESA_DISK_CACHE_DATABASE",
+        "MESA_DISK_CACHE_READ_ONLY_FOZ_DBS_DYNAMIC_LIST",
+    ] {
+        env.remove(std::ffi::OsStr::new(name));
+    }
+    env.insert("MESA_SHADER_CACHE_DIR".into(), cache.into_os_string());
+    for (name, value) in [
+        ("MESA_SHADER_CACHE_MAX_SIZE", "16M"),
+        ("MESA_DISK_CACHE_COMBINE_RW_WITH_RO_FOZ", "1"),
+        ("MESA_DISK_CACHE_READ_ONLY_FOZ_DBS", "tilo-seed"),
+    ] {
+        env.insert(name.into(), value.into());
+    }
+    eprintln!("tilo-sandbox-exec: validated read-only Mesa seed in private bounded cache");
+    Some(env)
 }
 
 #[cfg(test)]
@@ -437,6 +546,45 @@ mod tests {
     use super::*;
     use crate::landlock::FS_ABI;
     use landlock::CompatLevel;
+
+    #[test]
+    fn a_missing_optional_device_node_is_not_reported_but_other_failures_are() {
+        let missing = landlock::PathFd::new("/dev/nvidia-tilo-test-missing").unwrap_err();
+        assert_eq!(
+            skipped_rule_notice(std::path::Path::new("/dev/nvidia0"), &missing),
+            None,
+            "an absent path is normal and must not flood the session log"
+        );
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let not_a_directory = file.path().join("child");
+        let refused = landlock::PathFd::new(&not_a_directory).unwrap_err();
+        let notice = skipped_rule_notice(&not_a_directory, &refused)
+            .expect("a path that fails for another reason is still reported");
+        assert!(notice.contains("skipping rule for"), "{notice}");
+    }
+
+    #[test]
+    fn the_shim_hands_the_app_its_entry_and_exec_marks() {
+        let marks = with_shim_marks(
+            "launcher-start@1,sandbox-argv-ready@2".into(),
+            Some("sandbox-entered@3"),
+        );
+        let names: Vec<_> = marks
+            .split(',')
+            .map(|entry| entry.split_once('@').unwrap().0)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "launcher-start",
+                "sandbox-argv-ready",
+                "sandbox-entered",
+                "sandbox-exec"
+            ]
+        );
+        let exec: u128 = marks.rsplit_once('@').unwrap().1.parse().unwrap();
+        assert!(exec >= 3);
+    }
 
     #[test]
     fn shim_command_line_parses_strictly() {

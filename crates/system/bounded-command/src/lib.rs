@@ -12,11 +12,16 @@ use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
 use zeroize::Zeroizing;
+
+#[cfg(unix)]
+mod child_wait;
+#[cfg(unix)]
+pub use child_wait::{WakeFd, Wakeup, wait_child_or};
 
 /// Start `command`'s child as the leader of its own process tree, so
 /// [`kill_tree`] also reaches every descendant it starts. On Unix this is a
@@ -54,8 +59,8 @@ pub fn kill_tree(child: &mut Child) {
 
 /// Stop a child started with [`own_process_tree`] and reap it. With a
 /// non-zero `grace`, the tree is first asked to exit (`SIGTERM` on Unix) and
-/// the child gets that long to do so; whatever remains is then killed with
-/// [`kill_tree`].
+/// gets that long to do so: until the child and, on Unix, every process left
+/// in its group are gone. Whatever remains is then killed with [`kill_tree`].
 pub fn terminate_tree(child: &mut Child, grace: Duration) {
     #[cfg(unix)]
     if !grace.is_zero()
@@ -69,7 +74,13 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) {
             .checked_add(grace)
             .unwrap_or_else(Instant::now);
         while Instant::now() < deadline {
-            if child.try_wait().ok().flatten().is_some() {
+            // The leader exiting is not enough: a worker it started may still
+            // be winding down in the group. Signal 0 only probes for one.
+            // SAFETY: as above; signal 0 delivers nothing.
+            if child.try_wait().ok().flatten().is_some()
+                && unsafe { libc::kill(group, 0) } != 0
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            {
                 return;
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -79,6 +90,126 @@ pub fn terminate_tree(child: &mut Child, grace: Duration) {
     let _ = grace;
     kill_tree(child);
     let _ = child.wait();
+}
+
+/// Signal an owned process tree and reap its leader with a bounded grace period.
+///
+/// On Linux the leader remains unreaped until its descendants are signalled, so
+/// its process-group number cannot be reused by another session during cleanup.
+/// Returns the leader's status only when it exited within `grace`; forced or
+/// unobservable exits return `None`. This reports only the leader's status;
+/// it is not evidence that all descendant writers completed their work.
+///
+/// # Errors
+/// Refuses a child without its own process group, or an invalid child identity.
+/// This refusal does not signal the caller's or another session's process group.
+pub fn terminate_tree_checked(
+    child: &mut Child,
+    grace: Duration,
+) -> std::io::Result<Option<ExitStatus>> {
+    #[cfg(target_os = "linux")]
+    {
+        if child.try_wait()?.is_some() {
+            // A reaped child's former group number is no longer ours to signal.
+            return Ok(None);
+        }
+        let pid = i32::try_from(child.id()).map_err(std::io::Error::other)?;
+        // SAFETY: getpgid only inspects this unreaped child's process group.
+        if unsafe { libc::getpgid(pid) } != pid {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "child has no privately owned process group",
+            ));
+        }
+        let group = pid.checked_neg().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid child group")
+        })?;
+        // SAFETY: the group was checked above and its unreaped leader retains
+        // the pid, preventing a newly allocated unrelated group from matching.
+        unsafe { libc::kill(group, libc::SIGTERM) };
+        let deadline = Instant::now()
+            .checked_add(grace)
+            .unwrap_or_else(Instant::now);
+        while Instant::now() < deadline {
+            if exited_unreaped(pid) {
+                // SAFETY: the leader is still unreaped, so this is still our
+                // exact group. Signal descendants before releasing its pid.
+                unsafe { libc::kill(group, libc::SIGKILL) };
+                return child.wait().map(Some);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        kill_tree(child);
+        child.wait()?;
+        Ok(None)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        terminate_tree(child, grace);
+        Ok(None)
+    }
+}
+
+/// Wait up to `timeout` for `child` to exit, and reap it. `None` when it is
+/// still running at the deadline; it is left running. On Unix this sleeps in
+/// [`wait_child_or`] rather than polling.
+///
+/// # Errors
+/// Returns the error of inspecting or reaping the child.
+pub fn wait_timeout(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
+    let deadline = Instant::now().checked_add(timeout);
+    #[cfg(unix)]
+    {
+        Ok(match wait_child_or(child, None, deadline)? {
+            Wakeup::Exited(status) => Some(status),
+            Wakeup::Woken | Wakeup::Deadline => None,
+        })
+    }
+    #[cfg(not(unix))]
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// [`wait_timeout`], then kill and reap a child still running at the
+/// deadline. `None` when it had to be killed.
+///
+/// # Errors
+/// Returns the error of inspecting or reaping the child.
+pub fn wait_or_kill(child: &mut Child, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
+    let status = wait_timeout(child, timeout)?;
+    if status.is_none() {
+        let _ = child.kill();
+        child.wait()?;
+    }
+    Ok(status)
+}
+
+#[cfg(target_os = "linux")]
+fn exited_unreaped(pid: i32) -> bool {
+    let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+    // SAFETY: waitid receives writable siginfo storage and observes only our
+    // child. WNOWAIT deliberately retains the leader until group cleanup.
+    let observed = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid.cast_unsigned(),
+            info.as_mut_ptr(),
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if observed != 0 {
+        return false;
+    }
+    // SAFETY: waitid succeeded, and the zeroed storage also covers the
+    // WNOHANG case in which no child's status was available.
+    unsafe { info.assume_init().si_pid() == pid }
 }
 
 /// Mark a script or program file executable for everyone and writable only
@@ -116,6 +247,22 @@ pub struct Output {
     pub stderr: Vec<u8>,
 }
 
+impl Output {
+    /// Standard error as a short diagnostic safe to log or show a person: lossy
+    /// UTF-8 without control characters other than space, newline and tab, at
+    /// most 512 characters, trimmed.
+    #[must_use]
+    pub fn stderr_diagnostic(&self) -> String {
+        String::from_utf8_lossy(&self.stderr)
+            .chars()
+            .filter(|character| !character.is_control() || matches!(character, ' ' | '\n' | '\t'))
+            .take(512)
+            .collect::<String>()
+            .trim()
+            .to_string()
+    }
+}
+
 /// Failures before a bounded child completes successfully or unsuccessfully.
 #[derive(Debug, Error)]
 pub enum Error {
@@ -147,14 +294,58 @@ pub enum Error {
     Cancelled,
 }
 
+/// An informational copy of bytes already read by the owned stderr capture.
+/// Capture remains authoritative; overflow disables only this observation lane.
+#[derive(Debug)]
+pub enum StderrObservation {
+    /// At most 4096 captured bytes, in stream order.
+    Bytes(Vec<u8>),
+    /// The bounded observation queue overflowed; no subsequent bytes are exposed.
+    Overflow,
+}
+
+/// Maximum chunks retained by the optional informational stderr observer.
+pub const STDERR_OBSERVATION_CHUNKS: usize = 16;
+
+struct StderrCapture {
+    sender: SyncSender<Vec<u8>>,
+    overflow: Arc<AtomicBool>,
+}
+
+struct StderrObservations {
+    receiver: Receiver<Vec<u8>>,
+    overflow: Arc<AtomicBool>,
+    disabled: bool,
+}
+
 /// A nonblocking bounded command which cancels its process group when dropped.
 pub struct AsyncCommand {
     cancel: Arc<AtomicBool>,
     result: Receiver<Result<Output, Error>>,
     worker: Option<std::thread::JoinHandle<()>>,
+    stderr_observations: Option<StderrObservations>,
 }
 
 impl AsyncCommand {
+    /// Poll the optional bounded informational stderr lane without blocking.
+    /// On overflow, pending copies are discarded and this lane stays disabled.
+    pub fn try_stderr(&mut self) -> Option<StderrObservation> {
+        let observations = self.stderr_observations.as_mut()?;
+        if observations.disabled {
+            return None;
+        }
+        if observations.overflow.load(Ordering::Acquire) {
+            observations.disabled = true;
+            while observations.receiver.try_recv().is_ok() {}
+            return Some(StderrObservation::Overflow);
+        }
+        observations
+            .receiver
+            .try_recv()
+            .ok()
+            .map(StderrObservation::Bytes)
+    }
+
     /// Return a completed result without blocking, or `None` while it runs.
     pub fn try_wait(&mut self) -> Option<Result<Output, Error>> {
         match self.result.try_recv() {
@@ -195,6 +386,33 @@ pub fn spawn_prepared(
     output_limit: usize,
     timeout: Duration,
 ) -> Result<AsyncCommand, Error> {
+    spawn_prepared_inner(command, input, output_limit, timeout, false)
+}
+
+/// Spawn with a bounded nonblocking copy of owned stderr capture.
+///
+/// Up to sixteen 4096-byte chunks await observation. A slow observer disables
+/// this informational lane instead of blocking the child or capture readers.
+/// Output bytes, limits, cancellation and process-tree ownership are unchanged.
+///
+/// # Errors
+/// Returns the same input failures as [`spawn_prepared`].
+pub fn spawn_prepared_observing_stderr(
+    command: Command,
+    input: Option<&[u8]>,
+    output_limit: usize,
+    timeout: Duration,
+) -> Result<AsyncCommand, Error> {
+    spawn_prepared_inner(command, input, output_limit, timeout, true)
+}
+
+fn spawn_prepared_inner(
+    command: Command,
+    input: Option<&[u8]>,
+    output_limit: usize,
+    timeout: Duration,
+    observe_stderr: bool,
+) -> Result<AsyncCommand, Error> {
     if input.is_some_and(|bytes| bytes.len() > MAX_INPUT_BYTES) {
         return Err(Error::InputTooLarge);
     }
@@ -202,6 +420,23 @@ pub fn spawn_prepared(
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
     let (sender, result) = std::sync::mpsc::channel();
+    let (capture, stderr_observations) = if observe_stderr {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(STDERR_OBSERVATION_CHUNKS);
+        let overflow = Arc::new(AtomicBool::new(false));
+        (
+            Some(StderrCapture {
+                sender,
+                overflow: Arc::clone(&overflow),
+            }),
+            Some(StderrObservations {
+                receiver,
+                overflow,
+                disabled: false,
+            }),
+        )
+    } else {
+        (None, None)
+    };
     let worker = std::thread::spawn(move || {
         let outcome = run_prepared_inner(
             command,
@@ -210,6 +445,7 @@ pub fn spawn_prepared(
             output_limit,
             timeout,
             Some(&worker_cancel),
+            capture,
         );
         let _ = sender.send(outcome);
     });
@@ -217,6 +453,7 @@ pub fn spawn_prepared(
         cancel,
         result,
         worker: Some(worker),
+        stderr_observations,
     })
 }
 
@@ -224,6 +461,32 @@ fn read_bounded(pipe: impl Read, limit: usize) -> Vec<u8> {
     let read_limit = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
     let mut bytes = Vec::new();
     let _ = pipe.take(read_limit).read_to_end(&mut bytes);
+    bytes
+}
+
+fn read_bounded_observed(pipe: impl Read, limit: usize, capture: Option<StderrCapture>) -> Vec<u8> {
+    let Some(capture) = capture else {
+        return read_bounded(pipe, limit);
+    };
+    let read_limit = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+    let mut pipe = pipe.take(read_limit);
+    let mut bytes = Vec::new();
+    let mut chunk = [0; 4096];
+    loop {
+        let count = match pipe.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(count) => count,
+        };
+        let Some(captured) = chunk.get(..count) else {
+            break;
+        };
+        bytes.extend_from_slice(captured);
+        if !capture.overflow.load(Ordering::Acquire)
+            && capture.sender.try_send(captured.to_vec()).is_err()
+        {
+            capture.overflow.store(true, Ordering::Release);
+        }
+    }
     bytes
 }
 
@@ -354,6 +617,7 @@ pub fn run_prepared_with_input_limit(
         stderr_limit,
         timeout,
         None,
+        None,
     )
 }
 
@@ -364,6 +628,7 @@ fn run_prepared_inner(
     stderr_limit: usize,
     timeout: Duration,
     cancel: Option<&AtomicBool>,
+    stderr_capture: Option<StderrCapture>,
 ) -> Result<Output, Error> {
     command
         .stdin(if input.is_some() {
@@ -394,7 +659,8 @@ fn run_prepared_inner(
         .take()
         .ok_or_else(|| Error::Process(std::io::Error::other("command stderr is unavailable")))?;
     let out_reader = std::thread::spawn(move || read_bounded(stdout, stdout_limit));
-    let err_reader = std::thread::spawn(move || read_bounded(stderr, stderr_limit));
+    let err_reader =
+        std::thread::spawn(move || read_bounded_observed(stderr, stderr_limit, stderr_capture));
     let deadline = Instant::now()
         .checked_add(timeout)
         .unwrap_or_else(Instant::now);
@@ -442,7 +708,8 @@ fn run_prepared_inner(
     })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use std::fs;
@@ -477,7 +744,8 @@ mod tests {
                 let error =
                     run(helper.to_str().unwrap(), &[], None, 4096, UNTESTED_TIMEOUT).unwrap_err();
                 assert!(
-                    matches!(error, Error::OutputTooLarge { stream: got, .. } if got == stream)
+                    matches!(error, Error::OutputTooLarge { stream: got, .. } if got == stream),
+                    "expected {stream} overflow, got {error:?}"
                 );
             }
         }
@@ -583,6 +851,198 @@ mod tests {
             assert!(started.elapsed() < Duration::from_secs(1));
             assert!(child.try_wait().unwrap().is_some());
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_bounded_wait_reaps_an_exited_child_and_kills_only_on_request() {
+        let mut quick = Command::new("true").spawn().unwrap();
+        assert!(
+            wait_or_kill(&mut quick, UNTESTED_TIMEOUT)
+                .unwrap()
+                .is_some_and(|status| status.success())
+        );
+        let mut slow = Command::new("sleep").arg("60").spawn().unwrap();
+        assert_eq!(
+            wait_timeout(&mut slow, Duration::from_millis(50)).unwrap(),
+            None
+        );
+        assert!(
+            slow.try_wait().unwrap().is_none(),
+            "a plain wait leaves it running"
+        );
+        assert_eq!(
+            wait_or_kill(&mut slow, Duration::from_millis(50)).unwrap(),
+            None
+        );
+        assert!(slow.try_wait().unwrap().is_some(), "killed and reaped");
+    }
+
+    #[test]
+    fn checked_tree_stop_distinguishes_graceful_forced_and_unowned_children() {
+        struct Owned(Child);
+        impl Drop for Owned {
+            fn drop(&mut self) {
+                if matches!(self.0.try_wait(), Ok(None)) {
+                    terminate_tree(&mut self.0, Duration::ZERO);
+                }
+            }
+        }
+        // Start the descendant before announcing readiness and wait in the
+        // shell builtin. A foreground sleep started after `ready` can miss
+        // the group signal and defer the shell's TERM trap past the grace.
+        for (script, expected_clean) in [
+            ("trap 'exit 0' TERM; sleep 30 & printf ready; wait", true),
+            ("trap '' TERM; sleep 30 & printf ready; wait", false),
+        ] {
+            let mut command = Command::new("sh");
+            command.args(["-c", script]).stdout(Stdio::piped());
+            let mut child = Owned(own_process_tree(&mut command).spawn().unwrap());
+            let mut output = child.0.stdout.take().unwrap();
+            let (ready, received) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                let mut bytes = [0; 5];
+                ready
+                    .send(output.read_exact(&mut bytes).map(|()| bytes))
+                    .unwrap();
+                let mut remaining = Vec::new();
+                output.read_to_end(&mut remaining).unwrap();
+            });
+            assert_eq!(
+                received
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap()
+                    .unwrap(),
+                *b"ready",
+                "the signal handler is installed before shutdown is requested"
+            );
+            let started = Instant::now();
+            let status = terminate_tree_checked(&mut child.0, Duration::from_millis(100)).unwrap();
+            assert_eq!(status.is_some_and(|exit| exit.success()), expected_clean);
+            assert!(started.elapsed() < Duration::from_secs(2));
+            assert!(child.0.try_wait().unwrap().is_some());
+            reader.join().unwrap();
+            assert!(
+                terminate_tree_checked(&mut child.0, Duration::from_millis(100))
+                    .unwrap()
+                    .is_none(),
+                "a reaped handle never authorizes another group signal"
+            );
+        }
+        let mut unowned = Command::new("sleep").arg("30").spawn().unwrap();
+        let refusal = terminate_tree_checked(&mut unowned, Duration::from_millis(100));
+        // Cleanup targets the child handle only, because it has no private group.
+        let still_running = unowned.try_wait().unwrap().is_none();
+        unowned.kill().unwrap();
+        unowned.wait().unwrap();
+        assert_eq!(
+            refusal.unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert!(
+            still_running,
+            "refused group ownership must not signal the child"
+        );
+    }
+
+    #[test]
+    fn stderr_observation_is_live_bounded_and_preserves_exact_capture() {
+        let directory = tempfile::tempdir().unwrap();
+        let first_gate = directory.path().join("first-gate");
+        let second_gate = directory.path().join("second-gate");
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "printf 'first\\n' >&2; while [ ! -f \"$1\" ]; do sleep 0.01; done; printf 'second\\n' >&2; while [ ! -f \"$2\" ]; do sleep 0.01; done; printf stdout; exit 7",
+            "owned-observer-fixture",
+        ]).arg(&first_gate).arg(&second_gate);
+        let mut child =
+            spawn_prepared_observing_stderr(command, None, 4096, UNTESTED_TIMEOUT).unwrap();
+        let mut observed = Vec::new();
+        for (expected, gate) in [
+            (b"first\n".as_slice(), first_gate),
+            (b"first\nsecond\n".as_slice(), second_gate),
+        ] {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while observed.len() < expected.len() && Instant::now() < deadline {
+                match child.try_stderr() {
+                    Some(StderrObservation::Bytes(bytes)) => observed.extend(bytes),
+                    Some(StderrObservation::Overflow) => panic!("small gated output overflowed"),
+                    None => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
+            assert_eq!(
+                observed, expected,
+                "the phase is observable before its gate is released"
+            );
+            assert!(
+                child.try_wait().is_none(),
+                "the same owned invocation is still running"
+            );
+            fs::write(gate, b"release").unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let output = loop {
+            if let Some(result) = child.try_wait() {
+                break result.unwrap();
+            }
+            assert!(Instant::now() < deadline, "owned child did not complete");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(output.stdout, b"stdout");
+        assert_eq!(
+            output.stderr, observed,
+            "observation never removes or rewrites capture bytes"
+        );
+    }
+
+    #[test]
+    fn a_slow_stderr_observer_does_not_block_capture_or_change_output_limits() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "head -c 262144 /dev/zero >&2"]);
+        let mut child =
+            spawn_prepared_observing_stderr(command, None, 262_144, UNTESTED_TIMEOUT).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let output = loop {
+            if let Some(result) = child.try_wait() {
+                break result.unwrap();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "a full observation queue blocked the capture"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(output.status.success());
+        assert_eq!(output.stderr, vec![0; 262_144]);
+        assert!(matches!(
+            child.try_stderr(),
+            Some(StderrObservation::Overflow)
+        ));
+        assert!(
+            child.try_stderr().is_none(),
+            "overflow permanently disables only this lane"
+        );
+        let mut overflowing = Command::new("sh");
+        overflowing.args(["-c", "head -c 8192 /dev/zero >&2"]);
+        let mut child =
+            spawn_prepared_observing_stderr(overflowing, None, 1024, UNTESTED_TIMEOUT).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let error = loop {
+            if let Some(result) = child.try_wait() {
+                break result.unwrap_err();
+            }
+            assert!(Instant::now() < deadline, "bounded child did not complete");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(matches!(
+            error,
+            Error::OutputTooLarge {
+                stream: "stderr",
+                limit: 1024
+            }
+        ));
     }
 
     #[test]

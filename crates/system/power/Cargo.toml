@@ -15,8 +15,7 @@ path = "src/lib.rs"
 [features]
 default = ["service"]
 service = [
-    "dep:tilo-atomic-file",
-    "dep:bounded-command",
+    "dep:tilo-files",
     "dep:futures-util",
     "dep:serde",
     "dep:serde_json",
@@ -24,7 +23,7 @@ service = [
     "dep:tokio",
     "dep:tracing",
     "dep:zbus",
-    "dep:tilo-xdg-paths",
+    "dep:tilo-paths",
 ]
 
 # Power management for the compositor: suspend-on-idle, lid / power-key
@@ -34,16 +33,16 @@ service = [
 # only the on-disk JSON contract, not a code dependency.
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
-tilo-xdg-paths = { version = "0.1.0", path = "../xdg-paths", optional = true }
-bounded-command = { version = "0.1.0", path = "../../../crates/system/bounded-command", optional = true }
+tilo-paths = { workspace = true, optional = true }
 tracing = { version = "0.1", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 # One owner for ~/.config/tilo/settings.json — path resolution, forgiving reads
 # and non-destructive writes, shared with every other reader of that file.
 settings-store = { version = "0.1.0", path = "../../../crates/system/settings-store", optional = true }
-tilo-atomic-file = { version = "0.1.0", path = "../../../crates/system/atomic-file", optional = true }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 # Match `shell`'s zbus pin (4, tokio, no async-io default) so the workspace
 # lock collapses to one copy.
 zbus = { workspace = true, features = ["tokio"], optional = true }
@@ -51,7 +50,11 @@ tokio = { version = "1.52.3", features = ["rt", "macros", "time", "sync"], optio
 futures-util = { version = "0.3", optional = true }
 
 [dev-dependencies]
-tokio = { version = "1.52.3", features = ["full"] }
+# `test-util`: the service's wakeup tests run on paused time.
+tokio = { version = "1.52.3", features = ["full", "test-util"] }
+# A fake logind + UPower served over a socket pair: the production service
+# against a real D-Bus wire, no bus daemon.
+zbus = { workspace = true, features = ["tokio", "p2p"] }
 # Fixture power-supply trees for the sysfs battery reader, so its parsing
 # is tested against representative directory layouts.
 tempfile = { workspace = true }

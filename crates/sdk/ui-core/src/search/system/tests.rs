@@ -230,64 +230,79 @@ fn typed_registry_routes_scope_and_kinds_and_discards_stale_pages() {
 }
 
 #[test]
-fn the_chip_strip_places_every_chip_however_narrow_the_band() {
-    use super::filters::lay_out_chip_strip;
-    use vello::kurbo::Rect;
+fn a_narrow_band_keeps_one_row_and_a_more_chip() {
+    use super::filters::{lay_out_chip_row_with_more, lay_out_more_menu};
+    use vello::kurbo::{Point, Rect};
     let band = Rect::new(0.0, 0.0, 240.0, 36.0);
-    let natural = [40.0, 44.0, 92.0, 50.0, 46.0, 60.0, 58.0];
-    for rows_available in [1usize, 2, 3] {
-        let strip = lay_out_chip_strip(
-            &natural,
-            band,
-            band.x1 - 100.0,
-            rows_available,
-            36.0,
-            24.0,
-            8.0,
-        );
-        assert_eq!(
-            strip.rects.len(),
-            natural.len(),
-            "every chip gets a rect at {rows_available} row(s)"
-        );
+    let natural = [40.0, 80.0, 90.0, 70.0, 60.0, 80.0, 70.0];
+    let row = lay_out_chip_row_with_more(&natural, 56.0, band, band.x1, 36.0, 24.0, 8.0);
+    assert!(row.more.is_some(), "a crowded row must grow a More chip");
+    assert!(
+        !row.overflow.is_empty(),
+        "at least one kind sits behind More"
+    );
+    assert_eq!(row.rects.len(), natural.len());
+    let visible = row.rects.iter().filter(|rect| rect.area() > 0.0).count();
+    assert_eq!(
+        visible + row.overflow.len(),
+        natural.len(),
+        "every kind is on the row or behind More"
+    );
+    for rect in row.rects.iter().filter(|rect| rect.area() > 0.0) {
         assert!(
-            strip.rows_needed >= 1,
-            "the strip always needs at least one row"
-        );
-        for (i, r) in strip.rects.iter().enumerate() {
-            assert!(
-                r.width() > 0.0 && r.height() > 0.0,
-                "chip {i} of {} is not clickable at {rows_available} \
-                     row(s): {r:?}",
-                natural.len()
-            );
-            assert!(
-                r.x0 >= band.x0 - 0.001,
-                "chip {i} starts left of the band: {r:?}"
-            );
-        }
-        for i in 0..strip.rects.len() {
-            for j in (i + 1)..strip.rects.len() {
-                assert!(
-                    strip.rects[i].intersect(strip.rects[j]).area() <= 0.0,
-                    "chips {i} and {j} overlap at {rows_available} \
-                         row(s): {:?} / {:?}",
-                    strip.rects[i],
-                    strip.rects[j]
-                );
-            }
-        }
-    }
-    // And when there is room, nothing is squeezed: the chips keep
-    // their natural widths.
-    let wide = Rect::new(0.0, 0.0, 900.0, 36.0);
-    let strip = lay_out_chip_strip(&natural, wide, wide.x1, 1, 36.0, 24.0, 8.0);
-    assert_eq!(strip.rows_needed, 1);
-    for (i, r) in strip.rects.iter().enumerate() {
-        assert_eq!(
-            r.width(),
-            natural[i],
-            "chip {i} was squeezed with room to spare"
+            (rect.center().y - band.center().y).abs() < 1.0,
+            "visible chips stay on one row: {rect:?}"
         );
     }
+    let more = row.more.expect("more");
+    assert!((more.center().y - band.center().y).abs() < 1.0);
+    let menu = lay_out_more_menu(
+        &natural,
+        &row.overflow,
+        Point::new(more.x0, band.y1 + 8.0),
+        24.0,
+        8.0,
+    );
+    assert_eq!(menu.len(), row.overflow.len());
+    for (idx, rect) in &menu {
+        assert!(
+            row.overflow.contains(idx),
+            "menu entry {idx} was not overflow"
+        );
+        assert!(rect.area() > 0.0, "overflow kind {idx} is clickable");
+    }
+}
+
+#[test]
+fn exact_title_outranks_prefix_across_kinds() {
+    let exact = lexical_strength("sheets", &ResourceKind::Note, "Sheets", None);
+    let prefix = lexical_strength("sheets", &ResourceKind::Note, "Sheets budget", None);
+    let subtitle = lexical_strength("sheets", &ResourceKind::Note, "Budget", Some("Sheets"));
+    assert!(exact > prefix && prefix > subtitle && subtitle > 0.0);
+}
+
+#[test]
+fn launch_verb_does_not_weaken_an_application_title() {
+    assert!(
+        (lexical_strength("sheets", &ResourceKind::Application, "Open Sheets", None) - 4.0).abs()
+            < f32::EPSILON
+    );
+}
+
+#[test]
+fn perfect_application_match_beats_an_exact_note_of_the_same_word() {
+    let strength = |kind, title| {
+        merged_strength(
+            "sheets",
+            &kind,
+            title,
+            None,
+            MAX_PROVIDER_SCORE,
+            MAX_PROVIDER_SCORE,
+            0.0,
+        )
+    };
+    assert!(
+        strength(ResourceKind::Application, "Open Sheets") > strength(ResourceKind::Note, "Sheets")
+    );
 }

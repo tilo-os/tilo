@@ -1,7 +1,9 @@
 pub mod colors;
+pub mod contrast;
 pub mod elevation;
 pub mod metrics;
 pub mod motion;
+pub mod palette;
 pub mod radii;
 pub mod spacing;
 pub mod syntax_palette;
@@ -9,19 +11,21 @@ pub mod terminal_palette;
 pub mod typography;
 
 pub use colors::{
-    AccentChip, ColorRamp, Colors, NON_TEXT_MIN_CONTRAST, OnCard, OverlayTiers, PaletteSpec,
-    SemanticColors, Surfaces, dark_overlays, light_overlays,
+    ColorRamp, Colors, Intents, MediaColors, NON_TEXT_MIN_CONTRAST, OnSurface, OverlayTiers,
+    PresenceHue, PresencePalette, SemanticColors, Surfaces, TintedChip, Wash, WashStrength,
+    dark_overlays, light_overlays,
 };
 pub use elevation::{Elevation, Shadow};
 pub use metrics::Metrics;
 pub use motion::{Durations, Gesture, Motion, SpringParams, SpringPresets, rubber_band};
+pub use palette::{Emphasis, InkLadder, Palette, StatusTones, SurfaceLadder, Tone};
 pub use radii::Radii;
-pub use spacing::{Spacing, SpacingStep};
+pub use spacing::{Rhythm, RhythmScale, Spacing, SpacingStep};
 pub use syntax_palette::SyntaxPalette;
 pub use terminal_palette::TerminalPalette;
-pub use typography::{FontFamily, TextRole, TypeScale, Typography, WeightScale};
+pub use typography::{FontFamily, REFERENCE_BODY_PX, ReadingFace, TextRole, Typography, UiFace};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Tokens {
     pub colors: Colors,
     pub typography: Typography,
@@ -35,49 +39,48 @@ pub struct Tokens {
     /// on construction; consumers should prefer this over the raw string so
     /// future fallback lists/weights can be added without breaking call sites.
     pub font_mono: FontFamily,
-    /// Canonical base body font size in logical px. Mirrors `typography.scale.base`.
-    pub font_size_base: f32,
     /// Palette for terminal-style widgets (fg/bg defaults + ANSI 0..=15).
     pub terminal_palette: TerminalPalette,
     /// The one syntax-highlighting palette every code surface paints with.
     pub syntax: SyntaxPalette,
+    /// Authored UI-spring character. `1` is stock. Stored beside the springs
+    /// it produces, because calm and lively are not separable from stiffness
+    /// alone.
+    pub motion_character: f32,
 }
 
 impl Tokens {
-    pub fn dark() -> Self {
+    /// The stock token set around `colors`: the design language's type,
+    /// spacing, metrics, radii and motion, with the elevation of the
+    /// palette's polarity.
+    pub fn around(colors: Colors) -> Self {
         let typography = Typography::default();
         let font_mono = FontFamily::new(typography.mono_family.clone());
-        let font_size_base = typography.scale.base;
+        let dark = colors.palette.dark;
         Self {
-            colors: Colors::dark(),
+            terminal_palette: TerminalPalette::from_colors(&colors),
+            syntax: SyntaxPalette::from_colors(&colors),
+            colors,
             typography,
             spacing: Spacing::default(),
             metrics: Metrics::default(),
             radii: Radii::default(),
-            elevation: Elevation::default(),
+            elevation: if dark {
+                Elevation::dark()
+            } else {
+                Elevation::light()
+            },
             motion: Motion::default(),
             font_mono,
-            font_size_base,
-            terminal_palette: TerminalPalette::dark(),
-            syntax: SyntaxPalette::dark(),
+            motion_character: 1.0,
         }
     }
+
+    pub fn dark() -> Self {
+        Self::around(Colors::dark())
+    }
+
     pub fn light() -> Self {
-        let typography = Typography::default();
-        let font_mono = FontFamily::new(typography.mono_family.clone());
-        let font_size_base = typography.scale.base;
-        Self {
-            colors: Colors::light(),
-            typography,
-            spacing: Spacing::default(),
-            metrics: Metrics::default(),
-            radii: Radii::default(),
-            elevation: Elevation::light(),
-            motion: Motion::default(),
-            font_mono,
-            font_size_base,
-            terminal_palette: TerminalPalette::light(),
-            syntax: SyntaxPalette::light(),
-        }
+        Self::around(Colors::light())
     }
 }

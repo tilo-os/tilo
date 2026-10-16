@@ -8,13 +8,14 @@
 use anyhow::{Result, bail, ensure};
 use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
 use collab_types::DocumentMutation;
+use neighbour_wire::NeighbourMsg;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
-use tilo_peer_state::{NeighbourMsg, coverage, room};
+use tilo_peer_state::{coverage, room};
 use tilo_relay::{
     coedit::CoeditPayload,
     transport::{self, Envelope},
@@ -94,7 +95,7 @@ struct Decoded {
     source: String,
     author: [u8; 32],
     at: u64,
-    kind: tilo_peer_state::transport::Retention,
+    kind: neighbour_wire::Retention,
     message: NeighbourMsg,
 }
 fn decode(source: &Source, workspace: u64) -> Result<Decoded> {
@@ -112,34 +113,30 @@ fn decode(source: &Source, workspace: u64) -> Result<Decoded> {
     let (channel, body, kind) = match CoeditPayload::decode(&delta)
         .ok_or_else(|| anyhow::anyhow!("invalid coedit payload"))?
     {
-        CoeditPayload::Checkpoint { channel, body } => (
-            channel,
-            body,
-            tilo_peer_state::transport::Retention::Checkpoint,
-        ),
+        CoeditPayload::Checkpoint { channel, body } => {
+            (channel, body, neighbour_wire::Retention::Checkpoint)
+        }
         CoeditPayload::RetainedDelta { channel, body } => {
-            (channel, body, tilo_peer_state::transport::Retention::Delta)
+            (channel, body, neighbour_wire::Retention::Delta)
         }
     };
     let message: NeighbourMsg = postcard::from_bytes(&body)?;
     ensure!(
-        tilo_peer_state::transport::retention(
-            &message,
-            kind == tilo_peer_state::transport::Retention::Checkpoint
-        ) == Some((channel, kind)),
+        neighbour_wire::retention(&message, kind == neighbour_wire::Retention::Checkpoint)
+            == Some((channel, kind)),
         "retained channel or kind mismatch"
     );
     // Filesystem labels are evidence too. Tests use fixture-N names; real input
     // labels are relative to retained/, and must agree with the actual codec.
     if source.name.starts_with("checkpoints/") {
         ensure!(
-            kind == tilo_peer_state::transport::Retention::Checkpoint
+            kind == neighbour_wire::Retention::Checkpoint
                 && source.name == format!("checkpoints/{}", hex::encode(channel)),
             "checkpoint filename/channel mismatch"
         );
     } else if source.name.starts_with("tails/") {
         ensure!(
-            kind == tilo_peer_state::transport::Retention::Delta
+            kind == neighbour_wire::Retention::Delta
                 && source.name.split('/').nth(1) == Some(hex::encode(channel).as_str()),
             "tail filename/channel mismatch"
         );
@@ -214,20 +211,17 @@ fn canonical(room_id: &str, app: &str, record: &str, doc: &AutoCommit) -> Result
     owners.open(app, room_id)?.try_open_record(&checkout)?;
     if app == "so.tilo.chat" {
         ensure!(
-            chat::doc::ChatDoc::is_seeded(doc),
+            chat::projection::is_started(doc),
             "Chat canonical schema absent"
         );
     } else {
-        qdoc::model::open(doc, &automerge::ROOT)?;
+        word_processor::model::open(doc).map_err(anyhow::Error::msg)?;
     }
     Ok(())
 }
 fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
-    use collab_types::{
-        ArtifactKind, Ed25519PublicKey,
-        caps::{Actor, CapDecision, Principal, ResourceRef, decide_capability, verb_for_opclass},
-    };
-    use tilo_peer_state::transport::Retention;
+    use collab_types::{Ed25519PublicKey, caps::Principal};
+    use neighbour_wire::Retention;
     let b = &auth.bootstrap;
     let room_id = uuid::Uuid::parse_str(&b.room)?;
     ensure!(
@@ -330,8 +324,8 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
     }
     let room_doc = room_doc.ok_or_else(|| anyhow::anyhow!("missing governed room checkpoint"))?;
     let coverages = coverage::entries(&room_doc).map_err(anyhow::Error::msg)?;
-    let identities = room::governance_of(Some(&room_doc)).3;
-    let (_, owner, caps) = room::extract_governed_fields(&room_doc);
+    let identities = room::governance_of(Some(&room_doc)).identities;
+    let (_, policy) = room::extract_governed_fields(&room_doc);
     let mut docs = BTreeMap::new();
     let mut checks = vec![];
     let mut pending = vec![];
@@ -394,27 +388,39 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
             &revocations(&auth.root_public_key, &entries)?,
             at,
         )?;
-        let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
-        let role = room::role_of(owner.as_deref(), &caps, person.id(), at / 1_000_000_000)
+        let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key))
+            .id()
+            .to_owned();
+        policy
+            .role_of(&person)
             .ok_or_else(|| anyhow::anyhow!("missing room membership"))?;
-        let actor = Actor::person(Some(role), person.id())
-            .with_principal(Principal::App(app_id.clone()))
-            .in_room(b.room.clone());
-        let resource = ResourceRef::Artifact {
-            app: Some(app_id.clone()),
-            kind: ArtifactKind::Note,
-            instance: envelope.artifact,
+        let author = tilo_action_policy::Standing::person(policy.clone(), person);
+        let author = if cert.capabilities.foreign {
+            author.on_foreign_device()
+        } else {
+            author
+        };
+        // The change the op makes, decided against the room's policy when it
+        // was made, exactly as a receiver decides it live.
+        let allows = |node: &tilo_action_policy::TreePath, kind| {
+            author.answer(node, kind, &tilo_action_policy::Context::at(at / 1_000_000))
+                == tilo_action_policy::Answer::Allow
         };
         ensure!(
-            collab_types::role_permits(role, ArtifactKind::Note, envelope.op_class)
-                && decide_capability(
-                    &actor,
-                    &resource,
-                    verb_for_opclass(envelope.op_class),
-                    &caps,
-                    Some(at / 1_000_000_000)
-                ) == CapDecision::Allow,
-            "historical document capability forbidden"
+            collab_types::decide_op(
+                envelope,
+                &collab_types::Record {
+                    room: &b.room,
+                    app: app_id.as_str(),
+                    record: record_id,
+                },
+                None,
+                None,
+                &collab_types::Surfaces::process(),
+                &allows,
+            )
+            .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit),
+            "historical document change forbidden"
         );
         let collab_types::RoutedDocumentPayload::Cleartext(mutation) =
             collab_types::validate_document_payload_route(app_id, cluster_id, record_id, envelope)?
@@ -544,8 +550,8 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
 /// A readable projection accompanies, never replaces, the complete CRDT bytes.
 fn readable(app: &str, doc: &AutoCommit) -> Result<Value> {
     if app == "so.tilo.word-processor" {
-        let containers = qdoc::model::open(doc, &automerge::ROOT)?;
-        let snapshot = qdoc::model::materialize(doc, &containers);
+        let containers = word_processor::model::open(doc).map_err(anyhow::Error::msg)?;
+        let snapshot = tilo_doc::model::materialize(doc, &containers);
         let text = snapshot
             .blocks
             .iter()
@@ -556,9 +562,10 @@ fn readable(app: &str, doc: &AutoCommit) -> Result<Value> {
             json!({"app_id":app,"body_text":text,"rich_document":snapshot,"projection_note":"Body text is a convenience projection; rich_document and canonical bytes preserve structure."}),
         )
     } else if app == "so.tilo.chat" {
-        let channels=chat::doc::ChatDoc::list_channels(doc).into_iter().map(|channel| {
-            let messages=chat::doc::ChatDoc::list_messages(doc,&channel.id).into_iter().map(|message|json!({"id":message.id,"author":message.author,"timestamp":message.ts,"text":message.text,"parent":message.parent,"edited":message.edited,"history":message.history.iter().map(|h|json!({"timestamp":h.ts,"text":h.text})).collect::<Vec<_>>(),"attachment_present":message.attachment.is_some()})).collect::<Vec<_>>();
-            json!({"id":channel.id,"name":channel.name,"archived":channel.archived,"draft":chat::doc::ChatDoc::draft_text(doc,&channel.id),"messages":messages})
+        let record = chat::projection::read(doc);
+        let channels=record.channel_rows().into_iter().map(|channel| {
+            let messages=record.message_rows(&channel.id).into_iter().map(|message|json!({"id":message.id,"author":message.author,"timestamp":message.ts,"text":message.text,"parent":message.parent,"edited":message.edited,"history":message.history.iter().map(|h|json!({"timestamp":h.ts,"text":h.text})).collect::<Vec<_>>(),"attachment_present":message.attachment.is_some()})).collect::<Vec<_>>();
+            json!({"id":channel.id,"name":channel.name,"archived":channel.archived,"draft":chat::projection::draft_text(doc,&channel.id),"messages":messages})
         }).collect::<Vec<_>>();
         Ok(
             json!({"app_id":app,"channels":channels,"projection_note":"Canonical channel/message/draft API projection; full CRDT preserves other app fields and history. External attachment bytes are not in this archive export."}),

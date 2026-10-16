@@ -1,11 +1,17 @@
 use example_counter::{App, Counter, LIMIT};
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Replica, ResourceApp as _, TestApp};
+use ui::prelude::{Invoke, Replica, ResourceApp as _, TestApp};
 
-/// A `Replica` applies actions to the resource with no window: the fastest
-/// way to test what an action allows and refuses.
+/// Setting the count: an edit at its path.
+#[expect(clippy::expect_used, reason = "a test helper fails the test loudly")]
+fn set(count: i64) -> Invoke<Counter> {
+    Invoke::edit(&Counter::paths().count.set(count)).expect("an edit")
+}
+
+/// A `Replica` applies edits and verbs with no window: the fastest way to
+/// test what the model allows and refuses.
 #[test]
-fn actions_validate_and_a_refusal_changes_nothing() {
+fn edits_and_verbs_validate_and_a_refusal_changes_nothing() {
     let mut counter = Replica::<Counter>::new();
     counter.apply(Counter::ADD.with(10)).expect("add ten");
     counter
@@ -13,10 +19,8 @@ fn actions_validate_and_a_refusal_changes_nothing() {
         .expect("subtract three");
     assert_eq!(counter.state().expect("counter").count, 7);
 
-    assert!(counter.apply(Counter::SET.with(LIMIT + 1)).is_err());
-    counter
-        .apply(Counter::SET.with(LIMIT))
-        .expect("set to the limit");
+    assert!(counter.apply(set(LIMIT + 1)).is_err());
+    counter.apply(set(LIMIT)).expect("set to the limit");
     assert!(counter.apply(Counter::ADD.with(1)).is_err());
     assert!(counter.apply(Counter::ADD.with(i64::MIN)).is_err());
     assert_eq!(counter.state().expect("counter").count, LIMIT);
@@ -37,8 +41,10 @@ fn every_action_is_published_with_its_parameters() {
         .iter()
         .map(|action| action.id.as_str())
         .collect();
-    // The framework adds its own generic actions after the app's.
-    assert_eq!(actions.get(..3), Some(["add", "set", "reset"].as_slice()));
+    // The framework adds its own generic actions after the app's, among them
+    // `field-edit`, which sets the count.
+    assert_eq!(actions.get(..2), Some(["add", "reset"].as_slice()));
+    assert!(actions.contains(&"field-edit"));
     let add = counter.actions.first().expect("add");
     let params: Vec<_> = add
         .params()
@@ -69,7 +75,7 @@ fn buttons_invoke_the_action_and_undo_reverts_each_press() {
 #[test]
 fn reset_needs_confirmation() {
     let mut app = TestApp::<App>::new().expect("the app opens");
-    app.invoke(Counter::SET.with(5)).expect("set");
+    app.invoke(set(5)).expect("set");
     assert!(app.invoke(Counter::RESET.invoke()).is_err());
     assert_eq!(app.state().count, 5);
     app.invoke_confirmed(Counter::RESET.invoke())
@@ -88,8 +94,7 @@ fn a_viewer_cannot_count() {
 /// The screenshot scenario is staged through the same actions.
 #[test]
 fn the_counted_scenario_stages_through_actions() {
-    let mut app = TestApp::<App>::new().expect("the app opens");
-    app.stage(Some("counted")).expect("stage");
+    let app = TestApp::<App>::capture(Some("counted")).expect("stage");
     assert_eq!(app.state().count, 42);
 }
 

@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "assets": [
+    {
+      "file": "sample.pdf",
+      "sha256": "4a14d5e23f32abdda14329a2973ef33e02fd01197733bba38e4f40426e7983d4",
+      "bytes": 3735,
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/4a14d5e23f32abdda14329a2973ef33e02fd01197733bba38e4f40426e7983d4/sample.pdf"
+    }
+  ]
+}

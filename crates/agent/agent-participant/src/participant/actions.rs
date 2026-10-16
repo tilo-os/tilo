@@ -3,12 +3,11 @@
 //! for the records it has open, through the same door its own steps use.
 //!
 //! - A catalogue lists one provider per open record (`record:<app>:<record>`)
-//!   with every action the record publishes (declared and projected
-//!   controls), and the room's provider (`workspace:<room>`) offering
+//!   with every operation the record publishes, and the room's provider (`workspace:<room>`) offering
 //!   `app.<app>#open` for each delegated app.
 //! - An invocation runs through the app's door with the caller's arguments;
 //!   an explicit `Confirmed` from the caller satisfies a confirmation step.
-//!   The change is committed through the agent's session and its cursor
+//!   The change is committed through the agent's session and its presence
 //!   moves there, exactly as for its own steps.
 //! - Invocation ids are idempotent: a retry reports the original receipt, a
 //!   different request under a used id is a conflict.
@@ -20,10 +19,9 @@ use std::collections::VecDeque;
 
 use tilo_actions::door::DoorError;
 use tilo_actions::remote::{
-    ActionHostError, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource,
-    CatalogueRow, Confirmation, InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus,
-    RemoteActionFrame, RemoteActionMessage, application_open_target, workspace_provider,
-    workspace_provider_room,
+    ActionHostError, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow,
+    InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame,
+    RemoteActionMessage, application_open_target, workspace_provider, workspace_provider_room,
 };
 use tilo_actions::{ActionFailure, ActionOutput, PROMPTED_PARAM};
 use tilo_browser_peer::DocumentRoute;
@@ -42,7 +40,7 @@ pub fn record_provider(route: &DocumentRoute) -> String {
     format!("{RECORD_PROVIDER}:{}:{}", route.app_id, route.record)
 }
 
-fn record_of(provider: &str, room: &str) -> Option<DocumentRoute> {
+pub(crate) fn record_of(provider: &str, room: &str) -> Option<DocumentRoute> {
     let rest = provider.strip_prefix(RECORD_PROVIDER)?.strip_prefix(':')?;
     // App ids have no colon; record ids may (`uuid:…`).
     let (app_id, record) = rest.split_once(':')?;
@@ -51,6 +49,29 @@ fn record_of(provider: &str, room: &str) -> Option<DocumentRoute> {
         cluster_id: room.to_owned(),
         record: record.to_owned(),
     })
+}
+
+/// The row offering to open `app` on a new record in workspace `room`.
+pub(crate) fn open_row(room: &str, app: &str) -> CatalogueRow {
+    let target = application_open_target(room, app);
+    CatalogueRow::for_action(
+        target.provider,
+        app,
+        tilo_actions::door::ActionDescriptor {
+            semantic_identity: None,
+            address: target.address,
+            resource_kind: "applications.app".into(),
+            resource_label: app.to_owned(),
+            action_label: format!("Open {app}"),
+            description: Some(format!("Open {app} on a new record in this room.")),
+            locus: tilo_actions::ExecutionLocus::ServerPreferred,
+            kind: tilo_actions::OperationKind::Effect,
+            contract: tilo_actions::ActionContract::default(),
+            params: Vec::new(),
+            input: tilo_actions::InputSpec::None,
+            view: None,
+        },
+    )
 }
 
 /// Answered invocations, oldest first.
@@ -64,6 +85,14 @@ impl AgentParticipant {
             return;
         };
         let reply = match frame.message {
+            RemoteActionMessage::FeedbackRequest { correlation, .. } => {
+                RemoteActionMessage::FeedbackResponse {
+                    correlation,
+                    result: Err(ActionHostError::Unavailable {
+                        reason: "agents do not own canonical feedback delivery".into(),
+                    }),
+                }
+            }
             RemoteActionMessage::CatalogueRequest { correlation, query } => {
                 RemoteActionMessage::CatalogueResponse {
                     correlation,
@@ -73,7 +102,7 @@ impl AgentParticipant {
             RemoteActionMessage::Invoke(request) => {
                 RemoteActionMessage::Receipt(self.invoke_remote(request))
             }
-            RemoteActionMessage::Observe { invocation } => RemoteActionMessage::Update {
+            RemoteActionMessage::Observe { invocation, .. } => RemoteActionMessage::Update {
                 invocation,
                 state: None,
             },
@@ -91,7 +120,8 @@ impl AgentParticipant {
                     }),
                 }
             }
-            RemoteActionMessage::CatalogueResponse { .. }
+            RemoteActionMessage::FeedbackResponse { .. }
+            | RemoteActionMessage::CatalogueResponse { .. }
             | RemoteActionMessage::RecordResponse { .. }
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
@@ -111,7 +141,7 @@ impl AgentParticipant {
         self.generation.to_string()
     }
 
-    fn catalogue(&mut self, query: &CatalogueQuery) -> CataloguePage {
+    fn catalogue(&self, query: &CatalogueQuery) -> CataloguePage {
         let room = self.room.clone();
         let mut rows = Vec::new();
         let mut providers = Vec::new();
@@ -133,20 +163,11 @@ impl AgentParticipant {
                 browsable: false,
             });
             for descriptor in self.survey(&route) {
-                rows.push(CatalogueRow {
-                    provider: provider.clone(),
-                    app_id: route.app_id.clone(),
-                    parent_resource: String::new(),
-                    resource: CatalogueResource {
-                        id: descriptor.address.resource.clone(),
-                        kind: descriptor.resource_kind.clone(),
-                        label: descriptor.resource_label.clone(),
-                        presentation: None,
-                    },
-                    action: Some(descriptor),
-                    has_children: false,
-                    visibility: None,
-                });
+                rows.push(CatalogueRow::for_action(
+                    provider.clone(),
+                    route.app_id.clone(),
+                    descriptor,
+                ));
             }
         }
         let workspace = workspace_provider(&room);
@@ -155,41 +176,13 @@ impl AgentParticipant {
             .as_ref()
             .is_none_or(|wanted| *wanted == workspace)
         {
-            let apps: Vec<&'static str> = self
-                .catalogue
-                .iter()
-                .map(|definition| definition.app_id)
-                .filter(|app| self.identity.delegation.permits_app(app))
-                .collect();
-            for app in apps {
-                let target = application_open_target(&room, app);
-                rows.push(CatalogueRow {
-                    provider: workspace.clone(),
-                    app_id: app.to_owned(),
-                    parent_resource: String::new(),
-                    resource: CatalogueResource {
-                        id: target.address.resource.clone(),
-                        kind: "applications.app".into(),
-                        label: app.to_owned(),
-                        presentation: None,
-                    },
-                    action: Some(tilo_actions::door::ActionDescriptor {
-                        address: target.address,
-                        resource_kind: "applications.app".into(),
-                        resource_label: app.to_owned(),
-                        action_label: format!("Open {app}"),
-                        description: Some(format!("Open {app} on a new record in this room.")),
-                        locus: tilo_actions::ExecutionLocus::ServerPreferred,
-                        kind: tilo_actions::OperationKind::Effect,
-                        contract: tilo_actions::ActionContract::default(),
-                        params: Vec::new(),
-                        input: tilo_actions::InputSpec::None,
-                        view: None,
-                    }),
-                    has_children: false,
-                    visibility: None,
-                });
-            }
+            rows.extend(
+                self.catalogue
+                    .iter()
+                    .map(|definition| definition.app_id)
+                    .filter(|app| self.identity.delegation.permits_app(app))
+                    .map(|app| open_row(&room, app)),
+            );
             providers.push(CatalogueProvider {
                 provider: workspace,
                 app_id: String::new(),
@@ -212,7 +205,7 @@ impl AgentParticipant {
             .iter()
             .find(|(earlier, _)| earlier.invocation == request.invocation)
         {
-            return if *earlier == request {
+            return if earlier.same_invocation(&request) {
                 receipt.clone()
             } else {
                 rejected(&request, ActionHostError::InvocationConflict)
@@ -249,9 +242,7 @@ impl AgentParticipant {
             .as_ref()
             .is_some_and(|revision| *revision != self.revision())
         {
-            return Err(reject(ActionHostError::Refused {
-                reason: "the catalogue changed since that revision".into(),
-            }));
+            return Err(reject(ActionHostError::StaleRevision));
         }
         let target = &request.target;
         if workspace_provider_room(&target.provider) == Some(self.room.as_str()) {
@@ -287,8 +278,11 @@ impl AgentParticipant {
             }
             InvokeArgument::Json(arguments) => arguments.clone(),
         };
-        let confirmed = matches!(request.confirmation, Some(Confirmation::Confirmed));
-        self.invoke_as(&route, &target.address, &arguments, confirmed)
+        // Whoever drives the agent's records from afar confirms nothing by
+        // their word here: the agent's door cannot tell a person's device
+        // from another agent's, so an action that asks first is refused
+        // and is the person's to run themselves.
+        self.invoke_as(&route, &target.address, &arguments, false)
             .map(Option::unwrap_or_default)
             .map_err(|error| match error {
                 Refusal::Door(error) => door_status(&error),
@@ -306,6 +300,16 @@ pub(super) enum Refusal {
     Agent(String),
 }
 
+impl Refusal {
+    /// The refusal as a step's error reads.
+    pub(super) fn into_text(self) -> String {
+        match self {
+            Self::Door(error) => format!("{}: {error}", error.code()),
+            Self::Agent(reason) => reason,
+        }
+    }
+}
+
 fn rejected(request: &InvokeRequest, error: ActionHostError) -> InvocationReceipt {
     InvocationReceipt {
         invocation: request.invocation,
@@ -313,28 +317,42 @@ fn rejected(request: &InvokeRequest, error: ActionHostError) -> InvocationReceip
     }
 }
 
-fn door_status(error: &DoorError) -> ReceiptStatus {
-    let reject = |error| ReceiptStatus::Rejected { error };
+/// How an invocation the door refused ended.
+pub(crate) enum Outcome {
+    /// Nothing ran.
+    Rejected(ActionHostError),
+    Failed(ActionFailure),
+}
+
+pub(crate) fn door_outcome(error: &DoorError) -> Outcome {
     match error {
         DoorError::Unknown(_) | DoorError::UnregisteredType(_) => {
-            reject(ActionHostError::UnknownAction)
+            Outcome::Rejected(ActionHostError::UnknownAction)
         }
-        DoorError::ConfirmationRequired => reject(ActionHostError::ConfirmationRequired),
+        DoorError::ConfirmationRequired => Outcome::Rejected(ActionHostError::ConfirmationRequired),
         DoorError::MissingArgument(_)
         | DoorError::UnexpectedArgument(_)
-        | DoorError::InvalidArguments(_) => reject(ActionHostError::InvalidRequest {
-            reason: error.to_string(),
-        }),
-        DoorError::Unavailable { reason, .. } => reject(ActionHostError::Unavailable {
+        | DoorError::InvalidArguments(_)
+        | DoorError::ArgumentOutOfRange { .. } => {
+            Outcome::Rejected(ActionHostError::InvalidRequest {
+                reason: error.to_string(),
+            })
+        }
+        DoorError::Unavailable { reason, .. } => Outcome::Rejected(ActionHostError::Unavailable {
             reason: reason.clone(),
         }),
-        DoorError::Failed(message) => ReceiptStatus::Failed {
-            error: ActionFailure {
-                code: error.code().to_owned(),
-                message: message.clone(),
-                details: None,
-                retryable: false,
-            },
-        },
+        DoorError::Failed(message) => Outcome::Failed(ActionFailure {
+            code: error.code().to_owned(),
+            message: message.clone(),
+            details: None,
+            retryable: false,
+        }),
+    }
+}
+
+pub(crate) fn door_status(error: &DoorError) -> ReceiptStatus {
+    match door_outcome(error) {
+        Outcome::Rejected(error) => ReceiptStatus::Rejected { error },
+        Outcome::Failed(error) => ReceiptStatus::Failed { error },
     }
 }

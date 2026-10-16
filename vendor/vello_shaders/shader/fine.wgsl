@@ -230,7 +230,12 @@ fn fill_path_ms(fill: CmdFill, local_id: vec2<u32>, result: ptr<function, array<
             }
             let el_ix = lo;
             let last_pixel = i + 1u == sh_count[el_ix];
-            let sub_ix = i - select(0u, sh_count[el_ix - 1u], el_ix > 0u);
+            // `select` evaluates both arms, so the first element would read index -1.
+            var prev_count = 0u;
+            if el_ix > 0u {
+                prev_count = sh_count[el_ix - 1u];
+            }
+            let sub_ix = i - prev_count;
             let seg_off = fill.seg_data + batch * WG_SIZE + el_ix;
             let segment = segments[seg_off];
             // Coordinates are relative to tile origin
@@ -586,7 +591,12 @@ fn fill_path_ms_evenodd(fill: CmdFill, local_id: vec2<u32>, result: ptr<function
             }
             let el_ix = lo;
             let last_pixel = i + 1u == sh_count[el_ix];
-            let sub_ix = i - select(0u, sh_count[el_ix - 1u], el_ix > 0u);
+            // `select` evaluates both arms, so the first element would read index -1.
+            var prev_count = 0u;
+            if el_ix > 0u {
+                prev_count = sh_count[el_ix - 1u];
+            }
+            let sub_ix = i - prev_count;
             let seg_off = fill.seg_data + batch * WG_SIZE + el_ix;
             let segment = segments[seg_off];
             let xy0_in = segment.point0;
@@ -1042,6 +1052,17 @@ fn ppt8_subgroup_x(pixel_x_base: u32, subgroup: u32) -> f32 {
 // to wire this so it's a dynamic choice (even per-path).
 //
 // FIXME: This should return an array when https://github.com/gfx-rs/naga/issues/1930 is fixed.
+//
+// A pixel's coverage by a line's crossing of it is the mean, over the
+// crossing's x extent [xmin, xmax], of the area right of x (1 - clamp(x)):
+// ((b - xmin) - (c - d) * (c + d) / 2) / (xmax - xmin). It is evaluated in
+// that factored form, not as b + (d * d - c * c) / 2 - xmin: for a vertical
+// or near-vertical edge the extent is the 1e-6 nudge, and the expanded form
+// rounds its two squares and their sum at the magnitude of x, so the edge
+// pixel came out up to 15 channel steps off, by an error that depends on the
+// exact bits of x — on where the shape sits, not only on its fraction of a
+// pixel. Both differences of the factored form are of nearby values (exact),
+// so a shape moved by whole pixels rasterises the same coverage.
 fn fill_path(fill: CmdFill, xy: vec2<f32>, result: ptr<function, array<f32, PIXELS_PER_THREAD>>) {
     let n_segs = fill_segment_count(fill);
     let even_odd = (fill.size_and_rule & 1u) != 0u;
@@ -1082,7 +1103,7 @@ fn fill_path(fill: CmdFill, xy: vec2<f32>, result: ptr<function, array<f32, PIXE
                 let b = min(xmax, 1.0);
                 let c = max(b, 0.0);
                 let d = max(xmin, 0.0);
-                let a = (b + 0.5 * (d * d - c * c) - xmin) / (xmax - xmin);
+                let a = ((b - xmin) - 0.5 * ((c - d) * (c + d))) / (xmax - xmin);
                 area[i] += a * dy;
             }
         }
@@ -1144,7 +1165,8 @@ fn fill_path_ppt8(fill: CmdFill, local_x_base: u32, local_y: u32, result: ptr<fu
                     let b = min(xmax, 1.0);
                     let c = max(b, 0.0);
                     let d = max(xmin, 0.0);
-                    let a = (b + 0.5 * (d * d - c * c) - xmin) / (xmax - xmin);
+                    // As `fill_path`: the factored, translation-stable form.
+                    let a = ((b - xmin) - 0.5 * ((c - d) * (c + d))) / (xmax - xmin);
                     area[i] += a * dy;
                 }
             }
@@ -1622,8 +1644,11 @@ fn main(
 #endif
             let fg = rgba[i];
             // let fg = base_color * (1.0 - foreground.a) + foreground;
-            // Max with a small epsilon to avoid NaNs
-            let a_inv = 1.0 / max(fg.a, 1e-6);
+            // Max with a small epsilon to avoid NaNs. A pixel whose alpha
+            // stores as 0 stores transparent black: its colour would
+            // otherwise be whatever a sliver of coverage (the area stage's
+            // 1e-6 nudges) divides out to, in a pixel nothing shows.
+            let a_inv = select(1.0 / max(fg.a, 1e-6), 0.0, fg.a * 255.0 < 0.5);
             let rgba_sep = vec4(fg.rgb * a_inv, fg.a);
             textureStore(output, vec2<i32>(coords), rgba_sep);
         }

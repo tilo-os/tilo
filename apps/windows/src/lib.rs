@@ -9,22 +9,7 @@
 //! compositor-authenticated compatibility service descriptor.
 #![allow(
     clippy::arithmetic_side_effects,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::unnecessary_literal_bound,
     reason = "app-local rendering geometry and Widget trait signatures"
-)]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "test assertions"
-    )
 )]
 
 pub mod actions;
@@ -32,19 +17,14 @@ pub mod app;
 pub mod appliance_owner;
 pub mod model;
 pub mod provider;
+pub mod resource;
+pub mod search;
 pub mod strings;
 
 pub use app::WindowsApp;
+pub use resource::{Windows, WindowsShell};
 
-pub fn app_root() -> Box<dyn ui::widget::Widget> {
-    Box::new(WindowsApp::new_live())
-}
-pub fn app_root_open(path: &std::path::Path) -> Box<dyn ui::widget::Widget> {
-    Box::new(WindowsApp::new_live_open(path))
-}
-pub fn app_root_offline() -> Box<dyn ui::widget::Widget> {
-    Box::new(WindowsApp::new_offline())
-}
-pub fn app_root_scenario(scenario: &str) -> Box<dyn ui::widget::Widget> {
-    Box::new(WindowsApp::new_offline_scenario(scenario))
+/// The app as every host mounts it.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::built_in_definition!(WindowsShell)
 }

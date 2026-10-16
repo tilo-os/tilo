@@ -13,9 +13,18 @@
 //! - [`compaction`] — a member device's coverage statement for a sealed
 //!   route the host cannot read;
 //! - [`live`] — the ephemeral presence and preview frames of the live plane;
+//! - [`environment`] — interactive environment sessions a relay runs for its
+//!   members, and the legacy launches they route to KVM workers;
+//! - [`legacy_window`] — legacy windows a session streams, as the live plane
+//!   carries them to browsers, and the input members send back;
 //! - [`web`] — the browser carriers: HTTPS routes and the live grant;
+//! - [`rooms`] — governed rooms over HTTPS: administration and joining;
+//! - [`room_operator`] — the JSON-lines protocol between the public-room
+//!   service and each `tilo-relay room` child it runs;
 //! - [`mesh`] — device roles, service capabilities, replication intents and
-//!   the deterministic placement / remote-control routing over them;
+//!   the server advertisements compute admission checks;
+//! - [`placement`] — which advertised device a compute job is sent to, and
+//!   why every other one was passed over;
 //! - [`config`] and [`policy`] — the on-disk `relay.toml` schema;
 //! - [`home_peer`] — the registry record written after enrolling an
 //!   always-on peer;
@@ -31,68 +40,54 @@
 
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
 
 pub mod agents;
 pub mod auth;
 pub mod certify;
 pub mod compaction;
 pub mod config;
+pub mod environment;
 pub mod home_peer;
+pub mod legacy_window;
 pub mod live;
 pub mod mesh;
 pub mod metrics;
+pub mod placement;
 pub mod policy;
 pub mod process_lease;
+pub mod public_avatars;
 pub mod retention;
-mod sig64;
+pub mod room_operator;
+pub mod rooms;
 pub mod transport;
 pub mod voice;
 pub mod web;
 
+/// Root-signed agent and bot delegations, defined in `tilo-workspace-join` so
+/// the admission core can verify them without linking the relay protocol.
+pub use tilo_workspace_join::delegation;
+/// The stable relay shard of a room UUID, defined beside [`delegation`].
+pub use tilo_workspace_join::room_workspace_id;
+
 pub use auth::{AuthError, AuthenticatedPeer, PeerRole};
-pub use config::{ConfigError, PeerRelayConfig, RelayConfig, WorkspaceBinding};
-pub use home_peer::{HomePeerRegistration, valid_home_peer_label};
+pub use config::{ConfigError, EnvironmentsConfig, PeerRelayConfig, RelayConfig, WorkspaceBinding};
+pub use home_peer::{
+    HomePeerRegistration, RELAY_OFFERS_FILE, RelayEnvironments, RelayOffer, RelayOffers,
+    home_peer_registry_path, personal_device_peer_path, remember_personal_device,
+    valid_home_peer_label,
+};
 pub use mesh::{
-    ComputeAccelerator, DeviceKey, DeviceMeshProfile, DeviceRole, Placement, PlacementRequest,
-    PowerAvailability, RemoteControlRoute, ReplicationIntent, ReplicationResource,
-    ServerAdvertisement, ServiceCapabilities, Workload, place, route_remote_control,
+    ComputeAccelerator, DeviceKey, DeviceMeshProfile, DeviceRole, PowerAvailability,
+    ReplicationIntent, ReplicationResource, ServerAdvertisement, ServiceCapabilities,
 };
 pub use metrics::MetricsSnapshot;
+pub use placement::{
+    ComputeRequirements, Ineligible, NoEligibleWorker, Placement, PlacementCandidate,
+    PlacementRank, PowerClass, place_compute_job,
+};
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
 pub use transport::{ALPN, ContentPeerRegistration, Envelope};
-
-/// Derive the stable numeric host/gossip shard for a room UUID. This is shared
-/// by the shell and admin CLI so local workspace handles never leak onto the
-/// wire and operators cannot accidentally bind a different shard.
-///
-/// # Errors
-///
-/// Returns an error if `room` is not a valid UUID string.
-pub fn room_workspace_id(room: &str) -> Result<u64, uuid::Error> {
-    let room = uuid::Uuid::parse_str(room)?;
-    // Encode on the stack: bounded delivery paths derive this id under a
-    // native allowance that funds no heap allocation.
-    let mut canonical = [0u8; 36];
-    let hash = blake3::derive_key(
-        "tilo-room-transport-v1",
-        room.hyphenated().encode_lower(&mut canonical).as_bytes(),
-    );
-    let mut first8 = [0u8; 8];
-    first8.copy_from_slice(&hash[..8]);
-    let id = u64::from_le_bytes(first8);
-    Ok(if id == 0 { 1 } else { id })
-}
 
 /// Stable private relay shard for same-identity continuation checkpoints.
 /// This is not a user-visible workspace and is derived only from the root

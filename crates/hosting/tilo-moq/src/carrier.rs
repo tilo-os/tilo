@@ -253,13 +253,40 @@ pub async fn present(
 /// An admitted native `MoQ` session. Dropping it closes the session.
 pub struct Connected {
     pub session: moq_net::Session,
+    connection: quinn::Connection,
     task: tokio::task::JoinHandle<()>,
+}
+
+/// Content-free cumulative counters of one carrier's QUIC connection: what it
+/// costs on the wire (UDP payload bytes and datagrams) and the packet loss it
+/// measured.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WireStats {
+    pub tx_bytes: u64,
+    pub tx_datagrams: u64,
+    pub rx_bytes: u64,
+    pub rx_datagrams: u64,
+    pub sent_packets: u64,
+    pub lost_packets: u64,
 }
 
 impl Connected {
     /// Resolves when the session closes, including after a revocation.
     pub async fn closed(&self) -> moq_net::Error {
         self.session.closed().await
+    }
+
+    /// This carrier's wire counters so far.
+    pub fn wire(&self) -> WireStats {
+        let stats = self.connection.stats();
+        WireStats {
+            tx_bytes: stats.udp_tx.bytes,
+            tx_datagrams: stats.udp_tx.datagrams,
+            rx_bytes: stats.udp_rx.bytes,
+            rx_datagrams: stats.udp_rx.datagrams,
+            sent_packets: stats.path.sent_packets,
+            lost_packets: stats.path.lost_packets,
+        }
     }
 }
 
@@ -306,6 +333,7 @@ pub async fn start(
     .map_err(|_| AdmissionError::Unavailable)?
     .map_err(|_| AdmissionError::Unavailable)?;
     let watched = session.clone();
+    let connection = (*transport).clone();
     let task = tokio::spawn(async move {
         let run = moq_net::time::run(driver);
         tokio::pin!(run);
@@ -319,7 +347,11 @@ pub async fn start(
         }
         transport.close(0, b"");
     });
-    Ok(Connected { session, task })
+    Ok(Connected {
+        session,
+        connection,
+        task,
+    })
 }
 
 /// Which server certificates a native client accepts.
@@ -534,14 +566,27 @@ pub fn listener(
     chain: Vec<CertificateDer<'static>>,
     key: rustls::pki_types::PrivateKeyDer<'static>,
 ) -> Result<quinn::Endpoint, String> {
-    let mut tls = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_protocol_versions(&[&rustls::version::TLS13])
-    .map_err(|error| error.to_string())?
-    .with_no_client_auth()
-    .with_single_cert(chain, key)
-    .map_err(|error| error.to_string())?;
+    let socket = std::net::UdpSocket::bind(address).map_err(|error| error.to_string())?;
+    listener_on(socket, crate::tls::fixed_certificate(chain, key)?)
+}
+
+/// [`listener`] on an already bound UDP socket, presenting `certificate`:
+/// [`crate::tls::fixed_certificate`], or a [`crate::tls::FileCertificate`]
+/// that follows renewals on disk.
+///
+/// # Errors
+///
+/// Returns a message when the TLS identity is unusable or the socket cannot
+/// be used.
+pub fn listener_on(
+    socket: std::net::UdpSocket,
+    certificate: std::sync::Arc<dyn rustls::server::ResolvesServerCert>,
+) -> Result<quinn::Endpoint, String> {
+    let mut tls = rustls::ServerConfig::builder_with_provider(crate::tls::provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|error| error.to_string())?
+        .with_no_client_auth()
+        .with_cert_resolver(certificate);
     tls.alpn_protocols = vec![web_transport_quinn::ALPN.as_bytes().to_vec()];
     tls.max_early_data_size = 0;
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)
@@ -556,7 +601,14 @@ pub fn listener(
         ))
         .keep_alive_interval(Some(KEEP_ALIVE));
     config.transport_config(std::sync::Arc::new(transport));
-    quinn::Endpoint::server(config, address).map_err(|error| error.to_string())
+    let runtime = quinn::default_runtime().ok_or("no async runtime for the QUIC listener")?;
+    quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        Some(config),
+        socket,
+        runtime,
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// Accept WebTransport sessions for exactly one of `paths` on `endpoint` and

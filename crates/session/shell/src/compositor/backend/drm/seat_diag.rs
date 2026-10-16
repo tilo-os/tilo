@@ -30,7 +30,7 @@
 //! observed environment and renders the operator-facing message.
 
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Where seatd's control socket lives when the daemon is running.
 pub const SEATD_SOCKET: &str = "/run/seatd.sock";
@@ -276,12 +276,6 @@ pub fn diagnose_live(raw: impl Into<String>) -> SeatFailure {
     SeatFailure::diagnose(raw, SeatEnvironment::detect())
 }
 
-/// Paths this module probes, exposed so a caller can log what it looked
-/// at. Not used by [`classify`] — it reads the booleans instead.
-pub fn probed_paths() -> [PathBuf; 2] {
-    [PathBuf::from(SEATD_SOCKET), PathBuf::from(LOGIND_SEAT_DIR)]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,10 +332,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn seat_diagnosis_classifies_each_missing_precondition() {
         // Phase `no_session_id_is_the_no_login_session_case`.
         {

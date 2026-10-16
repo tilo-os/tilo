@@ -1,0 +1,32 @@
+[package]
+name = "legacy-agent"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The agent inside a Tilo legacy VM guest: launches apps, relays stdio, mounts shares."
+
+[lib]
+name = "legacy_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-legacy-agent"
+path = "src/main.rs"
+
+[dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+legacy-agent-protocol = { path = "../legacy-agent-protocol" }
+libc.workspace = true
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tilo-desktop-entry = { path = "../../system/desktop-entry" }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

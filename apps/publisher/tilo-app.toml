@@ -16,7 +16,10 @@ x86_64 = "v3"
 aarch64 = "aarch64"
 
 [capabilities]
-optional = ["clipboard", "threads"]
+optional = ["clipboard", "secrets", "threads"]
+
+[resources]
+kinds = ["publisher.profile"]
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

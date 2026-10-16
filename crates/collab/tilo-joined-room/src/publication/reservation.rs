@@ -15,6 +15,10 @@ pub(crate) struct StoredReservation {
     state_bytes: usize,
 }
 impl StoredReservation {
+    pub(super) fn has_recovery(&self) -> bool {
+        self.entries > 0
+    }
+
     pub(crate) fn bounds(&self) -> Result<(), String> {
         if self.entries > MAX_ENTRIES
             || self.wire_bytes > MAX_BYTES
@@ -48,7 +52,7 @@ impl Serialize for VirtualEntry<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let binding = CommitBinding {
             room: self.room.into(),
-            target: tilo_peer_state::owner_commit::CommitTarget::Document {
+            target: tilo_owner_commit::CommitTarget::Document {
                 app: self.app.into(),
                 record: self.record.into(),
             },
@@ -68,21 +72,59 @@ impl Serialize for VirtualEntry<'_> {
 }
 struct VirtualProjection<'a> {
     room: &'a str,
-    proof: &'a tilo_peer_state::LocalRecoveryReservation,
+    /// Each entry's app, record and reserved bytes.
+    routes: &'a [(&'a str, &'a str, usize)],
+    /// Each entry's bytes cut to at most this many; see [`count_projection`].
+    cut: usize,
 }
 impl Serialize for VirtualProjection<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut seq = serializer.serialize_seq(Some(self.proof.entries()))?;
-        for (app, record, bytes) in self.proof.routes() {
+        let mut seq = serializer.serialize_seq(Some(self.routes.len()))?;
+        for &(app, record, bytes) in self.routes {
             seq.serialize_element(&VirtualEntry {
                 room: self.room,
                 app,
                 record,
-                bytes,
+                bytes: bytes.min(self.cut),
             })?;
         }
         seq.end()
     }
+}
+/// Exactly what [`count`] counts for the whole virtual projection embedded at
+/// `depth`, without a `255` written for every reserved byte, a whole
+/// recovery history's worth on every commit: an entry's bytes past its first
+/// are each one more line of its array, `,` and a newline, the elements'
+/// three levels of indentation and `255`, plus the `2 * depth` spaces the
+/// embedding adds to that newline.
+fn count_projection(
+    room: &str,
+    routes: &[(&str, &str, usize)],
+    depth: usize,
+    limit: usize,
+) -> Result<usize, String> {
+    let short = count(
+        &VirtualProjection {
+            room,
+            routes,
+            cut: 1,
+        },
+        depth,
+        limit,
+    )?;
+    let line = depth
+        .checked_mul(2)
+        .and_then(|indent| indent.checked_add(11))
+        .ok_or("native reserve overflow")?;
+    routes
+        .iter()
+        .try_fold(0_usize, |sum, &(_, _, bytes)| {
+            sum.checked_add(bytes.saturating_sub(1))
+        })
+        .and_then(|lines| lines.checked_mul(line))
+        .and_then(|longer| longer.checked_add(short))
+        .filter(|total| *total <= limit)
+        .ok_or_else(|| "native encoded recovery reserve exceeds capacity".into())
 }
 /// A pretty-printed subtree has exactly `2 * depth` more spaces per structural
 /// newline when embedded in the authority/file. Escaped string newlines are not
@@ -132,17 +174,16 @@ fn proof(
     if originals.is_empty() {
         return Ok(StoredReservation::default());
     }
-    let proof =
-        view.peer
-            .reserve_local_recovery(originals, None, view.device().device_public_key)?;
+    let proof = view.peer.outbox().reserve_local_recovery(
+        originals,
+        None,
+        view.device().device_public_key,
+    )?;
     if proof.entries() > MAX_ENTRIES || proof.max_encoded_bytes() > MAX_BYTES {
         return Err("native outgoing cannot reserve complete causal recovery".into());
     }
     let room = view.record.room.to_string();
-    let virtual_projection = VirtualProjection {
-        room: &room,
-        proof: &proof,
-    };
+    let routes = proof.routes().collect::<Vec<_>>();
     // NativeAuthorityStorage.rooms[room].publication.projection has depth four;
     // state.json adds the surrounding WorkspaceTree object (depth five).
     // The peer's serialized reserved channel floor is separately charged below.
@@ -157,10 +198,10 @@ fn proof(
             .and_then(|size| size.checked_add(proof.max_peer_decimal_growth()))
             .ok_or_else(|| "native peer floor reserve overflow".into())
     };
-    let authority_bytes = count(&virtual_projection, 4, store::MAX_AUTHORITY_BYTES)?
+    let authority_bytes = count_projection(&room, &routes, 4, store::MAX_AUTHORITY_BYTES)?
         .checked_add(peer_extra(3)?)
         .ok_or("native authority reserve overflow")?;
-    let state_bytes = count(&virtual_projection, 5, store::MAX_STATE_BYTES)?
+    let state_bytes = count_projection(&room, &routes, 5, store::MAX_STATE_BYTES)?
         .checked_add(peer_extra(4)?)
         .ok_or("native state reserve overflow")?;
     let result = StoredReservation {
@@ -253,10 +294,19 @@ fn extra(storage: &record::NativeAuthorityStorage, file: bool) -> Result<usize, 
 /// # Errors
 /// `storage` does not fit its cap together with its reserve.
 pub fn preflight_storage(storage: &record::NativeAuthorityStorage) -> Result<(), String> {
-    let limit = store::MAX_AUTHORITY_BYTES
-        .checked_sub(extra(storage, false)?)
-        .ok_or("native authority recovery reserve exceeds capacity")?;
+    let limit = authority_limit(storage)?;
     store::preflight(storage, limit).map_err(|e| e.to_string())
+}
+/// The most bytes `storage` may pretty-print to: the cap, less the recovery
+/// its rooms reserved. [`preflight_storage`] refuses a record past it; a host
+/// that pretty-prints the record anyway counts against it in that one pass.
+///
+/// # Errors
+/// A room's reserve is out of bounds or exceeds the cap.
+pub fn authority_limit(storage: &record::NativeAuthorityStorage) -> Result<usize, String> {
+    store::MAX_AUTHORITY_BYTES
+        .checked_sub(extra(storage, false)?)
+        .ok_or_else(|| "native authority recovery reserve exceeds capacity".into())
 }
 /// Bytes a host file that embeds `storage` one level deeper than the record
 /// itself (the desktop session's state file) must keep free for the
@@ -283,6 +333,51 @@ mod tests {
     struct Entry {
         data: Vec<u8>,
         route: String,
+    }
+    /// The projection's count, worked out from one line per entry, is the
+    /// count of the projection written out a `255` per reserved byte, at
+    /// both embeddings, and refuses exactly the limits that one refuses.
+    #[test]
+    fn projection_count_without_writing_each_byte_is_the_written_count() {
+        let room = "00000000-0000-4000-8000-0000000000aa";
+        let cases: [&[(&str, &str, usize)]; 5] = [
+            &[],
+            &[("so.tilo.code", "a", 0)],
+            &[("so.tilo.code", "a", 1)],
+            &[("so.tilo.code", "a", 2), ("app\"quoted\nname", "r\\", 0)],
+            &[
+                ("so.tilo.code", "a", 1_000),
+                ("so.tilo.notes", "b", 7),
+                ("x", "y", 1),
+            ],
+        ];
+        for routes in cases {
+            let written_at = |depth, limit| {
+                count(
+                    &VirtualProjection {
+                        room,
+                        routes,
+                        cut: usize::MAX,
+                    },
+                    depth,
+                    limit,
+                )
+            };
+            for depth in [0, 4, 5] {
+                let written = written_at(depth, usize::MAX).unwrap();
+                assert_eq!(
+                    count_projection(room, routes, depth, usize::MAX).unwrap(),
+                    written,
+                    "{routes:?} at depth {depth}"
+                );
+                assert_eq!(
+                    count_projection(room, routes, depth, written).unwrap(),
+                    written
+                );
+                assert!(count_projection(room, routes, depth, written - 1).is_err());
+                assert!(written_at(depth, written - 1).is_err());
+            }
+        }
     }
     #[test]
     #[allow(

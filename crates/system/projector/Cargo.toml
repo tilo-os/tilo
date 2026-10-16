@@ -6,11 +6,17 @@ license.workspace = true
 publish = false
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 hex.workspace = true
 bounded-command = { path = "../bounded-command" }
-tilo-xdg-paths = { path = "../xdg-paths" }
+postcard = { workspace = true, features = ["alloc"] }
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-paths.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+wire-frame = { path = "../wire-frame", features = ["postcard"] }
+zeroize.workspace = true
 fcast-sender-sdk.workspace = true
 mdns-sd.workspace = true
 getrandom.workspace = true
@@ -21,6 +27,17 @@ zbus = { workspace = true, features = ["tokio", "p2p"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+prost = "0.14.4"
+google-cast-protocol = "0.1.0"
+webpki = { package = "rustls-webpki", version = "0.103.15", default-features = false, features = ["ring", "std"] }
+x509-parser = "0.18.1"
+sha2.workspace = true
+rand_core.workspace = true
+rsa = { version = "=0.10.0-rc.18", features = ["encoding", "sha2"] }
+
+rcgen.workspace = true
+tokio-rustls = { workspace = true }
+rustls-pki-types = "1.14"
 futures-util.workspace = true
 tilo-callstream = { path = "../../collab/tilo-callstream" }
 tilo-test-env = { path = "../../dev/test-env" }
@@ -31,3 +48,6 @@ path = "src/main.rs"
 
 [lints]
 workspace = true
+
+[dev-dependencies.time]
+version = "0.3"

@@ -11,18 +11,13 @@
 //! by-eye inspection.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use crate::support::offscreen::OffscreenRenderer;
 use std::collections::HashMap;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
+use tilo_ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
@@ -32,13 +27,6 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::{
     AppKind, TabDescriptor, TaffyTreeExt, TileContent, Widget, WindowGroup, WindowWidth,
 };
-
-fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        OffscreenRenderer::new(w, h)
-    }))
-    .ok()
-}
 
 fn make_window_group() -> WindowGroup {
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![
@@ -116,10 +104,7 @@ fn render_group_themed(
     // the canvas, and the "maximized" frame proves nothing about them.
     let root = taffy.parent_node(
         Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
+            size: Size::from_lengths(w as f32, h as f32),
             ..Style::default()
         },
         &[node],
@@ -148,7 +133,7 @@ fn render_group_themed(
 
     // The theme's own app background, so the card edge and the maximized
     // chips are judged against the ground they really sit on.
-    renderer.render(&scene, theme.bg_app)
+    renderer.render(&scene, theme.tokens.colors.surfaces.content)
 }
 
 /// Cheap 64-bit FNV-1a over the full RGBA buffer — not a golden-image
@@ -173,10 +158,6 @@ fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
     eprintln!("wrote {} to {}", name, path.display());
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
-)]
 #[test]
 fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes() {
     // Case `window_group_visual_journey_distinguishes_all_states`.
@@ -185,7 +166,7 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
     // change silently stopped affecting output.
     {
         let (w, h) = (620u32, 200u32);
-        let mut renderer = try_new_renderer(w, h)
+        let mut renderer = OffscreenRenderer::try_new(w, h)
             .expect("the window-group journey needs a wgpu adapter to observe its subject");
 
         let mut group = make_window_group();
@@ -235,14 +216,13 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
 
     // Case `window_group_visual_journey_distinguishes_all_states_in_light`.
     // The same journey on the **light** preset. The maximized chrome's chips
-    // are the one live consumer of `surface::chip_colors` / `surface::pill`,
-    // whose quiet edge is now derived from the chip fill; a light-theme frame
+    // are quiet pills whose edge is derived from the chip fill; a light-theme frame
     // is where a declared or literal-white edge used to vanish, so the four
     // states must stay distinct there too. Writes `window_group_<state>_light.png`
     // under `TILO_UI_SCREENSHOT_DIR` for by-eye inspection beside the dark set.
     {
         let (w, h) = (620u32, 200u32);
-        let mut renderer = try_new_renderer(w, h)
+        let mut renderer = OffscreenRenderer::try_new(w, h)
             .expect("the light window-group journey needs a wgpu adapter to observe its subject");
         let theme = Theme::light();
 
@@ -294,7 +274,7 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
     {
         fn window_group_fresh_render_is_deterministic() {
             let (w, h) = (400u32, 120u32);
-            let Some(mut renderer) = try_new_renderer(w, h) else {
+            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
                 eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
                 return;
             };

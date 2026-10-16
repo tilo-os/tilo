@@ -111,6 +111,7 @@ fn run() -> Result<(), String> {
 
     let mut entry = RegistryEntry {
         package_id: package_id.clone(),
+        kind: registry_types::EntryKind::App,
         name: name.clone().into(),
         description: format!("{name}, served by the local test registry").into(),
         tagline: "Native Tilo OS app".into(),
@@ -127,17 +128,20 @@ fn run() -> Result<(), String> {
             // What the package says it is, not a number chosen here —
             // the entry and the manifest have to agree.
             version,
-            tapp_url: format!("{base_url}/app.tapp"),
-            tapp_root_hash_hex: tapp_root,
-            tapp_size_bytes: advertised_len as u64,
             released_at_unix: 1,
-            tapp_blake3_hex: blake3::hash(&tapp).to_hex().to_string(),
-            target: registry_types::RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: "x86_64".into(),
-                isa: "x86_64-v3".into(),
-                runtime: None,
-            },
+            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                tapp_url: format!("{base_url}/app.tapp"),
+                tapp_root_hash_hex: tapp_root,
+                tapp_size_bytes: advertised_len as u64,
+                tapp_blake3_hex: blake3::hash(&tapp).to_hex().to_string(),
+                target: registry_types::RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                    interfaces: Vec::new(),
+                },
+            }),
         }],
         updated_at_unix: 2,
         signature_hex: String::new(),
@@ -159,6 +163,7 @@ fn run() -> Result<(), String> {
         entries: vec![entry],
         owner_signature_hex: String::new(),
         channel_authorization: None,
+        bots_signature_hex: String::new(),
     };
     sign_snapshot(&mut snapshot, &owner).map_err(|e| format!("sign snapshot: {e}"))?;
     let entries_json =

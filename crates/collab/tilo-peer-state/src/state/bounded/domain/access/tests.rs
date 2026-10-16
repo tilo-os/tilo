@@ -3,32 +3,18 @@ use crate::BoundedStatePeer;
 use crate::PeerLimits;
 use crate::StatePeer;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
-use collab_types::caps::{
-    Actor, CapDecision, CapOverride, Principal, ResourceRef, Scope, Subject, Verb,
-    decide_capability,
-};
-use collab_types::{ArtifactKind, Ed25519PublicKey};
+use collab_types::Role;
+use tilo_action_policy::{ActionKind, TreePath};
 use tilo_user_identity::RevocationList;
-use web_time::Duration;
-fn fixture(verb: Verb) -> (StatePeer, [u8; 32], SystemTime) {
+fn fixture(role: Role) -> (StatePeer, [u8; 32], SystemTime) {
     let (mut peer, _, _, cert, now) = crate::admission_tests::seeded();
     let room = peer.core.room_doc.as_mut().unwrap();
     room.put(ROOT, "owner", "different owner").unwrap();
-    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
-    let existing: Vec<_> = room.keys(&caps).collect();
-    for key in existing {
-        room.delete(&caps, key).unwrap();
-    }
-    let cap = CapOverride::grant(
-        Subject::User(Ed25519PublicKey::from_bytes(cert.user_public_key)),
-        Scope::Workspace,
-        verb,
-    )
-    .with_expiry(crate::state::now_secs(now).checked_add(1).unwrap());
+    let members = room.get(ROOT, "members").unwrap().unwrap().1;
     room.put(
-        &caps,
-        "member",
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&cap).unwrap()),
+        &members,
+        hex::encode(cert.user_public_key),
+        automerge::ScalarValue::Bytes(serde_json::to_vec(&role).unwrap()),
     )
     .unwrap();
     room.commit();
@@ -41,60 +27,35 @@ fn old_document(
     record: &str,
     now: SystemTime,
 ) -> Result<(), String> {
-    let (role, caps, person) = peer.permissions(device, now)?;
-    let actor = Actor::person(Some(role), &person)
-        .with_principal(Principal::App(app.into()))
-        .in_room(peer.room().to_owned());
-    let resource = ResourceRef::Artifact {
-        app: Some(app.into()),
-        kind: ArtifactKind::Note,
-        instance: collab_types::document_artifact_id(app, peer.room(), record),
-    };
-    if decide_capability(
-        &actor,
-        &resource,
-        Verb::Read,
-        &caps,
-        Some(crate::state::now_secs(now)),
-    ) != CapDecision::Allow
-    {
+    let member = peer.permissions(device, now)?;
+    if !member.allows(
+        &collab_types::document_node(peer.room(), app, record),
+        ActionKind::Read,
+        now,
+    ) {
         return Err(format!("record read forbidden: {app}/{record}"));
     }
     Ok(())
 }
 fn old_room(peer: &StatePeer, device: [u8; 32], now: SystemTime) -> (bool, bool) {
-    let (role, caps, person) = peer.permissions(device, now).unwrap();
-    let actor = Actor::person(Some(role), person).in_room(peer.room().to_owned());
-    let resource = ResourceRef::Room(peer.room().to_owned());
+    let member = peer.permissions(device, now).unwrap();
+    let room = TreePath::room(peer.room());
     (
-        decide_capability(
-            &actor,
-            &resource,
-            Verb::Read,
-            &caps,
-            Some(crate::state::now_secs(now)),
-        ) == CapDecision::Allow,
-        decide_capability(
-            &actor,
-            &resource,
-            Verb::Write,
-            &caps,
-            Some(crate::state::now_secs(now)),
-        ) == CapDecision::Allow,
+        member.allows(&room, ActionKind::Read, now),
+        member.allows(&room, ActionKind::Undoable, now),
     )
 }
 #[test]
 fn native_current_access_matches_actual_legacy_room_and_record_decisions() {
-    for verb in [
-        Verb::Read,
-        Verb::Write,
-        Verb::Comment,
-        Verb::Invite,
-        Verb::Admin,
+    for (role, expected_room) in [
+        (Role::Viewer, (true, false)),
+        (Role::Commenter, (true, false)),
+        (Role::Editor, (true, true)),
     ] {
-        let (peer, device, now) = fixture(verb);
+        let (mut peer, device, now) = fixture(role);
         let bytes = peer.durable().unwrap();
         let expected = old_room(&peer, device, now);
+        assert_eq!(expected, expected_room, "{role:?}");
         let restored = BoundedStatePeer::restore(
             &bytes,
             peer.room(),
@@ -123,18 +84,34 @@ fn native_current_access_matches_actual_legacy_room_and_record_decisions() {
                 old_document(&peer, device, app, record, now).is_ok()
             );
         }
-        let later = now + Duration::from_secs(2);
-        assert!(peer.permissions(device, later).is_err());
-        assert!(read.room_access(device, later).is_err());
+        // Removing the member closes both paths.
+        let person = hex::encode(peer.core.certificates.get(&device).unwrap().user_public_key);
+        let room = peer.core.room_doc.as_mut().unwrap();
+        let members = room.get(ROOT, "members").unwrap().unwrap().1;
+        room.delete(&members, person.as_str()).unwrap();
+        room.commit();
+        assert!(peer.permissions(device, now).is_err());
+        let restored = BoundedStatePeer::restore(
+            &peer.durable().unwrap(),
+            peer.room(),
+            peer.authority(),
+            &[],
+            &RevocationList::new(),
+            now,
+            &PeerLimits::default(),
+        )
+        .unwrap();
+        let read = restored.read();
+        assert!(read.room_access(device, now).is_err());
         assert!(
-            read.document_read_allowed(device, "test.app", "tab:1", later)
+            read.document_read_allowed(device, "test.app", "tab:1", now)
                 .is_err()
         );
     }
 }
 #[test]
 fn access_evaluates_long_routes_and_refuses_unknown_devices() {
-    let (peer, device, now) = fixture(Verb::Write);
+    let (peer, device, now) = fixture(Role::Editor);
     let bytes = peer.durable().unwrap();
     let restored = BoundedStatePeer::restore(
         &bytes,

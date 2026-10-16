@@ -20,6 +20,7 @@ pub(crate) struct HostCommandsKey {
     framework_history_open: bool,
     palette: bool,
     focus: Option<taffy::NodeId>,
+    local_history: Option<(bool, bool, bool)>,
     resources: (u64, u64),
     /// Recent changes show relative times, which age by the minute.
     minute: u64,
@@ -44,7 +45,49 @@ impl App {
         &mut self,
         address: &tilo_actions::ActionAddress,
     ) -> Option<tilo_actions::Resource> {
-        (address.resource == EDIT_RESOURCE).then(|| edit_resource(&self.focused_undo_status()))
+        (address.resource == EDIT_RESOURCE).then(|| self.focused_edit_resource())
+    }
+
+    fn focused_edit_resource(&mut self) -> tilo_actions::Resource {
+        let mut resource = edit_resource(&self.focused_undo_status());
+        if crate::undo::local_undo_is_deferred(self.root_widget.as_ref()) {
+            for action in &mut resource.actions {
+                action.contract.execution =
+                    tilo_actions::ExecutionMode::Background { cancellable: false };
+                action.contract.result = tilo_actions::ResultSpec::Job;
+                action
+                    .contract
+                    .tags
+                    .push(tilo_actions::LOCAL_DEVICE_ONLY.into());
+                action.description = Some(crate::i18n::I18nManager::lookup_plain(
+                    "host-native-page-history-scope",
+                ));
+            }
+        }
+        if matches!(
+            crate::undo::local_undo_status(self.root_widget.as_ref()),
+            Some(crate::undo::LocalUndoStatus::Pending)
+        ) {
+            for action in &mut resource.actions {
+                action.contract.availability = tilo_actions::Availability::Unavailable {
+                    code: "native_history_unobserved".into(),
+                    reason: crate::i18n::I18nManager::lookup_plain(
+                        "host-native-history-unobserved",
+                    ),
+                };
+            }
+        }
+        resource
+    }
+
+    pub(super) fn refresh_local_undo_discovery(&mut self) -> bool {
+        let status = crate::undo::local_undo_status(self.root_widget.as_ref()).map(|s| s.key());
+        if status == self.actions.local_history_status {
+            return false;
+        }
+        self.actions.local_history_status = status;
+        self.invalidate_widget_resource_cache();
+        true
     }
 
     /// Undo or redo for the local author, offered first to a focused
@@ -64,6 +107,23 @@ impl App {
             .focused_node
             .and_then(|node| self.bindings.binding_for(node))
             .or_else(|| self.root_widget.callback_binding());
+        if self.collaboration.manager.is_connected()
+            && let Some(binding) = &binding
+        {
+            match binding.history_uses_compensation(&mut self.state.doc) {
+                Ok(true) => {
+                    if let Err(error) = self.invoke_bound_history(binding, request) {
+                        tracing::warn!(%error, "document history admission refused");
+                    }
+                    return;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(?error, "document history owner unavailable");
+                    return;
+                }
+            }
+        }
         let owned_target = binding.is_some()
             || self
                 .focused_node
@@ -89,10 +149,12 @@ impl App {
             let author = Some(&self.collaboration.local_author);
             match request {
                 crate::undo::UndoRequest::Undo => {
-                    self.state.undo_as(author, current_focus_idx, current_meta)
+                    self.state
+                        .undo_as(author, current_focus_idx, current_meta, None)
                 }
                 crate::undo::UndoRequest::Redo => {
-                    self.state.redo_as(author, current_focus_idx, current_meta)
+                    self.state
+                        .redo_as(author, current_focus_idx, current_meta, None)
                 }
             }
         };
@@ -109,6 +171,12 @@ impl App {
     /// What Undo would do for the target the keyboard would undo in. Reads a
     /// snapshot, so a pending edit keeps its undo step open.
     fn focused_undo_status(&mut self) -> crate::undo::UndoStatus {
+        if let Some(local) = crate::undo::local_undo_status(self.root_widget.as_ref()) {
+            return match local {
+                crate::undo::LocalUndoStatus::Ready(status) => status,
+                crate::undo::LocalUndoStatus::Pending => Default::default(),
+            };
+        }
         let focused = self.focused_node;
         if let Some(binding) = focused
             .and_then(|node| self.bindings.binding_for(node))
@@ -132,12 +200,12 @@ impl App {
     /// The commands the host chrome presents. Recent changes are read from
     /// the document history, so only a History menu asks for them.
     pub(crate) fn host_commands(&mut self, with_recent_changes: bool) -> Vec<HostCommand> {
-        let mut resources = vec![edit_resource(&self.focused_undo_status())];
+        let mut resources = vec![self.focused_edit_resource()];
         resources.extend(self.history_local_resources());
         if self.palette_presented()
-            && let Some(search) = resources.iter_mut().find(|resource| {
-                resource.id.as_str() == crate::standalone_history_host::SEARCH_RESOURCE
-            })
+            && let Some(search) = resources
+                .iter_mut()
+                .find(|resource| resource.id.as_str() == crate::search::request::SEARCH_RESOURCE)
         {
             // The open palette answers its own shortcut by closing.
             for action in &mut search.actions {
@@ -172,13 +240,13 @@ impl App {
                 .is_some_and(|history| history.is_open()),
             palette: self.palette_presented(),
             focus: self.focused_node,
+            local_history: crate::undo::local_undo_status(self.root_widget.as_ref())
+                .map(|s| s.key()),
             resources: (
                 self.actions.resource_generation.get(),
                 self.actions.permission_generation.get(),
             ),
-            minute: crate::time::wall()
-                .duration_since(crate::time::UNIX_EPOCH)
-                .map_or(0, |elapsed| elapsed.as_secs() / 60),
+            minute: crate::time::unix_now() / 60,
         }
     }
 
@@ -246,7 +314,7 @@ impl App {
         StandaloneHistory::open(
             target,
             &context,
-            crate::history_source::AuthorDirectory::new(),
+            crate::history_source::AuthorDirectory::with_room_agents(),
         )
         .map(|history| history.rows().to_vec())
         .unwrap_or_default()

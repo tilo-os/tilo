@@ -6,27 +6,29 @@
 //! background. Neither starts at session construction — the first palette
 //! query (or an explicit [`FilesProvider::rescan`]) opens the index and
 //! kicks the walk, so `OverlayHost` boot does not pay for file search.
-//! After that first walk an inotify watch keeps the name index current so a
-//! file written into `~/Documents` is findable without a manual rescan.
+//! After that first walk an inotify watch keeps the name index current, one
+//! record per changed path, so a file written into `~/Documents` is findable
+//! without a manual rescan and without re-indexing every other name.
 //! Enter routes a hit through [`crate::shell::doc_open`], which resolves the
 //! extension to the installed package that opens it.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock, RwLockReadGuard};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
-use crate::shell::chrome_state::{Chrome, ChromeState};
+use crate::shell::chrome_state::Chrome;
+use crate::shell::search::action_api::ActionError;
 use crate::shell::search::{
     ResourceKind, SearchBudget, SearchContext, SearchCursor, SearchPage, SearchProvider,
     SearchResult,
 };
-use tilo_search::{Document, FieldWeight, MatchTier, Matching, Page, SearchIndex, Signals};
+use tilo_search::{Document, FieldWeight, MatchTier, Matching, SearchIndex, Signals};
 
 /// Skip these paths anywhere in the tree — they explode the index without
 /// adding user-visible files. A pattern with a `/` matches that many
@@ -81,53 +83,52 @@ const WATCH_DEBOUNCE: Duration = Duration::from_millis(150);
 /// rescan is stale rather than read against a different corpus.
 static NEXT_NAME_INDEX_GENERATION: AtomicU64 = AtomicU64::new(1);
 
+/// A watched batch of at least this many paths that is also one in
+/// [`BULK_CHANGE_FRACTION`] of the index is rebuilt beside the published
+/// index and swapped in, as a walk is. Applied in place, a batch that large
+/// would make the index rebuild anyway, holding off every query meanwhile.
+const BULK_CHANGE_MIN: usize = 256;
+const BULK_CHANGE_FRACTION: usize = 8;
+/// When a name lands where its neighbours' keys leave no room, a widening
+/// window of neighbours is renumbered until they sit at least this far apart,
+/// so the next names added there fit without renumbering again.
+const RELABEL_GAP: u64 = 1 << 20;
+
 /// The walked names, searchable. Built by the background walker and kept
-/// current by an inotify watch on well-known user folders; readers clone
-/// the outer `Arc`.
+/// current by an inotify watch on well-known user folders, which upserts and
+/// removes single records rather than rebuilding the index.
 #[derive(Default)]
 struct NameIndex {
-    /// Keyed by position in [`SearchIndex`]. Sorted shallow paths first,
-    /// then by path, so equally scored hits come in that order.
-    entries: Vec<NameEntry>,
+    /// Sorted by [`name_order`]: shallow paths first, then by path. Each
+    /// entry's key in [`SearchIndex`] ascends with its position, because the
+    /// index orders equally scored hits by key. Keys are spread over the
+    /// whole `u64` range, so a name added later takes a key between its
+    /// neighbours' and nothing else is re-indexed.
+    entries: Vec<(u64, NameEntry)>,
     index: SearchIndex,
     generation: u64,
 }
 
 impl NameIndex {
     fn from_entries(mut entries: Vec<NameEntry>, generation: u64) -> Self {
-        entries.sort_by(|a, b| {
-            path_depth(&a.facts.lower)
-                .cmp(&path_depth(&b.facts.lower))
-                .then_with(|| a.facts.lower.cmp(&b.facts.lower))
-        });
+        #[cfg(test)]
+        tests::NAME_INDEX_BUILDS.with(|count| count.set(count.get().saturating_add(1)));
+        entries.sort_by(name_order);
+        let step = key_step(u64::MAX, entries.len());
+        let entries: Vec<(u64, NameEntry)> = (1u64..)
+            .map(|at| at.saturating_mul(step))
+            .zip(entries)
+            .collect();
         let mut index = SearchIndex::new(Matching {
             spanning: false,
             typos: true,
         })
         .with_ranks(name_rank);
-        index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
-            let facts = &entry.facts;
-            let parents = facts.lower.rsplit_once('/').map_or("", |(head, _)| head);
-            parents
-                .split('/')
-                .fold(
-                    Document::new(at as u64)
-                        .field(facts.leaf.as_ref(), LEAF)
-                        .field(
-                            facts
-                                .leaf
-                                .get(..usize::from(facts.stem_len))
-                                .unwrap_or_default(),
-                            STEM,
-                        )
-                        .field(facts.lower.as_str(), PATH),
-                    |document, component| document.field(component, PARENT),
-                )
-                .signals(
-                    facts.recency.saturating_sub(facts.penalty),
-                    u32::from(facts.stem_len),
-                )
-        }));
+        index.replace_all(
+            entries
+                .iter()
+                .map(|(key, entry)| name_document(*key, entry)),
+        );
         if let Err(error) = index.commit() {
             tracing::error!(%error, "could not index home directory names");
         }
@@ -136,6 +137,256 @@ impl NameIndex {
             index,
             generation,
         }
+    }
+
+    fn entries(&self) -> impl Iterator<Item = &NameEntry> {
+        self.entries.iter().map(|(_, entry)| entry)
+    }
+
+    /// The entry indexed under `key`.
+    fn entry(&self, key: u64) -> Option<&NameEntry> {
+        let at = self
+            .entries
+            .binary_search_by_key(&key, |(key, _)| *key)
+            .ok()?;
+        self.entries.get(at).map(|(_, entry)| entry)
+    }
+
+    /// Fold watched paths in place: each added, changed or removed name is
+    /// one upsert or removal, then one incremental commit. Returns whether
+    /// anything changed, and so whether a new generation was published.
+    fn apply(&mut self, observed: &[Observed]) -> bool {
+        let mut changes = Changes::default();
+        for change in observed {
+            fold_change(&mut self.entries, change, &mut changes);
+        }
+        if changes.stale.is_empty() && changes.touched.is_empty() {
+            return false;
+        }
+        for key in changes.stale {
+            // A key that renumbering handed to another entry is overwritten
+            // by that entry's upsert below instead.
+            if self.entry(key).is_none() {
+                self.index.remove(key);
+            }
+        }
+        changes.touched.sort_unstable();
+        changes.touched.dedup();
+        for (lower, path) in &changes.touched {
+            let Ok(at) = position(&self.entries, lower, path) else {
+                continue;
+            };
+            if let Some((key, entry)) = self.entries.get(at) {
+                self.index.upsert(name_document(*key, entry));
+            }
+        }
+        if let Err(error) = self.index.commit() {
+            tracing::error!(%error, "could not index changed home directory names");
+        }
+        self.generation = NEXT_NAME_INDEX_GENERATION.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        tests::NAME_INDEX_UPDATES.with(|count| count.set(count.get().saturating_add(1)));
+        true
+    }
+}
+
+/// The record a name is found by: the leaf, its stem, the whole path and
+/// each parent directory, with recency less penalties as its boost.
+fn name_document(key: u64, entry: &NameEntry) -> Document {
+    let facts = &entry.facts;
+    let parents = facts.lower.rsplit_once('/').map_or("", |(head, _)| head);
+    parents
+        .split('/')
+        .fold(
+            Document::new(key)
+                .field(facts.leaf.as_ref(), LEAF)
+                .field(
+                    facts
+                        .leaf
+                        .get(..usize::from(facts.stem_len))
+                        .unwrap_or_default(),
+                    STEM,
+                )
+                .field(facts.lower.as_str(), PATH),
+            |document, component| document.field(component, PARENT),
+        )
+        .signals(
+            facts.recency.saturating_sub(facts.penalty),
+            u32::from(facts.stem_len),
+        )
+}
+
+/// Where a name sorts: by depth, then by lowercased display path, then by
+/// the path itself, so two names differing only in case keep one order.
+fn order_key(entry: &NameEntry) -> (usize, &str, &Path) {
+    (
+        path_depth(&entry.facts.lower),
+        entry.facts.lower.as_str(),
+        entry.path.as_path(),
+    )
+}
+
+fn name_order(a: &NameEntry, b: &NameEntry) -> std::cmp::Ordering {
+    order_key(a).cmp(&order_key(b))
+}
+
+/// The position of the name with this lowercased display path and path, or
+/// the position it would be inserted at.
+fn position(entries: &[(u64, NameEntry)], lower: &str, path: &Path) -> Result<usize, usize> {
+    let probe = (path_depth(lower), lower, path);
+    entries.binary_search_by(|(_, entry)| order_key(entry).cmp(&probe))
+}
+
+/// What a watched path is now.
+enum Observed {
+    Present(NameEntry),
+    /// Gone, with the lowercased display path that locates its subtree.
+    Gone {
+        path: PathBuf,
+        lower: String,
+    },
+}
+
+/// What one watched batch did to the records. Applied after the whole
+/// batch, so a key renumbering handed to another entry is never removed.
+#[derive(Default)]
+struct Changes {
+    /// Keys a record may still be indexed under whose entry left or was
+    /// renumbered.
+    stale: Vec<u64>,
+    /// Entries to (re)index, by lowercased display path and path.
+    touched: Vec<(String, PathBuf)>,
+}
+
+impl Changes {
+    fn touch(&mut self, entry: &NameEntry) {
+        self.touched
+            .push((entry.facts.lower.clone(), entry.path.clone()));
+    }
+}
+
+fn same_record(a: &NameEntry, b: &NameEntry) -> bool {
+    a.display == b.display && a.facts == b.facts && a.is_dir == b.is_dir
+}
+
+fn fold_change(entries: &mut Vec<(u64, NameEntry)>, change: &Observed, changes: &mut Changes) {
+    match change {
+        Observed::Gone { path, lower } => {
+            let gone = subtree(entries, lower, path);
+            if gone.len() <= 32 {
+                for at in gone.into_iter().rev() {
+                    let (key, _) = entries.remove(at);
+                    changes.stale.push(key);
+                }
+            } else {
+                let mut at = 0usize;
+                let mut next = gone.into_iter().peekable();
+                entries.retain(|(key, _)| {
+                    let leaves = next.next_if_eq(&at).is_some();
+                    if leaves {
+                        changes.stale.push(*key);
+                    }
+                    at = at.saturating_add(1);
+                    !leaves
+                });
+            }
+        }
+        Observed::Present(fresh) => match position(entries, &fresh.facts.lower, &fresh.path) {
+            Ok(at) => {
+                // Content and mtime changes within a recency band leave the
+                // searchable names, rows and ranking unchanged.
+                if let Some((_, existing)) = entries.get_mut(at)
+                    && !same_record(existing, fresh)
+                {
+                    existing.clone_from(fresh);
+                    changes.touch(fresh);
+                }
+            }
+            Err(at) => insert_keyed(entries, at, fresh.clone(), changes),
+        },
+    }
+}
+
+/// Positions of `path` and of every entry under it, ascending. At each depth
+/// below its own, its descendants share its lowercased prefix and so sit
+/// together in name order: a few binary searches, not a scan.
+fn subtree(entries: &[(u64, NameEntry)], lower: &str, path: &Path) -> Vec<usize> {
+    let mut found = Vec::new();
+    if let Ok(at) = position(entries, lower, path) {
+        found.push(at);
+    }
+    let deepest = entries
+        .last()
+        .map_or(0, |(_, entry)| path_depth(&entry.facts.lower));
+    let prefix = format!("{lower}/");
+    for depth in path_depth(lower).saturating_add(1)..=deepest {
+        let start = entries.partition_point(|(_, entry)| {
+            (path_depth(&entry.facts.lower), entry.facts.lower.as_str()) < (depth, prefix.as_str())
+        });
+        let run = entries.get(start..).unwrap_or_default();
+        for (offset, (_, entry)) in run.iter().enumerate() {
+            if path_depth(&entry.facts.lower) != depth || !entry.facts.lower.starts_with(&prefix) {
+                break;
+            }
+            if entry.path.starts_with(path) {
+                found.push(start.saturating_add(offset));
+            }
+        }
+    }
+    found.sort_unstable();
+    found
+}
+
+/// The spacing that puts `count` keys evenly strictly inside `span`.
+fn key_step(span: u64, count: usize) -> u64 {
+    let slots = u64::try_from(count).map_or(u64::MAX, |count| count.saturating_add(1));
+    span.checked_div(slots).unwrap_or_default()
+}
+
+/// Insert `entry` at `at` with a key strictly between its neighbours'. When
+/// they leave no room, renumber a window around it, doubling until its keys
+/// can sit [`RELABEL_GAP`] apart; each renumbered neighbour is re-indexed.
+fn insert_keyed(
+    entries: &mut Vec<(u64, NameEntry)>,
+    at: usize,
+    entry: NameEntry,
+    changes: &mut Changes,
+) {
+    changes.touch(&entry);
+    entries.insert(at, (0, entry));
+    let mut start = at;
+    let mut end = at.saturating_add(1);
+    let mut wanted = 1;
+    loop {
+        let low = start
+            .checked_sub(1)
+            .and_then(|before| entries.get(before))
+            .map_or(0, |(key, _)| *key);
+        let high = entries.get(end).map_or(u64::MAX, |(key, _)| *key);
+        let count = end.saturating_sub(start);
+        let step = key_step(high.saturating_sub(low), count);
+        // The whole index always fits: 2^64 keys for at most MAX_ENTRIES
+        // walked names and what the watch adds.
+        if step >= wanted || (start == 0 && end >= entries.len()) {
+            let mut key = low;
+            let window = entries.get_mut(start..end).unwrap_or_default();
+            for (offset, (slot, renumbered)) in window.iter_mut().enumerate() {
+                key = key.saturating_add(step.max(1));
+                if start.saturating_add(offset) != at && *slot != key {
+                    changes.stale.push(*slot);
+                    changes.touch(renumbered);
+                }
+                *slot = key;
+            }
+            #[cfg(test)]
+            if count > 1 {
+                tests::NAME_INDEX_RENUMBERS.with(|n| n.set(n.get().saturating_add(1)));
+            }
+            return;
+        }
+        wanted = RELABEL_GAP;
+        start = start.saturating_sub(count);
+        end = end.saturating_add(count).min(entries.len());
     }
 }
 
@@ -149,9 +400,10 @@ struct NameEntry {
 
 pub struct FilesProvider {
     home: PathBuf,
-    /// A tiny publication lock protects only swapping/cloning the immutable
-    /// index `Arc`; no query holds it while searching.
-    name_index: Arc<Mutex<Arc<NameIndex>>>,
+    /// Queries read under the shared lock. A watched change holds the write
+    /// lock only for its upserts and incremental commit (milliseconds); a
+    /// walk or a bulk change builds its index beside this one and swaps it in.
+    name_index: Arc<RwLock<NameIndex>>,
     /// Opened on first [`Self::ensure_ready`]. `None` means open failed.
     tantivy: OnceLock<Option<crate::shell::search::files_index::FilesIndex>>,
     /// Set once the home walk has been kicked and the content index opened.
@@ -161,15 +413,59 @@ pub struct FilesProvider {
     watch: OnceLock<RecommendedWatcher>,
 }
 
+/// Home the files search walks.
+///
+/// A scratch or headless session points the XDG dirs at its profile and used
+/// to leave `$HOME` as the login home, so the walker indexed the operator's
+/// real files. When `XDG_CONFIG_HOME` is set and does not live under `$HOME`,
+/// walk the profile's `home` (or the profile root if that directory does not
+/// exist). A control-socket or identity-root process that still has the login
+/// layout, and is not a Tilo desktop, gets a directory under the session cache
+/// instead. A desktop session (`XDG_SESSION_DESKTOP=tilo`, including a dev VM
+/// slot driven through `TILO_TEST_CONTROL`) indexes `$HOME`: that is where
+/// `~/Documents` is written.
+fn indexable_home() -> PathBuf {
+    let home = tilo_paths::home().unwrap_or_else(|| PathBuf::from("/tmp"));
+    if let Some(config) = tilo_paths::config_dir()
+        && !config.starts_with(&home)
+    {
+        let profile = config.parent().unwrap_or(config.as_path());
+        let profile_home = profile.join("home");
+        return if profile_home.is_dir() {
+            profile_home
+        } else {
+            profile.to_path_buf()
+        };
+    }
+    if !is_tilo_desktop_session()
+        && (std::env::var_os("TILO_TEST_CONTROL").is_some()
+            || std::env::var_os("TILO_IDENTITY_ROOT").is_some())
+    {
+        let scratch = tilo_paths::cache_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("tilo-headless-home");
+        let _ = std::fs::create_dir_all(&scratch);
+        return scratch;
+    }
+    home
+}
+
+/// Greetd's `tilo-session` and a dev VM slot both export this. The slot also
+/// sets `TILO_TEST_CONTROL` so a harness can drive it; that socket must not
+/// send file search to a scratch directory.
+fn is_tilo_desktop_session() -> bool {
+    std::env::var_os("XDG_SESSION_DESKTOP").as_deref() == Some(std::ffi::OsStr::new("tilo"))
+}
+
 impl FilesProvider {
     pub fn new() -> Self {
-        Self::with_home(xdg_paths::home().unwrap_or_else(|| PathBuf::from("/tmp")))
+        Self::with_home(indexable_home())
     }
 
     fn with_home(home: PathBuf) -> Self {
         Self {
             home,
-            name_index: Arc::new(Mutex::new(Arc::new(NameIndex::default()))),
+            name_index: Arc::new(RwLock::new(NameIndex::default())),
             tantivy: OnceLock::new(),
             ready: OnceLock::new(),
             watch: OnceLock::new(),
@@ -192,11 +488,15 @@ impl FilesProvider {
     /// Kick the home walk and the inotify watch. Safe to call once; a
     /// second call walks again but does not arm another watcher.
     fn start_name_index(&self) {
+        let wake = crate::shell::search::invocation_wake::waker();
         let name_index = Arc::clone(&self.name_index);
         let home = self.home.clone();
         thread::Builder::new()
             .name("tilo-search-files-walk".into())
-            .spawn(move || walk_home(&home, &name_index))
+            .spawn(move || {
+                walk_home(&home, &name_index);
+                wake.wake();
+            })
             .ok();
         start_name_watch(&self.home, &self.name_index, &self.watch);
     }
@@ -214,8 +514,8 @@ impl FilesProvider {
             .ok();
     }
 
-    fn published(&self) -> Option<Arc<NameIndex>> {
-        self.name_index.lock().ok().map(|index| Arc::clone(&index))
+    fn published(&self) -> Option<RwLockReadGuard<'_, NameIndex>> {
+        self.name_index.read().ok()
     }
 
     /// Content hits, appended to `out` and deduped against
@@ -270,75 +570,28 @@ impl FilesProvider {
         };
         let revision = index.generation.to_string();
         let needle = ctx.needle.to_lowercase();
-        let offset = match cursor {
-            Some(cursor) if cursor.revision != revision => return SearchPage::stale(revision),
-            Some(cursor) => match cursor.token.split_once('\u{1f}') {
-                Some((cursor_needle, offset)) if cursor_needle == needle => match offset.parse() {
-                    Ok(offset) => offset,
-                    Err(_) => return SearchPage::stale(revision),
-                },
-                _ => return SearchPage::stale(revision),
-            },
-            None => 0,
-        };
         let needle_len = needle.len();
-        let found = index.index.search_scored(
+        crate::shell::search::index_page(
+            revision,
+            cursor,
             &needle,
-            Page {
-                offset,
-                limit: budget.max_work,
+            budget,
+            |page| {
+                index.index.search_scored(
+                    &needle,
+                    tilo_search::Page {
+                        limit: budget.max_work,
+                        ..page
+                    },
+                    move |signals| name_score(needle_len, signals),
+                )
             },
-            move |signals| name_score(needle_len, signals),
-        );
-        let mut bytes = 0usize;
-        let mut results = Vec::new();
-        let mut consumed = 0usize;
-        let mut stopped_for_budget = false;
-        for hit in &found.hits {
-            let Some(entry) = usize::try_from(hit.key)
-                .ok()
-                .and_then(|at| index.entries.get(at))
-            else {
-                consumed = consumed.saturating_add(1);
-                continue;
-            };
-            if (entry.is_dir && !want_folder) || (!entry.is_dir && !want_file) {
-                consumed = consumed.saturating_add(1);
-                continue;
-            }
-            // Budget what the palette receives, including both labels and
-            // the opaque path id, before cloning any row into the UI.
-            let row_bytes = entry
-                .path
-                .display()
-                .to_string()
-                .len()
-                .saturating_add(entry.display.len())
-                .saturating_add(file_title(&entry.path).len())
-                .saturating_add(96);
-            if results.len() >= budget.max_results
-                || bytes.saturating_add(row_bytes) > budget.max_bytes
-            {
-                stopped_for_budget = true;
-                break;
-            }
-            bytes = bytes.saturating_add(row_bytes);
-            consumed = consumed.saturating_add(1);
-            results.push(make_result(entry, hit.score, None));
-        }
-        let exhausted = !stopped_for_budget && !found.more;
-        let next = offset.saturating_add(consumed);
-        SearchPage {
-            revision: revision.clone(),
-            results,
-            next_cursor: (!exhausted).then(|| SearchCursor {
-                revision,
-                token: format!("{needle}\u{1f}{next}"),
-            }),
-            exhausted,
-            stale_cursor: false,
-            budget_exhausted: !exhausted,
-        }
+            |hit| {
+                let entry = index.entry(hit.key)?;
+                let wanted = if entry.is_dir { want_folder } else { want_file };
+                wanted.then(|| make_result(entry, hit.score, None))
+            },
+        )
     }
 }
 
@@ -377,6 +630,18 @@ impl SearchProvider for FilesProvider {
             },
         )
         .results
+    }
+
+    fn query_incomplete_reason(
+        &self,
+        _ctx: &SearchContext<'_>,
+    ) -> Option<crate::shell::search::QueryIncompleteReason> {
+        // Generation zero is the placeholder before the first walk publishes.
+        // It establishes neither an empty home nor a finished query source.
+        self.published()
+            .as_ref()
+            .is_none_or(|index| index.generation == 0)
+            .then_some(crate::shell::search::QueryIncompleteReason::Unavailable)
     }
 
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
@@ -423,9 +688,48 @@ impl SearchProvider for FilesProvider {
         page
     }
 
-    fn owns_tab(&self, _tab_id: u64, _chrome: &ChromeState) -> bool {
-        // Files isn't a tab-owning provider yet; the file explorer app owns tabs.
-        false
+    /// A file's address is its absolute path, so any file or folder under
+    /// the indexed home opens by its path — whether or not a search found it
+    /// first, and whether or not the background walk has reached it yet.
+    fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        let entry = self.entry_for_address(id)?;
+        let kind = if entry.is_dir {
+            ResourceKind::Folder
+        } else {
+            ResourceKind::File
+        };
+        ctx.wanted
+            .contains(&kind)
+            .then(|| make_result(&entry, MAX_SCORE, None))
+    }
+}
+
+impl FilesProvider {
+    /// The entry an absolute path names, if it exists under the indexed home
+    /// and is not one of the trees the walk deliberately skips. The path must
+    /// already be canonical: an address with `..` or a symlink that leaves
+    /// the home is not a file this provider offers.
+    fn entry_for_address(&self, id: &str) -> Option<NameEntry> {
+        let path = Path::new(id);
+        if !path.is_absolute() {
+            return None;
+        }
+        let canonical = std::fs::canonicalize(path).ok()?;
+        let home = std::fs::canonicalize(&self.home).ok()?;
+        if canonical.as_path() != path
+            || !canonical.starts_with(&home)
+            || should_skip(&canonical, &home)
+        {
+            return None;
+        }
+        let metadata = std::fs::metadata(&canonical).ok()?;
+        let display = display_path(&home, &canonical);
+        Some(NameEntry {
+            facts: NameFacts::new(&display, metadata.modified().ok()),
+            display,
+            is_dir: metadata.is_dir(),
+            path: canonical,
+        })
     }
 }
 
@@ -437,16 +741,14 @@ fn make_result(entry: &NameEntry, score: i32, subtitle: Option<String>) -> Searc
     };
     let path = entry.path.clone();
     let is_dir = entry.is_dir;
-    SearchResult::nullary(
+    SearchResult::view_with_output(
         kind,
         "files",
         entry.path.display().to_string(),
         file_title(&entry.path),
         subtitle.or_else(|| Some(entry.display.clone())),
         score,
-        move |_doc, _root, chrome: &Chrome| {
-            open_search_hit(&path, is_dir, chrome);
-        },
+        move |chrome: &Chrome| open_search_hit(&path, is_dir, chrome),
     )
 }
 
@@ -592,7 +894,7 @@ fn is_generated_leaf(leaf_lower: &str) -> bool {
 
 /// Everything a path's score depends on besides the needle, computed by the
 /// walker so a keystroke never `stat`s a file.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct NameFacts {
     /// The `~/…` display path, lowercased. Path-level tiers match here.
     lower: String,
@@ -735,26 +1037,42 @@ fn path_depth(display_lower: &str) -> usize {
 /// Open a palette hit via [`crate::shell::doc_open`] when an installed app
 /// claims the type; unclaimed types and directories fall back to
 /// `xdg-open`, and a claimed type with no editor is reported, not silent.
-fn open_search_hit(path: &Path, is_dir: bool, chrome: &Chrome) {
+///
+/// A failure is both shown to the person and returned, so an action caller
+/// that cannot see the notification is told the file did not open; success
+/// answers what opened it.
+fn open_search_hit(
+    path: &Path,
+    is_dir: bool,
+    chrome: &Chrome,
+) -> Result<serde_json::Value, ActionError> {
     use crate::shell::doc_open::{self, DocumentTarget};
+    let handed_off =
+        || serde_json::json!({ "opened": "handed-off", "path": path, "with": "xdg-open" });
     if is_dir {
         spawn_open(path, is_dir);
-        return;
+        return Ok(handed_off());
     }
     match doc_open::resolve(path) {
         DocumentTarget::App { .. } | DocumentTarget::HostApp { .. } => {
-            if let Err(e) = doc_open::open_in_workspace(path, chrome) {
-                notify_open_failure(path, &e.user_message(), chrome);
-            }
+            doc_open::open_in_workspace(path, chrome)
+                .map(|opened| opened.to_value(path))
+                .map_err(|e| {
+                    let message = e.user_message();
+                    notify_open_failure(path, &message, chrome);
+                    ActionError::Refused(message)
+                })
         }
         DocumentTarget::NoAppForDocument { ext } => {
-            notify_open_failure(
-                path,
-                &crate::shell::i18n::t_args("search-files-no-app", &[("ext", ext.as_str().into())]),
-                chrome,
-            );
+            let message =
+                crate::shell::i18n::t_args("search-files-no-app", &[("ext", ext.as_str().into())]);
+            notify_open_failure(path, &message, chrome);
+            Err(ActionError::Refused(message))
         }
-        DocumentTarget::Unclaimed | DocumentTarget::Directory => spawn_open(path, is_dir),
+        DocumentTarget::Unclaimed | DocumentTarget::Directory => {
+            spawn_open(path, is_dir);
+            Ok(handed_off())
+        }
     }
 }
 
@@ -778,7 +1096,7 @@ fn spawn_open(path: &Path, _is_dir: bool) {
 /// create/remove events into the published name index after the first walk.
 fn start_name_watch(
     home: &Path,
-    index: &Arc<Mutex<Arc<NameIndex>>>,
+    index: &Arc<RwLock<NameIndex>>,
     slot: &OnceLock<RecommendedWatcher>,
 ) {
     if slot.get().is_some() {
@@ -814,7 +1132,7 @@ fn arm_name_watches(watcher: &mut RecommendedWatcher, home: &Path) {
 
 fn watch_name_index(
     home: &Path,
-    index: &Arc<Mutex<Arc<NameIndex>>>,
+    index: &RwLock<NameIndex>,
     rx: &mpsc::Receiver<notify::Result<notify::Event>>,
 ) {
     let mut pending = Vec::new();
@@ -854,8 +1172,8 @@ fn watch_name_index(
     }
 }
 
-fn published_generation(index: &Arc<Mutex<Arc<NameIndex>>>) -> u64 {
-    index.lock().ok().map_or(0, |guard| guard.generation)
+fn published_generation(index: &RwLock<NameIndex>) -> u64 {
+    index.read().ok().map_or(0, |guard| guard.generation)
 }
 
 fn event_paths(event: &notify::Result<notify::Event>) -> Vec<PathBuf> {
@@ -866,72 +1184,125 @@ fn event_paths(event: &notify::Result<notify::Event>) -> Vec<PathBuf> {
     }
 }
 
-fn apply_watched_paths(home: &Path, index: &Arc<Mutex<Arc<NameIndex>>>, paths: &[PathBuf]) {
-    if paths.is_empty() {
+/// What `path` is now, or `None` when the name index never holds it.
+fn observe(home: &Path, path: &Path) -> Option<Observed> {
+    if should_skip(path, home) {
+        return None;
+    }
+    let rel = path.strip_prefix(home).ok()?;
+    if rel.as_os_str().is_empty() {
+        return None;
+    }
+    let display = display_path(home, path);
+    Some(match path.symlink_metadata() {
+        Ok(meta) => Observed::Present(NameEntry {
+            path: path.to_owned(),
+            facts: NameFacts::new(&display, meta.modified().ok()),
+            display,
+            is_dir: meta.file_type().is_dir(),
+        }),
+        Err(_) => Observed::Gone {
+            path: path.to_owned(),
+            lower: display.to_lowercase(),
+        },
+    })
+}
+
+/// Fold one debounced batch of watched paths into the name index: an upsert
+/// per added or changed name, a removal per name gone (with everything under
+/// it), one incremental commit. Nothing is published when no name, kind or
+/// recency band changed. A batch that would rebuild the index anyway
+/// ([`BULK_CHANGE_MIN`]) is rebuilt beside it so queries keep running.
+fn apply_watched_paths(home: &Path, index: &RwLock<NameIndex>, paths: &[PathBuf]) {
+    // Every `stat` happens before any lock is taken.
+    let observed: Vec<Observed> = paths
+        .iter()
+        .filter_map(|path| observe(home, path))
+        .collect();
+    if observed.is_empty() {
         return;
     }
-    let Some(published) = index.lock().ok().map(|guard| Arc::clone(&guard)) else {
+    let Some((seen, total)) = index
+        .read()
+        .ok()
+        .map(|guard| (guard.generation, guard.entries.len()))
+    else {
         return;
     };
-    let mut entries = published.entries.clone();
-    let mut changed = false;
-    for path in paths {
-        if should_skip(path, home) {
-            continue;
+    if observed.len() >= BULK_CHANGE_MIN
+        && observed.len().saturating_mul(BULK_CHANGE_FRACTION) >= total
+    {
+        if let Some(next) = rebuilt_with(index, &observed) {
+            let previous = index.write().ok().map(|mut guard| {
+                if guard.generation == seen {
+                    std::mem::replace(&mut *guard, next)
+                } else {
+                    // A walk published meanwhile: fold the batch into it.
+                    guard.apply(&observed);
+                    next
+                }
+            });
+            drop(previous);
         }
-        let Ok(rel) = path.strip_prefix(home) else {
-            continue;
-        };
-        if rel.as_os_str().is_empty() {
-            continue;
-        }
-        if let Ok(meta) = path.symlink_metadata() {
-            let is_dir = meta.file_type().is_dir();
-            let modified = meta.modified().ok();
-            let display = display_path(home, path);
-            let facts = NameFacts::new(&display, modified);
-            if let Some(existing) = entries.iter_mut().find(|entry| entry.path == *path) {
-                existing.display = display;
-                existing.facts = facts;
-                existing.is_dir = is_dir;
-            } else {
-                entries.push(NameEntry {
-                    path: path.clone(),
-                    display,
-                    facts,
-                    is_dir,
-                });
-            }
-            changed = true;
-        } else {
-            let before = entries.len();
-            entries.retain(|entry| entry.path != *path && !entry.path.starts_with(path));
-            changed |= entries.len() != before;
-        }
-    }
-    if !changed {
         return;
     }
-    let generation = NEXT_NAME_INDEX_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let next = Arc::new(NameIndex::from_entries(entries, generation));
-    if let Ok(mut guard) = index.lock() {
-        *guard = next;
+    if let Ok(mut guard) = index.write() {
+        guard.apply(&observed);
     }
+}
+
+/// The published names with `observed` folded in, built as a fresh index;
+/// `None` when the batch changes nothing.
+fn rebuilt_with(index: &RwLock<NameIndex>, observed: &[Observed]) -> Option<NameIndex> {
+    let mut names: BTreeMap<PathBuf, NameEntry> = index
+        .read()
+        .ok()?
+        .entries()
+        .map(|entry| (entry.path.clone(), entry.clone()))
+        .collect();
+    let mut changed = false;
+    for change in observed {
+        match change {
+            Observed::Present(fresh) => {
+                let previous = names.insert(fresh.path.clone(), fresh.clone());
+                changed |= previous.is_none_or(|previous| !same_record(&previous, fresh));
+            }
+            Observed::Gone { path, .. } => {
+                // Component order keeps a directory's subtree right after it.
+                let under: Vec<PathBuf> = names
+                    .range(path.clone()..)
+                    .map(|(name, _)| name)
+                    .take_while(|name| name.starts_with(path))
+                    .cloned()
+                    .collect();
+                changed |= !under.is_empty();
+                for name in under {
+                    names.remove(&name);
+                }
+            }
+        }
+    }
+    changed.then(|| {
+        let generation = NEXT_NAME_INDEX_GENERATION.fetch_add(1, Ordering::Relaxed);
+        NameIndex::from_entries(names.into_values().collect(), generation)
+    })
 }
 
 /// Build the name index. Breadth-first, because a single unpacked game is
 /// tens of thousands of paths (`~/Spiele` alone walks to 31 168):
 /// depth-first would spend [`MAX_ENTRIES`] on whichever branch it entered
 /// first and exclude whole trees.
-fn walk_home(home: &Path, index: &Arc<Mutex<Arc<NameIndex>>>) {
+fn walk_home(home: &Path, index: &RwLock<NameIndex>) {
     let entries = walk_breadth_first(home, MAX_ENTRIES);
-    // Construct all retained maps before touching the publication lock. A
-    // palette request meanwhile just clones the prior immutable snapshot.
+    // Build the whole index before touching the lock; queries meanwhile read
+    // the previous one, which is dropped after the lock is released.
     let generation = NEXT_NAME_INDEX_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let next = Arc::new(NameIndex::from_entries(entries, generation));
-    if let Ok(mut guard) = index.lock() {
-        *guard = next;
-    }
+    let next = NameIndex::from_entries(entries, generation);
+    let previous = index
+        .write()
+        .ok()
+        .map(|mut guard| std::mem::replace(&mut *guard, next));
+    drop(previous);
 }
 
 /// [`walk_home`]'s walk, with the budget as a parameter so a test can
@@ -1018,6 +1389,623 @@ fn display_path(home: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::chrome_state::ChromeState;
+    use tilo_search::Page;
+
+    thread_local! {
+        /// Whole-index builds ([`NameIndex::from_entries`]).
+        pub(super) static NAME_INDEX_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        /// Watched batches applied in place ([`NameIndex::apply`] publishing).
+        pub(super) static NAME_INDEX_UPDATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        /// Insertions that renumbered neighbours ([`insert_keyed`]).
+        pub(super) static NAME_INDEX_RENUMBERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    fn generation(provider: &FilesProvider) -> u64 {
+        provider.published().unwrap().generation
+    }
+
+    fn set_modified(path: &Path, modified: SystemTime) {
+        std::fs::File::open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+    }
+
+    fn watched_provider(home: &Path) -> FilesProvider {
+        let provider = FilesProvider::with_home(home.to_owned());
+        provider.ready.set(()).unwrap();
+        assert!(provider.tantivy.set(None).is_ok());
+        walk_home(home, &provider.name_index);
+        provider
+    }
+
+    #[test]
+    fn unchanged_watched_paths_keep_the_index_and_cursor() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path();
+        let file = home.join("a-needle.md");
+        let folder = home.join("b-needle");
+        std::fs::write(&file, b"first content").unwrap();
+        std::fs::create_dir(&folder).unwrap();
+        let now = SystemTime::now();
+        let first_time = now.checked_sub(Duration::from_secs(2 * 86_400)).unwrap();
+        let second_time = now.checked_sub(Duration::from_secs(3 * 86_400)).unwrap();
+        set_modified(&file, first_time);
+        set_modified(&folder, first_time);
+        let provider = watched_provider(home);
+        let before = generation(&provider);
+        let builds = NAME_INDEX_BUILDS.get();
+        let updates = NAME_INDEX_UPDATES.get();
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let wanted = [ResourceKind::File, ResourceKind::Folder];
+        let budget = SearchBudget {
+            max_results: 1,
+            max_bytes: 8_192,
+            max_work: 1,
+        };
+        let first = provider.query_page(ctx_for("needle", &wanted, &st, &doc), None, budget);
+        let cursor = first.next_cursor.unwrap();
+        let expected =
+            provider.query_page(ctx_for("needle", &wanted, &st, &doc), Some(&cursor), budget);
+        // A content write changes mtime but leaves both timestamps inside the
+        // 1..=6 day ranking band. Names search must retain its publication.
+        std::fs::write(&file, b"different content and length").unwrap();
+        set_modified(&file, second_time);
+        set_modified(&folder, second_time);
+        assert_ne!(
+            std::fs::metadata(&file).unwrap().modified().unwrap(),
+            first_time
+        );
+        for _ in 0..2 {
+            apply_watched_paths(home, &provider.name_index, &[file.clone(), folder.clone()]);
+            assert_eq!(generation(&provider), before, "unchanged name publication");
+            assert_eq!(NAME_INDEX_BUILDS.get(), builds, "no Tantivy rebuild");
+            assert_eq!(NAME_INDEX_UPDATES.get(), updates, "no record touched");
+            let next =
+                provider.query_page(ctx_for("needle", &wanted, &st, &doc), Some(&cursor), budget);
+            assert!(!next.stale_cursor);
+            assert_eq!(next.results.len(), 1);
+            assert_eq!(next.results[0].id, expected.results[0].id);
+            assert_eq!(next.results[0].score, expected.results[0].score);
+        }
+    }
+
+    #[test]
+    fn watched_changes_publish_ranking_kind_rename_and_removal() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path();
+        let file = home.join("a-needle.md");
+        let peer = home.join("b-needle.md");
+        std::fs::write(&file, b"content").unwrap();
+        std::fs::write(&peer, b"peer").unwrap();
+        let now = SystemTime::now();
+        set_modified(
+            &file,
+            now.checked_sub(Duration::from_secs(400 * 86_400)).unwrap(),
+        );
+        set_modified(
+            &peer,
+            now.checked_sub(Duration::from_secs(2 * 86_400)).unwrap(),
+        );
+        let provider = watched_provider(home);
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let wanted = [ResourceKind::File, ResourceKind::Folder];
+        let budget = SearchBudget {
+            max_results: 1,
+            max_bytes: 8_192,
+            max_work: 1,
+        };
+        let first = provider.query_page(ctx_for("needle", &wanted, &st, &doc), None, budget);
+        assert_eq!(first.results[0].id, peer.display().to_string());
+        let cursor = first.next_cursor.unwrap();
+        let before = generation(&provider);
+        let builds = NAME_INDEX_BUILDS.get();
+        let updates = NAME_INDEX_UPDATES.get();
+        set_modified(&file, now);
+        // An unchanged path in the same batch must not suppress a real change.
+        apply_watched_paths(home, &provider.name_index, &[peer.clone(), file.clone()]);
+        assert_ne!(generation(&provider), before);
+        // Every change below is applied in place; none rebuilds the index.
+        assert_eq!(NAME_INDEX_BUILDS.get(), builds);
+        assert_eq!(NAME_INDEX_UPDATES.get(), updates.saturating_add(1));
+        let ranked = provider.query_page(ctx_for("needle", &wanted, &st, &doc), None, budget);
+        assert_eq!(ranked.results[0].id, file.display().to_string());
+        assert!(
+            provider
+                .query_page(ctx_for("needle", &wanted, &st, &doc), Some(&cursor), budget,)
+                .stale_cursor
+        );
+
+        // Change only the kind: preserve the fresh ranking band and path.
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        set_modified(&file, now);
+        apply_watched_paths(home, &provider.name_index, std::slice::from_ref(&file));
+        let folders = provider.query_page(
+            ctx_for("needle", &[ResourceKind::Folder], &st, &doc),
+            None,
+            SearchBudget::PALETTE,
+        );
+        assert_eq!(folders.results.len(), 1);
+        assert_eq!(folders.results[0].id, file.display().to_string());
+        assert_eq!(NAME_INDEX_BUILDS.get(), builds);
+        assert_eq!(NAME_INDEX_UPDATES.get(), updates.saturating_add(2));
+
+        let renamed = home.join("renamed.md");
+        std::fs::rename(&peer, &renamed).unwrap();
+        apply_watched_paths(home, &provider.name_index, &[peer, renamed.clone()]);
+        let found = provider.query_page(
+            ctx_for("renamed", &[ResourceKind::File], &st, &doc),
+            None,
+            SearchBudget::PALETTE,
+        );
+        assert_eq!(found.results.len(), 1);
+        assert_eq!(found.results[0].id, renamed.display().to_string());
+        assert_eq!(NAME_INDEX_BUILDS.get(), builds);
+        assert_eq!(NAME_INDEX_UPDATES.get(), updates.saturating_add(3));
+
+        std::fs::write(file.join("child.md"), b"child").unwrap();
+        apply_watched_paths(home, &provider.name_index, &[file.join("child.md")]);
+        std::fs::remove_dir_all(&file).unwrap();
+        apply_watched_paths(home, &provider.name_index, std::slice::from_ref(&file));
+        assert!(
+            provider
+                .published()
+                .unwrap()
+                .entries()
+                .all(|entry| !entry.path.starts_with(&file))
+        );
+        assert_eq!(NAME_INDEX_BUILDS.get(), builds);
+        assert_eq!(NAME_INDEX_UPDATES.get(), updates.saturating_add(5));
+        let retained = generation(&provider);
+        apply_watched_paths(home, &provider.name_index, &[file]);
+        assert_eq!(generation(&provider), retained);
+        assert_eq!(NAME_INDEX_BUILDS.get(), builds);
+        assert_eq!(NAME_INDEX_UPDATES.get(), updates.saturating_add(5));
+    }
+
+    /// Needles whose hits [`watched_changes_answer_exactly_as_a_fresh_walk`]
+    /// compares: many equal scores (so key order decides which page a hit
+    /// lands on), a parent component, a typo.
+    const EQUIVALENCE_NEEDLES: &[&str] = &["needle", "photo", "report", "documents", "nedle"];
+
+    /// Everything a query can observe of a published index: its names in
+    /// key order with every ranking fact.
+    fn indexed_names(provider: &FilesProvider) -> Vec<String> {
+        let index = provider.published().unwrap();
+        assert!(
+            index.entries.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "keys must ascend with name order"
+        );
+        assert_eq!(
+            index.index.len(),
+            index.entries.len(),
+            "one record per name"
+        );
+        index
+            .entries()
+            .map(|entry| {
+                let facts = &entry.facts;
+                format!(
+                    "{} {} dir={} lower={} leaf={} stem={} penalty={} recency={}",
+                    entry.path.display(),
+                    entry.display,
+                    entry.is_dir,
+                    facts.lower,
+                    facts.leaf,
+                    facts.stem_len,
+                    facts.penalty,
+                    facts.recency
+                )
+            })
+            .collect()
+    }
+
+    /// Every hit for `needle`, paged three at a time so ties cross pages.
+    fn every_hit(
+        provider: &FilesProvider,
+        needle: &str,
+        chrome: &ChromeState,
+        doc: &automerge::AutoCommit,
+    ) -> Vec<(String, i32)> {
+        let wanted = [ResourceKind::File, ResourceKind::Folder];
+        let budget = SearchBudget {
+            max_results: 3,
+            max_bytes: 64 * 1024,
+            max_work: 3,
+        };
+        let mut hits = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = provider.query_page(
+                ctx_for(needle, &wanted, chrome, doc),
+                cursor.as_ref(),
+                budget,
+            );
+            assert!(!page.stale_cursor, "{needle}: the index changed mid-query");
+            hits.extend(page.results.into_iter().map(|row| (row.id, row.score)));
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => return hits,
+            }
+            assert!(hits.len() < 10_000, "{needle}: paging never ended");
+        }
+    }
+
+    /// Apply `paths` as one watched batch to `provider`, then check it answers
+    /// exactly as an index freshly walked from the same tree: the same names
+    /// with the same facts in the same order, and the same hits, scores and
+    /// page boundaries for every needle. `bulk` says whether the batch is
+    /// large enough to be rebuilt beside the index rather than applied.
+    fn apply_and_compare(
+        provider: &FilesProvider,
+        paths: &[PathBuf],
+        step: &str,
+        bulk: bool,
+        cx: (&ChromeState, &automerge::AutoCommit),
+    ) {
+        let home = provider.home.clone();
+        let builds = NAME_INDEX_BUILDS.get();
+        let before = generation(provider);
+        apply_watched_paths(&home, &provider.name_index, paths);
+        assert_ne!(generation(provider), before, "{step}: published");
+        let expected_builds = if bulk {
+            builds.saturating_add(1)
+        } else {
+            builds
+        };
+        assert_eq!(
+            NAME_INDEX_BUILDS.get(),
+            expected_builds,
+            "{step}: whole-index builds"
+        );
+        let fresh = watched_provider(&home);
+        let names = indexed_names(provider);
+        let fresh_names = indexed_names(&fresh);
+        assert!(
+            names == fresh_names,
+            "{step}: names differ from a fresh walk\nincremental: {names:#?}\nfresh: {fresh_names:#?}"
+        );
+        for needle in EQUIVALENCE_NEEDLES {
+            assert_eq!(
+                every_hit(provider, needle, cx.0, cx.1),
+                every_hit(&fresh, needle, cx.0, cx.1),
+                "{step}: hits for {needle:?} differ from a fresh walk"
+            );
+        }
+    }
+
+    /// Watched changes are applied record by record, and after each one the
+    /// index answers exactly as a full rebuild over the same tree would:
+    /// additions, a new folder, removals, a whole subtree going, renames,
+    /// names differing only in case, recency and kind changes, a temporary
+    /// file renamed into place, enough additions in one spot to renumber
+    /// neighbours' keys, and a bulk unpack that is rebuilt beside the index.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one sequence of filesystem changes, each compared with a fresh walk"
+    )]
+    fn watched_changes_answer_exactly_as_a_fresh_walk() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path();
+        let three_days = SystemTime::now()
+            .checked_sub(Duration::from_secs(3 * 86_400))
+            .unwrap();
+        for file in [
+            "needle.txt",
+            "Documents/a-needle.md",
+            "Documents/b-needle.md",
+            "Documents/notes/needle.md",
+            "Documents/zz-last.md",
+            "Downloads/needle.zip",
+            "Downloads/report-2026.pdf",
+            "Pictures/trip/needle.jpg",
+            "projects/alpha/needle.rs",
+            "projects/beta/needle.rs",
+            "projects/gamma/src/needle.rs",
+        ] {
+            let path = home.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, file).unwrap();
+            set_modified(&path, three_days);
+        }
+        let provider = watched_provider(home);
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let cx = (&*st, &doc);
+        let write = |rel: &str| {
+            let path = home.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, rel).unwrap();
+            path
+        };
+
+        let added = write("Documents/c-needle.md");
+        apply_and_compare(&provider, &[added], "a new file", false, cx);
+
+        let folder = home.join("Documents/new-needles");
+        let children = [
+            write("Documents/new-needles/x-needle.md"),
+            write("Documents/new-needles/y-needle.md"),
+        ];
+        let mut batch = vec![folder];
+        batch.extend(children);
+        apply_and_compare(&provider, &batch, "a new folder of files", false, cx);
+
+        let zip = home.join("Downloads/needle.zip");
+        std::fs::remove_file(&zip).unwrap();
+        apply_and_compare(&provider, &[zip], "a removed file", false, cx);
+
+        // Only the folder is reported: everything under it goes with it.
+        let alpha = home.join("projects/alpha");
+        std::fs::remove_dir_all(&alpha).unwrap();
+        apply_and_compare(&provider, &[alpha], "a removed folder", false, cx);
+
+        let old = home.join("Documents/b-needle.md");
+        let renamed = home.join("Documents/renamed-needle.md");
+        std::fs::rename(&old, &renamed).unwrap();
+        apply_and_compare(&provider, &[old, renamed], "a rename", false, cx);
+
+        let cased = [write("Pictures/Needle.md"), write("Pictures/needle.md")];
+        apply_and_compare(&provider, &cased, "names differing in case", false, cx);
+
+        let aged = home.join("needle.txt");
+        set_modified(
+            &aged,
+            SystemTime::now()
+                .checked_sub(Duration::from_secs(400 * 86_400))
+                .unwrap(),
+        );
+        apply_and_compare(&provider, &[aged], "a recency band change", false, cx);
+
+        let kind = home.join("Downloads/report-2026.pdf");
+        std::fs::remove_file(&kind).unwrap();
+        std::fs::create_dir(&kind).unwrap();
+        apply_and_compare(&provider, &[kind], "a kind change", false, cx);
+
+        let temporary = write("Documents/d-needle.md.tmp");
+        let landed = home.join("Documents/d-needle.md");
+        std::fs::rename(&temporary, &landed).unwrap();
+        apply_and_compare(
+            &provider,
+            &[temporary, landed],
+            "a temporary file renamed into place",
+            false,
+            cx,
+        );
+
+        // Each photo sorts right after the previous one, so they keep
+        // halving one gap between two keys until neighbours are renumbered.
+        let renumbers = NAME_INDEX_RENUMBERS.get();
+        for photo in 0..72 {
+            let added = write(&format!("Documents/photo-{photo:04}.jpg"));
+            apply_and_compare(&provider, &[added], &format!("photo {photo}"), false, cx);
+        }
+        assert!(
+            NAME_INDEX_RENUMBERS.get() > renumbers,
+            "the fixture must exhaust a gap and renumber neighbours"
+        );
+
+        let archive = home.join("Documents/archive");
+        let mut unpacked = vec![archive.clone()];
+        for file in 0..300 {
+            unpacked.push(write(&format!("Documents/archive/needle-{file:03}.txt")));
+        }
+        apply_and_compare(&provider, &unpacked, "a bulk unpack", true, cx);
+
+        std::fs::remove_dir_all(&archive).unwrap();
+        apply_and_compare(
+            &provider,
+            &[archive],
+            "the unpacked folder removed",
+            false,
+            cx,
+        );
+    }
+
+    /// Names in [`a_watched_change_costs_one_record_not_a_rebuild`]'s index.
+    /// The nightly performance job measures the walk's ceiling, `MAX_ENTRIES`.
+    fn update_cost_names() -> usize {
+        std::env::var("TILO_FILES_NAME_INDEX_NAMES")
+            .ok()
+            .and_then(|names| names.parse().ok())
+            .unwrap_or(20_000)
+    }
+
+    fn process_cpu() -> Duration {
+        crate::compositor::metrics::cpu_trace::process_cpu_time().expect("a process CPU clock")
+    }
+
+    fn cpu_ms(spent: Duration) -> String {
+        format!("{:.3}", spent.as_secs_f64() * 1_000.0)
+    }
+
+    /// One watched change costs its own record, not a rebuild of every name:
+    /// the before/after of this provider's idle cost. Prints the
+    /// `FILES-NAME-INDEX` line the nightly performance job records
+    /// (`tools/perf/adapters.py files-name-index`); process CPU, so the
+    /// index's own writer and merge threads count too.
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fixture measured through each kind of watched batch, then reported"
+    )]
+    fn a_watched_change_costs_one_record_not_a_rebuild() {
+        /// A typical change, the median of seven. A whole rebuild of 20k
+        /// names costs 1.5-2 s of CPU on a CI runner; a change applied in
+        /// place costs about 10 ms there.
+        const CHANGE_CPU_BUDGET: Duration = Duration::from_millis(50);
+        /// No single change may cost this share of a whole rebuild measured
+        /// in the same process, so one sample inflated by a loaded runner
+        /// passes, but a change that rebuilds the index never does.
+        const REBUILD_SHARE: u32 = 10;
+        const WORDS: [&str; 8] = [
+            "report", "invoice", "holiday", "draft", "notes", "budget", "scan", "receipt",
+        ];
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path();
+        let downloads = home.join("Downloads");
+        let pictures = home.join("Pictures");
+        std::fs::create_dir_all(&downloads).unwrap();
+        std::fs::create_dir_all(&pictures).unwrap();
+        let names = update_cost_names();
+        // Only the changed paths exist on disk; the indexed ones need not.
+        let entries: Vec<NameEntry> = (0..names)
+            .map(|at| {
+                let display = format!(
+                    "~/Documents/{}-{:03}/{}/{at:06}-{}.md",
+                    WORDS[at % 8],
+                    at % 397,
+                    WORDS[(at / 8) % 8],
+                    WORDS[(at / 64) % 8]
+                );
+                NameEntry {
+                    path: home.join(display.trim_start_matches("~/")),
+                    facts: NameFacts::new(&display, None),
+                    display,
+                    is_dir: false,
+                }
+            })
+            .collect();
+        let started = process_cpu();
+        let built = NameIndex::from_entries(
+            entries,
+            NEXT_NAME_INDEX_GENERATION.fetch_add(1, Ordering::Relaxed),
+        );
+        let rebuild = process_cpu().saturating_sub(started);
+        let provider = FilesProvider::with_home(home.to_owned());
+        provider.ready.set(()).unwrap();
+        assert!(provider.tantivy.set(None).is_ok());
+        *provider.name_index.write().unwrap() = built;
+        let builds = NAME_INDEX_BUILDS.get();
+        let chrome = empty_chrome();
+        let st = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let wanted = [ResourceKind::File];
+        let found = |needle: &str, path: &Path| {
+            provider
+                .page_name_hits(
+                    &ctx_for(needle, &wanted, &st, &doc),
+                    None,
+                    SearchBudget::PALETTE,
+                )
+                .results
+                .iter()
+                .any(|row| row.id == path.display().to_string())
+        };
+        let timed = |paths: &[PathBuf]| {
+            let started = process_cpu();
+            apply_watched_paths(home, &provider.name_index, paths);
+            process_cpu().saturating_sub(started)
+        };
+
+        // One new file per batch, as a save or a finished download lands.
+        let mut changes = Vec::new();
+        for sample in 0..7 {
+            let path = downloads.join(format!("quarterly-statement-{sample}.pdf"));
+            std::fs::write(&path, b"%PDF").unwrap();
+            let before = generation(&provider);
+            changes.push(timed(std::slice::from_ref(&path)));
+            assert_ne!(generation(&provider), before, "the new file is published");
+            assert!(found(&format!("quarterly-statement-{sample}"), &path));
+        }
+
+        // A download growing: every burst's batch is the same `.part` file
+        // with a new mtime in the same recency band, which changes nothing.
+        let part = downloads.join("dataset.zip.part");
+        std::fs::write(&part, b"chunk").unwrap();
+        timed(std::slice::from_ref(&part));
+        let before = generation(&provider);
+        let mut unchanged = Vec::new();
+        for _ in 0..7 {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&part)
+                .unwrap();
+            std::io::Write::write_all(&mut file, b"more chunks").unwrap();
+            unchanged.push(timed(std::slice::from_ref(&part)));
+        }
+        assert_eq!(
+            generation(&provider),
+            before,
+            "a growing file is not republished"
+        );
+        // ... then it lands under its final name.
+        let landed = downloads.join("dataset.zip");
+        std::fs::rename(&part, &landed).unwrap();
+        let rename = timed(&[part, landed.clone()]);
+        assert!(found("dataset", &landed));
+
+        // A camera import: a folder of 64 photos in one batch.
+        let import = pictures.join("import");
+        std::fs::create_dir(&import).unwrap();
+        let mut burst = vec![import.clone()];
+        for photo in 0..64 {
+            let path = import.join(format!("IMG_{photo:04}.jpg"));
+            std::fs::write(&path, b"jpeg").unwrap();
+            burst.push(path);
+        }
+        let burst_cpu = timed(&burst);
+        assert!(found("img_0063", &import.join("IMG_0063.jpg")));
+
+        assert_eq!(
+            NAME_INDEX_BUILDS.get(),
+            builds,
+            "no change rebuilt the index"
+        );
+        let join = |samples: &[Duration]| {
+            samples
+                .iter()
+                .map(|spent| cpu_ms(*spent))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        println!(
+            "FILES-NAME-INDEX names={names} rebuild_ms={} change_ms={} unchanged_ms={} \
+             rename_ms={} burst64_ms={}",
+            cpu_ms(rebuild),
+            join(&changes),
+            join(&unchanged),
+            cpu_ms(rename),
+            cpu_ms(burst_cpu)
+        );
+        let mut sorted = changes.clone();
+        sorted.sort_unstable();
+        let median = sorted[sorted.len() / 2];
+        assert!(
+            median < CHANGE_CPU_BUDGET,
+            "a change costs {} ms of CPU at {names} names (median; budget {} ms; a whole \
+             rebuild cost {} ms)",
+            cpu_ms(median),
+            CHANGE_CPU_BUDGET.as_millis(),
+            cpu_ms(rebuild)
+        );
+        let share = rebuild.checked_div(REBUILD_SHARE).unwrap();
+        for (what, spent) in changes
+            .iter()
+            .enumerate()
+            .map(|(sample, spent)| (format!("change {sample}"), *spent))
+            .chain([
+                ("the rename".into(), rename),
+                ("the burst".into(), burst_cpu),
+            ])
+        {
+            assert!(
+                spent < share,
+                "{what} cost {} ms of CPU at {names} names, over a {REBUILD_SHARE}th of the \
+                 {} ms whole rebuild",
+                cpu_ms(spent),
+                cpu_ms(rebuild)
+            );
+        }
+    }
 
     /// Case-insensitive-by-construction extension check for test assertions,
     /// via `Path::extension` rather than a raw `ends_with(".ext")`.
@@ -1354,10 +2342,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn the_walk_skips_bloat_and_indexes_every_tree_before_ranking() {
         // Phase `skip_dirs_hits_common_bloat`.
         {
@@ -1487,6 +2471,74 @@ mod tests {
         )
     }
 
+    #[test]
+    fn file_catalogue_completion_rejects_unpublished_placeholder() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible};
+        use crate::shell::search::{QueryArgs, QueryIncompleteReason, SearchRegistry};
+        let provider = std::rc::Rc::new(provider_from_entries(Vec::new()));
+        *provider.name_index.write().unwrap() = NameIndex::default();
+        let mut registry = SearchRegistry::new();
+        registry.register(provider.clone());
+        let chrome = empty_chrome();
+        let doc = automerge::AutoCommit::new();
+        let args = QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &chrome.borrow(),
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        };
+        let unknown = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(unknown.enumerate().is_empty());
+        assert!(!unknown.completion().complete);
+        assert_eq!(
+            unknown
+                .completion()
+                .incomplete
+                .first()
+                .expect("unpublished source")
+                .reason,
+            QueryIncompleteReason::Unavailable
+        );
+        *provider.name_index.write().unwrap() = NameIndex::from_entries(Vec::new(), 1);
+        let ready = ActionCatalog::build_query(&registry, &args, &AllVisible, true);
+        assert!(ready.enumerate().is_empty());
+        assert!(ready.completion().complete);
+    }
+
+    #[test]
+    fn initial_file_walk_wakes_catalogue_waiter() {
+        let home = tempfile::tempdir().expect("home");
+        let provider = FilesProvider::with_home(home.path().to_owned());
+        let (woken, wake) = std::sync::mpsc::channel();
+        let _installed = crate::shell::search::invocation_wake::install(Arc::new(move || {
+            woken.send(()).expect("waiting catalogue caller");
+        }));
+        assert_eq!(provider.published().unwrap().generation, 0);
+        provider.start_name_index();
+        wake.recv_timeout(tilo_test_env::hang_bound())
+            .expect("the initial name walk must wake a held listing");
+        assert_ne!(provider.published().unwrap().generation, 0);
+        let chrome = empty_chrome();
+        let doc = automerge::AutoCommit::new();
+        assert_eq!(
+            provider.query_incomplete_reason(&SearchContext {
+                query_scope: Some(crate::shell::chrome_state::SearchScope::All),
+                include_programmatic: true,
+                needle: "",
+                wanted: &[ResourceKind::File],
+                chrome: &chrome.borrow(),
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            }),
+            None,
+            "the production walk established a complete empty name source"
+        );
+    }
+
     fn provider_from_entries(entries: Vec<NameEntry>) -> FilesProvider {
         let home = PathBuf::from("/home/tester");
         let ready = OnceLock::new();
@@ -1495,11 +2547,144 @@ mod tests {
         let _ = tantivy.set(None);
         FilesProvider {
             home,
-            name_index: Arc::new(Mutex::new(Arc::new(NameIndex::from_entries(entries, 1)))),
+            name_index: Arc::new(RwLock::new(NameIndex::from_entries(entries, 1))),
             tantivy,
             ready,
             watch: OnceLock::new(),
         }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn scratch_xdg_tree_indexes_the_profile_home_not_the_login_home() {
+        let login = tempfile::tempdir().expect("login home");
+        let profile = tempfile::tempdir().expect("scratch profile");
+        let profile_home = profile.path().join("home");
+        std::fs::create_dir_all(&profile_home).expect("profile home");
+        std::fs::write(login.path().join("secret.md"), b"operator").unwrap();
+        std::fs::write(profile_home.join("note.md"), b"scratch").unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", login.path())
+            .set("XDG_CONFIG_HOME", profile.path().join("config"))
+            .set("XDG_CACHE_HOME", profile.path().join("cache"));
+        env.remove("TILO_TEST_CONTROL");
+        env.remove("TILO_IDENTITY_ROOT");
+        assert_eq!(
+            indexable_home(),
+            profile_home,
+            "a scratch XDG tree must not walk the login home"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_normal_xdg_tree_under_home_indexes_home() {
+        let home = tempfile::tempdir().expect("home");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path())
+            .set("XDG_CONFIG_HOME", home.path().join(".config"));
+        env.remove("TILO_TEST_CONTROL");
+        env.remove("TILO_IDENTITY_ROOT");
+        assert_eq!(indexable_home(), home.path());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_control_socket_session_with_the_login_layout_gets_a_scratch_home() {
+        let login = tempfile::tempdir().expect("login home");
+        let cache = tempfile::tempdir().expect("cache");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", login.path())
+            .set("XDG_CONFIG_HOME", login.path().join(".config"))
+            .set("XDG_CACHE_HOME", cache.path())
+            .set("TILO_TEST_CONTROL", "/tmp/tilo-test-control.sock");
+        env.remove("TILO_IDENTITY_ROOT");
+        let got = indexable_home();
+        assert_eq!(got, cache.path().join("tilo-headless-home"));
+        assert!(
+            !got.starts_with(login.path()),
+            "the control-socket session must not walk the login home"
+        );
+    }
+
+    /// The dev VM session is a real desktop (`XDG_SESSION_DESKTOP=tilo`) that
+    /// also sets `TILO_TEST_CONTROL` so the harness can drive it. The slot
+    /// user writes `~/Documents`; search has to query that home.
+    #[test]
+    #[serial_test::serial]
+    fn a_driven_desktop_session_finds_a_file_just_written_in_documents() {
+        let home = tempfile::tempdir().expect("session home");
+        let cache = tempfile::tempdir().expect("cache");
+        let documents = home.path().join("Documents");
+        std::fs::create_dir_all(&documents).expect("Documents");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path())
+            .set("XDG_CONFIG_HOME", home.path().join(".config"))
+            .set("XDG_CACHE_HOME", cache.path())
+            .set("XDG_SESSION_DESKTOP", "tilo")
+            .set("TILO_TEST_CONTROL", "/run/tilo-vm/slot/control.sock");
+        env.remove("TILO_IDENTITY_ROOT");
+        assert_eq!(
+            indexable_home(),
+            home.path(),
+            "a driven desktop session must search $HOME, not the headless cache"
+        );
+
+        let provider = FilesProvider::new();
+        let chrome = empty_chrome();
+        let state = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let hits = |needle: &str| {
+            provider.query(ctx_for(
+                needle,
+                &[ResourceKind::File, ResourceKind::Folder],
+                &state,
+                &doc,
+            ))
+        };
+        // The first palette query arms the walk and the Documents watch.
+        drop(hits(" "));
+        tilo_test_env::wait_until("the name walk to publish", || {
+            provider
+                .published()
+                .is_some_and(|index| index.generation > 0)
+        });
+
+        let needle = "accneedleff3e9f";
+        let dest = documents.join(format!("{needle}.txt"));
+        let tmp = documents.join(format!("{needle}.txt.acc-tmp"));
+        std::fs::write(&tmp, b"acceptance search probe\n").expect("probe temp");
+        std::fs::rename(&tmp, &dest).expect("probe rename");
+
+        tilo_test_env::wait_until("the Documents probe to be searchable", || {
+            hits(needle)
+                .iter()
+                .any(|row| action_text_contains(row, needle))
+        });
+        let hit = hits(needle)
+            .into_iter()
+            .find(|row| action_text_contains(row, needle))
+            .expect("probe");
+        assert!(
+            Path::new(&hit.id).starts_with(home.path()),
+            "search indexed {} instead of the session home {}",
+            hit.id,
+            home.path().display()
+        );
+        assert!(
+            !Path::new(&hit.id).starts_with(cache.path()),
+            "search indexed the headless cache {} for a desktop session",
+            hit.id
+        );
+    }
+
+    fn action_text_contains(row: &SearchResult, needle: &str) -> bool {
+        row.title.contains(needle)
+            || row.id.contains(needle)
+            || row
+                .subtitle
+                .as_deref()
+                .is_some_and(|text| text.contains(needle))
     }
 
     #[test]
@@ -1568,6 +2753,8 @@ mod tests {
         doc: &'a automerge::AutoCommit,
     ) -> SearchContext<'a> {
         SearchContext {
+            query_scope: None,
+            include_programmatic: false,
             needle,
             wanted,
             chrome,
@@ -1579,7 +2766,7 @@ mod tests {
     fn empty_chrome() -> crate::shell::chrome_state::Chrome {
         use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
         let handle: WorkspaceTreeHandle =
-            std::sync::Arc::new(parking_lot::RwLock::new(WorkspaceTree::default()));
+            crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::default());
         ChromeState::new_with_handle(handle)
     }
 
@@ -1588,6 +2775,49 @@ mod tests {
     /// linear scan would still exceed it by far; the 100k case itself is
     /// covered by the shared search provider tests in `ui`.
     const LARGE_CORPUS: usize = 4_000;
+
+    #[test]
+    fn filtered_name_pages_consume_hits_and_respect_the_result_budget() {
+        let provider = provider_with_index(vec![
+            ("~/a-needle", true),
+            ("~/b-needle", true),
+            ("~/c-needle", true),
+            ("~/d-needle", true),
+            ("~/e-needle", true),
+        ]);
+        let chrome = empty_chrome();
+        let state = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let budget = SearchBudget {
+            max_results: 1,
+            max_bytes: 8_192,
+            max_work: 5,
+        };
+        let filtered = provider.query_page(
+            ctx_for("needle", &[ResourceKind::File], &state, &doc),
+            None,
+            budget,
+        );
+        assert!(filtered.results.is_empty());
+        assert!(
+            filtered.exhausted,
+            "all five declined hits must be consumed"
+        );
+
+        let mut cursor = None;
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..5 {
+            let page = provider.query_page(
+                ctx_for("needle", &[ResourceKind::Folder], &state, &doc),
+                cursor.as_ref(),
+                budget,
+            );
+            assert_eq!(page.results.len(), 1);
+            assert!(ids.insert(page.results[0].id.clone()), "a hit was repeated");
+            cursor = page.next_cursor;
+        }
+        assert!(cursor.is_none(), "the last emitted hit exhausts the page");
+    }
 
     #[test]
     #[allow(
@@ -1693,8 +2923,9 @@ mod tests {
             );
             let cursor = page.next_cursor.expect("a continuation page");
             {
-                let mut publication = p.name_index.lock().unwrap();
-                *publication = Arc::new(NameIndex::from_entries(publication.entries.clone(), 2));
+                let mut publication = p.name_index.write().unwrap();
+                let entries = publication.entries().cloned().collect();
+                *publication = NameIndex::from_entries(entries, 2);
             }
             let stale = p.query_page(
                 ctx_for("needle.md", &[ResourceKind::File], &st, &doc),
@@ -1738,5 +2969,59 @@ mod tests {
                 huge.rsplit('/').next().unwrap().len()
             );
         }
+    }
+
+    /// A file opens by its path on the first request: no search, no walk.
+    /// Only canonical paths under the indexed home, outside hidden and
+    /// skipped trees, are addresses.
+    #[test]
+    fn a_file_opens_by_its_path_without_any_search_first() {
+        let home = tempfile::tempdir().expect("home");
+        let home_path = std::fs::canonicalize(home.path()).expect("canonical home");
+        std::fs::create_dir_all(home_path.join("Documents")).expect("documents");
+        std::fs::create_dir_all(home_path.join(".secrets")).expect("hidden");
+        let report = home_path.join("Documents/report.md");
+        std::fs::write(&report, "# report").expect("report");
+        std::fs::write(home_path.join(".secrets/key"), "k").expect("hidden file");
+        let outside = tempfile::tempdir().expect("outside");
+        let stray = std::fs::canonicalize(outside.path())
+            .expect("outside")
+            .join("stray.md");
+        std::fs::write(&stray, "x").expect("stray");
+
+        let provider = FilesProvider::with_home(home_path.clone());
+        let chrome = empty_chrome();
+        let state = chrome.borrow();
+        let doc = automerge::AutoCommit::new();
+        let wanted = [ResourceKind::File, ResourceKind::Folder];
+        let resolve = |id: &str| provider.resolve(id, ctx_for("", &wanted, &state, &doc));
+
+        let row = resolve(&report.display().to_string()).expect("the file resolves");
+        assert_eq!(row.title, "report.md");
+        assert_eq!(row.kind, ResourceKind::File);
+        let folder =
+            resolve(&home_path.join("Documents").display().to_string()).expect("a folder resolves");
+        assert_eq!(folder.kind, ResourceKind::Folder);
+        for refused in [
+            stray.display().to_string(),
+            home_path.join(".secrets/key").display().to_string(),
+            home_path
+                .join("Documents/../Documents/report.md")
+                .display()
+                .to_string(),
+            home_path.join("Documents/missing.md").display().to_string(),
+            "Documents/report.md".to_string(),
+        ] {
+            assert!(resolve(&refused).is_none(), "{refused} is not an address");
+        }
+        assert!(
+            provider
+                .resolve(
+                    &report.display().to_string(),
+                    ctx_for("", &[ResourceKind::Folder], &state, &doc)
+                )
+                .is_none(),
+            "a file is not offered where only folders are wanted"
+        );
     }
 }

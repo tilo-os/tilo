@@ -15,16 +15,6 @@
 //! Headless, deterministic maths — no GPU or HDR panel. A DRM
 //! connector scanning out `Rgba16Float` is the documented hardware-only gap.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use shell::diagnostics::PeerSurfaceMetrics;
 use shell::shell::color_pipeline::{
     OutputColorSpace, OutputColorState, SDR_REFERENCE_WHITE_NITS, SurfaceColorOp,

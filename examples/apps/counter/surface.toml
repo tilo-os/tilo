@@ -1,0 +1,22 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "example.counter"
+label = "Counter"
+version = 1
+fields = [
+  { path = "count", type = "i64" },
+]
+
+[[resources.verbs]]
+id = "add"
+kind = "undoable"
+params = [
+  { name = "amount", required = true, schema = { type = "integer" } },
+]
+
+[[resources.verbs]]
+id = "reset"
+destructive = true
+kind = "undoable"
+

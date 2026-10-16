@@ -4,11 +4,6 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -19,15 +14,15 @@ use std::time::Duration;
 
 use app_host::app_host_capnp::{Pinning as WirePinning, app_host as capnp_app_host};
 use app_host::transport;
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp, twoparty};
+use capnp_rpc::rpc_twoparty_capnp;
 use package_store::{Catalog, PackageStore, SystemStore};
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
 const HANG_BOUND: Duration = Duration::from_secs(30);
 
 struct Harness {
     socket: PathBuf,
+    store_root: PathBuf,
     _tmp: tempfile::TempDir,
 }
 
@@ -37,6 +32,7 @@ impl Harness {
         let socket = tmp.path().join("app-host.sock");
         let store_root = tmp.path().join("store");
         let store = Arc::new(PackageStore::at(&store_root));
+        let store_dir = store_root.clone();
         // An empty image catalog: the host's own preinstalled packages must
         // not appear in what this store lists.
         let system_dir = tmp.path().join("system");
@@ -46,6 +42,7 @@ impl Harness {
             Some(SystemStore {
                 data_dir: system_dir.clone(),
                 payload_dir: system_dir,
+                interfaces: None,
             }),
         ));
         let listener = transport::bind(&socket)?;
@@ -54,7 +51,11 @@ impl Harness {
         // discarded outright) so the task isn't detached-and-forgotten
         // in a way that hides a panic.
         let _handle = tokio::task::spawn_local(transport::serve(listener, store, catalog, 0));
-        Ok(Self { socket, _tmp: tmp })
+        Ok(Self {
+            socket,
+            store_root: store_dir,
+            _tmp: tmp,
+        })
     }
 
     async fn connect(&self) -> anyhow::Result<capnp_app_host::Client> {
@@ -83,19 +84,8 @@ impl Harness {
 }
 
 fn client_for(stream: tokio::net::UnixStream) -> capnp_app_host::Client {
-    let (reader, writer) = stream.into_split();
-    let reader = reader.compat();
-    let writer = writer.compat_write();
-    let network = Box::new(twoparty::VatNetwork::new(
-        futures_util::io::BufReader::new(reader),
-        futures_util::io::BufWriter::new(writer),
-        rpc_twoparty_capnp::Side::Client,
-        capnp::message::ReaderOptions::default(),
-    ));
-    let mut rpc_system = RpcSystem::new(network, None);
-    let client: capnp_app_host::Client = rpc_system.bootstrap(rpc_twoparty_capnp::Side::Server);
-    tokio::task::spawn_local(rpc_system);
-    client
+    runtime_portal::CapnpClient::from_connected_io(stream, rpc_twoparty_capnp::Side::Client)
+        .bootstrap()
 }
 
 #[test]
@@ -170,4 +160,74 @@ fn install_list_pin_resolve_over_capnp() {
             "pinned bytes should be > 0 after we pinned"
         );
     });
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn registry_catalogue_rpc_refuses_caller_supplied_endpoints() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let harness = Harness::new().unwrap();
+            let client = harness.connect().await.unwrap();
+            let mut request = client.registry_catalogue_request();
+            request
+                .get()
+                .set_registry("https://caller-controlled.example.test/");
+            let error = request
+                .send()
+                .promise
+                .await
+                .err()
+                .expect("caller endpoint must be refused");
+            assert!(error.to_string().contains("not configured and enabled"));
+        })
+        .await;
+}
+
+#[test]
+fn list_reports_payload_bytes_without_walking() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&rt, async {
+        let h = Harness::new().unwrap();
+        let store = PackageStore::at(&h.store_root);
+        let (bytes, _) = common::build_tapp(2);
+        app_host::install::install_tapp(&store, &bytes, app_host::Pinning::Tried, None).unwrap();
+        let row = store.registry().unwrap().entries()[0].clone();
+        let measured = package_store::tree_size(&row.payload_root);
+        assert!(measured > 0);
+        assert_eq!(
+            row.payload_bytes, measured,
+            "install records the tree's size"
+        );
+
+        let client = h.connect().await.unwrap();
+        let listed_size = |client: capnp_app_host::Client| async move {
+            let response = client.list_request().send().promise.await.unwrap();
+            let entries = response.get().unwrap().get_entries().unwrap();
+            assert_eq!(entries.len(), 1);
+            entries.get(0).get_size_bytes()
+        };
+        assert_eq!(listed_size(client.clone()).await, measured);
+
+        // With the tree gone, a walk would report 0; the recorded size stands.
+        make_writable(&row.payload_root);
+        std::fs::remove_dir_all(&row.payload_root).unwrap();
+        assert_eq!(listed_size(client).await, measured);
+    });
+}
+
+/// Materialised payload files and their directories are read-only.
+fn make_writable(root: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    for entry in std::fs::read_dir(root).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            make_writable(&path);
+        }
+    }
+    std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o755)).unwrap();
 }

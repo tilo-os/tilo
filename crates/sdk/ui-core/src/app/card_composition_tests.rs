@@ -1,8 +1,8 @@
 use super::*;
+use crate::widget::ButtonRole;
 use crate::widget::{
     Actions, Button, Card, CardGrid, Column, Element, EmptyState, Scrollable, Text,
 };
-use automerge::ReadDoc;
 use std::cell::Cell;
 use std::rc::Rc;
 use winit::dpi::PhysicalPosition;
@@ -13,30 +13,22 @@ fn fixture() -> App {
     let cards: Vec<Element> = (0_usize..3)
         .map(|index| {
             Box::new(
-                Card::composed(Box::new(Text::new(
+                Card::new(Box::new(Text::new(
                     &"Useful description. ".repeat(index.checked_add(1).unwrap()),
                 )))
                 .with_title("Connection")
-                .with_footer(Box::new(
+                .with_footer(
                     Actions::new(
-                        Button::new(
-                            &format!("primary-{index}"),
-                            "Refresh connections",
-                            Some("clicked"),
-                        )
-                        .primary(),
+                        Button::new(&format!("primary-{index}"), "Refresh connections")
+                            .on_click(crate::testing::record_click("clicked"))
+                            .role(ButtonRole::Primary),
                     )
-                    .secondary(Button::new(
-                        &format!("secondary-{index}"),
-                        "Details",
-                        None,
-                    )),
-                )),
+                    .secondary(Button::new(&format!("secondary-{index}"), "Details")),
+                ),
             ) as Element
         })
         .collect();
-    let mut app =
-        App::new_with_controlled_inputs(State::new(), Box::new(CardGrid::content_sized(cards)));
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(CardGrid::new(cards)));
     app.init_layout();
     app
 }
@@ -95,13 +87,7 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
         let target = initial[3].1.center();
         assert!(app.dispatch_semantic_click(target.x, target.y));
         assert_eq!(app.focused_node, Some(app.focusable_order[3]));
-        assert!(
-            app.state
-                .doc
-                .get(automerge::ROOT, "clicked")
-                .unwrap()
-                .is_some()
-        );
+        assert_eq!(crate::testing::clicks("clicked"), 1);
         let mut scene = Scene::new();
         app.root_widget.draw(
             &mut scene,
@@ -134,7 +120,9 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
             );
             for (_, rect) in controls(&app) {
                 assert!(rect.x0 >= -1.0 && rect.x1 <= f64::from(width) + 1.0);
-                assert!(rect.height() >= 40.0);
+                assert!(
+                    rect.height() >= crate::widget::ControlSize::Regular.height(&Theme::dark())
+                );
             }
         }
     }
@@ -148,13 +136,13 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
             .with_intrinsic_height()
             .with_gap(8.0);
         for index in 0..8 {
-            content = content.push(Box::new(Card::composed(Box::new(Text::new(&format!(
+            content = content.push(Box::new(Card::new(Box::new(Text::new(&format!(
                 "Application {index}: {}",
                 "A useful multi-line description that remains inside its card. ".repeat(3)
             ))))));
         }
         content = content.push(Box::new(
-            Button::new("final-action", "Open all applications", None).on_click(move || {
+            Button::new("final-action", "Open all applications").on_click(move || {
                 activated.set(activated.get() + 1);
             }),
         ));
@@ -222,25 +210,26 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
 
     // Case `scrollable_empty_state_action_uses_the_real_tab_and_enter_host_route`.
     {
+        let invocations = Rc::new(Cell::new(0));
+        let activated = invocations.clone();
         let root = EmptyState::new("No messages are available")
             .with_icon(crate::icons::Icon::Inbox)
             .with_message("Reconnect to load messages.")
             .with_action("Review connection settings")
-            .with_action_path("empty.review")
+            .on_view(move || activated.set(activated.get() + 1))
             .into_scrollable()
             .with_height(50.0);
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();
         layout_in(&mut app, 240, 50);
 
-        let action_node = *app
-            .focusable_order
-            .iter()
-            .find(|&&node| {
+        assert!(
+            app.focusable_order.iter().any(|&node| {
                 app.inspect_node(node, |widget| widget.name() == "EmptyState")
                     .unwrap_or(false)
-            })
-            .expect("empty-state action is in host focus order");
+            }),
+            "empty-state action is in host focus order"
+        );
         let wheel = WindowEvent::MouseWheel {
             device_id: winit::event::DeviceId::dummy(),
             delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -10_000.0)),
@@ -248,6 +237,15 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
         };
         assert!(send_widget_then_host_fallback(&mut app, &wheel));
         layout_in(&mut app, 240, 50);
+        // A rebuilt layout retires node ids; find the retained control again.
+        let action_node = *app
+            .focusable_order
+            .iter()
+            .find(|&&node| {
+                app.inspect_node(node, |widget| widget.name() == "EmptyState")
+                    .unwrap_or(false)
+            })
+            .expect("the recovery action remains focusable after scrolling");
 
         for _ in 0..app.focusable_order.len() {
             if app.focused_node == Some(action_node) {
@@ -260,11 +258,11 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
             &mut app,
             &named_key_event(NamedKey::Enter, ElementState::Pressed),
         ));
-        assert!(matches!(
-            app.state.doc.get(automerge::ROOT, "empty.review"),
-            Ok(Some((automerge::Value::Scalar(value), _)))
-                if value.as_ref().as_bool() == Some(true)
-        ));
+        assert_eq!(
+            invocations.get(),
+            1,
+            "Enter invokes the empty state's published action exactly once"
+        );
     }
 }
 
@@ -282,32 +280,22 @@ fn named_key_event(key: NamedKey, state: ElementState) -> WindowEvent {
         None,
         logical_key,
     );
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
-    }
+    crate::synthetic_input::keyboard_input(event)
 }
 
 fn send_widget_then_host_fallback(app: &mut App, event: &WindowEvent) -> bool {
-    let mut handled = false;
-    let mut focus_target = None;
-    app.root_widget.handle_event(
-        event,
-        &mut crate::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &app.input.modifiers,
-            state: &mut app.state.doc,
-            path: &app.state.root,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: app.layout.root_node.unwrap(),
-            taffy: &app.layout.taffy,
-        },
-    );
-    if let Some(target) = focus_target {
+    let sent = crate::testing::Dispatch::new()
+        .modifiers(app.input.modifiers)
+        .doc(&mut app.state.doc)
+        .path(&app.state.root)
+        .layout(&app.layout.taffy, app.layout.root_node.unwrap())
+        .send(app.root_widget.as_mut(), event);
+    let mut handled = sent.handled;
+    if let Some(target) = sent.focus_target {
         app.set_focused_node(Some(target));
     }
     app.handle_unconsumed_activation_key(event, &mut handled);
+    // Native input settles queued typed controls after widget/host routing.
+    app.dispatch_control_invocations();
     handled
 }

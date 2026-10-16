@@ -1,7 +1,7 @@
 //! Acknowledged commits and the live plane through one host: the author
 //! learns the host order of a persisted commit while other subscribers get
 //! it as a plain delta, and live frames reach only live members, stamped
-//! with the authenticated sender and validated by the host.
+//! with the authenticated sender: only sealed frames, forwarded unchanged.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -9,7 +9,7 @@
 )]
 use std::time::Duration;
 
-use tilo_relay::live::{LiveFrame, LiveRecord, PresenceFrame};
+use tilo_relay::live::{LiveFrame, LiveKind, LiveRecord, PresenceFrame, SealedLiveFrame};
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -61,19 +61,39 @@ async fn nothing_matching(client: &RelayClient, mut want: impl FnMut(&Envelope) 
     }
 }
 
-fn presence(seq: u64) -> Vec<u8> {
+fn record() -> LiveRecord {
+    LiveRecord {
+        app: "so.tilo.notes".into(),
+        record: "r".into(),
+    }
+}
+
+/// A presence frame in the clear, which the host never relays.
+fn cleartext_presence(seq: u64) -> Vec<u8> {
     LiveFrame::Presence(PresenceFrame {
+        place: None,
         seq,
         sent_at_ms: 1,
-        focus: Some(LiveRecord {
-            app: "so.tilo.notes".into(),
-            record: "r".into(),
-        }),
+        focus: Some(record()),
         pointer: Some([3.0, 4.0]),
         selection: None,
         drag: None,
         participant: None,
     })
+    .encode()
+    .unwrap()
+}
+
+/// A sealed presence frame: its payload is opaque to the host.
+fn presence(seq: u64) -> Vec<u8> {
+    SealedLiveFrame {
+        kind: LiveKind::Presence,
+        seq,
+        record: record().digest(),
+        channel: [7; 16],
+        epoch: 1,
+        payload: vec![0xa5; 48],
+    }
     .encode()
     .unwrap()
 }
@@ -164,15 +184,18 @@ async fn commits_are_acknowledged_and_live_frames_reach_live_members() {
             active: true,
         }
     );
-    // A forged sender and an invalid frame: the first arrives stamped with
-    // the real sender, the second is dropped by the host.
-    b_client
-        .send(Envelope::Live {
-            workspace_id: WS,
-            from_device_public_key: c.device_pubkey(),
-            frame: vec![0xff, 0x00],
-        })
-        .unwrap();
+    // An invalid frame and a frame in the clear are dropped by the host; a
+    // sealed frame with a forged sender arrives unchanged, stamped with the
+    // real sender.
+    for frame in [vec![0xff, 0x00], cleartext_presence(1)] {
+        b_client
+            .send(Envelope::Live {
+                workspace_id: WS,
+                from_device_public_key: c.device_pubkey(),
+                frame,
+            })
+            .unwrap();
+    }
     b_client
         .send(Envelope::Live {
             workspace_id: WS,

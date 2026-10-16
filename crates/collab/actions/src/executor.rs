@@ -14,13 +14,170 @@
 //! actor id per action means its single change is `seq == 1` on every
 //! replica, so the change hash is content-addressed identical everywhere.
 
+use automerge::ActorId;
 use automerge::transaction::{CommitOptions, Transactable};
 use tilo_automerge::ApplyIncoming;
 
 use crate::action::{Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus};
-use crate::context::ActionContext;
+use crate::context::{ActionContext, ChangeKind};
+use crate::entry::{Described, Did};
 use crate::envelope::ActionEnvelope;
 use crate::registry::ActionRegistry;
+
+thread_local! {
+    static INVOKING: std::cell::RefCell<Option<ActionContext>> = const { std::cell::RefCell::new(None) };
+    static OPEN_STEP: std::cell::Cell<Option<ActionId>> = const { std::cell::Cell::new(None) };
+}
+
+/// Open the undo step the changes committed on this thread join until the
+/// next one opens: every action applied meanwhile records it as its
+/// [`gesture`](ActionContext::gesture), so the document's history takes them
+/// back as one step. The host's history opens one at every step boundary;
+/// `None` closes it.
+pub fn open_step(step: Option<ActionId>) {
+    OPEN_STEP.with(|open| open.set(step));
+}
+
+/// The undo step open on this thread, if any (see [`open_step`]).
+pub fn current_step() -> Option<ActionId> {
+    OPEN_STEP.with(std::cell::Cell::get)
+}
+
+/// The document key prefix of a step's undo marker, followed by the step's
+/// change hash: `true` once taken back, a negative attempt count while its
+/// undo waits for an outside consequence to settle, a positive one while its
+/// redo does.
+pub const UNDONE_KEY: &str = "tilo:undone:";
+
+thread_local! {
+    /// The steps the action applying now undoes or redoes, and whether it
+    /// queued an outside consequence that settles them.
+    static COMPENSATING: std::cell::RefCell<Option<(Vec<String>, bool)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The undo or redo of the steps `marks` (their change hashes) applying its
+/// compensating action on this thread: an outside consequence the action
+/// queues reads them ([`await_compensation`]), and the step counts as taken
+/// back (or brought back) only once that consequence settles
+/// ([`settle_compensation`]).
+pub struct CompensatingScope(Option<(Vec<String>, bool)>);
+
+impl CompensatingScope {
+    #[must_use]
+    pub fn enter(marks: Vec<String>) -> Self {
+        Self(COMPENSATING.with(|current| current.replace(Some((marks, false)))))
+    }
+
+    /// Whether the action queued an outside consequence that will settle
+    /// the steps.
+    #[must_use]
+    pub fn awaited(&self) -> bool {
+        COMPENSATING.with(|current| {
+            current
+                .borrow()
+                .as_ref()
+                .is_some_and(|(_, awaited)| *awaited)
+        })
+    }
+}
+
+impl Drop for CompensatingScope {
+    fn drop(&mut self) {
+        COMPENSATING.with(|current| *current.borrow_mut() = self.0.take());
+    }
+}
+
+/// The steps an outside consequence queued now settles, recording that
+/// their undo or redo waits for it; empty outside a compensation.
+#[must_use]
+pub fn await_compensation() -> Vec<String> {
+    COMPENSATING.with(|current| {
+        current
+            .borrow_mut()
+            .as_mut()
+            .map(|(marks, awaited)| {
+                *awaited = true;
+                marks.clone()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// Mark the step `hash` as waiting for the outside consequence its undo (or,
+/// with `redo`, its redo) queued: the next attempt's marker, negative for an
+/// undo, positive for a redo. The step stays as it was until
+/// [`settle_compensation`] completes it.
+///
+/// # Errors
+/// Refuses when the attempts exceed the budget or the document refuses the
+/// write.
+pub fn await_settlement(doc: &mut Doc, hash: &str, redo: bool) -> Result<(), ActionError> {
+    use automerge::ReadDoc as _;
+    let key = format!("{UNDONE_KEY}{hash}");
+    let before = doc
+        .get(automerge::ROOT, &key)?
+        .and_then(|(value, _)| value.as_i64())
+        .filter(|attempt| (*attempt > 0) == redo && *attempt != 0)
+        .unwrap_or(0);
+    let attempt = if redo {
+        before.checked_add(1)
+    } else {
+        before.checked_sub(1)
+    }
+    .ok_or_else(|| ActionError::Refused("settlement attempts exceed the budget".into()))?;
+    doc.put(automerge::ROOT, key, attempt)?;
+    Ok(())
+}
+
+/// Mark the undo (or redo) of the step `hash` complete: its outside
+/// consequence settled.
+///
+/// # Errors
+/// Refuses a step whose undo or redo waits for nothing.
+pub fn settle_compensation(doc: &mut Doc, hash: &str) -> Result<(), ActionError> {
+    use automerge::ReadDoc as _;
+    let key = format!("{UNDONE_KEY}{hash}");
+    let pending = doc
+        .get(automerge::ROOT, &key)?
+        .and_then(|(value, _)| value.as_i64())
+        .filter(|attempt| *attempt != 0)
+        .ok_or_else(|| ActionError::Refused("history compensation is not pending".into()))?;
+    if pending < 0 {
+        doc.put(automerge::ROOT, key, true)?;
+    } else {
+        doc.delete(automerge::ROOT, key)?;
+    }
+    Ok(())
+}
+
+/// The context of the action whose [`Action::apply`] is running on this
+/// thread: who invoked it and in which work group (an agent run). Pinned by
+/// the envelope like the actor and the time, so a replica replaying the
+/// action reads the same value. `None` outside an apply, or for an action
+/// dispatched with no context.
+///
+/// An action whose meaning depends on its author — "undo my last step" —
+/// reads it here; any other action must not.
+pub fn invoking_context() -> Option<ActionContext> {
+    INVOKING.with(|current| current.borrow().clone())
+}
+
+/// Sets [`invoking_context`] for one apply and restores the outer value.
+struct InvokingScope(Option<ActionContext>);
+
+impl InvokingScope {
+    fn enter(context: Option<ActionContext>) -> Self {
+        Self(INVOKING.with(|current| current.replace(context)))
+    }
+}
+
+impl Drop for InvokingScope {
+    fn drop(&mut self) {
+        let outer = self.0.take();
+        INVOKING.with(|current| *current.borrow_mut() = outer);
+    }
+}
 
 /// Build an envelope for `action` at the doc's current heads, without
 /// applying — used by [`dispatch`] so a `ServerPreferred` action can be
@@ -31,21 +188,105 @@ fn envelope_for(
     encoded: EncodedAction,
     actor: Option<&[u8]>,
     context: Option<ActionContext>,
-) -> ActionEnvelope {
+) -> Result<ActionEnvelope, ActionError> {
     let base = doc.get_heads();
+    // The action declares what it is; a context may only say a content
+    // action is nobody's step this time (a record's first-run seed).
     let change = action.change_kind();
-    let context = match context {
-        Some(context) => Some(context.with_change(change)),
-        None => (!change.is_content()).then(|| ActionContext::default().with_change(change)),
+    let id = ActionId::new();
+    let mut context = context.unwrap_or_default();
+    if change != ChangeKind::Content {
+        context.change = change;
+    }
+    context.kind = Some(action.action_kind());
+    if action.incoming_message()
+        && !context
+            .facets
+            .iter()
+            .any(|facet| facet.key == crate::INCOMING_MESSAGE_FACET)
+    {
+        context.facets.push(crate::ActionFacet::new(
+            crate::INCOMING_MESSAGE_FACET,
+            "true",
+        ));
+    }
+    if context.gesture.is_none() {
+        context.gesture = current_step();
+    }
+    // What history records the step did: described by the value itself from
+    // the document before it applies, else as the published action the door
+    // resolved, else as the verb its encoded form names.
+    let app = context.app.as_ref().map(|app| app.id.clone());
+    // The value describes itself as it will apply: under its invoker.
+    let own = {
+        let _invoking = InvokingScope::enter(Some(context.clone()));
+        action.describe(doc)
     };
-    ActionEnvelope {
-        id: ActionId::new(),
+    let described = own
+        .or_else(|| context.described())
+        .or_else(|| Described::from_encoded(&encoded, app.as_deref()));
+    if let Some(mut described) = described {
+        if let Some(app) = app {
+            name_app(&mut described.what, &app);
+        }
+        context = context.with_described(described);
+    }
+    // Caller-supplied descriptive context cannot choose executable history.
+    // Compute it from the actual decoded action at its canonical before state,
+    // under the actor the change commits as: what the action mints (the
+    // entry a compensation names) depends on it.
+    let actor = actor.filter(|a| !a.is_empty()).map(<[u8]>::to_vec);
+    let committing = actor
+        .clone()
+        .map_or_else(|| ActorId::from(id.actor_bytes().to_vec()), ActorId::from);
+    let compensation = inverse_as(doc, action, committing);
+    // Only what undo adds is bounded hard: the action itself is recorded
+    // when it fits the budget, and travels in the envelope anyway.
+    if let Some(compensation) = &compensation
+        && serde_json::to_vec(compensation)
+            .map_err(ActionError::Encode)?
+            .len()
+            > crate::context::COMPENSATION_BUDGET
+    {
+        return Err(ActionError::Refused(
+            "document compensation exceeds the history budget".into(),
+        ));
+    }
+    context.action = Some(recorded_form(&encoded)?);
+    context.compensation = compensation;
+    let context = Some(context);
+    Ok(ActionEnvelope {
+        id,
         action: encoded,
         base_heads: base.iter().map(|h| h.0).collect(),
         timestamp: tilo_clock::unix_now_i64(),
         locus: action.locus(),
-        actor: actor.filter(|a| !a.is_empty()).map(<[u8]>::to_vec),
+        actor,
         context,
+    })
+}
+
+/// The action's [`inverse_encoded`](Action::inverse_encoded) at `doc`, as
+/// the change written by `actor` records it: what the action mints depends
+/// on its writer.
+pub fn inverse_as(doc: &mut Doc, action: &dyn Action, actor: ActorId) -> Option<EncodedAction> {
+    let previous = doc.get_actor().clone();
+    doc.set_actor(actor);
+    let inverse = action.inverse_encoded(doc);
+    doc.set_actor(previous);
+    inverse
+}
+
+/// Fill the app of every verb in `what` that does not name one.
+fn name_app(what: &mut Did, app: &str) {
+    match what {
+        Did::Verb(verb) if verb.action.app.is_empty() => app.clone_into(&mut verb.action.app),
+        Did::Group(group) => {
+            for member in &mut group.members {
+                name_app(member, app);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -88,7 +329,11 @@ fn apply_under_envelope(
     // start from a clean commit boundary and the action's ops land in
     // their own change under the pinned actor.
     doc.set_actor(env.actor());
-    if let Err(e) = action.apply(doc) {
+    let applied = {
+        let _invoking = InvokingScope::enter(env.context.clone());
+        action.apply(doc)
+    };
+    if let Err(e) = applied {
         abort_pinned_change(doc, prev_actor);
         return Err(e);
     }
@@ -97,11 +342,16 @@ fn apply_under_envelope(
         // change under the pinned timestamp, content-addressed identical on
         // origin and every replaying replica.
         let mut options = CommitOptions::default().with_time(env.timestamp);
-        if let Some(message) = env.context.as_ref().and_then(ActionContext::change_message) {
+        if let Some(message) = env
+            .context
+            .as_ref()
+            .and_then(|context| entry_message(doc, &env.actor(), context))
+        {
             options = options.with_message(message);
         }
         doc.commit_with(options);
         doc.set_actor(prev_actor);
+        crate::content::keep(env);
     } else {
         // No ops: a genuine no-op. Do not `commit_with` (it would pin then
         // prune this action's fresh actor and desync the patch log — see the
@@ -109,6 +359,88 @@ fn apply_under_envelope(
         abort_pinned_change(doc, prev_actor);
     }
     Ok(())
+}
+
+/// The message `context` is written with by `actor` on `doc`: as the
+/// continuation of the actor's previous entry when the change continues its
+/// gesture (a head of `doc` is the actor's, of the same gesture and step),
+/// else whole. A function of the document, so a replaying device writes the
+/// same message, hence the same change.
+#[must_use]
+pub fn entry_message(doc: &Doc, actor: &ActorId, context: &ActionContext) -> Option<String> {
+    if context.gesture.is_some() && context.compensation.is_none() {
+        let document = doc.committed_document();
+        let continuation = doc.committed_heads().into_iter().find_map(|head| {
+            let meta = document.get_change_meta_by_hash(&head)?;
+            if meta.actor.as_ref() != actor {
+                return None;
+            }
+            context.continuation_of(&entry_of(document, head)?)
+        });
+        if continuation.is_some() {
+            return continuation;
+        }
+    }
+    context.change_message()
+}
+
+/// How deep [`entry_of`] follows a gesture's continuations back to its
+/// first entry.
+const MAX_CONTINUATIONS: usize = 4096;
+
+/// The entry of the change `hash`: its message's, or for a continuation its
+/// gesture's first entry with the continuation's action (found by following
+/// its writer's earlier changes).
+#[must_use]
+pub fn entry_of(doc: &automerge::Automerge, hash: automerge::ChangeHash) -> Option<ActionContext> {
+    let meta = doc.get_change_meta_by_hash(&hash)?;
+    let message = meta.message.as_deref()?;
+    if let Some(entry) = ActionContext::from_change_message(message) {
+        return Some(entry);
+    }
+    let gesture = ActionContext::continued_gesture(message)?;
+    let actor = meta.actor.clone();
+    let mut at = meta.deps.clone();
+    for _ in 0..MAX_CONTINUATIONS {
+        let earlier = at.iter().find_map(|dep| {
+            let meta = doc.get_change_meta_by_hash(dep)?;
+            (meta.actor == actor).then_some(meta)
+        })?;
+        let text = earlier.message.as_deref()?;
+        if let Some(first) = ActionContext::from_change_message(text) {
+            return (first.gesture == Some(gesture))
+                .then(|| ActionContext::continued(message, &first))
+                .flatten();
+        }
+        if ActionContext::continued_gesture(text) != Some(gesture) {
+            return None;
+        }
+        at = earlier.deps.clone();
+    }
+    None
+}
+
+/// The entries of a document's changes read in causal order, each
+/// continuation folded into its gesture's first entry as it is read.
+#[derive(Default)]
+pub struct EntryReader {
+    firsts: std::collections::HashMap<(ActorId, ActionId), ActionContext>,
+}
+
+impl EntryReader {
+    /// The entry of a change by `actor` with `message`, read after every
+    /// change before it.
+    pub fn read(&mut self, actor: &ActorId, message: Option<&str>) -> Option<ActionContext> {
+        let message = message?;
+        if let Some(entry) = ActionContext::from_change_message(message) {
+            if let Some(gesture) = entry.gesture {
+                self.firsts.insert((actor.clone(), gesture), entry.clone());
+            }
+            return Some(entry);
+        }
+        let gesture = ActionContext::continued_gesture(message)?;
+        ActionContext::continued(message, self.firsts.get(&(actor.clone(), gesture))?)
+    }
 }
 
 /// Abandon a dispatch that produced no committed change, leaving the
@@ -132,7 +464,7 @@ fn apply_under_envelope(
 /// document content and history are untouched, so replay stays
 /// byte-identical. Runs only on this abandon path — a change-producing
 /// dispatch keeps its patch log intact.
-fn abort_pinned_change(doc: &mut Doc, prev_actor: automerge::ActorId) {
+fn abort_pinned_change(doc: &mut Doc, prev_actor: ActorId) {
     doc.rollback();
     doc.reset_diff_cursor();
     doc.set_actor(prev_actor);
@@ -169,7 +501,7 @@ pub fn apply_local_by(
     encoded: EncodedAction,
     actor: Option<&[u8]>,
 ) -> Result<ActionEnvelope, ActionError> {
-    let env = envelope_for(doc, action, encoded, actor, None);
+    let env = envelope_for(doc, action, encoded, actor, None)?;
     apply_under_envelope(doc, action, &env)?;
     Ok(env)
 }
@@ -188,7 +520,7 @@ pub fn apply_local_with_context(
     actor: Option<&[u8]>,
     context: ActionContext,
 ) -> Result<ActionEnvelope, ActionError> {
-    let env = envelope_for(doc, action, encoded, actor, Some(context));
+    let env = envelope_for(doc, action, encoded, actor, Some(context))?;
     apply_under_envelope(doc, action, &env)?;
     Ok(env)
 }
@@ -210,6 +542,7 @@ pub fn replay(
     let action = registry.decode(&env.action)?;
     let base_heads = env.base_change_hashes();
     if doc.get_heads() == base_heads {
+        validate_compensation(doc, action.as_ref(), env)?;
         return apply_under_envelope(doc, action.as_ref(), env);
     }
 
@@ -222,8 +555,156 @@ pub fn replay(
     // `fork_at` fails closed when the dependencies have not arrived yet; the
     // transport can retry once it has the missing base changes.
     let mut replay_base = doc.fork_at(&base_heads)?;
+    validate_compensation(&mut replay_base, action.as_ref(), env)?;
     apply_under_envelope(&mut replay_base, action.as_ref(), env)?;
     doc.merge_incoming(&mut replay_base)?;
+    Ok(())
+}
+
+/// What replaying a received change showed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Verified {
+    /// The action the change records reproduces exactly this change.
+    Reproduced,
+    /// The change records no action to replay (a framework change: a
+    /// record's genesis, a checkpoint, a merge).
+    NothingRecorded,
+    /// The change records an action this replica cannot decode: the app is
+    /// not installed here, so another device has to verify it.
+    UnknownAction(String),
+    /// The recorded action names content (its large parts) that is not in
+    /// this device's content store yet: the change is held until it is.
+    ContentMissing(String),
+}
+
+/// The action a change records, encoded as the executor dispatched it.
+fn recorded_action(context: &ActionContext) -> Option<&EncodedAction> {
+    context.action.as_ref()
+}
+
+/// The action as its change records it: itself when it fits the history
+/// budget, else with its large parts kept as content
+/// ([`EncodedAction::with_content_parts`]). An action too large even then
+/// is refused: a change never commits without the action it ran.
+///
+/// # Errors
+/// An action whose recorded form does not fit the budget.
+pub fn recorded_form(action: &EncodedAction) -> Result<EncodedAction, ActionError> {
+    if recorded_size(action)? <= crate::context::HISTORY_BUDGET {
+        return Ok(action.clone());
+    }
+    let (recorded, _) = action.with_content_parts(crate::content::CONTENT_PART_THRESHOLD)?;
+    if recorded_size(&recorded)? > crate::context::HISTORY_BUDGET {
+        return Err(ActionError::Refused(
+            "the action is too large to record, even with its large parts kept as content".into(),
+        ));
+    }
+    Ok(recorded)
+}
+
+/// What an entry's action takes, encoded.
+fn recorded_size(action: &EncodedAction) -> Result<usize, ActionError> {
+    Ok(serde_json::to_vec(action)
+        .map_err(ActionError::Encode)?
+        .len())
+}
+
+/// Replay the action the change `hash` records on the document it was
+/// authored against, and check that it produces exactly that change: same
+/// operations, same actor, time and message, so the same hash. This is what
+/// a device that has the app does with every change it receives, beside the
+/// relay's grant check: an author granted an action who wrote something else
+/// inside its storage units is caught here.
+///
+/// # Errors
+/// Refuses a change that is not in `doc`, whose base is incomplete, or that
+/// its recorded action does not reproduce.
+pub fn verify_change(
+    doc: &mut Doc,
+    hash: automerge::ChangeHash,
+    registry: &ActionRegistry,
+) -> Result<Verified, ActionError> {
+    let change = doc
+        .get_change_meta_by_hash(&hash)
+        .ok_or_else(|| ActionError::Refused("the change is not in the document".into()))?
+        .into_owned();
+    let Some(context) = entry_of(doc.committed_document(), hash) else {
+        return Ok(Verified::NothingRecorded);
+    };
+    let Some(recorded) = recorded_action(&context) else {
+        return Ok(Verified::NothingRecorded);
+    };
+    if !registry.contains(&recorded.type_id) {
+        return Ok(Verified::UnknownAction(recorded.type_id.clone()));
+    }
+    let action = match registry.resolve(recorded)? {
+        Ok(action) => action,
+        Err(missing) => return Ok(Verified::ContentMissing(missing.0)),
+    };
+    let env = ActionEnvelope {
+        id: ActionId::new(),
+        action,
+        base_heads: change.deps.iter().map(|head| head.0).collect(),
+        timestamp: change.timestamp,
+        locus: ExecutionLocus::ClientLocal,
+        actor: Some(change.actor.to_bytes().to_vec()),
+        context: Some(context),
+    };
+    let mut original = doc.fork_at(&change.deps)?;
+    replay(&mut original, &env, registry)?;
+    if original.get_heads() != [hash] {
+        return Err(ActionError::Refused(
+            "the change is not what its recorded action produces".into(),
+        ));
+    }
+    Ok(Verified::Reproduced)
+}
+
+/// Decode a recorded inverse only after reproducing its original change.
+/// Descriptive CRDT metadata alone cannot install executable history.
+///
+/// # Errors
+/// Refuses missing changes, forged inverses, and changes that their recorded
+/// action cannot reproduce at the original dependency heads.
+pub fn verified_compensation(
+    doc: &mut Doc,
+    hash: automerge::ChangeHash,
+    registry: &ActionRegistry,
+) -> Result<Option<Box<dyn Action>>, ActionError> {
+    doc.get_change_meta_by_hash(&hash)
+        .ok_or_else(|| ActionError::Refused("history change is unavailable".into()))?;
+    let inverse = entry_of(doc.committed_document(), hash).and_then(|context| context.compensation);
+    let Some(inverse) = inverse else {
+        return Ok(None);
+    };
+    match verify_change(doc, hash, registry)? {
+        Verified::Reproduced => registry.decode(&inverse).map(Some),
+        Verified::NothingRecorded | Verified::UnknownAction(_) | Verified::ContentMissing(_) => {
+            Err(ActionError::Refused(
+                "recorded history action does not reproduce its change".into(),
+            ))
+        }
+    }
+}
+
+fn validate_compensation(
+    doc: &mut Doc,
+    action: &dyn Action,
+    env: &ActionEnvelope,
+) -> Result<(), ActionError> {
+    let Some(context) = env.context.as_ref() else {
+        return Ok(());
+    };
+    let Some(recorded) = context.action.as_ref() else {
+        return Ok(());
+    };
+    if recorded != &recorded_form(&env.action)?
+        || inverse_as(doc, action, env.actor()) != context.compensation
+    {
+        return Err(ActionError::Refused(
+            "recorded compensation differs from the action's canonical before state".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -356,13 +837,13 @@ fn dispatch_by_maybe_context(
     let context = context.map(|context| context.with_inferred_app(&encoded.type_id));
     match action.locus() {
         ExecutionLocus::ClientLocal => {
-            let env = envelope_for(doc, action, encoded, actor, context);
+            let env = envelope_for(doc, action, encoded, actor, context)?;
             apply_under_envelope(doc, action, &env)?;
             transport.replicate(&env);
             Ok(Dispatched::AppliedLocal(env))
         }
         ExecutionLocus::ServerPreferred => {
-            let env = envelope_for(doc, action, encoded, actor, context);
+            let env = envelope_for(doc, action, encoded, actor, context)?;
             match transport.submit_to_host(&env) {
                 HostDecision::AcceptedByHost => Ok(Dispatched::SubmittedToHost(env)),
                 HostDecision::Unavailable => Err(ActionError::Refused(

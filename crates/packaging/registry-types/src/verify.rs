@@ -152,7 +152,7 @@ fn parse_signature_opt(hex_str: &str) -> Option<Signature> {
 mod tests {
     use super::*;
     use crate::change::sign_change_request;
-    use crate::entry::{RegistryVersion, sign_entry};
+    use crate::entry::{EntryKind, RegistryVersion, TappArtifact, VersionArtifact, sign_entry};
     use ed25519_dalek::SigningKey;
     use getrandom::{SysRng, rand_core::UnwrapErr};
 
@@ -161,6 +161,7 @@ mod tests {
         let pk_hex = hex::encode(key.verifying_key().to_bytes());
         let entry = RegistryEntry {
             package_id: "so.tilo.editor".into(),
+            kind: EntryKind::App,
             name: "Editor".into(),
             description: "CRDT-native text editor".into(),
             tagline: "Edit together".into(),
@@ -175,17 +176,20 @@ mod tests {
             publisher_pubkey_hex: pk_hex,
             versions: vec![RegistryVersion {
                 version: "2026.06".into(),
-                tapp_url: "https://apps.tilo.so/editor/2026.06.tapp".into(),
-                tapp_root_hash_hex: "cd".repeat(32),
-                tapp_size_bytes: 1024,
                 released_at_unix: 100,
-                tapp_blake3_hex: "ef".repeat(32),
-                target: crate::entry::RegistryTarget {
-                    platform: crate::entry::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                },
+                artifact: VersionArtifact::Tapp(TappArtifact {
+                    tapp_url: "https://apps.tilo.so/editor/2026.06.tapp".into(),
+                    tapp_root_hash_hex: "cd".repeat(32),
+                    tapp_size_bytes: 1024,
+                    tapp_blake3_hex: "ef".repeat(32),
+                    target: crate::entry::RegistryTarget {
+                        platform: crate::entry::TILO_OS_PLATFORM.into(),
+                        architecture: "x86_64".into(),
+                        isa: "x86_64-v3".into(),
+                        runtime: None,
+                        interfaces: Vec::new(),
+                    },
+                }),
             }],
             updated_at_unix: 200,
             signature_hex: String::new(),

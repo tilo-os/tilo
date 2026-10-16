@@ -9,8 +9,9 @@
 //!   once (or loads the page from the same origin after accepting it).
 //! - **Files**: a PEM chain and key on disk, renewed by whatever manages them
 //!   — an ACME client (certbot, lego, Caddy) on a home host, or the Cloud
-//!   machine's managed certificate. The listener reloads nothing by itself;
-//!   restart it after renewal.
+//!   machine's managed certificate. Both listeners read the pair again when
+//!   either file changes (looked at every 30 s), so a renewal needs no
+//!   restart.
 //! - **Managed**: ACME inside the host. Not implemented: configure `Files`
 //!   from an ACME client, or terminate HTTPS at the Cloud edge. WebTransport
 //!   is HTTP/3 over UDP, so an edge in front of it must pass UDP through (or
@@ -19,7 +20,6 @@
 
 use std::path::PathBuf;
 
-use rustls::pki_types::pem::PemObject as _;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 /// How the listener obtains its certificate.
@@ -41,6 +41,9 @@ pub enum TlsSource {
         certificate_chain: PathBuf,
         /// PKCS#8, PKCS#1 or SEC1 private key.
         private_key: PathBuf,
+        /// The name the certificate is for, which browsers dial. Needed for
+        /// addresses the host hands out when it listens on every address.
+        host: Option<String>,
     },
     /// ACME inside the host (not implemented).
     Managed {
@@ -55,6 +58,8 @@ pub(crate) struct Identity {
     pub(crate) key: PrivateKeyDer<'static>,
     /// Set for development certificates, which browsers pin by hash.
     pub(crate) pinned_sha256: Option<String>,
+    /// The PEM pair to follow for renewals, for certificates from files.
+    pub(crate) files: Option<(PathBuf, PathBuf)>,
 }
 
 impl Identity {
@@ -69,6 +74,7 @@ impl Identity {
                     chain: identity.chain,
                     key: identity.key,
                     pinned_sha256: Some(identity.fingerprint),
+                    files: None,
                 };
                 if let Some(store) = store {
                     save_stored(store, &loaded)?;
@@ -78,20 +84,14 @@ impl Identity {
             TlsSource::Files {
                 certificate_chain,
                 private_key,
+                ..
             } => {
-                let chain = CertificateDer::pem_file_iter(certificate_chain)
-                    .map_err(|error| format!("certificate chain: {error}"))?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| format!("certificate chain: {error}"))?;
-                if chain.is_empty() {
-                    return Err("certificate chain is empty".into());
-                }
-                let key = PrivateKeyDer::from_pem_file(private_key)
-                    .map_err(|error| format!("private key: {error}"))?;
+                let (chain, key) = tilo_moq::tls::load_pem(certificate_chain, private_key)?;
                 Ok(Self {
                     chain,
                     key,
                     pinned_sha256: None,
+                    files: Some((certificate_chain.clone(), private_key.clone())),
                 })
             }
             TlsSource::Managed { domain } => Err(format!(
@@ -101,18 +101,22 @@ impl Identity {
         }
     }
 
+    /// The certificate both listeners present: one that follows renewals
+    /// for files, the loaded one otherwise.
+    pub(crate) fn certificate(
+        &self,
+    ) -> Result<std::sync::Arc<dyn rustls::server::ResolvesServerCert>, String> {
+        match &self.files {
+            Some((chain, key)) => Ok(std::sync::Arc::new(tilo_moq::tls::FileCertificate::load(
+                chain, key,
+            )?)),
+            None => tilo_moq::tls::fixed_certificate(self.chain.clone(), self.key.clone_key()),
+        }
+    }
+
     /// rustls server configuration for HTTPS over TCP (HTTP/2 and HTTP/1.1).
     pub(crate) fn https_config(&self) -> Result<rustls::ServerConfig, String> {
-        let mut config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .map_err(|error| error.to_string())?
-        .with_no_client_auth()
-        .with_single_cert(self.chain.clone(), self.key.clone_key())
-        .map_err(|error| error.to_string())?;
-        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-        Ok(config)
+        tilo_moq::tls::https_server_config(self.certificate()?)
     }
 }
 
@@ -135,6 +139,7 @@ fn load_stored(path: &std::path::Path) -> Option<Identity> {
         chain: vec![CertificateDer::from(stored.certificate)],
         key: PrivateKeyDer::Pkcs8(stored.pkcs8_key.into()),
         pinned_sha256: Some(stored.sha256),
+        files: None,
     })
 }
 
@@ -153,5 +158,11 @@ fn save_stored(path: &std::path::Path, identity: &Identity) -> Result<(), String
         sha256: identity.pinned_sha256.clone().unwrap_or_default(),
     };
     let bytes = postcard::to_allocvec(&stored).map_err(|error| error.to_string())?;
-    atomic_file::write_with_mode(path, &bytes, 0o600).map_err(|error| error.to_string())
+    // A host awaiting its certificate serves before anything else created
+    // its state directory.
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
+        .map_err(|error| error.to_string())
 }

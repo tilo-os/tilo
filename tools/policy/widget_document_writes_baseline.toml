@@ -1,0 +1,4 @@
+# Document writes left in toolkit widget code, per file.
+# Counts may only fall; tools/policy/check_widget_document_writes.py --update
+# records a file that shed some. The goal is an empty table.
+[files]

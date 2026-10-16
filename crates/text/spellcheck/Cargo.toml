@@ -4,20 +4,30 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license.workspace = true
-description = "Self-contained English spelling engine for Tilo: tokenize, check, and suggest corrections"
+description = "Tilo's spelling engine: tokenize, check, and suggest corrections, with an embedded English list and in-process Hunspell dictionaries"
 repository.workspace = true
 homepage.workspace = true
 
-# No external dependencies: tokenization, dictionary loading, and suggestions
-# are implemented in-crate.
 [lib]
 name = "spellcheck"
 path = "src/lib.rs"
 
+[features]
+# The dictionaries (the embedded English list, Hunspell) are not linked into
+# the checks: the program fetches their code the first time something checks
+# spelling and hands it over (`defer_dictionaries`, `install_dictionaries`).
+# The browser desktop uses this to keep them out of its start module.
+lazy-dictionaries = []
+
 [dependencies]
-tilo-xdg-paths = { version = "0.1.0", path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
+# Hunspell dictionaries (.aff/.dic) checked in-process, and the legacy
+# 8-bit encodings many of them declare with `SET`.
+spellbook = "0.4"
+encoding_rs = "0.8"
 
 [dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

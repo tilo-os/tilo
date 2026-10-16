@@ -26,6 +26,27 @@ pub enum ModerationDecision {
     Restore,
 }
 
+impl ModerationDecision {
+    /// The status a case is left in by this decision.
+    #[must_use]
+    pub fn status(self) -> ModerationCaseStatus {
+        match self {
+            Self::NeedsInformation => ModerationCaseStatus::NeedsInformation,
+            Self::NoAction => ModerationCaseStatus::ClosedNoAction,
+            Self::Quarantine => ModerationCaseStatus::Quarantined,
+            Self::Restore => ModerationCaseStatus::Restored,
+        }
+    }
+}
+
+/// The id of the case a report opens: bound to the reported package and the
+/// report's request, so a retried report names the same case.
+#[must_use]
+pub fn moderation_case_id(package_id: &str, request_id: &str) -> String {
+    let hash = blake3::hash(format!("{package_id}:{request_id}").as_bytes());
+    format!("case-{}", hex::encode(&hash.as_bytes()[..12]))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModerationCaseStatus {
@@ -88,6 +109,39 @@ pub struct ModerationCase {
     pub opened_at_unix: u64,
     pub updated_at_unix: u64,
     pub latest_sequence: u64,
+}
+
+impl ModerationCase {
+    /// The case `event` opens, open as of it.
+    #[must_use]
+    pub fn opened_by(event: &ModerationEvent) -> Self {
+        Self {
+            case_id: event.case_id.clone(),
+            package_id: event.package_id.clone(),
+            publisher_pubkey_hex: event.publisher_pubkey_hex.clone(),
+            status: ModerationCaseStatus::Open,
+            opened_at_unix: event.recorded_at_unix,
+            updated_at_unix: event.recorded_at_unix,
+            latest_sequence: event.sequence,
+        }
+    }
+
+    /// The case as of `event`, one of its own: its time and sequence, and
+    /// the status an appeal or a decision leaves it in.
+    pub fn advance(&mut self, event: &ModerationEvent) {
+        self.updated_at_unix = event.recorded_at_unix;
+        self.latest_sequence = event.sequence;
+        match &event.event {
+            ModerationEventKind::ReviewerDecided { decision, .. } => {
+                self.status = decision.status();
+            }
+            ModerationEventKind::PublisherAppealed { .. } => {
+                self.status = ModerationCaseStatus::Appealed;
+            }
+            ModerationEventKind::ReportFiled { .. }
+            | ModerationEventKind::PublisherReplied { .. } => {}
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,15 +363,7 @@ pub fn derive_verified_case(
                     return Err(ModerationWireError::UnauthorizedActor(event.sequence));
                 }
                 saw_report = true;
-                case = Some(ModerationCase {
-                    case_id: event.case_id.clone(),
-                    package_id: event.package_id.clone(),
-                    publisher_pubkey_hex: event.publisher_pubkey_hex.clone(),
-                    status: ModerationCaseStatus::Open,
-                    opened_at_unix: event.recorded_at_unix,
-                    updated_at_unix: event.recorded_at_unix,
-                    latest_sequence: event.sequence,
-                });
+                case = Some(ModerationCase::opened_by(event));
             }
             ModerationEventKind::PublisherReplied { .. }
             | ModerationEventKind::PublisherAppealed { .. } => {
@@ -331,13 +377,9 @@ pub fn derive_verified_case(
                 {
                     return Err(ModerationWireError::UnauthorizedActor(event.sequence));
                 }
-                if matches!(event.event, ModerationEventKind::PublisherAppealed { .. }) {
-                    current.status = ModerationCaseStatus::Appealed;
-                }
-                current.updated_at_unix = event.recorded_at_unix;
-                current.latest_sequence = event.sequence;
+                current.advance(event);
             }
-            ModerationEventKind::ReviewerDecided { decision, .. } => {
+            ModerationEventKind::ReviewerDecided { .. } => {
                 let Some(current) = case.as_mut() else {
                     return Err(ModerationWireError::InvalidCase);
                 };
@@ -348,14 +390,7 @@ pub fn derive_verified_case(
                 {
                     return Err(ModerationWireError::UnauthorizedActor(event.sequence));
                 }
-                current.status = match decision {
-                    ModerationDecision::NeedsInformation => ModerationCaseStatus::NeedsInformation,
-                    ModerationDecision::NoAction => ModerationCaseStatus::ClosedNoAction,
-                    ModerationDecision::Quarantine => ModerationCaseStatus::Quarantined,
-                    ModerationDecision::Restore => ModerationCaseStatus::Restored,
-                };
-                current.updated_at_unix = event.recorded_at_unix;
-                current.latest_sequence = event.sequence;
+                current.advance(event);
             }
         }
     }

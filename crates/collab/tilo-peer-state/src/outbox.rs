@@ -1,6 +1,6 @@
 //! Recover an expired, durable incremental only after fresh governed coverage.
 //! Original signed evidence stays in the outbox until the governor covers it.
-use crate::{DocumentMutation, NeighbourMsg, StatePeer};
+use crate::{DocumentMutation, NeighbourMsg, PeerOutbox, PeerOutboxMut};
 use ed25519_dalek::SigningKey;
 use web_time::{Duration, SystemTime};
 #[derive(Debug, Default)]
@@ -55,24 +55,24 @@ fn replacement(original: &NeighbourMsg, candidate: &NeighbourMsg, now: SystemTim
         _ => false,
     }
 }
-impl StatePeer {
+impl PeerOutbox<'_> {
     /// True only when causal coverage is backed by the exact governed durable receipt.
-    pub fn outbox_message_retired(&self, message: &NeighbourMsg) -> bool {
+    pub fn outbox_message_retired(self, message: &NeighbourMsg) -> bool {
         let NeighbourMsg::AppDocument {
             app_id, record_id, ..
         } = message
         else {
             return false;
         };
-        self.covers(message)
+        self.peer.covers(message)
             && self
+                .peer
                 .durable_coverage(app_id, record_id)
                 .ok()
                 .flatten()
                 .is_some()
     }
-
-    pub fn outbox_status(&self, outbox: &[NeighbourMsg], now: SystemTime) -> OutboxStatus {
+    pub fn outbox_status(self, outbox: &[NeighbourMsg], now: SystemTime) -> OutboxStatus {
         let pending = outbox
             .iter()
             .filter(|message| !self.outbox_message_retired(message))
@@ -88,6 +88,8 @@ impl StatePeer {
                 .count(),
         }
     }
+}
+impl PeerOutboxMut<'_> {
     /// Reconcile a durable outbox with this peer, returning the queue to send.
     ///
     /// # Errors
@@ -95,12 +97,12 @@ impl StatePeer {
     /// Returns an error if a queued message is not authentic or a successor cannot be
     /// signed.
     pub fn reconcile_outbox(
-        &mut self,
+        self,
         outbox: &[NeighbourMsg],
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
-        let mut candidate = self.clone();
+        let mut candidate = self.peer.clone();
         let mut retained = outbox
             .iter()
             .filter(|message| !candidate.covers(message))
@@ -152,7 +154,7 @@ impl StatePeer {
             let renewed = candidate.publish_incremental(app_id, record_id, bytes, key, now)?;
             retained.push(renewed);
         }
-        *self = candidate;
+        *self.peer = candidate;
         Ok(retained)
     }
 }

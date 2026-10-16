@@ -10,45 +10,12 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const REALTIME_PROTOCOL_VERSION: u16 = 1;
 pub const MAX_REALTIME_WIRE_BYTES: usize = 8 * 1024;
 pub const MAX_REALTIME_TOKEN_BYTES: usize = 128;
 pub const MAX_CAPTURE_AUTHORIZATIONS: usize = 4;
 pub const OPAQUE_CAPTURE_AUTHORIZATION_BYTES: usize = 32;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independent media facet on the stable cross-language JSON contract"
-)]
-pub struct RealtimeMediaFacets {
-    pub microphone: bool,
-    pub camera: bool,
-    pub screen_share: bool,
-    pub share_audio: bool,
-}
-
-impl RealtimeMediaFacets {
-    #[must_use]
-    pub const fn valid(self) -> bool {
-        (self.microphone || self.camera || self.screen_share)
-            && (!self.share_audio || self.screen_share)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independent control intent on the stable cross-language JSON contract"
-)]
-pub struct RealtimeControlIntent {
-    pub microphone_muted: bool,
-    pub camera_muted: bool,
-    pub screen_share_paused: bool,
-    pub share_audio_muted: bool,
-}
+pub use collab_types::realtime::{RealtimeControlIntent, RealtimeMediaFacets};
 
 /// Safe app projection registered with the local broker.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

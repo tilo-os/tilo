@@ -37,6 +37,8 @@ pub enum Language {
     C,
     Cpp,
     Go,
+    Verilog,
+    SystemVerilog,
     PlainText,
 }
 
@@ -58,6 +60,8 @@ impl Language {
             Language::C => "C",
             Language::Cpp => "C++",
             Language::Go => "Go",
+            Language::Verilog => "Verilog",
+            Language::SystemVerilog => "SystemVerilog",
             Language::PlainText => "Plain Text",
         }
     }
@@ -80,6 +84,8 @@ impl Language {
             Language::C => "c",
             Language::Cpp => "cpp",
             Language::Go => "go",
+            Language::Verilog => "v",
+            Language::SystemVerilog => "sv",
             Language::PlainText => "txt",
         }
     }
@@ -102,6 +108,8 @@ impl Language {
             "c" | "h" => Language::C,
             "cpp" | "cc" | "cxx" | "hpp" => Language::Cpp,
             "go" => Language::Go,
+            "v" | "vh" => Language::Verilog,
+            "sv" | "svh" => Language::SystemVerilog,
             _ => match name {
                 "Cargo.lock" => Language::Toml,
                 "Makefile" | "Dockerfile" | "Containerfile" => Language::Shell,
@@ -136,7 +144,9 @@ impl Language {
             | Language::TypeScript
             | Language::C
             | Language::Cpp
-            | Language::Go => Some("//"),
+            | Language::Go
+            | Language::Verilog
+            | Language::SystemVerilog => Some("//"),
             Language::Python | Language::Shell | Language::Toml | Language::Yaml => Some("#"),
             Language::Markdown
             | Language::Html
@@ -200,6 +210,8 @@ pub struct Project {
     pub nodes: BTreeMap<NodeId, TreeNode>,
     pub root: NodeId,
     next_id: NodeId,
+    /// Nodes read from disk since [`Self::take_read_from_disk`] last asked.
+    read_from_disk: Vec<NodeId>,
 }
 
 impl Project {
@@ -209,6 +221,7 @@ impl Project {
             nodes: BTreeMap::new(),
             root: 0,
             next_id: 0,
+            read_from_disk: Vec::new(),
         };
         let root = p.alloc();
         p.nodes.insert(
@@ -237,10 +250,9 @@ impl Project {
         id
     }
 
-    /// The id `alloc` will hand out next. Captured at authoring
-    /// time so the Ctrl+K "New file" action and the app's own `New File` command
-    /// target the same buffer node id (and therefore build the identical action).
-    pub fn peek_next_id(&self) -> NodeId {
+    /// The id `alloc` will hand out next.
+    #[cfg(test)]
+    pub(crate) fn peek_next_id(&self) -> NodeId {
         self.next_id
     }
 
@@ -469,13 +481,83 @@ impl Project {
     /// Add a disk-backed folder under `parent`. Its children are read lazily
     /// from `path` the first time it is expanded (`load_children`).
     pub fn add_disk_folder(&mut self, parent: NodeId, name: &str, path: &Path) -> NodeId {
-        self.insert_folder(parent, name, Some(path.to_path_buf()), false)
+        if let Some(id) = self.claim_disk_node(parent, name, path, true) {
+            return id;
+        }
+        let id = self.insert_folder(parent, name, Some(path.to_path_buf()), false);
+        self.identify_from_disk(id);
+        id
     }
 
     /// Add a disk-backed file under `parent`. Its content is read lazily from
     /// `path` the first time the buffer is opened (`file_seed`).
     pub fn add_disk_file(&mut self, parent: NodeId, name: &str, path: &Path) -> NodeId {
-        self.insert_file(parent, name, "", Some(path.to_path_buf()))
+        if let Some(id) = self.claim_disk_node(parent, name, path, false) {
+            return id;
+        }
+        let id = self.insert_file(parent, name, "", Some(path.to_path_buf()));
+        self.identify_from_disk(id);
+        id
+    }
+
+    /// The identity of the entry `name` read from disk under `parent`: the
+    /// same for the same place in the project on every launch and every
+    /// device that opens it, so reopening a folder meets the records it
+    /// left.
+    fn disk_identity(&self, parent: Option<NodeId>, name: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let path = match parent {
+            Some(parent) => format!("{}/{name}", self.path_of(parent)),
+            None => name.to_string(),
+        };
+        let digest = Sha256::digest(path.as_bytes());
+        let mut bytes = [0u8; 16];
+        for (byte, digested) in bytes.iter_mut().zip(digest.iter()) {
+            *byte = *digested;
+        }
+        uuid::Builder::from_random_bytes(bytes)
+            .into_uuid()
+            .to_string()
+    }
+
+    /// Give the node `id`, just read from disk, its identity, and note it
+    /// for the project to record.
+    fn identify_from_disk(&mut self, id: NodeId) {
+        let Some(node) = self.nodes.get(&id) else {
+            return;
+        };
+        let identity = self.disk_identity(node.parent, &node.name.clone());
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.resource_id = identity;
+        }
+        self.read_from_disk.push(id);
+    }
+
+    /// A node the project's records already put at this place: it is the
+    /// entry on disk, read now.
+    fn claim_disk_node(
+        &mut self,
+        parent: NodeId,
+        name: &str,
+        path: &Path,
+        folder: bool,
+    ) -> Option<NodeId> {
+        let identity = self.disk_identity(Some(parent), name);
+        let id = self.node_for_resource(&identity)?;
+        let node = self.nodes.get_mut(&id)?;
+        if node.is_folder() != folder {
+            return None;
+        }
+        node.disk_path = Some(path.to_path_buf());
+        if let NodeKind::Folder { loaded, .. } = &mut node.kind {
+            *loaded = false;
+        }
+        Some(id)
+    }
+
+    /// The nodes read from disk since the last call.
+    pub fn take_read_from_disk(&mut self) -> Vec<NodeId> {
+        std::mem::take(&mut self.read_from_disk)
     }
 
     fn insert_folder(
@@ -608,6 +690,7 @@ impl Project {
         let root = p.root;
         // Point the root at the real directory and mark it unloaded so
         // `load_children` reads it.
+        p.identify_from_disk(root);
         if let Some(node) = p.nodes.get_mut(&root) {
             node.disk_path = Some(path);
             if let NodeKind::Folder {
@@ -701,6 +784,7 @@ impl Project {
             .map_or_else(|| "/".to_string(), dir_display_name);
         let mut p = Project::new(&parent_name);
         let root = p.root;
+        p.identify_from_disk(root);
         let node = p.add_disk_file(root, &file_name, path);
         Ok((p, node))
     }
@@ -900,7 +984,7 @@ fn dir_display_name(path: &Path) -> String {
     )
 }
 
-/// An open editor buffer: a file the user has opened into a tab. The actual
+/// The editor buffer: the file this window shows. The actual
 /// text lives in the CRDT, keyed by `node`; this struct holds the per-buffer
 /// caret/selection and the cached language.
 #[derive(Clone, Debug)]
@@ -941,36 +1025,38 @@ impl OpenBuffer {
     }
 }
 
-/// The full editor session: the project, the ordered list of open buffers,
-/// and which one is active.
+/// The editor session: the project, and the one file this window shows.
+///
+/// A window edits one file. Another file side by side is another editor in a
+/// tab of the desktop's window group, never a tab of this one.
 #[derive(Clone, Debug, Default)]
 pub struct Session {
     pub project: Project,
-    pub open: Vec<OpenBuffer>,
-    pub active: Option<usize>,
+    pub buffer: Option<OpenBuffer>,
 }
 
 impl Session {
     pub fn new(project: Project) -> Self {
         Session {
             project,
-            open: Vec::new(),
-            active: None,
+            buffer: None,
         }
     }
 
-    /// Open the file `node` in a tab, or focus the existing tab if already
-    /// open. Returns the index of the (possibly newly-created) tab.
-    pub fn open_file(&mut self, node: NodeId) -> Option<usize> {
-        let tn = self.project.get(node)?;
-        let NodeKind::File { language, .. } = tn.kind else {
-            return None;
+    /// Show the file `node`, replacing the file shown before. Returns
+    /// whether `node` is a file. The caller keeps unsaved work: replacing a
+    /// modified buffer is its decision, after asking.
+    pub fn open_file(&mut self, node: NodeId) -> bool {
+        let Some(tn) = self.project.get(node) else {
+            return false;
         };
-        if let Some(idx) = self.open.iter().position(|b| b.node == node) {
-            self.active = Some(idx);
-            return Some(idx);
+        let NodeKind::File { language, .. } = tn.kind else {
+            return false;
+        };
+        if self.buffer.as_ref().is_some_and(|b| b.node == node) {
+            return true;
         }
-        let buf = OpenBuffer {
+        self.buffer = Some(OpenBuffer {
             node,
             name: tn.name.clone(),
             language,
@@ -979,75 +1065,29 @@ impl Session {
             stamp: None,
             saved_text: String::new(),
             stale: false,
-        };
-        self.open.push(buf);
-        let idx = self.open.len() - 1;
-        self.active = Some(idx);
-        Some(idx)
-    }
-
-    /// The open buffer for `node`, if any.
-    pub fn buffer_of(&self, node: NodeId) -> Option<&OpenBuffer> {
-        self.open.iter().find(|b| b.node == node)
-    }
-
-    /// Mutable access to the open buffer for `node`.
-    pub fn buffer_of_mut(&mut self, node: NodeId) -> Option<&mut OpenBuffer> {
-        self.open.iter_mut().find(|b| b.node == node)
-    }
-
-    /// Every open buffer with unsaved edits, by tab index. Drives Save All and
-    /// the "you have unsaved work" question on close.
-    pub fn dirty_indices(&self) -> Vec<usize> {
-        self.open
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| b.dirty)
-            .map(|(i, _)| i)
-            .collect()
-    }
-
-    /// Close the tab at `idx`, adjusting the active index so it stays valid.
-    pub fn close_tab(&mut self, idx: usize) {
-        if idx >= self.open.len() {
-            return;
-        }
-        self.open.remove(idx);
-        if self.open.is_empty() {
-            self.active = None;
-        } else {
-            let new_active = match self.active {
-                Some(a) if a > idx => a - 1,
-                Some(a) if a == idx => idx.min(self.open.len() - 1),
-                other => other.unwrap_or(0),
-            };
-            self.active = Some(new_active.min(self.open.len() - 1));
-        }
-    }
-
-    /// Move the open tab at `from` to `to` — a drag-reorder in the tab bar
-    /// must never change which buffer is showing, only where its tab sits.
-    pub fn reorder_tab(&mut self, from: usize, to: usize) {
-        if from >= self.open.len() || to >= self.open.len() || from == to {
-            return;
-        }
-        let buf = self.open.remove(from);
-        self.open.insert(to, buf);
-        self.active = self.active.map(|a| {
-            if a == from {
-                to
-            } else if from < to && a > from && a <= to {
-                a - 1
-            } else if to < from && a >= to && a < from {
-                a + 1
-            } else {
-                a
-            }
         });
+        true
+    }
+
+    /// The shown buffer when it is `node`.
+    pub fn buffer_of(&self, node: NodeId) -> Option<&OpenBuffer> {
+        self.buffer.as_ref().filter(|b| b.node == node)
+    }
+
+    /// Mutable access to the shown buffer when it is `node`.
+    pub fn buffer_of_mut(&mut self, node: NodeId) -> Option<&mut OpenBuffer> {
+        self.buffer.as_mut().filter(|b| b.node == node)
+    }
+
+    /// Stop showing `node`, if it is the shown file.
+    pub fn close_file(&mut self, node: NodeId) {
+        if self.buffer.as_ref().is_some_and(|b| b.node == node) {
+            self.buffer = None;
+        }
     }
 
     pub fn active_buffer(&self) -> Option<&OpenBuffer> {
-        self.active.and_then(|i| self.open.get(i))
+        self.buffer.as_ref()
     }
 }
 
@@ -1062,6 +1102,19 @@ mod tests {
         assert_eq!(Language::from_path("README.md"), Language::Markdown);
         assert_eq!(Language::from_path("Cargo.lock"), Language::Toml);
         assert_eq!(Language::from_path("mystery.xyz"), Language::PlainText);
+    }
+
+    #[test]
+    fn hardware_source_and_header_paths_select_their_dialect() {
+        for name in ["mac.v", "rtl/defines.vh", "RTL/MAC.V", "include/DEFINES.VH"] {
+            assert_eq!(Language::from_path(name), Language::Verilog, "{name}");
+        }
+        for name in ["mac.sv", "rtl/types.svh", "RTL/MAC.SV", "include/TYPES.SVH"] {
+            assert_eq!(Language::from_path(name), Language::SystemVerilog, "{name}");
+        }
+        for language in [Language::Verilog, Language::SystemVerilog] {
+            assert_eq!(language.line_comment(), Some("//"));
+        }
     }
 
     #[test]
@@ -1113,22 +1166,33 @@ mod tests {
     }
 
     #[test]
-    fn session_tabs_follow_the_active_buffer_and_compare_dirty_state() {
+    fn a_session_shows_one_file_and_compares_dirty_state() {
         // Each phase builds its own session or buffer.
-        open_file_is_idempotent();
-        close_tab_adjusts_active();
-        reorder_tab_moves_the_buffer_and_keeps_active_pointed_at_it();
+        opening_another_file_replaces_the_shown_one();
         dirty_is_a_comparison_with_disk_not_a_sticky_flag();
     }
 
-    fn open_file_is_idempotent() {
+    fn opening_another_file_replaces_the_shown_one() {
         let mut p = Project::new("proj");
-        let f = p.add_file(p.root, "a.rs", "x");
+        let a = p.add_file(p.root, "a.rs", "x");
+        let b = p.add_file(p.root, "b.rs", "y");
+        let folder = p.root;
         let mut s = Session::new(p);
-        let i1 = s.open_file(f).unwrap();
-        let i2 = s.open_file(f).unwrap();
-        assert_eq!(i1, i2);
-        assert_eq!(s.open.len(), 1);
+        assert!(s.open_file(a));
+        assert!(s.open_file(a), "showing the shown file again is a no-op");
+        assert_eq!(s.active_buffer().unwrap().node, a);
+        assert!(s.open_file(b));
+        assert_eq!(s.active_buffer().unwrap().node, b, "one file per window");
+        assert!(s.buffer_of(a).is_none());
+        assert!(!s.open_file(folder), "a folder is not a file to show");
+        assert_eq!(s.active_buffer().unwrap().node, b);
+        s.close_file(a);
+        assert!(
+            s.active_buffer().is_some(),
+            "closing another file changes nothing"
+        );
+        s.close_file(b);
+        assert!(s.active_buffer().is_none());
     }
 
     // ---- real filesystem projection -----------------------------------
@@ -1318,64 +1382,6 @@ mod tests {
         assert!(!buf.dirty);
         assert!(!buf.stale);
         assert!(!buf.is_dirty("new"));
-    }
-
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "each single-letter binding names exactly the file it opens (a.rs, b.rs, c.rs); spelling them out would just repeat the string literal two lines down"
-    )]
-    fn close_tab_adjusts_active() {
-        let mut p = Project::new("proj");
-        let a = p.add_file(p.root, "a.rs", "");
-        let b = p.add_file(p.root, "b.rs", "");
-        let c = p.add_file(p.root, "c.rs", "");
-        let mut s = Session::new(p);
-        s.open_file(a);
-        s.open_file(b);
-        s.open_file(c);
-        s.active = Some(2);
-        s.close_tab(0);
-        // Active shifts down by one to still point at "c".
-        assert_eq!(s.active, Some(1));
-        assert_eq!(s.open.len(), 2);
-    }
-
-    #[allow(
-        clippy::many_single_char_names,
-        reason = "each single-letter binding names exactly the file it opens (a.rs, b.rs, c.rs); spelling them out would just repeat the string literal two lines down"
-    )]
-    fn reorder_tab_moves_the_buffer_and_keeps_active_pointed_at_it() {
-        let mut p = Project::new("proj");
-        let a = p.add_file(p.root, "a.rs", "");
-        let b = p.add_file(p.root, "b.rs", "");
-        let c = p.add_file(p.root, "c.rs", "");
-        let mut s = Session::new(p);
-        s.open_file(a);
-        s.open_file(b);
-        s.open_file(c);
-        s.active = Some(1); // "b" is active
-
-        s.reorder_tab(0, 2); // drag "a" to the end: [b, c, a]
-        let names: Vec<&str> = s.open.iter().map(|buf| buf.name.as_str()).collect();
-        assert_eq!(names, vec!["b.rs", "c.rs", "a.rs"]);
-        assert_eq!(
-            s.active,
-            Some(0),
-            "reordering a buffer other than the active one must still \
-             follow the active buffer to its new index"
-        );
-
-        s.reorder_tab(0, 2); // drag "b" (still active) to the end too.
-        assert_eq!(
-            s.active,
-            Some(2),
-            "reordering the active buffer itself must follow it exactly"
-        );
-
-        // Out-of-range and no-op reorders must not panic or move anything.
-        s.reorder_tab(0, 0);
-        s.reorder_tab(0, 99);
-        assert_eq!(s.open.len(), 3);
     }
 
     fn durable_tree_ids_project_across_different_local_arena_layouts() {

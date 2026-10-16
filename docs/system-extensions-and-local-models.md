@@ -25,7 +25,10 @@ The catalogue may describe artifacts, compatibility, display metadata, and
 fixed typed launch fields. It may not contain scripts or arbitrary command
 lines. Every accepted extension has:
 
-- an Ed25519 signature from a key already trusted by the installed Tilo image;
+- a signature from a key already trusted by the installed Tilo image (Ed25519
+  release keys in `trust.d/` for BootPacks and runtimes; the dedicated
+  extension-manifest key `keys/extensions.pub` for downloaded system
+  extensions, see below);
 - an HTTPS retrieval location, exact byte length, and SHA-256 digest;
 - an immutable model revision or OCI manifest digest—never a mutable tag;
 - explicit base-image, architecture, kernel, accelerator, memory, and storage
@@ -44,6 +47,14 @@ software, the signed catalogue points at the vendor's official source and the
 device downloads it only after the user accepts the displayed terms. Acceptance
 records identify the license and catalogue revision; they never contain
 credentials.
+
+Downloaded system extensions (`/usr/share/tilo/system-extensions/sysext.d/`)
+apply this to content Tilo cannot distribute at all, such as patent-encumbered
+media codecs: CI resolves the publishers' packages for each image and signs a
+manifest pinning them by URL, length and SHA-256; the device fetches the bytes
+from the publishers' own hosts only, and rebuilds the read-only sysext from
+verified bytes at every activation. The contract is in
+`os/usr/share/tilo/system-extensions/README.md`.
 
 ## One-click local setup
 
@@ -67,6 +78,28 @@ Leaving Settings, logging out, losing the network, or rebooting does not lose
 the transaction. Cancellation stops at a safe boundary; retry reuses verified
 objects. Removal is confirmed, stops the model first, and deletes only objects
 whose content identity belongs exclusively to that model.
+
+## In-process models
+
+Some signed models are small enough to run on the CPU inside the per-user
+service that uses them, such as the U²-Net subject selection model the model
+gateway loads with `rten` for "Select subject". These are catalogued with
+`"artifact_format": "onnx_file"`, an in-process capability (`segmentation`),
+no `allowed_runtimes` and no context window, and can never claim chat, vision
+or face capabilities. Settings shows each one as its own card with the same
+download, storage, source, revision and licence confirmation, and
+`settings://models/<model-id>` opens Agent Models at that card.
+
+Setup is the same verified, resumable download and licence record, then
+nothing else: no runtime image, container, service or hardware gate. The
+installed model is the content-addressed object
+`$XDG_DATA_HOME/tilo/models/sha256/<sha256>`, and `state.json` beside it
+records its revision, licence and capabilities. A consumer finds it with
+`local_model_service::installed_in_process_model` over the store
+`user_model_root()` names (none without a data home, never a shared
+directory), a filesystem-only lookup that needs neither the catalogue nor
+the model manager. Removal deletes the object; the
+lookup then reports no model.
 
 ## Hardware policy
 

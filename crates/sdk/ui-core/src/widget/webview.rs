@@ -14,13 +14,14 @@
 //! [`crate::webview::WebViewEvent`]s from the engine during `sync` and
 //! owns that state in its CRDT.
 
+use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Blob, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
+use vello::peniko::{Blob, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
@@ -36,16 +37,6 @@ use crate::widget::Widget;
 /// by the display factor before being sent to the engine).
 const WHEEL_LINE_PX: f64 = 40.0;
 
-/// Narrows a screen-space `f64` (view-relative pointer/scroll coordinate) to
-/// the `f32` the engine's command protocol expects.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "on-screen physical coordinates never approach f32::MAX; f32 precision is sufficient for engine screen coordinates and device scale"
-)]
-fn to_f32(v: f64) -> f32 {
-    v as f32
-}
-
 /// Rounds a physical pixel extent to `u32`, clamping to `[0, u32::MAX]`
 /// first so a negative or absurdly large rect (a transient layout glitch)
 /// saturates instead of wrapping.
@@ -59,8 +50,8 @@ fn round_to_u32_px(v: f64) -> u32 {
 }
 
 /// Backends may render the exact physical request or quantize it through an
-/// integer logical viewport. Allow rounding in either direction (WPE rounds
-/// logical dimensions to nearest; CEF rounds outward). Integer device scales
+/// integer logical viewport. Allow rounding in either direction (an engine may
+/// round logical dimensions to nearest; CEF rounds outward). Integer device scales
 /// need at most scale - 1 pixels; fractional scales can add a final pixel when
 /// converting the logical viewport back to an integer physical buffer.
 fn frame_quantization_slack(scale_factor: f32) -> u32 {
@@ -77,6 +68,11 @@ fn frame_quantization_slack(scale_factor: f32) -> u32 {
 
 /// See module docs.
 pub struct WebView {
+    text_input: crate::webview::text_input::Guard,
+    history_operation: Option<(
+        tilo_actions::InvocationId,
+        crate::webview::text_input::Receipt,
+    )>,
     rect: Rect,
     engine: SharedEngine,
     scale_factor: f32,
@@ -93,6 +89,8 @@ pub struct WebView {
     cached_image: Option<PenikoImage>,
     cached_trace_id: Option<u64>,
     cached_key: (usize, u32, u32),
+    /// Draws the engine's display list when it has one (the paint stream).
+    page: crate::webview::paint::PageRenderer,
     test_id: String,
     accessible_name: String,
 }
@@ -100,6 +98,8 @@ pub struct WebView {
 impl WebView {
     pub fn new(engine: SharedEngine) -> Self {
         Self {
+            text_input: Default::default(),
+            history_operation: None,
             rect: Rect::ZERO,
             engine,
             scale_factor: 1.0,
@@ -111,8 +111,45 @@ impl WebView {
             cached_image: None,
             cached_trace_id: None,
             cached_key: (0, 0, 0),
+            page: crate::webview::paint::PageRenderer::new(),
             test_id: "webview".to_string(),
             accessible_name: "Web content".to_string(),
+        }
+    }
+
+    /// While the session shares this window's page with someone watching,
+    /// hand it the page as a paint stream — the view on screen is the page
+    /// the window shows. Payloads the app → shell channel cannot carry are
+    /// dropped; a dropped whole frame is asked for again.
+    fn share_page(&self) {
+        use crate::webview::paint;
+        if !paint::share_watched() {
+            return;
+        }
+        let keyframe = paint::take_share_keyframe();
+        let page = [
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.width(),
+            self.rect.height(),
+        ];
+        for payload in self.engine.take_paint_stream(keyframe) {
+            let whole = matches!(
+                payload,
+                crate::webview::paint::stream::wire::Payload::Key(_)
+            );
+            match payload.encode() {
+                Ok(bytes) if bytes.len() <= paint::MAX_SHARE_PAYLOAD => {
+                    paint::queue_share(paint::SharedFrame {
+                        payload: bytes,
+                        page,
+                        scale: f64::from(self.scale_factor),
+                    });
+                }
+                _ => {
+                    tracing::debug!(whole, "paint payload too large to share; skipped");
+                }
+            }
         }
     }
 
@@ -160,8 +197,8 @@ impl WebView {
     /// Engine-space (physical, view-relative) coordinates for a logical point.
     fn to_engine(&self, p: Point) -> (f32, f32) {
         (
-            to_f32((p.x - self.rect.x0) * f64::from(self.scale_factor)),
-            to_f32((p.y - self.rect.y0) * f64::from(self.scale_factor)),
+            f32_of_f64((p.x - self.rect.x0) * f64::from(self.scale_factor)),
+            f32_of_f64((p.y - self.rect.y0) * f64::from(self.scale_factor)),
         )
     }
 
@@ -247,7 +284,7 @@ impl crate::widget::NativeViewLifecycle for WebView {
     fn mount_native_view(&mut self, host: &crate::widget::NativeViewHost<'_>) {
         let first_mount = !self.native_mounted;
         self.native_mounted = true;
-        let host_scale = to_f32(host.scale_factor());
+        let host_scale = f32_of_f64(host.scale_factor());
         // A freshly rebuilt Browser WebView is seeded from the device-scale
         // draw that requested the rebuild. Some macOS startup windows still
         // report 1 here until their first visible frame. Preserve the larger
@@ -269,14 +306,190 @@ impl crate::widget::NativeViewLifecycle for WebView {
     }
 
     fn unmount_native_view(&mut self) {
+        self.text_input.invalidate(&self.engine);
+        if self.focused {
+            self.engine.send(WebViewCommand::SetFocused(false));
+        }
+        self.focused = false;
         self.native_mounted = false;
     }
 
     fn native_view_frame_start(&mut self) {}
 }
 
+impl crate::undo::LocalUndo for WebView {
+    fn local_undo_is_deferred(&self) -> bool {
+        true
+    }
+    fn local_undo_status(&self) -> Option<crate::undo::LocalUndoStatus> {
+        (self.focused && self.engine.supports_guarded_edit_history()).then(|| {
+            self.text_input.history_status().map_or(
+                crate::undo::LocalUndoStatus::Pending,
+                crate::undo::LocalUndoStatus::Ready,
+            )
+        })
+    }
+
+    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
+        if self.focused
+            && self.engine.supports_guarded_edit_history()
+            && self.text_input.history(request).is_some()
+        {
+            return true;
+        }
+        if !self.focused || !self.engine.handle_undo_request(request) {
+            return false;
+        }
+        // Editing the page retires any original-field speech reservation.
+        self.text_input.invalidate(&self.engine);
+        true
+    }
+}
+
 impl Widget for WebView {
-    crate::provides!(dyn crate::widget::NativeViewLifecycle);
+    crate::provides!(
+        dyn crate::widget::NativeViewLifecycle,
+        dyn crate::undo::LocalUndo
+    );
+
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::undo::EDIT_OPERATION]
+    }
+
+    fn start_operation(
+        &mut self,
+        operation: &crate::widget::ResourceOperation<'_>,
+        _: &mut crate::widget::Edits<'_>,
+        _: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(request) = operation.unscoped() else {
+            return Ok(None);
+        };
+        if request.type_id != crate::undo::EDIT_OPERATION {
+            return Ok(None);
+        }
+        if !self.focused || !self.engine.supports_guarded_edit_history() {
+            return Ok(None);
+        }
+        if let Some((invocation, _)) = &self.history_operation {
+            return if *invocation == request.invocation {
+                Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+            } else {
+                Err("An original-field history request is already pending".into())
+            };
+        }
+        let direction: crate::undo::UndoRequest =
+            serde_json::from_slice(request.payload).map_err(|_| "Invalid native Edit request")?;
+        if !self
+            .text_input
+            .history_status()
+            .is_some_and(|status| status.can(direction))
+        {
+            return Err("The original field's history is not available".into());
+        }
+        let receipt = self
+            .text_input
+            .history(direction)
+            .ok_or("The original field's history reservation retired")?;
+        self.history_operation = Some((request.invocation, receipt));
+        Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        _: &automerge::AutoCommit,
+        _: &automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        let (original, receipt) = self.history_operation.as_ref()?;
+        if *original != invocation {
+            return None;
+        }
+        if cancellation_requested {
+            receipt.cancel();
+        }
+        let result = receipt.poll()?;
+        self.history_operation = None;
+        Some(match result {
+            Ok(None) => tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: Default::default(),
+            },
+            _ => tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "native_history_unconfirmed".into(),
+                    message: crate::i18n::I18nManager::lookup_plain(
+                        "host-native-history-unconfirmed",
+                    ),
+                    details: None,
+                    retryable: false,
+                },
+            },
+        })
+    }
+
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.text_input.pump(
+            &self.engine,
+            self.focused && self.engine.supports_text_input(),
+        );
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        (self.focused && self.engine.supports_text_input() && self.text_input.ready())
+            .then_some(winit::window::ImePurpose::Normal)
+    }
+
+    fn ime_multiline(&self) -> bool {
+        self.ime_purpose().is_some() && self.text_input.multiline()
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.ime_purpose()?;
+        Some(Rect::new(
+            self.rect.x0,
+            self.rect.y1 - 1.0,
+            self.rect.x0 + 1.0,
+            self.rect.y1,
+        ))
+    }
+
+    fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        self.ime_purpose()?;
+        self.text_input.stamp(key)
+    }
+
+    fn ime_requires_deferred_ack(&self) -> bool {
+        true
+    }
+
+    fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
+        let receipt = self.focused.then(|| self.text_input.start()).flatten();
+        Some(receipt.unwrap_or_else(|| {
+            crate::webview::text_input::Receipt::failed(
+                crate::webview::text_input::Failure::Rejected,
+            )
+        }))
+    }
+
+    fn commit_deferred_text(&mut self, text: &str) -> Option<crate::webview::text_input::Receipt> {
+        let receipt = self
+            .focused
+            .then(|| self.text_input.commit(&self.engine, text))
+            .flatten();
+        Some(receipt.unwrap_or_else(|| {
+            let receipt = crate::webview::text_input::Receipt::pending();
+            receipt.complete(Err(crate::webview::text_input::Failure::Rejected));
+            receipt
+        }))
+    }
+
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        ((self.focused || self.text_input.has_work()) && self.engine.supports_text_input())
+            .then(|| self.text_input.deadline())
+    }
 
     fn build_layout(
         &mut self,
@@ -284,26 +497,16 @@ impl Widget for WebView {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
+        let style = Style {
+            size: Size::from_percent(1.0, 1.0),
             flex_grow: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.send_resize_if_needed();
     }
 
@@ -311,14 +514,14 @@ impl Widget for WebView {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        _text_renderer: &mut TextRenderer,
+        text_renderer: &mut TextRenderer,
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
         // First layout can precede all window/input events. The host's draw
         // transform already carries the actual device scale at that point.
         let coefficients = transform.as_coeffs();
-        let device_scale = to_f32(coefficients[0].hypot(coefficients[1]));
+        let device_scale = f32_of_f64(coefficients[0].hypot(coefficients[1]));
         if device_scale.is_finite()
             && device_scale > 0.0
             && device_scale.to_bits() != self.scale_factor.to_bits()
@@ -335,6 +538,24 @@ impl Widget for WebView {
             None,
             &self.rect,
         );
+
+        self.engine.presented();
+        self.share_page();
+        // A display list replaces pixels: draw it like any other widget
+        // content, in this toolkit's own text and Vello.
+        if let Some(page) = self.engine.paint_frame() {
+            let engine = Arc::clone(&self.engine);
+            let blobs = move |hash: &[u8; 32]| engine.paint_blob(hash);
+            let mut canvas = crate::webview::paint::PageCanvas {
+                scene,
+                transform: transform * Affine::translate((self.rect.x0, self.rect.y0)),
+                text: text_renderer,
+                blobs: &blobs,
+            };
+            self.page.draw(&mut canvas, &page);
+            crate::webview::profile::record_draw(self.rect.width(), self.rect.height(), None);
+            return;
+        }
 
         let latest = {
             let slot = self.engine.frames();
@@ -360,13 +581,11 @@ impl Widget for WebView {
                     .saturating_mul(frame.height as usize)
                     .saturating_mul(4);
                 if frame.rgba.len() == expected && expected > 0 {
-                    self.cached_image = Some(PenikoImage {
-                        data: Blob::new(frame.rgba.clone()),
-                        format: ImageFormat::Rgba8,
-                        alpha_type: ImageAlphaType::Alpha,
-                        width: frame.width,
-                        height: frame.height,
-                    });
+                    self.cached_image = Some(crate::raster::rgba8(
+                        Blob::new(frame.rgba.clone()),
+                        frame.width,
+                        frame.height,
+                    ));
                     self.cached_key = key;
                     self.cached_trace_id = frame.trace_id;
                 }
@@ -410,17 +629,46 @@ impl Widget for WebView {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        // Someone is using the page: it is on screen, whether or not a frame
+        // has been drawn since it came back.
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Focused(true)
+                | WindowEvent::Occluded(false)
+        ) {
+            self.engine.presented();
+        }
         if (f64::from(self.scale_factor) - ctx.scale_factor).abs() > f64::EPSILON {
-            self.scale_factor = to_f32(ctx.scale_factor);
+            self.scale_factor = f32_of_f64(ctx.scale_factor);
             // Force a resize eagerly, to keep engine DPI in step without a re-layout.
             self.last_sent_size = (0, 0);
             self.send_resize_if_needed();
         }
 
+        // Modifier releases may never become mapped page keys (and system
+        // shortcuts consume their presses). Pointer default actions must use
+        // the current host state rather than the last key sent to Chromium.
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+        ) {
+            let modifiers = ctx.modifiers.state();
+            self.engine.set_modifiers(KeyModifiers {
+                ctrl: modifiers.control_key(),
+                shift: modifiers.shift_key(),
+                alt: modifiers.alt_key(),
+                meta: modifiers.super_key(),
+            });
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let logical = ctx.logical(position);
                 self.last_mouse = logical;
                 if self.rect.contains(logical) {
                     let (x, y) = self.to_engine(logical);
@@ -449,6 +697,7 @@ impl Widget for WebView {
                         if down && mapped == MouseButton::Left {
                             *ctx.focus_target = Some(ctx.node_id);
                         }
+                        self.text_input.invalidate(&self.engine);
                         crate::webview::profile::record_input("mouse");
                         self.engine.send(WebViewCommand::MouseButton {
                             button: mapped,
@@ -480,11 +729,11 @@ impl Widget for WebView {
                 }
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (
-                        to_f32(f64::from(*x) * WHEEL_LINE_PX * ctx.scale_factor),
-                        to_f32(f64::from(*y) * WHEEL_LINE_PX * ctx.scale_factor),
+                        f32_of_f64(f64::from(*x) * WHEEL_LINE_PX * ctx.scale_factor),
+                        f32_of_f64(f64::from(*y) * WHEEL_LINE_PX * ctx.scale_factor),
                     ),
                     // PixelDelta is already physical.
-                    MouseScrollDelta::PixelDelta(p) => (to_f32(p.x), to_f32(p.y)),
+                    MouseScrollDelta::PixelDelta(p) => (f32_of_f64(p.x), f32_of_f64(p.y)),
                 };
                 let (x, y) = self.to_engine(self.last_mouse);
                 crate::webview::profile::record_input("scroll");
@@ -498,6 +747,14 @@ impl Widget for WebView {
                     return;
                 }
                 if let Some(key) = Self::map_key(&key_event.logical_key) {
+                    // A host shortcut consumes its press but its release still
+                    // reaches the page. Retiring here canceled queued Undo/Redo
+                    // before the next sync could send it to the original editor.
+                    // Release handlers remain subject to the renderer's field
+                    // and selection checks before deferred history is applied.
+                    if key_event.state == ElementState::Pressed {
+                        self.text_input.invalidate(&self.engine);
+                    }
                     crate::webview::profile::record_input("key");
                     let m = ctx.modifiers.state();
                     self.engine.send(WebViewCommand::Key {
@@ -533,11 +790,11 @@ impl Widget for WebView {
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Document)
                 .with_name(self.accessible_name.clone())
-                .with_state(crate::a11y::AccessState {
-                    focusable: true,
-                    focused: self.focused,
-                    ..Default::default()
-                }),
+                .with_state(
+                    crate::a11y::AccessState::new()
+                        .focusable(true)
+                        .focused(self.focused),
+                ),
         )
     }
 
@@ -556,12 +813,7 @@ impl Widget for WebView {
     /// Two-finger swipe / edge-pull → browser-style history navigation.
     /// Overriding this here makes every embedder of `WebView`
     /// swipe-navigable, not just the browser app.
-    fn on_nav_gesture(
-        &mut self,
-        dir: NavDirection,
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
+    fn on_nav_gesture(&mut self, dir: NavDirection, _state: &AppModel, _path: &ModelPath) -> bool {
         self.engine.send(match dir {
             NavDirection::Back => WebViewCommand::GoBack,
             NavDirection::Forward => WebViewCommand::GoForward,
@@ -575,6 +827,7 @@ impl Widget for WebView {
 
     fn set_focus(&mut self, focused: bool) {
         if self.focused != focused {
+            self.text_input.invalidate(&self.engine);
             self.focused = focused;
             self.engine.send(WebViewCommand::SetFocused(focused));
         }
@@ -592,11 +845,234 @@ impl Widget for WebView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use crate::webview::WebViewEngine; // send()/commands() on the concrete TestEngine
     use crate::webview::test_engine::TestEngine;
     use automerge::AutoCommit;
     use std::sync::Arc;
-    use winit::event::{DeviceId, ElementState, WindowEvent};
+    use winit::event::{ElementState, WindowEvent};
+
+    #[test]
+    fn native_history_operation_waits_for_renderer_ack_and_rejects_focus_change() {
+        use crate::webview::text_input::Transactions;
+        use serde_json::{Value, json};
+        struct Acknowledged {
+            inner: SharedEngine,
+            transactions: std::sync::Mutex<Transactions>,
+            edits: std::sync::Mutex<Vec<Value>>,
+        }
+        impl WebViewEngine for Acknowledged {
+            fn wrapped(&self) -> Option<&SharedEngine> {
+                Some(&self.inner)
+            }
+            fn send(&self, command: WebViewCommand) {
+                self.inner.send(command);
+            }
+            fn frames(&self) -> crate::webview::FrameSlot {
+                self.inner.frames()
+            }
+            fn drain_events(&self) -> Vec<crate::webview::WebViewEvent> {
+                self.inner.drain_events()
+            }
+            fn supports_text_input(&self) -> bool {
+                true
+            }
+            fn supports_guarded_edit_history(&self) -> bool {
+                true
+            }
+            fn text_input(
+                &self,
+                request: crate::webview::text_input::Request,
+            ) -> Option<crate::webview::text_input::Receipt> {
+                let mut transactions = self.transactions.lock().unwrap();
+                let (receipt, command) = transactions.admit(request)?;
+                if matches!(
+                    command["action"].as_str(),
+                    Some("undo_text_input" | "redo_text_input")
+                ) {
+                    assert_eq!(command["history_scope"], "page");
+                    self.edits.lock().unwrap().push(command);
+                } else {
+                    transactions.reply(&json!({"request_id":command["request_id"],"ok":true,
+                        "data":{"lease":"0123456789abcdef0123456789abcdef"},
+                        "history":{"can_undo":true,"can_redo":false}}));
+                }
+                Some(receipt)
+            }
+        }
+        for (changed, acknowledged, key_edge) in [
+            (false, true, None),
+            (false, false, None),
+            (true, true, None),
+            (false, true, Some(ElementState::Released)),
+            (false, true, Some(ElementState::Pressed)),
+        ] {
+            let native = TestEngine::new();
+            let engine = Arc::new(Acknowledged {
+                inner: native.clone(),
+                transactions: Default::default(),
+                edits: Default::default(),
+            });
+            let (mut page, tree, node) = laid_out(engine.clone());
+            page.focused = true;
+            let edit = crate::host_chrome::edit::edit_resource(&crate::undo::UndoStatus {
+                can_undo: true,
+                ..Default::default()
+            });
+            let violations = tilo_actions::validate_surface(
+                &[edit],
+                &tilo_actions::ActionRegistry::new(),
+                &page.resource_operation_handlers(),
+            );
+            assert!(
+                violations.is_empty(),
+                "native Edit publication: {violations:?}"
+            );
+            let mut doc = AutoCommit::new();
+            page.sync(&doc, &automerge::ROOT);
+            page.sync(&doc, &automerge::ROOT);
+            let invocation = tilo_actions::InvocationId::new();
+            let payload = serde_json::to_vec(&crate::undo::UndoRequest::Undo).unwrap();
+            let operation = crate::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::host_chrome::edit::EDIT_OPERATION,
+                &payload,
+            );
+            assert_eq!(
+                page.start_operation(
+                    &operation,
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT
+                )
+                .unwrap(),
+                Some(crate::widget::ResourceOperationStart::Accepted)
+            );
+            assert!(
+                page.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                    .is_none(),
+                "queue admission cannot report success"
+            );
+            if changed {
+                page.focused = false;
+            }
+            if let Some(edge) = key_edge {
+                dispatch(
+                    &mut page,
+                    &tree,
+                    node,
+                    &crate::synthetic_input::key_input(
+                        &winit::keyboard::Key::Character("z".into()),
+                        edge,
+                    ),
+                );
+                assert!(native.commands().iter().any(|command| {
+                    matches!(command, WebViewCommand::Key { down, .. }
+                        if *down == (edge == ElementState::Pressed))
+                }));
+            }
+            let retired = changed || key_edge == Some(ElementState::Pressed);
+            page.sync(&doc, &automerge::ROOT);
+            let edits = engine.edits.lock().unwrap();
+            if retired {
+                assert!(
+                    edits.is_empty(),
+                    "changed focus or a new press cannot receive the original edit"
+                );
+            } else {
+                assert_eq!(edits.len(), 1);
+                assert!(
+                    page.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                        .is_none()
+                );
+                engine.transactions.lock().unwrap().reply(&json!({"request_id":edits[0]["request_id"],"ok":acknowledged,"code":"rejected"}));
+            }
+            drop(edits);
+            page.sync(&doc, &automerge::ROOT);
+            let terminal = page
+                .poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                .unwrap();
+            assert_eq!(
+                matches!(terminal, tilo_actions::InvocationUpdate::Succeeded { .. }),
+                !retired && acknowledged
+            );
+            assert!(
+                page.poll_resource_operation(invocation, false, &doc, &automerge::ROOT)
+                    .is_none(),
+                "terminal receipt is one shot"
+            );
+        }
+    }
+
+    struct NativeHistory {
+        inner: crate::webview::SharedEngine,
+        requests: std::sync::Mutex<Vec<crate::undo::UndoRequest>>,
+        modifiers: std::sync::Mutex<Vec<KeyModifiers>>,
+        pointer_modifiers: std::sync::Mutex<Vec<KeyModifiers>>,
+    }
+    impl WebViewEngine for NativeHistory {
+        fn send(&self, command: WebViewCommand) {
+            if matches!(command, WebViewCommand::MouseButton { .. }) {
+                let modifiers = self
+                    .modifiers
+                    .lock()
+                    .unwrap()
+                    .last()
+                    .copied()
+                    .unwrap_or_default();
+                self.pointer_modifiers.lock().unwrap().push(modifiers);
+            }
+            self.inner.send(command);
+        }
+        fn set_modifiers(&self, modifiers: KeyModifiers) {
+            self.modifiers.lock().unwrap().push(modifiers);
+        }
+        fn frames(&self) -> crate::webview::FrameSlot {
+            self.inner.frames()
+        }
+        fn drain_events(&self) -> Vec<crate::webview::WebViewEvent> {
+            self.inner.drain_events()
+        }
+        fn wrapped(&self) -> Option<&crate::webview::SharedEngine> {
+            Some(&self.inner)
+        }
+        fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
+            self.requests
+                .lock()
+                .expect("native history fixture")
+                .push(request);
+            true
+        }
+    }
+
+    #[test]
+    fn system_undo_delegates_only_to_focused_native_page() {
+        use crate::undo::{UndoRequest, handle_local_undo_request};
+        let engine = Arc::new(NativeHistory {
+            inner: TestEngine::new(),
+            requests: Default::default(),
+            modifiers: Default::default(),
+            pointer_modifiers: Default::default(),
+        });
+        let mut page = WebView::new(engine.clone());
+        assert!(!handle_local_undo_request(&mut page, UndoRequest::Undo));
+        assert!(engine.requests.lock().expect("fixture").is_empty());
+        page.set_focus(true);
+        assert!(handle_local_undo_request(&mut page, UndoRequest::Undo));
+        assert!(handle_local_undo_request(&mut page, UndoRequest::Redo));
+        page.set_focus(false);
+        assert!(!handle_local_undo_request(&mut page, UndoRequest::Redo));
+        assert_eq!(
+            *engine.requests.lock().expect("fixture"),
+            [UndoRequest::Undo, UndoRequest::Redo]
+        );
+        let mut unsupported = WebView::new(TestEngine::new());
+        unsupported.set_focus(true);
+        assert!(!handle_local_undo_request(
+            &mut unsupported,
+            UndoRequest::Undo
+        ));
+    }
 
     #[test]
     fn keyboard_focus_is_forwarded_to_the_page() {
@@ -651,7 +1127,7 @@ mod tests {
         }
     }
 
-    fn laid_out(engine: Arc<TestEngine>) -> (WebView, TaffyTree<()>, NodeId) {
+    fn laid_out(engine: SharedEngine) -> (WebView, TaffyTree<()>, NodeId) {
         let mut w = WebView::new(engine);
         let mut tree = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
@@ -670,24 +1146,7 @@ mod tests {
     }
 
     fn dispatch(w: &mut WebView, tree: &TaffyTree<()>, node: NodeId, event: &WindowEvent) {
-        let mut state = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut handled = false;
-        let mut focus = None;
-        let mods = winit::event::Modifiers::default();
-        w.handle_event(
-            event,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: &mut state,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: tree,
-            },
-        );
+        Dispatch::new().layout(tree, node).send(w, event);
     }
 
     #[test]
@@ -1005,8 +1464,9 @@ mod tests {
 
         // Case `quantized_engine_frames_draw_on_either_side_of_requested_size`.
         {
-            // CEF rounds outward twice; WPE rounds the logical size to nearest.
-            // At 3x WPE's 802x451 request becomes 267x150 logical / 801x450 physical.
+            // CEF rounds outward twice; an engine rounding the logical size to
+            // nearest turns an 802x451 request at 3x into 267x150 logical /
+            // 801x450 physical.
             for (requested, painted, scale) in [
                 ((802, 451), (804, 452), 1.75),
                 ((802, 451), (801, 450), 3.0),
@@ -1135,13 +1595,12 @@ mod tests {
                     });
                 }
                 let mut scene = Scene::new();
-                root.draw_with_presence(
+                root.draw(
                     &mut scene,
                     Affine::IDENTITY,
                     &mut TextRenderer::new(),
                     &Theme::dark(),
                     &PresenceCtx::default(),
-                    &crate::permissions::PermissionContext::permissive(),
                 );
                 assert!(
                     scene
@@ -1177,12 +1636,53 @@ mod tests {
     }
 
     #[test]
+    fn pointer_press_uses_released_modifiers_after_a_native_shortcut() {
+        let engine = Arc::new(NativeHistory {
+            inner: TestEngine::new(),
+            requests: std::sync::Mutex::new(Vec::new()),
+            modifiers: std::sync::Mutex::new(Vec::new()),
+            pointer_modifiers: std::sync::Mutex::new(Vec::new()),
+        });
+        engine.set_modifiers(KeyModifiers {
+            ctrl: true,
+            shift: true,
+            ..KeyModifiers::default()
+        });
+        let (mut page, tree, node) = laid_out(engine.clone());
+        let device = winit::event::DeviceId::dummy();
+        dispatch(
+            &mut page,
+            &tree,
+            node,
+            &WindowEvent::CursorMoved {
+                device_id: device,
+                position: (50.0, 60.0).into(),
+            },
+        );
+        dispatch(
+            &mut page,
+            &tree,
+            node,
+            &WindowEvent::MouseInput {
+                device_id: device,
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+        );
+        assert_eq!(
+            &*engine.pointer_modifiers.lock().unwrap(),
+            &[KeyModifiers::default()],
+            "pointer default actions must see the current released modifiers before delivery"
+        );
+    }
+
+    #[test]
     fn pointer_input_forwards_inside_only_and_navigates_history() {
         // Case `pointer_inside_forwards_translated_coordinates`.
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             dispatch(
                 &mut w,
                 &tree,
@@ -1216,7 +1716,7 @@ mod tests {
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             dispatch(
                 &mut w,
                 &tree,
@@ -1249,7 +1749,7 @@ mod tests {
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             dispatch(
                 &mut w,
                 &tree,
@@ -1276,7 +1776,7 @@ mod tests {
         {
             let engine = TestEngine::new();
             let (mut w, tree, node) = laid_out(engine.clone());
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             dispatch(
                 &mut w,
                 &tree,
@@ -1309,13 +1809,33 @@ mod tests {
             use crate::gesture::NavDirection;
             let engine = TestEngine::new();
             let mut w = WebView::new(engine.clone());
-            let mut state = AutoCommit::new();
+            let state = AutoCommit::new();
             let root = automerge::ROOT;
-            assert!(w.on_nav_gesture(NavDirection::Back, &mut state, &root));
-            assert!(w.on_nav_gesture(NavDirection::Forward, &mut state, &root));
+            assert!(w.on_nav_gesture(NavDirection::Back, &state, &root));
+            assert!(w.on_nav_gesture(NavDirection::Forward, &state, &root));
             let cmds = engine.commands();
             assert!(cmds.contains(&WebViewCommand::GoBack));
             assert!(cmds.contains(&WebViewCommand::GoForward));
         }
+    }
+}
+
+/// A web view is a window of its own where a page is all there is to show:
+/// a browser tab a host streams to this desktop. It keeps no record here.
+impl crate::widget::AppWidget for WebView {
+    fn uses_host_record(&self) -> bool {
+        false
+    }
+    fn app_kind(&self) -> crate::widget::AppKind {
+        crate::widget::AppKind::Browser
+    }
+    fn app_title(&self) -> &str {
+        &self.accessible_name
+    }
+    fn app_icon(&self) -> crate::widget::IconDescriptor {
+        crate::widget::IconDescriptor::Glyph("W")
+    }
+    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
+        Some(crate::widget::AppKind::Browser)
     }
 }

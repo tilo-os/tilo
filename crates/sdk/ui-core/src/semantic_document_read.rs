@@ -15,6 +15,8 @@ use tilo_actions::{ActionSpec, EncodedAction, Resource};
 pub mod retirement;
 
 pub const MAX_REQUEST_BYTES: usize = 8 * 1024;
+/// The longest opaque cursor a paged read hands out or accepts.
+pub const MAX_CURSOR_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemanticReadError {
@@ -59,6 +61,78 @@ impl SemanticReadError {
             Self::Malformed => ("document_malformed", "The document cannot be read"),
         }
     }
+}
+
+impl From<tilo_doc::semantic_read::ReadError> for SemanticReadError {
+    fn from(error: tilo_doc::semantic_read::ReadError) -> Self {
+        use tilo_doc::semantic_read::ReadError;
+        match error {
+            ReadError::Pending => Self::Pending,
+            ReadError::StaleCursor => Self::StaleCursor,
+            ReadError::InvalidCursor => Self::InvalidRequest,
+            ReadError::Limit => Self::Limit,
+            ReadError::Malformed => Self::Malformed,
+        }
+    }
+}
+
+/// The exact result schema of a read whose projection yields `content`: the
+/// SDK stamps `version`, `record` and `basis` around it. A `paged` read
+/// returns an opaque `nextCursor` or null; any other read always returns null.
+#[must_use]
+pub fn result_schema(content: serde_json::Value, paged: bool) -> serde_json::Value {
+    let next_cursor = if paged {
+        serde_json::json!({"type":["string","null"],"maxLength":MAX_CURSOR_BYTES})
+    } else {
+        serde_json::json!({"type":"null"})
+    };
+    serde_json::json!({"type":"object","required":["version","record","basis","content","nextCursor"],"additionalProperties":false,"properties":{
+        "version":{"type":"integer","enum":[1]},
+        "record":{"type":"object","required":["roomId","appId","recordId"],"additionalProperties":false,"properties":{
+            "roomId":{"type":["string","null"],"format":"uuid"},"appId":{"type":"string","minLength":1,"maxLength":256},"recordId":{"type":"string","maxLength":512}
+        }},
+        "basis":{"type":"object","required":["heads"],"additionalProperties":false,"properties":{
+            "heads":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","pattern":"^[0-9a-f]{64}$"}}
+        }},
+        "content":content,
+        "nextCursor":next_cursor
+    }})
+}
+
+/// A reader's closed request, decoded from its payload. The SDK has already
+/// refused a payload over [`MAX_REQUEST_BYTES`].
+pub fn decode_request<T: serde::de::DeserializeOwned>(
+    payload: &[u8],
+) -> Result<T, SemanticReadError> {
+    serde_json::from_slice(payload).map_err(|_| SemanticReadError::InvalidRequest)
+}
+
+/// The cursor an earlier page handed out, decoded; `None` reads from the start.
+pub fn decode_cursor<C: serde::de::DeserializeOwned>(
+    cursor: Option<&str>,
+) -> Result<Option<C>, SemanticReadError> {
+    let Some(cursor) = cursor else {
+        return Ok(None);
+    };
+    if cursor.len() > MAX_CURSOR_BYTES {
+        return Err(SemanticReadError::Limit);
+    }
+    serde_json::from_str(cursor)
+        .map(Some)
+        .map_err(|_| SemanticReadError::InvalidRequest)
+}
+
+/// The opaque cursor for the page after this one, when there is one.
+pub fn encode_cursor<C: serde::Serialize>(
+    next: Option<&C>,
+) -> Result<Option<String>, SemanticReadError> {
+    next.map(|next| {
+        serde_json::to_string(next)
+            .ok()
+            .filter(|cursor| cursor.len() <= MAX_CURSOR_BYTES)
+            .ok_or(SemanticReadError::Limit)
+    })
+    .transpose()
 }
 
 /// One page an app's projection produced at the heads it was given.
@@ -143,7 +217,7 @@ pub(crate) fn select<'a>(
 
 impl SelectedSemanticRead<'_> {
     fn check_contract(&self) -> Result<(), SemanticReadError> {
-        use tilo_actions::{ExecutionMode, OperationKind, PermissionRequirement, ResultSpec};
+        use tilo_actions::{ActionKind, ExecutionMode, OperationKind, ResultSpec};
         if !self
             .resource
             .actions
@@ -152,7 +226,7 @@ impl SelectedSemanticRead<'_> {
             || self.spec.kind != OperationKind::Effect
             || self.spec.operation_type.as_deref() != Some(self.registration.operation_type)
             || self.encoded.type_id != self.registration.operation_type
-            || self.spec.contract.permission != PermissionRequirement::Read
+            || self.spec.contract.kind != ActionKind::Read
             || self.spec.contract.execution != ExecutionMode::Immediate
             || !matches!(&self.spec.contract.result, ResultSpec::Json { schema } if schema == (self.registration.schema)())
         {
@@ -209,6 +283,70 @@ impl SelectedSemanticRead<'_> {
             resources: Vec::new(),
         })
     }
+}
+
+/// Inert descriptors for reads registered by the actual retained widget tree.
+/// This admits no invocation or document: execution still needs the normal
+/// bound SDK door and its canonical owner loan. Generic effects are excluded.
+pub fn registered_operations(
+    widget: &dyn crate::widget::Widget,
+    resources: &[Resource],
+) -> Vec<tilo_actions::ActionDescriptor> {
+    fn collect(
+        widget: &dyn crate::widget::Widget,
+        resource: &Resource,
+        addresses: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        for spec in &resource.actions {
+            let Some(type_id) = spec.operation_type.as_deref() else {
+                continue;
+            };
+            if type_id.is_empty() {
+                continue;
+            }
+            let Some(table) = registered_in_tree(widget, type_id) else {
+                continue;
+            };
+            let mut matching = table
+                .iter()
+                .filter(|reader| reader.operation_type == type_id);
+            let Some(registration) = matching.next() else {
+                continue;
+            };
+            if matching.next().is_some() {
+                continue;
+            }
+            let encoded = EncodedAction {
+                type_id: type_id.to_owned(),
+                payload: Vec::new(),
+            };
+            if (SelectedSemanticRead {
+                registration,
+                resource,
+                spec,
+                encoded: &encoded,
+            })
+            .check_contract()
+            .is_ok()
+            {
+                addresses.insert(tilo_actions::ActionAddress::new(
+                    resource.id.as_str(),
+                    &spec.id,
+                ));
+            }
+        }
+        for child in &resource.children {
+            collect(widget, child, addresses);
+        }
+    }
+    let mut addresses = std::collections::HashSet::new();
+    for resource in resources {
+        collect(widget, resource, &mut addresses);
+    }
+    tilo_actions::door::survey(resources)
+        .into_iter()
+        .filter(|descriptor| addresses.contains(&descriptor.address))
+        .collect()
 }
 
 /// The reader registered anywhere in `widget`'s retained tree for `type_id`.

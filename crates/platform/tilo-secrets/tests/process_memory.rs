@@ -1,8 +1,6 @@
 //! `keep_in_memory_for_process` in a process of its own: every app's store
 //! is then in memory, shared by later stores and still app-scoped.
 
-#![allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
-
 use tilo_secrets::{Protection, PutOptions, SecretStore, keep_in_memory_for_process};
 
 #[test]

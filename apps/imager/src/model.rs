@@ -6,15 +6,17 @@
 //! about vello, taffy or `lsblk`.
 
 use serde::{Deserialize, Serialize};
+use ui::tilo_resource::{self, Id, Identified, JsonSchema, Model};
 
 // ---------------------------------------------------------------------------
 // Source — what we are going to write or install.
 // ---------------------------------------------------------------------------
 
 /// Where the bytes to be written come from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 pub enum SourceKind {
     /// An arbitrary local disk image picked from disk.
+    #[default]
     IsoFile,
     /// A Tilo installer/live image authenticated by the release catalog.
     TiloImage,
@@ -37,13 +39,14 @@ impl SourceKind {
 
 /// A selected image source with the metadata we can show without reading
 /// the whole file (name, on-disk size, volume label / image type).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 pub struct Source {
     pub kind: SourceKind,
     /// Absolute path to the image file (empty for a not-yet-downloaded
     /// known release).
     pub path: String,
     /// Display name (file name or release name).
+    #[model(label)]
     pub name: String,
     /// Size in bytes (0 when not yet known / not downloaded).
     pub size: u64,
@@ -62,8 +65,67 @@ pub struct Source {
     pub expected_sha256: Option<String>,
 }
 
+impl Source {
+    /// Stable identity of a reviewed source. Prefer immutable digest, then
+    /// platform identity, then the canonical path/name fallback.
+    pub fn id(&self) -> String {
+        let material = self
+            .expected_sha256
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map_or_else(
+                || {
+                    self.identity.map_or_else(
+                        || format!("{}\u{1f}{}\u{1f}{}", self.kind.tag(), self.path, self.name),
+                        |identity| {
+                            format!(
+                                "{}\u{1f}{}:{}",
+                                self.kind.tag(),
+                                identity.volume,
+                                identity.file
+                            )
+                        },
+                    )
+                },
+                |digest| format!("{}\u{1f}{digest}", self.kind.tag()),
+            );
+        // FNV-1a is a stable identifier, not a security boundary. The writer
+        // independently rechecks identity/digest at the privileged boundary.
+        let hash = material
+            .bytes()
+            .fold(0xcbf2_9ce4_8422_2325u64, |acc, byte| {
+                (acc ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+        format!("imager.source:{hash:016x}")
+    }
+}
+
+/// An image reviewed before the current one, stored under its source's id
+/// so two people choosing at once keep both records.
+#[derive(Clone, Debug, PartialEq, Eq, Model)]
+pub struct RecentSource {
+    /// The source's [`Source::id`].
+    pub id: Id,
+    /// Where it sorts: the most recent has the lowest rank; equal ranks
+    /// (concurrent choices) sort by id.
+    pub rank: i64,
+    /// Image
+    pub source: Source,
+}
+
+impl Identified for RecentSource {
+    fn id(&self) -> Id {
+        self.id.clone()
+    }
+
+    /// Most recent first; concurrent choices of one rank keep id order.
+    fn order(&self, other: &Self) -> std::cmp::Ordering {
+        self.rank.cmp(&other.rank)
+    }
+}
+
 /// Platform file identity, portable across the helper request boundary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 pub struct SourceIdentity {
     pub volume: u64,
     pub file: u64,
@@ -106,23 +168,6 @@ impl SourceIdentity {
             let _ = file;
             Ok(None)
         }
-    }
-}
-
-impl Source {
-    /// One-line summary used under the source header.
-    pub fn summary(&self) -> String {
-        let where_from = if self.path.is_empty() {
-            "not downloaded".to_string()
-        } else {
-            self.path.clone()
-        };
-        format!(
-            "{}  ·  {}  ·  {}",
-            self.label,
-            fmt_size(self.size),
-            where_from
-        )
     }
 }
 
@@ -210,7 +255,7 @@ impl TiloRelease {
             name: self.display_name(),
             size: self.size,
             label: format!(
-                "Tilo {} ({}) · {}",
+                "Tilo {} ({}), {}",
                 self.version,
                 self.channel,
                 self.target_label()
@@ -257,11 +302,6 @@ impl TargetKind {
             TargetKind::SdCard => "SD / memory card",
             TargetKind::Other => "Block device",
         }
-    }
-    /// Removable media is the "safe" flash target; fixed internal disks are
-    /// the dangerous install target and get a louder warning.
-    pub fn is_removable_class(&self) -> bool {
-        matches!(self, TargetKind::Usb | TargetKind::SdCard)
     }
     pub fn from_lsblk(rota: bool, tran: Option<&str>, removable: bool) -> Self {
         match tran {
@@ -326,6 +366,17 @@ pub struct TargetDrive {
 }
 
 impl TargetDrive {
+    /// The glyph of the drive: a USB stick, a memory card, or a drive.
+    pub fn icon(&self) -> ui::icons::Icon {
+        use ui::icons::Icon;
+        match self.tran.as_deref() {
+            Some("usb") => Icon::Usb,
+            Some("mmc" | "sd") => Icon::SdCard,
+            _ if self.name.starts_with("mmcblk") => Icon::SdCard,
+            _ => Icon::HardDrive,
+        }
+    }
+
     /// Whether this is external installation media the desktop imager may
     /// safely offer. Some USB readers report `RM=0`, so the transport is also
     /// considered; system disks are unconditionally excluded.
@@ -375,11 +426,10 @@ impl TargetDrive {
                     .unwrap_or_else(|| "data".into())
             })
             .collect();
-        format!(
-            "{} partition(s): {}",
-            self.partitions.len(),
-            labels.join(", ")
-        )
+        match self.partitions.len() {
+            1 => format!("1 partition ({})", labels.join(", ")),
+            count => format!("{count} partitions ({})", labels.join(", ")),
+        }
     }
     /// Does the image fit? (Raw writes need `image_size` ≤ drive size.)
     pub fn fits(&self, image_size: u64) -> bool {
@@ -549,52 +599,8 @@ impl Step {
 // serialises to the installation-media preconfiguration profile.
 // ---------------------------------------------------------------------------
 
-/// Whether a USB target is a throwaway live stick or a real, persistent
-/// install you can boot and keep using.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum InstallMode {
-    /// Boot-once installer / live environment (writes the image as-is).
-    Live,
-    /// Persistent install written onto the stick — survives reboots,
-    /// keeps user data.
-    Persistent,
-    /// Full install onto an internal disk.
-    DiskInstall,
-}
-
-impl InstallMode {
-    pub fn key(&self) -> &'static str {
-        match self {
-            InstallMode::Live => "live",
-            InstallMode::Persistent => "persistent",
-            InstallMode::DiskInstall => "disk",
-        }
-    }
-    pub fn label(&self) -> &'static str {
-        match self {
-            InstallMode::Live => "Live / installer stick",
-            InstallMode::Persistent => "Persistent USB install",
-            InstallMode::DiskInstall => "Install to disk",
-        }
-    }
-    pub fn from_key(k: &str) -> InstallMode {
-        match k {
-            "persistent" => InstallMode::Persistent,
-            "disk" => InstallMode::DiskInstall,
-            _ => InstallMode::Live,
-        }
-    }
-    pub fn all() -> [InstallMode; 3] {
-        [
-            InstallMode::Live,
-            InstallMode::Persistent,
-            InstallMode::DiskInstall,
-        ]
-    }
-}
-
 /// Filesystem used for the installed system.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Model, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Filesystem {
     #[default]
@@ -613,7 +619,7 @@ impl Filesystem {
     }
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Btrfs => "Btrfs — recommended",
+            Self::Btrfs => "Btrfs (recommended)",
             Self::Ext4 => "Ext4",
             Self::Xfs => "XFS",
         }
@@ -631,17 +637,19 @@ impl Filesystem {
     }
 }
 
-/// The user account created during install.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// The user account created during install. Only the names are authored
+/// in the document; the password is entered on the target.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct UserAccount {
+    /// Full name
     pub full_name: String,
+    /// Username
     pub username: String,
     /// Held only for the current host-side UI session. It is deliberately
     /// excluded from the installation-media profile and must be entered on
     /// the target device.
+    #[model(skip)]
     pub password: String,
-    pub is_admin: bool,
-    pub autologin: bool,
 }
 
 impl Default for UserAccount {
@@ -650,8 +658,6 @@ impl Default for UserAccount {
             full_name: "Tilo User".into(),
             username: "quser".into(),
             password: String::new(),
-            is_admin: true,
-            autologin: false,
         }
     }
 }
@@ -660,20 +666,26 @@ impl Default for UserAccount {
 /// emits only its validated, non-secret preferences; target selection,
 /// destructive consent, credentials, and recovery acknowledgement stay local
 /// to the device being installed.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+///
+/// The document holds the secret-free choices the media profile and the
+/// on-write setup carry; credentials are not part of that contract and
+/// stay on this machine.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Model)]
 pub struct InstallProfile {
-    pub mode: InstallMode,
+    /// Hostname
     pub hostname: String,
     pub user: UserAccount,
+    /// Locale
     pub locale: String,
+    /// Keyboard layout
     pub keyboard: String,
+    /// Time zone
     pub timezone: String,
+    /// Filesystem
     pub filesystem: Filesystem,
-    pub encrypt: bool,
     /// Host-session draft value only; never serialized into installation media.
+    #[model(skip)]
     pub encryption_passphrase: String,
-    /// Persistence overlay size in MB, for `InstallMode::Persistent`.
-    pub persist_mb: u64,
     /// Wi-Fi network the new machine should join. The passphrase stays in the
     /// write request, never in this collaborative profile.
     #[serde(default)]
@@ -681,25 +693,27 @@ pub struct InstallProfile {
     /// Name of the device identity created for the target.
     #[serde(default)]
     pub device_label: String,
-    /// Certify a new device under the setup machine's person and place it on
-    /// the target. The human root secret stays on the setup machine.
+    /// Enroll as a new device: certify a new device under the setup
+    /// machine's person and place it on the target. The human root secret
+    /// stays on the setup machine.
     #[serde(default)]
     pub enroll_local_identity: bool,
 }
 
+/// The hostname a profile starts with. A profile that still carries it has not
+/// chosen one, so a written disk keeps the image's own name.
+pub const DEFAULT_HOSTNAME: &str = "tilo";
+
 impl Default for InstallProfile {
     fn default() -> Self {
         Self {
-            mode: InstallMode::Live,
-            hostname: "tilo".into(),
+            hostname: DEFAULT_HOSTNAME.into(),
             user: UserAccount::default(),
             locale: "en_US.UTF-8".into(),
             keyboard: "us".into(),
             timezone: "UTC".into(),
             filesystem: Filesystem::Btrfs,
-            encrypt: false,
             encryption_passphrase: String::new(),
-            persist_mb: 4096,
             wifi_ssid: String::new(),
             device_label: String::new(),
             enroll_local_identity: false,
@@ -707,32 +721,10 @@ impl Default for InstallProfile {
     }
 }
 
-const INSTALLER_KEYBOARDS: &[&str] = &[
-    "us", "gb", "de", "fr", "es", "it", "pt", "br", "ru", "se", "no", "dk", "ch", "pl", "dvorak",
-    "colemak",
-];
-
-/// Exact locale catalog supported by both the host customizer and the
-/// installed OS. Keep this in the image source so the host builds, live
-/// installer and privileged backend all consume one reviewed contract.
-pub(crate) const INSTALLER_LOCALE_CATALOG: &str =
-    include_str!("../../../os/usr/share/tilo/installer-locales.txt");
-
-pub(crate) fn installer_locales() -> impl Iterator<Item = &'static str> {
-    INSTALLER_LOCALE_CATALOG
-        .lines()
-        .map(str::trim)
-        .filter(|locale| !locale.is_empty())
-}
-
 impl InstallProfile {
-    /// Validate the exact secret-free subset accepted by the live installer.
-    ///
-    /// This intentionally mirrors `installer::media_profile` locally: the
-    /// imager cannot depend on the graphical installer crate without pulling a
-    /// second application into every host build. Keeping the checks beside the
-    /// media serializer still lets us reject a bad profile before spending time
-    /// flashing it; the live installer repeats every check across the trust
+    /// Validate the exact secret-free subset accepted by the live installer,
+    /// with the rules it applies, so a bad profile is refused before
+    /// flashing. The live installer repeats every check across the trust
     /// boundary.
     ///
     /// # Errors
@@ -740,91 +732,30 @@ impl InstallProfile {
     /// Returns a field-specific message when any transported value would be
     /// rejected by the live installer.
     pub fn validate_media_profile(&self) -> Result<(), String> {
-        let hostname = self.hostname.trim();
-        if hostname.is_empty()
-            || hostname.len() > 63
-            || !hostname
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-')
-            || hostname.starts_with('-')
-            || hostname.ends_with('-')
-        {
+        use install_profile_model as rules;
+        if !rules::valid_hostname(&self.hostname) {
             return Err(
                 "Hostname must be 1–63 letters, numbers or hyphens, without a hyphen at either end."
                     .into(),
             );
         }
-
-        let username = self.user.username.trim();
-        let username_bytes = username.as_bytes();
-        let reserved = matches!(
-            username,
-            "root"
-                | "bin"
-                | "daemon"
-                | "adm"
-                | "lp"
-                | "sync"
-                | "shutdown"
-                | "halt"
-                | "mail"
-                | "operator"
-                | "games"
-                | "ftp"
-                | "nobody"
-                | "dbus"
-                | "polkitd"
-                | "sshd"
-                | "chrony"
-                | "tss"
-                | "greetd"
-                | "tilo"
-        );
-        if username_bytes.is_empty()
-            || username_bytes.len() > 32
-            || !username_bytes
-                .first()
-                .is_some_and(|c| matches!(c, b'a'..=b'z' | b'_'))
-            || !username_bytes
-                .iter()
-                .skip(1)
-                .all(|c| matches!(c, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
-            || reserved
-        {
+        if !rules::valid_username(self.user.username.trim()) {
             return Err(
                 "Username must be a non-reserved Linux account name of at most 32 characters."
                     .into(),
             );
         }
-
-        let full_name = self.user.full_name.trim();
-        if full_name.chars().count() > 100
-            || full_name
-                .chars()
-                .any(|c| c.is_control() || matches!(c, ':' | '\n' | '\r'))
-        {
+        if !rules::valid_full_name(self.user.full_name.trim()) {
             return Err("Full name must be at most 100 characters and contain no control characters or colon."
                 .into());
         }
-
-        let locale = self.locale.trim();
-        if !installer_locales().any(|supported| supported == locale) {
+        if !rules::valid_locale(self.locale.trim()) {
             return Err("Choose a language and locale supported by Tilo.".into());
         }
-
-        if !INSTALLER_KEYBOARDS.contains(&self.keyboard.trim()) {
+        if !rules::KEYBOARDS.contains(&self.keyboard.trim()) {
             return Err("Keyboard layout is not supported by the Tilo installer.".into());
         }
-
-        let timezone = self.timezone.trim();
-        if timezone.is_empty()
-            || timezone.len() > 128
-            || timezone.starts_with('/')
-            || timezone.contains("..")
-            || !timezone
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'/' | b'+' | b'-'))
-        {
+        if !rules::valid_timezone_name(self.timezone.trim()) {
             return Err("Time zone must be a safe IANA name such as Europe/Berlin.".into());
         }
         Ok(())
@@ -869,22 +800,17 @@ impl InstallProfile {
     /// A named saved-profile snapshot for the "saved install profiles" list.
     pub fn sample_workstation() -> Self {
         InstallProfile {
-            mode: InstallMode::DiskInstall,
             hostname: "tilo-workstation".into(),
             user: UserAccount {
                 full_name: "ada".into(),
                 username: "ada".into(),
                 password: "•••••••••".into(),
-                is_admin: true,
-                autologin: false,
             },
             locale: "en_US.UTF-8".into(),
             keyboard: "us".into(),
             timezone: "Europe/Amsterdam".into(),
             filesystem: Filesystem::Btrfs,
-            encrypt: true,
             encryption_passphrase: "•••••••••".into(),
-            persist_mb: 0,
             wifi_ssid: String::new(),
             device_label: String::new(),
             enroll_local_identity: false,
@@ -921,11 +847,6 @@ pub enum JobPhase {
     Success,
     Failed,
 }
-
-/// A persisted active phase cannot prove that a restarted UI still supervises
-/// the privileged writer which produced it. Treat that state as unknown and
-/// potentially incomplete until the user performs a fresh review.
-pub const WRITE_SUPERVISION_LOST: &str = "Tilo Imager restarted before the previous write reported completion. Its outcome is unknown and the drive may be incomplete. Keep it connected until any writer activity stops, then rescan and review it before retrying.";
 
 impl JobPhase {
     pub fn key(&self) -> &'static str {
@@ -988,23 +909,6 @@ impl Default for Progress {
 }
 
 impl Progress {
-    /// Record that no live supervisor can establish the job's outcome.
-    pub fn mark_supervision_lost(&mut self) {
-        self.phase = JobPhase::Failed;
-        self.rate_bps = 0;
-        self.error = Some(WRITE_SUPERVISION_LOST.into());
-    }
-
-    /// Fail closed when an active progress snapshot has outlived its local
-    /// worker/supervisor. Returns whether a recovery transition was applied.
-    pub fn fail_if_supervision_lost(&mut self) -> bool {
-        if !self.phase.is_active() {
-            return false;
-        }
-        self.mark_supervision_lost();
-        true
-    }
-
     /// Overall fraction across both phases (write counts for the first 85%,
     /// verify the last 15% — the read-back is quicker than the write).
     pub fn overall(&self) -> f64 {
@@ -1415,18 +1319,18 @@ mod tests {
             let json = serde_json::to_string(&prof).unwrap();
             let back: InstallProfile = serde_json::from_str(&json).unwrap();
             assert_eq!(back.hostname, prof.hostname);
-            assert_eq!(back.encrypt, prof.encrypt);
+            assert_eq!(back.user.username, prof.user.username);
             assert_eq!(back.filesystem, prof.filesystem);
         }
     }
 
-    /// Step flow, progress, ETA and supervision recovery.
+    /// Step flow, progress and ETA.
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn step_and_progress_state_advance_and_fail_closed_on_lost_supervision() {
+    fn step_and_progress_state_advance() {
         // Phase `step_flow_advances_and_retreats_and_saturates`.
         {
             assert_eq!(Step::Source.next(), Step::Drive);
@@ -1469,39 +1373,6 @@ mod tests {
                 error: None,
             };
             assert_eq!(done.overall(), 1.0);
-        }
-
-        // Phase `restored_active_phases_fail_closed_when_supervision_is_lost`.
-        {
-            for phase in [JobPhase::Writing, JobPhase::Verifying] {
-                let mut progress = Progress {
-                    phase,
-                    write_frac: 0.7,
-                    verify_frac: 0.2,
-                    rate_bps: 42_000_000,
-                    error: None,
-                };
-
-                assert!(progress.fail_if_supervision_lost());
-                assert_eq!(progress.phase, JobPhase::Failed);
-                assert_eq!(progress.rate_bps, 0);
-                assert!(progress.error.as_deref().is_some_and(|message| {
-                    message.contains("outcome is unknown") && message.contains("incomplete")
-                }));
-                assert_ne!(progress.phase, JobPhase::Success);
-            }
-        }
-
-        // Phase `supervision_recovery_does_not_rewrite_terminal_or_idle_phases`.
-        {
-            for phase in [JobPhase::Idle, JobPhase::Success, JobPhase::Failed] {
-                let mut progress = Progress {
-                    phase,
-                    ..Progress::default()
-                };
-                assert!(!progress.fail_if_supervision_lost());
-                assert_eq!(progress.phase, phase);
-            }
         }
     }
 }

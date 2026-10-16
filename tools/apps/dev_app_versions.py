@@ -88,9 +88,13 @@ def collection_plan(plan, built, prior):
         declared = app.get("declared_version", app["version"])
         if artifact.get("declared_version", artifact["version"]) != declared:
             raise ValueError(f"declared app version changed; rebuild {app['name']}")
-        for key in ("id", "package", "runtime"):
+        for key in ("id", "package"):
             if artifact[key] != app[key]:
                 raise ValueError(f"artifact identity mismatch: {app['name']} {key}")
+        # A packed app names the exact runtime build it links
+        # (`<release>+native.<digest>`) where its manifest declares the release.
+        if artifact["runtime"].split("+native.", 1)[0] != app["runtime"]:
+            raise ValueError(f"artifact identity mismatch: {app['name']} runtime")
         app["declared_version"] = declared
         app["version"] = artifact["version"]
     return result

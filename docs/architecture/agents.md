@@ -23,9 +23,13 @@ parameter forms derived from action descriptors and no model at all.
 
 ## Access model
 
-Human roles are inherited base authority. Agents deliberately receive no
-human role: `Workspace::actor_for_agent` produces a typed agent principal with
-no role, and every usable resource/action is an explicit capability.
+Human roles are inherited base authority. An agent is not a member with a role
+of its own: `Workspace::actor_for_agent` produces a typed agent principal, and
+it acts for one person. Its room authority is the least of that person's role,
+what its room admission grants it, and Editor
+(`tilo_action_policy::roles::agent_policy::role`, capped at `ROLE_CAP`). Its
+delegation's grants then bound it further, so an agent never governs a room and
+never does more than its person.
 
 The UI therefore must not call an agent's room-admission verb a role. Future
 presets are capability bundles, expanded into ordinary `CapOverride` records:
@@ -35,6 +39,16 @@ presets are capability bundles, expanded into ordinary `CapOverride` records:
 - **Operator** — broader selected actions/files, excluding administration,
   devices and unrestricted network by default.
 - **Custom** — the exact capability editor.
+
+Agents share their delegation with bots ([bots.md](bots.md)). Both act from a
+device key of their own under a root-signed, expiring `Delegation` whose
+`delegate` names an agent or a bot installation, and both are rows of the
+room's governed delegate list. The difference is who decides the steps: an
+agent plans at run time within its grants, while a bot runs a fixed program
+whose grant was derived from it and reviewed at install. A bot is therefore
+not an agent preset, and agent presets never apply to bots. Bots are not capped
+at Editor, because their grant is fixed and reviewed. They still never govern
+the room ([bots.md](bots.md) §3).
 
 Presets are conveniences, not a second policy store. The UI derives the preset
 name when the live capability set exactly matches a bundle and shows `Custom`
@@ -75,6 +89,10 @@ loopback or network-namespace boundary. Downloading is an explicit management
 operation, never a side effect of an agent request.
 
 ## Agent experience and MCP
+
+Foreign Linux agent boxes (no desktop) use the MCP-beside-local-relay path in
+[`agent-host.md`](agent-host.md) rather than embedding a cloud API or copying
+the user root secret.
 
 `crates/collab/actions` remains the single action schema. The gateway projects
 each permission-filtered `ActionDescriptor` to MCP with its existing JSON

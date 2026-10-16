@@ -25,18 +25,23 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 pub mod android;
 pub mod capability_usage;
 pub mod ci;
+pub mod contract;
 mod dev_reload;
 pub mod examples;
+mod font_assets;
 mod json;
 pub mod native_libs;
+pub mod native_sdk;
 mod pack;
 pub mod portability;
 mod resource_kinds;
 pub mod size;
 pub mod standalone;
+pub mod surface;
 pub mod targets;
 pub mod web;
 
+const APP_AGENT_GUIDE: &str = include_str!("../templates/AGENTS.md");
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
 const DOCUMENT_APP_TEMPLATE: &str = include_str!("../templates/document.rs");
 const COLLECTION_APP_TEMPLATE: &str = include_str!("../templates/collection.rs");
@@ -89,6 +94,15 @@ impl Template {
         }
     }
 
+    fn surface(self) -> &'static str {
+        match self {
+            Self::Starter => include_str!("../templates/starter.surface.toml"),
+            Self::Document => include_str!("../templates/document.surface.toml"),
+            Self::Collection => include_str!("../templates/collection.surface.toml"),
+            Self::Graph => include_str!("../templates/graph.surface.toml"),
+        }
+    }
+
     fn catalog(self) -> &'static str {
         match self {
             Self::Starter => STARTER_APP_CATALOG,
@@ -114,21 +128,25 @@ pub fn templates_json() -> serde_json::Value {
         .collect()
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum ScreenTemplate {
+    /// A localized title and starter body.
     #[default]
     Blank,
+    /// Labeled inputs, a checkbox, draft bindings, and a save action.
     Form,
+    /// Labeled preferences, stable bindings, and a save action.
     Settings,
+    /// Explanatory copy and a primary recovery action.
     EmptyState,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum ComponentTemplate {
-    /// A reusable typed-props heading and detail view.
+    /// Typed props rendered as an accessible heading and detail.
     #[default]
     Display,
-    /// A reusable form with explicit cloneable local state.
+    /// Typed local state bound to labeled text and boolean controls.
     Form,
     /// A source-agnostic virtualized tree with typed configuration.
     Tree,
@@ -510,7 +528,20 @@ pub struct DevRequest {
     pub debounce: Duration,
     /// Report where each reload spent its time.
     pub timings: bool,
+    /// Cargo profile every build of the app uses; `None` is Cargo's `dev`.
+    pub profile: Option<String>,
 }
+
+impl DevRequest {
+    fn profile(&self) -> Option<&str> {
+        self.profile.as_deref()
+    }
+}
+
+/// The profile `tilo-app dev --release` picks: release optimisation without
+/// LTO, the profile thin Tilo builds ship with. It links the toolkit
+/// dynamically, so the app still reloads in place.
+pub const DEV_RELEASE_PROFILE: &str = "thin-app";
 
 /// Quiet period `tilo-app dev` waits after a save before it builds.
 pub const DEV_DEBOUNCE_MS: u64 = 30;
@@ -519,6 +550,8 @@ pub use dev_reload::run_as_build_tool_if_requested;
 
 #[derive(Debug)]
 pub struct PackageRequest {
+    /// Independently selected signed native SDK; never an authored runtime override.
+    pub sdk: Option<native_sdk::SdkSelection>,
     pub output: Option<PathBuf>,
     pub identity: Option<PathBuf>,
     /// `None` picks `thin-app` for a thin build and `release` for a static one.
@@ -537,7 +570,7 @@ pub struct PackageRequest {
 }
 
 /// The system a package is built for.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum PackagePlatform {
     /// A thin Tilo OS app, linked against the toolkit the OS ships.
     #[default]
@@ -619,7 +652,9 @@ impl PackagePlatform {
         Ok(())
     }
 
-    /// The registry's name for the platform family.
+    /// The registry's name for the platform family. The browser has no
+    /// registry family (its runtime compiles its apps in), so `web` is only
+    /// the platform's own name.
     #[must_use]
     pub const fn registry_name(self) -> &'static str {
         match self {
@@ -627,7 +662,7 @@ impl PackagePlatform {
             Self::Linux => registry_types::LINUX_PLATFORM,
             Self::Windows => registry_types::WINDOWS_PLATFORM,
             Self::Macos => registry_types::MACOS_PLATFORM,
-            Self::Web => registry_types::WEB_PLATFORM,
+            Self::Web => "web",
             Self::Android => registry_types::ANDROID_PLATFORM,
         }
     }
@@ -745,7 +780,6 @@ fn starter_ui_document(title: &str) -> tilo_ui_graph::UiDocument {
                     value: title.into(),
                 },
                 role: tilo_ui_graph::UiTextRole::Title,
-                size: None,
             },
             tilo_ui_graph::UiNode::Text {
                 id: "body".into(),
@@ -753,7 +787,6 @@ fn starter_ui_document(title: &str) -> tilo_ui_graph::UiDocument {
                     value: "Start building here.".into(),
                 },
                 role: tilo_ui_graph::UiTextRole::Body,
-                size: None,
             },
         ],
         gap: Some(8.0),
@@ -768,7 +801,8 @@ const SCREEN_ENTRY_PREFIX: &str = "// tilo-app:screen=";
 const COMPONENT_REGISTRY_HEADER: &str = "// @generated by tilo-app; Rust component registry.\n";
 const COMPONENT_ENTRY_PREFIX: &str = "// tilo-app:component=";
 const GRAPH_COMPONENT_ENTRY_PREFIX: &str = "// tilo-app:graph-component=";
-const GENERATED_GRAPH_ROUTER_CALL: &str = "crate::screens::router_with(\n        \"main\",\n        &Theme::default(),\n        crate::components::ui_graph_context(),\n    )";
+const GENERATED_GRAPH_ROUTER_CALL: &str =
+    "crate::screens::router_with(\"main\", &Theme::default(), context)";
 
 struct PendingWrite {
     path: PathBuf,
@@ -1126,8 +1160,7 @@ pub fn add_app_artifact(request: AddRequest) -> Result<AddOutcome> {
 
 const LOCALE_REGISTRY_HEADER: &str = "// @generated by tilo-app; locale registry.\n";
 const LOCALE_ENTRY_PREFIX: &str = "// tilo-app:locale=";
-const GENERATED_LOCALE_SETUP: &str =
-    "pub mod locales;\n\nfn install_catalog() {\n    locales::install();\n}";
+const GENERATED_LOCALE_SETUP: &str = "pub mod locales;";
 fn locale_artifact_writes(app_dir: &Path, locale: &str, force: bool) -> Result<Vec<PendingWrite>> {
     validate_locale(locale)?;
     if locale.eq_ignore_ascii_case("en-US") {
@@ -1169,12 +1202,12 @@ fn locale_artifact_writes(app_dir: &Path, locale: &str, force: bool) -> Result<V
     if !locales.iter().any(|locale| locale == "en-US") {
         bail!("generated locale registry is missing its en-US source catalog");
     }
-    let registry_source = rustfmt_source(&locale_registry_source(&locales), &registry_path)?;
     let source_path = app_dir.join("locales/en-US.ftl");
     let source_catalog = std::fs::read_to_string(&source_path)
         .with_context(|| format!("reading source catalog {}", source_path.display()))?;
     parse_fluent_catalog(&source_catalog)
         .with_context(|| format!("source catalog {} is invalid", source_path.display()))?;
+    let registry_source = rustfmt_source(&locale_registry_source(&locales), &registry_path)?;
 
     let mut writes = vec![PendingWrite {
         path,
@@ -1388,13 +1421,11 @@ fn synchronize_fluent_entry(
             changed
         }
         (Entry::Term(source), Entry::Term(translation)) => {
-            let mut changed = false;
-            if reset_variables
+            let changed = reset_variables
                 && fluent_pattern_variables(&source.value)
-                    != fluent_pattern_variables(&translation.value)
-            {
+                    != fluent_pattern_variables(&translation.value);
+            if changed {
                 translation.value = source.value.clone();
-                changed = true;
             }
             changed
                 | synchronize_fluent_attributes(
@@ -1490,32 +1521,36 @@ fn parse_locale_registry(source: &str) -> Result<Vec<String>> {
     Ok(locales)
 }
 
+/// The messages (not terms) of a source catalog, in catalog order of ids.
+pub(crate) fn catalog_message_ids(contract: &FluentCatalogContract) -> Vec<String> {
+    contract
+        .entries
+        .keys()
+        .filter(|id| !id.starts_with('-'))
+        .cloned()
+        .collect()
+}
+
+/// The registry's catalog: every registered locale, embedded, for the app's
+/// `ResourceApp::catalog` to return.
+fn catalog_declaration(locales: &[String]) -> String {
+    format!(
+        "ui::embedded_catalog!(pub static CATALOG, [{}]);",
+        locales
+            .iter()
+            .map(|locale| format!("{locale:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 fn locale_registry_source(locales: &[String]) -> String {
     let mut source = String::from(LOCALE_REGISTRY_HEADER);
     source.push_str("// Edit Fluent catalogs under locales/; tilo-app maintains this registry.\n");
     for locale in locales {
         let _ = writeln!(source, "{LOCALE_ENTRY_PREFIX}{locale}");
     }
-    source.push('\n');
-    for (index, locale) in locales.iter().enumerate() {
-        let _ = writeln!(
-            source,
-            "const CATALOG_{index}: &str = include_str!(\"../locales/{locale}.ftl\");"
-        );
-    }
-    source.push_str("\npub const IDS: &[&str] = &[\n");
-    for locale in locales {
-        let _ = writeln!(source, "    {locale:?},");
-    }
-    source.push_str(
-        "];\n\npub fn install() {\n    if let Err(error) = ui::i18n::I18nManager::install_system(\n        \"en-US\",\n        &[\n",
-    );
-    for (index, locale) in locales.iter().enumerate() {
-        let _ = writeln!(source, "            ({locale:?}, CATALOG_{index}),");
-    }
-    source.push_str(
-        "        ],\n    ) {\n        eprintln!(\"localization catalog: {error}\");\n    }\n}\n",
-    );
+    let _ = writeln!(source, "\n{}", catalog_declaration(locales));
     source
 }
 
@@ -1552,7 +1587,7 @@ fn screen_artifact_writes(
                 click_value: None,
                 navigate: Some(tilo_ui_graph::UiNavigation::Back),
                 enabled: true,
-                style: tilo_ui_graph::UiButtonStyle::Ghost,
+                role: tilo_ui_graph::UiButtonRole::Plain,
             },
         )?;
         messages.push(back);
@@ -1891,7 +1926,7 @@ fn primary_action_button(
         click_value: Some("yes".into()),
         navigate: None,
         enabled: true,
-        style: tilo_ui_graph::UiButtonStyle::Primary,
+        role: tilo_ui_graph::UiButtonRole::Primary,
     }
 }
 
@@ -1900,7 +1935,6 @@ fn screen_text(id: &str, value: String, role: tilo_ui_graph::UiTextRole) -> tilo
         id: id.into(),
         text: tilo_ui_graph::UiTextSource::Static { value },
         role,
-        size: None,
     }
 }
 
@@ -2070,7 +2104,7 @@ fn navigation_link_write(
                 route: to.to_owned(),
             }),
             enabled: true,
-            style: tilo_ui_graph::UiButtonStyle::Neutral,
+            role: tilo_ui_graph::UiButtonRole::Secondary,
         },
     )?;
     let mut source = document.to_json_pretty()?;
@@ -2226,46 +2260,7 @@ fn screen_writes(
     names.dedup();
     let registry_source = screen_registry_source(&names);
 
-    let library_path = app_dir.join("src/lib.rs");
-    let library_source = std::fs::read_to_string(&library_path)
-        .with_context(|| format!("reading {}", library_path.display()))?;
-    let syntax = syn::parse_file(&library_source)
-        .with_context(|| format!("parsing {} before screen wiring", library_path.display()))?;
-    let screens_modules: Vec<_> = syntax
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            syn::Item::Mod(module) if module.ident == "screens" => Some(module),
-            _ => None,
-        })
-        .collect();
-    let updated_library = match screens_modules.as_slice() {
-        [] => {
-            let separator = if library_source.ends_with('\n') {
-                "\n"
-            } else {
-                "\n\n"
-            };
-            format!("{library_source}{separator}pub mod screens;\n")
-        }
-        [module]
-            if module.content.is_none()
-                && matches!(module.vis, syn::Visibility::Public(_))
-                && !module.attrs.iter().any(|attr| attr.path().is_ident("path")) =>
-        {
-            library_source.clone()
-        }
-        [_] => bail!(
-            "{} already defines a custom `screens` module; generated screens require a plain `pub mod screens;` declaration",
-            library_path.display()
-        ),
-        _ => bail!(
-            "{} defines `screens` more than once",
-            library_path.display()
-        ),
-    };
-    syn::parse_file(&updated_library)
-        .with_context(|| format!("validating screen wiring for {}", library_path.display()))?;
+    let library = library_module_write(app_dir, "screens", "screen")?;
 
     let mut writes = vec![PendingWrite {
         path: graph_path,
@@ -2279,14 +2274,61 @@ fn screen_writes(
             description: "screen registry",
         });
     }
-    if updated_library != library_source {
-        writes.push(PendingWrite {
-            path: library_path,
-            source: updated_library,
-            description: "app library",
-        });
-    }
+    writes.extend(library);
     Ok(writes)
+}
+
+/// The write that makes `src/lib.rs` declare `pub mod {module};` for
+/// generated `kind` code; `None` when it already has that plain declaration.
+fn library_module_write(app_dir: &Path, module: &str, kind: &str) -> Result<Option<PendingWrite>> {
+    let library_path = app_dir.join("src/lib.rs");
+    let library_source = std::fs::read_to_string(&library_path)
+        .with_context(|| format!("reading {}", library_path.display()))?;
+    let syntax = syn::parse_file(&library_source)
+        .with_context(|| format!("parsing {} before {kind} wiring", library_path.display()))?;
+    let declared: Vec<_> = syntax
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Mod(declared) if declared.ident == module => Some(declared),
+            _ => None,
+        })
+        .collect();
+    let updated_library = match declared.as_slice() {
+        [] => {
+            let separator = if library_source.ends_with('\n') {
+                "\n"
+            } else {
+                "\n\n"
+            };
+            format!("{library_source}{separator}pub mod {module};\n")
+        }
+        [declared]
+            if declared.content.is_none()
+                && matches!(declared.vis, syn::Visibility::Public(_))
+                && !declared
+                    .attrs
+                    .iter()
+                    .any(|attr| attr.path().is_ident("path")) =>
+        {
+            return Ok(None);
+        }
+        [_] => bail!(
+            "{} already defines a custom `{module}` module; generated {module} require a plain `pub mod {module};` declaration",
+            library_path.display()
+        ),
+        _ => bail!(
+            "{} defines `{module}` more than once",
+            library_path.display()
+        ),
+    };
+    syn::parse_file(&updated_library)
+        .with_context(|| format!("validating {kind} wiring for {}", library_path.display()))?;
+    Ok(Some(PendingWrite {
+        path: library_path,
+        source: updated_library,
+        description: "app library",
+    }))
 }
 
 fn component_artifact_writes(
@@ -2322,46 +2364,7 @@ fn component_artifact_writes(
     let graph_names = graph_component_names(app_dir, &registry, &names, name, template)?;
     let registry_source = component_registry_source(&names, &graph_names)?;
 
-    let library_path = app_dir.join("src/lib.rs");
-    let library_source = std::fs::read_to_string(&library_path)
-        .with_context(|| format!("reading {}", library_path.display()))?;
-    let syntax = syn::parse_file(&library_source)
-        .with_context(|| format!("parsing {} before component wiring", library_path.display()))?;
-    let component_modules: Vec<_> = syntax
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            syn::Item::Mod(module) if module.ident == "components" => Some(module),
-            _ => None,
-        })
-        .collect();
-    let updated_library = match component_modules.as_slice() {
-        [] => {
-            let separator = if library_source.ends_with('\n') {
-                "\n"
-            } else {
-                "\n\n"
-            };
-            format!("{library_source}{separator}pub mod components;\n")
-        }
-        [module]
-            if module.content.is_none()
-                && matches!(module.vis, syn::Visibility::Public(_))
-                && !module.attrs.iter().any(|attr| attr.path().is_ident("path")) =>
-        {
-            library_source.clone()
-        }
-        [_] => bail!(
-            "{} already defines a custom `components` module; generated components require a plain `pub mod components;` declaration",
-            library_path.display()
-        ),
-        _ => bail!(
-            "{} defines `components` more than once",
-            library_path.display()
-        ),
-    };
-    syn::parse_file(&updated_library)
-        .with_context(|| format!("validating component wiring for {}", library_path.display()))?;
+    let library = library_module_write(app_dir, "components", "component")?;
 
     let (component_source, messages) = component_source(name, &module_name, &type_name, template);
     syn::parse_file(&component_source)
@@ -2378,13 +2381,7 @@ fn component_artifact_writes(
             description: "component registry",
         });
     }
-    if updated_library != library_source {
-        writes.push(PendingWrite {
-            path: library_path,
-            source: updated_library,
-            description: "app library",
-        });
-    }
+    writes.extend(library);
     writes.extend(artifact_locale_writes(app_dir, &messages, force)?);
     Ok((writes, Some("tilo-app test".into())))
 }
@@ -2715,7 +2712,7 @@ mod tests {{
     #[test]
     fn component_exposes_typed_props_and_stable_semantics() {{
         let props = {type_name}Props::new("Example title", "Example detail");
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new({module_name}("example", &props)),
             (480, 240),
@@ -2747,7 +2744,7 @@ mod tests {{
             &context,
         )
         .expect("registered component");
-        let mut app = ui::headless::Driver::new(ui::State::new(), widget, (480, 240));
+        let mut app = ui::headless::FrameHarness::new(ui::State::new(), widget, (480, 240));
         app.expect(
             &SemanticExpectation::named("example-title")
                 .role(Role::Heading {{ level: 2 }})
@@ -2818,21 +2815,26 @@ pub fn {module_name}(id: &str, state: &{type_name}State) -> ui::widget::Column {
     .with_no_padding()
 }}
 
-/// Build one `{name}` form whose controls bind directly to the app document.
+/// Build one `{name}` form for a serialized graph. The value is the graph's
+/// typed value at `value_path`, which the app reads when it acts on it; the
+/// checkbox shares the graph's checked value at `enabled_path`. The app routes
+/// that path to a field of its resource with `ViewCx::route_graph_bool` when
+/// the value belongs in the document.
 ///
 /// Reusing either path in another component or ordinary graph control creates
-/// another synchronized view of the same persistent, undoable value.
-pub fn {module_name}_from_document(
+/// another synchronized view of the same value.
+pub fn {module_name}_in_graph(
     id: &str,
+    values: &ui::UiValues,
     value_path: &str,
     enabled_path: &str,
 ) -> ui::widget::Column {{
     let value_id = format!("{{id}}-value");
     let enabled_id = format!("{{id}}-enabled");
-    let value = TextInput::from_document_string(value_path)
+    let value = TextInput::from_state(&values.text(value_path))
         .with_id(&value_id)
         .with_placeholder("{name}-value-placeholder");
-    let enabled = Checkbox::new(&enabled_id, enabled_path).with_id(&enabled_id);
+    let enabled = values.checkbox(enabled_path).with_id(&enabled_id);
     ui::column![
         labeled_field("{name}-value-label", value),
         labeled_check("{name}-enabled-label", enabled),
@@ -2840,7 +2842,7 @@ pub fn {module_name}_from_document(
     .with_no_padding()
 }}
 
-/// Build this document-bound component from a serialized UI graph node.
+/// Build this component from a serialized UI graph node.
 ///
 /// Each graph instance receives explicit `value_path` and `enabled_path` props.
 /// Paths may be unique per instance or deliberately shared across views.
@@ -2857,8 +2859,9 @@ pub fn from_ui_graph(request: UiComponentRequest<'_>) -> Result<Element, String>
             .filter(|path| !path.trim().is_empty())
             .ok_or_else(|| format!("{{key}} must be a non-empty string"))
     }};
-    Ok(Box::new({module_name}_from_document(
+    Ok(Box::new({module_name}_in_graph(
         request.id,
+        request.values,
         path("value_path")?,
         path("enabled_path")?,
     )))
@@ -2875,11 +2878,12 @@ mod tests {{
     use super::*;
     use ui::a11y::{{Action, Role}};
     use ui::headless::SemanticExpectation;
+    use ui::prelude::*;
 
     #[test]
     fn component_binds_typed_state_and_stable_semantics() {{
         let state = {type_name}State::default();
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new({module_name}("example", &state)),
             (480, 240),
@@ -2898,49 +2902,113 @@ mod tests {{
         assert!(!state.enabled.with(|enabled| *enabled));
     }}
 
+    #[derive(ui::prelude::Model, Default, Debug, Clone, PartialEq)]
+    pub struct GraphFlags {{
+        enabled: bool,
+    }}
+
+    #[ui::prelude::resource(kind = "template.form-flags", label = "Form flags")]
+    impl GraphFlags {{}}
+
+    struct GraphForm {{
+        root: Element,
+        values: ui::UiValues,
+    }}
+
+    impl ui::widget::Widget for GraphForm {{
+        fn name(&self) -> &'static str {{ "GraphForm" }}
+        fn children(&self) -> Vec<&dyn ui::widget::Widget> {{ vec![self.root.as_ref()] }}
+        fn children_mut(&mut self) -> Vec<&mut (dyn ui::widget::Widget + '_)> {{ vec![self.root.as_mut()] }}
+        fn build_layout(&mut self, tree: &mut ui::taffy::TaffyTree<()>, theme: &ui::Theme, nodes: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>) -> ui::taffy::NodeId {{
+            self.root.build_layout(tree, theme, nodes)
+        }}
+        fn apply_layout(&mut self, tree: &ui::taffy::TaffyTree<()>, node: ui::taffy::NodeId, origin: ui::kurbo::Point) {{ self.root.apply_layout(tree, node, origin); }}
+        fn draw(&mut self, scene: &mut ui::vello::Scene, transform: ui::kurbo::Affine, text: &mut ui::TextRenderer, theme: &ui::Theme, presence: &ui::presence::PresenceCtx) {{ self.root.draw(scene, transform, text, theme, presence); }}
+        fn handle_event(&mut self, event: &ui::winit::event::WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {{ self.root.handle_event(event, ctx); }}
+        fn get_rect(&self) -> ui::kurbo::Rect {{ self.root.get_rect() }}
+    }}
+
+    impl ui::prelude::ResourceSurface<GraphFlags> for GraphForm {{
+        fn present(&mut self, _: &std::rc::Rc<GraphFlags>) {{}}
+    }}
+
+    struct GraphApp;
+
+    impl ui::prelude::ResourceApp for GraphApp {{
+        type Resource = GraphFlags;
+        const ID: &'static str = "template.form-graph";
+        const TITLE: &'static str = "Form graph";
+
+        fn view(cx: &mut ui::prelude::ViewCx<GraphFlags>) -> Element {{
+            let context = register_ui_graph(UiBuildContext::default());
+            cx.route_graph_bool(context.values(), "shared-enabled", GraphFlags::paths().enabled);
+            let document = graph_document();
+            let root = ui::UiDocumentExt::build_with(&document, &ui::Theme::default(), &context).expect("registered form component");
+            cx.surface(GraphForm {{ root, values: context.values().clone() }})
+        }}
+    }}
+
+    fn graph_document() -> ui::UiDocument {{
+        ui::UiDocument::from_json(
+            r#"{{"version":1,"root":{{"type":"column","id":"root","children":[{{"type":"component","id":"first","name":"{name}","props":{{"value_path":"shared-value","enabled_path":"shared-enabled"}}}},{{"type":"component","id":"second","name":"{name}","props":{{"value_path":"shared-value","enabled_path":"shared-enabled"}}}},{{"type":"toggle","id":"ordinary-enabled","value_path":"shared-enabled","accessible_name":"Enabled"}}]}}}}"#,
+        ).expect("valid component graph")
+    }}
+
     #[test]
-    fn graph_factory_binds_shared_document_state() {{
-        let document = ui::UiDocument::from_json(
-            r#"{{"version":1,"root":{{"type":"column","id":"root","children":[{{"type":"component","id":"first","name":"{name}","props":{{"value_path":"shared-value","enabled_path":"shared-enabled"}}}},{{"type":"component","id":"second","name":"{name}","props":{{"value_path":"shared-value","enabled_path":"shared-enabled"}}}}]}}}}"#,
-        )
-        .expect("valid component graph");
-        let context = register_ui_graph(UiBuildContext::default());
-        let widget = ui::UiDocumentExt::build_with(
-            &document,
-            &ui::Theme::default(),
-            &context,
-        )
-        .expect("registered form component");
-        let mut app = ui::headless::Driver::new(ui::State::new(), widget, (480, 240));
-        app.perform_named("first-value", &Action::SetValue("Ada".into()))
-            .expect("first graph form edits shared text");
-        app.expect(
+    fn graph_checked_controls_use_resource_actions_and_permissions() {{
+        let mut app = TestApp::<GraphApp>::new().expect("the graph app opens");
+        app.harness().perform_named("ordinary-enabled", &Action::ToggleCheck)
+            .expect("the ordinary graph toggle invokes the resource action");
+        assert!(app.state().enabled);
+        app.harness().expect(&SemanticExpectation::named("second-enabled").checked(true))
+            .expect("the component follows the ordinary graph toggle");
+        app.set_role(ui::Role::Viewer);
+        let off = Invoke::edit(&GraphFlags::paths().enabled.set(false)).expect("an edit");
+        assert!(app.invoke(off).is_err(), "a viewer cannot make the routed edit");
+        let _ = app.harness().perform_named("ordinary-enabled", &Action::ToggleCheck);
+        assert!(app.state().enabled);
+        app.harness().expect(&SemanticExpectation::named("second-enabled").checked(true))
+            .expect("refusal preserves the displayed resource value");
+    }}
+
+    #[test]
+    fn graph_factory_binds_shared_graph_values_and_document_state() {{
+        let mut app = ui::prelude::TestApp::<GraphApp>::new().expect("the graph app opens");
+        let values = app.surface_mut::<GraphForm>().values.clone();
+        app.harness().perform_named("first-value", &Action::SetValue("Ada".into()))
+            .expect("first graph form edits the shared value");
+        app.harness().expect(
             &SemanticExpectation::named("second-value")
                 .role(Role::TextInput)
                 .value("Ada"),
         )
-        .expect("second graph form observes shared document text");
-        app.perform_named("first-enabled", &Action::ToggleCheck)
+        .expect("second graph form observes the shared value");
+        app.harness().perform_named("first-enabled", &Action::ToggleCheck)
             .expect("first graph form edits shared boolean");
-        app.expect(
+        app.harness().expect(
             &SemanticExpectation::named("second-enabled")
                 .role(Role::Checkbox)
                 .checked(true),
         )
         .expect("second graph form observes shared document boolean");
-        assert!(app.perform_undo(), "document-bound toggle is undoable");
-        app.expect(
+        assert!(app.undo(), "document-bound toggle is undoable");
+        app.harness().expect(
             &SemanticExpectation::named("second-enabled")
                 .role(Role::Checkbox)
                 .checked(false),
         )
         .expect("undo updates every bound view");
-        assert!(app.perform_redo(), "document-bound toggle is redoable");
-        let state = app.dump_json();
-        assert!(state.contains("shared-value"));
-        assert!(state.contains("Ada"));
-        assert!(state.contains("shared-enabled"));
+        assert!(app.redo(), "document-bound toggle is redoable");
+        assert_eq!(
+            values.get("shared-value").as_deref(),
+            Some("Ada"),
+            "the app reads what the forms typed"
+        );
+        let state = app.harness().dump_json();
+        assert!(!state.contains("shared-value"), "typing never writes the document");
+        assert!(app.state().enabled, "the routed toggle writes the document");
 
+        let context = register_ui_graph(UiBuildContext::default());
         let invalid = ui::UiDocument::from_json(
             r#"{{"version":1,"root":{{"type":"component","id":"invalid","name":"{name}","props":{{"value_path":"","enabled_path":"enabled"}}}}}}"#,
         )
@@ -3050,21 +3118,20 @@ mod tests {{
             expanded: vec![1, 2],
             ..{type_name}Config::default()
         }};
+        let activated = ui::LocalState::new(None::<String>);
+        let rows_activated = activated.clone();
         let tree = {module_name}("example-tree", model, &config)
-            .with_row_delegate(|model, id, _depth| {{
+            .with_row_delegate(move |model, id, _depth| {{
                 let label = model.label(id).unwrap_or_default();
+                let activated = rows_activated.clone();
                 Box::new(ui::row![
                     Text::new(label),
-                    Button::new(
-                        &format!("more-{{id}}"),
-                        "More",
-                        Some("row-action-requested"),
-                    )
-                    .with_click_value(id.to_string()),
+                    Button::new(&format!("more-{{id}}"), "More")
+                        .on_view(move || activated.set(Some(id.to_string()))),
                 ])
             }})
             .reorderable();
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(tree),
             (560, 360),
@@ -3085,7 +3152,7 @@ mod tests {{
         .expect("selected row semantics");
         app.perform_named("more-3", &Action::Activate)
             .expect("delegated control remains independently interactive");
-        assert!(app.dump_json().contains("row-action-requested"));
+        assert_eq!(activated.get().as_deref(), Some("3"));
     }}
 }}
 "#
@@ -3192,27 +3259,27 @@ mod tests {{
             selection,
             ..{type_name}Config::default()
         }};
+        let activated = ui::LocalState::new(None::<String>);
+        let rows_activated = activated.clone();
         let list = {module_name}(
             "example-list",
             SparseItems {{ count: ITEM_COUNT }},
             &config,
-            |_model, index, key, _state| {{
+            move |_model, index, key, _state| {{
                 let height = if index % 5 == 0 {{ 72.0 }} else {{ 44.0 }};
+                let activated = rows_activated.clone();
+                let key = key.to_string();
                 Box::new(Container::new().with_height(height).with_child(Box::new(
                     ui::row![
                         Text::new(&format!("Item {{index}}")),
-                        Button::new(
-                            &format!("open-{{key}}"),
-                            "Open",
-                            Some("open-requested"),
-                        )
-                        .with_click_value(key.to_string()),
+                        Button::new(&format!("open-{{key}}"), "Open")
+                            .on_view(move || activated.set(Some(key.clone()))),
                     ],
                 )))
             }},
             u64::to_string,
         );
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(list),
             (560, 360),
@@ -3237,7 +3304,7 @@ mod tests {{
         let first = semantics.children[0].bounds.expect("first row bounds").to_rect().height();
         let second = semantics.children[1].bounds.expect("second row bounds").to_rect().height();
         assert!((first - second).abs() > 1.0, "delegate heights drive geometry");
-        assert!(app.dump_json().contains("open-requested"));
+        assert_eq!(activated.get().as_deref(), Some("0"));
     }}
 }}
 "#
@@ -3310,7 +3377,7 @@ mod tests {{
     use super::*;
     use ui::a11y::{{Action, Role}};
     use ui::headless::SemanticExpectation;
-    use ui::widget::Button;
+    use ui::widget::{{Button, ControlSize}};
     use ui::widget::data_table::{{ColumnWidth, TableRowState}};
 
     struct Row {{
@@ -3351,19 +3418,18 @@ mod tests {{
     #[test]
     fn component_keeps_sparse_variable_interactive_table_rows() {{
         const ROW_COUNT: usize = 100_000_000;
+        let activated = ui::LocalState::new(None::<String>);
+        let cells_activated = activated.clone();
         let columns = vec![
             ColumnDef::<Row>::new("name", "Name", ColumnWidth::Flex(1.0))
                 .with_text(|row| row.name.clone()),
             ColumnDef::<Row>::new("actions", "Actions", ColumnWidth::Fixed(112.0))
-                .with_widget(|_row, index| {{
+                .with_widget(move |_row, index| {{
+                    let activated = cells_activated.clone();
                     Box::new(
-                        Button::new(
-                            &format!("open-{{index}}"),
-                            "Open",
-                            Some("open-requested"),
-                        )
-                        .with_click_value(index.to_string())
-                        .fit_content(if index == 0 {{ 56.0 }} else {{ 28.0 }}),
+                        Button::new(&format!("open-{{index}}"), "Open")
+                            .on_view(move || activated.set(Some(index.to_string())))
+                            .control_size(if index == 0 {{ ControlSize::Large }} else {{ ControlSize::Small }}),
                     )
                 }}),
         ];
@@ -3382,7 +3448,7 @@ mod tests {{
             }},
             &config,
         );
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(table),
             (720, 420),
@@ -3407,7 +3473,7 @@ mod tests {{
         let first = semantics.children[0].bounds.expect("first row bounds").to_rect().height();
         let second = semantics.children[1].bounds.expect("second row bounds").to_rect().height();
         assert!((first - second).abs() > 1.0, "measured rows drive geometry");
-        assert!(app.dump_json().contains("open-requested"));
+        assert_eq!(activated.get().as_deref(), Some("3"));
     }}
 }}
 "#
@@ -3422,39 +3488,35 @@ fn text_component_source(
     let body = ScreenMessage::new(name, "body", "Replace this copy with application content.");
     let mut source = format!(
         r#"use ui::widget::Text;
-use ui::{{PolygonTextLayout, TextFlowRegion, TextLayoutEngine, TextStyle}};
+use ui::{{PolygonTextLayout, TextFlowRegion, TextLayoutEngine, TextRole}};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct {type_name}Props {{
     pub message: String,
-    pub style: TextStyle,
+    /// What the text is; the theme decides how it looks.
+    pub role: TextRole,
 }}
 
 impl {type_name}Props {{
     #[must_use]
-    pub fn new(message: impl Into<String>, style: TextStyle) -> Self {{
-        Self {{ message: message.into(), style }}
+    pub fn new(message: impl Into<String>, role: TextRole) -> Self {{
+        Self {{ message: message.into(), role }}
     }}
 }}
 
 impl Default for {type_name}Props {{
     fn default() -> Self {{
-        Self::new(
-            "{name}-body",
-            TextStyle::new(18.0)
-                .with_line_height(1.5)
-                .with_kerning(true)
-                .with_letter_spacing(0.15)
-                .with_auto_hyphenation("en-US"),
-        )
+        Self::new("{name}-body", TextRole::Reading)
     }}
 }}
 
-/// Build ordinary reusable `{name}` text with one style shared by layout and paint.
+/// Build ordinary reusable `{name}` text in its role, shared by layout and paint.
 pub fn {module_name}(id: &str, props: &{type_name}Props) -> Text {{
     Text::new(&props.message)
         .with_id(id)
-        .with_style(props.style.clone())
+        .with_role(props.role)
+        .with_kerning(true)
+        .with_auto_hyphenation("en-US")
 }}
 
 /// Keep the standard Text lifecycle while replacing measurement and painting.
@@ -3491,7 +3553,7 @@ mod tests {{
     use ui::a11y::Role;
     use ui::headless::SemanticExpectation;
     use ui::kurbo::Point;
-    use ui::{{TextLayoutConstraints, TextRenderer}};
+    use ui::{{TextLayoutConstraints, TextRenderer, TextStyle}};
 
     struct RecordingLayout(Rc<Cell<u32>>);
 
@@ -3522,16 +3584,13 @@ mod tests {{
     #[test]
     fn component_keeps_text_semantics_with_a_custom_engine() {{
         let measures = Rc::new(Cell::new(0));
-        let props = {type_name}Props::new(
-            "Advanced typography",
-            TextStyle::new(18.0).with_kerning(true),
-        );
+        let props = {type_name}Props::new("Advanced typography", TextRole::Reading);
         let text = {module_name}_with_engine(
             "example-text",
             &props,
             RecordingLayout(Rc::clone(&measures)),
         );
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(text),
             (480, 240),
@@ -3548,7 +3607,7 @@ mod tests {{
 
     #[test]
     fn component_accepts_non_rectangular_text_flow() {{
-        let props = {type_name}Props::new("Polygon text", TextStyle::new(18.0));
+        let props = {type_name}Props::new("Polygon text", TextRole::Body);
         let region = TextFlowRegion::polygon([
             Point::new(0.0, 0.0),
             Point::new(360.0, 0.0),
@@ -3561,7 +3620,7 @@ mod tests {{
         ])
         .expect("valid concave region");
         let text = {module_name}_in_region("polygon-text", &props, region);
-        let mut app = ui::headless::Driver::new(
+        let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(text),
             (400, 220),
@@ -4024,10 +4083,10 @@ fn write_atomic(path: &Path, source: &[u8], description: &str) -> Result<()> {
     let written = {
         let mode = std::fs::metadata(path)
             .map_or(0o644, |metadata| metadata.permissions().mode() & 0o7777);
-        atomic_file::write_with_mode(path, source, mode)
+        tilo_files::native::atomic::write_with_mode(path, source, mode)
     };
     #[cfg(not(unix))]
-    let written = atomic_file::write(path, source);
+    let written = tilo_files::native::atomic::write(path, source);
     written.with_context(|| format!("publishing {description} {}", path.display()))
 }
 
@@ -4039,9 +4098,10 @@ impl CargoPlan {
     ///
     /// Returns an error when Cargo cannot start or exits unsuccessfully.
     pub fn execute(&self) -> Result<()> {
-        let status = ProcessCommand::new(&self.program)
-            .args(&self.args)
-            .current_dir(&self.app_dir)
+        let mut command = ProcessCommand::new(&self.program);
+        command.args(&self.args).current_dir(&self.app_dir);
+        attach_surface_env(&mut command, &self.app_dir);
+        let status = command
             .status()
             .with_context(|| format!("starting {}", self.program.to_string_lossy()))?;
         if !status.success() {
@@ -4117,18 +4177,16 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
         .as_ref()
         .map(|manifest| manifest.package.id.clone());
 
-    check_source_file(
-        &app_dir,
-        "src/lib.rs",
-        "app root",
-        &["impl ResourceApp for", "pub fn app_root"],
-        &mut checks,
-    );
+    check_app_root(&app_dir, &mut checks);
     check_source_file(
         &app_dir,
         "src/main.rs",
         "launch lifecycle",
-        &["ui::main!", "framework::run::<", "LaunchSpec::new"],
+        &[
+            "ui::main!",
+            "framework::run::<",
+            "framework::launch_spec::<",
+        ],
         &mut checks,
     );
     let draws_nothing = manifest
@@ -4162,30 +4220,135 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
     DoctorReport { app_dir, checks }
 }
 
-fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
-    fn append_rust_sources(dir: &Path, source: &mut String) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(dir)? {
-            let path = entry?.path();
-            if path.is_dir() {
-                append_rust_sources(&path, source)?;
-            } else if path.extension().is_some_and(|ext| ext == "rs") {
-                source.push_str(&std::fs::read_to_string(path)?);
-                source.push('\n');
+/// The Rust sources under `dir`, as (path relative to `root`, text), in a
+/// stable order.
+fn rust_sources(
+    root: &Path,
+    dir: &Path,
+    sources: &mut Vec<(PathBuf, String)>,
+) -> std::io::Result<()> {
+    let mut entries = std::fs::read_dir(dir)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            rust_sources(root, &path, sources)?;
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            let text = std::fs::read_to_string(&path)?;
+            let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+            sources.push((relative, text));
+        }
+    }
+    Ok(())
+}
+
+/// Where an app's sources use the app framework, read from the parsed items
+/// rather than their text, so `#[resource(..)]`,
+/// `#[ui::tilo_resource::resource(..)]` and
+/// `impl ui::framework::ResourceApp for` are all recognised.
+#[derive(Debug, Default)]
+struct FrameworkUse {
+    /// The first file with a `#[resource]` impl or an `impl Resource for`.
+    resource: Option<PathBuf>,
+    /// The first file with an `impl ResourceApp for`.
+    host: Option<PathBuf>,
+}
+
+impl FrameworkUse {
+    fn of(sources: &[(PathBuf, String)]) -> Self {
+        let mut found = Self::default();
+        for (file, text) in sources {
+            // A file that does not parse fails the build, which reports it
+            // better than this check could.
+            if let Ok(parsed) = syn::parse_file(text) {
+                found.visit(&parsed.items, file);
             }
         }
-        Ok(())
+        found
     }
 
-    let mut source = String::new();
-    if append_rust_sources(&app_dir.join("src"), &mut source).is_err() {
+    fn visit(&mut self, items: &[syn::Item], file: &Path) {
+        fn last_segment(path: &syn::Path) -> Option<String> {
+            path.segments
+                .last()
+                .map(|segment| segment.ident.to_string())
+        }
+        for item in items {
+            match item {
+                syn::Item::Impl(item) => {
+                    let attribute = item.attrs.iter().any(|attribute| {
+                        last_segment(attribute.path()).as_deref() == Some("resource")
+                    });
+                    let implemented = item
+                        .trait_
+                        .as_ref()
+                        .and_then(|(_, path, _)| last_segment(path));
+                    if attribute || implemented.as_deref() == Some("Resource") {
+                        self.resource.get_or_insert_with(|| file.to_path_buf());
+                    }
+                    if implemented.as_deref() == Some("ResourceApp") {
+                        self.host.get_or_insert_with(|| file.to_path_buf());
+                    }
+                }
+                syn::Item::Mod(module) => {
+                    if let Some((_, items)) = &module.content {
+                        self.visit(items, file);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The app's root: `src/lib.rs` declares `pub fn app_root`, or the crate
+/// implements `ResourceApp`, in whichever module it keeps it.
+fn check_app_root(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
+    let (status, detail) = match std::fs::read_to_string(app_dir.join("src/lib.rs")) {
+        Err(error) => (DoctorStatus::Fail, format!("src/lib.rs: {error}")),
+        Ok(source) if rust_code_only(&source).contains("pub fn app_root") => {
+            (DoctorStatus::Pass, "src/lib.rs".to_owned())
+        }
+        Ok(_) => {
+            let mut sources = Vec::new();
+            // An unreadable source directory leaves the host unfound, which
+            // the warning below reports.
+            let _ = rust_sources(app_dir, &app_dir.join("src"), &mut sources);
+            match FrameworkUse::of(&sources).host {
+                Some(file) => (
+                    DoctorStatus::Pass,
+                    format!("{} implements ResourceApp", file.display()),
+                ),
+                None => (
+                    DoctorStatus::Warning,
+                    "src/lib.rs does not use the generated impl ResourceApp for contract"
+                        .to_owned(),
+                ),
+            }
+        }
+    };
+    checks.push(DoctorCheck {
+        status,
+        label: "app root",
+        detail,
+    });
+}
+
+fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) {
+    let mut sources = Vec::new();
+    if rust_sources(app_dir, &app_dir.join("src"), &mut sources).is_err() {
         return;
     }
+    let source = sources
+        .iter()
+        .map(|(_, text)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     let code = rust_code_only(&source);
     let toolkit_host = code.contains("ui::widget::resource_actions::immediate(")
-        || code.contains("ui::widget::resource_actions::background(")
         || code.contains("ui::widget::resource_actions::form(")
         || code.contains("resource_actions::immediate(")
-        || code.contains("resource_actions::background(")
         || code.contains("resource_actions::form(");
     let toolkit_descriptor = code.contains("ui::widget::resource_actions::resource(")
         || code.contains("ui::widget::resource_actions::typed_resource(")
@@ -4199,18 +4362,17 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
         code.contains("OperationKind::Effect") || code.contains("OperationKind::View");
     let toolkit_surface = toolkit_host && toolkit_descriptor;
     let custom_surface = custom_catalogue && (!custom_operation || custom_invocation);
-    // `#[resource]` turns `#[action]` methods into the published, replayable
-    // catalogue, and `ResourceApp` hosts it; a hand-written `impl Resource`
-    // (a custom storage layout) is the same contract.
-    let framework_surface = (code.contains("#[resource(") && code.contains("#[action"))
-        || code.contains("impl Resource for");
-    let framework_host = code.contains("impl ResourceApp for");
-    let framework = framework_surface && framework_host;
+    // `#[resource]` publishes the model's field edits and turns `#[action]`
+    // methods into verbs, the replayable catalogue `ResourceApp` hosts; a
+    // hand-written `impl Resource` (a custom storage layout) is the same
+    // contract.
+    let framework_use = FrameworkUse::of(&sources);
+    let framework = framework_use.resource.is_some() && framework_use.host.is_some();
     let (status, detail) = if framework || toolkit_surface || custom_surface {
         (
             DoctorStatus::Pass,
             if framework {
-                "the app framework publishes the resource's typed actions"
+                "the app framework publishes the resource's field edits and verbs"
             } else if toolkit_surface {
                 "native SDK host publishes a typed resource/action catalogue"
             } else if custom_operation {
@@ -4293,6 +4455,16 @@ fn rust_code_only(source: &str) -> String {
             block_depth = 1;
             output.push_str("  ");
             index += 2;
+        } else if let Some(end) = raw_string_end(bytes, index) {
+            // A raw string's quotes are not delimiters: `r#"a="b""#`.
+            for &byte in &bytes[index..end] {
+                output.push(if byte == b'\n' { '\n' } else { ' ' });
+            }
+            index = end;
+        } else if let Some(length) = char_literal_length(bytes, index) {
+            // `'"'` is a character, not the start of a string.
+            output.push_str(&" ".repeat(length));
+            index += length;
         } else if bytes[index] == b'"' {
             string = true;
             output.push(' ');
@@ -4305,7 +4477,76 @@ fn rust_code_only(source: &str) -> String {
     output
 }
 
-fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
+/// Where the raw string literal (`r"…"`, `r#"…"#`, `br#"…"#`) starting at
+/// `index` ends, if one starts there.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    reason = "the byte cursor is bounded by the slice and advances by inspected token widths"
+)]
+fn raw_string_end(bytes: &[u8], index: usize) -> Option<usize> {
+    let starts_word = index == 0
+        || !bytes
+            .get(index - 1)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_');
+    let mut at = index;
+    if bytes.get(at) == Some(&b'b') {
+        at += 1;
+    }
+    if !starts_word || bytes.get(at) != Some(&b'r') {
+        return None;
+    }
+    at += 1;
+    let hashes = bytes[at..].iter().take_while(|byte| **byte == b'#').count();
+    at += hashes;
+    if bytes.get(at) != Some(&b'"') {
+        return None;
+    }
+    at += 1;
+    while at < bytes.len() {
+        if bytes[at] == b'"'
+            && bytes.len() >= at + 1 + hashes
+            && bytes[at + 1..at + 1 + hashes]
+                .iter()
+                .all(|byte| *byte == b'#')
+        {
+            return Some(at + 1 + hashes);
+        }
+        at += 1;
+    }
+    Some(bytes.len())
+}
+
+/// The length of the character literal (`'"'`, `'\''`, `'\u{22}'`) starting
+/// at `index`, if one starts there; a lifetime (`'a`) is not one.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    reason = "the byte cursor is bounded by the slice and advances by inspected token widths"
+)]
+fn char_literal_length(bytes: &[u8], index: usize) -> Option<usize> {
+    if bytes.get(index) != Some(&b'\'') {
+        return None;
+    }
+    if bytes.get(index + 1) == Some(&b'\\') {
+        // The escaped character itself may be a quote: `'\''`.
+        let close = bytes
+            .get(index + 3..)?
+            .iter()
+            .take(10)
+            .position(|byte| *byte == b'\'')?;
+        return Some(close + 4);
+    }
+    let width = match bytes.get(index + 1)? {
+        byte if *byte < 0x80 => 1,
+        byte if *byte >= 0xf0 => 4,
+        byte if *byte >= 0xe0 => 3,
+        _ => 2,
+    };
+    (bytes.get(index + 1 + width) == Some(&b'\'')).then_some(width + 2)
+}
+
+pub(crate) fn resolve_app_dir(start: &Path) -> Result<PathBuf> {
     let start = if start.is_file() {
         start.parent().unwrap_or(start)
     } else {
@@ -4787,7 +5028,9 @@ impl ScenarioSuitePlan {
                 .prefix("tilo-scenario-")
                 .tempdir()
                 .with_context(|| format!("creating isolated state for scenario {:?}", case.name))?;
-            let status = ProcessCommand::new(program)
+            let mut command = ProcessCommand::new(program);
+            attach_surface_env(&mut command, &self.app_dir);
+            let status = command
                 .args(&case.args)
                 .current_dir(&self.app_dir)
                 .env("XDG_DATA_HOME", state.path().join("data"))
@@ -4796,7 +5039,6 @@ impl ScenarioSuitePlan {
                 .env("XDG_CACHE_HOME", state.path().join("cache"))
                 .env_remove("TILO_PACKAGE_ID")
                 .env_remove("TILO_WORKSPACE_ID")
-                .env_remove("QUICK_CLUSTER_ID")
                 .status()
                 .with_context(|| format!("starting scenario {:?}", case.name))?;
             if status.success() {
@@ -4836,6 +5078,7 @@ struct AppPackageSpec {
 /// Returns an error when preflight, compilation, staging, packing, or
 /// verification fails, or when the destination exists without `force`.
 pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutcome> {
+    native_sdk::validate_request(request)?;
     if request.platform == PackagePlatform::Web {
         return web::package_web(start, request);
     }
@@ -4893,8 +5136,8 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
 
     let staged_package = staging.path().join("package.tapp");
     let identity = signing_identity(&spec.app_dir, request.identity.as_deref())?;
-    let resource_kinds = resource_kinds::declared_by_app(&spec.app_dir)?;
-    let manifest = signed_manifest(
+    let resource_kinds = package_resources(&spec, request, &built, triple.as_deref())?;
+    let mut manifest = signed_manifest(
         &spec,
         request,
         &manifest_source,
@@ -4902,6 +5145,14 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         triple.as_deref(),
         &shipped,
     )?;
+    if let Some(selection) = &request.sdk {
+        manifest.package.runtime = Some(native_sdk::bind_staged(
+            selection,
+            built,
+            (&payload, &shipped),
+            (&spec.app_dir, triple.as_deref()),
+        )?);
+    }
     let packed = pack::pack_manifest(
         manifest,
         resource_kinds,
@@ -4998,6 +5249,8 @@ pub struct NativeBuild {
     pub profile: String,
     /// Each Cargo binary built and where Cargo left it.
     pub executables: Vec<(String, PathBuf)>,
+    /// Exact toolkit path emitted by Cargo when using the canonical SDK graph.
+    pub sdk_toolkit: Option<PathBuf>,
     pub elapsed: Duration,
 }
 
@@ -5009,6 +5262,7 @@ impl NativeBuild {
             "platform": self.platform.cli_name(),
             "target": self.triple,
             "profile": self.profile,
+            "sdk_toolkit": self.sdk_toolkit,
             "executables": self
                 .executables
                 .iter()
@@ -5028,6 +5282,7 @@ impl NativeBuild {
 /// Returns an error for the web platform (see [`web::build_web`]), when
 /// preflight fails, or when Cargo does.
 pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuild> {
+    native_sdk::validate_request(request)?;
     if request.platform == PackagePlatform::Web {
         bail!("a web build is `tilo-app build --platform web`, not a native build");
     }
@@ -5062,6 +5317,7 @@ pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuil
         triple: target.triple,
         profile: target.profile,
         executables,
+        sdk_toolkit: built.get("sdk:runtime_dylib").cloned(),
         elapsed: started.elapsed(),
     })
 }
@@ -5069,6 +5325,18 @@ pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuil
 /// Where the package goes: `--output`, or `dist/<package>.tapp` (with the
 /// platform and architecture for a desktop build). Refuses to replace an
 /// existing file without `force`, and creates the directory.
+fn package_resources(
+    spec: &AppPackageSpec,
+    request: &PackageRequest,
+    built: &HashMap<String, PathBuf>,
+    triple: Option<&str>,
+) -> Result<Vec<String>> {
+    match request.sdk.as_ref().filter(|sdk| sdk.compiler.is_some()) {
+        Some(sdk) => native_sdk::compiler::declared_resources(sdk, built, &spec.app_dir, triple),
+        None => resource_kinds::declared_by_app(&spec.app_dir),
+    }
+}
+
 fn package_output(
     spec: &AppPackageSpec,
     request: &PackageRequest,
@@ -5124,7 +5392,8 @@ fn shipped_binaries(
     Ok(vec![(bin, path)])
 }
 
-/// Fill `payload` with the app's `payload/` tree and the built binaries.
+/// Fill `payload` with the app's `payload/` tree, its committed surface and
+/// the built binaries.
 fn stage_payload(
     spec: &AppPackageSpec,
     shipped: &[(String, PathBuf)],
@@ -5135,6 +5404,13 @@ fn stage_payload(
     let app_payload = spec.app_dir.join("payload");
     if app_payload.is_dir() {
         copy_payload_tree(&app_payload, payload)?;
+    }
+    // The committed public surface ships at the package root: what the OS
+    // offers of the app while it is not running.
+    let surface = spec.app_dir.join(surface::FILE);
+    if surface.is_file() {
+        std::fs::copy(&surface, payload.join(surface::FILE))
+            .with_context(|| format!("copying {}", surface.display()))?;
     }
     for (cargo_bin, payload_path) in shipped {
         let source = built
@@ -5291,7 +5567,7 @@ fn signing_identity(
     path: Option<&Path>,
 ) -> Result<tilo_app_package::SigningIdentity> {
     let Some(path) = path else {
-        if let Some(key) = registry_client::key::discover()? {
+        if let Some(key) = registry_client::key::discover(&registry_client::key::machine_store())? {
             eprintln!(
                 "[tilo-app] signing with publisher key {}",
                 registry_client::key::public_hex(&key)
@@ -5393,6 +5669,13 @@ fn build_entrypoints(
     plan: &BuildPlan<'_>,
     request: &PackageRequest,
 ) -> Result<HashMap<String, PathBuf>> {
+    if request
+        .sdk
+        .as_ref()
+        .is_some_and(|sdk| sdk.compiler.is_some())
+    {
+        return native_sdk::compiler::build(spec, plan, request);
+    }
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = ProcessCommand::new(&cargo);
     command
@@ -5408,11 +5691,24 @@ fn build_entrypoints(
         command.arg("--bin").arg(cargo_bin);
     }
     let mut features = request.features.clone();
-    if plan.thin {
+    if request.sdk.is_some() {
+        let root = find_repo_root(&spec.app_dir)
+            .filter(|_| app_is_workspace_member(&spec.app_dir))
+            .context("native SDK packaging requires a checkout workspace app; scaffold with tilo-app new in the SDK checkout")?;
+        features = native_sdk::configure_graph(
+            &mut command,
+            &root,
+            plan.profile,
+            &spec.cargo_package,
+            &features,
+        )?;
+        if let Some(target) = plan.triple {
+            command.arg("--target").arg(target);
+        }
+    } else if plan.thin {
         let triple = if let Some(target) = plan.triple {
             target.to_owned()
         } else {
-            native_libs::require_thin_runtime()?;
             host_triple(&spec.app_dir)?
         };
         let (key, flags) = prefer_dynamic_rustflags(&triple);
@@ -5445,9 +5741,20 @@ fn build_entrypoints(
     for line in BufReader::new(stdout).lines() {
         let line = line.context("reading Cargo artifact stream")?;
         collect_cargo_message(&line, &expected_manifest, &mut artifacts);
+        if request.sdk.is_some() {
+            native_sdk::collect_toolkit(&line, &spec.app_dir, &mut artifacts)?;
+        }
     }
     let status = child.wait().context("waiting for Cargo build")?;
     if !status.success() {
+        // Asked only now: Cargo may have compiled on another machine, which
+        // needs none of this one's development files.
+        if plan.thin
+            && plan.triple.is_none()
+            && let Some(hint) = native_libs::thin_build_failure_hint()
+        {
+            bail!("Cargo package build failed with {status}\n{hint}");
+        }
         bail!("Cargo package build failed with {status}");
     }
     for (cargo_bin, _) in plan.bins {
@@ -5484,7 +5791,14 @@ fn collect_cargo_message(
         .get("manifest_path")
         .and_then(serde_json::Value::as_str)
         .map(Path::new)
-        .is_some_and(|path| path == expected_manifest);
+        // Cargo reports the path it was given; the caller's is canonical, and a path through a
+        // symlink (macOS's /tmp, a CARGO_HOME under it) differs from it only in spelling.
+        .is_some_and(|path| {
+            path == expected_manifest
+                || path
+                    .canonicalize()
+                    .is_ok_and(|path| path == expected_manifest)
+        });
     if !manifest_matches {
         return;
     }
@@ -5582,7 +5896,7 @@ static DEV_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// `request.timings` is set.
 pub fn dev_app(start: &Path, request: &DevRequest) -> Result<Vec<serde_json::Value>> {
     let app_dir = resolve_app_dir(start)?;
-    let initial = plan_app_task(&app_dir, AppTask::Run, &request.forwarded)?;
+    let initial = dev_run_plan(&app_dir, request)?;
     let roots = dev_watch_roots(&app_dir, request.watch_ui)?;
     let (event_tx, event_rx) = mpsc::channel();
     let source_revision = Arc::new(AtomicU64::new(0));
@@ -5622,17 +5936,18 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<Vec<serde_json::Val
         dev_session_dir(&app_dir),
         request.timings,
         Arc::clone(&source_revision),
+        request.profile.clone(),
     );
     // The first process has to be the prefer-dynamic host. A static binary
     // links its own `ui`, so the library built on the next save cannot run
     // inside those windows.
-    let mut child = if reloads_in_place(&app_dir) {
+    let mut child = if reloads_in_place(&app_dir, request.profile()) {
         None
     } else {
         spawn_dev_child_reported(&initial)
     };
     if child.is_none()
-        && reloads_in_place(&app_dir)
+        && reloads_in_place(&app_dir, request.profile())
         && rebuild_running_dev_app(
             &initial,
             request,
@@ -5699,7 +6014,7 @@ fn rebuild_running_dev_app(
     dev: &mut dev_reload::DevLoop,
 ) -> bool {
     drain_until_quiet(events, roots, request.debounce, watcher);
-    if reload_catalogs_without_build(plan, child.as_ref(), roots, sources) {
+    if reload_catalogs_without_build(plan, request.profile(), child.as_ref(), roots, sources) {
         dev.changed_at = None;
         return false;
     }
@@ -5719,7 +6034,7 @@ fn rebuild_running_dev_app(
         let building_revision = dev.source_revision.load(Ordering::Acquire);
         // The startup plan already passed preflight. A newer edit cancels this
         // compile instead of waiting for a binary that will not be launched.
-        let in_place = reloads_in_place(&plan.app_dir);
+        let in_place = reloads_in_place(&plan.app_dir, request.profile());
         let candidate = if in_place {
             build_in_place_dev_app_for_loop(
                 plan,
@@ -5732,9 +6047,15 @@ fn rebuild_running_dev_app(
                 &mut timings,
             )
         } else {
-            build_dev_candidate_interruptible(plan, Some(events), roots, |event| {
-                watcher.observe(event);
-            })
+            build_dev_candidate_interruptible(
+                plan,
+                request.profile(),
+                Some(events),
+                roots,
+                |event| {
+                    watcher.observe(event);
+                },
+            )
         };
         let queued_restart = drain_pending_restart_events(events, roots, |event| {
             watcher.observe(event);
@@ -5754,7 +6075,8 @@ fn rebuild_running_dev_app(
         }
         match candidate {
             Ok(DevCandidate::Built(executable)) => {
-                if let Some(running) = child.as_ref()
+                if in_place
+                    && let Some(running) = child.as_ref()
                     && reload_running_dev_app(running)
                 {
                     eprintln!("[tilo-app] build succeeded; reloading the open windows");
@@ -5769,9 +6091,7 @@ fn rebuild_running_dev_app(
                         &request.forwarded,
                     );
                 } else {
-                    eprintln!("[tilo-app] build succeeded; opening the app");
-                    *child =
-                        spawn_dev_binary_reported(&plan.app_dir, &executable, &request.forwarded);
+                    restart_dev_app(child, &plan.app_dir, &executable, &request.forwarded);
                 }
             }
             Ok(DevCandidate::Superseded) => {
@@ -5800,6 +6120,7 @@ fn rebuild_running_dev_app(
 /// was handled that way.
 fn reload_catalogs_without_build(
     plan: &CargoPlan,
+    profile: Option<&str>,
     child: Option<&Child>,
     roots: &[PathBuf],
     sources: &mut HashMap<PathBuf, (SystemTime, u64)>,
@@ -5807,7 +6128,7 @@ fn reload_catalogs_without_build(
     let Some(running) = child else {
         return false;
     };
-    if !reloads_in_place(&plan.app_dir) {
+    if !reloads_in_place(&plan.app_dir, profile) {
         return false;
     }
     let Some(next) = snapshot_restart_sources(roots) else {
@@ -5905,7 +6226,7 @@ enum DevPick {
 
 #[cfg(test)]
 fn build_dev_candidate(plan: &CargoPlan) -> Result<PathBuf> {
-    match build_dev_candidate_interruptible(plan, None, &[], |_| {})? {
+    match build_dev_candidate_interruptible(plan, None, None, &[], |_| {})? {
         DevCandidate::Built(executable) => Ok(executable),
         DevCandidate::Superseded => bail!("development build was cancelled without a watcher"),
     }
@@ -5916,26 +6237,29 @@ fn build_dev_candidate(plan: &CargoPlan) -> Result<PathBuf> {
 /// a binary that will be discarded.
 fn build_dev_candidate_interruptible(
     plan: &CargoPlan,
+    profile: Option<&str>,
     events: Option<&mpsc::Receiver<notify::Result<Event>>>,
     roots: &[PathBuf],
     observe: impl FnMut(&Event),
 ) -> Result<DevCandidate> {
     let manifest = plan.app_dir.join("Cargo.toml");
     let expected_binary = dev_binary_name(&manifest)?;
+    let mut args = vec![
+        OsString::from("build"),
+        OsString::from("--manifest-path"),
+        manifest.as_os_str().to_os_string(),
+        OsString::from("--bin"),
+        OsString::from(&expected_binary),
+    ];
+    args.extend(cargo_profile_args(profile));
+    args.push(OsString::from("--message-format=json-render-diagnostics"));
     run_dev_cargo(
         plan,
         events,
         roots,
         observe,
         &DevCargo {
-            args: vec![
-                OsString::from("build"),
-                OsString::from("--manifest-path"),
-                manifest.as_os_str().to_os_string(),
-                OsString::from("--bin"),
-                OsString::from(&expected_binary),
-                OsString::from("--message-format=json-render-diagnostics"),
-            ],
+            args,
             env: Vec::new(),
             pick: DevPick::Executable(expected_binary),
         },
@@ -6528,14 +6852,32 @@ fn dev_session_dir(app_dir: &Path) -> PathBuf {
     std::env::temp_dir().join(format!("tilo-dev-{:016x}", hasher.finish()))
 }
 
-fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) {
+/// The environment of an app `dev` starts: its dev session, its runtime host,
+/// and inside a Tilo session the shell's file chooser. Returns this process's
+/// end of the chooser connection, to keep until the app has started.
+/// Name the app's committed `surface.toml` to the app, by path and hash, as
+/// its launcher names the one its package ships: the app reads it from there.
+fn attach_surface_env(command: &mut ProcessCommand, app_dir: &Path) {
+    let file = app_dir.join(surface::FILE);
+    let Ok(bytes) = std::fs::read(&file) else {
+        return;
+    };
+    let file = file.canonicalize().unwrap_or(file);
+    command.env("TILO_SURFACE", &file).env(
+        "TILO_SURFACE_HASH",
+        blake3::hash(&bytes).to_hex().to_string(),
+    );
+}
+
+fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) -> Option<DevChooser> {
+    attach_surface_env(command, app_dir);
     let dir = dev_session_dir(app_dir);
     if let Err(error) = std::fs::create_dir_all(&dir) {
         eprintln!(
             "[tilo-app] cannot keep the dev session at {}: {error}",
             dir.display()
         );
-        return;
+        return None;
     }
     command.env("TILO_DEV_SESSION", dir);
     if let Some(runtime) = DEV_RUNTIME.get().and_then(Option::as_ref) {
@@ -6543,6 +6885,136 @@ fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) {
             .env("TILO_RUNTIME_BINARY", &runtime.host)
             .env("TILO_RUNTIME_PROFILE", &runtime.profile);
     }
+    #[cfg(target_os = "linux")]
+    {
+        let mut kept: Vec<std::os::fd::OwnedFd> =
+            attach_model_gateway(command, app_dir).into_iter().collect();
+        kept.extend(attach_session_chooser(command, app_dir));
+        Some(kept)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// `dev`'s ends of the connections it made for an app it started: the file
+/// chooser, and the services it hands over as the launcher does.
+#[cfg(target_os = "linux")]
+type DevChooser = Vec<std::os::fd::OwnedFd>;
+#[cfg(not(target_os = "linux"))]
+type DevChooser = ();
+
+/// The room of the workspace in front of the Tilo session this command runs
+/// in, as its shell publishes it; `None` outside a session.
+#[cfg(target_os = "linux")]
+fn session_room() -> Option<String> {
+    let session = tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))?;
+    let room = std::fs::read_to_string(session.join(tilo_paths::login::WORKSPACE_ID_FILE)).ok()?;
+    let room = room.trim();
+    (!room.is_empty()).then(|| room.to_owned())
+}
+
+/// Hand the app the session's model gateway when its manifest declares it,
+/// connected and authenticated for the app the way the launcher does
+/// (`launcher::services`), so features served by the gateway (Canvas's
+/// select subject, Photos' analysis) work in a dev session as they do in a
+/// login. Nothing is attached when no gateway runs in the session.
+#[cfg(target_os = "linux")]
+fn attach_model_gateway(
+    command: &mut ProcessCommand,
+    app_dir: &Path,
+) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::AsRawFd as _;
+    let source = std::fs::read_to_string(app_dir.join("tilo-app.toml")).ok()?;
+    let manifest = tilo_app_package::Manifest::from_toml_str(&source).ok()?;
+    let name = launcher::services::MODEL_GATEWAY_SERVICE;
+    let requirement = manifest.sandbox.services.get(name)?;
+    // A dev session may run without one: what the app requires, it asks
+    // for here as optional, and says what is missing.
+    let wanted = std::collections::BTreeMap::from([(
+        name.to_owned(),
+        tilo_app_package::ServiceReq {
+            requirement: tilo_app_package::Requirement::Optional,
+            ..requirement.clone()
+        },
+    )]);
+    let context = launcher::services::ServiceLaunchContext {
+        app_id: &manifest.package.id,
+        workspace_id: None,
+    };
+    let resolved =
+        match launcher::services::resolve_service_binds_for_launch(&wanted, false, context) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                eprintln!("[tilo-app] the session's model gateway is unavailable: {error}");
+                return None;
+            }
+        };
+    let Some(service) = resolved.into_iter().next() else {
+        eprintln!(
+            "[tilo-app] no model gateway answers at {}; the app runs without it",
+            launcher::services::socket_for(name).display()
+        );
+        return None;
+    };
+    let fd = service.host;
+    // SAFETY: `fd` is an open descriptor this process owns; F_GETFD and
+    // F_SETFD only read and change its close-on-exec flag.
+    let inheritable = unsafe {
+        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFD);
+        flags >= 0 && libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) == 0
+    };
+    if !inheritable {
+        return None;
+    }
+    command.env(
+        launcher::sandbox::svc_env_var(name),
+        fd.as_raw_fd().to_string(),
+    );
+    Some(fd)
+}
+
+/// Hand the app the session shell's file chooser, the way the launcher hands
+/// one to an app the shell starts: connected on the app's behalf and named
+/// for the app and the room it runs in before the app holds it. Inside a
+/// Tilo session that runs no desktop portal this is how an app chooses
+/// files; elsewhere nothing is attached. The returned descriptor is this
+/// process's end, kept until the app has started.
+#[cfg(target_os = "linux")]
+fn attach_session_chooser(
+    command: &mut ProcessCommand,
+    app_dir: &Path,
+) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::AsRawFd as _;
+    let room = session_room()?;
+    let source = std::fs::read_to_string(app_dir.join("tilo-app.toml")).ok()?;
+    let manifest = tilo_app_package::Manifest::from_toml_str(&source).ok()?;
+    let chooser =
+        match launcher::services::resolve_chooser_bind(&manifest.package.id, Some(&room), false) {
+            Ok(chooser) => chooser?,
+            Err(error) => {
+                eprintln!("[tilo-app] the session's file chooser is unavailable: {error}");
+                return None;
+            }
+        };
+    let fd = chooser.host;
+    // The app inherits this descriptor; the launcher hands it at a fixed
+    // slot inside its sandbox, an unsandboxed app takes it where it is.
+    // SAFETY: `fd` is an open descriptor this process owns; F_GETFD and
+    // F_SETFD only read and change its close-on-exec flag.
+    let inheritable = unsafe {
+        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFD);
+        flags >= 0 && libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) == 0
+    };
+    if !inheritable {
+        return None;
+    }
+    command.env(
+        launcher::sandbox::svc_env_var(&chooser.name),
+        fd.as_raw_fd().to_string(),
+    );
+    Some(fd)
 }
 
 /// The runtime [`provide_runtime_host`] built for this dev session.
@@ -6725,7 +7197,7 @@ fn spawn_dev_child(plan: &CargoPlan) -> Result<Child> {
     let mut command = ProcessCommand::new(&plan.program);
     command.args(&plan.args).current_dir(&plan.app_dir);
     attach_live_graph_env(&mut command, &plan.app_dir);
-    attach_dev_session_env(&mut command, &plan.app_dir);
+    let _chooser = attach_dev_session_env(&mut command, &plan.app_dir);
     #[cfg(unix)]
     command.process_group(0);
     let child = command
@@ -6749,7 +7221,7 @@ fn spawn_dev_binary(app_dir: &Path, executable: &Path, forwarded: &[OsString]) -
     let mut command = ProcessCommand::new(executable);
     command.args(forwarded).current_dir(app_dir);
     attach_live_graph_env(&mut command, app_dir);
-    attach_dev_session_env(&mut command, app_dir);
+    let _chooser = attach_dev_session_env(&mut command, app_dir);
     #[cfg(unix)]
     command.process_group(0);
     let child = command
@@ -6792,8 +7264,43 @@ fn report_child_exit(child: &mut Option<Child>) {
 
 /// Whether `dev` reloads the app inside its windows: it supports that, and
 /// this machine can build the shared toolkit it links.
-fn reloads_in_place(app_dir: &Path) -> bool {
-    app_supports_in_place_reload(app_dir) && native_libs::thin_runtime_available()
+fn reloads_in_place(app_dir: &Path, profile: Option<&str>) -> bool {
+    profile_reloads_in_place(profile)
+        && app_supports_in_place_reload(app_dir)
+        && native_libs::thin_runtime_available()
+}
+
+/// Reloading in place links the toolkit and `libstd` dynamically, which an
+/// LTO profile such as `release` refuses. `dev` and `thin-app` have no LTO;
+/// any other profile restarts the app instead, whatever its settings.
+fn profile_reloads_in_place(profile: Option<&str>) -> bool {
+    matches!(profile, None | Some("dev" | DEV_RELEASE_PROFILE))
+}
+
+/// `--profile <name>` for Cargo, or nothing for its default `dev` profile.
+fn cargo_profile_args(profile: Option<&str>) -> Vec<OsString> {
+    profile
+        .map(|profile| vec![OsString::from("--profile"), OsString::from(profile)])
+        .unwrap_or_default()
+}
+
+/// The first `cargo run` of a restarting dev loop, in the requested profile.
+/// Says so when that profile keeps an app that could reload in place from it.
+fn dev_run_plan(app_dir: &Path, request: &DevRequest) -> Result<CargoPlan> {
+    if let Some(profile) = request.profile() {
+        validate_profile_name(profile)?;
+    }
+    if !profile_reloads_in_place(request.profile()) && app_supports_in_place_reload(app_dir) {
+        eprintln!(
+            "[tilo-app] the {:?} profile cannot link the toolkit dynamically; restarting the app on each change instead of reloading it in place",
+            request.profile().unwrap_or("dev")
+        );
+    }
+    let mut plan = plan_app_task(app_dir, AppTask::Run, &request.forwarded)?;
+    // `run --manifest-path <manifest>`, then the forwarded arguments.
+    plan.args
+        .splice(3..3, cargo_profile_args(request.profile()));
+    Ok(plan)
 }
 
 /// An app can reload Rust inside the windows it already has when it links the
@@ -6825,7 +7332,7 @@ fn build_in_place_dev_app(
     observe: impl FnMut(&Event),
     need_host: bool,
 ) -> Result<DevCandidate> {
-    build_in_place_dev_app_with_cargo(plan, events, roots, observe, need_host, &mut None)
+    build_in_place_dev_app_with_cargo(plan, None, events, roots, observe, need_host, &mut None)
 }
 
 /// The watch loop's in-place build. Once the app is running and every edit
@@ -6876,8 +7383,10 @@ fn build_in_place_dev_app_for_loop(
     // What Cargo is about to compile. Later edits are compared against it.
     dev.baseline.clone_from(sources);
     let session = dev.session().to_path_buf();
+    let profile = dev.profile.clone();
     build_in_place_dev_app_with_cargo(
         plan,
+        profile.as_deref(),
         Some(events),
         roots,
         |event| watcher.observe(event),
@@ -6898,6 +7407,7 @@ fn elapsed_ms(since: SystemTime) -> f64 {
 /// command is recorded there for the next edit, and each step is timed.
 fn build_in_place_dev_app_with_cargo(
     plan: &CargoPlan,
+    profile: Option<&str>,
     events: Option<&mpsc::Receiver<notify::Result<Event>>>,
     roots: &[PathBuf],
     mut observe: impl FnMut(&Event),
@@ -6913,7 +7423,7 @@ fn build_in_place_dev_app_with_cargo(
     };
     let library_crate = cargo_library_name(&manifest);
     let mut executable = PathBuf::new();
-    for mut step in thin_dev_steps(&manifest, &binary, &linkage, need_host) {
+    for mut step in thin_dev_steps(&manifest, &binary, &linkage, profile, need_host) {
         eprintln!("[tilo-app] building {}", step.label);
         if let (DevPick::DynamicLibrary, Some((session, _)), Some(name)) = (
             &step.cargo.pick,
@@ -7061,6 +7571,7 @@ fn thin_dev_steps(
     manifest: &Path,
     binary: &str,
     linkage: &ThinDevLinkage,
+    profile: Option<&str>,
     need_host: bool,
 ) -> Vec<ThinDevStep> {
     let (target_args, env) = match linkage {
@@ -7078,6 +7589,7 @@ fn thin_dev_steps(
         ];
         args.extend(target.iter().map(OsString::from));
         args.extend(target_args.iter().cloned());
+        args.extend(cargo_profile_args(profile));
         args.extend(
             [
                 "--features",
@@ -7228,7 +7740,7 @@ fn spawn_thin_dev_binary(
     let mut command = ProcessCommand::new(executable);
     command.args(forwarded).current_dir(app_dir);
     attach_live_graph_env(&mut command, app_dir);
-    attach_dev_session_env(&mut command, app_dir);
+    let _chooser = attach_dev_session_env(&mut command, app_dir);
     attach_dynamic_loader_env(&mut command, app_dir, executable);
     #[cfg(unix)]
     command.process_group(0);
@@ -7284,6 +7796,26 @@ fn rustc_target_libdir(app_dir: &Path) -> Option<PathBuf> {
 /// Ask the running app to swap the contents of the windows it already has.
 ///
 /// The process stays. A new process would be a new window.
+/// Without in-place reload the running app is the old build and cannot load
+/// the new one, so it is replaced by `executable`.
+fn restart_dev_app(
+    child: &mut Option<Child>,
+    app_dir: &Path,
+    executable: &Path,
+    forwarded: &[OsString],
+) {
+    if child
+        .as_ref()
+        .is_some_and(|running| !child_has_exited(running))
+    {
+        eprintln!("[tilo-app] build succeeded; restarting the app");
+    } else {
+        eprintln!("[tilo-app] build succeeded; opening the app");
+    }
+    stop_dev_child(child);
+    *child = spawn_dev_binary_reported(app_dir, executable, forwarded);
+}
+
 fn reload_running_dev_app(child: &Child) -> bool {
     let Ok(pid) = i32::try_from(child.id()) else {
         return false;
@@ -7314,30 +7846,9 @@ fn stop_dev_child(child: &mut Option<Child>) {
     stop_dev_process_tree(&mut running);
 }
 
-#[cfg(unix)]
+#[cfg(not(windows))]
 fn stop_dev_process_tree(running: &mut Child) {
-    let Ok(pid) = i32::try_from(running.id()) else {
-        let _ = running.kill();
-        let _ = running.wait();
-        return;
-    };
-    // SAFETY: both development spawn paths create a process group whose ID is
-    // the child PID. Negating that validated PID confines SIGTERM to it.
-    let _ = unsafe { libc::kill(pid.saturating_neg(), libc::SIGTERM) };
-    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(1)) else {
-        let _ = running.kill();
-        let _ = running.wait();
-        return;
-    };
-    while Instant::now() < deadline {
-        if running.try_wait().ok().flatten().is_some() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    // SAFETY: the same dedicated process-group invariant applies to SIGKILL.
-    let _ = unsafe { libc::kill(pid.saturating_neg(), libc::SIGKILL) };
-    let _ = running.wait();
+    bounded_command::terminate_tree(running, Duration::from_secs(1));
 }
 
 #[cfg(windows)]
@@ -7353,12 +7864,6 @@ fn stop_dev_process_tree(running: &mut Child) {
     if !stopped_tree {
         let _ = running.kill();
     }
-    let _ = running.wait();
-}
-
-#[cfg(not(any(unix, windows)))]
-fn stop_dev_process_tree(running: &mut Child) {
-    let _ = running.kill();
     let _ = running.wait();
 }
 
@@ -7875,11 +8380,11 @@ struct FluentEntryContract {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct FluentCatalogContract {
+pub(crate) struct FluentCatalogContract {
     entries: BTreeMap<String, FluentEntryContract>,
 }
 
-fn parse_fluent_catalog(source: &str) -> Result<FluentCatalogContract> {
+pub(crate) fn parse_fluent_catalog(source: &str) -> Result<FluentCatalogContract> {
     use fluent_syntax::ast::Entry;
 
     let resource = fluent::FluentResource::try_new(source.to_owned())
@@ -8166,22 +8671,8 @@ fn check_locale_registry(
     let registered = parse_locale_registry(&registry);
     let result = registered.and_then(|registered| {
         syn::parse_file(&registry).context("generated locale registry is not valid Rust")?;
-        for (index, locale) in registered.iter().enumerate() {
-            let catalog =
-                format!("const CATALOG_{index}: &str = include_str!(\"../locales/{locale}.ftl\");");
-            if !registry.contains(&catalog) {
-                bail!("registered locale {locale:?} is not embedded as CATALOG_{index}");
-            }
-            let mapping = format!("({locale:?}, CATALOG_{index})");
-            if !registry.contains(&mapping) {
-                bail!("registered locale {locale:?} is absent from the install mapping");
-            }
-        }
-        if !registry.contains("pub const IDS:") {
-            bail!("locale id registry is absent");
-        }
-        if !registry.contains("I18nManager::install_system") {
-            bail!("locale installation is absent");
+        if !registry.contains(&catalog_declaration(&registered)) {
+            bail!("the embedded catalog does not hold exactly the registered locales");
         }
         for locale in &registered {
             if !catalog_ids.iter().any(|catalog| catalog == locale) {
@@ -9334,7 +9825,9 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
         ),
         (PathBuf::from("tilo-app.toml"), app_manifest(spec)),
         (PathBuf::from("README.md"), app_readme(spec)),
+        (PathBuf::from("AGENTS.md"), APP_AGENT_GUIDE.to_owned()),
         (PathBuf::from("locales/en-US.ftl"), app_catalog(spec)),
+        (PathBuf::from(surface::FILE), app_surface(spec)),
     ];
     if spec.template == Template::Graph {
         files.push((PathBuf::from("ui/main.json"), graph_document()?));
@@ -9446,6 +9939,11 @@ fn app_lib(spec: &AppSpec) -> String {
             format!("pub mod components;\npub mod screens;\n\n{GRAPH_APP_TEMPLATE}")
         }
     };
+    // The templates name their resource `generated.<what>`; an app's kind
+    // lives under its own id, so two generated apps never share actions,
+    // permissions or search under one kind.
+    let application =
+        application.replace("kind = \"generated.", &format!("kind = \"{}.", spec.app_id));
     format!(
         "//! {title} application.\n\n/// The application id.\npub const APP_ID: &str = {app_id:?};\n/// The window and launcher title.\npub const APP_TITLE: &str = {title:?};\n\n{GENERATED_LOCALE_SETUP}\n\n{application}\nui::dev_reload_entry!(App);\n",
         title = spec.title,
@@ -9506,14 +10004,33 @@ fn headless_actions(spec: &AppSpec) -> String {
 /// The app's source catalog. A graph screen's static text is a message id
 /// too, so the graph template's catalog also names the screen it generates.
 fn app_catalog(spec: &AppSpec) -> String {
-    let catalog = spec.template.catalog();
+    // The templates key their history messages `generated-…`, as they name
+    // their kinds `generated.…`; the history looks them up under the app.
+    let prefix = format!("{}-", tilo_history::app_prefix(&spec.app_id));
+    let catalog: String = spec
+        .template
+        .catalog()
+        .lines()
+        .map(|line| {
+            line.strip_prefix("generated-")
+                .map_or_else(|| format!("{line}\n"), |rest| format!("{prefix}{rest}\n"))
+        })
+        .collect();
     if spec.template != Template::Graph {
-        return catalog.to_owned();
+        return catalog;
     }
     format!(
         "graph-title = {{ \"{}\" }}\ngraph-introduction = This screen is a serialized graph under ui/. Edit it while the app runs with tilo-app ui edit ui/main.json.\n{catalog}",
         escape_fluent_string(&spec.title)
     )
+}
+
+/// The app's committed public surface: what `tilo-app surface` writes for
+/// the template's code, under the app's own resource kinds.
+fn app_surface(spec: &AppSpec) -> String {
+    spec.template
+        .surface()
+        .replace("kind = \"generated.", &format!("kind = \"{}.", spec.app_id))
 }
 
 fn graph_document() -> Result<String> {
@@ -9526,7 +10043,6 @@ fn graph_document() -> Result<String> {
                     value: "graph-title".into(),
                 },
                 role: tilo_ui_graph::UiTextRole::Title,
-                size: None,
             },
             tilo_ui_graph::UiNode::Text {
                 id: "graph-introduction".into(),
@@ -9534,7 +10050,6 @@ fn graph_document() -> Result<String> {
                     value: "graph-introduction".into(),
                 },
                 role: tilo_ui_graph::UiTextRole::Body,
-                size: None,
             },
         ],
         gap: Some(8.0),
@@ -9567,6 +10082,7 @@ fn app_readme(spec: &AppSpec) -> String {
         "The app is written on the Tilo app framework: its state is a `#[derive(Model)]` resource, every edit is an `#[action]` method, and the view binds controls to those actions (`cx.input`, `cx.checkbox`, `cx.button`, `cx.control`, `cx.each`). Storage, sync, collaboration, history, per-author undo, permissions, the action palette, agents, scripts and search come from the framework; `Replica` tests the resource and `TestApp` tests the running app. `tilo-app doctor` rejects apps that remove this surface.\n"
     );
     let (resource, action, arguments) = readme_action_example(spec.template);
+    let resource = format!("{}.{resource}", spec.app_id);
     let _ = writeln!(
         out,
         "Agents, scripts, and search invoke the same address as the visible control. Discover the live catalogue, then submit an invocation shaped like:\n"
@@ -9690,20 +10206,18 @@ fn app_readme(spec: &AppSpec) -> String {
     out
 }
 
+/// The template's resource kind under the app's id, one of its actions and
+/// arguments for it.
 fn readme_action_example(template: Template) -> (&'static str, &'static str, &'static str) {
     match template {
-        Template::Starter => ("generated.greeting", "set-name", r#"{"name":"Ada"}"#),
+        Template::Starter => ("greeting", "clear", "{}"),
         Template::Document => (
-            "generated.document",
+            "document",
             "set-content",
             r#"{"title":"Plan","body":"Ship it"}"#,
         ),
-        Template::Collection => ("generated.items", "set-draft", r#"{"draft":"Buy milk"}"#),
-        Template::Graph => (
-            "generated.graph-project",
-            "set-draft",
-            r#"{"draft":"Launch plan"}"#,
-        ),
+        Template::Collection => ("items", "add", r#"{"title":"Buy milk"}"#),
+        Template::Graph => ("graph-project", "create", "{}"),
     }
 }
 

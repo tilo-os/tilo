@@ -9,9 +9,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -19,7 +16,7 @@ use std::time::SystemTime;
 
 use collab_types::{
     ArtifactId, ArtifactKind, ChannelEvent, ChannelId, ChannelState, Ed25519PublicKey, Identity,
-    OpClass, Role, Signature, SignedOp, SpaceId, canonical_bytes, verify_event,
+    OpKind, Role, Signature, SignedOp, SpaceId, canonical_bytes, verify_event,
 };
 use threshold_identity::{
     EnrolmentRound2, ThresholdIdentity, signing::SigningRound1, signing::SigningRound1Commitment,
@@ -179,7 +176,7 @@ fn threshold_signed_op_passes_inbound_validator() {
         artifact,
         a.group_public_key,
         attestation_id,
-        OpClass::Splice,
+        OpKind::Change,
         now + std::time::Duration::from_secs(60),
         1,
     );

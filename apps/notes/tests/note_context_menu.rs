@@ -1,57 +1,89 @@
-use notes::NotesApp;
-use tempfile::TempDir;
-use ui::headless::{FrameOptions, Framed};
-use ui::theme::Theme;
-use ui::widget::Widget;
+use crate::framework_support::{add_note, notes, open, surface};
+use notes::{NotesShell, PageId};
+use ui::framework::testing::TestApp;
+use ui::synthetic_input::cursor_moved;
 use vello::kurbo::Point;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
-fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
 
 fn mouse_press_right() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Right,
-    }
-}
-
-fn named_key(key: NamedKey) -> WindowEvent {
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(key);
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
-
-/// Mount `app` over `state` and run the production frame at `w`x`h`.
-fn settle_layout(app: NotesApp, state: ui::State, w: u16, h: u16) -> Framed<NotesApp> {
-    Framed::with_options(
-        state,
-        app,
-        (u32::from(w), u32::from(h)),
-        FrameOptions {
-            text: Some(crate::component_support::renderer()),
-            ..FrameOptions::default()
-        },
+    ui::synthetic_input::mouse_input(
+        ui::winit::event::ElementState::Pressed,
+        ui::winit::event::MouseButton::Right,
     )
 }
 
-fn dispatch(app: &mut Framed<NotesApp>, modifiers: Modifiers, event: &WindowEvent) -> bool {
-    Framed::harness_mut(app).dispatch_to_root_with(event, &modifiers)
+use ui::synthetic_input::named_key;
+
+/// Notes with one note (`body`) open, laid out `width` x 800.
+fn note_at(width: u16, body: &str) -> (TestApp<NotesShell>, PageId) {
+    let mut app = notes();
+    let page = add_note(&mut app, "Welcome", body);
+    open(&mut app, page);
+    app.harness().relayout_at((u32::from(width), 800)).unwrap();
+    (app, page)
+}
+
+fn dispatch(app: &mut TestApp<NotesShell>, modifiers: Modifiers, event: &WindowEvent) -> bool {
+    app.harness().dispatch_to_root_with(event, &modifiers)
+}
+
+fn menu_open(app: &mut TestApp<NotesShell>) -> bool {
+    surface(app, |notes| notes.note_menu_open_for_test())
+}
+
+fn text(app: &mut TestApp<NotesShell>) -> String {
+    surface(app, |notes| notes.editor_text_for_test())
+}
+
+fn first_block(app: &mut TestApp<NotesShell>) -> (String, String) {
+    surface(app, |notes| {
+        let block = &notes.main_panel_mut().editor().blocks()[0];
+        (block.id.clone(), block.text().to_owned())
+    })
+}
+
+fn editor_rect(app: &mut TestApp<NotesShell>) -> vello::kurbo::Rect {
+    *app.harness()
+        .targets()
+        .get("block_editor")
+        .expect("body editor laid out")
+}
+
+/// Perform `action` on the editor's semantic `target`, as assistive
+/// technology does.
+fn semantic(app: &mut TestApp<NotesShell>, target: &str, action: &ui::a11y::Action) {
+    app.harness()
+        .perform_semantic_named("block_editor", Some(target), action)
+        .unwrap();
+}
+
+#[test]
+fn the_note_actions_button_opens_the_note_menu_anchored_to_itself() {
+    for width in [480, 1200] {
+        let (mut app, _) = note_at(width, "Welcome to Notes");
+        let button = surface(&mut app, |notes| notes.note_menu_button_center_for_test());
+        assert!(
+            button.x > 0.0,
+            "the header lays the button out, width {width}"
+        );
+        app.harness().click_at(button.x, button.y);
+        assert!(menu_open(&mut app), "width {width}");
+        // The menu lays its rows out when it paints.
+        let _ = app.harness().render_rgba();
+        let (menu, anchor) = surface(&mut app, |notes| notes.note_menu_rects_for_test())
+            .expect("an open menu has a rect");
+        assert!(
+            menu.y0 >= anchor.y1 - 1.0 && menu.y0 <= anchor.y1 + 16.0,
+            "the menu opens just under its button: {menu:?} vs {anchor:?}"
+        );
+        assert!(
+            menu.x1 >= anchor.x1 - 1.0 && menu.x0 < anchor.x1,
+            "the menu hangs from the button's edge: {menu:?} vs {anchor:?}"
+        );
+        dispatch(&mut app, Modifiers::default(), &named_key(NamedKey::Escape));
+        assert!(!menu_open(&mut app));
+    }
 }
 
 #[allow(
@@ -63,11 +95,8 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
     eprintln!("phase open_note_context_menu_works_on_title_body_and_margin_in_both_layouts");
     {
         for width in [480, 1200] {
-            let tmp = TempDir::new().unwrap();
-            let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-            let state = ui::State::new();
-            let mut app = settle_layout(app, state, width, 800);
-            let title = app.main_title_center_for_test();
+            let (mut app, _) = note_at(width, "A first paragraph.\n\nAnd a second one.");
+            let title = surface(&mut app, |notes| notes.main_title_center_for_test());
             for point in [
                 title,
                 Point::new(f64::from(width) - 20.0, 400.0),
@@ -84,15 +113,15 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
                     &mouse_press_right()
                 ));
                 assert!(
-                    app.note_menu_open_for_test(),
+                    menu_open(&mut app),
                     "note menu missing at {point:?}, width {width}"
                 );
                 dispatch(&mut app, Modifiers::default(), &named_key(NamedKey::Escape));
-                assert!(!app.note_menu_open_for_test());
+                assert!(!menu_open(&mut app));
             }
             // Keyboard activation of New child note follows the shared action path.
-            let before = app.workspace_pages_for_test().len();
-            let parent = app.selected_for_test().unwrap();
+            let before = crate::framework_support::shown(&app).pages().len();
+            let parent = surface(&mut app, |notes| notes.selected_for_test()).unwrap();
             dispatch(
                 &mut app,
                 Modifiers::default(),
@@ -105,26 +134,24 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
                 &named_key(NamedKey::ArrowDown),
             );
             dispatch(&mut app, Modifiers::default(), &named_key(NamedKey::Enter));
-            assert!(!app.note_menu_open_for_test());
-            let pages = app.workspace_pages_for_test();
+            assert!(!menu_open(&mut app));
+            let pages = crate::framework_support::shown(&app).pages().to_vec();
             assert_eq!(pages.len(), before + 1);
+            let selected = surface(&mut app, |notes| notes.selected_for_test()).unwrap();
             assert!(
                 pages
                     .iter()
-                    .any(|p| p.id == app.selected_for_test().unwrap() && p.parent == Some(parent))
+                    .any(|p| p.id == selected && p.parent == Some(parent))
             );
         }
     }
 
     eprintln!("phase note_text_menu_preserves_selection_and_blocks_background_shortcuts");
     {
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
-        let before = app.editor_text_for_test();
-        let pages_before = app.workspace_pages_for_test().len();
-        let rect = editor_rect(&*app).expect("body editor laid out");
+        let (mut app, _) = note_at(1200, "A first paragraph.\n\nAnd a second one.");
+        let before = text(&mut app);
+        let pages_before = crate::framework_support::shown(&app).pages().len();
+        let rect = editor_rect(&mut app);
         let body = Point::new(rect.x0 + 10.0, rect.y0 + 10.0);
         dispatch(
             &mut app,
@@ -132,7 +159,7 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
             &cursor_moved(body.x, body.y),
         );
         dispatch(&mut app, Modifiers::default(), &mouse_press_right());
-        assert!(app.note_menu_open_for_test());
+        assert!(menu_open(&mut app));
         let mut key = named_key(NamedKey::Space);
         if let WindowEvent::KeyboardInput { event, .. } = &mut key {
             event.logical_key = Key::Character("n".into());
@@ -143,14 +170,14 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
             winit::keyboard::ModifiersState::CONTROL.into(),
             &key,
         );
-        assert!(app.note_menu_open_for_test());
+        assert!(menu_open(&mut app));
         assert_eq!(
-            app.workspace_pages_for_test().len(),
+            crate::framework_support::shown(&app).pages().len(),
             pages_before,
             "menu captures Ctrl+N"
         );
         assert_eq!(
-            app.editor_text_for_test(),
+            text(&mut app),
             before,
             "menu input must not type into the body"
         );
@@ -164,9 +191,9 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
             );
         }
         dispatch(&mut app, Modifiers::default(), &named_key(NamedKey::Enter));
-        assert!(!app.note_menu_open_for_test());
+        assert!(!menu_open(&mut app));
         dispatch(&mut app, Modifiers::default(), &mouse_press_right());
-        assert!(app.note_menu_open_for_test());
+        assert!(menu_open(&mut app));
         dispatch(
             &mut app,
             Modifiers::default(),
@@ -174,62 +201,49 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
         );
         dispatch(&mut app, Modifiers::default(), &named_key(NamedKey::Enter));
         assert!(
-            app.editor_text_for_test().trim().is_empty(),
+            text(&mut app).trim().is_empty(),
             "cut replaces the preserved document selection"
         );
-        let (notes, state) = Framed::split(&mut app);
-        notes.sync(&mut state.doc, &state.root);
+        app.harness().relayout();
         assert!(
-            app.editor_text_for_test().trim().is_empty(),
+            text(&mut app).trim().is_empty(),
             "cut survives canonical sync"
         );
-        assert_eq!(app.workspace_pages_for_test().len(), pages_before);
+        assert_eq!(
+            crate::framework_support::shown(&app).pages().len(),
+            pages_before
+        );
     }
 
     eprintln!("phase narrow_sidebar_context_menu_keeps_its_drawer_visible_when_selecting_a_note");
     {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        app.apply_event_for_test(notes::sidebar::OutEvent::CreateChild { parent: None });
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 480, 800);
-        let toggle = app.menu_btn_center_for_test();
-        dispatch(
-            &mut app,
-            Modifiers::default(),
-            &cursor_moved(toggle.x, toggle.y),
+        let (mut app, _) = note_at(480, "");
+        let second = add_note(&mut app, "Second", "");
+        open(&mut app, second);
+        let toggle = surface(&mut app, |notes| notes.menu_btn_center_for_test());
+        app.harness().click_at(toggle.x, toggle.y);
+        assert!(
+            app.harness().control_failures().is_empty(),
+            "{:?}",
+            app.harness().control_failures()
         );
-        let mut left = mouse_press_right();
-        if let WindowEvent::MouseInput { button, .. } = &mut left {
-            *button = MouseButton::Left;
-        }
-        dispatch(&mut app, Modifiers::default(), &left);
-        assert!(app.drawer_open_for_test());
-        Framed::harness_mut(&mut app)
-            .relayout_at((480, 800))
-            .unwrap();
-        let row = app.sidebar_row_center_for_test(0).unwrap();
+        assert!(surface(&mut app, |notes| notes.drawer_open_for_test()));
+        app.harness().relayout_at((480, 800)).unwrap();
+        let row = surface(&mut app, |notes| notes.sidebar_row_center_for_test(0)).unwrap();
         dispatch(&mut app, Modifiers::default(), &cursor_moved(row.x, row.y));
         dispatch(&mut app, Modifiers::default(), &mouse_press_right());
-        assert!(app.sidebar_menu_open_for_test());
+        assert!(surface(&mut app, |notes| notes.sidebar_menu_open_for_test()));
         assert!(
-            app.drawer_open_for_test(),
+            surface(&mut app, |notes| notes.drawer_open_for_test()),
             "right-click selection must not hide its own menu"
         );
         dispatch(&mut app, Modifiers::default(), &named_key(NamedKey::Escape));
-        assert!(!app.sidebar_menu_open_for_test());
+        assert!(!surface(&mut app, |notes| notes.sidebar_menu_open_for_test()));
         assert!(
-            app.drawer_open_for_test(),
+            surface(&mut app, |notes| notes.drawer_open_for_test()),
             "Escape dismisses the menu before its drawer"
         );
     }
-}
-
-fn editor_rect(widget: &dyn Widget) -> Option<vello::kurbo::Rect> {
-    if widget.name() == "BlockEditor" {
-        return Some(widget.get_rect());
-    }
-    widget.children().into_iter().find_map(editor_rect)
 }
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -238,53 +252,39 @@ fn table_context_commands_edit_only_the_current_table() {
     eprintln!("phase table_menu_refuses_commands_after_remote_content_changes_at_same_cell");
     {
         for selection_steps in [1, 5] {
-            let tmp = TempDir::new().unwrap();
-            notes::storage::ensure_layout(tmp.path()).unwrap();
-            let mut workspace = notes::Workspace::new();
-            let page = workspace.create_page(None);
-            workspace.set_selected(Some(page));
-            notes::storage::save_workspace(tmp.path(), &workspace).unwrap();
             let source = "| Name |\n| --- |\n| Before |\n| Selected |\n| Following |\n";
-            notes::storage::write_page_body(tmp.path(), page, source).unwrap();
-            let mut app = NotesApp::spawn(tmp.path().into()).unwrap();
-            app.bypass_seed_grace_for_test();
-            let state = ui::State::new();
-            let mut app = settle_layout(app, state, 1200, 800);
-            let id = app.main_panel_mut().editor().blocks()[0].id.clone();
-            let (notes, state) = Framed::split(&mut app);
-            assert!(notes.main_panel_mut().editor_mut().perform_semantic_action(
+            let (mut app, page) = note_at(1200, source);
+            let (id, _) = first_block(&mut app);
+            semantic(
+                &mut app,
                 &format!("notes.table-cell:{id}:2:0"),
                 &ui::a11y::Action::Focus,
-                &mut state.doc,
-                &state.root,
-            ));
-            assert!(notes.main_panel_mut().editor_mut().perform_semantic_action(
-                "notes.editor:select-all",
-                &ui::a11y::Action::Activate,
-                &mut state.doc,
-                &state.root,
-            ));
-            let rect = editor_rect(&*app).unwrap();
+            );
+            app.harness().set_modifiers(&["ctrl".into()]);
+            app.harness().key("a");
+            app.harness().set_modifiers(&[]);
+            let rect = editor_rect(&mut app);
             dispatch(
                 &mut app,
                 Modifiers::default(),
                 &cursor_moved(rect.x0 + 40.0, rect.y0 + 50.0),
             );
             dispatch(&mut app, Modifiers::default(), &mouse_press_right());
-            assert!(app.note_menu_open_for_test());
-            let canonical_source = app.main_panel_mut().editor().blocks()[0].text().to_owned();
+            assert!(menu_open(&mut app));
+            let (_, canonical_source) = first_block(&mut app);
             let changed = canonical_source.replace("| Before |\n", "");
             assert_ne!(changed, canonical_source);
-            let state = Framed::split(&mut app).1;
-            crate::component_support::replace_block_text(&mut state.doc, page, &id, &changed);
-            Framed::harness_mut(&mut app)
-                .relayout_at((1200, 800))
-                .unwrap();
+            app.merge_peer_edit(|doc| {
+                crate::component_support::replace_block_text(doc, page, &id, &changed);
+            });
             assert_eq!(
-                app.main_panel_mut().editor().focused_table_cell(),
+                surface(&mut app, |notes| notes
+                    .main_panel_mut()
+                    .editor()
+                    .focused_table_cell()),
                 Some((id, 2, 0))
             );
-            let heads = Framed::split(&mut app).1.doc.get_heads();
+            let heads = app.peer_document().get_heads();
             // Exercise both Cut and Add row. The same coordinate now addresses
             // a different row; neither captured command may touch it.
             for _ in 0..selection_steps {
@@ -295,9 +295,9 @@ fn table_context_commands_edit_only_the_current_table() {
                 );
             }
             dispatch(&mut app, Modifiers::default(), &named_key(NamedKey::Enter));
-            assert!(!app.note_menu_open_for_test());
-            assert_eq!(Framed::split(&mut app).1.doc.get_heads(), heads);
-            assert_eq!(app.main_panel_mut().editor().blocks()[0].text(), changed);
+            assert!(!menu_open(&mut app));
+            assert_eq!(app.peer_document().get_heads(), heads);
+            assert_eq!(first_block(&mut app).1, changed);
         }
     }
 
@@ -306,44 +306,22 @@ fn table_context_commands_edit_only_the_current_table() {
         for (command_slot, expected_rows, expected_columns) in
             [(0, 3, 2), (1, 2, 3), (2, 1, 2), (3, 2, 1)]
         {
-            let tmp = TempDir::new().unwrap();
-            notes::storage::ensure_layout(tmp.path()).unwrap();
-            let mut workspace = notes::Workspace::new();
-            let page = workspace.create_page(None);
-            workspace.set_selected(Some(page));
-            notes::storage::save_workspace(tmp.path(), &workspace).unwrap();
-            notes::storage::write_page_body(
-                tmp.path(),
-                page,
-                "| Name | Status |\n| --- | --- |\n| Mina | Ready |\n",
-            )
-            .unwrap();
-            let app = NotesApp::spawn(tmp.path().into()).unwrap();
-            let state = ui::State::new();
-            let mut app = settle_layout(app, state, 1200, 800);
-            app.draw(
-                &mut vello::Scene::new(),
-                vello::kurbo::Affine::IDENTITY,
-                &mut crate::component_support::renderer(),
-                &Theme::dark(),
-                &ui::presence::PresenceCtx::empty(),
-            );
-            let id = app.main_panel_mut().editor().blocks()[0].id.clone();
-            let (notes, state) = Framed::split(&mut app);
-            assert!(notes.main_panel_mut().editor_mut().perform_semantic_action(
+            let (mut app, _) =
+                note_at(1200, "| Name | Status |\n| --- | --- |\n| Mina | Ready |\n");
+            let (id, _) = first_block(&mut app);
+            semantic(
+                &mut app,
                 &format!("notes.table-cell:{id}:1:0"),
                 &ui::a11y::Action::Focus,
-                &mut state.doc,
-                &state.root,
-            ));
-            let rect = editor_rect(&*app).unwrap();
+            );
+            let rect = editor_rect(&mut app);
             dispatch(
                 &mut app,
                 Modifiers::default(),
                 &cursor_moved(rect.x0 + 40.0, rect.y0 + 50.0),
             );
             dispatch(&mut app, Modifiers::default(), &mouse_press_right());
-            assert!(app.note_menu_open_for_test());
+            assert!(menu_open(&mut app));
             // Four clipboard commands precede the table commands; separators
             // do not consume a keyboard selection step.
             for _ in 0..5 + command_slot {
@@ -354,9 +332,11 @@ fn table_context_commands_edit_only_the_current_table() {
                 );
             }
             dispatch(&mut app, Modifiers::default(), &named_key(NamedKey::Enter));
-            assert!(!app.note_menu_open_for_test());
-            assert_eq!(app.workspace_pages_for_test().len(), 1);
-            let accessibility = app.main_panel_mut().editor().accessibility().unwrap();
+            assert!(!menu_open(&mut app));
+            assert_eq!(crate::framework_support::shown(&app).pages().len(), 1);
+            let accessibility = surface(&mut app, |notes| {
+                ui::widget::Widget::accessibility(notes.main_panel_mut().editor()).unwrap()
+            });
             let table = accessibility.children[0]
                 .children
                 .iter()
@@ -373,12 +353,11 @@ fn table_context_commands_edit_only_the_current_table() {
                     .iter()
                     .all(|row| row.children.len() == expected_columns)
             );
-            app.flush_saves();
-            let expected = app.main_panel_mut().editor().blocks()[0].text().to_owned();
-            drop(app);
-            let mut reopened = NotesApp::spawn(tmp.path().into()).unwrap();
+            let (_, expected) = first_block(&mut app);
+            let page = crate::framework_support::shown(&app).pages()[0].id;
+            let reopened = app.reopen().unwrap();
             assert_eq!(
-                reopened.main_panel_mut().editor().blocks()[0].text(),
+                reopened.read_document(|doc| notes::read::page_block_snapshots(doc, page))[0].1,
                 expected
             );
         }

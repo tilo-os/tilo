@@ -17,18 +17,15 @@ const MAX_TRANSFER_BYTES: usize = 4 * 1024 * 1024;
 /// never independently authorized: a provider binds it to the owning portal
 /// session and decides when that session's capture/control phase is active.
 pub trait ClipboardSessionProvider: Send + Sync {
+    /// Bind Clipboard to `session` before `Start`. Only the authenticated
+    /// frontend connection that created the session may do so.
     fn request_clipboard(&self, session: &str, owner: &str) -> bool;
-    fn clipboard_active(&self, session: &str, owner: &str) -> bool;
-    fn clipboard_live(&self, session: &str) -> bool;
+    /// Who owns `session` while its clipboard is live: requested before
+    /// `Start`, started, and not paused by its portal.
+    fn clipboard_owner(&self, session: &str) -> Option<String>;
+    /// Every session whose clipboard is live. Names are implementation-side
+    /// session paths, not app input.
     fn clipboard_sessions(&self) -> Vec<String>;
-}
-
-#[derive(Clone)]
-pub struct ClipboardSessionProviderHandle(Arc<dyn ClipboardSessionProvider>);
-impl ClipboardSessionProviderHandle {
-    pub fn new(provider: Arc<dyn ClipboardSessionProvider>) -> Self {
-        Self(provider)
-    }
 }
 
 /// Compositor selection bridge. Production can back this with Smithay's live
@@ -52,28 +49,43 @@ pub trait ClipboardBroker: Send + Sync {
     }
 }
 #[derive(Clone)]
-pub struct ClipboardBrokerHandle(Arc<dyn ClipboardBroker>);
+pub struct ClipboardBrokerHandle {
+    inner: Arc<dyn ClipboardBroker>,
+    selection_wake: Option<crate::idle_wake::IdleWake>,
+}
 impl ClipboardBrokerHandle {
     pub fn new(broker: Arc<dyn ClipboardBroker>) -> Self {
-        Self(broker)
+        Self {
+            inner: broker,
+            selection_wake: None,
+        }
     }
+
+    pub(crate) fn with_selection_wake(mut self, wake: crate::idle_wake::IdleWake) -> Self {
+        self.selection_wake = Some(wake);
+        self
+    }
+
     fn begin_offer(&self, mimes: &[String]) -> Result<(), String> {
-        self.0.begin_offer(mimes)
+        self.inner.begin_offer(mimes)
     }
     fn read(&self, mime: &str) -> Result<Vec<u8>, String> {
-        self.0.read(mime)
+        self.inner.read(mime)
     }
     fn write(&self, mime: &str, bytes: Vec<u8>) -> Result<(), String> {
-        self.0.write(mime, bytes)
+        self.inner.write(mime, bytes)
     }
     fn clear(&self) -> Result<(), String> {
-        self.0.clear()
+        self.inner.clear()
     }
     fn selection_change(&self) -> Option<Vec<String>> {
-        self.0.selection_change()
+        self.inner.selection_change()
+    }
+    fn selection_wake(&self) -> Option<crate::idle_wake::IdleWake> {
+        self.selection_wake.clone()
     }
     pub fn available(&self) -> bool {
-        self.0.available()
+        self.inner.available()
     }
     pub fn unavailable() -> Self {
         Self::new(Arc::new(NullBroker))
@@ -91,14 +103,18 @@ pub struct MemoryClipboardBroker {
 pub struct CompositorClipboardBroker {
     selection: crate::compositor::selection::SharedSelection,
     seen_revision: Mutex<u64>,
+    pub(crate) wake: crate::idle_wake::IdleWake,
 }
 
 #[cfg(target_os = "linux")]
 impl CompositorClipboardBroker {
     pub fn new(selection: crate::compositor::selection::SharedSelection) -> Self {
+        let wake = crate::idle_wake::IdleWake::default();
+        crate::compositor::selection::watch_clipboard_revision(&selection, wake.clone());
         Self {
             selection,
             seen_revision: Mutex::new(0),
+            wake,
         }
     }
 }
@@ -239,9 +255,13 @@ struct ClipboardState {
 
 #[derive(Clone)]
 pub struct ClipboardBackend {
-    providers: Vec<ClipboardSessionProviderHandle>,
+    providers: Vec<Arc<dyn ClipboardSessionProvider>>,
     broker: ClipboardBrokerHandle,
     state: Arc<Mutex<ClipboardState>>,
+    /// Transfers queued for emission.
+    wake: crate::idle_wake::IdleWake,
+    /// Session close, so a revoked remote clipboard is cleared without polling.
+    session_wake: crate::idle_wake::IdleWake,
 }
 
 /// Emit deferred transfer requests without blocking the compositor or D-Bus
@@ -289,7 +309,7 @@ pub fn spawn_signal_emitter(connection: zbus::Connection, backend: ClipboardBack
                     return;
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+            backend.parked().await;
         }
     });
 }
@@ -308,10 +328,12 @@ impl ClipboardBackend {
                 next_serial: 1,
                 ..Default::default()
             })),
+            wake: crate::idle_wake::IdleWake::default(),
+            session_wake: crate::idle_wake::IdleWake::default(),
         }
     }
     pub fn with_session_providers(
-        providers: Vec<ClipboardSessionProviderHandle>,
+        providers: Vec<Arc<dyn ClipboardSessionProvider>>,
         broker: ClipboardBrokerHandle,
     ) -> Self {
         Self {
@@ -321,17 +343,31 @@ impl ClipboardBackend {
                 next_serial: 1,
                 ..Default::default()
             })),
+            wake: crate::idle_wake::IdleWake::default(),
+            session_wake: crate::idle_wake::IdleWake::default(),
         }
     }
-    #[cfg(target_os = "linux")]
-    pub fn with_remote_desktop(
-        remote: super::remote_desktop::RemoteDesktopSessionHandle,
-        broker: ClipboardBrokerHandle,
-    ) -> Self {
-        Self::with_session_providers(
-            vec![ClipboardSessionProviderHandle::new(Arc::new(remote))],
-            broker,
-        )
+
+    /// Share the portal lifecycle wake so session close prunes without a timer.
+    #[must_use]
+    pub(crate) fn with_session_wake(mut self, wake: crate::idle_wake::IdleWake) -> Self {
+        self.session_wake = wake;
+        self
+    }
+
+    async fn parked(&self) {
+        if let Some(selection) = self.broker.selection_wake() {
+            tokio::select! {
+                () = self.wake.wait() => {}
+                () = self.session_wake.wait() => {}
+                () = selection.wait() => {}
+            }
+        } else {
+            tokio::select! {
+                () = self.wake.wait() => {}
+                () = self.session_wake.wait() => {}
+            }
+        }
     }
     fn owner(hdr: &zbus::message::Header<'_>) -> zbus::fdo::Result<OwnedUniqueName> {
         hdr.sender()
@@ -348,34 +384,36 @@ impl ClipboardBackend {
         session: &ObjectPath<'_>,
         owner: &OwnedUniqueName,
     ) -> zbus::fdo::Result<()> {
-        self.providers
-            .iter()
-            .any(|provider| {
-                provider
-                    .0
-                    .request_clipboard(&session.to_string(), owner.as_str())
-            })
-            .then_some(())
-            .ok_or_else(|| {
-                zbus::fdo::Error::AccessDenied(
-                    "clipboard must be requested by this remote session before Start".into(),
-                )
-            })
+        self.any_provider(
+            session,
+            owner,
+            |provider, session, owner| provider.request_clipboard(session, owner),
+            "clipboard must be requested by this remote session before Start",
+        )
     }
     fn active(&self, session: &ObjectPath<'_>, owner: &OwnedUniqueName) -> zbus::fdo::Result<()> {
+        self.any_provider(
+            session,
+            owner,
+            |provider, session, owner| provider.clipboard_owner(session).as_deref() == Some(owner),
+            "clipboard is not active for this owned session",
+        )
+    }
+    /// Succeed when some provider `grants` the clipboard to `owner`'s
+    /// `session`; refuse with `refusal` otherwise.
+    fn any_provider(
+        &self,
+        session: &ObjectPath<'_>,
+        owner: &OwnedUniqueName,
+        grants: fn(&dyn ClipboardSessionProvider, &str, &str) -> bool,
+        refusal: &str,
+    ) -> zbus::fdo::Result<()> {
+        let session = session.to_string();
         self.providers
             .iter()
-            .any(|provider| {
-                provider
-                    .0
-                    .clipboard_active(&session.to_string(), owner.as_str())
-            })
+            .any(|provider| grants(provider.as_ref(), &session, owner.as_str()))
             .then_some(())
-            .ok_or_else(|| {
-                zbus::fdo::Error::AccessDenied(
-                    "clipboard is not active for this owned session".into(),
-                )
-            })
+            .ok_or_else(|| zbus::fdo::Error::AccessDenied(refusal.into()))
     }
     fn available(&self) -> zbus::fdo::Result<()> {
         self.broker.available().then_some(()).ok_or_else(|| {
@@ -394,7 +432,7 @@ impl ClipboardBackend {
             let live = |session: &str| {
                 self.providers
                     .iter()
-                    .any(|provider| provider.0.clipboard_live(session))
+                    .any(|provider| provider.clipboard_owner(session).is_some())
             };
             state.offers.retain(|session, _| live(session));
             state.pending.retain(|_, write| live(&write.session));
@@ -418,7 +456,7 @@ impl ClipboardBackend {
         let mut sessions = self
             .providers
             .iter()
-            .flat_map(|provider| provider.0.clipboard_sessions())
+            .flat_map(|provider| provider.clipboard_sessions())
             .collect::<Vec<_>>();
         sessions.sort();
         sessions.dedup();
@@ -445,6 +483,8 @@ impl ClipboardBackend {
             serial,
         };
         state.transfers.push(transfer.clone());
+        drop(state);
+        self.wake.poke();
         Some(transfer)
     }
     pub fn take_transfers(&self) -> Vec<ClipboardTransfer> {
@@ -461,10 +501,7 @@ fn valid_mime(mime: &str) -> bool {
         && !mime.chars().any(|c| c.is_control() || c.is_whitespace())
 }
 fn mimes(options: &HashMap<String, OwnedValue>) -> Result<Vec<String>, zbus::fdo::Error> {
-    let values = options
-        .get("mime_types")
-        .and_then(|v| v.try_clone().ok())
-        .and_then(|v| Vec::<String>::try_from(v).ok())
+    let values = crate::portal::option::<Vec<String>>(options, "mime_types")
         .ok_or_else(|| zbus::fdo::Error::InvalidArgs("mime_types must be a string array".into()))?;
     if values.is_empty()
         || values.len() > MAX_MIME_TYPES
@@ -665,16 +702,15 @@ mod tests {
         fn request_clipboard(&self, _: &str, _: &str) -> bool {
             false
         }
-        fn clipboard_active(&self, _: &str, _: &str) -> bool {
-            false
-        }
-        fn clipboard_live(&self, session: &str) -> bool {
-            self.live.load(Ordering::Acquire) && session == self.session
+        fn clipboard_owner(&self, session: &str) -> Option<String> {
+            (self.live.load(Ordering::Acquire) && session == self.session)
+                .then(|| ":1.1".to_owned())
         }
         fn clipboard_sessions(&self) -> Vec<String> {
-            self.clipboard_live(&self.session)
-                .then(|| vec![self.session.clone()])
-                .unwrap_or_default()
+            self.clipboard_owner(&self.session)
+                .map(|_| self.session.clone())
+                .into_iter()
+                .collect()
         }
     }
 
@@ -712,12 +748,10 @@ mod tests {
             .set("image/png", vec![0x89, b'P', b'N', b'G'])
             .unwrap();
         let backend = ClipboardBackend::with_session_providers(
-            vec![ClipboardSessionProviderHandle::new(Arc::new(
-                TestProvider {
-                    session: session.clone(),
-                    live: live.clone(),
-                },
-            ))],
+            vec![Arc::new(TestProvider {
+                session: session.clone(),
+                live: live.clone(),
+            })],
             ClipboardBrokerHandle::new(broker.clone()),
         );
         {

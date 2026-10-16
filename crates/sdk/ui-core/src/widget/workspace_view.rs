@@ -8,7 +8,7 @@ use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::kurbo::{Affine, Rect, Vec2};
 use winit::event::WindowEvent;
 
 #[derive(Clone, Copy, Debug)]
@@ -97,7 +97,7 @@ impl Widget for WorkspaceView {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
-    fn update(&mut self, _s: &mut AppModel, _p: &ModelPath) -> bool {
+    fn update(&mut self, _s: &AppModel, _p: &ModelPath) -> bool {
         if self.slide.is_settled() {
             false
         } else {
@@ -113,26 +113,17 @@ impl Widget for WorkspaceView {
     ) -> NodeId {
         // Zero-height: this is a keyboard-handler + animation driver, not a
         // visible rect. Workspace chrome lives in the top bar.
-        let n = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(0.0),
             },
             flex_shrink: 0.0,
             ..Default::default()
-        });
-        node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-        n
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, n: NodeId, origin: Point) {
-        let l = taffy.layout(n).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-    }
+    crate::rect_geometry!();
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -184,8 +175,5 @@ impl Widget for WorkspaceView {
     }
     fn name(&self) -> &'static str {
         "WorkspaceView"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }

@@ -16,15 +16,11 @@
 //! projections and issues their typed control requests without duplicating a
 //! second durable record store.
 //!
-//! Local preferences such as favourites and zoom live in the user's Files
-//! config directory. They are deliberately not collaborative. Likewise,
-//! inline rename uses a process-local [`ui::widget::TextInput`]; it is a
-//! proposed external mutation until committed, not content that another peer
-//! should see or undo.
-//!
-//! Consequently Files has no replayable CRDT actions. `take_committed_action`
-//! stays empty; external work is surfaced through the canonical resource
-//! operation lifecycle and its typed status/result updates.
+//! What the Files document holds is the person's bookmarked places and the
+//! filesystem changes queued from Files ([`crate::resource::FileExplorer`]);
+//! view preferences are the person's settings. Inline rename uses a process-local
+//! [`ui::widget::TextInput`]; it is a proposed external mutation until
+//! committed, not content that another peer should see or undo.
 
 #[cfg(test)]
 mod tests {
@@ -33,7 +29,7 @@ mod tests {
 
     use crate::FileExplorerWidget;
     use crate::command::FileCommand;
-    use crate::favorites::UserDirs;
+    use crate::resource::FileExplorer;
 
     /// Interaction state, filesystem operations and preferences never materialise in the shared document; resources expose typed local operations.
     #[test]
@@ -41,13 +37,13 @@ mod tests {
         // --- phase: local_interaction_state_never_materialises_a_shared_document_record ---
         {
             let mut files = FileExplorerWidget::new();
-            let mut document = AutoCommit::new();
+            let document = AutoCommit::new();
 
-            files.sync(&mut document, &ROOT);
+            files.sync(&document, &ROOT);
             assert_eq!(document.keys(&ROOT).count(), 0, "initial UI state is local");
 
             files.set_rename_buffer("draft.txt".into());
-            files.sync(&mut document, &ROOT);
+            files.sync(&document, &ROOT);
             assert_eq!(
                 document.keys(&ROOT).count(),
                 0,
@@ -62,8 +58,8 @@ mod tests {
 
             let mut files = FileExplorerWidget::new();
             files.navigate(directory.path().to_path_buf());
-            let mut document = AutoCommit::new();
-            files.sync(&mut document, &ROOT);
+            let document = AutoCommit::new();
+            files.sync(&document, &ROOT);
 
             let index = files
                 .displayed_entries()
@@ -83,50 +79,34 @@ mod tests {
             );
         }
 
-        // --- phase: preferences_stay_in_user_config_not_the_shared_document ---
+        // --- phase: the_window_publishes_only_live_rows ---
         {
-            let config = tempfile::tempdir().unwrap();
-            let home = tempfile::tempdir().unwrap();
-            let mut files = FileExplorerWidget::with_persistence_dirs(
-                Some(config.path().to_path_buf()),
-                Some(home.path().to_path_buf()),
-                UserDirs::default(),
-            );
-            let mut document = AutoCommit::new();
-            files.sync(&mut document, &ROOT);
-
-            assert!(files.apply_command(FileCommand::AddFavorite(home.path().join("Projects"))));
-            assert!(files.apply_command(FileCommand::ZoomIn));
-
-            assert!(config.path().join("favorites").exists());
-            assert!(config.path().join("zoom").exists());
-            assert_eq!(document.keys(&ROOT).count(), 0);
-        }
-
-        // --- phase: resources_expose_typed_local_operations_without_crdt_actions ---
-        {
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
             let mut files = FileExplorerWidget::new();
-            let mut document = AutoCommit::new();
-            files.sync(&mut document, &ROOT);
+            files.navigate(directory.path().to_path_buf());
+            let document = AutoCommit::new();
+            files.sync(&document, &ROOT);
 
-            let resources = ui::resources::resources(&files, &document);
-            assert_eq!(resources.len(), 1, "one current-folder root");
-            let folder = &resources[0];
-            assert_eq!(folder.kind, "files.folder");
-            let action_ids: Vec<_> = folder
-                .actions
-                .iter()
-                .map(|action| action.id.as_str())
-                .collect();
-            for expected in ["refresh", "new-folder", "paste"] {
-                assert!(
-                    action_ids.contains(&expected),
-                    "missing {expected}: {action_ids:?}"
-                );
-            }
+            let resources = files.published_rows();
             assert!(
-                !action_ids.contains(&"navigate"),
-                "a raw local path is not a durable action identity"
+                resources
+                    .iter()
+                    .all(|resource| resource.kind != "files.folder"),
+                "the folder is the resource's publication, not the window's"
+            );
+            assert!(
+                resources
+                    .iter()
+                    .any(|resource| resource.label == "notes.txt"),
+                "the listing's rows are the window's"
+            );
+            assert!(
+                resources
+                    .iter()
+                    .flat_map(|resource| &resource.actions)
+                    .all(|action| action.kind != ui::tilo_actions::OperationKind::Document),
+                "a live row never changes the document"
             );
             assert!(ui::undo::take_committed_action(&mut files).is_none());
         }
@@ -139,18 +119,29 @@ mod tests {
         std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
         let mut files = FileExplorerWidget::new();
         files.navigate(directory.path().to_path_buf());
-        let mut synced = document.clone();
-        files.sync(&mut synced, &ROOT);
-        ui::resources::resources(&files, &synced)
+        let synced = document.clone();
+        files.sync(&synced, &ROOT);
+        crate::files_app::published::tree(&files, &synced)
     }
 
-    // Files has no replayable CRDT actions (see the module docs): its surface
-    // is typed local operations only, so the registry is empty and the sweep
-    // checks the surface and its protocol.
+    fn seeded() -> AutoCommit {
+        use ui::tilo_resource::Resource as _;
+        let mut document = AutoCommit::new();
+        FileExplorer::initialize(&mut document).unwrap();
+        document
+    }
+
+    fn registry() -> ui::tilo_actions::ActionRegistry {
+        use ui::tilo_resource::Resource as _;
+        ui::tilo_actions::ActionRegistry::with(FileExplorer::register)
+    }
+
+    // The resource's publication (its places and the folder-wide work) and
+    // the window's live rows, as the palette sees them together.
     ui::action_contract_tests! {
-        seed: AutoCommit::new(),
-        registry: ui::tilo_actions::ActionRegistry::new(),
+        seed: seeded(),
+        registry: registry(),
         resources: |document| folder_resources(document),
-        palette: ["Refresh folder", "New folder", "Sort by name"],
+        palette: ["Refresh folder", "Add to Favourites", "Sort by name"],
     }
 }

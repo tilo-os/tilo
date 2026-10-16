@@ -54,16 +54,20 @@ pub(crate) fn identity_fixture() -> (GovernedIdentity, SystemTime) {
     (identity, now)
 }
 
-pub(crate) fn capability_fixture() -> CapOverride {
-    CapOverride::grant(
-        Subject::Principal(Principal::Person("person 🦀\n\"named\"\\".into())),
-        Scope::Action {
-            app: "so.tilo.chat".into(),
-            action: "message.\u{0001}send".into(),
-        },
-        Verb::Write,
+pub(crate) fn grant_fixture() -> tilo_action_policy::Grant {
+    use tilo_action_policy::{Answer, Grant, KindSet, Lifetime, Subject, TreePath};
+    Grant::new(
+        "grant \u{0003}id",
+        Subject::Person("person 🦀\n\"named\"\\".into()),
+        TreePath::room("room")
+            .app("so.tilo.chat")
+            .resource("chat.channel:\u{0002}general")
+            .action("message.\u{0001}send"),
+        KindSet::ALL,
+        Answer::Allow,
+        Subject::Person("granter".into()),
     )
-    .with_expiry(u64::MAX)
+    .with_lifetime(Lifetime::Until(u64::MAX))
 }
 
 fn verify_identity(identity: &GovernedIdentity, now: SystemTime) {
@@ -113,13 +117,13 @@ fn json_resource_fixture_escaped_keys_and_surrogate_values_preserve_signed_ident
 }
 
 #[test]
-fn json_resource_fixture_capability_control_utf8_and_maximum_u64_roundtrip() {
-    let capability = capability_fixture();
+fn json_resource_fixture_grant_control_utf8_and_maximum_u64_roundtrip() {
+    let capability = grant_fixture();
     let wire = serde_json::to_string(&capability).unwrap();
     assert!(wire.contains("\\u0001"));
     assert!(wire.contains("18446744073709551615"));
     let escaped = wire.replace('🦀', "\\uD83E\\uDD80");
-    let decoded: CapOverride = serde_json::from_str(&escaped).unwrap();
+    let decoded: tilo_action_policy::Grant = serde_json::from_str(&escaped).unwrap();
     assert_eq!(decoded, capability);
     assert_eq!(serde_json::to_string(&decoded).unwrap(), wire);
 }

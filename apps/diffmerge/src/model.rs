@@ -19,6 +19,56 @@
 
 use similar::{Algorithm, ChangeTag, TextDiff};
 
+thread_local! {
+    // Resource publication and the retained view ask for the same comparison.
+    // Share immutable alignment rather than rerunning the full algorithm on
+    // every local Next/Previous action. Two entries bound retained input memory.
+    static COMPARISONS: std::cell::RefCell<std::collections::VecDeque<ComparisonCache>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
+#[cfg(test)]
+thread_local! {
+    static DIGEST_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn digest_passes() -> usize {
+    DIGEST_PASSES.get()
+}
+
+struct ComparisonCache {
+    key: (blake3::Hash, blake3::Hash),
+    model: std::sync::Arc<DiffModel>,
+}
+
+/// The exact content's alignment, shared by resources and their retained view.
+/// Labels do not affect alignment; both source digests do. Editing either
+/// source therefore cannot reuse the previous comparison's blocks.
+pub(crate) fn comparison(left: &str, right: &str) -> std::sync::Arc<DiffModel> {
+    #[cfg(test)]
+    DIGEST_PASSES.set(DIGEST_PASSES.get().saturating_add(1));
+    let key = (
+        blake3::hash(left.as_bytes()),
+        blake3::hash(right.as_bytes()),
+    );
+    COMPARISONS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(entry) = cache.iter().find(|entry| entry.key == key) {
+            return std::sync::Arc::clone(&entry.model);
+        }
+        let model = std::sync::Arc::new(DiffModel::compute(left, right));
+        if cache.len() >= 2 {
+            cache.pop_front();
+        }
+        cache.push_back(ComparisonCache {
+            key,
+            model: std::sync::Arc::clone(&model),
+        });
+        model
+    })
+}
+
 /// The kind of change a single aligned row represents in a two-way diff.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowKind {
@@ -294,9 +344,6 @@ pub enum Resolution {
 
 impl Resolution {
     pub fn is_conflict(&self) -> bool {
-        matches!(self, Resolution::Conflict)
-    }
-    pub fn is_open_or_conflict(&self) -> bool {
         matches!(self, Resolution::Conflict)
     }
 }
@@ -916,5 +963,25 @@ mod tests {
                 assert_eq!(m.merged_lines(), take.merged, "{label}: merged lines");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod comparison_cache_tests {
+    #[test]
+    fn exact_input_reuses_alignment_and_either_changed_side_invalidates_it() {
+        let original = super::comparison("left\n", "right\n");
+        let same = super::comparison("left\n", "right\n");
+        assert!(std::sync::Arc::ptr_eq(&original, &same));
+        let changed_left = super::comparison("other\n", "right\n");
+        assert!(!std::sync::Arc::ptr_eq(&original, &changed_left));
+        let changed_right = super::comparison("left\n", "left\n");
+        assert_eq!(changed_right.modified, 0);
+        assert!(changed_right.blocks.is_empty());
+        let evicted = super::comparison("left\n", "right\n");
+        assert!(
+            !std::sync::Arc::ptr_eq(&original, &evicted),
+            "only two comparisons are retained"
+        );
     }
 }

@@ -50,8 +50,10 @@ prepare() {
     case "$2" in /*) ;; *) die 'ISO argument must be an absolute path' ;; esac
     source_iso="$(canonical_regular_file "$2")"
     [ -d "$GUEST_SOURCE" ] || die "missing immutable guest setup payload"
-    [ -r "$VIRTIO_DRIVERS_MEDIA" ] || die "the packaged virtio-win driver ISO is missing"
-    [ -r "$VIRTIO_GUEST_TOOLS" ] || die "the packaged virtio-win guest-tools installer is missing"
+    # The virtio-win media ships in the on-demand Windows support extension,
+    # not in the base image. Say what to install rather than only what is absent.
+    [ -r "$VIRTIO_DRIVERS_MEDIA" ] && [ -r "$VIRTIO_GUEST_TOOLS" ] || die \
+        'the packaged virtio-win driver ISO is missing: Windows support is not installed on this device. It is a separate download of about 3 GB; install it with: systemctl start tilo-extension@install:windows-compat.service'
     command -v qemu-img >/dev/null || die 'qemu-img is not installed'
     command -v xorriso >/dev/null || die 'xorriso is not installed'
     [ -x "$VM_CONTROL" ] || die 'the singleton VM controller is not installed'
@@ -100,9 +102,12 @@ EOF
     chmod 0600 "$TOOLS_MEDIA"
     digest="$(sha256sum "$INSTALL_MEDIA" | awk '{print $1}')"
     uuid="$(uuidgen | tr '[:upper:]' '[:lower:]')"
-    printf '%s\n' "$uuid" > "$UUID_FILE"
-    chown root:tilo-identity "$UUID_FILE"
-    chmod 0640 "$UUID_FILE"
+    # Rename the identity into place complete: its appearance starts the
+    # Windows status timer (tilo-windows-vm-egress-reaper.path).
+    printf '%s\n' "$uuid" > "$UUID_FILE.new"
+    chown root:tilo-identity "$UUID_FILE.new"
+    chmod 0640 "$UUID_FILE.new"
+    mv -f "$UUID_FILE.new" "$UUID_FILE"
     printf '{"schema_version":1,"phase":{"installing":{"media_digest":"%s"}},"license":"unknown","catalog_generation":0}\n' "$digest" > "$STATE"
     chown root:tilo-identity "$STATE"
     chmod 0660 "$STATE"

@@ -1,3 +1,6 @@
+# Image write review. The remaining image contents are written unchanged.
+imager-review-setup-hostname = Written with hostname { $hostname }, then verified
+
 # Guided setup semantic resource and action labels.
 imager-setup-action-choose-experience = Choose setup experience
 imager-setup-placeholder-experience = desktop
@@ -31,7 +34,7 @@ imager-setup-error-unknown-mode = Unknown folder mode: { $value }
 imager-setup-error-invalid-operation = Invalid setup operation: { $error }
 imager-setup-error-folder-choices-closed = Folder choices are not open on the current setup page
 imager-setup-error-folder-selection-stale = The folder selection is no longer available
-imager-setup-error-connected-unavailable = Folder syncing is not available in this build yet
+imager-setup-error-connected-unavailable = Connected folders are not available on this computer
 imager-setup-error-wait-for-scans = Wait for the selected folders to finish scanning
 imager-setup-error-suggestion-unavailable = That suggested folder is unavailable on this computer
 imager-setup-error-picker-unavailable = The folder picker is already open or folder choices are not available
@@ -72,10 +75,10 @@ imager-setup-badge-page-setup = Setup
 imager-setup-suggestion-available = Available to select
 imager-setup-suggestion-unavailable = Unavailable on this computer
 
-imager-setup-detail-folder-common = { $mode } · common
-imager-setup-detail-folder-override = { $mode } · override
-imager-setup-detail-desktop = { $phase } · { $status }
-imager-setup-detail-internal-download = { $phase } · { $status }
+imager-setup-detail-folder-common = { $mode }, the common choice
+imager-setup-detail-folder-override = { $mode }, chosen for this folder
+imager-setup-detail-desktop = { $status }
+imager-setup-detail-internal-download = { $status }
 imager-setup-detail-selection =
     experience { $experience ->
         [none] no experience selected
@@ -187,18 +190,40 @@ imager-import-error-next-issues-unavailable = Another issue page is not availabl
 imager-import-error-first-issues-unavailable = The first issue page is not available
 imager-import-error-folder-review-unavailable = This saved folder cannot be reviewed in its current state
 imager-import-error-folder-mode-unavailable = Saved folder choices cannot change while a copy is running
-imager-import-error-connected-unavailable = Connected folders are not available in this build yet
+imager-import-error-connected-unavailable = Connected folders are not available on this computer
 imager-import-error-stale-operation = That folder import is no longer available
 imager-import-error-stale-folder = That saved folder choice is no longer available
 imager-import-error-command-refused = Folder import could not continue. Open import status (read-status) on this computer for details
-imager-import-detail-root = { $phase } · { $operations } import(s) · error { $error }
-imager-import-detail-operation = { $state } · { $files } verified file(s) · { $bytes } verified bytes · { $issues } issue(s)
-imager-import-detail-folder = { $mode } · destination reviewed { $reviewed }
+imager-import-detail-root = { $operations ->
+        [one] One copy
+       *[other] { $operations } copies
+    }
+imager-import-detail-operation = { $state ->
+        [awaiting_review] Waiting for review
+        [ready] Ready to start
+        [running] Copying
+        [interrupted] Interrupted
+        [cancelled] Stopped
+        [incomplete] Needs attention
+        [failed] Could not start
+       *[complete] Complete
+    }, { $files ->
+        [one] one file checked
+       *[other] { $files } files checked
+    }
+imager-import-detail-folder = { $mode ->
+        [later] Decide later
+        [connected] Connected
+       *[copy] Copy
+    }{ $reviewed ->
+        [true] , destination reviewed
+       *[false] {""}
+    }
 
 # Full Tilo installed alongside the current system, without a USB drive.
 imager-setup-resource-internal = Full Tilo installation
 imager-setup-badge-internal = Full Tilo
-imager-setup-detail-internal = { $readiness } · download { $download } · helper { $run } · blockers { $blockers }
+imager-setup-detail-internal = { $readiness }
 imager-setup-action-internal-set-target-size = Set Tilo size
 imager-setup-param-internal-target-gib = Tilo size in GiB
 imager-setup-action-internal-install = Install Tilo alongside the current system
@@ -229,8 +254,8 @@ imager-setup-internal-checking =
         [linux] your Linux system
        *[other] your current system
     } on this computer…
-imager-setup-internal-gated = Full Tilo installation is not available in this build yet.
-imager-setup-internal-no-release = This build has no Full Tilo release for this computer's processor.
+imager-setup-internal-gated = Full Tilo is not available on this computer yet.
+imager-setup-internal-no-release = There is no Full Tilo release for this computer's processor yet.
 imager-setup-internal-unsupported = Tilo cannot be installed alongside the current system on this computer: { $reasons }
 imager-setup-internal-ready =
     Tilo can be installed alongside { $host ->
@@ -261,7 +286,7 @@ imager-setup-internal-expect =
         [windows] Windows stays installed and remains the startup default.
        *[other] Your current system stays installed and remains the startup default.
     } Installing takes one restart into the Tilo installer, where you confirm again before anything is installed. Secure Boot must be turned off.
-imager-setup-internal-unverified = Development preview: installing without a USB drive has not been verified on real Windows or Linux computers yet. Back up anything important before you continue.
+imager-setup-internal-unverified = Back up anything important before you continue.
 imager-setup-internal-blockers-title = Before installing
 imager-setup-internal-blockers-none = Nothing on this computer blocks installation.
 imager-setup-internal-blocker-not-uefi = This computer starts in legacy BIOS mode. Tilo needs UEFI startup.
@@ -333,3 +358,47 @@ imager-setup-internal-download-consuming-detail = The installer helper is copyin
 imager-setup-internal-download-consumed = Download used
 imager-setup-internal-download-consumed-detail = The installer helper copied the verified download. The download stays on this computer until you discard it.
 imager-setup-internal-download-kept = Installation stopped; download kept
+
+# Desktop setup shares these effects with its controls and automation.
+imager-setup-desktop-heading = Tilo Desktop on this computer
+imager-setup-desktop-install = Install Tilo Desktop
+imager-setup-desktop-cancel = Cancel download
+imager-setup-desktop-recheck = Check again
+imager-setup-desktop-command-unavailable = This operation is unavailable in the current setup state.
+imager-setup-method-heading = Install Tilo OS
+imager-setup-method-body = Install alongside your current system, or create a USB installer. You review the target before writing.
+imager-setup-usb-open = Create a USB installer
+imager-setup-usb-unavailable = USB image writing is unavailable on this host. Use a supported host to create the installer.
+imager-setup-alongside = Install directly alongside
+
+imager-journey-heading = Make Tilo yours
+imager-journey-body = Bring files now or decide later. Connect accounts explicitly and choose apps in Store after identity setup.
+imager-journey-accounts = Connect accounts
+imager-journey-store = Choose apps in Store
+imager-journey-identity-required = Complete identity setup in the trusted Tilo session first.
+imager-journey-navigation-pending = Asking the session to open your choice…
+imager-journey-navigation-opened = Your choice opened.
+imager-journey-navigation-lost = The session did not return an opening result. Try again.
+
+imager-setup-alongside-unavailable = Not available on this computer yet.
+
+## History: what changed in the imager's document
+imager-select-source = Chose the image to write
+imager-clear-source = Cleared the image to write
+imager-install-profile-hostname = Changed the hostname
+imager-install-profile-locale = Changed the locale
+imager-install-profile-keyboard = Changed the keyboard layout
+imager-install-profile-timezone = Changed the time zone
+imager-install-profile-filesystem = Set the filesystem to { $new ->
+    [btrfs] Btrfs
+    [ext4] Ext4
+   *[xfs] XFS
+}
+imager-install-profile-wifi-ssid = Changed the Wi-Fi network
+imager-install-profile-device-label = Changed the new device's name
+imager-install-profile-enroll-local-identity = { $new ->
+    [true] Chose to enroll the new device
+   *[false] Chose not to enroll the new device
+}
+imager-user-account-full-name = Changed the first user's full name
+imager-user-account-username = Changed the first user's username

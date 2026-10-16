@@ -4,14 +4,12 @@
 //! of increasing size and times each typed character end to end — the
 //! action, the document refresh, layout and drawing — and prints how the mean
 //! and the tail move with size. It measures the editor hosted on the app
-//! framework (the record, permission checks, attributed undo and the
-//! incrementally refreshed state all on the path) and, with `--standalone`,
-//! the editor on its own.
+//! framework: the record, permission checks, attributed undo and the
+//! incrementally refreshed state are all on the path.
 //!
 //! ```text
 //! cargo run -p word-processor --release --example large_document
 //! cargo run -p word-processor --release --example large_document -- --sizes 1,5 --chars 100
-//! cargo run -p word-processor --release --example large_document -- --standalone
 //! ```
 //!
 //! Release only: a debug build is slow enough to make every reading
@@ -20,9 +18,7 @@
 use std::path::PathBuf;
 
 use ui::framework::testing::HeadlessApp;
-use ui::headless::Driver;
 use word_processor::framework::WordProcessorApp;
-use word_processor::open_document;
 
 const PARAGRAPH: &str = "The rehearsal ran long and the doors opened late, so the \
 first half went out to a room that was still finding its seats. Nobody minded much. \
@@ -76,24 +72,15 @@ trait Editor {
 }
 
 fn measure(doc: &automerge::AutoCommit) -> (usize, usize) {
-    let Ok(c) = qdoc::model::open(doc, &automerge::ROOT) else {
+    let Ok(c) = word_processor::model::open(doc) else {
         return (0, 0);
     };
-    let ids = qdoc::model::blocks_in_order(doc, &c);
+    let ids = tilo_doc::model::blocks_in_order(doc, &c);
     let chars = ids
         .iter()
-        .map(|id| qdoc::model::block_text(doc, &c, id).map_or(0, |t| t.chars().count()))
+        .map(|id| tilo_doc::model::block_text(doc, &c, id).map_or(0, |t| t.chars().count()))
         .sum();
     (ids.len(), chars)
-}
-
-impl Editor for Driver {
-    fn key(&mut self, key: &str) {
-        Driver::key(self, key);
-    }
-    fn size(&mut self) -> (usize, usize) {
-        measure(&self.state_mut().doc)
-    }
 }
 
 impl Editor for HeadlessApp<WordProcessorApp> {
@@ -104,11 +91,11 @@ impl Editor for HeadlessApp<WordProcessorApp> {
         let harness = self.harness();
         harness.begin_profiling();
         harness.clear_profile_samples();
-        let scans = qdoc::model::ordered_keys_scan_count();
+        let scans = tilo_doc::model::ordered_keys_scan_count();
         let started = ui::time::now();
         harness.key(key);
         let wall = micros(started.elapsed());
-        let scans = qdoc::model::ordered_keys_scan_count().saturating_sub(scans);
+        let scans = tilo_doc::model::ordered_keys_scan_count().saturating_sub(scans);
         let frames = harness.take_profile_samples();
         let sum =
             |pick: fn(&ui::profiling::FrameTiming) -> u64| frames.iter().map(pick).sum::<u64>();
@@ -128,24 +115,20 @@ impl Editor for HeadlessApp<WordProcessorApp> {
     }
 }
 
-fn open_standalone(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
-    let (state, wp, _format) = open_document(path, tilo_content::ContentStore::memory())?;
-    Ok(Box::new(Driver::new(state, Box::new(wp), (1200, 800))))
-}
-
 /// The framework-hosted editor on a new record, with the document pasted
 /// into it through the editor's own paste action, ten thousand paragraphs a
 /// time.
 fn open_hosted(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
-    use qdoc_codecs::FormatProvider;
-    use qdoc_rich_text::action::{RegionKind, RichTextAction};
-    use qdoc_rich_text::{ClipBlock, RichText};
+    use tilo_doc_codecs::FormatProvider;
+    use tilo_document::ClipBlock;
+    use tilo_document::action::{RegionKind, RichTextAction};
     use ui::tilo_resource::Invoke;
+    use word_processor::framework::Document;
 
     let failed = |error: String| std::io::Error::other(error);
     let bytes = std::fs::read(path)?;
-    let mut scratch = qdoc::Document::new();
-    qdoc_codecs::MarkdownCodec
+    let mut scratch = tilo_doc::Document::new();
+    tilo_doc_codecs::MarkdownCodec
         .import(
             &bytes,
             &mut scratch.as_mut(),
@@ -157,10 +140,7 @@ fn open_hosted(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
         .blocks
         .into_iter()
         .map(|block| ClipBlock {
-            level: match block.attrs.get("level") {
-                Some(qdoc::AttrVal::Int(level)) => Some(*level),
-                _ => None,
-            },
+            level: block.int_attr("level"),
             kind: block.kind,
             text: block.text,
             marks: block.marks,
@@ -175,9 +155,10 @@ fn open_hosted(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
     for chunk in clips.chunks(10_000) {
         let (block, at) = app
             .read_document(|doc| {
-                let c = qdoc::model::open(doc, &automerge::ROOT).ok()?;
-                let last = qdoc::model::blocks_in_order(doc, &c).pop()?;
-                let len = qdoc::model::block_text(doc, &c, &last).map_or(0, |t| t.chars().count());
+                let c = word_processor::model::open(doc).ok()?;
+                let last = tilo_doc::model::blocks_in_order(doc, &c).pop()?;
+                let len =
+                    tilo_doc::model::block_text(doc, &c, &last).map_or(0, |t| t.chars().count());
                 Some((last, len))
             })
             .ok_or_else(|| failed("the record holds no paragraph".into()))?;
@@ -190,8 +171,8 @@ fn open_hosted(path: &std::path::Path) -> std::io::Result<Box<dyn Editor>> {
             blocks: chunk.to_vec(),
             adopt_first_style: false,
         };
-        let invoke =
-            Invoke::<RichText>::apply(&paste).map_err(|error| failed(error.to_string()))?;
+        let invoke = Invoke::<Document>::edit(&word_processor::model::edit(&paste))
+            .map_err(|error| failed(error.to_string()))?;
         app.invoke_confirmed(invoke)
             .map_err(|error| failed(error.to_string()))?;
     }
@@ -207,7 +188,6 @@ fn main() -> std::io::Result<()> {
             .and_then(|i| args.get(i.saturating_add(1)))
             .cloned()
     };
-    let standalone = args.iter().any(|a| a == "--standalone");
     let sizes: Vec<usize> = arg("--sizes")
         .unwrap_or_else(|| "1,5,20".into())
         .split(',')
@@ -215,23 +195,12 @@ fn main() -> std::io::Result<()> {
         .collect();
     let chars: usize = arg("--chars").and_then(|v| v.parse().ok()).unwrap_or(200);
 
-    println!(
-        "{} editor: per keystroke, ms",
-        if standalone {
-            "standalone"
-        } else {
-            "framework-hosted"
-        }
-    );
+    println!("framework-hosted editor: per keystroke, ms");
     println!("size   open(s)   keystroke mean      p50      p95      max   enter mean");
     for megabytes in sizes {
         let path = document_of(megabytes)?;
         let opened = ui::time::now();
-        let mut editor = if standalone {
-            open_standalone(&path)?
-        } else {
-            open_hosted(&path)?
-        };
+        let mut editor = open_hosted(&path)?;
         for ch in "warmup".chars() {
             editor.key(&ch.to_string());
         }

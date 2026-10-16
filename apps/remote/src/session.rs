@@ -46,13 +46,13 @@ impl TransportReadiness {
         matches!(self, Self::Ready)
     }
 
-    /// Short state label that fits alongside a protocol badge in a list row.
+    /// Short state that fits the meta column of a list row.
     pub fn label(self) -> &'static str {
         match self {
             Self::Ready => "Ready",
-            Self::NeedsLiveSessionCapability => "Needs live access",
-            Self::BackendUnavailable => "Not supported",
-            Self::InvalidProfile => "Fix profile",
+            Self::NeedsLiveSessionCapability => "Not available here",
+            Self::BackendUnavailable => "RDP isn't supported",
+            Self::InvalidProfile => "Needs editing",
         }
     }
 
@@ -66,24 +66,19 @@ impl TransportReadiness {
         }
     }
 
-    /// Concise explanation shown without implying that a connection was tried.
+    /// One sentence for the person, without implying that a connection was
+    /// tried.
     pub fn detail(self, kind: ConnectionKind) -> &'static str {
         match self {
-            Self::Ready => "This transport is ready to connect.",
+            Self::Ready => "Remote can connect to this machine.",
             Self::NeedsLiveSessionCapability => match kind {
-                ConnectionKind::Ssh => {
-                    "SSH is installed, but this build has not been granted live network access."
-                }
-                ConnectionKind::Vnc => {
-                    "VNC is installed, but this build has not been granted live network access."
-                }
-                _ => "This transport needs a capability before it can connect.",
+                ConnectionKind::Ssh => "Remote can't open SSH sessions on this device.",
+                ConnectionKind::Vnc => "Remote can't open VNC sessions on this device.",
+                _ => "Remote can't open this kind of session on this device.",
             },
-            Self::BackendUnavailable => {
-                "RDP profiles are preserved, but this Tilo build has no RDP client backend."
-            }
+            Self::BackendUnavailable => "Remote opens SSH, VNC and Tilo devices, but not RDP.",
             Self::InvalidProfile => {
-                "This saved connection has incompatible target or authentication settings."
+                "The saved address or sign-in method doesn't fit this protocol."
             }
         }
     }
@@ -115,9 +110,9 @@ pub fn transport_readiness(kind: ConnectionKind) -> TransportReadiness {
 /// Every invocation path uses this one decision: the visible connection row,
 /// the accessibility tree, Ctrl+K/agent resources, and the effect handler. A
 /// malformed profile therefore never reaches an I/O constructor merely because
-/// one surface forgot a preflight check. Cached `Presence::Offline` is not an
-/// availability gate: it is stale by design, so a deliberate reconnect is
-/// required to discover that a machine recovered.
+/// one surface forgot a preflight check. Whether this device last saw the
+/// machine offline is not an availability gate: it is stale by design, so a
+/// deliberate reconnect is required to discover that a machine recovered.
 pub fn connection_readiness(connection: &Connection) -> TransportReadiness {
     let transport = transport_readiness(connection.kind);
     if !transport.can_connect() {
@@ -127,12 +122,6 @@ pub fn connection_readiness(connection: &Connection) -> TransportReadiness {
         return TransportReadiness::InvalidProfile;
     }
     TransportReadiness::Ready
-}
-
-/// Whether this connection kind may start its transport now. Tilo is a
-/// production broker capability; SSH/VNC retain the explicit developer gate.
-pub fn can_attempt_live(kind: ConnectionKind) -> bool {
-    transport_readiness(kind).can_connect()
 }
 
 /// The state of a live transport, shared from the background I/O thread to
@@ -164,25 +153,24 @@ impl SessionStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Presence;
+    use ui::tilo_resource::Atom;
     use uuid::Uuid;
 
     fn connection(kind: ConnectionKind) -> Connection {
         Connection {
             id: Uuid::new_v4(),
             name: "Saved machine".into(),
-            host: iroh_base::SecretKey::generate().public().to_string(),
+            host: Atom(iroh_base::SecretKey::generate().public().to_string()),
             port: kind.default_port(),
-            user: String::new(),
+            user: Atom::default(),
             kind,
             auth: if kind == ConnectionKind::Tilo {
                 crate::model::AuthMethod::DeviceIdentity
             } else {
                 crate::model::AuthMethod::Password
             },
-            last_used: "Never".into(),
-            presence: Presence::Unknown,
-            group: String::new(),
+            last_used_ms: None,
+            group: Atom::default(),
             favorite: false,
         }
     }
@@ -191,14 +179,14 @@ mod tests {
     fn session_readiness_and_preflight_fail_closed() {
         eprintln!("phase tilo_broker_transport_is_production_on");
         {
-            assert!(can_attempt_live(ConnectionKind::Tilo));
-            assert!(!can_attempt_live(ConnectionKind::Rdp));
+            assert!(transport_readiness(ConnectionKind::Tilo).can_connect());
+            assert!(!transport_readiness(ConnectionKind::Rdp).can_connect());
             assert_eq!(
-                can_attempt_live(ConnectionKind::Ssh),
+                transport_readiness(ConnectionKind::Ssh).can_connect(),
                 live_sessions_enabled()
             );
             assert_eq!(
-                can_attempt_live(ConnectionKind::Vnc),
+                transport_readiness(ConnectionKind::Vnc).can_connect(),
                 live_sessions_enabled()
             );
         }
@@ -224,15 +212,11 @@ mod tests {
         );
         {
             let mut tilo = connection(ConnectionKind::Tilo);
-            tilo.host = "friendly-name".into();
+            tilo.host = Atom("friendly-name".into());
             assert_eq!(
                 connection_readiness(&tilo),
                 TransportReadiness::InvalidProfile
             );
-
-            let mut offline = connection(ConnectionKind::Tilo);
-            offline.presence = crate::model::Presence::Offline;
-            assert_eq!(connection_readiness(&offline), TransportReadiness::Ready);
         }
     }
 }

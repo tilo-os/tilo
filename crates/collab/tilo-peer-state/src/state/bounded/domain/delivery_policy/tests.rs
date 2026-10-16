@@ -1,5 +1,4 @@
 use super::*;
-use crate::BoundedStatePeer;
 use crate::NeighbourMsg;
 use crate::PeerLimits;
 use crate::SeedDocument;
@@ -7,21 +6,10 @@ use crate::SeedState;
 use crate::StatePeer;
 use crate::TransportOrigin;
 use crate::seed_room;
+use crate::state::backend::restore::tests::restore_bounded;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use tilo_user_identity::RevocationList;
 use web_time::Duration;
-fn restore(peer: &StatePeer, now: SystemTime, limits: &PeerLimits) -> BoundedStatePeer {
-    BoundedStatePeer::restore(
-        &peer.durable().unwrap(),
-        peer.room(),
-        peer.authority(),
-        &[],
-        &RevocationList::new(),
-        now,
-        limits,
-    )
-    .unwrap()
-}
 fn expected(peer: &StatePeer, host: &DeviceCert, device: &DeviceCert, now: SystemTime) -> [u8; 32] {
     use crate::room::{
         delivery_policy::{self, Error, Metadata},
@@ -76,7 +64,7 @@ fn actual_delivery_holder_preserves_distinct_host_device_and_checks_every_real_r
             .digest(),
         digest
     );
-    let native = restore(&peer, now, &PeerLimits::default());
+    let native = restore_bounded(&peer, now, &PeerLimits::default());
     let read = native.read();
     ROUTE_CHECKS.with(|n| n.set(0));
     let got = read.delivery_policy(37, &host, &device, now).unwrap();
@@ -164,7 +152,7 @@ fn actual_delivery_holder_denies_current_expired_and_revoked_members() {
             peer.delivery_policy_unqualified(37, peer.authority(), &device, at),
             Err(PeerDeliveryPolicyError::CurrentDenied)
         ));
-        let native = restore(&peer, now, &PeerLimits::default());
+        let native = restore_bounded(&peer, now, &PeerLimits::default());
         let read = native.read();
         assert!(matches!(
             read.delivery_policy(37, peer.authority(), &device, at),
@@ -195,8 +183,8 @@ fn actual_delivery_holder_preserves_empty_room_semantics_and_limit_refusals() {
             now,
         )
         .unwrap();
-    let native = restore(&empty, now, &PeerLimits::default());
-    let missing = restore(&missing, now, &PeerLimits::default());
+    let native = restore_bounded(&empty, now, &PeerLimits::default());
+    let missing = restore_bounded(&missing, now, &PeerLimits::default());
     let read = native.read();
     // The old projection has no independent membership gate with no routes.
     // This is why its result cannot stand in for authenticated session proof.
@@ -222,7 +210,7 @@ fn actual_delivery_holder_preserves_empty_room_semantics_and_limit_refusals() {
             limits.governance_collection_bytes = 1;
         }
         // Restoring this room reads no governance JSON; the policy read does.
-        let with_routes = restore(&source, now, &limits);
+        let with_routes = restore_bounded(&source, now, &limits);
         let result = with_routes
             .read()
             .delivery_policy(37, source.authority(), &device, now);
@@ -292,7 +280,7 @@ fn actual_delivery_holder_uses_verified_metadata_and_ignores_document_heads() {
     // consumer's authorization view (v2): admitting or revoking them must not
     // reset this consumer's delivery session.
     assert_eq!(digest, original);
-    let native = restore(&peer, now, &PeerLimits::default());
+    let native = restore_bounded(&peer, now, &PeerLimits::default());
     let read = native.read();
     let policy = read
         .delivery_policy(37, peer.authority(), &device, now)
@@ -308,22 +296,11 @@ fn actual_delivery_holder_uses_verified_metadata_and_ignores_document_heads() {
 
 #[test]
 fn actual_delivery_holder_preserves_policy_errors_before_current_route_denial() {
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
-    for malformed in [false, true] {
+    {
         let (mut peer, key, _, mut device, now) = crate::admission_tests::seeded();
         let mut room = peer.admitted_room().unwrap().clone();
-        let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
-        let bytes = if malformed {
-            b"not-json".to_vec()
-        } else {
-            serde_json::to_vec(&CapOverride::grant(
-                Subject::Role(collab_types::Role::Editor),
-                Scope::App("unsupported.app".into()),
-                Verb::Read,
-            ))
-            .unwrap()
-        };
-        room.put(&caps, "extra", bytes).unwrap();
+        let caps = room.get(ROOT, "grants").unwrap().unwrap().1;
+        room.put(&caps, "extra", b"not-json".to_vec()).unwrap();
         let changes = room
             .get_changes(&[])
             .iter()
@@ -343,15 +320,8 @@ fn actual_delivery_holder_preserves_policy_errors_before_current_route_denial() 
             .delivery_policy_unqualified(37, peer.authority(), &device, now)
             .err()
             .unwrap();
-        assert_eq!(
-            legacy,
-            if malformed {
-                PeerDeliveryPolicyError::Unavailable
-            } else {
-                PeerDeliveryPolicyError::UnsupportedPolicy
-            }
-        );
-        let native = restore(&peer, now, &PeerLimits::default());
+        assert_eq!(legacy, PeerDeliveryPolicyError::Unavailable);
+        let native = restore_bounded(&peer, now, &PeerLimits::default());
         let read = native.read();
         ROUTE_CHECKS.with(|n| n.set(0));
         let result = read.delivery_policy(37, peer.authority(), &device, now);
@@ -362,24 +332,35 @@ fn actual_delivery_holder_preserves_policy_errors_before_current_route_denial() 
 
 #[test]
 fn file_and_action_grants_to_apps_leave_the_delivery_policy_available() {
-    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+    use collab_types::caps::{Access, CapOverride, Scope, Subject};
     let (mut peer, key, _, device, now) = crate::admission_tests::seeded();
     let mut room = peer.admitted_room().unwrap().clone();
-    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
+    let sandbox = room
+        .put_object(ROOT, "sandbox", automerge::ObjType::Map)
+        .unwrap();
     let grant = CapOverride::grant(
         Subject::app("so.tilo.notes"),
         Scope::FsPath("/data/out".into()),
-        Verb::Write,
+        Access::Write,
     );
-    room.put(&caps, "profile:files", serde_json::to_vec(&grant).unwrap())
-        .unwrap();
-    let action = CapOverride::grant(
-        Subject::app("so.tilo.notes"),
-        Scope::Action {
-            app: "so.tilo.word-processor".into(),
-            action: "read-text".into(),
-        },
-        Verb::Write,
+    room.put(
+        &sandbox,
+        "profile:files",
+        serde_json::to_vec(&grant).unwrap(),
+    )
+    .unwrap();
+    let caps = room.get(ROOT, "grants").unwrap().unwrap().1;
+    let action = tilo_action_policy::Grant::new(
+        "app-action",
+        tilo_action_policy::Subject::app("so.tilo.notes"),
+        tilo_action_policy::TreePath::room(peer.room())
+            .app("so.tilo.word-processor")
+            .kind("word-processor.document")
+            .any(tilo_action_policy::Level::Resource)
+            .action("read-text"),
+        tilo_action_policy::KindSet::READ,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Subject::person("owner"),
     );
     room.put(&caps, "app-action", serde_json::to_vec(&action).unwrap())
         .unwrap();
@@ -399,7 +380,7 @@ fn file_and_action_grants_to_apps_leave_the_delivery_policy_available() {
     .unwrap();
     peer.delivery_policy_unqualified(37, peer.authority(), &device, now)
         .unwrap();
-    let native = restore(&peer, now, &PeerLimits::default());
+    let native = restore_bounded(&peer, now, &PeerLimits::default());
     native
         .read()
         .delivery_policy(37, peer.authority(), &device, now)

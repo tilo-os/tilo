@@ -5,8 +5,6 @@
 //! or handler appears, so they run headless, on CI, against the real system
 //! backends. They panic with the violated rule.
 #![allow(
-    clippy::panic,
-    clippy::expect_used,
     clippy::missing_panics_doc,
     reason = "a conformance check fails by panicking with the violated rule"
 )]

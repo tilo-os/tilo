@@ -13,29 +13,18 @@ path = "src/lib.rs"
 name = "chat"
 path = "src/main.rs"
 
-# The page build leaves out live-media (the peer-to-peer endpoint, GStreamer
-# capture and playback, the ScreenCast portal): text chat runs, calls use the
-# local simulated transport until they move onto tilo-capture.
+# Calls run through the shell's native voice service (`ui::native_media`),
+# which a page build reaches through its host; the app itself has no media
+# transport.
 [package.metadata.tilo]
 web-features = []
 
 [features]
 thin = ["dep:runtime-dylib"]
-# The default app includes the legacy diagnostic media engine. Shots and tests
-# use the simulated engine and do not start an iroh endpoint.
-default = ["live-media"]
-# Calls themselves run through the shell's native voice service
-# (`ui::native_media`). This feature only adds the legacy custom-Iroh media
-# transport; its loopback test runs the Opus codec. Disable default
-# features for explicitly media-free builds and hermetic tests. In the browser
-# (a web side module) the feature adds nothing: a page binds no endpoint.
-live-media = ["dep:tilo-net", "tilo-net/p2p"]
 
 [dependencies]
 fnv.workspace = true
-hex.workspace = true
 emoji = { path = "../../crates/text/emoji" }
-tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The Tilo action model: the serializable, replayable unit of CRDT mutation
@@ -47,16 +36,17 @@ tilo-actions = { path = "../../crates/collab/actions" }
 # `Message::reference` — and the vocabulary an agent's own progress on a
 # summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).
 tilo-reference = { path = "../../crates/collab/reference" }
-qdoc = { path = "../../crates/doc/qdoc" }
+# Reports of people and messages, which the room host's moderation agent
+# decides on; the record lives in the chat so every guest can file one.
+moderation-model = { path = "../moderation-model" }
+tilo-doc = { path = "../../crates/doc/tilo-doc" }
 # Message bodies and drafts are rich text, written in the SDK editor.
-qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Content addressing everywhere; the on-disk store, and the device store where
 # the launcher hands one over.
 tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-# The live media transport's peer-to-peer endpoint (`live-media`).
-tilo-net = { path = "../../crates/platform/tilo-net", optional = true }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde.workspace = true
@@ -76,9 +66,6 @@ image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
-tokio = { workspace = true, features = ["sync"] }
-# The live transport's loopback test encodes and decodes real Opus audio.
-media = { package = "tilo-media", path = "../../crates/platform/tilo-media", default-features = false, features = ["voice"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]

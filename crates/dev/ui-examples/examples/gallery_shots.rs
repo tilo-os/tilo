@@ -4,8 +4,8 @@
 //! `apply_layout` → `draw`) on the same widget tree the interactive `gallery`
 //! example builds.
 //!
-//! Run:  `cargo run -p ui-examples --example ui-shots -- gallery_shots`
-//! Out:  `$GALLERY_SHOTS_OUT` (default `/tmp/gallery_shots`) — gallery-dark.png,
+//! Run:  `cargo run -p ui-examples --example ui-shots -- gallery_shots [out-dir]`
+//! Out:  `out-dir`, else `$GALLERY_SHOTS_OUT` (default `/tmp/gallery_shots`) — gallery-dark.png,
 //!       gallery-light.png
 //!
 //! Fractional `HiDPI`: set `GALLERY_SHOTS_SCALE=1.5` (or 1.25 / 1.75 / 2.0)
@@ -39,7 +39,7 @@ fn shoot(theme: &Theme, out: &Path, scale: f64) {
     let mut root = gallery_scene::build_showcase(&mut state, theme);
 
     let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+        tilo_ui::font_catalog::checkout_root(),
         "en-US",
     );
     #[allow(
@@ -52,7 +52,7 @@ fn shoot(theme: &Theme, out: &Path, scale: f64) {
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     // sync pulls the seeded control state out of the CRDT.
-    root.sync(&mut state.doc, &state.root);
+    root.sync(&state.doc, &state.root);
 
     // Layout is solved in LOGICAL space (the same WIDTH/HEIGHT regardless
     // of scale) — HiDPI must not change the logical layout, only how many
@@ -97,14 +97,16 @@ fn shoot(theme: &Theme, out: &Path, scale: f64) {
         (f64::from(HEIGHT) * scale).round() as u32,
     );
     let mut r = OffscreenRenderer::new(phys_w, phys_h);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {} ({phys_w}x{phys_h} px @ {scale}x)", out.display());
 }
 
-pub fn run(_args: &[String]) {
+pub fn run(args: &[String]) {
     tilo_ui::i18n::I18nManager::init("en-US");
-    let dir =
-        std::env::var("GALLERY_SHOTS_OUT").unwrap_or_else(|_| "/tmp/gallery_shots".to_string());
+    // The output directory: the first argument, then `$GALLERY_SHOTS_OUT`.
+    let dir = args.first().cloned().unwrap_or_else(|| {
+        std::env::var("GALLERY_SHOTS_OUT").unwrap_or_else(|_| "/tmp/gallery_shots".to_string())
+    });
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("gallery_shots: failed to create output dir {dir}: {e}");
         return;

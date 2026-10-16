@@ -31,12 +31,10 @@ struct RawFrame {
     rgba: Vec<u8>,
     fps: u32,
     bitrate_kbps: u32,
-    reset_encoder: bool,
 }
 
 struct EncoderWorker {
     tx: SyncSender<RawFrame>,
-    packets: Receiver<VideoPacket>,
 }
 
 impl EncoderWorker {
@@ -44,7 +42,6 @@ impl EncoderWorker {
     /// it, in which case capture stays unavailable rather than panicking the compositor.
     fn spawn(socket_path: Option<PathBuf>) -> Option<Self> {
         let (tx, rx) = mpsc::sync_channel::<RawFrame>(1);
-        let (packet_tx, packets) = mpsc::sync_channel::<VideoPacket>(1);
         let spawned = std::thread::Builder::new()
             .name("tilo-projection-encoder".to_owned())
             .spawn(move || {
@@ -53,10 +50,6 @@ impl EncoderWorker {
                 let mut reported_unavailable = false;
                 let mut encoder_profile = None;
                 while let Ok(frame) = rx.recv() {
-                    if frame.reset_encoder {
-                        encoder = None;
-                        encoder_profile = None;
-                    }
                     if stream.is_none()
                         && let Some(socket_path) = socket_path.as_ref()
                         && let Ok(connected) = UnixStream::connect(socket_path)
@@ -64,7 +57,11 @@ impl EncoderWorker {
                         stream = Some(connected);
                         // A new broker connection must begin with fresh SPS/PPS.
                         encoder = None;
+                        encoder_profile = None;
                     }
+                    let Some(active_stream) = stream.as_mut() else {
+                        continue;
+                    };
                     let profile = (frame.width, frame.height, frame.fps, frame.bitrate_kbps);
                     if encoder_profile != Some(profile) {
                         encoder = match build(
@@ -111,13 +108,7 @@ impl EncoderWorker {
                         keyframe: stats.keyframe,
                         annex_b,
                     };
-                    let _ = packet_tx.try_send(packet.clone());
-                    // The branch above either just set `stream` to `Some` or `continue`d, so
-                    // this is always populated; handled rather than asserted regardless.
-                    if stream
-                        .as_mut()
-                        .is_some_and(|active_stream| packet.write_to(active_stream).is_err())
-                    {
+                    if packet.write_to(active_stream).is_err() {
                         stream = None;
                         encoder = None;
                         encoder_profile = None;
@@ -125,7 +116,7 @@ impl EncoderWorker {
                 }
             });
         match spawned {
-            Ok(_handle) => Some(Self { tx, packets }),
+            Ok(_handle) => Some(Self { tx }),
             Err(e) => {
                 tracing::warn!(
                     target: "shell::compositor::projection",
@@ -135,10 +126,6 @@ impl EncoderWorker {
                 None
             }
         }
-    }
-
-    fn take_packet(&self) -> Option<VideoPacket> {
-        self.packets.try_recv().ok()
     }
 
     fn submit(&self, frame: RawFrame) -> bool {
@@ -156,23 +143,24 @@ pub struct ProjectionCapture {
     renderer_size: (u32, u32),
     started: Instant,
     last_frame: Option<Instant>,
-    profile_path: Option<PathBuf>,
+    /// Profiles the projection service asks for, as it changes its mind.
+    profiles: Receiver<CaptureProfile>,
     profile: CaptureProfile,
     hardware_profile: CaptureProfile,
     accepted_since_pressure: u32,
-    last_profile_check: Option<Instant>,
-    personal_profile: Option<CaptureProfile>,
-    reset_encoder: bool,
 }
 
 impl Default for ProjectionCapture {
     fn default() -> Self {
-        Self::new(default_socket_path())
+        Self::new(
+            default_socket_path(),
+            crate::shell::projection::subscribe_capture_profiles(),
+        )
     }
 }
 
 impl ProjectionCapture {
-    fn new(socket_path: Option<PathBuf>) -> Self {
+    fn new(socket_path: Option<PathBuf>, profiles: Receiver<CaptureProfile>) -> Self {
         let profile = DisplayStreamPolicy::default().ceiling(None);
         Self {
             worker: EncoderWorker::spawn(socket_path),
@@ -180,52 +168,36 @@ impl ProjectionCapture {
             renderer_size: (0, 0),
             started: Instant::now(),
             last_frame: None,
-            profile_path: default_profile_path(),
+            profiles,
             profile,
             hardware_profile: profile,
             accepted_since_pressure: 0,
-            last_profile_check: None,
-            personal_profile: None,
-            reset_encoder: false,
         }
     }
 
-    pub fn set_personal_profile(&mut self, profile: Option<CaptureProfile>) {
-        self.personal_profile = profile;
+    /// Takes the newest profile the service sent. A channel read, never a
+    /// file: this runs on the render thread.
+    fn apply_profile_events(&mut self) {
+        while let Ok(profile) = self.profiles.try_recv() {
+            self.profile = profile;
+            self.hardware_profile = clamp_profile(self.hardware_profile, profile);
+        }
     }
 
-    pub fn request_keyframe(&mut self) {
-        self.reset_encoder = true;
-    }
-
-    pub fn take_packet(&self) -> Option<VideoPacket> {
-        self.worker.as_ref().and_then(EncoderWorker::take_packet)
+    /// The profile frames are rendered and encoded at now.
+    fn effective_profile(&self) -> CaptureProfile {
+        clamp_profile(self.hardware_profile, self.profile)
     }
 
     /// Render and queue a desktop scene. Returns `true` when a frame was
     /// accepted for encoding, `false` when throttled or capture is unavailable.
     pub fn submit_scene(&mut self, scene: &Scene, source_size: (u32, u32)) -> bool {
+        self.apply_profile_events();
         let Some(worker) = self.worker.as_ref() else {
             return false;
         };
         let now = Instant::now();
-        if self
-            .last_profile_check
-            .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(1))
-        {
-            if let Some(path) = self.profile_path.as_ref()
-                && let Ok(bytes) = std::fs::read(path)
-                && let Ok(profile) = serde_json::from_slice::<CaptureProfile>(&bytes)
-            {
-                self.profile = profile;
-                self.hardware_profile = clamp_profile(self.hardware_profile, profile);
-            }
-            self.last_profile_check = Some(now);
-        }
-        let ceiling = self.personal_profile.map_or(self.profile, |personal| {
-            clamp_profile(self.profile, personal)
-        });
-        let effective_profile = clamp_profile(self.hardware_profile, ceiling);
+        let effective_profile = self.effective_profile();
         let frame_interval = Duration::from_secs_f64(1.0 / f64::from(effective_profile.fps.max(1)));
         if self
             .last_frame
@@ -256,7 +228,6 @@ impl ProjectionCapture {
             rgba,
             fps: effective_profile.fps,
             bitrate_kbps: effective_profile.bitrate_kbps,
-            reset_encoder: std::mem::take(&mut self.reset_encoder),
         });
         self.last_frame = Some(now);
         if accepted {
@@ -300,18 +271,10 @@ fn raise_profile(value: CaptureProfile, ceiling: CaptureProfile) -> CaptureProfi
     )
 }
 
-fn default_profile_path() -> Option<PathBuf> {
-    std::env::var_os("TILO_PROJECTOR_PROFILE")
-        .map(PathBuf::from)
-        .or_else(|| {
-            xdg_paths::xdg::runtime_dir().map(|dir| dir.join("tilo-projector/capture-profile.json"))
-        })
-}
-
 fn default_socket_path() -> Option<PathBuf> {
     std::env::var_os(VIDEO_SOCKET_ENV)
         .map(PathBuf::from)
-        .or_else(|| xdg_paths::xdg::runtime_dir().map(|dir| dir.join("tilo-projector/video.sock")))
+        .or_else(|| tilo_projector::control::runtime_dir().map(|dir| dir.join("video.sock")))
 }
 
 fn target_size(source: (u32, u32), profile: CaptureProfile) -> Option<(u32, u32, f64)> {
@@ -375,6 +338,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn projection_capture_applies_profile_events() {
+        let (profiles, events) = mpsc::channel();
+        let mut capture = ProjectionCapture::new(None, events);
+        let source = (3840, 2160);
+        let before = target_size(source, capture.effective_profile()).expect("target");
+        let limited = CaptureProfile::new(1280, 720, 30, 4_000);
+        profiles.send(limited).expect("deliver profile");
+        // The production path: a frame submission takes the profile first,
+        // whether or not this machine can render the frame.
+        let _ = capture.submit_scene(&Scene::new(), source);
+        let after = target_size(source, capture.effective_profile()).expect("target");
+        assert_ne!((before.0, before.1), (after.0, after.1));
+        assert_eq!((after.0, after.1), (1280, 720));
+        assert_eq!(capture.effective_profile().fps, 30);
+    }
+
     /// Needs an H.264 encoder: hardware, or Cisco's openh264 plugin. A stock
     /// image has neither, and says so rather than passing.
     #[test]
@@ -395,7 +375,6 @@ mod tests {
             rgba: vec![0x44; 320 * 240 * 4],
             fps: 30,
             bitrate_kbps: 2_000,
-            reset_encoder: false,
         }));
         let (mut stream, _) = listener.accept().expect("encoder connection");
         stream

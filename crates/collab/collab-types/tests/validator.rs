@@ -9,11 +9,7 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -21,11 +17,12 @@ use std::time::{Duration, SystemTime};
 
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Claim,
-    Clearance, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
+    Clearance, DEFAULT_ROOM, Ed25519PublicKey, OpKind, Role, RoleAttestation, Signature, SignedOp,
     ValidationError, generate_keypair, sign_event, sign_op, validate_admitted_inbound_op,
     validate_inbound_op, validate_replayed_inbound_op,
 };
 use ed25519_dalek::SigningKey;
+use tilo_action_policy::{Authority, Grant, Party, Subject, roles};
 
 fn t(secs: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH
@@ -119,13 +116,13 @@ fn fixture_with(role: Role, valid_from: SystemTime, valid_until: SystemTime) -> 
     }
 }
 
-fn build_op(f: &Fixture, op_class: OpClass, timestamp: SystemTime, seq: u64) -> SignedOp {
+fn build_op(f: &Fixture, kind: OpKind, timestamp: SystemTime, seq: u64) -> SignedOp {
     let mut op = SignedOp::new_unsigned(
         b"payload".to_vec(),
         f.artifact,
         f.author_pub,
         f.attestation_id,
-        op_class,
+        kind,
         timestamp,
         seq,
     );
@@ -146,7 +143,7 @@ fn build_x_op(
         artifact,
         author,
         attestation,
-        OpClass::Splice,
+        OpKind::Change,
         timestamp,
         1,
     );
@@ -181,6 +178,14 @@ fn grant_clearance(f: &mut Fixture, level: Clearance, trusted: bool) -> Ed25519P
     issuer_pub
 }
 
+fn presets() -> Vec<Grant> {
+    roles::room_role_grants(DEFAULT_ROOM, &Subject::Role(Role::Owner))
+}
+
+fn party(grants: &[Grant], role: Role) -> Authority<'_> {
+    Authority::person(Party::new(vec![Subject::Role(role)], grants))
+}
+
 fn rejection(case: &str, result: Result<(), ValidationError>) -> ValidationError {
     match result {
         Err(e) => e,
@@ -196,7 +201,7 @@ fn rejection(case: &str, result: Result<(), ValidationError>) -> ValidationError
 fn a_valid_op_passes_all_eight_steps_and_only_success_bumps_the_replay_slot() {
     // Case: happy path, all eight pass; the seq map is updated.
     let mut f = fixture();
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     let r = validate_inbound_op(&op, &mut f.state);
     assert!(r.is_ok(), "expected Ok, got {r:?}");
     assert_eq!(
@@ -212,12 +217,12 @@ fn a_valid_op_passes_all_eight_steps_and_only_success_bumps_the_replay_slot() {
     f.state
         .artifact_classifications
         .insert(f.artifact, Clearance::INTERNAL);
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     assert!(validate_inbound_op(&op, &mut f.state).is_ok());
 
     // Case: the replay slot bumps on success.
     let mut f = fixture();
-    let op = build_op(&f, OpClass::Splice, t(10), 42);
+    let op = build_op(&f, OpKind::Change, t(10), 42);
     assert!(validate_inbound_op(&op, &mut f.state).is_ok());
     assert_eq!(
         f.state.last_seq_per_author.get(&f.author_pub).copied(),
@@ -227,7 +232,7 @@ fn a_valid_op_passes_all_eight_steps_and_only_success_bumps_the_replay_slot() {
     // Case: the replay slot does not bump on failure (a tampered op that
     // fails step 3).
     let mut f = fixture();
-    let mut op = build_op(&f, OpClass::Splice, t(10), 5);
+    let mut op = build_op(&f, OpKind::Change, t(10), 5);
     op.signature = Signature::from_bytes([0xff; 64]);
     let r = validate_inbound_op(&op, &mut f.state);
     assert!(r.is_err());
@@ -238,15 +243,16 @@ fn a_valid_op_passes_all_eight_steps_and_only_success_bumps_the_replay_slot() {
 /// yet still rejects forgery, a forbidding role, a stale clock and replay.
 #[test]
 fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
+    let g = presets();
     // Case: admission with no attestations or signers at all.
     let mut f = fixture();
     f.state.attestations.clear();
     f.state.authorised_signers.clear();
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     assert!(
         validate_admitted_inbound_op(
             &op,
-            Role::Editor,
+            &party(&g, Role::Editor),
             &mut f.state,
             t(10),
             Duration::from_secs(5),
@@ -260,28 +266,49 @@ fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
 
     // Case: still rejects forgery, role, time and replay.
     let f = fixture();
-    let valid = build_op(&f, OpClass::Splice, t(10), 7);
+    let valid = build_op(&f, OpKind::Change, t(10), 7);
     let skew = Duration::from_secs(5);
 
     let mut forged = valid.clone();
     forged.payload.push(0xff);
     assert!(matches!(
-        validate_admitted_inbound_op(&forged, Role::Editor, &mut f.state.clone(), t(10), skew),
+        validate_admitted_inbound_op(
+            &forged,
+            &party(&g, Role::Editor),
+            &mut f.state.clone(),
+            t(10),
+            skew
+        ),
         Err(ValidationError::BadOpSignature(_))
     ));
+    assert!(matches!(
+        validate_admitted_inbound_op(
+            &valid,
+            &party(&g, Role::Viewer),
+            &mut f.state.clone(),
+            t(10),
+            skew
+        ),
+        Err(ValidationError::NotGranted(_))
+    ));
     assert_eq!(
-        validate_admitted_inbound_op(&valid, Role::Viewer, &mut f.state.clone(), t(10), skew),
-        Err(ValidationError::RoleForbidsOpClass)
-    );
-    assert_eq!(
-        validate_admitted_inbound_op(&valid, Role::Editor, &mut f.state.clone(), t(20), skew),
+        validate_admitted_inbound_op(
+            &valid,
+            &party(&g, Role::Editor),
+            &mut f.state.clone(),
+            t(20),
+            skew
+        ),
         Err(ValidationError::OutsideValidityWindow)
     );
 
     let mut state = f.state;
-    assert!(validate_admitted_inbound_op(&valid, Role::Editor, &mut state, t(10), skew).is_ok());
+    assert!(
+        validate_admitted_inbound_op(&valid, &party(&g, Role::Editor), &mut state, t(10), skew)
+            .is_ok()
+    );
     assert!(matches!(
-        validate_admitted_inbound_op(&valid, Role::Editor, &mut state, t(10), skew),
+        validate_admitted_inbound_op(&valid, &party(&g, Role::Editor), &mut state, t(10), skew),
         Err(ValidationError::ReplaySeq {
             seen: 7,
             incoming: 7
@@ -296,14 +323,15 @@ fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
 /// tampered op signature, and an author who is not the attestation subject.
 #[test]
 fn host_replayed_history_is_admitted_however_old_but_never_twice_or_from_the_future() {
+    let g = presets();
     let mut f = fixture();
-    let old = build_op(&f, OpClass::Splice, t(10), 3);
+    let old = build_op(&f, OpKind::Change, t(10), 3);
     let skew = Duration::from_secs(300);
     let an_hour_later = t(10 + 3600);
     assert_eq!(
         validate_admitted_inbound_op(
             &old,
-            Role::Editor,
+            &party(&g, Role::Editor),
             &mut f.state.clone(),
             an_hour_later,
             skew
@@ -313,26 +341,51 @@ fn host_replayed_history_is_admitted_however_old_but_never_twice_or_from_the_fut
     );
     let mut state = f.state.clone();
     assert!(
-        validate_replayed_inbound_op(&old, Role::Editor, &mut state, an_hour_later, skew).is_ok()
+        validate_replayed_inbound_op(
+            &old,
+            &party(&g, Role::Editor),
+            &mut state,
+            an_hour_later,
+            skew
+        )
+        .is_ok()
     );
     assert!(matches!(
-        validate_replayed_inbound_op(&old, Role::Editor, &mut state, an_hour_later, skew),
+        validate_replayed_inbound_op(
+            &old,
+            &party(&g, Role::Editor),
+            &mut state,
+            an_hour_later,
+            skew
+        ),
         Err(ValidationError::ReplaySeq { .. })
     ));
     assert_eq!(
-        validate_replayed_inbound_op(&old, Role::Editor, &mut f.state.clone(), t(0), skew),
+        validate_replayed_inbound_op(
+            &old,
+            &party(&g, Role::Editor),
+            &mut f.state.clone(),
+            t(0),
+            skew
+        ),
         Ok(()),
         "within the skew ahead",
     );
-    let future = build_op(&f, OpClass::Splice, t(10 + 3600), 4);
+    let future = build_op(&f, OpKind::Change, t(10 + 3600), 4);
     assert_eq!(
-        validate_replayed_inbound_op(&future, Role::Editor, &mut f.state.clone(), t(10), skew),
+        validate_replayed_inbound_op(
+            &future,
+            &party(&g, Role::Editor),
+            &mut f.state.clone(),
+            t(10),
+            skew
+        ),
         Err(ValidationError::OutsideValidityWindow),
     );
     let mut forged = old.clone();
     forged.payload.push(0xff);
     assert!(matches!(
-        validate_replayed_inbound_op(&forged, Role::Editor, &mut f.state, t(10), skew),
+        validate_replayed_inbound_op(&forged, &party(&g, Role::Editor), &mut f.state, t(10), skew),
         Err(ValidationError::BadOpSignature(_))
     ));
 }
@@ -359,7 +412,7 @@ fn steps_1_to_4_reject_unknown_unauthorised_or_forged_ops() {
     // `owner_pub`, which no longer qualifies.
     let mut f = fixture();
     f.state.authorised_signers.clear();
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     assert_eq!(
         rejection("step2 issuer", validate_inbound_op(&op, &mut f.state)),
         ValidationError::UnauthorisedAttestation(f.owner_pub)
@@ -370,7 +423,7 @@ fn steps_1_to_4_reject_unknown_unauthorised_or_forged_ops() {
     let mut f = fixture();
     let ra = f.state.attestations.get_mut(&f.attestation_id).unwrap();
     ra.attestation.signature = Signature::from_bytes([0xff; 64]);
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     let e = rejection("step2 signature", validate_inbound_op(&op, &mut f.state));
     assert!(
         matches!(e, ValidationError::BadAttestationSignature(_)),
@@ -386,7 +439,7 @@ fn steps_1_to_4_reject_unknown_unauthorised_or_forged_ops() {
         ("step3 payload", tamper_payload),
     ] {
         let mut f = fixture();
-        let mut op = build_op(&f, OpClass::Splice, t(10), 1);
+        let mut op = build_op(&f, OpKind::Change, t(10), 1);
         tamper(&mut op);
         let e = rejection(case, validate_inbound_op(&op, &mut f.state));
         assert!(
@@ -423,10 +476,10 @@ fn steps_5_to_7_reject_forbidden_unknown_out_of_window_or_replayed_ops() {
         t(10),
         &f.author_sk,
     );
-    assert_eq!(
+    assert!(matches!(
         rejection("step5 commenter", validate_inbound_op(&op, &mut f.state)),
-        ValidationError::RoleForbidsOpClass
-    );
+        ValidationError::NotGranted(_)
+    ));
 
     // Step 5: unknown artifact (not registered with the channel).
     let mut f = fixture();
@@ -446,7 +499,7 @@ fn steps_5_to_7_reject_forbidden_unknown_out_of_window_or_replayed_ops() {
     // Step 6: op after valid_until (attestation valid until t(100_000); op
     // at t(100_001)).
     let mut f = fixture();
-    let op = build_op(&f, OpClass::Splice, t(100_001), 1);
+    let op = build_op(&f, OpKind::Change, t(100_001), 1);
     assert_eq!(
         rejection("step6 after", validate_inbound_op(&op, &mut f.state)),
         ValidationError::OutsideValidityWindow
@@ -468,8 +521,8 @@ fn steps_5_to_7_reject_forbidden_unknown_out_of_window_or_replayed_ops() {
 
     // Step 7: the same seq replayed is rejected.
     let mut f = fixture();
-    let op1 = build_op(&f, OpClass::Splice, t(10), 1);
-    let op2 = build_op(&f, OpClass::Splice, t(11), 1); // same seq as op1
+    let op1 = build_op(&f, OpKind::Change, t(10), 1);
+    let op2 = build_op(&f, OpKind::Change, t(11), 1); // same seq as op1
     assert!(validate_inbound_op(&op1, &mut f.state).is_ok());
     assert_eq!(
         rejection("step7 same seq", validate_inbound_op(&op2, &mut f.state)),
@@ -481,8 +534,8 @@ fn steps_5_to_7_reject_forbidden_unknown_out_of_window_or_replayed_ops() {
 
     // Step 7: a smaller seq is rejected.
     let mut f = fixture();
-    let op1 = build_op(&f, OpClass::Splice, t(10), 10);
-    let op2 = build_op(&f, OpClass::Splice, t(11), 5);
+    let op1 = build_op(&f, OpKind::Change, t(10), 10);
+    let op2 = build_op(&f, OpKind::Change, t(11), 5);
     assert!(validate_inbound_op(&op1, &mut f.state).is_ok());
     let e = rejection("step7 smaller seq", validate_inbound_op(&op2, &mut f.state));
     assert!(
@@ -502,7 +555,7 @@ fn step_8_enforces_the_effective_clearance_from_trusted_issuers() {
     f.state
         .artifact_classifications
         .insert(f.artifact, Clearance::CONFIDENTIAL);
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     assert_eq!(
         rejection("no claim", validate_inbound_op(&op, &mut f.state)),
         ValidationError::InsufficientClearance {
@@ -517,7 +570,7 @@ fn step_8_enforces_the_effective_clearance_from_trusted_issuers() {
     f.state
         .artifact_classifications
         .insert(f.artifact, Clearance::CONFIDENTIAL);
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     assert_eq!(
         rejection("too low", validate_inbound_op(&op, &mut f.state)),
         ValidationError::InsufficientClearance {
@@ -534,7 +587,7 @@ fn step_8_enforces_the_effective_clearance_from_trusted_issuers() {
     f.state
         .artifact_classifications
         .insert(f.artifact, Clearance::CONFIDENTIAL);
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     assert_eq!(
         rejection("untrusted issuer", validate_inbound_op(&op, &mut f.state)),
         ValidationError::UntrustedClearanceIssuer { issuer: rogue_pub }
@@ -545,7 +598,7 @@ fn step_8_enforces_the_effective_clearance_from_trusted_issuers() {
     // still enforce.
     let mut f = fixture();
     f.state.channel_min_clearance = Some(Clearance::RESTRICTED);
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     let e = rejection("channel floor", validate_inbound_op(&op, &mut f.state));
     assert!(
         matches!(
@@ -566,7 +619,7 @@ fn step_8_enforces_the_effective_clearance_from_trusted_issuers() {
         .artifact_classifications
         .insert(f.artifact, Clearance::RESTRICTED);
     grant_clearance(&mut f, Clearance::CONFIDENTIAL, true);
-    let op = build_op(&f, OpClass::Splice, t(10), 1);
+    let op = build_op(&f, OpKind::Change, t(10), 1);
     assert_eq!(
         rejection("effective max", validate_inbound_op(&op, &mut f.state)),
         ValidationError::InsufficientClearance {
@@ -574,4 +627,113 @@ fn step_8_enforces_the_effective_clearance_from_trusted_issuers() {
             found: Some(Clearance::CONFIDENTIAL)
         }
     );
+}
+
+/// A grant naming a record (at it or below it) names that record's channel;
+/// a pattern over an app's records, another room's record or a record of
+/// another app names none.
+#[test]
+fn a_grant_naming_a_record_names_its_channel_and_a_pattern_does_not() {
+    use collab_types::{document_channel_id, document_node, named_record_of_channel};
+    use tilo_action_policy::{Answer, KindSet, Level, TreePath};
+    let grant = |node: TreePath| {
+        Grant::new(
+            "g",
+            Subject::person("carol"),
+            node,
+            KindSet::READ,
+            Answer::Deny,
+            Subject::person("owner"),
+        )
+    };
+    let channel = document_channel_id("so.tilo.sheets", "room", "payroll");
+    let exact = [grant(document_node("room", "so.tilo.sheets", "payroll"))];
+    assert_eq!(
+        named_record_of_channel(&exact, "room", channel),
+        Some(("so.tilo.sheets", "payroll"))
+    );
+    let below = [grant(
+        document_node("room", "so.tilo.sheets", "payroll").field("salary"),
+    )];
+    assert_eq!(
+        named_record_of_channel(&below, "room", channel),
+        Some(("so.tilo.sheets", "payroll"))
+    );
+    let others = [
+        grant(
+            TreePath::room("room")
+                .app("so.tilo.sheets")
+                .any(Level::Resource),
+        ),
+        grant(TreePath::room("room").app("so.tilo.sheets")),
+        grant(document_node("other", "so.tilo.sheets", "payroll")),
+        grant(document_node("room", "so.tilo.notes", "payroll")),
+        grant(document_node("room", "so.tilo.sheets", "budget")),
+    ];
+    assert_eq!(named_record_of_channel(&others, "room", channel), None);
+}
+
+/// A Read Deny over a pattern of records stands for them by one record it
+/// covers and nothing names; a grant naming a record, one below records, one
+/// that allows, one of another kind or one in another room has no witness.
+#[test]
+fn a_pattern_read_deny_has_a_witness_and_a_named_or_field_grant_does_not() {
+    use collab_types::{document_node, pattern_read_witnesses};
+    use tilo_action_policy::{Answer, KindSet, Level, TreePath};
+    let grant = |node: TreePath, kinds: KindSet, answer: Answer| {
+        Grant::new(
+            "g",
+            Subject::person("carol"),
+            node,
+            kinds,
+            answer,
+            Subject::person("owner"),
+        )
+    };
+    let deny = |node: TreePath| grant(node, KindSet::READ, Answer::Deny);
+    let finance = TreePath::room("room").app("finance");
+    let grants = [
+        deny(finance.clone()),
+        deny(TreePath::room("room").app("sheets").any(Level::Resource)),
+        grant(
+            TreePath::room("room").rest().resource("secret"),
+            KindSet::READ,
+            Answer::Ask,
+        ),
+        // Named records, below records, allowing, other kinds, other rooms.
+        deny(document_node("room", "finance", "payroll")),
+        deny(
+            TreePath::room("room")
+                .app("finance")
+                .any(Level::Resource)
+                .field("salary"),
+        ),
+        grant(
+            document_node("room", "finance", "summary"),
+            KindSet::READ,
+            Answer::Allow,
+        ),
+        grant(finance.clone(), KindSet::READ, Answer::Allow),
+        grant(finance, KindSet::UNDOABLE, Answer::Deny),
+        deny(TreePath::room("other").app("finance")),
+    ];
+    let witnesses = pattern_read_witnesses(&grants, "room");
+    let unnamed = "\u{0}unnamed";
+    let expected: std::collections::BTreeSet<(String, String)> = [
+        ("finance", unnamed),
+        ("sheets", unnamed),
+        (unnamed, "secret"),
+    ]
+    .into_iter()
+    .map(|(app, record)| (app.to_owned(), record.to_owned()))
+    .collect();
+    assert_eq!(witnesses, expected);
+    for (app, record) in &witnesses {
+        assert!(
+            grants
+                .iter()
+                .any(|grant| grant.node.covers(&document_node("room", app, record))),
+            "{app}/{record}"
+        );
+    }
 }

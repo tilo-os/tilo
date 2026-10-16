@@ -1,26 +1,24 @@
 //! `FileView` — the file explorer's main content pane, in either **list** or
-//! **grid** mode. A single self-contained widget so the two modes share one
-//! selection / hit-test / hover / zoom implementation and one clean, modern
-//! visual language:
+//! **grid** mode, behind one widget so the two modes share one selection,
+//! drag and zoom implementation.
 //!
-//! * **no zebra striping** — rows are transparent; a selected row gets a solid
-//!   accent highlight and a hovered row a barely-there veneer, exactly like
-//!   GNOME Files / Finder;
-//! * **comfortable, zoomable metrics** — row height, icon size and grid cell
-//!   size all scale from one `scale` factor the app drives from Ctrl +/-,
-//!   Ctrl-scroll;
-//! * a **real responsive grid** that flows left-to-right and wraps to fill the
-//!   available width (the leaf fills its parent's width, so the column count is
-//!   derived from the true pane width, never collapsing to a single column);
-//! * single-click selects, double-click activates (the app owns the
-//!   double-click timing and navigates into folders / opens files).
+//! * **List** — the framework's `DataTable` (see [`super::file_list`]): it
+//!   paints the header, the rows, the selection lift and the sort indicator,
+//!   and scrolls itself. Files adds the name cell and the row geometry its
+//!   drag and context menu need.
+//! * **Grid** — a responsive grid of objects (a file icon or its preview with
+//!   the name under it), flowing left to right and wrapping to fill the
+//!   available width. Names wrap onto a second line rather than being cut.
 //!
-//! Like the file explorer's other children it is rebuilt each frame by a
-//! stateless host: seed the selection + zoom, react to the pushed
-//! [`FileCommand`]s. Ephemeral per-frame state (hover) is recomputed from the
-//! cursor, so nothing is lost across a rebuild.
+//! Single-click selects, double-click activates (the app owns the double-click
+//! timing and navigates into folders / opens files). Like the file explorer's
+//! other children it is rebuilt by a stateless host: seed the selection and
+//! zoom, react to the pushed [`FileCommand`]s. The list's table lives in a
+//! [`ListSlot`] the host keeps, so scrolling and column widths survive a
+//! rebuild; the grid recomputes its ephemeral state (hover) from the cursor.
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 use host_fs::attributes as xattr;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -28,84 +26,110 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{Dimension, LengthPercentage, NodeId, Size, Style, TaffyTree};
+use ui::widget::TaffyTreeExt;
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
+use vello::kurbo::{Affine, Circle, Point, Rect};
+use vello::peniko::{Color, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use thumbnail::{FileCategory, ThumbKey, ThumbState, ThumbnailService, category_for_path};
 
+use super::file_list::{ListInputs, ListSlot, sort_column};
 use crate::command::{CommandSink, FileCommand, push};
 use crate::i18n::{arg, t, t_args};
-use crate::model::{
-    AvailabilityPolicy, AvailabilityProjection, Entry, ReplicaEvidence, Residency, SortBy,
-    SortOrder, SyncState, TransferPhase, ViewMode, format_modified, human_size,
-};
+use crate::model::{Entry, SortBy, SortOrder, ViewMode, human_size};
+use fs_protocol::AvailabilityPolicy;
+use fs_protocol::AvailabilityProjectionV1;
+use fs_protocol::ProjectedReplicaEvidence;
+use fs_protocol::Residency;
+use fs_protocol::SyncState;
+use fs_protocol::TransferPhase;
 use ui::SelectionModel;
-use ui::chrome::{SelectionState, selection_tier};
+use ui::chrome::{SelectionState, paint_row_selection};
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon, icon_for_path};
-use ui::image_store::paint_image_cover;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tokens::spacing::Spacing;
-use ui::widget::Widget;
+use ui::tokens::TextRole;
+use ui::widget::{MediaArt, MediaCardFace, Widget};
 
 /// The file manager's handle onto the shared thumbnail system: the off-thread
 /// service (cache + workers) plus an app-lived memo that converts a decoded
 /// [`thumbnail::RgbaThumb`] into a `peniko` image exactly once (so a painted
-/// grid never rebuilds the GPU-facing blob per frame). Cheap to clone; the view
-/// is handed a fresh copy each rebuild.
+/// view never rebuilds the GPU-facing blob per frame). Cheap to clone; the
+/// view is handed a fresh copy each rebuild.
 #[derive(Clone)]
 pub struct ThumbCtx {
     pub service: Arc<ThumbnailService>,
     pub imgs: Rc<RefCell<HashMap<ThumbKey, PenikoImage>>>,
 }
 
-// --- base metrics (multiplied by `scale`) ---------------------------------
+// --- base metrics -----------------------------------------------------------
 
-const LIST_ROW_H: f64 = 34.0;
-const LIST_HEADER_H: f64 = 30.0;
-const LIST_ICON: f64 = 18.0;
-const CONTENT_PAD_X: f64 = 10.0;
-const ROW_RADIUS: f64 = 8.0;
-/// One rhythm for the list (HIG §7b): the row highlight backs off the row's
-/// horizontal edges by `s2`, and off its top and bottom by half an `s1` — so
-/// two adjacent highlighted rows keep an `s1` gap between them instead of
-/// fusing into one slab. The focus ring and the in-place rename field share
-/// these insets, so all three agree on where a row's face is.
-const ROW_HL_INSET_X: f64 = Spacing::BASE.s2 as f64;
-const ROW_HL_INSET_Y: f64 = Spacing::BASE.s1 as f64 / 2.0;
-/// Gap between a row's leading icon and its name (`s3`), and between the name
-/// column's left edge and the icon (`s1`). The name gap is a sibling step
-/// rather than the icon-label step because the in-place rename field backs
-/// off the name by the shared field's `padding_standard` (`s2`): with `s3`
-/// the field's edge still clears the icon by an `s1` instead of touching it.
-const ICON_LABEL_GAP: f64 = Spacing::BASE.s3 as f64;
-const ICON_LEAD: f64 = Spacing::BASE.s1 as f64;
-/// Fixed (pre-scale) widths of the trailing list columns.
-const SIZE_COL_W: f64 = 96.0;
-const MOD_COL_W: f64 = 158.0;
-const COL_GAP: f64 = 10.0;
-
-const GRID_CELL_W: f64 = 112.0;
-const GRID_CELL_H: f64 = 104.0;
-const GRID_ICON: f64 = 46.0;
-const GRID_GAP: f64 = 16.0;
-/// A two-column compact grid stays useful at phone width even when the user
-/// has increased item zoom.  Below this, one roomy tile is the more honest
-/// accessible layout; at or above it, two 44px-plus targets are preferable to
-/// wasting most of the pane with a single centred item.
-const COMPACT_GRID_MIN_CELL_W: f64 = 132.0;
-/// When a large-zoom tile is compacted to retain two columns, trim blank
-/// vertical space before shrinking previews or labels. This keeps the tap
-/// target comfortably above 44px while avoiding the old ~190px row cadence.
-const COMPACT_GRID_MAX_HEIGHT_RATIO: f64 = 0.9;
-/// Extra rows/cells painted around the clipped viewport to keep a partially
+/// Extra cells painted around the clipped viewport to keep a partially
 /// visible boundary item alive through scroll settling.
 const VISIBLE_RANGE_OVERDRAW_ROWS: usize = 1;
+/// How many lines a grid label wraps onto before it is cut.
+const GRID_LABEL_LINES: usize = 2;
+
+/// The list and grid metrics at zoom 1, read from the theme's tokens (the
+/// view multiplies them by the user's item zoom).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Geo {
+    pub(super) row: f64,
+    pub(super) icon: f64,
+    /// Space above the first row of the grid.
+    pub(super) grid_top: f64,
+    pub(super) icon_label_gap: f64,
+    pub(super) icon_lead: f64,
+    pub(super) size_col: f64,
+    pub(super) modified_col: f64,
+    /// The modified column when it shows the date alone.
+    pub(super) date_col: f64,
+    pub(super) cell_w: f64,
+    /// One line of a grid label (a body line).
+    pub(super) label_line: f64,
+    pub(super) grid_icon: f64,
+    pub(super) grid_gap: f64,
+    /// The room a scrollbar takes at a table's trailing edge.
+    pub(super) scrollbar_gutter: f64,
+    /// Space inside a grid cell around its art and label.
+    pub(super) cell_pad: f64,
+    /// Space between a grid cell's art and its label.
+    pub(super) label_gap: f64,
+    pub(super) item_radius: f64,
+}
+
+impl Geo {
+    pub(super) fn of(theme: &Theme) -> Self {
+        let t = &theme.tokens;
+        let sp = &t.spacing;
+        let s = |v: f32| f64::from(v);
+        let body = s(t.typography.style(TextRole::Body).line_height_px());
+        let pointer = s(t.metrics.min_pointer_target);
+        Self {
+            row: pointer.max(body + s(sp.s2)),
+            icon: s(t.metrics.icon_md),
+            grid_top: s(sp.s3),
+            icon_label_gap: s(sp.s3),
+            icon_lead: s(sp.s1),
+            size_col: s(sp.s6) * 4.0,
+            modified_col: s(sp.s6) * 7.5,
+            date_col: s(sp.s6) * 4.75,
+            cell_w: s(sp.s4) * 8.0,
+            label_line: body,
+            grid_icon: s(sp.s12),
+            grid_gap: s(sp.s4),
+            scrollbar_gutter: s(t.metrics.scrollbar_gutter),
+            cell_pad: s(sp.s3),
+            label_gap: s(sp.s2),
+            item_radius: s(t.radii.item),
+        }
+    }
+}
 
 /// A folder drop target the view publishes each layout: a directory row's
 /// absolute on-screen rect and path. The host owns the drag (it captures the
@@ -121,53 +145,6 @@ pub struct FolderDropTarget {
 /// layout (cleared + refilled), analogous to the rename-rect channel.
 pub type DropTargets = Rc<RefCell<Vec<FolderDropTarget>>>;
 
-/// Per-item inputs to [`FileView::draw_file_visual`], bundled into one
-/// argument so the paint call stays under clippy's argument-count limit.
-#[derive(Clone, Copy)]
-struct FileVisual<'a> {
-    rect: Rect,
-    entry: &'a Entry,
-    glyph_color: Color,
-    grid: bool,
-}
-
-/// Layout already resolved by [`FileView::draw_list_row`], handed to
-/// [`FileView::draw_list_row_text`] so that helper stays under clippy's
-/// argument-count limit.
-#[derive(Clone, Copy)]
-struct RowTextLayout {
-    i: usize,
-    row: Rect,
-    name_rect: Rect,
-    name_x: f64,
-}
-
-/// A list column the header exposes for click-to-sort. `sort_col` is the index
-/// the app's `SortColumn` command understands (1 = name, 2 = size, 3 = date).
-struct ColSpec {
-    header_key: &'static str,
-    sort_col: usize,
-    sort_by: SortBy,
-}
-
-const LIST_COLUMNS: [ColSpec; 3] = [
-    ColSpec {
-        header_key: "files-column-name",
-        sort_col: 1,
-        sort_by: SortBy::Name,
-    },
-    ColSpec {
-        header_key: "files-column-size",
-        sort_col: 2,
-        sort_by: SortBy::Size,
-    },
-    ColSpec {
-        header_key: "files-column-modified",
-        sort_col: 3,
-        sort_by: SortBy::Modified,
-    },
-];
-
 pub struct FileView {
     entries: Vec<Entry>,
     selection: SelectionModel,
@@ -177,6 +154,8 @@ pub struct FileView {
     /// widens/hides metadata columns without magnifying icons and labels a
     /// second time (the theme already owns type enlargement).
     text_scale: f64,
+    /// Token-derived metrics at zoom 1; refreshed from the theme at layout.
+    geo: Geo,
     sort_by: SortBy,
     sort_order: SortOrder,
     sink: CommandSink,
@@ -192,9 +171,8 @@ pub struct FileView {
     /// host can draw the shared rename editor exactly where the name was.
     renaming: Option<usize>,
     rename_rect: Option<Rc<Cell<Option<Rect>>>>,
-    /// The scroll viewport observed at the last `draw`, so the header
-    /// hit-test can follow the pinned header (which sits at the viewport top
-    /// once the list is scrolled). `None` before the first paint.
+    /// The scroll viewport observed at the last `draw`, so the grid culls to
+    /// what shows. `None` before the first paint.
     last_vp: Option<Rect>,
     /// A plain press on a row `(press point, its path, whether it is a folder)`,
     /// held until the pointer either releases (a click) or travels past the drag
@@ -205,14 +183,24 @@ pub struct FileView {
     /// the host can resolve which folder a drag is dropped onto.
     drop_targets: Option<DropTargets>,
     /// The shared thumbnail service + peniko memo. `None` disables previews (the
-    /// view falls back to type glyphs/badges), which keeps the widget usable in
+    /// view falls back to type glyphs), which keeps the widget usable in
     /// contexts without a thumbnail service.
     thumbs: Option<ThumbCtx>,
+    workspace_roots: Rc<[PathBuf]>,
+    /// The list's table, kept by the host across rebuilds.
+    list: ListSlot,
+    /// Room kept clear under the list for the floating status bubble.
+    bottom_inset: f64,
+    /// A layout found the list's columns should change with its width.
+    rebuild: bool,
 }
 
 /// Pointer travel (logical px) past which a held directory press becomes a
-/// drag rather than a click.
-pub const DRAG_THRESHOLD: f64 = 6.0;
+/// drag rather than a click: one `s1` step, the toolkit's own drag threshold.
+#[must_use]
+pub fn drag_threshold() -> f64 {
+    f64::from(ui::tokens::spacing::Spacing::BASE.s1)
+}
 
 impl FileView {
     pub fn new(entries: &[Entry], selection: &SelectionModel, sink: &CommandSink) -> Self {
@@ -222,6 +210,7 @@ impl FileView {
             mode: ViewMode::List,
             scale: 1.0,
             text_scale: 1.0,
+            geo: Geo::of(&Theme::dark()),
             sort_by: SortBy::Name,
             sort_order: SortOrder::Ascending,
             sink: sink.clone(),
@@ -236,6 +225,10 @@ impl FileView {
             pressed_row: None,
             drop_targets: None,
             thumbs: None,
+            workspace_roots: Rc::from([]),
+            list: ListSlot::default(),
+            bottom_inset: 0.0,
+            rebuild: false,
         }
     }
 
@@ -249,10 +242,25 @@ impl FileView {
 
     /// Bind the shared thumbnail service (+ the app's peniko memo) so file cells
     /// paint real previews for images/PDF/ebook (and host-provided previews for
-    /// workspace files), falling back to a type badge otherwise.
+    /// workspace files), falling back to a type glyph otherwise.
     #[must_use]
     pub fn with_thumbs(mut self, thumbs: Option<ThumbCtx>) -> Self {
         self.thumbs = thumbs;
+        self
+    }
+
+    /// Keep the list's table in `slot`, which the host owns, so its scroll
+    /// position and column widths survive this view being rebuilt.
+    #[must_use]
+    pub fn with_list(mut self, slot: ListSlot) -> Self {
+        self.list = slot;
+        self
+    }
+
+    /// Keep `inset` clear under the list (the floating status bubble's lane).
+    #[must_use]
+    pub fn with_bottom_inset(mut self, inset: f64) -> Self {
+        self.bottom_inset = inset.max(0.0);
         self
     }
 
@@ -276,9 +284,11 @@ impl FileView {
         self.scale = scale.clamp(0.5, 3.0);
         self
     }
+    /// Read the view's metrics from `theme`'s tokens (also done at layout).
     #[must_use]
-    pub fn with_text_scale(mut self, scale: f32) -> Self {
-        self.text_scale = f64::from(scale.clamp(0.5, 4.0));
+    pub fn with_theme(mut self, theme: &Theme) -> Self {
+        self.geo = Geo::of(theme);
+        self.text_scale = f64::from(theme.text_scale);
         self
     }
 
@@ -303,37 +313,40 @@ impl FileView {
     // --- scaled metrics ---------------------------------------------------
 
     fn row_h(&self) -> f64 {
-        LIST_ROW_H * self.scale * self.text_scale
+        self.geo.row * self.scale
     }
-    fn header_h(&self) -> f64 {
-        LIST_HEADER_H * self.scale * self.text_scale
+    /// Space above the grid's first row. The shell already keeps the content
+    /// gutter, so the first column's lift lines up with the toolbar's edge.
+    fn grid_top(&self) -> f64 {
+        self.geo.grid_top
     }
-    /// Resolve grid geometry from the actual pane width. At large zoom a
-    /// phone pane can fit two slightly narrower tiles even though it cannot
-    /// fit two fully zoomed desktop tiles; use that compact geometry instead
-    /// of falling all the way back to one column.
+    /// The grid cell for a pane `width` wide: `(width, height)`. A cell is as
+    /// wide as the zoom and type size ask, narrowing only when a phone-width
+    /// pane could otherwise not fit two of them, and tall enough for its art
+    /// and a label that wraps onto a second line.
     fn grid_cell_size_for_width(&self, width: f64) -> (f64, f64) {
-        // Enlarged labels need their own readable measure. Growing only the
-        // glyph left neighbouring names visually concatenated at 200% text;
-        // let the grid reflow to fewer cards instead. Height grows more gently
-        // because a grid label is deliberately one truncated line.
-        let desired_w = GRID_CELL_W * self.scale * self.text_scale;
-        let desired_h =
-            GRID_CELL_H * self.scale + 36.0 * self.scale * (self.text_scale - 1.0).max(0.0);
+        let desired_w = self.geo.cell_w * self.scale * self.text_scale;
         let gap = self.grid_gap();
-        let inner = (width - 2.0 * self.pad_x()).max(0.0);
+        let inner = width.max(0.0);
         let compact_w = ((inner - gap) / 2.0).max(0.0);
-        let width = if desired_w * 2.0 + gap > inner && compact_w >= COMPACT_GRID_MIN_CELL_W {
+        // A two-column compact grid stays useful at phone width even when the
+        // user has increased item zoom: below one base tile of width per
+        // column, one roomy tile is the more honest accessible layout; at or
+        // above it, two 44px-plus targets beat a single centred item.
+        let cell_w = if desired_w * 2.0 + gap > inner && compact_w >= self.geo.cell_w {
             compact_w
         } else {
             desired_w
         };
-        let height = if width < desired_w {
-            desired_h.min(width * COMPACT_GRID_MAX_HEIGHT_RATIO)
-        } else {
-            desired_h
-        };
-        (width, height)
+        let height = self.geo.cell_pad * self.scale * 2.0
+            + self.grid_art_px(cell_w)
+            + self.geo.label_gap * self.scale
+            + self.geo.label_line * GRID_LABEL_LINES as f64;
+        (cell_w, height)
+    }
+    /// The square a grid cell's art (an icon or a preview) sits in.
+    fn grid_art_px(&self, cell_w: f64) -> f64 {
+        (cell_w * 0.62).max(self.geo.grid_icon * self.scale)
     }
     fn cell_w(&self) -> f64 {
         self.grid_cell_size_for_width(self.rect.width()).0
@@ -342,49 +355,23 @@ impl FileView {
         self.grid_cell_size_for_width(self.rect.width()).1
     }
     fn grid_gap(&self) -> f64 {
-        GRID_GAP * self.scale * self.text_scale.sqrt()
+        self.geo.grid_gap * self.scale * self.text_scale.sqrt()
     }
-    /// Vertical geometry every grid cell shares: `(slot_y, slot_px, label_y)`
-    /// — the top and side of the preview slot, sized for the largest preview
-    /// any cell shows (a file badge at 1.3× the glyph) and shrunk only when
-    /// the cell cannot hold it plus a `label_h`-tall label, and the top of
-    /// the label under it. A folder centres its smaller glyph inside the same
-    /// slot, so folder and file labels in one row sit on one baseline rather
-    /// than 14px apart.
-    fn grid_cell_slot(&self, cell: Rect, label_h: f64) -> (f64, f64, f64) {
-        let top_pad = 12.0 * self.scale;
-        let bottom_pad = 14.0 * self.scale;
-        let max_preview_px = (cell.height() - top_pad - label_h - bottom_pad).max(44.0);
-        let slot_px = (GRID_ICON * self.scale * 1.3).min(max_preview_px);
-        let slot_y = cell.y0 + top_pad;
-        let label_y = slot_y + slot_px + 6.0 * self.scale;
-        (slot_y, slot_px, label_y)
-    }
-    fn pad_x(&self) -> f64 {
-        CONTENT_PAD_X * self.scale
-    }
-    fn body_text(&self, theme: &Theme) -> f32 {
-        (f64::from(theme.tokens.typography.scale.base / theme.text_scale) * self.scale) as f32
-    }
-    /// Top of a measured `line_h`-tall text run centred in a band of height
-    /// `h` starting at `y0`. The one vertical rule for the list: header
-    /// labels and cell text both go through it, so a header never drifts
-    /// from its column when the text scale changes.
-    fn centered_line_top(y0: f64, h: f64, line_h: f32) -> f64 {
-        y0 + (h - f64::from(line_h)) / 2.0
-    }
-    fn header_text(theme: &Theme) -> f32 {
-        theme.tokens.typography.scale.sm / theme.text_scale
+    /// Names and cells: `Body`.
+    fn body_style(theme: &Theme) -> ui::text_render::TextStyle {
+        theme.text(TextRole::Body)
     }
 
     /// Grid columns that fit `width` (never zero).
     fn columns_for_width(&self, width: f64) -> usize {
-        let inner = (width - 2.0 * self.pad_x()).max(0.0);
+        let inner = width.max(0.0);
         let stride = self.grid_cell_size_for_width(width).0 + self.grid_gap();
         if stride <= 0.0 {
             return 1;
         }
-        (((inner + self.grid_gap()) / stride).floor() as usize).max(1)
+        // The compact tile width is derived from this very sum, so the quotient
+        // is exactly a whole number up to rounding: never lose a column to it.
+        ((((inner + self.grid_gap()) / stride) + 1e-9).floor() as usize).max(1)
     }
 
     fn grid_rows(&self, columns: usize) -> usize {
@@ -418,15 +405,10 @@ impl FileView {
     }
 
     fn content_height(&self, width: f64) -> f64 {
-        match self.mode {
-            ViewMode::List => self.header_h() + self.entries.len() as f64 * self.row_h() + 6.0,
-            ViewMode::Grid => {
-                let cols = self.columns.max(1);
-                let rows = self.grid_rows(cols);
-                let cell_h = self.grid_cell_size_for_width(width).1;
-                self.pad_x() + rows as f64 * (cell_h + self.grid_gap())
-            }
-        }
+        let cols = self.columns.max(1);
+        let rows = self.grid_rows(cols);
+        let cell_h = self.grid_cell_size_for_width(width).1;
+        self.grid_top() + rows as f64 * (cell_h + self.grid_gap())
     }
 
     /// Top-left of grid cell `i` within `self.rect`.
@@ -434,64 +416,55 @@ impl FileView {
         let cols = self.columns.max(1);
         let col = i % cols;
         let row = i / cols;
-        let x = self.rect.x0 + self.pad_x() + col as f64 * (self.cell_w() + self.grid_gap());
-        let y = self.rect.y0 + self.pad_x() + row as f64 * (self.cell_h() + self.grid_gap());
+        let x = self.rect.x0 + col as f64 * (self.cell_w() + self.grid_gap());
+        let y = self.rect.y0 + self.grid_top() + row as f64 * (self.cell_h() + self.grid_gap());
         Rect::new(x, y, x + self.cell_w(), y + self.cell_h())
     }
 
-    fn list_row_rect(&self, i: usize) -> Rect {
-        let y0 = self.rect.y0 + self.header_h() + i as f64 * self.row_h();
-        Rect::new(self.rect.x0, y0, self.rect.x1, y0 + self.row_h())
+    /// The rectangle of item `i` in the current mode, when it is on screen
+    /// (always, for a grid cell; only the rows the list has laid out).
+    fn item_rect(&self, i: usize) -> Option<Rect> {
+        match self.mode {
+            ViewMode::Grid => Some(self.cell_rect(i)),
+            ViewMode::List => self
+                .list
+                .row_rects()
+                .into_iter()
+                .find_map(|(index, rect)| (index == i).then_some(rect)),
+        }
     }
 
-    /// Return the small inclusive-overdraw slice that can intersect `vp`.
+    /// Return the small inclusive-overdraw slice of grid cells that can
+    /// intersect `vp`.
     ///
     /// `FileView` owns only a single, measured leaf in the scroll tree, so it
     /// cannot use a recycling child list.  Calculating this range before the
     /// paint loop gives us the same useful property: a 100k-entry directory
-    /// costs work proportional to the visible rows, not the directory size.
+    /// costs work proportional to the visible cells, not the directory size.
     fn visible_range(&self, vp: Option<Rect>) -> std::ops::Range<usize> {
         let Some(vp) = vp else {
             return 0..self.entries.len();
         };
-        match self.mode {
-            ViewMode::List => {
-                let start = ((vp.y0 - self.rect.y0 - self.header_h()) / self.row_h())
-                    .floor()
-                    .max(0.0) as usize;
-                let end = ((vp.y1 - self.rect.y0 - self.header_h()) / self.row_h())
-                    .ceil()
-                    .max(0.0) as usize;
-                start
-                    .saturating_sub(VISIBLE_RANGE_OVERDRAW_ROWS)
-                    .min(self.entries.len())
-                    ..end
-                        .saturating_add(VISIBLE_RANGE_OVERDRAW_ROWS)
-                        .min(self.entries.len())
-            }
-            ViewMode::Grid => {
-                let stride = self.cell_h() + self.grid_gap();
-                let start_row = ((vp.y0 - self.rect.y0 - self.pad_x()) / stride)
-                    .floor()
-                    .max(0.0) as usize;
-                let end_row = ((vp.y1 - self.rect.y0 - self.pad_x()) / stride)
-                    .ceil()
-                    .max(0.0) as usize;
-                let columns = self.columns.max(1);
-                start_row
-                    .saturating_sub(VISIBLE_RANGE_OVERDRAW_ROWS)
-                    .saturating_mul(columns)
-                    .min(self.entries.len())
-                    ..end_row
-                        .saturating_add(VISIBLE_RANGE_OVERDRAW_ROWS)
-                        .saturating_mul(columns)
-                        .min(self.entries.len())
-            }
-        }
+        let stride = self.cell_h() + self.grid_gap();
+        let start_row = ((vp.y0 - self.rect.y0 - self.grid_top()) / stride)
+            .floor()
+            .max(0.0) as usize;
+        let end_row = ((vp.y1 - self.rect.y0 - self.grid_top()) / stride)
+            .ceil()
+            .max(0.0) as usize;
+        let columns = self.columns.max(1);
+        start_row
+            .saturating_sub(VISIBLE_RANGE_OVERDRAW_ROWS)
+            .saturating_mul(columns)
+            .min(self.entries.len())
+            ..end_row
+                .saturating_add(VISIBLE_RANGE_OVERDRAW_ROWS)
+                .saturating_mul(columns)
+                .min(self.entries.len())
     }
 
     /// A `Scrollable` can reserve a bottom lane for an app-level status or
-    /// footer affordance. Do not leave a partly clipped row in that lane: it
+    /// footer affordance. Do not leave a partly clipped cell in that lane: it
     /// looks broken and, more importantly, suggests an item is available
     /// where pointer and keyboard input cannot reach it. The first partly
     /// visible row at the top remains useful while scrolling, so only the
@@ -500,8 +473,8 @@ impl FileView {
         vp.is_none_or(|viewport| rect.y1 <= viewport.y1)
     }
 
-    /// Republish the visible folder rows into the host's drop-target sink.
-    /// A drag cannot be released on a row outside the clipped viewport, so
+    /// Republish the visible folders into the host's drop-target sink. A drag
+    /// cannot be released on an item outside the clipped viewport, so
     /// retaining off-screen folders only turns a directory-sized list into
     /// needless work and allocation on every layout/paint pass.
     fn publish_drop_targets(&self, vp: Option<Rect>) {
@@ -509,29 +482,37 @@ impl FileView {
             return;
         };
         let mut out = Vec::new();
-        let range = self.visible_range(vp);
-        for (offset, entry) in self
-            .entries
-            .get(range.clone())
-            .into_iter()
-            .flatten()
-            .enumerate()
-        {
-            let i = range.start + offset;
-            if !entry.is_dir {
-                continue;
+        match self.mode {
+            ViewMode::List => {
+                for (index, rect) in self.list.row_rects() {
+                    if let Some(entry) = self.entries.get(index)
+                        && entry.is_dir
+                    {
+                        out.push(FolderDropTarget {
+                            path: entry.path.clone(),
+                            rect,
+                        });
+                    }
+                }
             }
-            let rect = match self.mode {
-                ViewMode::List => self.list_row_rect(i),
-                ViewMode::Grid => self.cell_rect(i),
-            };
-            if !Self::fits_viewport_bottom(rect, vp) {
-                continue;
+            ViewMode::Grid => {
+                let range = self.visible_range(vp);
+                for (offset, entry) in self
+                    .entries
+                    .get(range.clone())
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    let rect = self.cell_rect(range.start + offset);
+                    if entry.is_dir && Self::fits_viewport_bottom(rect, vp) {
+                        out.push(FolderDropTarget {
+                            path: entry.path.clone(),
+                            rect,
+                        });
+                    }
+                }
             }
-            out.push(FolderDropTarget {
-                path: entry.path.clone(),
-                rect,
-            });
         }
         *sink.borrow_mut() = out;
     }
@@ -543,23 +524,20 @@ impl FileView {
         }
         match self.mode {
             ViewMode::List => {
-                let body_top = self.rect.y0 + self.header_h();
-                if pt.y < body_top {
+                let table = self.list.rect();
+                if pt.y < table.y0 + self.list.header_height() {
                     return None;
                 }
-                // Reject clicks that land on the pinned header band (which
-                // floats over the scrolled-away top rows) so a click there
-                // hits the header, not the row hidden beneath it.
-                if pt.y < self.header_top(self.last_vp) + self.header_h() {
-                    return None;
-                }
-                let idx = ((pt.y - body_top) / self.row_h()) as usize;
-                (idx < self.entries.len()).then_some(idx)
+                self.list
+                    .row_rects()
+                    .into_iter()
+                    .find_map(|(index, rect)| rect.contains(pt).then_some(index))
+                    .filter(|index| *index < self.entries.len())
             }
             ViewMode::Grid => {
                 let cols = self.columns.max(1);
-                let rel_x = pt.x - self.rect.x0 - self.pad_x();
-                let rel_y = pt.y - self.rect.y0 - self.pad_x();
+                let rel_x = pt.x - self.rect.x0;
+                let rel_y = pt.y - self.rect.y0 - self.grid_top();
                 if rel_x < 0.0 || rel_y < 0.0 {
                     return None;
                 }
@@ -582,422 +560,24 @@ impl FileView {
         }
     }
 
-    /// Responsive column visibility: hide the Modified column on a narrow pane
-    /// and the Size column on a very narrow one, so the Name always has room
-    /// (like GNOME Files / Finder collapsing detail columns). The breakpoints
-    /// scale with the user's item zoom: retaining a fixed 340 px Size column
-    /// cutoff made a 390 px window waste most of a large-text row on a `—`
-    /// size placeholder and truncate the filename.
-    fn show_size(&self) -> bool {
-        self.rect.width() > 340.0 * self.scale * self.text_scale
-    }
-    fn show_modified(&self) -> bool {
-        self.rect.width() > 560.0 * self.scale * self.text_scale
-    }
-    /// Whether list column `i` (0 name, 1 size, 2 modified) is currently shown.
-    fn col_visible(&self, i: usize) -> bool {
-        match i {
-            0 => true,
-            1 => self.show_size(),
-            _ => self.show_modified(),
-        }
-    }
-
-    /// The `SortColumn` command index for a header click at `pt`, if any.
-    /// The header band follows the pinned header position, so header clicks
-    /// keep sorting even after the list is scrolled.
-    fn header_sort_at(&self, pt: Point) -> Option<usize> {
-        if self.mode != ViewMode::List {
-            return None;
-        }
-        let top = self.header_top(self.last_vp);
-        if pt.y < top || pt.y >= top + self.header_h() {
-            return None;
-        }
-        for (i, col) in LIST_COLUMNS.iter().enumerate() {
-            if self.col_visible(i) {
-                let cr = self.header_col_rect(i);
-                if pt.x >= cr.x0 && pt.x < cr.x1 {
-                    return Some(col.sort_col);
-                }
-            }
-        }
-        None
-    }
-
-    /// x-range of list column `i` (0 = name/flex, 1 = size, 2 = modified),
-    /// accounting for which trailing columns are currently visible.
-    fn header_col_rect(&self, i: usize) -> Rect {
-        let x0 = self.rect.x0 + self.pad_x();
-        let x1 = self.rect.x1 - self.pad_x();
-        let size_w = SIZE_COL_W * self.scale * self.text_scale;
-        let mod_w = MOD_COL_W * self.scale * self.text_scale;
-        let gap = COL_GAP * self.scale;
-        let show_mod = self.show_modified();
-        let show_size = self.show_size();
-        let mod_x0 = if show_mod { x1 - mod_w } else { x1 };
-        let size_right = if show_mod { mod_x0 - gap } else { x1 };
-        let size_x0 = size_right - size_w;
-        let name_x1 = if show_size {
-            size_x0 - gap
-        } else if show_mod {
-            mod_x0 - gap
-        } else {
-            x1
-        };
-        let top = self.rect.y0;
-        let bot = self.rect.y0 + self.header_h();
-        match i {
-            0 => Rect::new(x0, top, name_x1, bot),
-            1 => Rect::new(size_x0, top, size_x0 + size_w, bot),
-            _ => Rect::new(mod_x0, top, mod_x0 + mod_w, bot),
-        }
-    }
-
-    /// Selection is a lift, not an accent wash (HIG §9.3), so the text keeps
-    /// its ordinary colours on a selected row: the lifted face is still the
-    /// theme's own surface and `text_primary`/`text_dim` were built for it.
-    fn cell_text(theme: &Theme) -> Color {
-        theme.tokens.colors.text_primary
-    }
-    fn cell_dim(theme: &Theme) -> Color {
-        theme.tokens.colors.text_dim
-    }
-
-    /// The rect a list row's face (highlight, focus ring, rename field)
-    /// occupies inside its full-width band.
-    fn list_row_face(row: Rect) -> Rect {
-        Rect::new(
-            row.x0 + ROW_HL_INSET_X,
-            row.y0 + ROW_HL_INSET_Y,
-            row.x1 - ROW_HL_INSET_X,
-            row.y1 - ROW_HL_INSET_Y,
-        )
-    }
-
-    /// Paint a row's or cell's "which one is chosen" state as the shared lift
-    /// tier (HIG §9.3): hover is `lift(0.5)`, selected is `lift(1.0)` with the
-    /// derived hairline and inner glow. Never an accent fill — the accent
-    /// stays free to mean live state (a drop target, a sync in flight).
+    /// Paint a grid cell's "which one is chosen" state as the shared lift
+    /// (HIG §9.3): hover is the half lift, selected the full lift.
     fn paint_selection(
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
         rect: Rect,
-        radius: f64,
         selected: bool,
         hovered: bool,
     ) {
-        if !(selected || hovered) {
-            return;
-        }
-        let tier = selection_tier(theme, SelectionState::new(selected, hovered, false));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            tier.fill,
-            None,
-            &RoundedRect::from_rect(rect, radius),
-        );
-        if let Some(border) = tier.border {
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                border,
-                None,
-                &ui::surface::edge_outline(rect, radius),
-            );
-        }
-        if let Some(glow) = tier.inner_glow {
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                glow,
-                None,
-                &ui::surface::edge_outline(rect.inset(-1.0), radius - 1.0),
-            );
-        }
-    }
-
-    // --- draw -------------------------------------------------------------
-
-    /// The y-coordinate the column header paints at. It sits at the top of the
-    /// content while at rest, but once the list is scrolled it pins to the
-    /// viewport's top edge (`vp.y0`) so the Name/Size/Modified labels + the
-    /// active sort caret stay visible while the rows scroll beneath — the
-    /// GNOME Files / Finder sticky-header behaviour.
-    fn header_top(&self, vp: Option<Rect>) -> f64 {
-        match vp {
-            Some(v) if self.rect.y0 < v.y0 => v.y0,
-            _ => self.rect.y0,
-        }
-    }
-
-    /// Paint the (possibly pinned) column header: an opaque band so rows scroll
-    /// cleanly beneath it, the Name/Size/Modified labels, the active sort
-    /// caret, and the hairline separator. Drawn *after* the rows so it always
-    /// composites on top.
-    fn draw_list_header(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        vp: Option<Rect>,
-    ) {
-        let tokens = &theme.tokens;
-        let header_h = self.header_h();
-        let hsize = Self::header_text(theme);
-        let top = self.header_top(vp);
-        // The header centres its measured line box exactly as the rows
-        // beneath centre theirs (`draw_list_row_text`), so header and cell
-        // text share one vertical rhythm at every text scale — centring the
-        // nominal size put the labels a quarter line low at 200 %.
-        let (_, hheight) = tr.measure("Ag", hsize, None);
-        let ty = Self::centered_line_top(top, header_h, hheight);
-        // Opaque band matching the content background so scrolled rows never
-        // bleed through the (transparent-text) header.
-        let band = Rect::new(self.rect.x0, top, self.rect.x1, top + header_h);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.base,
-            None,
-            &band,
-        );
-        // Column labels + a sort caret on the active column. Hidden (collapsed)
-        // columns are skipped.
-        for (i, col) in LIST_COLUMNS.iter().enumerate() {
-            if !self.col_visible(i) {
-                continue;
-            }
-            let cr = self.header_col_rect(i);
-            let header = t(col.header_key);
-            tr.draw_text(
-                scene,
-                &header,
-                hsize,
-                tokens.colors.text_dim,
-                transform * Affine::translate((cr.x0, ty)),
-                None,
-            );
-            if self.sort_by == col.sort_by {
-                let caret = if self.sort_order == SortOrder::Ascending {
-                    "\u{25B4}"
-                } else {
-                    "\u{25BE}"
-                };
-                let (lw, _) = tr.measure(&header, hsize, None);
-                tr.draw_text(
-                    scene,
-                    caret,
-                    hsize,
-                    tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX],
-                    transform * Affine::translate((cr.x0 + f64::from(lw) + 4.0, ty)),
-                    None,
-                );
-            }
-        }
-        // Quiet header separator along the band's bottom edge, derived against
-        // the band it sits on (HIG §9.5) and inset like every other rule.
-        ui::surface::separator(
+        paint_row_selection(
             scene,
             transform,
-            self.rect.x0,
-            self.rect.x1,
-            top + header_h - 0.5,
-            self.pad_x(),
-            tokens.colors.surfaces.base,
-        );
-    }
-
-    fn draw_list(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        vp: Option<Rect>,
-    ) {
-        let range = self.visible_range(vp);
-        for (offset, entry) in self
-            .entries
-            .get(range.clone())
-            .into_iter()
-            .flatten()
-            .enumerate()
-        {
-            let i = range.start + offset;
-            if !Self::fits_viewport_bottom(self.list_row_rect(i), vp) {
-                continue;
-            }
-            self.draw_list_row(scene, transform, tr, theme, i, entry);
-        }
-        // Header last so it composites above the rows (and stays put while
-        // they scroll beneath the pinned band).
-        self.draw_list_header(scene, transform, tr, theme, vp);
-    }
-
-    /// Paint list row `i` (icon, name, size, modified) — split out of
-    /// [`Self::draw_list`] purely to stay under the line-count limit.
-    fn draw_list_row(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        i: usize,
-        entry: &Entry,
-    ) {
-        let tokens = &theme.tokens;
-        let icon_size_px = LIST_ICON * self.scale;
-        let row = self.list_row_rect(i);
-        let selected = self.selection.is_selected(i);
-        let hovered = self.hover == Some(i) && !selected;
-        // Row highlight — inset so adjacent chosen rows keep an `s1` gap.
-        Self::paint_selection(
-            scene,
-            transform,
+            rect,
+            SelectionState::new(selected, hovered, false),
+            theme.tokens.colors.surfaces.content,
             theme,
-            Self::list_row_face(row),
-            ROW_RADIUS,
-            selected,
-            hovered,
         );
-
-        // Icon + name.
-        let name_rect = self.header_col_rect(0);
-        let icon_x = name_rect.x0 + ICON_LEAD;
-        let icon_y = row.y0 + (row.height() - icon_size_px) / 2.0;
-        let icon_color = if entry.is_dir {
-            tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX]
-        } else {
-            tokens.colors.text_dim
-        };
-        let file_icon_rect =
-            Rect::new(icon_x, icon_y, icon_x + icon_size_px, icon_y + icon_size_px);
-        // A real thumbnail when ready, else the compact type glyph.
-        self.draw_file_visual(
-            scene,
-            transform,
-            tr,
-            theme,
-            FileVisual {
-                rect: file_icon_rect,
-                entry,
-                glyph_color: icon_color,
-                grid: false,
-            },
-        );
-        // Sync-state emblem for workspace files (cloud / downloading / local).
-        if let Some(availability) = &entry.availability {
-            draw_availability_badge(
-                scene,
-                transform,
-                file_icon_rect,
-                availability,
-                self.scale,
-                theme,
-            );
-        } else if let Some(state) = entry.sync_state {
-            draw_sync_badge(scene, transform, file_icon_rect, state, self.scale, theme);
-        }
-        let name_x = icon_x + icon_size_px + ICON_LABEL_GAP;
-        self.draw_list_row_text(
-            scene,
-            transform,
-            tr,
-            theme,
-            entry,
-            RowTextLayout {
-                i,
-                row,
-                name_rect,
-                name_x,
-            },
-        );
-    }
-
-    /// Paint row `layout.i`'s name (or the in-place rename rect), size and
-    /// modified columns — the rest of [`Self::draw_list_row`], split out
-    /// purely to stay under the line-count limit.
-    fn draw_list_row_text(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        entry: &Entry,
-        layout: RowTextLayout,
-    ) {
-        let RowTextLayout {
-            i,
-            row,
-            name_rect,
-            name_x,
-        } = layout;
-        let size = self.body_text(theme);
-        // Centre the measured line box on the row, level with the icon, which
-        // is centred by its box. The header uses the same rule
-        // (`centered_line_top`), so both scale together.
-        let (_, height) = tr.measure("Ag", size, None);
-        let text_y = Self::centered_line_top(row.y0, row.height(), height);
-        if self.renaming == Some(i) {
-            // Publish the name field's rect and omit the label; the host
-            // draws the in-place rename editor here. The shared `TextInput`
-            // insets its text by `padding_standard`, so the field's left edge
-            // backs off by exactly that: the editable name starts where the
-            // static name was painted instead of jumping 8px to the right.
-            if let Some(sink) = &self.rename_rect {
-                let face = Self::list_row_face(row);
-                sink.set(Some(Rect::new(
-                    name_x - f64::from(theme.padding_standard),
-                    face.y0,
-                    name_rect.x1 - ICON_LEAD,
-                    face.y1,
-                )));
-            }
-        } else {
-            let label = if entry.is_conflict() {
-                format!("{}  \u{26A0}", entry.name)
-            } else {
-                entry.name.clone()
-            };
-            let avail = (name_rect.x1 - name_x - ICON_LABEL_GAP).max(0.0);
-            let label = truncate(tr, &label, size, avail);
-            tr.draw_text(
-                scene,
-                &label,
-                size,
-                Self::cell_text(theme),
-                transform * Affine::translate((name_x, text_y)),
-                None,
-            );
-        }
-        // Size.
-        if self.show_size() {
-            let size_rect = self.header_col_rect(1);
-            tr.draw_text(
-                scene,
-                &human_size(entry),
-                size,
-                Self::cell_dim(theme),
-                transform * Affine::translate((size_rect.x0, text_y)),
-                None,
-            );
-        }
-        // Modified.
-        if self.show_modified() {
-            let mod_rect = self.header_col_rect(2);
-            tr.draw_text(
-                scene,
-                &format_modified(entry.modified),
-                size,
-                Self::cell_dim(theme),
-                transform * Affine::translate((mod_rect.x0, text_y)),
-                None,
-            );
-        }
     }
 
     // --- thumbnails -------------------------------------------------------
@@ -1023,6 +603,7 @@ impl FileView {
     /// Ordinary local files are generated by the shared service directly.
     fn request_thumb(
         ctx: &ThumbCtx,
+        workspace_roots: &[PathBuf],
         entry: &Entry,
         key: ThumbKey,
         category: FileCategory,
@@ -1032,7 +613,7 @@ impl FileView {
             entry,
             key,
             category,
-            crate::model::is_workspace_path(&entry.path),
+            crate::model::path_under_any(&entry.path, workspace_roots),
         )
     }
 
@@ -1066,153 +647,14 @@ impl FileView {
     }
 
     /// The `peniko` image for a ready thumbnail, converted once and memoised by
-    /// key so a scrolling grid never rebuilds the blob per frame.
+    /// key so a scrolling view never rebuilds the blob per frame.
     fn thumb_peniko(ctx: &ThumbCtx, key: ThumbKey, rgba: &thumbnail::RgbaThumb) -> PenikoImage {
         if let Some(img) = ctx.imgs.borrow().get(&key) {
             return img.clone();
         }
-        let img = PenikoImage {
-            data: Blob::new(Arc::new(rgba.rgba.clone())),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: rgba.width,
-            height: rgba.height,
-        };
+        let img = ui::raster::rgba8(rgba.rgba.clone(), rgba.width, rgba.height);
         ctx.imgs.borrow_mut().insert(key, img.clone());
         img
-    }
-
-    /// Paint a file cell's visual into `rect`: a real thumbnail when one is
-    /// ready, a type badge otherwise. `glyph_color` is the fallback glyph tint
-    /// (used for directories and the list mode's compact icon). `grid` enables
-    /// the richer badge card (there is room for it only in grid mode).
-    fn draw_file_visual(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        visual: FileVisual,
-    ) {
-        let FileVisual {
-            rect,
-            entry,
-            glyph_color,
-            grid,
-        } = visual;
-        // Directories keep their accent folder glyph — no preview, no badge.
-        if entry.is_dir {
-            self.draw_glyph(scene, transform, rect, entry, glyph_color);
-            return;
-        }
-        let Some(ctx) = self.thumbs.clone() else {
-            if grid {
-                self.draw_type_badge(scene, transform, tr, rect, entry);
-            } else {
-                self.draw_glyph(scene, transform, rect, entry, glyph_color);
-            }
-            return;
-        };
-        let category = category_for_path(&entry.path);
-        let key = Self::thumb_key(&ctx, entry);
-        if let ThumbState::Ready(rgba) = Self::request_thumb(&ctx, entry, key, category) {
-            let img = Self::thumb_peniko(&ctx, key, &rgba);
-            let radius = if grid {
-                8.0 * self.scale
-            } else {
-                4.0 * self.scale
-            };
-            paint_image_cover(scene, transform, rect, &img, radius);
-            // A derived hairline seats the photo against the row it sits on
-            // (HIG §9.5): derived from the row ground and stroked just outside
-            // the image, on that ground, so a dark photo on a light row and a
-            // light photo on a dark row both get a frame that registers.
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                ui::surface::edge_on(theme.tokens.colors.surfaces.base),
-                None,
-                &RoundedRect::from_rect(rect.inset(0.5), radius + 0.5),
-            );
-            return;
-        }
-        // No real preview (yet): a badge in grid, a compact glyph in the list.
-        if grid {
-            self.draw_type_badge(scene, transform, tr, rect, entry);
-        } else {
-            self.draw_glyph(scene, transform, rect, entry, glyph_color);
-        }
-    }
-
-    /// The plain type glyph (the pre-thumbnail fallback).
-    fn draw_glyph(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        rect: Rect,
-        entry: &Entry,
-        color: Color,
-    ) {
-        draw_icon(
-            scene,
-            transform,
-            rect,
-            icon_for_path(&entry.path, entry.is_dir),
-            color,
-            LUCIDE_DEFAULT_STROKE_PX * self.scale.max(1.0),
-        );
-    }
-
-    /// A good-looking type badge for a file with no real preview: a soft
-    /// category-tinted card, the type glyph, and the uppercased extension — so a
-    /// `.zip` / `.rs` / `.mp4` tells its kind at a glance. Drawn live from the
-    /// theme, so it reads in both light and dark.
-    fn draw_type_badge(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        rect: Rect,
-        entry: &Entry,
-    ) {
-        let category = category_for_path(&entry.path);
-        let tint = category_tint(category);
-        let radius = 8.0 * self.scale;
-        let card = RoundedRect::from_rect(rect, radius);
-        // Soft category-tinted fill with a crisp tinted edge. Selection is a
-        // lift of the cell beneath (HIG §9.3), so the badge keeps its own
-        // colours in both states and never needs a white veneer.
-        let (fill, fg) = (tint.with_alpha(0.16), tint);
-        scene.fill(Fill::NonZero, transform, fill, None, &card);
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            fg.with_alpha(0.5),
-            None,
-            &ui::surface::edge_outline(rect, radius),
-        );
-        // Glyph in the upper portion.
-        let pad = rect.height() * 0.14;
-        let glyph_h = rect.height() * 0.5;
-        let gx = rect.x0 + (rect.width() - glyph_h) / 2.0;
-        let glyph_rect = Rect::new(gx, rect.y0 + pad, gx + glyph_h, rect.y0 + pad + glyph_h);
-        self.draw_glyph(scene, transform, glyph_rect, entry, fg);
-        // Extension label centred below the glyph.
-        let ext = ext_label(&entry.path);
-        if !ext.is_empty() {
-            let fs = (rect.height() * 0.2).clamp(8.0, 13.0) as f32;
-            let (w, _) = tr.measure(&ext, fs, None);
-            let tx = rect.x0 + (rect.width() - f64::from(w)) / 2.0;
-            let ty = rect.y1 - pad - f64::from(fs);
-            tr.draw_text(
-                scene,
-                &ext,
-                fs,
-                fg,
-                transform * Affine::translate((tx, ty)),
-                None,
-            );
-        }
     }
 
     fn draw_grid(
@@ -1224,11 +666,7 @@ impl FileView {
         vp: Option<Rect>,
     ) {
         let tokens = &theme.tokens;
-        let size = self.body_text(theme);
-        // One measured line box for every label in the grid (same size and
-        // style the labels are painted with, so it carries the text scale).
-        let (_, label_h) = tr.measure("Mg", size, None);
-        let label_h = f64::from(label_h);
+        let style = Self::body_style(theme);
         let range = self.visible_range(vp);
         for (offset, entry) in self
             .entries
@@ -1244,85 +682,168 @@ impl FileView {
             }
             let selected = self.selection.is_selected(i);
             let hovered = self.hover == Some(i) && !selected;
-            Self::paint_selection(
-                scene,
-                transform,
-                theme,
-                cell,
-                ROW_RADIUS * self.scale,
-                selected,
-                hovered,
+            Self::paint_selection(scene, transform, theme, cell, selected, hovered);
+            // The art: the file's preview filling its square, or its type
+            // glyph centred in the same square, so every label in a row sits
+            // on one baseline whether or not its file has a preview.
+            let pad = self.geo.cell_pad * self.scale;
+            let slot_px = self.grid_art_px(cell.width());
+            let art_x = cell.x0 + (cell.width() - slot_px) / 2.0;
+            let slot = Rect::new(
+                art_x,
+                cell.y0 + pad,
+                art_x + slot_px,
+                cell.y0 + pad + slot_px,
             );
-            // A preview tile centred in the upper portion — larger than the bare
-            // glyph so a real thumbnail reads well; directories keep the glyph,
-            // centred in the same slot so their labels stay level with their
-            // neighbours' (see `grid_cell_slot`).
-            let (slot_y, slot_px, ly) = self.grid_cell_slot(cell, label_h);
-            let preview_px = if entry.is_dir {
-                (GRID_ICON * self.scale).min(slot_px)
-            } else {
-                slot_px
+            let visual = VisualPaint {
+                thumbs: self.thumbs.as_ref(),
+                workspace_roots: &self.workspace_roots,
+                scale: self.scale,
+                glyph_px: (self.geo.grid_icon * self.scale).min(slot_px),
+                glyph_color: tokens.colors.text_primary,
             };
-            let icon_x = cell.x0 + (cell.width() - preview_px) / 2.0;
-            let icon_y = slot_y + (slot_px - preview_px) / 2.0;
-            let icon_color = if entry.is_dir {
-                tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX]
-            } else {
-                tokens.colors.text_primary
-            };
-            let file_icon_rect =
-                Rect::new(icon_x, icon_y, icon_x + preview_px, icon_y + preview_px);
-            self.draw_file_visual(
-                scene,
-                transform,
-                tr,
-                theme,
-                FileVisual {
-                    rect: file_icon_rect,
-                    entry,
-                    glyph_color: icon_color,
-                    grid: true,
-                },
-            );
-            // Sync-state emblem for workspace files (cloud / downloading / local).
-            if let Some(availability) = &entry.availability {
-                draw_availability_badge(
-                    scene,
-                    transform,
-                    file_icon_rect,
-                    availability,
-                    self.scale,
-                    theme,
-                );
-            } else if let Some(state) = entry.sync_state {
-                draw_sync_badge(scene, transform, file_icon_rect, state, self.scale, theme);
-            }
-            // Label centred under the slot, truncated to the cell width.
+            let painted = paint_file_visual(scene, transform, tr, theme, &visual, slot, entry);
+            paint_entry_emblem(scene, transform, painted, entry, self.scale, theme);
+            // The label under the art: centred, wrapped onto a second line
+            // rather than cut, and only then elided.
+            let label_y = slot.y1 + self.geo.label_gap * self.scale;
             if self.renaming == Some(i) {
                 // Publish the label field's rect and omit the label; the host
                 // draws the in-place rename editor here.
                 if let Some(sink) = &self.rename_rect {
+                    let inset = f64::from(tokens.spacing.s1);
                     sink.set(Some(Rect::new(
-                        cell.x0 + 6.0,
-                        ly - 4.0,
-                        cell.x1 - 6.0,
-                        ly + label_h + 6.0,
+                        cell.x0 + inset,
+                        label_y - inset,
+                        cell.x1 - inset,
+                        label_y + self.geo.label_line + inset,
                     )));
                 }
-            } else {
-                let label = truncate(tr, &entry.name, size, cell.width() - 10.0);
-                let (lw, _) = tr.measure(&label, size, None);
+                continue;
+            }
+            let label_w = (cell.width() - 2.0 * f64::from(tokens.spacing.s2)).max(1.0);
+            let lines = tr.clamp_to_lines(&entry.name, &style, label_w as f32, GRID_LABEL_LINES);
+            let mut y = label_y;
+            for line in lines {
+                let (lw, lh) = tr.measure_style(&line, None, &style);
                 let lx = cell.x0 + (cell.width() - f64::from(lw)) / 2.0;
-                tr.draw_text(
+                tr.draw_style(
                     scene,
-                    &label,
-                    size,
-                    Self::cell_text(theme),
-                    transform * Affine::translate((lx, ly)),
+                    &line,
+                    tokens.colors.text_primary,
+                    transform * Affine::translate((lx, y)),
                     None,
+                    &style,
                 );
+                y += f64::from(lh);
             }
         }
+    }
+
+    /// The press, move and release handling the list and the grid share, once
+    /// `row_click` says which item a press landed on.
+    fn press_item(
+        &mut self,
+        index: usize,
+        ctrl: bool,
+        shift: bool,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        // Reflect the click locally so this frame paints selected, and let the
+        // app own the authoritative selection + the single/double-click
+        // distinction.
+        self.selection.apply_click(index, ctrl, shift);
+        *ctx.focus_target = Some(ctx.node_id);
+        push(&self.sink, FileCommand::Click { index, ctrl, shift });
+        // A plain press on any row arms a potential drag (move onto a folder,
+        // or pin a folder to the sidebar). A modifier press is extending the
+        // selection, not starting a drag.
+        if !ctrl
+            && !shift
+            && let Some(entry) = self.entries.get(index)
+        {
+            self.pressed_row = Some((self.last_cursor, entry.path.clone(), entry.is_dir));
+            // The app arms the same drag: this view may be rebuilt before the
+            // pointer moves.
+            push(
+                &self.sink,
+                FileCommand::ArmDrag {
+                    path: entry.path.clone(),
+                    is_dir: entry.is_dir,
+                    at: self.last_cursor,
+                },
+            );
+        }
+    }
+}
+
+/// What a file's visual paints with: the preview service, the zoom, and the
+/// type glyph's size and ink for a file that has no preview.
+pub(super) struct VisualPaint<'a> {
+    pub(super) thumbs: Option<&'a ThumbCtx>,
+    pub(super) workspace_roots: &'a [PathBuf],
+    pub(super) scale: f64,
+    /// The type glyph's side, centred in the painted rectangle.
+    pub(super) glyph_px: f64,
+    pub(super) glyph_color: Color,
+}
+
+/// Paint a file's visual into `rect` and return the rectangle that was
+/// painted: its preview filling `rect` when one is ready, otherwise its type
+/// glyph (`visual.glyph_px` square, centred in `rect`). Folders are always
+/// glyphs. A file with no preview is just its icon: there is no tile around it.
+pub(super) fn paint_file_visual(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    visual: &VisualPaint<'_>,
+    rect: Rect,
+    entry: &Entry,
+) -> Rect {
+    if !entry.is_dir
+        && let Some(ctx) = visual.thumbs
+    {
+        let category = category_for_path(&entry.path);
+        let key = FileView::thumb_key(ctx, entry);
+        if let ThumbState::Ready(rgba) =
+            FileView::request_thumb(ctx, visual.workspace_roots, entry, key, category)
+        {
+            let img = FileView::thumb_peniko(ctx, key, &rgba);
+            // The shared media card seats a photo on its ground with the
+            // theme's own edge and radius.
+            MediaCardFace::new(MediaArt::Image(&img))
+                .paint(&mut PaintCtx::new(scene, transform, tr, theme), rect);
+            return rect;
+        }
+    }
+    let glyph = Rect::from_center_size(rect.center(), (visual.glyph_px, visual.glyph_px));
+    draw_icon(
+        scene,
+        transform,
+        glyph,
+        icon_for_path(&entry.path, entry.is_dir),
+        visual.glyph_color,
+        LUCIDE_DEFAULT_STROKE_PX * visual.scale.max(1.0),
+    );
+    glyph
+}
+
+/// Paint the sync-state emblem of a workspace file (cloud / downloading /
+/// local) over the corner of `icon_rect`, the rectangle its visual was painted
+/// in.
+pub(super) fn paint_entry_emblem(
+    scene: &mut Scene,
+    transform: Affine,
+    icon_rect: Rect,
+    entry: &Entry,
+    scale: f64,
+    theme: &Theme,
+) {
+    if let Some(availability) = &entry.availability {
+        draw_availability_badge(scene, transform, icon_rect, availability, scale, theme);
+    } else if let Some(state) = entry.sync_state {
+        draw_sync_badge(scene, transform, icon_rect, state, scale, theme);
     }
 }
 
@@ -1341,8 +862,26 @@ impl Widget for FileView {
         // Entries, mode and zoom are construction inputs: the host replaces
         // this view when they change. Pointer/selection/thumbnail updates do
         // not change its intrinsic geometry. Parent constraints still force
-        // measurement on resize, and a theme rebuild updates text_scale.
-        false
+        // measurement on resize, and a theme rebuild updates text_scale. The
+        // list's table has geometry of its own (scrolling, a resized column).
+        self.mode == ViewMode::List && self.list.is_layout_dirty()
+    }
+
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        self.mode == ViewMode::List && self.list.update(state, path)
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.mode == ViewMode::List && self.list.needs_animation_frame()
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.mode == ViewMode::List && self.list.wants_pointer_capture()
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        self.list.discard_structure_dirty();
+        std::mem::take(&mut self.rebuild)
     }
 
     fn build_layout(
@@ -1352,6 +891,10 @@ impl Widget for FileView {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
+        self.geo = Geo::of(theme);
+        if self.mode == ViewMode::List {
+            return self.build_list_layout(taffy, theme, node_map);
+        }
         // Fill the parent width (so the grid's column count is derived from the
         // real pane width, never collapsing to one column) and measure the
         // content height.
@@ -1363,27 +906,20 @@ impl Widget for FileView {
         // the view reports a height equal to the visible area, so the
         // Scrollable sees `content == viewport` and a long directory can't
         // scroll at all. Opting out of the stretch lets the leaf take its
-        // *measured* content height (all the rows / every grid row), so the
-        // Scrollable's content overflows the viewport and the wheel +
-        // scrollbar thumb move the list.
+        // *measured* content height (every grid row), so the Scrollable's
+        // content overflows the viewport and the wheel + scrollbar thumb move
+        // the grid.
         // `new_leaf` only fails on tree-internal bookkeeping errors, never on
         // caller input; there is none to report here.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "new_leaf cannot fail for a freshly built style"
-        )]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
-                },
-                align_self: Some(taffy::AlignSelf::Start),
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let style = Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            align_self: Some(taffy::AlignSelf::Start),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -1398,13 +934,11 @@ impl Widget for FileView {
         let width = known.width.map_or_else(
             || match available.width {
                 taffy::AvailableSpace::Definite(w) => f64::from(w),
-                _ => self.cell_w() + 2.0 * self.pad_x(),
+                _ => self.cell_w(),
             },
             f64::from,
         );
-        if self.mode == ViewMode::Grid {
-            self.columns = self.columns_for_width(width);
-        }
+        self.columns = self.columns_for_width(width);
         taffy::Size {
             width: width as f32,
             height: self.content_height(width) as f32,
@@ -1412,22 +946,20 @@ impl Widget for FileView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        // `node` was created by `build_layout` in this same tree, so a lookup
-        // miss would mean the frame cycle called these out of order.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "node was built in this tree by build_layout; a miss means the frame cycle called these out of order"
-        )]
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if self.mode == ViewMode::Grid {
             self.columns = self.columns_for_width(self.rect.width());
+            return;
         }
+        if let Ok(children) = taffy.children(node)
+            && let Some(&table) = children.first()
+        {
+            let base = Point::new(self.rect.x0, self.rect.y0);
+            if self.list.apply_layout(taffy, table, base, self.row_h()) {
+                self.rebuild = true;
+            }
+        }
+        self.publish_drop_targets(None);
     }
 
     fn draw(
@@ -1438,38 +970,45 @@ impl Widget for FileView {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The enclosing `Scrollable` publishes its viewport rect here; cull
-        // rows/cells outside it so a long directory only paints what's on
-        // screen (the wheel scrolls thousands of files without paying to emit
-        // every off-screen row's icon + text runs each frame). Remember it so
-        // the header hit-test can follow the pinned header on the next event.
-        let vp = presence.viewport.get();
-        self.last_vp = vp;
-        self.publish_drop_targets(vp);
         // Clear last frame's rename-field rect; the draw below republishes it
         // only if the renaming row is actually on screen.
         if let Some(sink) = &self.rename_rect {
             sink.set(None);
         }
         match self.mode {
-            ViewMode::List => self.draw_list(scene, transform, tr, theme, vp),
-            ViewMode::Grid => self.draw_grid(scene, transform, tr, theme, vp),
+            ViewMode::List => {
+                // A folder with nothing in it has no columns to name: the
+                // window shows its empty state instead.
+                if !self.entries.is_empty() {
+                    self.list.draw(scene, transform, tr, theme, presence);
+                    self.publish_drop_targets(None);
+                }
+            }
+            ViewMode::Grid => {
+                // The enclosing `Scrollable` publishes its viewport rect here;
+                // cull cells outside it so a long directory only paints what's
+                // on screen. Remember it for the next event.
+                let vp = presence.viewport.get();
+                self.last_vp = vp;
+                self.publish_drop_targets(vp);
+                self.draw_grid(scene, transform, tr, theme, vp);
+            }
         }
         if self.is_focused
             && let Some(i) = self.selection.primary()
+            && let Some(item) = self.item_rect(i)
         {
-            let r = match self.mode {
-                ViewMode::List => Self::list_row_face(self.list_row_rect(i)),
-                ViewMode::Grid => self.cell_rect(i),
+            let ring = match self.mode {
+                // The lift reaches past the row by one step on each side.
+                ViewMode::List => item.inflate(f64::from(theme.tokens.spacing.s2), 0.0),
+                ViewMode::Grid => item,
             };
-            if !cull(vp, r) {
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    transform,
-                    theme.border_focus,
-                    None,
-                    &RoundedRect::from_rect(r, ROW_RADIUS),
-                );
+            let visible = match self.mode {
+                ViewMode::List => item.y1 > self.list.rect().y0 + self.list.header_height(),
+                ViewMode::Grid => !cull(self.last_vp, item),
+            };
+            if visible {
+                ui::widget::paint_focus_ring(scene, transform, ring, self.geo.item_radius, theme);
             }
         }
     }
@@ -1501,17 +1040,21 @@ impl Widget for FileView {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pt = ctx.logical(position);
                 self.last_cursor = pt;
-                let new_hover = self.item_at(pt);
-                if new_hover != self.hover {
-                    self.hover = new_hover;
+                if self.mode == ViewMode::List {
+                    self.list.handle_event(event, ctx);
+                } else {
+                    let new_hover = self.item_at(pt);
+                    if new_hover != self.hover {
+                        self.hover = new_hover;
+                    }
                 }
                 // A held press that travels far enough starts a drag; the app
                 // carries the row(s) and, on release, moves them onto a folder
                 // (or pins a folder to the sidebar).
                 if let Some((start, path, is_dir)) = self.pressed_row.clone()
-                    && pt.distance(start) > DRAG_THRESHOLD
+                    && pt.distance(start) > drag_threshold()
                 {
                     push(&self.sink, FileCommand::BeginDrag { path, is_dir });
                     self.pressed_row = None;
@@ -1522,49 +1065,35 @@ impl Widget for FileView {
                 button: MouseButton::Left,
                 ..
             } => {
-                // Header click → sort.
-                if let Some(col) = self.header_sort_at(self.last_cursor) {
-                    push(&self.sink, FileCommand::SortColumn(col));
-                    *ctx.handled = true;
-                    return;
-                }
-                if let Some(i) = self.item_at(self.last_cursor) {
+                if self.mode == ViewMode::List {
+                    // A press on a row is the view's: it selects, and arms
+                    // the drag that carries the row (the table would take a
+                    // press-and-move on its body for a scroll). Everything
+                    // else (the header, a column's edge, the scrollbar) is
+                    // the table's own.
+                    let row = self
+                        .item_at(self.last_cursor)
+                        .filter(|_| !self.list.in_scrollbar(self.last_cursor));
+                    if let Some(index) = row {
+                        let ctrl = ctx.modifiers.state().control_key()
+                            || ctx.modifiers.state().super_key();
+                        let shift = ctx.modifiers.state().shift_key();
+                        self.press_item(index, ctrl, shift, ctx);
+                        self.list.select(&self.selection);
+                        *ctx.handled = true;
+                    } else {
+                        self.list.point_at(self.last_cursor, ctx);
+                        let outcome = self.list.handle_event(event, ctx);
+                        // Header click → sort.
+                        if let Some(column) = outcome.sort_key.and_then(sort_column) {
+                            push(&self.sink, FileCommand::SortColumn(column));
+                        }
+                    }
+                } else if let Some(i) = self.item_at(self.last_cursor) {
                     let ctrl =
                         ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
                     let shift = ctx.modifiers.state().shift_key();
-                    // Reflect the click locally so this frame paints selected,
-                    // and let the app own the authoritative selection + the
-                    // single/double-click distinction.
-                    self.selection.apply_click(i, ctrl, shift);
-                    *ctx.focus_target = Some(ctx.node_id);
-                    push(
-                        &self.sink,
-                        FileCommand::Click {
-                            index: i,
-                            ctrl,
-                            shift,
-                        },
-                    );
-                    // A plain press on any row arms a potential drag (move onto a
-                    // folder, or pin a folder to the sidebar). A modifier press is
-                    // extending the selection, not starting a drag.
-                    if !ctrl
-                        && !shift
-                        && let Some(entry) = self.entries.get(i)
-                    {
-                        self.pressed_row =
-                            Some((self.last_cursor, entry.path.clone(), entry.is_dir));
-                        // The app arms the same drag: this view may be
-                        // rebuilt before the pointer moves.
-                        push(
-                            &self.sink,
-                            FileCommand::ArmDrag {
-                                path: entry.path.clone(),
-                                is_dir: entry.is_dir,
-                                at: self.last_cursor,
-                            },
-                        );
-                    }
+                    self.press_item(i, ctrl, shift, ctx);
                     *ctx.handled = true;
                 }
             }
@@ -1575,6 +1104,9 @@ impl Widget for FileView {
             } => {
                 // A release without travel was just a click — disarm the drag.
                 self.pressed_row = None;
+                if self.mode == ViewMode::List {
+                    self.list.handle_event(event, ctx);
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -1595,6 +1127,9 @@ impl Widget for FileView {
                 // Not marked handled: the app still needs to see the right-press
                 // to open the menu.
             }
+            WindowEvent::MouseWheel { .. } if self.mode == ViewMode::List => {
+                self.list.handle_event(event, ctx);
+            }
             _ => {}
         }
     }
@@ -1611,13 +1146,7 @@ impl Widget for FileView {
         self.entries
             .iter()
             .enumerate()
-            .map(|(i, e)| {
-                let rect = match self.mode {
-                    ViewMode::List => self.list_row_rect(i),
-                    ViewMode::Grid => self.cell_rect(i),
-                };
-                (format!("file_row:{}", e.name), rect)
-            })
+            .filter_map(|(i, e)| Some((format!("file_row:{}", e.name), self.item_rect(i)?)))
             .collect()
     }
     fn get_rect(&self) -> Rect {
@@ -1638,6 +1167,25 @@ impl Widget for FileView {
         #[cfg(test)]
         ACCESSIBILITY_BUILDS.with(|count| count.set(count.get() + 1));
         let primary = self.selection.primary();
+        if self.mode == ViewMode::List
+            && let Some(mut table) = self.list.accessibility()
+        {
+            // The table names its cells by column; a file's row is named by
+            // the file and says what is known about it.
+            for row in &mut table.children {
+                let Some(entry) = row
+                    .pos_in_set
+                    .and_then(|position| position.checked_sub(1))
+                    .and_then(|index| self.entries.get(index))
+                else {
+                    continue;
+                };
+                row.name = Some(entry.name.clone());
+                row.description = Some(accessible_entry_description(entry));
+            }
+            table.state.focused = self.is_focused;
+            return Some(table);
+        }
         let value = primary
             .and_then(|i| self.entries.get(i))
             .map(|e| e.name.clone());
@@ -1646,35 +1194,24 @@ impl Widget for FileView {
             .iter()
             .enumerate()
             .map(|(index, entry)| {
-                let bounds = match self.mode {
-                    ViewMode::List => self.list_row_rect(index),
-                    ViewMode::Grid => self.cell_rect(index),
-                };
                 AccessNode::new(Role::ListItem)
                     .with_name(entry.name.clone())
                     .with_description(accessible_entry_description(entry))
                     .with_position(index + 1, self.entries.len())
-                    .with_bounds(bounds)
-                    .with_state(AccessState {
-                        selected: self.selection.is_selected(index),
-                        ..Default::default()
-                    })
+                    .with_bounds(self.cell_rect(index))
+                    .with_state(AccessState::new().selected(self.selection.is_selected(index)))
             })
             .collect();
         let mut node = AccessNode::new(Role::List)
             .with_name(t("files-a11y-list"))
-            // The list control occupies its scroll viewport; individual rows
+            // The list control occupies its scroll viewport; individual cells
             // retain their content-space bounds and the ancestor's clipping.
             .with_bounds(
                 self.last_vp
                     .map_or(self.rect, |viewport| self.rect.intersect(viewport)),
             )
             .with_optional_value(value)
-            .with_state(AccessState {
-                focusable: true,
-                focused: self.is_focused,
-                ..Default::default()
-            })
+            .with_state(AccessState::new().focusable(true).focused(self.is_focused))
             .with_children(children);
         if let Some(i) = primary
             && i < self.entries.len()
@@ -1682,6 +1219,48 @@ impl Widget for FileView {
             node = node.with_position(i + 1, self.entries.len());
         }
         Some(node)
+    }
+}
+
+impl FileView {
+    /// The list's layout: a column holding the table, with the status lane
+    /// kept clear at the bottom.
+    fn build_list_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.list.sync(&ListInputs {
+            entries: &self.entries,
+            selection: &self.selection,
+            sort_by: self.sort_by,
+            sort_order: self.sort_order,
+            scale: self.scale,
+            text_scale: self.text_scale,
+            geo: self.geo,
+            thumbs: self.thumbs.clone(),
+            workspace_roots: Rc::clone(&self.workspace_roots),
+            renaming: self.renaming,
+            rename_rect: self.rename_rect.clone(),
+            theme,
+        });
+        let children: Vec<NodeId> = self.list.build_layout(taffy, theme).into_iter().collect();
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size::from_percent(1.0, 1.0),
+            padding: taffy::Rect {
+                left: LengthPercentage::length(0.0),
+                right: LengthPercentage::length(0.0),
+                top: LengthPercentage::length(0.0),
+                bottom: LengthPercentage::length(self.bottom_inset as f32),
+            },
+            ..Default::default()
+        };
+        // `new_with_children` only fails when a child belongs to a different
+        // tree; the table's node was just built in this one.
+        taffy.widget_node(style, &children, node_map, self)
     }
 }
 
@@ -1704,7 +1283,10 @@ fn accessible_entry_description(entry: &Entry) -> String {
     }
 
     if let Some(availability) = &entry.availability {
-        use crate::model::{AvailabilityPolicy, ReplicaEvidence, Residency, TransferPhase};
+        use fs_protocol::AvailabilityPolicy;
+        use fs_protocol::ProjectedReplicaEvidence;
+        use fs_protocol::Residency;
+        use fs_protocol::TransferPhase;
         if availability.transfer.last_error.is_some() {
             facts.push(t("files-a11y-transfer-failed"));
         } else {
@@ -1728,11 +1310,13 @@ fn accessible_entry_description(entry: &Entry) -> String {
             });
         }
         match availability.replicas {
-            ReplicaEvidence::Unknown => facts.push(t("files-a11y-replica-unknown")),
-            ReplicaEvidence::Known { durable, .. } if durable > 0 => {
+            ProjectedReplicaEvidence::Unknown => facts.push(t("files-a11y-replica-unknown")),
+            ProjectedReplicaEvidence::Known { durable, .. } if durable > 0 => {
                 facts.push(t("files-a11y-durably-replicated"));
             }
-            ReplicaEvidence::Known { .. } => facts.push(t("files-a11y-not-durably-replicated")),
+            ProjectedReplicaEvidence::Known { .. } => {
+                facts.push(t("files-a11y-not-durably-replicated"));
+            }
         }
     } else if let Some(sync) = entry.sync_state {
         facts.push(match sync {
@@ -1756,46 +1340,46 @@ fn accessible_entry_description(entry: &Entry) -> String {
 }
 
 /// The badge glyph + colour for a workspace file's sync state. Follows the
-/// familiar cloud-storage emblem language: a filled arrow/tick for on-disk, a
-/// cloud for remote-only, a download arrow while hydrating.
+/// familiar cloud-storage emblem language: a tick for on-disk, a cloud for
+/// remote-only, a download arrow while hydrating.
 fn sync_badge(state: SyncState, theme: &Theme) -> (Icon, Color) {
-    let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+    let colors = &theme.tokens.colors;
     match state {
         // On disk: a quiet tick — nothing the user needs to act on.
-        SyncState::Local => (Icon::Check, theme.tokens.colors.text_dim),
-        // Remote-only: a cloud, tinted so it reads as "not here yet".
-        SyncState::Projected => (Icon::CloudDownload, theme.tokens.colors.text_dim),
-        // Actively hydrating: a download arrow in the accent to draw the eye.
-        SyncState::Downloading => (Icon::Download, accent),
+        SyncState::Local => (Icon::Check, colors.text_dim),
+        // Remote-only: a cloud, so it reads as "not here yet".
+        SyncState::Projected => (Icon::CloudDownload, colors.text_dim),
+        // Actively hydrating: in-flight state.
+        SyncState::Downloading => (Icon::Download, colors.semantic.info),
     }
 }
 
-fn availability_badge(state: &AvailabilityProjection, theme: &Theme) -> (Icon, Color) {
-    let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+fn availability_badge(state: &AvailabilityProjectionV1, theme: &Theme) -> (Icon, Color) {
+    let colors = &theme.tokens.colors;
     if state.transfer.last_error.is_some() {
-        return (Icon::Ban, accent);
+        return (Icon::Ban, colors.semantic.danger);
     }
     match state.transfer.phase {
-        TransferPhase::Queued | TransferPhase::Verifying => return (Icon::Refresh, accent),
-        TransferPhase::Downloading => return (Icon::Download, accent),
-        TransferPhase::Uploading => return (Icon::Send, accent),
+        TransferPhase::Queued | TransferPhase::Verifying => {
+            return (Icon::Refresh, colors.semantic.info);
+        }
+        TransferPhase::Downloading => return (Icon::Download, colors.semantic.info),
+        TransferPhase::Uploading => return (Icon::Send, colors.semantic.info),
         TransferPhase::Idle => {}
     }
     match state.residency {
-        Residency::NotResident => (Icon::CloudDownload, theme.tokens.colors.text_dim),
-        Residency::Partial { .. } => (Icon::Download, theme.tokens.colors.text_dim),
+        Residency::NotResident => (Icon::CloudDownload, colors.text_dim),
+        Residency::Partial { .. } => (Icon::Download, colors.text_dim),
         // The star means the keep-offline promise is actually satisfied. A
         // desired pin that is still remote/partial is represented by its real
         // transfer/residency state above, never as a completed outcome.
         Residency::Resident { .. } if state.policy == AvailabilityPolicy::Pinned => {
-            (Icon::Star, accent)
+            (Icon::Star, colors.text_primary)
         }
-        Residency::Resident { .. } if state.safely_replicated() => {
-            (Icon::Shield, theme.tokens.colors.text_dim)
-        }
+        Residency::Resident { .. } if state.safely_replicated() => (Icon::Shield, colors.text_dim),
         Residency::Resident { .. } => match state.replicas {
-            ReplicaEvidence::Unknown => (Icon::Info, theme.tokens.colors.text_dim),
-            ReplicaEvidence::Known { .. } => (Icon::Info, accent),
+            ProjectedReplicaEvidence::Unknown => (Icon::Info, colors.text_dim),
+            ProjectedReplicaEvidence::Known { .. } => (Icon::Info, colors.semantic.warning),
         },
     }
 }
@@ -1825,15 +1409,16 @@ fn draw_badge(
     theme: &Theme,
 ) {
     // The badge overlaps the icon's lower-right corner (the standard emblem
-    // position); size it relative to the icon so it scales with zoom.
-    let bsz = (icon_rect.width() * 0.62).max(9.0);
+    // position); size it relative to the icon so it scales with zoom, but
+    // never past one icon step, so it stays an emblem on a large preview.
+    let bsz = (icon_rect.width() * 0.62).clamp(9.0, f64::from(theme.tokens.metrics.icon_md));
     let cx = icon_rect.x1;
     let cy = icon_rect.y1;
     // Opaque backing disc so the emblem reads over any row highlight.
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.surfaces.base,
+        theme.tokens.colors.surfaces.content,
         None,
         &Circle::new((cx, cy), bsz * 0.62),
     );
@@ -1857,7 +1442,7 @@ fn draw_availability_badge(
     scene: &mut Scene,
     transform: Affine,
     icon_rect: Rect,
-    state: &AvailabilityProjection,
+    state: &AvailabilityProjectionV1,
     scale: f64,
     theme: &Theme,
 ) {
@@ -1865,7 +1450,7 @@ fn draw_availability_badge(
     draw_badge(scene, transform, icon_rect, icon, color, scale, theme);
 }
 
-/// Cull a row/cell whose vertical extent falls entirely outside the scroll
+/// Cull a grid cell whose vertical extent falls entirely outside the scroll
 /// viewport `vp` (the enclosing `Scrollable`'s clip rect, published via the
 /// presence context). A small margin keeps the row just off each edge alive so
 /// a partially-visible row at the boundary always paints. When no viewport is
@@ -1873,53 +1458,24 @@ fn draw_availability_badge(
 fn cull(vp: Option<Rect>, r: Rect) -> bool {
     match vp {
         Some(v) => {
-            const MARGIN: f64 = 4.0;
-            r.y1 < v.y0 - MARGIN || r.y0 > v.y1 + MARGIN
+            let margin = f64::from(ui::tokens::spacing::Spacing::BASE.s1);
+            r.y1 < v.y0 - margin || r.y0 > v.y1 + margin
         }
         None => false,
     }
 }
 
-/// The uppercased extension for a type badge (at most 4 chars, so `.markdown`
-/// shows `MARK` rather than overflowing). Empty for an extensionless file.
-fn ext_label(path: &std::path::Path) -> String {
-    match path.extension().and_then(|e| e.to_str()) {
-        Some(e) if !e.is_empty() => {
-            let up = e.to_ascii_uppercase();
-            up.chars().take(4).collect()
-        }
-        _ => String::new(),
-    }
-}
-
-/// A stable, mid-tone accent per file category for the type badge. Chosen to
-/// stay legible on both light and dark surfaces (the badge fills a translucent
-/// tint of it and draws the glyph + extension in the full colour).
-fn category_tint(cat: FileCategory) -> Color {
-    let [r, g, b] = match cat {
-        FileCategory::Image => [0x3B, 0xA7, 0x76],
-        FileCategory::Video => [0x8B, 0x5C, 0xF6],
-        FileCategory::Audio => [0xE0, 0x55, 0x9A],
-        FileCategory::Pdf => [0xE5, 0x48, 0x4D],
-        FileCategory::Ebook => [0xD0, 0x8A, 0x2E],
-        FileCategory::Document => [0x3E, 0x7B, 0xEA],
-        FileCategory::Spreadsheet => [0x2F, 0xA3, 0x6B],
-        FileCategory::Presentation => [0xE8, 0x70, 0x3A],
-        FileCategory::Archive => [0xB0, 0x7B, 0x3E],
-        FileCategory::Code => [0x2A, 0xA0, 0xB4],
-        FileCategory::Text => [0x7A, 0x82, 0x90],
-        FileCategory::Font => [0x7C, 0x6C, 0xF0],
-        FileCategory::Unknown => [0x8A, 0x93, 0xA0],
-    };
-    Color::from_rgba8(r, g, b, 255)
-}
-
 /// Trim `text` with an ellipsis until it fits `max_w`.
-fn truncate(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> String {
+pub(super) fn truncate(
+    tr: &mut TextRenderer,
+    text: &str,
+    style: &ui::text_render::TextStyle,
+    max_w: f64,
+) -> String {
     if max_w <= 0.0 {
         return String::new();
     }
-    let (w, _) = tr.measure(text, size, None);
+    let (w, _) = tr.measure_style(text, None, style);
     if f64::from(w) <= max_w {
         return text.to_string();
     }
@@ -1939,7 +1495,7 @@ fn truncate(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> String 
                 .skip(chars.len().saturating_sub(suffix))
                 .collect::<String>()
         );
-        let (cw, _) = tr.measure(&candidate, size, None);
+        let (cw, _) = tr.measure_style(&candidate, None, style);
         if f64::from(cw) <= max_w {
             return candidate;
         }
@@ -1947,37 +1503,43 @@ fn truncate(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> String 
     "\u{2026}".to_string()
 }
 
+impl FileView {
+    #[must_use]
+    pub fn with_workspace_roots(mut self, roots: Rc<[PathBuf]>) -> Self {
+        self.workspace_roots = roots;
+        self
+    }
+    #[must_use]
+    pub fn with_hover(mut self, index: Option<usize>) -> Self {
+        self.hover = index;
+        self
+    }
+    pub(crate) fn prefetch_thumbnails(
+        ctx: &ThumbCtx,
+        entries: &[Entry],
+        workspace_roots: &[PathBuf],
+    ) {
+        for entry in entries.iter().filter(|entry| !entry.is_dir) {
+            let key = Self::thumb_key(ctx, entry);
+            let in_workspace = crate::model::path_under_any(&entry.path, workspace_roots);
+            let _ = Self::request_thumb_in(
+                ctx,
+                entry,
+                key,
+                category_for_path(&entry.path),
+                in_workspace,
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
+    use super::super::file_list::shape_columns;
     use super::*;
     use crate::command::{FileCommand, new_sink};
     use std::path::PathBuf;
-
-    fn dev() -> winit::event::DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
-
-    fn dispatch(v: &mut FileView, tree: &TaffyTree<()>, node: NodeId, ev: &WindowEvent) {
-        let mut handled = false;
-        let mut focus = None;
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        v.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: tree,
-            },
-        );
-    }
 
     fn ent(name: &str, is_dir: bool) -> Entry {
         Entry {
@@ -1994,6 +1556,7 @@ mod tests {
             share: None,
             history: None,
             rich_metadata: None,
+            observed: None,
         }
     }
 
@@ -2018,56 +1581,34 @@ mod tests {
         scroll_layout_reuses_real_file_view_measurement();
         rows_outside_the_scroll_viewport_are_culled();
         visible_range_avoids_scanning_a_large_directory();
-        drop_targets_are_limited_to_visible_folders();
-        list_and_grid_leave_a_reserved_bottom_lane_clear();
-        apply_layout_publishes_folder_rows_as_drop_targets();
+        grid_drop_targets_are_limited_to_visible_folders();
+        grid_leaves_a_reserved_bottom_lane_clear();
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "measurement scenario checks every scroll layout step in sequence"
-    )]
     fn scroll_layout_reuses_real_file_view_measurement() {
-        use ui::widget::{NavShell, Scrollable};
-        fn scroll(nav: &mut NavShell) -> &mut Scrollable {
-            nav.children_mut()
-                .into_iter()
-                .find_map(|child| child.as_any_mut()?.downcast_mut::<Scrollable>())
-                .expect("real scroll content")
+        use ui::launch::ShotFrame;
+        use ui::widget::Scrollable;
+        fn view_rect(scroll: &Scrollable) -> Rect {
+            scroll.children()[0].get_rect()
         }
-        for mode in [ViewMode::List, ViewMode::Grid] {
+        for mode in [ViewMode::Grid] {
             let sink = new_sink();
-            let sidebar = crate::places_sidebar::PlacesSidebar::new(
-                crate::places_sidebar::new_store(vec![]),
-                PathBuf::from("/x"),
-                sink.clone(),
-            );
             let view = FileView::new(&items(1200), &SelectionModel::new(), &sink).mode(mode);
-            let mut nav = NavShell::sidebar_over_content(
-                Box::new(sidebar),
-                Box::new(Scrollable::new_vertical().with_child(Box::new(view))),
-            );
+            let mut scroll = Scrollable::new_vertical().with_child(Box::new(view));
             let theme = Theme::dark();
-            let mut tree = TaffyTree::new();
-            let node = nav.build_layout(&mut tree, &theme, &mut HashMap::new());
-            tree.compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(1000.0),
-                    height: taffy::AvailableSpace::Definite(600.0),
-                },
-            )
-            .unwrap();
-            nav.apply_layout(&tree, node, Point::ZERO);
-            nav.mark_drawn();
-            let before = scroll(&mut nav).children()[0].get_rect();
+            let mut frame = ShotFrame::new((1000, 600), theme.clone());
+            frame.layout(&mut scroll).unwrap();
+            let (_, tree, node) = frame.layout_parts().expect("laid out");
+            let (tree, node) = (tree.clone(), node);
+            scroll.mark_drawn();
+            let before = view_rect(&scroll);
             MEASURE_CALLS.with(|count| count.set(0));
             for _ in 0..4 {
-                scroll(&mut nav).scroll_by(0.0, 20.0);
-                nav.apply_layout(&tree, node, Point::ZERO);
-                nav.mark_drawn();
+                scroll.scroll_by(0.0, 20.0);
+                scroll.apply_layout(&tree, node, Point::ZERO);
+                scroll.mark_drawn();
             }
-            let after = scroll(&mut nav).children()[0].get_rect();
+            let after = view_rect(&scroll);
             assert_eq!(after.y0, before.y0 - 80.0);
             assert_eq!(after.size(), before.size());
             assert_eq!(
@@ -2076,38 +1617,23 @@ mod tests {
                 "scrolling an unchanged directory must not remeasure its rows"
             );
             // Real pane resizing must still measure the width-dependent content.
-            tree.compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(1200.0),
-                    height: taffy::AvailableSpace::Definite(600.0),
-                },
-            )
-            .unwrap();
-            nav.apply_layout(&tree, node, Point::ZERO);
+            MEASURE_CALLS.with(|count| count.set(0));
+            frame.layout_at(&mut scroll, (1200, 600)).unwrap();
             assert!(MEASURE_CALLS.with(Cell::get) > 0);
-            let resized = scroll(&mut nav).children()[0].get_rect();
+            let resized = view_rect(&scroll);
             if mode == ViewMode::Grid {
                 assert!(resized.height() < before.height());
             }
             // Theme rebuilds invalidate the retained tree, including scaled rows.
             let scaled = Theme::dark().with_text_scale(2.0);
-            let node = nav.build_layout(&mut tree, &scaled, &mut HashMap::new());
-            tree.compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(1200.0),
-                    height: taffy::AvailableSpace::Definite(600.0),
-                },
-            )
-            .unwrap();
+            let mut frame = ShotFrame::new((1200, 600), scaled.clone());
             MEASURE_CALLS.with(|count| count.set(0));
-            nav.apply_layout(&tree, node, Point::ZERO);
+            frame.layout(&mut scroll).unwrap();
             assert!(MEASURE_CALLS.with(Cell::get) > 0);
-            let scaled_rect = scroll(&mut nav).children()[0].get_rect();
-            let mut expected =
-                FileView::new(&items(1200), &SelectionModel::new(), &sink).mode(mode);
-            expected.text_scale = 2.0;
+            let scaled_rect = view_rect(&scroll);
+            let mut expected = FileView::new(&items(1200), &SelectionModel::new(), &sink)
+                .mode(mode)
+                .with_theme(&scaled);
             expected.columns = expected.columns_for_width(scaled_rect.width());
             let expected_height = expected.content_height(scaled_rect.width()).round();
             assert!(
@@ -2118,18 +1644,20 @@ mod tests {
                 expected.columns,
             );
             // A new directory snapshot is remeasured even at identical pane size.
-            nav.set_content(Box::new(Scrollable::new_vertical().with_child(Box::new(
+            let mut replaced = Scrollable::new_vertical().with_child(Box::new(
                 FileView::new(&items(120), &SelectionModel::new(), &sink).mode(mode),
-            ))));
+            ));
             MEASURE_CALLS.with(|count| count.set(0));
-            nav.apply_layout(&tree, node, Point::ZERO);
+            frame.layout(&mut replaced).unwrap();
             assert!(MEASURE_CALLS.with(Cell::get) > 0);
-            let replaced = scroll(&mut nav).children()[0].get_rect();
-            let mut expected = FileView::new(&items(120), &SelectionModel::new(), &sink).mode(mode);
-            expected.text_scale = 2.0;
-            expected.columns = expected.columns_for_width(replaced.width());
+            let replaced_rect = view_rect(&replaced);
+            let mut expected = FileView::new(&items(120), &SelectionModel::new(), &sink)
+                .mode(mode)
+                .with_theme(&scaled);
+            expected.columns = expected.columns_for_width(replaced_rect.width());
             assert!(
-                (replaced.height() - expected.content_height(replaced.width()).round()).abs()
+                (replaced_rect.height() - expected.content_height(replaced_rect.width()).round())
+                    .abs()
                     < 0.01
             );
         }
@@ -2140,25 +1668,17 @@ mod tests {
     #[test]
     fn list_geometry_follows_width_zoom_and_text_scale() {
         nested_navigation_layout_preserves_large_text_file_row_geometry();
-        large_text_list_reserves_scaled_rows_and_filename_width();
         truncated_file_names_preserve_distinguishing_suffix();
-        zoom_scale_grows_row_height_and_cell_size();
-        narrow_list_collapses_detail_columns_to_give_name_room();
-        large_item_zoom_hides_detail_columns_earlier_on_narrow_windows();
-        accessibility_text_scale_reserves_metadata_width_without_double_zooming_items();
-        header_pins_to_the_viewport_top_once_scrolled();
-        header_click_sorts_even_after_the_list_is_scrolled();
-        list_item_at_maps_rows_below_the_header();
         neighbouring_faces_keep_a_token_gap();
+        grid_zoom_grows_the_cell();
     }
 
     fn nested_navigation_layout_preserves_large_text_file_row_geometry() {
         let sink = new_sink();
         let view = FileView::new(&items(2), &SelectionModel::new(), &sink);
-        let nav = ui::widget::NavShell::sidebar_over_content(
-            Box::new(ui::widget::Text::new("Places")),
-            Box::new(view),
-        );
+        let nav = ui::widget::NavShell::new()
+            .sidebar(Box::new(ui::widget::Text::new("Places")))
+            .content(Box::new(view));
         let theme = Theme::dark().with_text_scale(2.0);
         let nav = ui::headless::Framed::new(ui::State::new(), nav, (1000, 700), theme.clone());
         let row = nav
@@ -2169,62 +1689,29 @@ mod tests {
             .find(|node| node.name.as_deref() == Some("f0"))
             .unwrap();
         let bounds = row.bounds.unwrap();
+        let line = f64::from(theme.text(TextRole::Body).line_height_px());
         assert!(
-            bounds.y1 - bounds.y0 >= 68.0,
-            "nested rows must receive200% layout scale: {bounds:?}"
+            bounds.y1 - bounds.y0 >= line,
+            "nested rows must receive 200% layout scale: {bounds:?}"
         );
         let scene = ui::headless::Framed::harness(&nav).scene();
+        let body = theme.text(TextRole::Body);
         assert!(
             scene
                 .encoding()
                 .resources
                 .glyph_runs
                 .iter()
-                .any(|run| (run.font_size - theme.tokens.typography.scale.base).abs() < 0.01)
+                .any(|run| (run.font_size - body.size).abs() < 0.01)
         );
-    }
-
-    fn large_text_list_reserves_scaled_rows_and_filename_width() {
-        let sink = new_sink();
-        let mut view = FileView::new(&items(2), &SelectionModel::new(), &sink);
-        view.rect = Rect::new(0.0, 0.0, 350.0, 600.0);
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        Widget::measure(
-            &mut view,
-            taffy::Size {
-                width: Some(350.0),
-                height: None,
-            },
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(350.0),
-                height: taffy::AvailableSpace::MaxContent,
-            },
-            &mut tr,
-        );
-        assert!(
-            view.row_h() >= 60.0,
-            "scaled rows need room for large glyphs"
-        );
-        assert!(view.header_h() >= 50.0);
-        let (_, painted_height) = tr.measure(
-            "Ag",
-            view.body_text(&Theme::dark().with_text_scale(2.0)),
-            None,
-        );
-        assert!(f64::from(painted_height) <= view.row_h());
-        assert!(
-            !view.show_size(),
-            "compact large-text names need the full row"
-        );
-        assert!(!view.show_modified());
     }
 
     fn truncated_file_names_preserve_distinguishing_suffix() {
         let mut tr = TextRenderer::new();
         tr.set_text_scale(2.0);
-        let first = truncate(&mut tr, "Document-000.txt", 16.0, 190.0);
-        let next = truncate(&mut tr, "Document-060.txt", 16.0, 190.0);
+        let style = Theme::dark().text(TextRole::Body);
+        let first = truncate(&mut tr, "Document-000.txt", &style, 190.0);
+        let next = truncate(&mut tr, "Document-060.txt", &style, 190.0);
         assert_ne!(first, next);
         assert!(next.ends_with("060.txt"), "{next}");
     }
@@ -2240,7 +1727,7 @@ mod tests {
     fn accessibility_list_bounds_describe_the_scroll_viewport() {
         let sink = new_sink();
         let entries = vec![ent("a.txt", false), ent("b.txt", false)];
-        let mut view = FileView::new(&entries, &SelectionModel::new(), &sink);
+        let mut view = FileView::new(&entries, &SelectionModel::new(), &sink).mode(ViewMode::Grid);
         view.rect = Rect::new(100.0, -500.0, 700.0, 2500.0);
         let viewport = Rect::new(100.0, 150.0, 700.0, 750.0);
         view.last_vp = Some(viewport);
@@ -2255,43 +1742,13 @@ mod tests {
     }
 
     fn accessibility_exposes_each_file_selection_and_collaboration_state() {
-        use ui::widget::Widget;
-
         let sink = new_sink();
         let mut selection = SelectionModel::new();
         selection.select_only(1);
-        let mut entries = vec![ent("folder", true), ent("report.pdf", false)];
-        entries[1].size = 4_000;
-        entries[1].availability = Some(availability_with(
-            "idle",
-            &serde_json::json!({"state": "resident", "bytes": 4000}),
-            "pinned",
-            &serde_json::json!({"state": "known", "reachable": 2, "durable": 1}),
-            false,
-        ));
-        entries[1].share = crate::model::ShareProjection::parse(
-            &serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "record_id": uuid::Uuid::nil().to_string(),
-                "observed_at_ms": 1,
-                "grants": [{
-                    "grant_id": uuid::Uuid::nil().to_string(),
-                    "subject": {"kind": "bearer_link"},
-                    "permission": "View",
-                    "expires_at_ms": null,
-                    "revoked": false,
-                    "expired": false,
-                    "used": false,
-                    "exhausted": false,
-                    "status": "active",
-                    "redemptions": 0,
-                    "max_redemptions": 1
-                }]
-            }))
-            .unwrap(),
-        );
-
-        let view = FileView::new(&entries, &selection, &sink);
+        let entries = accessible_entries();
+        let mut view = FileView::new(&entries, &selection, &sink).mode(ViewMode::Grid);
+        view.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
+        view.columns = view.columns_for_width(900.0);
         let node = Widget::accessibility(&view).expect("file view has semantics");
         assert_eq!(node.name.as_deref(), Some("Files"));
         assert_eq!(node.children.len(), 2);
@@ -2301,19 +1758,7 @@ mod tests {
         assert!(node.children[1].state.selected);
         assert_eq!(node.children[1].pos_in_set, Some(2));
         assert_eq!(node.children[1].set_size, Some(2));
-        let description = node.children[1].description.as_deref().unwrap_or_default();
-        for fact in [
-            "File, 4\u{a0}kB",
-            "Available offline",
-            "Kept offline",
-            "Durably replicated",
-            "Shared with 1 recipient",
-        ] {
-            assert!(
-                description.contains(fact),
-                "missing `{fact}` in {description:?}"
-            );
-        }
+        assert_description_has_every_fact(node.children[1].description.as_deref());
     }
 
     #[test]
@@ -2322,7 +1767,8 @@ mod tests {
         grid_columns_scale_with_width_and_never_zero();
         grid_arrow_targets_follow_the_measured_visual_row();
         phone_grid_keeps_two_accessible_columns_at_normal_and_large_zoom();
-        grid_labels_share_one_baseline_and_stay_inside_the_cell();
+        grid_labels_share_one_baseline_and_fit_two_lines_inside_the_cell();
+        grid_names_wrap_instead_of_being_cut();
     }
 
     fn grid_flows_left_to_right_and_wraps_to_fill_width() {
@@ -2456,6 +1902,10 @@ mod tests {
 
         let cache = thumbnail::ThumbCache::open(dir.path().join("cache")).unwrap();
         let service = Arc::new(thumbnail::ThumbnailService::new(cache, 2, 128));
+        let (settled_tx, settled) = std::sync::mpsc::channel();
+        service.set_wake(move || {
+            settled_tx.send(std::thread::current().id()).unwrap();
+        });
         let ctx = ThumbCtx {
             service: service.clone(),
             imgs: Rc::new(RefCell::new(HashMap::new())),
@@ -2474,6 +1924,7 @@ mod tests {
             share: None,
             history: None,
             rich_metadata: None,
+            observed: None,
         };
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2482,24 +1933,33 @@ mod tests {
 
         // First look schedules generation on the shared service.
         assert!(matches!(
-            FileView::request_thumb(&ctx, &entry, key, thumbnail::FileCategory::Image),
+            FileView::request_thumb(&ctx, &[], &entry, key, thumbnail::FileCategory::Image),
             ThumbState::Loading
         ));
-        assert_eq!(
-            service.pending(),
-            1,
-            "decode is off-loaded to the shared service"
+        let worker = settled.recv_timeout(tilo_test_env::hang_bound()).unwrap();
+        assert_ne!(
+            worker,
+            std::thread::current().id(),
+            "decode is off-loaded to a shared-service worker"
         );
 
-        // Returns as soon as generation settles; the bound only catches a
-        // service that never does, so a loaded runner cannot fail it.
+        // The wake follows settlement; an instantaneous pending count cannot
+        // prove off-loading because a fast worker may already have finished.
         service.block_until_idle(tilo_test_env::hang_bound());
+        assert_eq!(service.pending(), 0, "generation settled within the bound");
         assert!(
-            matches!(
-                FileView::request_thumb(&ctx, &entry, key, thumbnail::FileCategory::Image),
-                ThumbState::Ready(_)
-            ),
+            service.cache().contains(&key),
+            "the shared service cached the preview"
+        );
+        let shared = service.peek(&key).unwrap();
+        let cell = FileView::request_thumb(&ctx, &[], &entry, key, thumbnail::FileCategory::Image);
+        assert!(
+            matches!(cell, ThumbState::Ready(_)),
             "the service produced a real preview the cell reads back"
+        );
+        assert!(
+            Arc::ptr_eq(shared.ready().unwrap(), cell.ready().unwrap()),
+            "the cell reads the service-owned preview rather than decoding its own"
         );
     }
 
@@ -2512,7 +1972,7 @@ mod tests {
         let mut b = a.clone();
         b.name = "after.png".into();
         b.path = PathBuf::from("/var/workspace/after.png");
-        b.modified = Some(chrono::Local::now());
+        b.modified = Some(ui::clock::local_now());
         assert_eq!(
             FileView::thumb_key(&ctx, &a),
             FileView::thumb_key(&ctx, &b),
@@ -2546,6 +2006,7 @@ mod tests {
             share: None,
             history: None,
             rich_metadata: None,
+            observed: None,
         }
     }
 
@@ -2610,7 +2071,7 @@ mod tests {
         image::DynamicImage::ImageRgba8(host)
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
-        xattr::set(&entry.path, crate::model::THUMB_XATTR, &png).unwrap();
+        xattr::set(&entry.path, fs_protocol::THUMB_XATTR, &png).unwrap();
 
         let (service, ctx) = thumb_ctx(&dir.path().join("cache"));
         let sink = new_sink();
@@ -2638,7 +2099,7 @@ mod tests {
         // picture of it.
         let dir = tempfile::tempdir().unwrap();
         let mut entry = photo_on_disk(dir.path(), "harbour.png", 80, 60);
-        entry.sync_state = Some(crate::model::SyncState::Projected);
+        entry.sync_state = Some(fs_protocol::SyncState::Projected);
         let (service, ctx) = thumb_ctx(&dir.path().join("cache"));
         let sink = new_sink();
         let sel = SelectionModel::new();
@@ -2674,106 +2135,10 @@ mod tests {
         let _v = FileView::new(std::slice::from_ref(&entry), &sel, &sink);
         let key = FileView::thumb_key(&ctx, &entry);
         assert!(matches!(
-            FileView::request_thumb(&ctx, &entry, key, thumbnail::FileCategory::Archive),
+            FileView::request_thumb(&ctx, &[], &entry, key, thumbnail::FileCategory::Archive),
             ThumbState::Badge(thumbnail::FileCategory::Archive)
         ));
         assert_eq!(service.pending(), 0, "a badge type never schedules work");
-    }
-
-    fn zoom_scale_grows_row_height_and_cell_size() {
-        let sink = new_sink();
-        let sel = SelectionModel::new();
-        let base = FileView::new(&items(3), &sel, &sink);
-        let zoomed = FileView::new(&items(3), &sel, &sink).with_scale(1.6);
-        assert!(zoomed.row_h() > base.row_h(), "zoom grows list row height");
-        assert!(
-            zoomed.cell_w() > base.cell_w(),
-            "zoom grows grid cell width"
-        );
-        assert!(zoomed.cell_h() > base.cell_h());
-    }
-
-    fn narrow_list_collapses_detail_columns_to_give_name_room() {
-        let sink = new_sink();
-        let sel = SelectionModel::new();
-        let mut v = FileView::new(&items(4), &sel, &sink);
-        // Wide: all three columns shown.
-        v.rect = Rect::new(0.0, 0.0, 900.0, 400.0);
-        assert!(
-            v.show_size() && v.show_modified(),
-            "wide pane shows every column"
-        );
-
-        // Medium: Modified collapses; the right-anchored Size takes its place and
-        // the Name column reclaims the freed space up to the Size column.
-        v.rect = Rect::new(0.0, 0.0, 460.0, 400.0);
-        assert!(v.show_size(), "size still shown at medium width");
-        assert!(!v.show_modified(), "modified collapses on a narrow pane");
-        let size = v.header_col_rect(1);
-        assert!(
-            size.x1 >= v.rect.x1 - v.pad_x() - 1.0,
-            "size is right-anchored once modified is hidden",
-        );
-        let name = v.header_col_rect(0);
-        assert!(
-            name.x1 <= size.x0 && name.x1 > size.x0 - v.pad_x() - 12.0,
-            "name reclaims up to the size column"
-        );
-
-        // Very narrow: both detail columns collapse; Name spans the whole pane.
-        v.rect = Rect::new(0.0, 0.0, 300.0, 400.0);
-        assert!(
-            !v.show_size() && !v.show_modified(),
-            "very narrow shows name only"
-        );
-        let name = v.header_col_rect(0);
-        assert!(
-            name.x1 >= v.rect.x1 - v.pad_x() - 1.0,
-            "name fills the pane when both details hide"
-        );
-    }
-
-    fn large_item_zoom_hides_detail_columns_earlier_on_narrow_windows() {
-        let sink = new_sink();
-        let sel = SelectionModel::new();
-        let mut v = FileView::new(&items(4), &sel, &sink).with_scale(1.6);
-        v.rect = Rect::new(0.0, 0.0, 390.0, 400.0);
-
-        assert!(
-            !v.show_size() && !v.show_modified(),
-            "large text at phone width reserves the row for the filename"
-        );
-        let name = v.header_col_rect(0);
-        assert!(
-            name.width() >= v.rect.width() - 2.0 * v.pad_x() - 1.0,
-            "the name column owns the usable row width at large zoom"
-        );
-    }
-
-    fn accessibility_text_scale_reserves_metadata_width_without_double_zooming_items() {
-        let sink = new_sink();
-        let sel = SelectionModel::new();
-        let mut v = FileView::new(&items(4), &sel, &sink).with_text_scale(2.0);
-        v.rect = Rect::new(0.0, 0.0, 1_200.0, 400.0);
-
-        assert!(
-            v.show_size(),
-            "size still fits in a wide enlarged-text pane"
-        );
-        assert!(v.show_modified(), "modified still fits at desktop width");
-        assert_eq!(
-            v.row_h(),
-            LIST_ROW_H * 2.0,
-            "large text needs a taller row without changing the item zoom"
-        );
-        assert_eq!(
-            v.header_col_rect(2).width(),
-            MOD_COL_W * 2.0,
-            "the date column grows with its text"
-        );
-
-        v.rect = Rect::new(0.0, 0.0, 900.0, 400.0);
-        assert!(!v.show_modified(), "metadata yields to the primary name");
     }
 
     fn rows_outside_the_scroll_viewport_are_culled() {
@@ -2795,21 +2160,9 @@ mod tests {
     fn visible_range_avoids_scanning_a_large_directory() {
         let sink = new_sink();
         let sel = SelectionModel::new();
-        let mut v = FileView::new(&items(100_000), &sel, &sink);
-        v.rect = Rect::new(0.0, -34_000.0, 800.0, 3_366_000.0);
-
-        let list = v.visible_range(Some(Rect::new(0.0, 0.0, 800.0, 600.0)));
-        assert!(
-            list.start > 900,
-            "the viewport starts well into the directory"
-        );
-        assert!(
-            list.len() < 32,
-            "only visible rows plus overdraw are visited"
-        );
-
-        v.mode = ViewMode::Grid;
+        let mut v = FileView::new(&items(100_000), &sel, &sink).mode(ViewMode::Grid);
         v.columns = 5;
+        v.rect = Rect::new(0.0, -34_000.0, 800.0, 3_366_000.0);
         let grid = v.visible_range(Some(Rect::new(0.0, 0.0, 800.0, 600.0)));
         assert!(
             grid.start > 1_000,
@@ -2821,7 +2174,7 @@ mod tests {
         );
     }
 
-    fn drop_targets_are_limited_to_visible_folders() {
+    fn grid_drop_targets_are_limited_to_visible_folders() {
         let sink = new_sink();
         let sel = SelectionModel::new();
         let entries = (0..2_000)
@@ -2833,95 +2186,56 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let targets = Rc::new(RefCell::new(Vec::new()));
-        let mut v = FileView::new(&entries, &sel, &sink).with_drop_targets(targets.clone());
+        let mut v = FileView::new(&entries, &sel, &sink)
+            .mode(ViewMode::Grid)
+            .with_drop_targets(targets.clone());
         v.rect = Rect::new(0.0, -10_000.0, 800.0, 58_000.0);
+        v.columns = v.columns_for_width(800.0);
         v.publish_drop_targets(Some(Rect::new(0.0, 0.0, 800.0, 600.0)));
         assert!(
-            targets.borrow().len() < 32,
+            targets.borrow().len() < 64,
             "the drag registry retains only folders a pointer can reach"
         );
     }
 
-    fn list_and_grid_leave_a_reserved_bottom_lane_clear() {
+    fn grid_leaves_a_reserved_bottom_lane_clear() {
         // Files reserves a bottom lane for its floating status pill. The
         // drawing and folder-drop paths use this same predicate, so a partly
-        // clipped item cannot look actionable behind that app-level chrome.
-        for mode in [ViewMode::List, ViewMode::Grid] {
-            let sink = new_sink();
-            let sel = SelectionModel::new();
-            let mut entries = items(20);
-            for entry in &mut entries {
-                entry.is_dir = true;
-            }
-            let targets = Rc::new(RefCell::new(Vec::new()));
-            let mut v = FileView::new(&entries, &sel, &sink)
-                .mode(mode)
-                .with_drop_targets(Rc::clone(&targets));
-            v.rect = Rect::new(0.0, 0.0, 358.0, 1_200.0);
-            v.columns = v.columns_for_width(v.rect.width());
-            let viewport = Rect::new(0.0, 0.0, 358.0, 210.0);
-
-            let first_partial = match mode {
-                ViewMode::List => v.list_row_rect(5),
-                ViewMode::Grid => v.cell_rect(v.columns),
-            };
-            assert!(
-                (first_partial.y0..first_partial.y1).contains(&viewport.y1),
-                "fixture has a partially visible {mode:?} item: {first_partial:?}"
-            );
-            assert!(
-                !FileView::fits_viewport_bottom(first_partial, Some(viewport)),
-                "the shared draw guard defers the partial {mode:?} item"
-            );
-
-            v.publish_drop_targets(Some(viewport));
-            assert!(
-                targets
-                    .borrow()
-                    .iter()
-                    .all(|target| target.rect.y1 <= viewport.y1),
-                "no partial {mode:?} folder remains a drop target in the status lane"
-            );
+        // clipped cell cannot look actionable behind that app-level chrome.
+        let sink = new_sink();
+        let sel = SelectionModel::new();
+        let mut entries = items(20);
+        for entry in &mut entries {
+            entry.is_dir = true;
         }
-    }
-
-    fn header_pins_to_the_viewport_top_once_scrolled() {
-        let sink = new_sink();
-        let sel = SelectionModel::new();
-        let mut v = FileView::new(&items(40), &sel, &sink);
-        let vp = Some(Rect::new(0.0, 0.0, 600.0, 300.0));
-        // At rest the content's top aligns with the viewport top → the header
-        // sits at the content top.
-        v.rect = Rect::new(0.0, 0.0, 600.0, 800.0);
-        assert!(v.header_top(vp).abs() < f64::EPSILON);
-        // Scrolled: the content is pushed up (rect.y0 < viewport top) so the
-        // header pins to the viewport's top edge and stays visible.
-        v.rect = Rect::new(0.0, -250.0, 600.0, 550.0);
-        assert!(
-            v.header_top(vp).abs() < f64::EPSILON,
-            "pinned to the viewport top"
+        let targets = Rc::new(RefCell::new(Vec::new()));
+        let mut v = FileView::new(&entries, &sel, &sink)
+            .mode(ViewMode::Grid)
+            .with_drop_targets(Rc::clone(&targets));
+        v.rect = Rect::new(0.0, 0.0, 358.0, 1_200.0);
+        v.columns = v.columns_for_width(v.rect.width());
+        let first_partial = v.cell_rect(v.columns);
+        let viewport = Rect::new(
+            0.0,
+            0.0,
+            358.0,
+            first_partial.y0 + first_partial.height() / 2.0,
         );
-        // Without a viewport the header just tracks the content top.
-        assert!((v.header_top(None) + 250.0).abs() < f64::EPSILON);
-    }
-
-    fn header_click_sorts_even_after_the_list_is_scrolled() {
-        let sink = new_sink();
-        let sel = SelectionModel::new();
-        let mut v = FileView::new(&items(40), &sel, &sink);
-        // Scrolled up by 250px; the viewport starts at y=0.
-        v.rect = Rect::new(0.0, -250.0, 900.0, 550.0);
-        v.last_vp = Some(Rect::new(0.0, 0.0, 900.0, 300.0));
-        // A click on the pinned Name header (in the viewport-top band) still
-        // resolves to the name sort column.
-        let name = v.header_col_rect(0);
-        let pt = Point::new(name.x0 + 5.0, v.header_h() / 2.0);
-        assert_eq!(v.header_sort_at(pt), Some(1), "pinned Name header sorts");
-        // A click where the header *used* to be (scrolled off the top) does not
-        // sort — it's off-screen above the viewport.
-        assert_eq!(
-            v.header_sort_at(Point::new(name.x0 + 5.0, -250.0 + v.header_h() / 2.0)),
-            None,
+        assert!(
+            (first_partial.y0..first_partial.y1).contains(&viewport.y1),
+            "fixture has a partially visible cell: {first_partial:?}"
+        );
+        assert!(
+            !FileView::fits_viewport_bottom(first_partial, Some(viewport)),
+            "the shared draw guard defers the partial cell"
+        );
+        v.publish_drop_targets(Some(viewport));
+        assert!(
+            targets
+                .borrow()
+                .iter()
+                .all(|target| target.rect.y1 <= viewport.y1),
+            "no partial folder remains a drop target in the status lane"
         );
     }
 
@@ -2938,36 +2252,11 @@ mod tests {
         // The dangerous bug this guards: a right-click must target the row it
         // lands on, not whatever was selected before. The FileView emits a
         // `ContextSelect(Some(row))` the app drains before opening the menu.
-        let sink = new_sink();
-        let sel = SelectionModel::new();
-        let mut v = FileView::new(&items(10), &sel, &sink);
-        v.rect = Rect::new(0.0, 0.0, 600.0, 600.0);
-
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
-        // Move the cursor onto row 3, then right-press.
-        let y = v.rect.y0 + v.header_h() + 3.0 * v.row_h() + v.row_h() / 2.0;
-        dispatch(
-            &mut v,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: dev(),
-                position: (50.0, y).into(),
-            },
-        );
-        dispatch(
-            &mut v,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: dev(),
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-            },
-        );
-
-        let cmds = sink.borrow();
+        let mut laid = Laid::new(&items(10), (900, 600), |view| view);
+        let row = laid.row_center(3);
+        laid.move_to(row);
+        laid.press(MouseButton::Right);
+        let cmds = laid.commands();
         assert!(
             cmds.iter()
                 .any(|c| matches!(c, FileCommand::ContextSelect(Some(3)))),
@@ -2976,36 +2265,13 @@ mod tests {
     }
 
     fn right_press_on_empty_space_clears_the_selection_for_the_menu() {
-        let sink = new_sink();
-        let sel = SelectionModel::new();
-        let mut v = FileView::new(&items(3), &sel, &sink);
-        v.rect = Rect::new(0.0, 0.0, 600.0, 600.0);
-
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut laid = Laid::new(&items(3), (900, 600), |view| view);
         // Right-press well below the 3 rows → empty space.
-        let y = v.rect.y0 + v.header_h() + 40.0 * v.row_h();
-        dispatch(
-            &mut v,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: dev(),
-                position: (50.0, y).into(),
-            },
-        );
-        dispatch(
-            &mut v,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: dev(),
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-            },
-        );
-
-        let cmds = sink.borrow();
+        let below = laid.view.item_rect(2).unwrap().y1 + 120.0;
+        let x = laid.view.list.rect().x0 + 50.0;
+        laid.move_to(Point::new(x, below));
+        laid.press(MouseButton::Right);
+        let cmds = laid.commands();
         assert!(
             cmds.iter()
                 .any(|c| matches!(c, FileCommand::ContextSelect(None))),
@@ -3016,7 +2282,7 @@ mod tests {
     fn sync_badge_maps_each_state_to_a_distinct_emblem() {
         let theme = Theme::dark();
         // Each hydration state gets its own recognisable glyph, and the
-        // downloading state is tinted with the accent to catch the eye.
+        // downloading state is in-flight, which is the info status.
         assert_eq!(sync_badge(SyncState::Local, &theme).0, Icon::Check);
         assert_eq!(
             sync_badge(SyncState::Projected, &theme).0,
@@ -3025,9 +2291,8 @@ mod tests {
         let (dl_icon, dl_color) = sync_badge(SyncState::Downloading, &theme);
         assert_eq!(dl_icon, Icon::Download);
         assert_eq!(
-            dl_color,
-            theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX],
-            "downloading badge uses the accent colour",
+            dl_color, theme.tokens.colors.semantic.info,
+            "downloading badge shows in-flight state",
         );
     }
 
@@ -3037,7 +2302,7 @@ mod tests {
         policy: &str,
         replicas: &serde_json::Value,
         error: bool,
-    ) -> AvailabilityProjection {
+    ) -> AvailabilityProjectionV1 {
         let value = serde_json::json!({
             "schema_version": 1,
             "record_id": "b0d4e23f-c7cb-4ded-a427-b32cf9da9341",
@@ -3058,7 +2323,7 @@ mod tests {
                 "replicas_observed_at_ms": 3
             }
         });
-        AvailabilityProjection::parse(&serde_json::to_vec(&value).unwrap()).unwrap()
+        AvailabilityProjectionV1::parse_xattr(&serde_json::to_vec(&value).unwrap()).unwrap()
     }
 
     fn rich_availability_badges_are_honest_and_actionable() {
@@ -3132,47 +2397,15 @@ mod tests {
     }
 
     fn dragging_a_directory_row_begins_a_pin_drag() {
-        let sink = new_sink();
-        let sel = SelectionModel::new();
         let mut entries = items(5);
         entries[2] = ent("folder", true);
-        let mut v = FileView::new(&entries, &sel, &sink);
-        v.rect = Rect::new(0.0, 0.0, 600.0, 600.0);
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
-
+        let mut laid = Laid::new(&entries, (900, 600), |view| view);
         // Press on the folder row (row 2), then travel past the threshold.
-        let y = v.rect.y0 + v.header_h() + 2.0 * v.row_h() + v.row_h() / 2.0;
-        dispatch(
-            &mut v,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: dev(),
-                position: (50.0, y).into(),
-            },
-        );
-        dispatch(
-            &mut v,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: dev(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
-        dispatch(
-            &mut v,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: dev(),
-                position: (120.0, y).into(),
-            },
-        );
-
-        let cmds = sink.borrow();
+        let row = laid.row_center(2);
+        laid.move_to(row);
+        laid.press(MouseButton::Left);
+        laid.move_to(Point::new(row.x + 70.0, row.y));
+        let cmds = laid.commands();
         assert!(
             cmds.iter().any(|c| matches!(c, FileCommand::BeginDrag { path, is_dir: true } if path.ends_with("folder"))),
             "a folder press that travels begins a pin drag: {cmds:?}",
@@ -3183,174 +2416,116 @@ mod tests {
         // Files (not only folders) are draggable now — a row drag moves the
         // file into a folder it is dropped onto. The host decides drop
         // semantics; the view just reports the drag started on this row.
-        let sink = new_sink();
-        let sel = SelectionModel::new();
-        let mut v = FileView::new(&items(5), &sel, &sink);
-        v.rect = Rect::new(0.0, 0.0, 600.0, 600.0);
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree.new_leaf(Style::default()).unwrap();
-        let y = v.rect.y0 + v.header_h() + v.row_h() / 2.0;
-        dispatch(
-            &mut v,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: dev(),
-                position: (50.0, y).into(),
-            },
-        );
-        dispatch(
-            &mut v,
-            &tree,
-            node,
-            &WindowEvent::MouseInput {
-                device_id: dev(),
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
-        dispatch(
-            &mut v,
-            &tree,
-            node,
-            &WindowEvent::CursorMoved {
-                device_id: dev(),
-                position: (120.0, y).into(),
-            },
-        );
-        let cmds = sink.borrow();
+        let mut laid = Laid::new(&items(5), (900, 600), |view| view);
+        let row = laid.row_center(0);
+        laid.move_to(row);
+        laid.press(MouseButton::Left);
+        laid.move_to(Point::new(row.x + 70.0, row.y));
+        let cmds = laid.commands();
         assert!(
             cmds.iter().any(|c| matches!(c, FileCommand::BeginDrag { path, is_dir: false } if path.ends_with("f0"))),
             "a file row that travels begins a drag: {cmds:?}",
         );
     }
 
+    /// The host resolves a drop against the folder rects the view publishes,
+    /// so only directories appear, at their laid-out positions.
+    #[test]
     fn apply_layout_publishes_folder_rows_as_drop_targets() {
-        // The host resolves a drop against the folder rects the view publishes,
-        // so only directories must appear, at their laid-out positions.
-        let sink = new_sink();
-        let sel = SelectionModel::new();
         let mut entries = items(5); // f0..f4 are files
         entries[1] = ent("docs", true);
         entries[3] = ent("music", true);
-        let targets: super::DropTargets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let mut v = FileView::new(&entries, &sel, &sink).with_drop_targets(targets.clone());
-        let mut tree = TaffyTree::<()>::new();
-        let node = tree
-            .new_leaf(taffy::Style {
-                size: taffy::Size {
-                    width: Dimension::length(600.0),
-                    height: Dimension::length(600.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        tree.compute_layout(
-            node,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(600.0),
-                height: taffy::AvailableSpace::Definite(600.0),
-            },
-        )
-        .unwrap();
-        v.apply_layout(&tree, node, Point::ZERO);
-        // Drop targets follow the clipped paint viewport, just as they do in
-        // the live Scrollable draw pass; all five rows fit this fixture.
-        v.publish_drop_targets(Some(Rect::new(0.0, 0.0, 600.0, 600.0)));
+        let targets: DropTargets = Rc::new(RefCell::new(Vec::new()));
+        let laid = Laid::new(&entries, (900, 600), |view| {
+            view.with_drop_targets(targets.clone())
+        });
         let published = targets.borrow();
         let names: Vec<String> = published
             .iter()
             .map(|t| t.path.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(
-            names,
-            vec!["docs".to_string(), "music".to_string()],
-            "only folders, in row order"
-        );
-        // Each target's rect sits on its row (row 1 above row 3).
-        assert!(
-            published[0].rect.y0 < published[1].rect.y0,
-            "row order preserved in geometry"
-        );
+        assert_eq!(names, ["docs", "music"], "only folders, in row order");
+        assert_eq!(published[0].rect, laid.view.item_rect(1).unwrap());
+        assert!(published[0].rect.y0 < published[1].rect.y0);
     }
 
+    /// Every row of the list resolves back to itself under the pointer; the
+    /// header band and the space below the last row resolve to nothing.
+    #[test]
     fn list_item_at_maps_rows_below_the_header() {
-        let sink = new_sink();
-        let sel = SelectionModel::new();
-        let mut v = FileView::new(&items(4), &sel, &sink);
-        v.rect = Rect::new(0.0, 0.0, 600.0, 400.0);
-        // A point inside the header band selects nothing.
-        assert_eq!(v.item_at(Point::new(50.0, v.header_h() - 2.0)), None);
-        // The first row sits just below the header.
-        let y = v.rect.y0 + v.header_h() + v.row_h() / 2.0;
-        assert_eq!(v.item_at(Point::new(50.0, y)), Some(0));
-        // The third row.
-        let y2 = v.rect.y0 + v.header_h() + 2.0 * v.row_h() + v.row_h() / 2.0;
-        assert_eq!(v.item_at(Point::new(50.0, y2)), Some(2));
+        let laid = Laid::new(&items(4), (900, 600), |view| view);
+        let table = laid.view.list.rect();
+        let header = laid.view.list.header_height();
+        assert_eq!(
+            laid.view
+                .item_at(Point::new(table.x0 + 50.0, table.y0 + header - 2.0)),
+            None
+        );
+        let rows = laid.view.list.row_rects();
+        assert_eq!(rows.len(), 4);
+        for (index, rect) in rows {
+            assert_eq!(laid.view.item_at(rect.center()), Some(index));
+        }
+        let below = laid.view.item_rect(3).unwrap().y1 + 40.0;
+        assert_eq!(laid.view.item_at(Point::new(table.x0 + 50.0, below)), None);
     }
 
-    /// Folder and file cells in one grid row share a preview slot and hence
-    /// one label baseline; the folder glyph (smaller than a file badge) is
-    /// centred inside that slot rather than pulling its label up.
-    fn grid_labels_share_one_baseline_and_stay_inside_the_cell() {
+    /// Folder and file cells in one grid row share an art square and hence
+    /// one label baseline, and a label that wraps onto a second line still
+    /// fits inside its cell.
+    fn grid_labels_share_one_baseline_and_fit_two_lines_inside_the_cell() {
         let sink = new_sink();
         let sel = SelectionModel::new();
-        // A single-line label box at 1× and at 2× text (14px × 1.25 leading),
-        // the two heights the renderer hands `draw_grid` at those scales.
-        for (text_scale, label_h) in [(1.0_f64, 17.5_f64), (2.0, 35.0)] {
-            let mut v = FileView::new(&items(6), &sel, &sink).mode(ViewMode::Grid);
-            v.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+        for text_scale in [1.0_f32, 2.0] {
+            let theme = Theme::dark().with_text_scale(text_scale);
+            let mut v = FileView::new(&items(6), &sel, &sink)
+                .mode(ViewMode::Grid)
+                .with_theme(&theme);
+            v.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
             v.columns = v.columns_for_width(v.rect.width());
             let cell = v.cell_rect(0);
-            let (slot_y, slot_px, label_y) = v.grid_cell_slot(cell, label_h);
-            // The slot is sized for the larger file badge, so at 1× the
-            // folder glyph fits inside it; when a tall label compacts the slot
-            // below the glyph, `draw_grid` shrinks the glyph to the slot, so
-            // the slot (never the individual preview) stays the label's anchor.
-            let folder_glyph = GRID_ICON * v.scale;
-            if text_scale == 1.0 {
-                assert!(
-                    folder_glyph <= slot_px + 1e-9,
-                    "the folder glyph ({folder_glyph}) fits the shared slot ({slot_px})"
-                );
-            }
+            let art = v.grid_art_px(cell.width());
+            let pad = v.geo.cell_pad * v.scale;
+            let label_top = cell.y0 + pad + art + v.geo.label_gap * v.scale;
             assert!(
-                folder_glyph.min(slot_px) <= slot_px,
-                "the drawn folder glyph never exceeds the slot"
+                v.geo.grid_icon * v.scale <= art + 1e-9,
+                "the type glyph fits the art square"
             );
             assert!(
-                (label_y - (slot_y + slot_px + 6.0 * v.scale)).abs() < 1e-9,
-                "the label hangs from the slot, not from the individual preview"
-            );
-            assert!(
-                label_y + label_h <= cell.y1 + 1e-9,
-                "at {text_scale}× the label ({label_y}+{label_h}) stays inside the cell ({})",
+                label_top + 2.0 * v.geo.label_line + pad <= cell.y1 + 1e-9,
+                "at {text_scale}x two label lines ({label_top}+{}) stay inside the cell ({})",
+                2.0 * v.geo.label_line,
                 cell.y1
             );
         }
     }
 
-    /// HIG §7 "Nothing touches": two adjacent chosen rows keep an `s1` gap
-    /// between their faces, two grid cells keep the grid gap, and the header
-    /// rule is inset from the pane edge like every other separator.
+    /// A name that used to be cut in the middle (a plain document name in a
+    /// narrow cell) wraps onto a second line whole.
+    fn grid_names_wrap_instead_of_being_cut() {
+        let mut tr = TextRenderer::new();
+        let style = Theme::dark().text(TextRole::Body);
+        let cell = Geo::of(&Theme::dark()).cell_w;
+        for name in [
+            "Holiday photos.zip",
+            "Household budget.xlsx",
+            "Quarterly report.pdf",
+            "Wedding invitation.pdf",
+        ] {
+            let lines = tr.clamp_to_lines(name, &style, (cell - 16.0) as f32, GRID_LABEL_LINES);
+            assert!(lines.len() <= GRID_LABEL_LINES);
+            assert_eq!(
+                lines.join(" ").replace("  ", " "),
+                name,
+                "{name} is shown whole"
+            );
+        }
+    }
+
+    /// HIG §7 "Nothing touches": two grid cells keep the grid gap.
     fn neighbouring_faces_keep_a_token_gap() {
         let sink = new_sink();
-        let s1 = f64::from(Spacing::BASE.s1);
-        let mut list = FileView::new(&items(4), &SelectionModel::new(), &sink);
-        list.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
-        for i in 0..3 {
-            let a = FileView::list_row_face(list.list_row_rect(i));
-            let b = FileView::list_row_face(list.list_row_rect(i + 1));
-            let gap = b.y0 - a.y1;
-            assert!(
-                gap >= s1 && (gap - s1).abs() < 0.01,
-                "list rows {i} and {} are {gap}px apart, want s1 ({s1})",
-                i + 1
-            );
-            assert!(a.x0 > list.rect.x0 && a.x1 < list.rect.x1);
-        }
-        assert!(list.pad_x() >= s1, "header rule inset is a token step");
-
+        let s1 = f64::from(Theme::dark().tokens.spacing.s1);
         let mut grid = FileView::new(&items(6), &SelectionModel::new(), &sink).mode(ViewMode::Grid);
         grid.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
         grid.columns = grid.columns_for_width(800.0);
@@ -3364,5 +2539,423 @@ mod tests {
             "grid rows touch: {}",
             below.y0 - a.y1
         );
+    }
+
+    fn grid_zoom_grows_the_cell() {
+        let sink = new_sink();
+        let sel = SelectionModel::new();
+        let mut base = FileView::new(&items(3), &sel, &sink).mode(ViewMode::Grid);
+        let mut zoomed = FileView::new(&items(3), &sel, &sink)
+            .mode(ViewMode::Grid)
+            .with_scale(1.6);
+        base.rect = Rect::new(0.0, 0.0, 1000.0, 600.0);
+        zoomed.rect = base.rect;
+        assert!(
+            zoomed.cell_w() > base.cell_w(),
+            "zoom grows grid cell width"
+        );
+        assert!(zoomed.cell_h() > base.cell_h());
+        assert!(zoomed.row_h() > base.row_h(), "zoom grows list row height");
+    }
+
+    /// A folder and a pinned, shared, replicated file: every fact the
+    /// accessibility description carries.
+    fn accessible_entries() -> Vec<Entry> {
+        let mut entries = vec![ent("folder", true), ent("report.pdf", false)];
+        entries[1].size = 4_000;
+        entries[1].availability = Some(availability_with(
+            "idle",
+            &serde_json::json!({"state": "resident", "bytes": 4000}),
+            "pinned",
+            &serde_json::json!({"state": "known", "reachable": 2, "durable": 1}),
+            false,
+        ));
+        entries[1].share = fs_protocol::ShareProjectionV1::parse_xattr(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "record_id": uuid::Uuid::nil().to_string(),
+                "observed_at_ms": 1,
+                "grants": [{
+                    "grant_id": uuid::Uuid::nil().to_string(),
+                    "subject": {"kind": "bearer_link"},
+                    "permission": "View",
+                    "expires_at_ms": null,
+                    "revoked": false,
+                    "expired": false,
+                    "used": false,
+                    "exhausted": false,
+                    "status": "active",
+                    "redemptions": 0,
+                    "max_redemptions": 1
+                }]
+            }))
+            .unwrap(),
+        )
+        .ok();
+
+        entries
+    }
+
+    fn assert_description_has_every_fact(description: Option<&str>) {
+        let description = description.unwrap_or_default();
+        for fact in [
+            "File, 4\u{a0}kB",
+            "Available offline",
+            "Kept offline",
+            "Durably replicated",
+            "Shared with 1 recipient",
+        ] {
+            assert!(
+                description.contains(fact),
+                "missing `{fact}` in {description:?}"
+            );
+        }
+    }
+
+    /// A view laid out for real in a frame, so a list's table has the geometry
+    /// it paints and hit-tests with.
+    struct Laid {
+        view: FileView,
+        frame: ui::launch::ShotFrame,
+        sink: CommandSink,
+    }
+
+    impl Laid {
+        fn new(
+            entries: &[Entry],
+            size: (u32, u32),
+            build: impl FnOnce(FileView) -> FileView,
+        ) -> Self {
+            Self::with_theme(entries, size, Theme::dark(), build)
+        }
+
+        fn with_theme(
+            entries: &[Entry],
+            size: (u32, u32),
+            theme: Theme,
+            build: impl FnOnce(FileView) -> FileView,
+        ) -> Self {
+            let sink = new_sink();
+            let mut view = build(FileView::new(entries, &SelectionModel::new(), &sink));
+            let mut frame = ui::launch::ShotFrame::new(size, theme);
+            frame.layout(&mut view).unwrap();
+            let _ = frame.draw(&mut view);
+            Self { view, frame, sink }
+        }
+
+        /// Lay the view out and paint it again, as the next frame does.
+        fn relayout(&mut self) {
+            self.frame.layout(&mut self.view).unwrap();
+            let _ = self.frame.draw(&mut self.view);
+        }
+
+        fn send(&mut self, event: &WindowEvent) {
+            let (_, tree, node) = self.frame.layout_parts().expect("laid out");
+            let tree = tree.clone();
+            ui::testing::Dispatch::new()
+                .layout(&tree, node)
+                .send(&mut self.view, event);
+        }
+
+        fn move_to(&mut self, at: Point) {
+            self.send(&WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: (at.x, at.y).into(),
+            });
+        }
+
+        fn press(&mut self, button: MouseButton) {
+            self.send(&ui::synthetic_input::mouse_input(
+                ElementState::Pressed,
+                button,
+            ));
+        }
+
+        /// The centre of list row `index`.
+        fn row_center(&self, index: usize) -> Point {
+            self.view
+                .item_rect(index)
+                .expect("the row is on screen")
+                .center()
+        }
+
+        fn commands(&self) -> Vec<FileCommand> {
+            self.sink.borrow().iter().cloned().collect()
+        }
+    }
+
+    /// The list is the framework's table: a name, a size and a modified
+    /// column, the sort indicator on the column the entries are ordered by,
+    /// and one row per entry named for its file.
+    #[test]
+    fn the_list_is_a_table_with_a_sorted_column_and_a_row_per_entry() {
+        let laid = Laid::new(&items(4), (900, 600), |view| view);
+        let node = Widget::accessibility(&laid.view).expect("list semantics");
+        assert_eq!(node.role, ui::a11y::Role::Table);
+        assert_eq!(node.name.as_deref(), Some("Files"));
+        assert_eq!(
+            node.description.as_deref(),
+            Some("sorted by Name ascending")
+        );
+        assert_eq!(node.children.len(), 4);
+        let headers: Vec<_> = node.children[0]
+            .children
+            .iter()
+            .filter_map(|cell| cell.name.clone())
+            .filter(|name| !name.is_empty())
+            .collect();
+        assert_eq!(headers, ["Name", "Size", "Modified"]);
+        assert_eq!(node.children[2].name.as_deref(), Some("f2"));
+        assert_eq!(node.children[2].pos_in_set, Some(3));
+    }
+
+    /// Row height follows the item zoom, and the table's header band is the
+    /// one the view reserves for hit-testing.
+    #[test]
+    fn list_rows_follow_item_zoom_and_the_header_band_is_the_tables() {
+        let base = Laid::new(&items(3), (900, 600), |view| view);
+        let zoomed = Laid::new(&items(3), (900, 600), |view| view.with_scale(1.6));
+        let height = |laid: &Laid| laid.view.item_rect(0).unwrap().height();
+        assert!(
+            height(&zoomed) > height(&base),
+            "zoom grows list row height"
+        );
+        let table = base.view.list.rect();
+        let first = base.view.item_rect(0).unwrap();
+        assert!(
+            (first.y0 - (table.y0 + base.view.list.header_height())).abs() < 0.01,
+            "the first row starts where the header band the view reserves ends"
+        );
+        let scaled = Theme::dark().with_text_scale(2.0);
+        let large = Laid::with_theme(&items(3), (900, 600), scaled.clone(), |view| {
+            view.with_theme(&scaled)
+        });
+        assert!(
+            large.view.item_rect(0).unwrap().height()
+                >= f64::from(scaled.text(TextRole::Body).line_height_px()),
+            "large type needs room in its rows"
+        );
+        let table = large.view.list.rect();
+        assert!(
+            (large.view.item_rect(0).unwrap().y0 - (table.y0 + large.view.list.header_height()))
+                .abs()
+                < 0.01,
+            "the header band follows the type"
+        );
+    }
+
+    /// A directory with a hundred thousand entries mounts only the rows it
+    /// shows, and scrolling moves that window.
+    #[test]
+    fn a_large_directory_mounts_only_the_visible_rows() {
+        let mut laid = Laid::new(&items(100_000), (900, 600), |view| view);
+        let first = laid.view.list.row_rects();
+        assert!(first.len() < 40, "{} rows mounted", first.len());
+        assert_eq!(first[0].0, 0);
+        laid.view.list.set_scroll_y(34_000.0);
+        laid.relayout();
+        let later = laid.view.list.row_rects();
+        assert!(later.len() < 40);
+        assert!(later[0].0 > 900, "the window moved to row {}", later[0].0);
+    }
+
+    /// The wheel scrolls the table, and its scroll position survives the host
+    /// rebuilding the view around the same slot.
+    #[test]
+    fn the_list_scrolls_by_wheel_and_keeps_its_place_across_rebuilds() {
+        let mut laid = Laid::new(&items(300), (900, 600), |view| view);
+        let slot = laid.view.list.clone();
+        let centre = laid.view.list.rect().center();
+        laid.move_to(centre);
+        laid.send(&ui::synthetic_input::mouse_wheel(0.0, -5.0));
+        let scrolled = slot.scroll_y();
+        assert!(scrolled > 0.0, "a wheel-down scrolls the list");
+        assert!(slot.max_scroll_y() >= scrolled);
+
+        // The host replaces the view (a selection changed): the table stays.
+        let sink = new_sink();
+        let mut rebuilt =
+            FileView::new(&items(300), &SelectionModel::new(), &sink).with_list(slot.clone());
+        let mut frame = ui::launch::ShotFrame::new((900, 600), Theme::dark());
+        frame.layout(&mut rebuilt).unwrap();
+        assert_eq!(
+            slot.scroll_y(),
+            scrolled,
+            "the scroll position survives a rebuild"
+        );
+
+        // A new folder starts at the top.
+        slot.reset_scroll();
+        assert_eq!(slot.scroll_y(), 0.0);
+    }
+
+    /// The columns follow the pane: all three when wide, the date alone when
+    /// medium, the name alone when narrow, sooner with larger type or zoom.
+    #[test]
+    fn narrow_panes_drop_detail_columns_and_ask_for_a_rebuild() {
+        let mut wide = Laid::new(&items(4), (1000, 600), |view| view);
+        assert!(
+            !Widget::take_structure_dirty(&mut wide.view),
+            "wide keeps every column"
+        );
+
+        // A medium pane shows the size and the date, without the time.
+        let mut laid = Laid::new(&items(4), (900, 600), |view| view);
+        assert!(!Widget::take_structure_dirty(&mut laid.view));
+        let mut medium = Laid::new(&items(4), (560, 600), |view| view);
+        assert!(
+            Widget::take_structure_dirty(&mut medium.view),
+            "a pane narrower than the columns it was built with asks for a rebuild"
+        );
+
+        // The rebuilt view finds its columns already fitted.
+        let slot = medium.view.list.clone();
+        let sink = new_sink();
+        let mut rebuilt = FileView::new(&items(4), &SelectionModel::new(), &sink).with_list(slot);
+        let mut frame = ui::launch::ShotFrame::new((560, 600), Theme::dark());
+        frame.layout(&mut rebuilt).unwrap();
+        assert!(!Widget::take_structure_dirty(&mut rebuilt));
+        let node = Widget::accessibility(&rebuilt).unwrap();
+        let headers: Vec<_> = node.children[0]
+            .children
+            .iter()
+            .filter_map(|cell| cell.name.clone())
+            .filter(|name| !name.is_empty())
+            .collect();
+        assert_eq!(
+            headers,
+            ["Name", "Size", "Modified"],
+            "the date column stays at 560"
+        );
+
+        // A phone-width pane keeps the name alone, and large item zoom gives
+        // up the detail columns sooner.
+        let geo = Geo::of(&Theme::dark());
+        assert_eq!(shape_columns(1000.0, &geo, 1.0, 1.0), (true, 2));
+        assert_eq!(shape_columns(500.0, &geo, 1.0, 1.0), (true, 1));
+        assert_eq!(shape_columns(250.0, &geo, 1.0, 1.0), (false, 0));
+        assert_eq!(shape_columns(360.0, &geo, 1.6, 1.0), (false, 0));
+        assert_eq!(shape_columns(900.0, &geo, 1.0, 2.0), (true, 1));
+    }
+
+    /// Clicking a column's header sorts by it, and the click reaches the app
+    /// as the column's sort command; a press on a row is not a sort.
+    #[test]
+    fn header_clicks_sort_by_the_column() {
+        let mut laid = Laid::new(&items(4), (900, 600), |view| view);
+        let node = Widget::accessibility(&laid.view).unwrap();
+        let cell = |column: usize| node.children[0].children[column].bounds.unwrap().to_rect();
+        let header_y = laid.view.list.rect().y0 + laid.view.list.header_height() / 2.0;
+        for (column, command) in [(0, 1), (1, 2), (2, 3)] {
+            laid.sink.borrow_mut().clear();
+            let x = cell(column).center().x;
+            laid.move_to(Point::new(x, header_y));
+            laid.press(MouseButton::Left);
+            assert!(
+                laid.commands()
+                    .iter()
+                    .any(|c| matches!(c, FileCommand::SortColumn(i) if *i == command)),
+                "column {column} sorts as column {command}: {:?}",
+                laid.commands()
+            );
+        }
+        laid.sink.borrow_mut().clear();
+        let row = laid.row_center(1);
+        laid.move_to(row);
+        laid.press(MouseButton::Left);
+        assert!(
+            !laid
+                .commands()
+                .iter()
+                .any(|c| matches!(c, FileCommand::SortColumn(_)))
+        );
+    }
+
+    /// A press on a row selects it, and arms the drag that carries it.
+    #[test]
+    fn a_press_on_a_list_row_selects_it_and_arms_a_drag() {
+        let mut laid = Laid::new(&items(5), (900, 600), |view| view);
+        let row = laid.row_center(2);
+        laid.move_to(row);
+        laid.press(MouseButton::Left);
+        let commands = laid.commands();
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                FileCommand::Click {
+                    index: 2,
+                    ctrl: false,
+                    shift: false
+                }
+            )),
+            "{commands:?}"
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|c| matches!(c, FileCommand::ArmDrag { path, .. } if path.ends_with("f2"))),
+            "{commands:?}"
+        );
+        assert!(
+            Widget::accessibility(&laid.view).unwrap().children[2]
+                .state
+                .selected,
+            "the table shows the row selected at once"
+        );
+    }
+
+    /// A list with long rows and a bottom inset keeps its rows clear of the
+    /// status lane, and only folders the pointer can reach are drop targets.
+    #[test]
+    fn list_rows_and_drop_targets_stay_above_the_status_lane() {
+        let mut entries = items(60);
+        for entry in &mut entries {
+            entry.is_dir = true;
+        }
+        let targets: DropTargets = Rc::new(RefCell::new(Vec::new()));
+        let laid = Laid::new(&entries, (900, 600), |view| {
+            view.with_bottom_inset(64.0)
+                .with_drop_targets(targets.clone())
+        });
+        let table = laid.view.list.rect();
+        assert!(
+            table.y1 <= 600.0 - 64.0 + 0.5,
+            "the table ends above the status lane: {table:?}"
+        );
+        let published = targets.borrow();
+        assert!(
+            !published.is_empty() && published.len() < 32,
+            "{}",
+            published.len()
+        );
+        assert!(
+            published
+                .iter()
+                .all(|target| target.rect.y1 <= table.y1 + 0.5 && target.rect.y0 >= table.y0),
+            "no drop target lies in the status lane"
+        );
+    }
+
+    /// The list says what it holds for assistive technology: one row per
+    /// file, named for it, with what is known about it, and which are chosen.
+    #[test]
+    fn the_list_exposes_each_file_selection_and_collaboration_state() {
+        let mut selection = SelectionModel::new();
+        selection.select_only(1);
+        let entries = accessible_entries();
+        let sink = new_sink();
+        let mut view = FileView::new(&entries, &selection, &sink);
+        let mut frame = ui::launch::ShotFrame::new((900, 600), Theme::dark());
+        frame.layout(&mut view).unwrap();
+        let node = Widget::accessibility(&view).expect("file view has semantics");
+        assert_eq!(node.name.as_deref(), Some("Files"));
+        assert_eq!(node.children.len(), 2);
+        assert_eq!(node.children[0].name.as_deref(), Some("folder"));
+        assert!(!node.children[0].state.selected);
+        assert_eq!(node.children[1].name.as_deref(), Some("report.pdf"));
+        assert!(node.children[1].state.selected);
+        assert_eq!(node.children[1].pos_in_set, Some(2));
+        assert_eq!(node.children[1].set_size, Some(2));
+        assert_description_has_every_fact(node.children[1].description.as_deref());
     }
 }

@@ -1,27 +1,25 @@
 //! What each peer can encode and decode, from their
 //! [`NeighbourMsg::MediaCapabilities`](crate::network::NeighbourMsg) adverts.
 //!
-//! Peers advertise with every heartbeat (every 5 s). An advert older than
-//! [`STALE_AFTER`] is forgotten, which is how an evicted peer drops out: the
-//! registry needs no eviction hook. A peer with no fresh advert is treated as
+//! A peer advertises when its link to a neighbour comes up and again when
+//! what it can do changes, not on a timer, so an advert holds until the peer
+//! says otherwise or departs: the network forgets a departed peer's advert
+//! ([`forget`]). A peer with no advert is treated as
 //! [`CodecCapabilities::legacy_peer`] — H.264 only — which is what every
 //! build that predates the advert can decode.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
 
 use media::realtime::CodecCapabilities;
 
 use crate::network::protocol::{NeighbourMsg, PeerId};
-
-/// Three missed heartbeats, the same horizon as peer eviction.
-pub const STALE_AFTER: Duration = Duration::from_secs(15);
+use tilo_lock::MutexRecover as _;
 
 #[derive(Default)]
 struct Registry {
-    peers: HashMap<PeerId, (CodecCapabilities, Instant)>,
+    peers: HashMap<PeerId, CodecCapabilities>,
     /// Bumped whenever a peer's advertised capabilities change, so a share
     /// can tell cheaply whether to renegotiate.
     generation: u64,
@@ -93,40 +91,42 @@ pub fn record(
             software_decode: CodecCapabilities::parse_labels(software_decode),
             hardware_encode: CodecCapabilities::parse_labels(hardware_encode),
             software_encode: CodecCapabilities::parse_labels(software_encode),
+            hardware_decode_max: std::collections::BTreeMap::new(),
         },
     );
 }
 
-/// Record parsed capabilities for `peer`, stamped now.
+/// Record parsed capabilities for `peer`.
 pub fn record_caps(peer: PeerId, caps: CodecCapabilities) {
-    let mut reg = registry()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let changed = reg.peers.get(&peer).is_none_or(|(old, _)| *old != caps);
-    reg.peers.insert(peer, (caps, Instant::now()));
+    let mut reg = registry().lock_recover();
+    let changed = reg.peers.get(&peer).is_none_or(|old| *old != caps);
+    reg.peers.insert(peer, caps);
     if changed {
         reg.generation = reg.generation.wrapping_add(1);
     }
 }
 
-/// What `peer` can do, or [`CodecCapabilities::legacy_peer`] without a
-/// fresh advert.
+/// Forget what departed `peer` advertised: a peer that comes back says
+/// again when its link does.
+pub fn forget(peer: PeerId) {
+    let mut reg = registry().lock_recover();
+    if reg.peers.remove(&peer).is_some() {
+        reg.generation = reg.generation.wrapping_add(1);
+    }
+}
+
+/// What `peer` can do, or [`CodecCapabilities::legacy_peer`] without an
+/// advert.
 pub fn capabilities(peer: PeerId) -> CodecCapabilities {
-    let reg = registry()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let reg = registry().lock_recover();
     reg.peers
         .get(&peer)
-        .filter(|(_, seen)| seen.elapsed() < STALE_AFTER)
-        .map_or_else(CodecCapabilities::legacy_peer, |(caps, _)| caps.clone())
+        .map_or_else(CodecCapabilities::legacy_peer, Clone::clone)
 }
 
 /// Advances whenever some peer's capabilities changed.
 pub fn generation() -> u64 {
-    registry()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .generation
+    registry().lock_recover().generation
 }
 
 #[cfg(test)]
@@ -155,6 +155,24 @@ mod tests {
             let after = generation();
             record(PEER, &["av1".into()], &["h264".into()], &[], &[]);
             assert_eq!(generation(), after, "an unchanged advert is not a change");
+        }
+        // Phase `an_advert_holds_until_its_peer_departs`. Nothing restates
+        // it, so it does not go stale with time; departure forgets it.
+        {
+            const PEER: PeerId = 0x5eed_0002;
+            record(PEER, &["av1".into()], &["h264".into()], &[], &[]);
+            assert!(
+                capabilities(PEER)
+                    .hardware_decode
+                    .contains(&StreamCodec::Av1)
+            );
+            let before = generation();
+            forget(PEER);
+            assert_eq!(capabilities(PEER), CodecCapabilities::legacy_peer());
+            assert_ne!(generation(), before, "a departure is a change");
+            let after = generation();
+            forget(PEER);
+            assert_eq!(generation(), after, "forgetting nobody changes nothing");
         }
         // Phase `the_local_advert_names_this_peer`.
         match local_advert(7) {

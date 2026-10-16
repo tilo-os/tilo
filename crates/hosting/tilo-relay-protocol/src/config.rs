@@ -107,6 +107,177 @@ pub struct RelayConfig {
     /// empty list keeps the relay standalone (current behaviour).
     #[serde(default, rename = "peer_relays")]
     pub peer_relays: Vec<PeerRelayConfig>,
+
+    /// Interactive environment sessions this relay's own compute worker
+    /// runs for members. Absent: it runs none. Needs `services.compute`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environments: Option<EnvironmentsConfig>,
+
+    /// Web entry base (ending in `/`) of the operator's versioned browser bundle,
+    /// announced in catalogue locators so links are minted under it.
+    /// This is a navigation destination, not an admission or content-access grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_entry: Option<String>,
+    /// Per-person change and content budgets, for a host whose rooms admit
+    /// the public. `None` limits nobody.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_limits: Option<MemberLimitsConfig>,
+    /// Pre-admissions a governed room keeps, spent ones included. A public
+    /// room that pre-admits every visitor raises it. `None` keeps 1024.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_room_grants: Option<usize>,
+}
+
+/// How a relay's compute worker hosts members' environment sessions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentsConfig {
+    /// The `tilo-ush` binary members' supervisors run.
+    #[serde(default = "default_ush_binary")]
+    pub ush_binary: PathBuf,
+    /// The `tilo-env-tools` binary members' tool builds run.
+    #[serde(default = "default_env_tools_binary")]
+    pub env_tools_binary: PathBuf,
+    /// Sessions the worker runs at once, for all members together.
+    #[serde(default = "default_environment_capacity")]
+    pub capacity: u32,
+    /// Concurrent sessions per member.
+    #[serde(default = "default_member_sessions")]
+    pub member_sessions: u32,
+    /// Disk per member, bytes.
+    #[serde(default = "default_member_disk_bytes")]
+    pub member_disk_bytes: u64,
+    /// Memory per member, bytes (enforced with `cgroup_root`).
+    #[serde(default = "default_member_memory_bytes")]
+    pub member_memory_bytes: u64,
+    /// CPU per member, percent of one core (enforced with `cgroup_root`).
+    #[serde(default = "default_member_cpu_percent")]
+    pub member_cpu_percent: u32,
+    /// Processes per member (enforced with `cgroup_root`).
+    #[serde(default = "default_member_processes")]
+    pub member_processes: u32,
+    /// Legacy VMs per member, on a worker that advertises `kvm`.
+    #[serde(default = "default_member_legacy_vms")]
+    pub member_legacy_vms: u32,
+    /// A detached session quiet for this long is ended.
+    #[serde(default = "default_idle_timeout_secs")]
+    pub idle_timeout_secs: u64,
+    /// First uid of a range members' supervisors run as, one uid each.
+    /// Requires running as root; absent, members share the relay's uid.
+    #[serde(default)]
+    pub member_uid_first: Option<u32>,
+    /// Uids in that range.
+    #[serde(default)]
+    pub member_uid_count: u32,
+    /// A delegated cgroup v2 directory for per-member CPU, memory and
+    /// process limits.
+    #[serde(default)]
+    pub cgroup_root: Option<PathBuf>,
+    /// OCI references (`host/repo[:tag]`) environment images are fetched
+    /// from when the relay's own stores lack them.
+    #[serde(default = "default_image_sources")]
+    pub image_sources: Vec<String>,
+    /// Legacy apps for members, on a worker with KVM. Absent: none.
+    #[serde(default)]
+    pub legacy: Option<LegacyAppsConfig>,
+}
+
+/// How a KVM worker runs members' legacy apps: each member's legacy VM
+/// through `tilo-legacy`, their windows on a headless Tilo shell.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyAppsConfig {
+    /// The `tilo-legacy` binary.
+    #[serde(default = "default_tilo_legacy_binary")]
+    pub tilo_legacy_binary: PathBuf,
+    /// The Tilo shell, run headless as the compositor of a member's windows.
+    #[serde(default = "default_shell_binary")]
+    pub shell_binary: PathBuf,
+    /// A local guest disk to create VMs from instead of the pinned image.
+    #[serde(default)]
+    pub guest_image: Option<PathBuf>,
+    /// Seconds a member's VM may sit with nothing running before it sleeps.
+    #[serde(default)]
+    pub idle_suspend_secs: Option<u64>,
+}
+
+impl Default for LegacyAppsConfig {
+    fn default() -> Self {
+        Self {
+            tilo_legacy_binary: default_tilo_legacy_binary(),
+            shell_binary: default_shell_binary(),
+            guest_image: None,
+            idle_suspend_secs: None,
+        }
+    }
+}
+
+fn default_tilo_legacy_binary() -> PathBuf {
+    PathBuf::from("/usr/bin/tilo-legacy")
+}
+
+fn default_shell_binary() -> PathBuf {
+    PathBuf::from("/usr/bin/shell")
+}
+
+impl Default for EnvironmentsConfig {
+    fn default() -> Self {
+        Self {
+            ush_binary: default_ush_binary(),
+            env_tools_binary: default_env_tools_binary(),
+            capacity: default_environment_capacity(),
+            member_sessions: default_member_sessions(),
+            member_disk_bytes: default_member_disk_bytes(),
+            member_memory_bytes: default_member_memory_bytes(),
+            member_cpu_percent: default_member_cpu_percent(),
+            member_processes: default_member_processes(),
+            member_legacy_vms: default_member_legacy_vms(),
+            idle_timeout_secs: default_idle_timeout_secs(),
+            member_uid_first: None,
+            member_uid_count: 0,
+            cgroup_root: None,
+            image_sources: default_image_sources(),
+            legacy: None,
+        }
+    }
+}
+
+fn default_image_sources() -> Vec<String> {
+    vec![
+        "registry.tilo.so/tilo/env-runtime".into(),
+        "registry.tilo.so/tilo/env-tools".into(),
+    ]
+}
+
+fn default_env_tools_binary() -> PathBuf {
+    PathBuf::from("/usr/bin/tilo-env-tools")
+}
+
+fn default_ush_binary() -> PathBuf {
+    PathBuf::from("/usr/bin/tilo-ush")
+}
+const fn default_environment_capacity() -> u32 {
+    32
+}
+const fn default_member_sessions() -> u32 {
+    4
+}
+const fn default_member_disk_bytes() -> u64 {
+    10 * 1024 * 1024 * 1024
+}
+const fn default_member_memory_bytes() -> u64 {
+    2 * 1024 * 1024 * 1024
+}
+const fn default_member_cpu_percent() -> u32 {
+    200
+}
+const fn default_member_processes() -> u32 {
+    512
+}
+const fn default_member_legacy_vms() -> u32 {
+    1
+}
+const fn default_idle_timeout_secs() -> u64 {
+    30 * 60
 }
 
 /// A configured federated peer relay. Two relays that list each
@@ -267,6 +438,35 @@ impl Default for RelayConfig {
             services: default_services(),
             workspaces: Vec::new(),
             peer_relays: Vec::new(),
+            environments: None,
+            web_entry: None,
+            member_limits: None,
+            max_room_grants: None,
+        }
+    }
+}
+
+/// Per-person limits a public host applies to members' traffic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemberLimitsConfig {
+    /// Changes refilled per window.
+    pub changes_per_window: u32,
+    /// The window, in seconds.
+    pub window_secs: u32,
+    /// Changes a person may send at once.
+    pub burst: u32,
+    /// Record content bytes a person may send per hour.
+    pub content_bytes_per_hour: u64,
+}
+
+impl Default for MemberLimitsConfig {
+    fn default() -> Self {
+        Self {
+            changes_per_window: 20,
+            window_secs: 10,
+            burst: 40,
+            content_bytes_per_hour: 8 * 1024 * 1024,
         }
     }
 }
@@ -421,11 +621,22 @@ mod tests {
 
     #[test]
     fn shell_authority_config_accepts_exact_local_binding() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../tilo-relay/tests/fixtures/shell-proof/failure.json"
-        ))
-        .unwrap();
-        let binding = serde_json::json!({"id": "42", "shell_authority": {"room": fixture["room"], "governor": fixture["authority"]}});
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
+        let mut governor = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Native workspace peer".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut governor, &root).unwrap();
+        let binding = serde_json::json!({"id": "42", "shell_authority": {
+            "room": "5e11f00d-7110-4000-8000-000000000001",
+            "governor": governor,
+        }});
         let binding: WorkspaceBinding = serde_json::from_value(binding).unwrap();
         assert_eq!(
             toml::from_str::<WorkspaceBinding>(&toml::to_string(&binding).unwrap()).unwrap(),

@@ -103,6 +103,9 @@ pub enum MissingPrerequisite {
     CausalDependencies,
     PersistedMls,
     ExactHistoricalEvidence,
+    /// The app surface the op names is not here yet: the op is decided
+    /// once it is.
+    AppSurface,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputDisposition {
@@ -156,11 +159,20 @@ impl std::ops::DerefMut for AdmissionReport {
 }
 
 /// Compact positive evidence only. Never evicted to meet a quota.
+///
+/// Every admission copies the peer it is decided in, and the index grows
+/// with every write a room keeps: its settled entries are shared between
+/// copies, so a copy costs the few entries since they last settled, not the
+/// whole index.
 #[derive(Clone, Default)]
 pub(crate) struct ExactAdmissions {
-    entries: BTreeMap<AdmissionKey, [u8; 32]>,
+    settled: std::sync::Arc<BTreeMap<AdmissionKey, [u8; 32]>>,
+    /// Entries since the last settling, none of them in `settled`.
+    recent: BTreeMap<AdmissionKey, [u8; 32]>,
     entry_bytes: usize,
 }
+/// Entries an index keeps apart before it settles them.
+const RECENT_ADMISSIONS: usize = 256;
 fn count_bytes(mut count: usize) -> usize {
     let mut bytes = 1usize;
     while count >= 128 {
@@ -172,10 +184,43 @@ fn count_bytes(mut count: usize) -> usize {
 }
 impl ExactAdmissions {
     pub(crate) fn get(&self, key: &AdmissionKey) -> Option<&[u8; 32]> {
-        self.entries.get(key)
+        self.recent.get(key).or_else(|| self.settled.get(key))
     }
+    pub(crate) fn len(&self) -> usize {
+        self.settled.len().saturating_add(self.recent.len())
+    }
+    /// Every entry, in key order.
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&AdmissionKey, &[u8; 32])> {
-        self.entries.iter()
+        let mut settled = self.settled.iter().peekable();
+        let mut recent = self.recent.iter().peekable();
+        std::iter::from_fn(move || match (settled.peek(), recent.peek()) {
+            (Some(old), Some(new)) if old.0 < new.0 => settled.next(),
+            (Some(_), None) => settled.next(),
+            _ => recent.next(),
+        })
+    }
+    /// Add an entry `check` measured as `bytes`, settling the recent ones
+    /// once there are enough of them.
+    pub(super) fn add(&mut self, key: AdmissionKey, operation_id: [u8; 32], bytes: usize) {
+        self.recent.insert(key, operation_id);
+        // `check` bounded the new total by MAX_EXACT_ADMISSION_BYTES.
+        self.entry_bytes = self.entry_bytes.saturating_add(bytes);
+        if self.recent.len() >= RECENT_ADMISSIONS {
+            let recent = std::mem::take(&mut self.recent);
+            std::sync::Arc::make_mut(&mut self.settled).extend(recent);
+        }
+    }
+    /// The entries as the canonical index map: in key order, every one once.
+    pub(super) fn serialize_entries<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        let mut map = serializer.serialize_map(Some(self.len()))?;
+        for (key, operation_id) in self.iter() {
+            map.serialize_entry(key, operation_id)?;
+        }
+        map.end()
     }
     pub(crate) fn check(&self, op: &DocumentAdmission) -> Result<usize, AdmissionError> {
         if let Some(prior) = self.get(&op.key) {
@@ -185,7 +230,7 @@ impl ExactAdmissions {
                 Err(AdmissionError::ConflictingSequence)
             };
         }
-        if self.entries.len() >= MAX_EXACT_ADMISSIONS {
+        if self.len() >= MAX_EXACT_ADMISSIONS {
             return Err(AdmissionError::ResourceLimit);
         }
         // Bound string lengths before counting the unchanged canonical key.
@@ -201,7 +246,7 @@ impl ExactAdmissions {
         let total = self
             .entry_bytes
             .saturating_add(bytes)
-            .saturating_add(count_bytes(self.entries.len().saturating_add(1)));
+            .saturating_add(count_bytes(self.len().saturating_add(1)));
         if total > MAX_EXACT_ADMISSION_BYTES {
             return Err(AdmissionError::ResourceLimit);
         }
@@ -210,14 +255,12 @@ impl ExactAdmissions {
     pub(crate) fn insert(&mut self, op: &DocumentAdmission) -> Result<(), AdmissionError> {
         let bytes = self.check(op)?;
         if bytes != 0 {
-            self.entries.insert(op.key.clone(), op.operation_id);
-            // `check` bounded the new total by MAX_EXACT_ADMISSION_BYTES.
-            self.entry_bytes = self.entry_bytes.saturating_add(bytes);
+            self.add(op.key.clone(), op.operation_id, bytes);
         }
         Ok(())
     }
     pub(crate) fn encode(&self) -> Result<Vec<u8>, AdmissionError> {
-        let bytes = postcard::to_allocvec(&self.entries)
+        let bytes = postcard::to_allocvec(&resources::WireEntries(self))
             .map_err(|e| AdmissionError::Rejected(e.to_string()))?;
         if bytes.len() > MAX_EXACT_ADMISSION_BYTES {
             return Err(AdmissionError::ResourceLimit);
@@ -265,5 +308,41 @@ mod tests {
         duplicate.extend(&row);
         assert!(ExactAdmissions::decode(&duplicate).is_err());
         assert!(ExactAdmissions::decode(&vec![0; MAX_EXACT_ADMISSION_BYTES + 1]).is_err());
+    }
+
+    /// Copies share the settled entries; the index still reads and encodes
+    /// as one map in key order, and decodes back to the same bytes.
+    #[test]
+    fn a_copy_shares_settled_admissions_and_encodes_one_ordered_index() {
+        let admission = |sequence: u64| DocumentAdmission {
+            key: AdmissionKey {
+                room: "room".into(),
+                app: "app".into(),
+                record: "record".into(),
+                author: [u8::try_from(sequence % 7).unwrap(); 32],
+                sequence,
+            },
+            operation_id: [1; 32],
+        };
+        let mut index = ExactAdmissions::default();
+        // Out of key order, past one settling.
+        for sequence in (0..RECENT_ADMISSIONS as u64 + 40).rev() {
+            index.insert(&admission(sequence)).unwrap();
+        }
+        let copy = index.clone();
+        assert!(std::sync::Arc::ptr_eq(&index.settled, &copy.settled));
+        assert!(copy.recent.len() < RECENT_ADMISSIONS);
+        let keys: Vec<_> = index.iter().map(|(key, _)| key.clone()).collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted);
+        assert_eq!(keys.len(), RECENT_ADMISSIONS + 40);
+        let bytes = index.encode().unwrap();
+        let whole: BTreeMap<_, _> = index.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        assert_eq!(bytes, postcard::to_allocvec(&whole).unwrap());
+        assert_eq!(
+            ExactAdmissions::decode(&bytes).unwrap().encode().unwrap(),
+            bytes
+        );
     }
 }

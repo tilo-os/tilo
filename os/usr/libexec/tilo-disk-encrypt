@@ -9,6 +9,9 @@
 #   tilo-disk-encrypt enrol    <luks-part> [--key-file F] [--pin-file F] [--fido2] [--passphrase]
 #                              [--store-part P --store-key-file F]
 #   tilo-disk-encrypt enrol    <luks-part> --reseal   # currently fails closed
+#   tilo-disk-encrypt enrol    <luks-part> --sibling [--key-file F] [--network NAME]...
+#                              [--session-uid UID]
+#   tilo-disk-encrypt enrol    <luks-part> --sibling --replace-networks [--network NAME]...
 #   tilo-disk-encrypt finish   <luks-part> [--key-file F] [--mnt DIR]
 #   tilo-disk-encrypt teardown <disk> [--mnt DIR]
 #
@@ -32,6 +35,23 @@
 # to find and open the volume. `enrol` adds the real unlock factors, `finish`
 # drops the throwaway key slot and tears the tree down, and `teardown` is the
 # same tear-down without touching key slots — what an aborted install wants.
+#
+# `enrol --sibling` adds the factor that unlocks the root at boot with the
+# consent of another of the owner's devices (docs/device-reach.md, "Unlocking
+# it after a reboot"). It runs on an installed, encrypted machine whose owner
+# is signed in: tilo-sibling-unlock draws a device half, a sibling half and a
+# boot-only key pair, adds a LUKS2 slot for the key the halves derive
+# (authorised by --key-file, else cryptsetup asks for the recovery key), and
+# hands the sibling half and the boot key to the owner's session, which
+# certifies the key and gives the half to their other devices. The device
+# half, the boot key, that certificate and the --network credentials (saved
+# NetworkManager connections early boot may join; wired links need none) go
+# into a token in the volume's own LUKS2 header: sealed to the TPM when
+# /dev/tpmrm0 exists, otherwise in the clear, readable by anyone holding the
+# disk, which Settings tells the owner. The sibling half is never stored
+# here. `tilo-sibling-unlock remove <luks-part>` takes the slot and token away.
+# `--replace-networks` keeps an existing sibling unlock and only chooses its
+# networks again (Settings does the same through polkit).
 #
 # ## Why the volume is not created by `bootc install --block-setup tpm2-luks`
 #
@@ -60,7 +80,9 @@ GUID_TILO_ROOT=7A2E8D75-3F01-4E5A-B2C9-51F6ED90B8AB
 # mount a discoverable /srv or /home type) ever claims it.
 GUID_TILO_STORE=0B6C5D38-8BA9-40AA-A1F6-DCC035F5438D
 
-ESP_SIZE=${TILO_ESP_SIZE:-512M}
+# Finalization temporarily holds bootc's live UKI, the target boot bundle,
+# and a replacement UKI. A 512 MiB ESP cannot hold all three on ARM64.
+ESP_SIZE=${TILO_ESP_SIZE:-2G}
 BOOT_SIZE=${TILO_BOOT_SIZE:-1G}
 STORE_VOLUME="${TILO_STORE_VOLUME:-/usr/libexec/tilo-store-volume}"
 MIN_ALONGSIDE_ESP_BYTES=2147483648
@@ -209,7 +231,7 @@ cmd_prepare_partition() {
   cryptsetup open --key-file "$key" "$part" "$mapper"
   case "$fs" in
     btrfs) mkfs.btrfs -f -L root "/dev/mapper/$mapper" >/dev/null ;;
-    ext4) mkfs.ext4 -q -F -L root "/dev/mapper/$mapper" ;;
+    ext4) mkfs.ext4 -q -F -O verity -L root "/dev/mapper/$mapper" ;;
     xfs) mkfs.xfs -q -f -L root "/dev/mapper/$mapper" >/dev/null ;;
   esac
   root_fs_uuid="$(blkid -s UUID -o value "/dev/mapper/$mapper")"
@@ -329,7 +351,7 @@ EOF
   log "  making the $fs root filesystem"
   case "$fs" in
     btrfs) mkfs.btrfs -f -L root "/dev/mapper/$mapper" >/dev/null ;;
-    ext4)  mkfs.ext4 -q -L root "/dev/mapper/$mapper" ;;
+    ext4)  mkfs.ext4 -q -O verity -L root "/dev/mapper/$mapper" ;;
     xfs)   mkfs.xfs -q -f -L root "/dev/mapper/$mapper" >/dev/null ;;
   esac
   local root_fs_uuid
@@ -386,7 +408,8 @@ EOF
 
 cmd_enrol() {
   local dev="" key="" pin_file="" want_fido2=0 reseal=0 predictions="" generation="" rollback_state=""
-  local require_tpm_prediction=0 store_part="" store_key=""
+  local require_tpm_prediction=0 store_part="" store_key="" sibling=0
+  local sibling_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --key-file) key="${2:-}"; shift 2 ;;
@@ -398,6 +421,10 @@ cmd_enrol() {
       --rollback-state) rollback_state="${2:-}"; shift 2 ;;
       --require-tpm-prediction) require_tpm_prediction=1; shift ;;
       --fido2) want_fido2=1; shift ;;
+      --sibling) sibling=1; shift ;;
+      --network) sibling_args+=(--network "${2:?--network needs a connection name}"); shift 2 ;;
+      --session-uid) sibling_args+=(--session-uid "${2:?--session-uid needs a uid}"); shift 2 ;;
+      --replace-networks) sibling_args+=(--replace-networks); shift ;;
       # Compatibility flag for callers; passphrase mode is also the default.
       --passphrase) shift ;;
       # Re-bind an already-installed volume to a TPM: after a cleared or replaced
@@ -410,6 +437,16 @@ cmd_enrol() {
     esac
   done
   [ -n "$dev" ] || die "enrol: missing <luks-part>"
+  if [ "$sibling" -eq 1 ]; then
+    need tilo-sibling-unlock
+    [ -z "$key" ] || sibling_args+=(--key-file "$key")
+    log "  enrolling unlock with the consent of your other devices…"
+    tilo-sibling-unlock enrol "$dev" "${sibling_args[@]}" \
+      || die "sibling unlock enrolment failed; the volume is unchanged"
+    log "  sibling unlock enrolled: $(tilo-sibling-unlock status "$dev" | tr -d '\n' | tr -s ' ')"
+    return 0
+  fi
+  [ "${#sibling_args[@]}" -eq 0 ] || die "enrol: --network, --session-uid and --replace-networks go with --sibling"
   [ -n "$key" ] || key="$(default_key_file)"
   if [ -n "$store_part$store_key" ]; then
     [ -b "$store_part" ] && [ -f "$store_key" ] \
@@ -626,6 +663,6 @@ case "$sub" in
   enrol|enroll) cmd_enrol "$@" ;;
   finish) cmd_finish "$@" ;;
   teardown) cmd_teardown "$@" ;;
-  -h|--help|"") sed -n '2,44p' "$0" ;;
+  -h|--help|"") sed -n '2,61p' "$0" ;;
   *) die "unknown subcommand: $sub (try --help)" ;;
 esac

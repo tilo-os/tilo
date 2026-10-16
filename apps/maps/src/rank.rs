@@ -100,10 +100,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn ranking_weighs_text_match_proximity_duplicates_and_folding() {
         // Phase `near_same_named_place_ranks_above_a_far_one`.
         // The reported bug: two places with the *exact same name*, one near and one

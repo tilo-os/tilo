@@ -328,28 +328,19 @@ mod tests {
 
     #[test]
     fn the_release_chord_is_ctrl_alt_escape_and_not_the_kill_switch() {
-        use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-        use winit::keyboard::{
-            Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey,
-        };
+        use winit::event::{ElementState, Modifiers};
+        use winit::keyboard::{Key, ModifiersState, NamedKey};
         let escape = |pressed: bool| {
-            // SAFETY: `KeyEvent` keeps platform data private; zero-init
-            // plus the public fields is what the input adapters build too.
-            let mut event: KeyEvent = unsafe { std::mem::zeroed() };
-            event.logical_key = Key::Named(NamedKey::Escape);
-            event.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-            event.location = KeyLocation::Standard;
-            event.state = if pressed {
-                ElementState::Pressed
-            } else {
-                ElementState::Released
-            };
-            WindowEvent::KeyboardInput {
-                // SAFETY: an inert device id, as the DRM adapter uses.
-                device_id: unsafe { std::mem::zeroed() },
-                event,
-                is_synthetic: false,
-            }
+            let event = ui::synthetic_input::key_event(
+                Key::Named(NamedKey::Escape),
+                None,
+                if pressed {
+                    ElementState::Pressed
+                } else {
+                    ElementState::Released
+                },
+            );
+            ui::synthetic_input::keyboard_input(event)
         };
         let ctrl_alt = Modifiers::from(ModifiersState::CONTROL | ModifiersState::ALT);
         assert!(is_release_chord(&escape(true), ctrl_alt));

@@ -1,6 +1,6 @@
 //! `tilo-ush` — one binary, three roles, dispatched on `argv[0]`.
 //!
-//! - `ush` / `dsh` on the host: build a guest and run a shell in it.
+//! - `ush` on the host: build a guest from an environment and run a shell in it.
 //! - `pkg`, `perm`, `scan`, `guard`, `quarantine`, `restart` inside a guest:
 //!   the runtime's own commands, symlinks to this binary on the guest's `PATH`.
 //! - `tilo`, `app`, `store`, `system` inside a guest: brokered back to the
@@ -11,24 +11,13 @@
 //! confinement, and because `pkg` inside a guest and the supervisor outside it
 //! are two halves of one protocol — splitting them would let the halves drift.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use std::sync::Arc;
+
 use ush::broker::{Request, Response};
-use ush::profile::Profile;
+use ush::images::{Images, SharedBuilds};
 use ush::store::Store;
 use ush::supervisor::{Session, SessionOptions};
 
@@ -42,8 +31,7 @@ fn main() -> ExitCode {
         .unwrap_or_default();
     let rest = argv.get(1..).unwrap_or(&[]);
 
-    // Inside a guest the runtime is reached through its own name. Outside it,
-    // `ush` and `dsh` are the two profiles of the same program.
+    // Inside a guest the runtime is reached through its own name.
     let result = match prog_name.as_str() {
         "pkg" => guest::pkg(rest),
         "perm" => guest::perm(rest),
@@ -52,8 +40,8 @@ fn main() -> ExitCode {
         "quarantine" => guest::quarantine(rest),
         "restart" => guest::restart(),
         "tilo" | "app" | "store" | "system" => guest::host_cli(&prog_name, rest),
-        "ush" => host(Profile::Ush, rest),
-        "dsh" => host(Profile::Dsh, rest),
+        "ush" => host(rest),
+        name if guest::is_legacy_shim(name) => guest::legacy_launch(name, rest),
         _ => dispatch(rest),
     };
 
@@ -80,8 +68,16 @@ fn dispatch(args: &[String]) -> anyhow::Result<i32> {
     match args.first().map(String::as_str) {
         Some("serve") => cmd_serve(rest),
         Some("guest-init") => guest::init(rest),
-        Some("dsh") => host(Profile::Dsh, rest),
-        Some("ush" | "run") => host(Profile::Ush, rest),
+        Some("__approved-check-supervise") => {
+            let path = rest.first().filter(|_| rest.len() == 1).ok_or_else(|| {
+                anyhow::anyhow!("approved-check supervisor requires one private config")
+            })?;
+            ush::approved_checks::run_guest(Path::new(path)).map_err(anyhow::Error::msg)
+        }
+        Some("__approved-check-init") => {
+            ush::approved_checks::run_init(rest).map_err(anyhow::Error::msg)
+        }
+        Some("ush" | "run") => host(rest),
         Some("pkg") => guest::pkg(rest),
         Some("perm") => guest::perm(rest),
         Some("scan") => guest::scan(rest),
@@ -99,18 +95,16 @@ const USAGE: &str = "\
 tilo-ush — an application runtime that hosts a shell.
 
 On the host:
-  ush [-c COMMAND] [-v] [--ephemeral]   open a sandboxed shell
-  dsh [-c COMMAND] [-v]                 open a developer shell (NOT a sandbox)
-  tilo-ush serve [--socket PATH]         hand guests to apps that ask
+  ush [-c COMMAND] [-v] [--environment RECORD]   open a shell in an environment
+  tilo-ush serve [--socket PATH]                  hand guests to apps that ask
 
 Inside a guest:
   tilo update                       update installed apps and the system image
   app update [APP]                  update apps (`store` is an alias)
   system update                     update the Tilo system image
-  pkg install [--one-time] PKG…    pkg remove PKG…    pkg list
-  pkg diff                         pkg inspect PKG    pkg freeze
-  pkg burn
-  perm trust-dir DIR               perm list          perm revoke ID
+  pkg install PKG…                 pkg remove PKG…    pkg list
+  perm trust-dir DIR               perm allow-host HOST
+  perm list                        perm revoke ID
   scan PATH
   guard status
   quarantine list | add PATH | restore PATH
@@ -119,44 +113,53 @@ Inside a guest:
 
 // host side
 
-fn host(profile: Profile, args: &[String]) -> anyhow::Result<i32> {
-    let mut opts = SessionOptions {
-        profile,
-        ..SessionOptions::default()
-    };
+fn host(args: &[String]) -> anyhow::Result<i32> {
+    let mut opts = SessionOptions::default();
+    let mut script: Option<String> = None;
     let mut i: usize = 0;
     while i < args.len() {
         let Some(arg) = args.get(i) else { break };
+        let value = || {
+            args.get(i.saturating_add(1))
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("{arg} needs a value"))
+        };
         match arg.as_str() {
             "-c" => {
-                let script = args
-                    .get(i.saturating_add(1))
-                    .ok_or_else(|| anyhow::anyhow!("-c needs a command"))?;
                 // Matching `sh -c`: everything after it is one script, run by
                 // the guest's shell, not split into an argv here.
-                opts.command = vec![
-                    ush::supervisor::guest_shell(&opts.base)
-                        .to_string_lossy()
-                        .into_owned(),
-                    "-c".into(),
-                    script.clone(),
-                ];
+                script = Some(value()?);
                 i = i.saturating_add(2);
             }
             "-v" | "--verbose" => {
                 opts.verbose = true;
                 i = i.saturating_add(1);
             }
-            "--ephemeral" => {
-                opts.ephemeral = true;
-                i = i.saturating_add(1);
-            }
-            "--base" => {
-                opts.base = PathBuf::from(
-                    args.get(i.saturating_add(1))
-                        .ok_or_else(|| anyhow::anyhow!("--base needs a path"))?,
-                );
+            "--environment" => {
+                opts.environment = Some(value()?);
                 i = i.saturating_add(2);
+            }
+            "--host-root" => {
+                opts.host_root = PathBuf::from(value()?);
+                i = i.saturating_add(2);
+            }
+            "--editor-fd" => {
+                use std::os::fd::{FromRawFd, OwnedFd};
+                let fd: i32 = value()?.parse()?;
+                // SAFETY: fcntl only probes the supplied integer; ownership begins below.
+                if fd < 3 || opts.editor.is_some() || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0
+                {
+                    anyhow::bail!("invalid inherited editor descriptor");
+                }
+                // SAFETY: this explicit startup argument transfers one inherited FD.
+                let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+                opts.editor = Some(Arc::new(runtime_portal::editor::Socket::adopt(fd)?));
+                i = i.saturating_add(2);
+            }
+            "--" => {
+                // A program, as the supervisor passes one for a served session.
+                opts.command = args.get(i.saturating_add(1)..).unwrap_or(&[]).to_vec();
+                break;
             }
             "-h" | "--help" => {
                 print!("{USAGE}");
@@ -167,20 +170,46 @@ fn host(profile: Profile, args: &[String]) -> anyhow::Result<i32> {
     }
 
     init_tracing(opts.verbose);
-    if profile == Profile::Dsh {
-        eprintln!(
-            "dsh: {}\ndsh: everything you run here has the authority of your \
-             user account. Do not run software you do not trust.",
-            profile.posture_summary()
-        );
+    let store = Store::discover();
+    let images = images();
+    let builder = Arc::new(SharedBuilds::new(builder(), Arc::clone(&images)));
+    let mut session = Session::new(store, opts, images, builder);
+    if let Some(script) = script {
+        let resolved = session.resolve()?;
+        let trees: Vec<PathBuf> = resolved.images.into_iter().map(|(_, p)| p).collect();
+        session.opts.command = vec![
+            ush::supervisor::guest_shell(&trees)
+                .to_string_lossy()
+                .into_owned(),
+            "-c".into(),
+            script,
+        ];
     }
-    let mut session = Session::new(Store::discover(), opts);
     session.run()
+}
+
+/// Where images come from on this device: the package store, or fixture
+/// trees under `TILO_USH_IMAGES` in tests.
+fn images() -> Arc<dyn Images> {
+    ush::images::on_this_device()
+}
+
+/// How `pkg install` builds tool images: into the store [`images`] reads
+/// them from on this device, or, for a member's supervisor on a relay, by
+/// the relay's worker, which holds the key this process must not.
+fn builder() -> Arc<dyn tilo_environment::ToolBuilder> {
+    if let Some(remote) = env_tools::delegated::RemoteBuilder::from_env() {
+        return Arc::new(remote);
+    }
+    if let Some(root) = std::env::var_os("TILO_USH_IMAGES") {
+        return env_tools::store::dir_tool_builder(Path::new(&root));
+    }
+    env_tools::store::device_tool_builder()
 }
 
 fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
     let mut socket = default_service_socket();
-    let mut base = PathBuf::from("/");
+    let mut host_root = PathBuf::from("/");
     let mut i: usize = 0;
     while i < args.len() {
         let Some(arg) = args.get(i) else { break };
@@ -192,10 +221,10 @@ fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
                 );
                 i = i.saturating_add(2);
             }
-            "--base" => {
-                base = PathBuf::from(
+            "--host-root" => {
+                host_root = PathBuf::from(
                     args.get(i.saturating_add(1))
-                        .ok_or_else(|| anyhow::anyhow!("--base needs a path"))?,
+                        .ok_or_else(|| anyhow::anyhow!("--host-root needs a path"))?,
                 );
                 i = i.saturating_add(2);
             }
@@ -203,16 +232,14 @@ fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
         }
     }
     init_tracing(true);
-    ush::supervisor::serve(&socket, &Store::discover(), &base)?;
+    ush::supervisor::serve(&socket, &Store::discover(), &host_root)?;
     Ok(0)
 }
 
 /// `$XDG_RUNTIME_DIR/tilo/services/ush.sock` — the path `tilo-launcher` looks in
 /// for a `[sandbox.services]` entry named `ush`.
 fn default_service_socket() -> PathBuf {
-    let runtime = xdg_paths::xdg::runtime_dir()
-        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::geteuid() })));
-    runtime.join("tilo/services/ush.sock")
+    tilo_paths::xdg::runtime_dir_or_default().join("tilo/services/ush.sock")
 }
 
 fn init_tracing(verbose: bool) {
@@ -230,7 +257,6 @@ fn init_tracing(verbose: bool) {
 
 mod guest {
     use super::{Path, PathBuf, Request, Response};
-    use ush::pkg::{InstalledPackage, Manifest};
 
     fn broker_socket() -> PathBuf {
         std::env::var_os("TILO_USH_BROKER")
@@ -243,7 +269,7 @@ mod guest {
         let show_progress = std::io::stderr().is_terminal();
         let mut stdout = std::io::stdout().lock();
         let mut stderr = std::io::stderr().lock();
-        let mut response = ush::broker::ask_streaming_with_progress(
+        ush::broker::ask_streaming_with_progress(
             &broker_socket(),
             req,
             &mut stdout,
@@ -256,21 +282,13 @@ mod guest {
                  work inside a guest — run `ush` first.",
                 broker_socket().display()
             )
-        })?;
-        // Command output was already copied live. Keep `broker::ask`'s fully
-        // buffered response compatible for library callers, but do not replay
-        // it in the guest CLI.
-        if let Response::Command { stdout, stderr, .. } = &mut response {
-            stdout.clear();
-            stderr.clear();
-        }
-        Ok(response)
+        })
     }
 
     fn report(resp: Response) -> i32 {
         match resp {
             Response::Ok => 0,
-            Response::NeedsRestart { detail } => {
+            Response::NeedsRestart { detail } | Response::Applied { detail } => {
                 println!("{detail}");
                 0
             }
@@ -310,6 +328,37 @@ Examples:\n  tilo app u browser\n  tilo system status\n  tilo update\n\n\
 Unavailable providers are skipped by `tilo update`; explicit provider commands\n\
 explain when the host does not offer them.\n";
 
+    /// A legacy app's command inside a guest: a symlink in the guest's bin
+    /// directory that is none of the runtime's own names.
+    pub fn is_legacy_shim(name: &str) -> bool {
+        !name.is_empty()
+            && name != "tilo-ush"
+            && !ush::GUEST_COMMANDS.contains(&name)
+            && Path::new(ush::GUEST_BIN_DIR).join(name).is_symlink()
+            && Path::new(ush::GUEST_BROKER_SOCK).exists()
+    }
+
+    /// `code .` in an environment: the app runs in the legacy VM, in this
+    /// directory when it is shared, and its windows open in the current strip.
+    pub fn legacy_launch(app: &str, args: &[String]) -> anyhow::Result<i32> {
+        let cwd = std::env::current_dir()?;
+        let request = Request::LegacyLaunch {
+            app: app.to_string(),
+            args: args.to_vec(),
+            cwd,
+        };
+        match ask(&request)? {
+            Response::Command { code } => Ok(code),
+            // A relay worker took the launch; the app runs there.
+            Response::Applied { detail } => {
+                println!("{detail}");
+                Ok(0)
+            }
+            Response::Denied { reason } => anyhow::bail!("{reason}"),
+            other => anyhow::bail!("the broker returned an unexpected response: {other:?}"),
+        }
+    }
+
     pub fn host_cli(program: &str, args: &[String]) -> anyhow::Result<i32> {
         if let Some(help) = management_help(program, args) {
             print!("{help}");
@@ -328,16 +377,8 @@ explain when the host does not offer them.\n";
             }
         }
         match ask(&request)? {
-            Response::Command {
-                code,
-                stdout,
-                stderr,
-            } => {
-                use std::io::Write as _;
-                std::io::stdout().write_all(stdout.as_bytes())?;
-                std::io::stderr().write_all(stderr.as_bytes())?;
-                Ok(code)
-            }
+            // The output already reached the terminal as it was produced.
+            Response::Command { code } => Ok(code),
             Response::Denied { reason } => anyhow::bail!("{reason}"),
             other => anyhow::bail!("the broker returned an unexpected response: {other:?}"),
         }
@@ -490,11 +531,11 @@ explain when the host does not offer them.\n";
             .collect();
         anyhow::ensure!(!rest.is_empty(), "guest-init needs a command after `--`");
 
-        // Everything the guest may write, in here: layered system dirs, scratch,
-        // home, and whatever was trusted (named again so a later remount can't
-        // widen it).
-        let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/root"), PathBuf::from);
-        let mut rw: Vec<PathBuf> = ["/usr", "/etc", "/tmp", "/var", "/run", "/dev", "/proc"]
+        // Everything the guest may write, in here: scratch, its own `/var`,
+        // home, and whatever was granted (named again so a later remount can't
+        // widen it). `/usr` and `/etc` are read-only images and get no rule.
+        let home = tilo_paths::home().unwrap_or_else(|| PathBuf::from("/"));
+        let mut rw: Vec<PathBuf> = ["/tmp", "/var", "/run", "/dev", "/proc"]
             .iter()
             .map(PathBuf::from)
             .collect();
@@ -506,7 +547,7 @@ explain when the host does not offer them.\n";
             rw.extend(status.trusted_dirs.iter().map(PathBuf::from));
             ro.extend(status.readable_dirs.iter().map(PathBuf::from));
         } else {
-            // No broker means no policy to read, which means no grants — the
+            // No broker means no record to read, which means no grants — the
             // restriction is *tighter*, not skipped.
             tracing::debug!("no broker; restricting to the base set only");
         }
@@ -524,203 +565,46 @@ explain when the host does not offer them.\n";
 
     pub fn pkg(args: &[String]) -> anyhow::Result<i32> {
         let rest = args.get(1..).unwrap_or(&[]);
+        let names = || -> Vec<String> {
+            rest.iter()
+                .filter(|a| !a.starts_with('-'))
+                .cloned()
+                .collect()
+        };
         match args.first().map(String::as_str) {
-            Some("install") => pkg_install(rest),
-            Some("remove") => pkg_remove(rest),
-            Some("list") => Ok(pkg_list()),
-            Some("diff") => pkg_diff(),
-            Some("inspect") => pkg_inspect(rest),
-            Some("freeze") => pkg_freeze(),
-            Some("burn") => Ok(report(ask(&Request::Burn)?)),
+            Some("install") => {
+                let packages = names();
+                anyhow::ensure!(!packages.is_empty(), "pkg install needs a package name");
+                Ok(report(ask(&Request::AddTool { packages })?))
+            }
+            Some("remove") => {
+                let packages = names();
+                anyhow::ensure!(!packages.is_empty(), "pkg remove needs a package name");
+                Ok(report(ask(&Request::RemoveTool { packages })?))
+            }
+            Some("list") => pkg_list(),
             _ => {
-                eprintln!(
-                    "pkg install [--one-time] PKG… | remove PKG… | list | diff | \
-                     inspect PKG | freeze | burn"
-                );
+                eprintln!("pkg install PKG… | remove PKG… | list");
                 Ok(2)
             }
         }
     }
 
-    fn manifest_path() -> PathBuf {
-        PathBuf::from(ush::pkg::MANIFEST_PATH)
-    }
-
-    fn pkg_install(args: &[String]) -> anyhow::Result<i32> {
-        let one_time = args.iter().any(|a| a == "--one-time");
-        let packages: Vec<String> = args
-            .iter()
-            .filter(|a| !a.starts_with("--"))
-            .cloned()
-            .collect();
-        anyhow::ensure!(!packages.is_empty(), "pkg install needs a package name");
-
-        // A base-provided package isn't something this layer installed; recording
-        // it as one-time would be harmful, since undoing it runs `dnf remove` and
-        // writes a whiteout, deleting a base file from the guest's view. Ask rpm first.
-        let (already, wanted): (Vec<String>, Vec<String>) = packages
-            .into_iter()
-            .partition(|p| ush::pkg::is_installed(p));
-        for name in &already {
-            println!(
-                "pkg: {name} is already part of the base image; nothing to install \
-                 and nothing for this layer to own."
-            );
-        }
-        if wanted.is_empty() {
-            return Ok(0);
-        }
-        let packages = wanted;
-
-        let cmd_argv = ush::pkg::install_argv(&packages, &ush::pkg::releasever());
-        let (prog, prog_args) = cmd_argv
-            .split_first()
-            .ok_or_else(|| anyhow::anyhow!("pkg: install_argv returned no command"))?;
-        let status = std::process::Command::new(prog).args(prog_args).status()?;
-        if !status.success() {
-            eprintln!(
-                "pkg: the transaction failed. If it was refused while writing \
-                 under /usr, the file already existed in the base image — a \
-                 layer can add to the base and cannot alter it."
-            );
-            return Ok(status.code().unwrap_or(1));
-        }
-
-        let mut manifest = Manifest::load(&manifest_path());
-        for name in &packages {
-            manifest.record(InstalledPackage {
-                nevra: ush::pkg::nevra(name),
-                name: name.clone(),
-                at: tilo_clock::unix_now(),
-                one_time,
-            });
-            let _ = ask(&Request::PkgRecorded {
-                package: name.clone(),
-                action: "install".into(),
-                one_time,
-            });
-        }
-        manifest.save(&manifest_path())?;
-        if one_time {
-            println!(
-                "pkg: {} installed into this session's layer; it is removed when \
-                 the session ends unless you run `pkg freeze`.",
-                packages.join(", ")
-            );
-        }
-        Ok(0)
-    }
-
-    fn pkg_remove(args: &[String]) -> anyhow::Result<i32> {
-        let packages: Vec<String> = args
-            .iter()
-            .filter(|a| !a.starts_with("--"))
-            .cloned()
-            .collect();
-        anyhow::ensure!(!packages.is_empty(), "pkg remove needs a package name");
-        let cmd_argv = ush::pkg::remove_argv(&packages, &ush::pkg::releasever());
-        let (prog, prog_args) = cmd_argv
-            .split_first()
-            .ok_or_else(|| anyhow::anyhow!("pkg: remove_argv returned no command"))?;
-        let status = std::process::Command::new(prog).args(prog_args).status()?;
-        if !status.success() {
-            return Ok(status.code().unwrap_or(1));
-        }
-        let mut manifest = Manifest::load(&manifest_path());
-        for name in &packages {
-            manifest.forget(name);
-            let _ = ask(&Request::PkgRecorded {
-                package: name.clone(),
-                action: "remove".into(),
-                one_time: false,
-            });
-        }
-        manifest.save(&manifest_path())?;
-        Ok(0)
-    }
-
-    fn pkg_list() -> i32 {
-        let manifest = Manifest::load(&manifest_path());
-        if manifest.packages.is_empty() {
-            println!("no packages in this layer; the base is what you see.");
-            return 0;
-        }
-        for p in &manifest.packages {
-            println!(
-                "{:<40} {}",
-                p.nevra,
-                if p.one_time { "one-time" } else { "" }
-            );
-        }
-        0
-    }
-
-    fn pkg_diff() -> anyhow::Result<i32> {
-        let Response::Diff { entries, truncated } = ask(&Request::LayerDiff { limit: 500 })? else {
-            anyhow::bail!("the broker did not answer with a diff");
+    fn pkg_list() -> anyhow::Result<i32> {
+        let Response::Tools { runtime, tools } = ask(&Request::ListTools)? else {
+            anyhow::bail!("the broker did not answer with the environment's tools");
         };
-        if entries.is_empty() {
-            println!("your layers have changed nothing relative to the base.");
-            return Ok(0);
+        println!("runtime  {runtime}");
+        if tools.is_empty() {
+            println!("no tools; `pkg install PKG` adds one.");
         }
-        for e in &entries {
-            println!("{:<10} {:>10}  {}", e.kind, e.bytes, e.path);
-        }
-        if truncated > 0 {
-            println!("… and {truncated} more");
-        }
-        Ok(0)
-    }
-
-    fn pkg_inspect(args: &[String]) -> anyhow::Result<i32> {
-        let name = args
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("pkg inspect needs a package name"))?;
-        let i = ush::pkg::inspect(name);
-        println!("{}", i.nevra);
-        if !i.summary.is_empty() {
-            println!("  {}", i.summary);
-        }
-        println!("  files    : {}", i.files.len());
-        println!(
-            "  scripts  : {}",
-            if i.scripts.is_empty() {
-                "none".to_string()
+        for tool in &tools {
+            let id = if tool.id.is_empty() {
+                "not built for this architecture yet"
             } else {
-                i.scripts.join(", ")
-            }
-        );
-        println!(
-            "  services : {}",
-            if i.services.is_empty() {
-                "none".to_string()
-            } else {
-                i.services.join(", ")
-            }
-        );
-        if i.risks.is_empty() {
-            println!("  risk     : nothing mechanical to report");
-        } else {
-            for r in &i.risks {
-                println!("  risk     : {r}");
-            }
-        }
-        println!(
-            "  note     : this is a mechanical read of what rpm says. No \
-             signature or reputation check was performed."
-        );
-        Ok(0)
-    }
-
-    fn pkg_freeze() -> anyhow::Result<i32> {
-        let mut manifest = Manifest::load(&manifest_path());
-        let promoted = manifest.freeze();
-        manifest.save(&manifest_path())?;
-        ask(&Request::Freeze)?;
-        if promoted.is_empty() {
-            println!("nothing was installed for this session only.");
-        } else {
-            println!("kept: {}", promoted.join(", "));
+                &tool.id
+            };
+            println!("tool     {:<40} {id}", tool.packages.join(" "));
         }
         Ok(0)
     }
@@ -735,6 +619,15 @@ explain when the host does not offer them.\n";
                     path: PathBuf::from(dir),
                 })?))
             }
+            Some("allow-host") => {
+                let host = args.get(1).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "perm allow-host needs a host: example.com, *.example.com for a \
+                         domain and everything under it, or * for any host"
+                    )
+                })?;
+                Ok(report(ask(&Request::AllowHost { host: host.clone() })?))
+            }
             Some("revoke") => {
                 let id = args
                     .get(1)
@@ -748,8 +641,9 @@ explain when the host does not offer them.\n";
                 if entries.is_empty() {
                     println!(
                         "nothing is granted. Your home directory in here is this \
-                         runtime's, not yours; `perm trust-dir DIR` is how a real \
-                         directory appears."
+                         environment's, not yours; `perm trust-dir DIR` is how a real \
+                         directory appears, and `perm allow-host HOST` how a host \
+                         becomes reachable."
                     );
                 }
                 for e in &entries {
@@ -757,7 +651,9 @@ explain when the host does not offer them.\n";
                 }
                 Ok(0)
             }
-            Some(other) => anyhow::bail!("unknown `perm {other}`; try trust-dir, list, revoke"),
+            Some(other) => {
+                anyhow::bail!("unknown `perm {other}`; try trust-dir, allow-host, list, revoke")
+            }
         }
     }
 
@@ -771,7 +667,13 @@ explain when the host does not offer them.\n";
             }
             _ => Vec::new(),
         };
-        let r = ush::guard::scan(Path::new(path), &trusted);
+        let image = match ask(&Request::Provenance {
+            path: PathBuf::from(path),
+        }) {
+            Ok(Response::Provenance { image }) => image,
+            _ => None,
+        };
+        let r = ush::guard::scan(Path::new(path), &trusted, image);
         println!("{}", r.path.display());
         if !r.exists {
             for n in &r.notes {
@@ -791,20 +693,8 @@ explain when the host does not offer them.\n";
             }
         );
         println!(
-            "  package    : {}",
-            r.owned_by
-                .as_deref()
-                .unwrap_or("none — not installed by rpm")
-        );
-        println!(
-            "  unmodified : {}",
-            if r.owned_by.is_none() {
-                "n/a"
-            } else if r.modified_since_install {
-                "no — rpm disagrees with the installed package"
-            } else {
-                "yes"
-            }
+            "  image      : {}",
+            r.image.as_deref().unwrap_or("none — not from an image")
         );
         for n in &r.notes {
             println!("  note       : {n}");
@@ -818,14 +708,16 @@ explain when the host does not offer them.\n";
                 let Response::Status { status } = ask(&Request::Status)? else {
                     anyhow::bail!("the broker did not answer with a status");
                 };
-                println!("session   : {}", status.session);
-                println!("profile   : {}", status.profile);
-                println!("posture   : {}", status.posture);
-                println!("layer     : {} ({})", status.layer, status.layer_kind);
-                println!("seccomp   : {}", status.seccomp);
-                println!("landlock  : {}", landlock_now());
+                println!("session     : {}", status.session);
+                println!("environment : {} ({})", status.environment, status.record);
+                println!("runtime     : {}", status.runtime);
+                for tool in &status.tools {
+                    println!("tool        : {tool}");
+                }
+                println!("seccomp     : {}", status.seccomp);
+                println!("landlock    : {}", landlock_now());
                 println!(
-                    "trusted   : {}",
+                    "trusted     : {}",
                     if status.trusted_dirs.is_empty() {
                         "nothing — your files are not in here".to_string()
                     } else {
@@ -833,15 +725,12 @@ explain when the host does not offer them.\n";
                     }
                 );
                 if !status.readable_dirs.is_empty() {
-                    println!("readable  : {}", status.readable_dirs.join(", "));
+                    println!("readable    : {}", status.readable_dirs.join(", "));
                 }
-                if !status.one_time_packages.is_empty() {
-                    println!(
-                        "one-time  : {} (removed when this session ends)",
-                        status.one_time_packages.join(", ")
-                    );
+                for line in ush::guard::network_report(&status.network) {
+                    println!("{line}");
                 }
-                println!("audit     : {} records", status.audit_records);
+                println!("audit       : {} records", status.audit_records);
                 Ok(0)
             }
             Some(other) => anyhow::bail!("unknown `guard {other}`; try status"),
@@ -915,19 +804,35 @@ explain when the host does not offer them.\n";
     /// Tear the guest down so the supervisor can build it again. There is no
     /// way to remount a namespace from inside it, so a restart is literally a
     /// new guest: the broker records the request, this ends the current one,
-    /// and the supervisor loops — signalling PID 1 (the sandbox's own init
-    /// inside the guest's pid namespace) takes every process in it with it.
+    /// and the supervisor loops. Every process in the guest's pid namespace
+    /// is ended — hung up first, so shells save their history, then killed —
+    /// and the sandbox's init (pid 1, which the kernel shields from signals
+    /// sent inside its own namespace) exits with its last child.
     pub fn restart() -> anyhow::Result<i32> {
+        use std::io::Write as _;
         ask(&Request::Restart)?;
         println!("restarting the guest…");
-        // SAFETY: plain `kill(2)`. Inside the guest's pid namespace pid 1 is
-        // the sandbox's own init; outside one this fails with EPERM and the
-        // fallback below applies.
-        if unsafe { libc::kill(1, libc::SIGTERM) } == 0 {
+        let _ = std::io::stdout().flush();
+        // Only ever inside a guest: there pid 1 is the sandbox's init. On a
+        // host `kill(-1)` would end the whole login session.
+        let in_guest =
+            std::fs::read_to_string("/proc/1/comm").is_ok_and(|comm| comm.trim() == "bwrap");
+        if !in_guest {
+            // SAFETY: `getppid` cannot fail; the parent is the shell that ran this.
+            unsafe { libc::kill(libc::getppid(), libc::SIGHUP) };
             return Ok(0);
         }
-        // SAFETY: `getppid` cannot fail; the parent is the shell that ran this.
-        unsafe { libc::kill(libc::getppid(), libc::SIGHUP) };
+        // SAFETY: plain signal(2)/kill(2) calls. This process ignores the
+        // hangup it sends so it is still here to send the kill; `-1` reaches
+        // every process this one may signal, which inside the guest's pid
+        // namespace is the guest and nothing else.
+        unsafe {
+            libc::signal(libc::SIGHUP, libc::SIG_IGN);
+            libc::kill(-1, libc::SIGHUP);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // SAFETY: as above.
+        unsafe { libc::kill(-1, libc::SIGKILL) };
         Ok(0)
     }
 

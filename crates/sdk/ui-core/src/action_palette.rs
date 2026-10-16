@@ -24,16 +24,16 @@
 //! back to the app to navigate.
 //!
 //! The host ([`crate::app::App`]) drains a completed activation with
-//! [`take_dispatch`](ActionPalette::take_dispatch) (actions) and
+//! [`take_operation`](ActionPalette::take_operation) (actions) and
 //! [`take_navigation`](ActionPalette::take_navigation) (content).
 
 use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -42,16 +42,17 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
 use crate::search::{
-    FieldWeight, ListIndex, SearchCursor, SearchGroup, SearchProvider, SearchResult,
-    result_relevance,
+    Facet, FacetFilter, FieldWeight, ListIndex, PagePoll, PendingToken, ScopeDecl, SearchCursor,
+    SearchGroup, SearchProvider, SearchQuery, SearchResult, result_relevance,
 };
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::{SearchField, SearchResultsView, Widget};
 use tilo_actions::{
-    ActionContext, ActionInput, ActionRegistry, ActionTransport, ConfirmationPolicy, Dispatched,
-    EncodedAction, OperationKind, Resource, flatten,
+    ActionContext, ActionInput, ConfirmationPolicy, EncodedAction, OperationKind, Resource, flatten,
 };
+#[cfg(test)]
+use tilo_actions::{ActionRegistry, ActionTransport, Dispatched};
 
 /// The group header for the focused app's exported actions.
 pub const ACTIONS_KIND: &str = "Actions";
@@ -60,9 +61,18 @@ pub const ACTIONS_KIND: &str = "Actions";
 /// row can never collide with a flattened action key.
 const NAV_PREFIX: &str = "\u{1}nav\u{1f}";
 
+/// Row-id prefix for "Search in" rows, which narrow the palette to a scope.
+const SCOPE_PREFIX: &str = "\u{1}scope\u{1f}";
+
+/// The group "Search in" rows are listed under.
+const SCOPES_KIND: &str = "Search in";
+
 /// Card geometry, matched to the shared search surface (`search_showcase`).
-const FIELD_H: f64 = 38.0;
+/// The query field is a large control: the palette exists to be typed into.
+const FIELD_SIZE: crate::widget::ControlSize = crate::widget::ControlSize::Large;
 const GAP: f64 = 10.0;
+/// One row of facet chips, a small control's height.
+const FACET_H: f64 = 28.0;
 /// Cap per group so one busy provider can't flood the overlay.
 // Dense resource types routinely expose a handful of collection actions plus
 // contextual item actions. Eight hid basic operations such as Rename/Delete
@@ -295,15 +305,37 @@ pub struct ActionPalette {
     /// Searchable-content sources folded in as navigable result groups.
     providers: Vec<Box<dyn SearchProvider>>,
     provider_cursors: Vec<Option<SearchCursor>>,
+    /// A provider's outstanding slow page, polled until it arrives.
+    provider_pending: Vec<Option<PendingToken>>,
     provider_complete: Vec<bool>,
     next_provider: usize,
+    /// The free text of the query, which ranks rows.
     search_query: String,
+    /// The whole query providers receive: text, facet filters and scope.
+    query: SearchQuery,
+    /// The part of the app the palette is narrowed to ("Only Inbox").
+    scope: Option<ScopeDecl>,
+    /// Every provider's facets, merged by key.
+    facets: Vec<Facet>,
+    /// Every provider's search scopes, offered as "Search in" rows.
+    scopes: Vec<ScopeDecl>,
+    /// Facet values picked as chips (typed tokens live in the field text).
+    picked_filters: Vec<FacetFilter>,
+    /// The facet chips as last laid out: rect, filter, label.
+    facet_chips: Vec<(Rect, FacetFilter, String)>,
+    /// Each facet group's label as last laid out, before its chips.
+    facet_labels: Vec<(Point, String)>,
+    last_cursor: Point,
     /// A revoked selection stays unselected until restored or deliberately changed.
     missing_selection: Option<String>,
     search_generation: u64,
     /// The exported actions' titles and descriptions, indexed while they
     /// stay the same.
     action_index: ListIndex,
+    /// [`crate::search::engine_generation`] the rows were ranked with:
+    /// where the index's code loads on first use, an open palette ranks
+    /// again once it is in.
+    engine_generation: u64,
     search_announcement: Option<String>,
     open: bool,
     /// `Some` while collecting a prompted action's argument in the field.
@@ -311,7 +343,7 @@ pub struct ActionPalette {
     /// `Some` while collecting the explicit confirmation required by the
     /// selected action contract.
     confirm: Option<ConfirmState>,
-    /// A ready-to-dispatch action, set on activation, drained by `take_dispatch`.
+    /// A ready-to-dispatch action, set on activation, drained by `take_operation`.
     pending_dispatch: Option<PendingOperation>,
     history_suspended: bool,
     history_review_required: bool,
@@ -355,6 +387,15 @@ impl Default for ActionPalette {
 }
 
 impl ActionPalette {
+    /// The action the palette is asking the person to confirm, and the text
+    /// that confirms it, while it asks.
+    #[must_use]
+    pub fn asking(&self) -> Option<(&tilo_actions::ActionAddress, &str)> {
+        self.confirm
+            .as_ref()
+            .map(|confirm| (&confirm.pending.address, confirm.expected.as_str()))
+    }
+
     /// A closed palette. Load resources / providers, then `open`.
     pub fn new() -> Self {
         Self::with_inputs(TextRenderer::new(), SearchField::new)
@@ -381,16 +422,17 @@ impl ActionPalette {
         let cancel = command.clone();
         let controls = crate::widget::Row::new()
             .push(Box::new(
-                crate::widget::Button::new("palette-submit", "Confirm", None)
+                crate::widget::Button::new("palette-submit", "Confirm")
                     .on_click(move || submit.set(Some(true))),
             ))
             .push(Box::new(
-                crate::widget::Button::new("palette-cancel", "Cancel", None)
+                crate::widget::Button::new("palette-cancel", "Cancel")
                     .on_click(move || cancel.set(Some(false))),
             ));
         Self {
             field: field_source
                 .build()
+                .control_size(FIELD_SIZE)
                 .with_placeholder("Search actions and results"),
             results: SearchResultsView::new()
                 .with_empty_text("No matches")
@@ -406,12 +448,22 @@ impl ActionPalette {
             bound_resources: Vec::new(),
             providers: Vec::new(),
             provider_cursors: Vec::new(),
+            provider_pending: Vec::new(),
             provider_complete: Vec::new(),
             next_provider: 0,
             search_query: String::new(),
+            query: SearchQuery::default(),
+            scope: None,
+            facets: Vec::new(),
+            scopes: Vec::new(),
+            picked_filters: Vec::new(),
+            facet_chips: Vec::new(),
+            facet_labels: Vec::new(),
+            last_cursor: Point::ZERO,
             missing_selection: None,
             search_generation: 0,
             action_index: ListIndex::default(),
+            engine_generation: crate::search::engine_generation(),
             search_announcement: None,
             open: false,
             arg: None,
@@ -438,12 +490,6 @@ impl ActionPalette {
     /// action becomes an **Actions** row; rebuilds the result set + index.
     pub fn load_open_resources(&mut self, resources: &[Resource]) {
         self.resources = resources.to_vec();
-        // `.to_string()` is load-bearing here, not redundant: it ends the
-        // immutable borrow of `self.field` before `rebuild` takes `&mut self`.
-        #[allow(
-            clippy::unnecessary_to_owned,
-            reason = "the owned query ends the field borrow before rebuild mutably borrows the palette"
-        )]
         let query = self.field.value().to_string();
         self.rebuild(&query);
     }
@@ -509,12 +555,19 @@ impl ActionPalette {
     /// through the resource/action path; legacy opaque hits remain navigable.
     pub fn set_providers(&mut self, providers: Vec<Box<dyn SearchProvider>>) {
         self.providers = providers;
-        // `.to_string()` is load-bearing here, not redundant: it ends the
-        // immutable borrow of `self.field` before `rebuild` takes `&mut self`.
-        #[allow(
-            clippy::unnecessary_to_owned,
-            reason = "the owned query ends the field borrow before rebuild mutably borrows the palette"
-        )]
+        self.facets = merged_facets(&self.providers);
+        self.scopes = self
+            .providers
+            .iter()
+            .flat_map(|provider| provider.search_scopes())
+            .fold(Vec::new(), |mut scopes: Vec<ScopeDecl>, scope| {
+                if !scopes.iter().any(|known| known.anchor == scope.anchor) {
+                    scopes.push(scope);
+                }
+                scopes
+            });
+        self.picked_filters
+            .retain(|filter| self.facets.iter().any(|facet| facet.key == filter.key));
         let query = self.field.value().to_string();
         self.rebuild(&query);
     }
@@ -596,12 +649,12 @@ impl ActionPalette {
     fn target(&self, part: &str) -> String {
         format!("ordinary-confirmation:{}:{part}", self.request_generation)
     }
-    fn drain_command(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+    fn drain_command(&mut self, doc: &mut crate::widget::Edits<'_>, path: &ObjId) {
         match self.command.take() {
             Some(true) => {
                 self.focus_part(0);
                 self.handle_key(
-                    &crate::synthetic_input::key_event(
+                    &crate::synthetic_input::key_input(
                         &Key::Named(NamedKey::Enter),
                         ElementState::Pressed,
                     ),
@@ -626,7 +679,7 @@ impl ActionPalette {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         if !self.is_presented() {
@@ -643,7 +696,7 @@ impl ActionPalette {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &modifiers,
-                    state: doc,
+                    state: doc.reborrow(),
                     path,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -670,7 +723,7 @@ impl ActionPalette {
                     &mut crate::widget::EventCtx {
                         scale_factor: scale,
                         modifiers: &modifiers,
-                        state: doc,
+                        state: doc.reborrow(),
                         path,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -859,7 +912,7 @@ impl ActionPalette {
             ConfirmationPolicy::Confirm => "CONFIRM".to_owned(),
             ConfirmationPolicy::Phrase { phrase } => phrase.clone(),
         };
-        self.field = self.field_source.build();
+        self.field = self.field_source.build().control_size(FIELD_SIZE);
         self.field
             .set_placeholder(&confirmation_instruction(&expected));
         self.focus_part(0);
@@ -907,12 +960,68 @@ impl ActionPalette {
         self.pending_dispatch = None;
         self.history_review_required = false;
         self.pending_nav = None;
-        self.field = self
-            .field_source
-            .build()
-            .with_placeholder("Search actions and results");
+        self.field = self.query_field();
         self.focus_part(0);
         self.rebuild("");
+    }
+
+    /// The query field, showing the scope the palette is narrowed to.
+    fn query_field(&self) -> SearchField {
+        let mut field = self
+            .field_source
+            .build()
+            .control_size(FIELD_SIZE)
+            .with_placeholder("Search actions and results");
+        field.set_scope_token(self.scope.as_ref().map(scope_token_label));
+        field
+    }
+
+    /// Narrow the palette to one part of the app, or widen it to the whole
+    /// app with `None`. The field shows the scope as a removable token.
+    pub fn set_scope(&mut self, scope: Option<ScopeDecl>) {
+        self.scope = scope;
+        self.field
+            .set_scope_token(self.scope.as_ref().map(scope_token_label));
+        let query = self.field.value().to_owned();
+        self.rebuild(&query);
+    }
+
+    /// The part of the app the palette is narrowed to.
+    pub fn scope(&self) -> Option<&ScopeDecl> {
+        self.scope.as_ref()
+    }
+
+    /// Select the query, so typing replaces a pre-filled search.
+    pub fn select_query(&mut self) {
+        self.field.select_all();
+    }
+
+    /// The facets the providers declared, offered as chips.
+    pub fn facets(&self) -> &[Facet] {
+        &self.facets
+    }
+
+    /// The query providers receive, with its parsed filters and scope.
+    pub fn search_query(&self) -> &SearchQuery {
+        &self.query
+    }
+
+    /// Pick or unpick a facet value, as clicking its chip does. A value that
+    /// was typed as a `key:value` token is removed from the text.
+    pub fn toggle_facet(&mut self, filter: &FacetFilter) {
+        if let Some(at) = self.picked_filters.iter().position(|f| f == filter) {
+            self.picked_filters.remove(at);
+        } else if SearchQuery::parse(self.field.value(), &self.facets)
+            .filters()
+            .contains(filter)
+        {
+            let kept = without_token(self.field.value(), filter);
+            self.field.set_query(&kept);
+        } else {
+            self.picked_filters.push(filter.clone());
+        }
+        let query = self.field.value().to_owned();
+        self.rebuild(&query);
     }
 
     pub fn close(&mut self) {
@@ -970,6 +1079,14 @@ impl ActionPalette {
                 ..SearchAdvance::default()
             };
         }
+        let engine_generation = crate::search::engine_generation();
+        if self.engine_generation != engine_generation {
+            self.engine_generation = engine_generation;
+            if self.open {
+                let typed = self.field.value().to_owned();
+                self.rebuild(&typed);
+            }
+        }
         if self.validation_queue.is_empty() && self.provider_complete.iter().all(|done| *done) {
             for (key, validation) in &mut self.provider_validation {
                 validation.permissions = None;
@@ -1019,16 +1136,36 @@ impl ActionPalette {
             };
         };
         let binding = provider.callback_binding();
-        let page = provider.search_page(
-            &self.search_query,
-            cursor.as_ref(),
-            PROVIDER_HIT_BUDGET,
-            PROVIDER_HIT_BUDGET,
-        );
-        let results = self.checked_provider_hits(provider.as_ref(), binding.as_ref(), page.results);
-        let complete = page.next.is_none();
+        let waiting = self.provider_pending.get(provider_index).cloned().flatten();
+        let page = match waiting {
+            // A slow source answers on a later frame; ask, never wait.
+            Some(token) => match provider.poll_page(&token) {
+                PagePoll::Pending => {
+                    return SearchAdvance {
+                        pending: true,
+                        generation,
+                        ..SearchAdvance::default()
+                    };
+                }
+                PagePoll::Ready(page) => page,
+            },
+            None => provider.search_page(
+                &self.query,
+                cursor.as_ref(),
+                PROVIDER_HIT_BUDGET,
+                PROVIDER_HIT_BUDGET,
+            ),
+        };
+        let mut hits = page.results;
+        // The scope narrows every provider, including one that ignores it.
+        hits.retain(|hit| self.query.in_scope(&hit.anchor()));
+        let results = self.checked_provider_hits(provider.as_ref(), binding.as_ref(), hits);
+        let complete = page.next.is_none() && page.pending.is_none();
         if let Some(slot) = self.provider_cursors.get_mut(provider_index) {
             *slot = page.next;
+        }
+        if let Some(slot) = self.provider_pending.get_mut(provider_index) {
+            *slot = page.pending;
         }
         if let Some(slot) = self.provider_complete.get_mut(provider_index) {
             *slot = complete;
@@ -1045,6 +1182,8 @@ impl ActionPalette {
         } else {
             "No matches"
         });
+        self.results
+            .set_loading(self.provider_pending.iter().any(Option::is_some));
         let count = self.results.len();
         if added > 0 || !pending {
             self.search_announcement = Some(if pending {
@@ -1076,7 +1215,7 @@ impl ActionPalette {
                 .borrow()
                 .check(&crate::permissions::PermissionScope::app(
                     &binding.app_id,
-                    collab_types::caps::Verb::Read,
+                    crate::permissions::ActionKind::Read,
                 ));
         };
         // Provider resolution runs through its captured owner. Eager resources
@@ -1087,7 +1226,7 @@ impl ActionPalette {
                 .find(|snapshot| snapshot.binding.same_component(binding))
                 .and_then(|snapshot| {
                     snapshot
-                        .resources
+                        .resources()
                         .iter()
                         .find(|resource| {
                             tilo_actions::door::resolve(std::slice::from_ref(resource), address)
@@ -1251,6 +1390,7 @@ impl ActionPalette {
                         || RowResolution::Address(address.clone()),
                         |binding| {
                             RowResolution::Bound(crate::bound_dispatch::BoundActionTarget {
+                                input: crate::bound_dispatch::Input::Discrete,
                                 binding: (*binding).clone(),
                                 address: crate::bound_dispatch::BoundActionAddress {
                                     instance_id: binding.instance_id,
@@ -1280,12 +1420,10 @@ impl ActionPalette {
                 );
             }
             let mut row = SearchResult::new(hit.kind, hit.title, row_id).with_score(hit.score);
-            if let Some(subtitle) = hit.subtitle {
-                row = row.with_subtitle(subtitle);
-            }
-            if let Some(icon) = hit.icon {
-                row = row.with_icon(icon);
-            }
+            row.subtitle = hit.subtitle;
+            row.preview = hit.preview;
+            row.icon = hit.icon;
+            row.row = hit.row;
             self.provider_rows.push(row);
         }
         // Retain display candidates per kind. The number of kinds is not
@@ -1399,8 +1537,7 @@ impl ActionPalette {
         let Ok(encoded) = flattened.action.build_json(arguments) else {
             return false;
         };
-        let mut context = ActionContext::for_resource(
-            &flattened.action.label,
+        let mut context = flattened.action.history_context(
             flattened.resource_id.as_str(),
             &flattened.resource_kind,
             &flattened.resource_label,
@@ -1433,10 +1570,12 @@ impl ActionPalette {
     /// Drain a completed action activation and dispatch it against `doc` +
     /// `transport`. Decoding goes through [`ActionRegistry::decode`] — the
     /// same path a remote peer uses to replay. `None` when no action is
-    /// pending (e.g. the last activation was a navigation).
+    /// pending (e.g. the last activation was a navigation). Tests use this to
+    /// replay an activation without the application host's executor.
+    #[cfg(test)]
     pub fn take_dispatch(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         registry: &ActionRegistry,
         transport: &mut dyn ActionTransport,
     ) -> Option<Result<Dispatched, tilo_actions::ActionError>> {
@@ -1462,12 +1601,20 @@ impl ActionPalette {
                 }
             }
         }
-        Some(Self::dispatch_encoded(
-            doc,
+        let mut context = pending.context;
+        let kind = context
+            .resource
+            .as_ref()
+            .map(|resource| resource.kind.clone())
+            .unwrap_or_default();
+        if let Some(described) = tilo_actions::Described::of_published(
             &encoded,
-            registry,
-            transport,
-            pending.context,
+            tilo_actions::ActionKey::new("", kind, &pending.address.action),
+        ) {
+            context = context.with_described(described);
+        }
+        Some(Self::dispatch_encoded(
+            doc, &encoded, registry, transport, context,
         ))
     }
 
@@ -1541,7 +1688,7 @@ impl ActionPalette {
                 .iter()
                 .find(|snapshot| snapshot.binding.same_component(&target.binding))?;
             let resources = snapshot
-                .resources
+                .resources()
                 .iter()
                 .cloned()
                 .filter_map(|resource| {
@@ -1588,8 +1735,9 @@ impl ActionPalette {
             .collect()
     }
 
+    #[cfg(test)]
     fn dispatch_encoded(
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         encoded: &EncodedAction,
         registry: &ActionRegistry,
         transport: &mut dyn ActionTransport,
@@ -1603,7 +1751,7 @@ impl ActionPalette {
         let action = registry.decode(encoded)?;
         let actor = doc.get_actor().to_bytes().to_vec();
         tilo_actions::dispatch_by_with_context(
-            doc,
+            doc.document_mut(),
             action.as_ref(),
             encoded.clone(),
             transport,
@@ -1614,6 +1762,20 @@ impl ActionPalette {
 
     /// Resolve a chosen row id into a pending outcome (or the argument step).
     fn resolve_activation(&mut self, id: &str) {
+        // A "Search in" row narrows the palette; the typed text clears so
+        // the search starts afresh inside the scope.
+        if let Some(anchor) = id.strip_prefix(SCOPE_PREFIX) {
+            let scope = self
+                .scopes
+                .iter()
+                .find(|scope| scope.anchor == anchor)
+                .cloned();
+            if scope.is_some() {
+                self.field.set_query("");
+                self.set_scope(scope);
+            }
+            return;
+        }
         match self.index.get(id).cloned() {
             Some(resolution @ (RowResolution::Address(_) | RowResolution::Bound(_))) => {
                 let (address, bound) = match resolution {
@@ -1656,7 +1818,7 @@ impl ActionPalette {
                     ActionKind::Prompted { prompt, .. } => {
                         // Repurpose the field to collect the argument; clear the result
                         // list so only the prompt shows.
-                        self.field = self.field_source.build();
+                        self.field = self.field_source.build().control_size(FIELD_SIZE);
                         self.field.set_placeholder(&prompt);
                         self.focus_part(0);
                         self.results.set_groups(Vec::new());
@@ -1669,7 +1831,7 @@ impl ActionPalette {
                         });
                     }
                     ActionKind::Typed { prompt, .. } => {
-                        self.field = self.field_source.build();
+                        self.field = self.field_source.build().control_size(FIELD_SIZE);
                         self.field.set_placeholder(&prompt);
                         self.focus_part(0);
                         self.results.set_groups(Vec::new());
@@ -1703,8 +1865,7 @@ impl ActionPalette {
         if !fa.action.contract.availability.is_available() {
             return None;
         }
-        let mut context = ActionContext::for_resource(
-            &fa.action.label,
+        let mut context = fa.action.history_context(
             fa.resource_id.as_str(),
             &fa.resource_kind,
             &fa.resource_label,
@@ -1720,7 +1881,7 @@ impl ActionPalette {
                 .is_some_and(|parameter| parameter.ty != tilo_actions::ParamType::Text);
         Some(match &fa.action.input {
             ActionInput::Immediate(enc) => ActionKind::NoArgument {
-                intent: PreparedActionIntent::Encoded(enc.clone()),
+                intent: PreparedActionIntent::Encoded(enc.as_ref().clone()),
                 context,
                 kind: fa.action.kind,
                 confirmation: fa.action.contract.confirmation.clone(),
@@ -1758,8 +1919,17 @@ impl ActionPalette {
 
     /// Rebuild the result set for `query`: exported actions matching it as
     /// the **Actions** group, then each provider's hits as its own group.
-    fn rebuild(&mut self, query: &str) {
+    fn rebuild(&mut self, typed: &str) {
         self.missing_selection = None;
+        let mut parsed = SearchQuery::parse(typed, &self.facets);
+        for filter in &self.picked_filters {
+            parsed = parsed.with_filter(filter.clone());
+        }
+        if let Some(scope) = &self.scope {
+            parsed = parsed.within(scope.anchor.clone());
+        }
+        let text = parsed.text().to_owned();
+        let query = text.as_str();
         // Every available action is a candidate row with the text it is
         // found by; the index then keeps the ones matching the query.
         let mut candidates: Vec<(SearchResult, Option<String>, RowResolution)> = Vec::new();
@@ -1770,6 +1940,10 @@ impl ActionPalette {
         for fa in flatten(&self.resources) {
             // Programmatic actions are for agents and scripts, never a row.
             if !fa.action.contract.availability.is_available() || fa.action.is_programmatic() {
+                continue;
+            }
+            // A scoped palette offers the actions of that part of the app.
+            if !parsed.in_scope(fa.resource_id.as_str()) {
                 continue;
             }
             let title = format!("{} \u{2014} {}", fa.resource_label, fa.action.label);
@@ -1801,7 +1975,7 @@ impl ActionPalette {
             let Ok(_entry) = snapshot.binding.enter() else {
                 continue;
             };
-            for resource in snapshot.resources.iter().cloned().filter_map(|resource| {
+            for resource in snapshot.resources().iter().cloned().filter_map(|resource| {
                 crate::bound_dispatch::filter_resource(&snapshot.binding, resource)
             }) {
                 for fa in flatten(&[resource]) {
@@ -1815,6 +1989,7 @@ impl ActionPalette {
                         fa.resource_label, fa.action.label, snapshot.binding.instance_id
                     );
                     let target = crate::bound_dispatch::BoundActionTarget {
+                        input: crate::bound_dispatch::Input::Discrete,
                         binding: snapshot.binding.clone(),
                         address: crate::bound_dispatch::BoundActionAddress {
                             instance_id: snapshot.binding.instance_id,
@@ -1831,6 +2006,22 @@ impl ActionPalette {
                         RowResolution::Bound(target),
                     ));
                 }
+            }
+        }
+
+        // An unscoped palette offers to narrow to each part of the app.
+        if self.scope.is_none() {
+            for scope in &self.scopes {
+                candidates.push((
+                    SearchResult::new(
+                        SCOPES_KIND,
+                        scope.label.clone(),
+                        format!("{SCOPE_PREFIX}{}", scope.anchor),
+                    )
+                    .with_icon(crate::icons::Icon::Search),
+                    None,
+                    RowResolution::Navigate(format!("{SCOPE_PREFIX}{}", scope.anchor), None),
+                ));
             }
         }
 
@@ -1858,6 +2049,7 @@ impl ActionPalette {
         self.search_generation = self.search_generation.wrapping_add(1);
         self.search_query.clear();
         self.search_query.push_str(query);
+        self.query = parsed;
         self.action_rows = rows;
         self.base_index = index;
         self.provider_rows.clear();
@@ -1865,10 +2057,17 @@ impl ActionPalette {
         self.provider_validation.clear();
         self.validation_queue.clear();
         self.provider_cursors = vec![None; self.providers.len()];
+        self.provider_pending = vec![None; self.providers.len()];
         self.provider_complete = vec![false; self.providers.len()];
+        self.results.set_loading(false);
         self.next_provider = 0;
         self.refresh_progressive_results();
-        if self.providers.is_empty() {
+        if !query.trim().is_empty() && !crate::search::engine_ready() {
+            // The rows are ranked by the index, whose code is still loading.
+            self.search_announcement = Some(String::from("Searching"));
+            self.results.set_empty_text("Searching…");
+            let _ = self.advance_search_page();
+        } else if self.providers.is_empty() {
             self.results.set_empty_text("No matches");
             self.search_announcement = Some(format!("{} results", self.results.len()));
         } else {
@@ -1900,13 +2099,6 @@ impl ActionPalette {
     /// Position the palette at `origin` with `width`. Called each frame
     /// before `draw`.
     #[allow(
-        clippy::cast_possible_truncation,
-        reason = "width and FIELD_H are UI layout dimensions in logical \
-                  pixels, always tiny compared to f32's range; narrowing \
-                  for taffy's f32-based layout loses no visually \
-                  meaningful precision"
-    )]
-    #[allow(
         clippy::expect_used,
         reason = "private palette ownership mismatch is an invariant violation"
     )]
@@ -1936,7 +2128,7 @@ impl ActionPalette {
 
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "width and FIELD_H are logical-pixel layout dimensions, far inside f32's range"
+        reason = "width and the field height are logical-pixel layout dimensions, far inside f32's range"
     )]
     fn layout_field(&mut self, theme: &Theme, origin: Point, width: f64, tr: &mut TextRenderer) {
         // Field: build a fresh 2-node tree so `handle_event` can resolve the
@@ -1949,7 +2141,7 @@ impl ActionPalette {
             node,
             Size {
                 width: AvailableSpace::Definite(width as f32),
-                height: AvailableSpace::Definite(FIELD_H as f32),
+                height: AvailableSpace::Definite(FIELD_SIZE.height(theme) as f32),
             },
             |known, available, id, _, _| {
                 node_map.get(&id).map_or(Size::ZERO, |&p| unsafe {
@@ -1966,12 +2158,113 @@ impl ActionPalette {
         self.field_taffy = taffy;
         self.field_node = Some(node);
 
-        // Results overlay directly under the field.
-        let top = origin.y + FIELD_H + GAP;
+        // Facet chips, then the results overlay, directly under the field.
+        let mut top = origin.y + FIELD_SIZE.height(theme) + GAP;
+        self.layout_facet_chips(theme, origin.x, top, width, tr);
+        if !self.facet_chips.is_empty() {
+            top += FACET_H + GAP;
+        }
         let h = self.results.desired_height();
         self.results
             .set_rect(Rect::new(origin.x, top, origin.x + width, top + h));
         self.rect = Rect::new(origin.x, origin.y, origin.x + width, top + h);
+    }
+
+    /// One row of facet value chips, in facet order, as many as fit.
+    fn layout_facet_chips(
+        &mut self,
+        theme: &Theme,
+        x0: f64,
+        top: f64,
+        width: f64,
+        text: &mut TextRenderer,
+    ) {
+        self.facet_chips.clear();
+        self.facet_labels.clear();
+        if self.arg.is_some() || self.confirm.is_some() {
+            return;
+        }
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let label_style = theme.text(crate::tokens::TextRole::Caption);
+        let mut x = x0;
+        for facet in &self.facets {
+            // The group's name, then its values.
+            let (label_w, label_h) = text.measure_style(&facet.label, None, &label_style);
+            let label_w = f64::from(label_w);
+            if x + label_w > x0 + width {
+                return;
+            }
+            self.facet_labels.push((
+                Point::new(
+                    x,
+                    crate::text_metrics::centered_text_top(top, FACET_H, f64::from(label_h)),
+                ),
+                facet.label.clone(),
+            ));
+            x += label_w + gap;
+            for value in &facet.values {
+                let label = value.label.clone();
+                let w = crate::widget::ChipFace::intrinsic_width(
+                    &label,
+                    crate::widget::ChipLead::None,
+                    false,
+                    text,
+                    theme,
+                );
+                if x + w > x0 + width {
+                    return;
+                }
+                self.facet_chips.push((
+                    Rect::new(x, top, x + w, top + FACET_H),
+                    FacetFilter::new(facet.key.clone(), value.value.clone()),
+                    label,
+                ));
+                x += w + gap;
+            }
+            x += gap;
+        }
+    }
+
+    fn draw_facet_chips(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let label_style = theme.text(crate::tokens::TextRole::Caption);
+        for (at, label) in &self.facet_labels {
+            #[allow(
+                clippy::arithmetic_side_effects,
+                reason = "Affine composition is float matrix math and cannot overflow"
+            )]
+            let placed = transform * Affine::translate((at.x, at.y));
+            text.draw_style(scene, label, theme.text_dim, placed, None, &label_style);
+        }
+        let applied = self.query.filters();
+        for (rect, filter, label) in &self.facet_chips {
+            let on = applied.contains(filter);
+            // Selected is the lift: one step of ink, never a hue.
+            crate::widget::ChipFace::new(*rect, label)
+                .selected(on)
+                .paint(scene, transform, text, theme);
+        }
+    }
+
+    fn facet_chip_at(&self, point: Point) -> Option<FacetFilter> {
+        self.facet_chips
+            .iter()
+            .find(|(rect, ..)| rect.contains(point))
+            .map(|(_, filter, _)| filter.clone())
+    }
+
+    /// Follow a scope the user removed from the field.
+    fn follow_field_scope(&mut self) {
+        if self.field.take_scope_cleared() {
+            self.scope = None;
+            let query = self.field.value().to_owned();
+            self.rebuild(&query);
+        }
     }
 
     fn layout_controls(&mut self, theme: &Theme, text: &mut TextRenderer) {
@@ -2023,6 +2316,7 @@ impl ActionPalette {
     ) {
         self.field
             .draw(scene, transform, text_renderer, theme, presence);
+        self.draw_facet_chips(scene, transform, text_renderer, theme);
         self.results
             .draw(scene, transform, text_renderer, theme, presence);
         if self.controls_node.is_some() {
@@ -2040,7 +2334,7 @@ impl ActionPalette {
         results_owner: bool,
         target: Option<&str>,
         action: &crate::a11y::Action,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         root: &ObjId,
     ) -> bool {
         // The caller resolves this owner against the current inspection before
@@ -2053,7 +2347,7 @@ impl ActionPalette {
         } else if matches!(action, crate::a11y::Action::Focus) {
             true
         } else {
-            self.field.perform_action(action, doc, root)
+            self.field.perform_action(action, &[], doc, root)
         };
         if let Some(query) = self.field.take_dirty() {
             if self.arg.is_none() && self.confirm.is_none() {
@@ -2069,7 +2363,7 @@ impl ActionPalette {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         root: &ObjId,
     ) -> bool {
         if self.handle_key(event, &modifiers, doc, root) {
@@ -2099,10 +2393,24 @@ impl ActionPalette {
                 }
                 true
             }
-            WindowEvent::CursorMoved { .. }
-            | WindowEvent::MouseInput { .. }
-            | WindowEvent::MouseWheel { .. } => {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_cursor = Point::new(position.x, position.y);
                 self.route_to_field(event, modifiers, doc, root);
+                self.route_to_results(event, modifiers, doc, root);
+                true
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            } if self.facet_chip_at(self.last_cursor).is_some() => {
+                if let Some(filter) = self.facet_chip_at(self.last_cursor) {
+                    self.toggle_facet(&filter);
+                }
+                true
+            }
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
+                self.route_to_field(event, modifiers, doc, root);
+                self.follow_field_scope();
                 self.route_to_results(event, modifiers, doc, root);
                 self.poll_view_activation();
                 true
@@ -2123,7 +2431,7 @@ impl ActionPalette {
         &mut self,
         event: &WindowEvent,
         modifiers: &Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         if self.history_suspended {
@@ -2158,6 +2466,7 @@ impl ActionPalette {
             {
                 self.controls.children_mut()[focused - 1].perform_action(
                     &crate::a11y::Action::Activate,
+                    &[],
                     doc,
                     path,
                 );
@@ -2334,6 +2643,7 @@ impl ActionPalette {
             if let Some(q) = self.field.take_dirty() {
                 self.rebuild(&q);
             }
+            self.follow_field_scope();
         }
         true
     }
@@ -2351,10 +2661,7 @@ impl ActionPalette {
         self.arg = None;
         self.confirm = None;
         // Restore the query field and result set.
-        self.field = self
-            .field_source
-            .build()
-            .with_placeholder("Search actions and results");
+        self.field = self.query_field();
         self.focus_part(0);
         self.rebuild("");
     }
@@ -2406,7 +2713,7 @@ impl ActionPalette {
             ConfirmationPolicy::Confirm => "CONFIRM".to_string(),
             ConfirmationPolicy::Phrase { phrase } => phrase,
         };
-        self.field = self.field_source.build();
+        self.field = self.field_source.build().control_size(FIELD_SIZE);
         self.field
             .set_placeholder(&confirmation_instruction(&expected));
         self.focus_part(0);
@@ -2420,7 +2727,7 @@ impl ActionPalette {
         &mut self,
         event: &WindowEvent,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) {
         let Some(node) = self.field_node else { return };
@@ -2431,7 +2738,7 @@ impl ActionPalette {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: doc.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target: &mut ft,
@@ -2445,7 +2752,7 @@ impl ActionPalette {
         &mut self,
         event: &WindowEvent,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -2462,7 +2769,7 @@ impl ActionPalette {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: doc.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target: &mut ft,
@@ -2471,6 +2778,45 @@ impl ActionPalette {
             },
         );
     }
+}
+
+/// Every provider's facets, merged by key in first-declared order.
+fn merged_facets(providers: &[Box<dyn SearchProvider>]) -> Vec<Facet> {
+    let mut merged: Vec<Facet> = Vec::new();
+    for facet in providers.iter().flat_map(|provider| provider.facets()) {
+        if let Some(existing) = merged.iter_mut().find(|known| known.key == facet.key) {
+            for value in facet.values {
+                if !existing
+                    .values
+                    .iter()
+                    .any(|known| known.value == value.value)
+                {
+                    existing.values.push(value);
+                }
+            }
+        } else {
+            merged.push(facet);
+        }
+    }
+    merged
+}
+
+/// What the field's scope token reads.
+fn scope_token_label(scope: &ScopeDecl) -> String {
+    format!("Only {}", scope.label)
+}
+
+/// `text` without the typed token(s) for `filter`.
+fn without_token(text: &str, filter: &FacetFilter) -> String {
+    text.split_whitespace()
+        .filter(|token| {
+            token.split_once(':').is_none_or(|(key, value)| {
+                !(key.eq_ignore_ascii_case(&filter.key)
+                    && value.trim_matches('"').eq_ignore_ascii_case(&filter.value))
+            })
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Rank `rows` by fit against `query` and bucket by kind. Uses the shared
@@ -2559,7 +2905,6 @@ impl Widget for ActionPalette {
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -2574,8 +2919,13 @@ impl Widget for ActionPalette {
         ActionPalette::draw(self, scene, transform, text, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        *ctx.handled |=
-            self.route_event(event, ctx.scale_factor, *ctx.modifiers, ctx.state, ctx.path);
+        *ctx.handled |= self.route_event(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            &mut ctx.state,
+            ctx.path,
+        );
     }
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         if !self.is_presented() {
@@ -2616,9 +2966,19 @@ impl Widget for ActionPalette {
                 }
             }
         }
+        if !self.in_argument_mode()
+            && !self.history_review_required
+            && let Some(results) = self.results.accessibility()
+        {
+            children.push(results.with_hashed_key(self.target("results")));
+        }
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Dialog)
-                .with_name("Action confirmation")
+                .with_name(if self.in_argument_mode() {
+                    "Action confirmation"
+                } else {
+                    "Search"
+                })
                 .with_state(crate::a11y::AccessState::new().modal(true))
                 .with_children(children),
         )
@@ -2627,7 +2987,7 @@ impl Widget for ActionPalette {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        doc: &mut AppModel,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if !self.is_presented() {
@@ -2637,7 +2997,14 @@ impl Widget for ActionPalette {
             if matches!(action, crate::a11y::Action::Focus) {
                 self.focus_part(0);
             }
-            return self.field.perform_action(action, doc, path);
+            return self.field.perform_action(action, &[], doc, path);
+        }
+        if !self.in_argument_mode() && !self.history_review_required {
+            let handled = self
+                .results
+                .perform_semantic_action(target, action, doc, path);
+            self.poll_view_activation();
+            return handled;
         }
         if self.confirm.is_none() && !self.history_review_required {
             return false;
@@ -2647,7 +3014,8 @@ impl Widget for ActionPalette {
                 if matches!(action, crate::a11y::Action::Focus) {
                     self.focus_part(index + 1);
                 }
-                let handled = self.controls.children_mut()[index].perform_action(action, doc, path);
+                let handled =
+                    self.controls.children_mut()[index].perform_action(action, &[], doc, path);
                 let (doc, path) = crate::doc::document(doc, path);
                 self.drain_command(doc, path);
                 return handled;
@@ -2694,6 +3062,7 @@ pub(crate) fn observed_history_editor(
 #[cfg(test)]
 mod tests {
     include!("action_palette/deferred_tests.rs");
+    include!("action_palette/platform_search_tests.rs");
     use super::*;
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue};
@@ -2742,10 +3111,14 @@ mod tests {
                 )
                 .unwrap(),
             )
-            .with_action(ActionSpec::prompted(
+            .with_action(ActionSpec::prompted_param(
                 "rename",
                 "Rename",
-                "New name",
+                tilo_actions::ActionParam::required(
+                    "value",
+                    tilo_actions::ParamType::Text,
+                    "New name",
+                ),
                 "e.g. Widget",
                 ExecutionLocus::ClientLocal,
                 |s: &str| {
@@ -3004,16 +3377,26 @@ mod tests {
             p.set_cursor(idx);
             p.activate_selected();
 
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             assert!(doc.get(&ROOT, "marked").unwrap().is_none());
             let mut tx = LocalTransport::new();
             let d = p
-                .take_dispatch(&mut doc, &registry(), &mut tx)
+                .take_dispatch(
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &registry(),
+                    &mut tx,
+                )
                 .expect("an action was pending")
                 .expect("dispatch ok");
             assert!(matches!(d, Dispatched::AppliedLocal(_)));
             let context = d.envelope().context.as_ref().expect("palette provenance");
-            assert_eq!(context.action_label, "Mark done");
+            let Some(tilo_actions::Did::Verb(verb)) = &context.what else {
+                panic!("the published action is recorded: {context:?}");
+            };
+            assert_eq!(
+                (verb.action.kind.as_str(), verb.action.action.as_str()),
+                ("test.thing", "mark")
+            );
             assert_eq!(
                 context
                     .resource
@@ -3049,10 +3432,14 @@ mod tests {
             p.open();
             p.activate_selected();
 
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             let mut tx = LocalTransport::new();
             let dispatched = p
-                .take_dispatch(&mut doc, &registry(), &mut tx)
+                .take_dispatch(
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &registry(),
+                    &mut tx,
+                )
                 .expect("action pending")
                 .expect("dispatch succeeds");
             let context = dispatched.envelope().context.as_ref().expect("context");
@@ -3090,10 +3477,15 @@ mod tests {
             p.set_cursor(idx);
             p.activate_selected();
 
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             let mut tx = LocalTransport::new();
             assert!(
-                p.take_dispatch(&mut doc, &registry(), &mut tx).is_none(),
+                p.take_dispatch(
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &registry(),
+                    &mut tx
+                )
+                .is_none(),
                 "a content row is not a dispatch"
             );
             assert_eq!(
@@ -3169,14 +3561,23 @@ mod tests {
 
             // Type the argument into the field and confirm.
             p.field.set_query("Sprocket");
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             let root = ROOT;
             let mods = Modifiers::default();
-            p.handle_key(&enter(), &mods, &mut doc, &root);
+            p.handle_key(
+                &enter(),
+                &mods,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &root,
+            );
 
             let mut tx = LocalTransport::new();
             let d = p
-                .take_dispatch(&mut doc, &registry(), &mut tx)
+                .take_dispatch(
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &registry(),
+                    &mut tx,
+                )
                 .expect("prompted action pending")
                 .expect("dispatch ok");
             assert!(matches!(d, Dispatched::AppliedLocal(_)));
@@ -3289,26 +3690,44 @@ mod tests {
             palette.activate_selected();
             assert!(palette.in_argument_mode());
 
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             let mut transport = LocalTransport::new();
             assert!(
                 palette
-                    .take_dispatch(&mut doc, &registry(), &mut transport)
+                    .take_dispatch(
+                        &mut crate::widget::Edits::lend(&mut doc),
+                        &registry(),
+                        &mut transport
+                    )
                     .is_none(),
                 "activation alone must not queue the operation"
             );
 
             palette.field.set_query("mark thing");
-            palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+            palette.handle_key(
+                &enter(),
+                &Modifiers::default(),
+                &mut crate::widget::Edits::lend(&mut doc),
+                &ROOT,
+            );
             assert!(
                 palette
-                    .take_dispatch(&mut doc, &registry(), &mut transport)
+                    .take_dispatch(
+                        &mut crate::widget::Edits::lend(&mut doc),
+                        &registry(),
+                        &mut transport
+                    )
                     .is_none(),
                 "confirmation is exact and case-sensitive"
             );
 
             palette.field.set_query("MARK THING");
-            palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+            palette.handle_key(
+                &enter(),
+                &Modifiers::default(),
+                &mut crate::widget::Edits::lend(&mut doc),
+                &ROOT,
+            );
             let pending = palette
                 .take_operation()
                 .expect("exact confirmation queues the operation");
@@ -3318,7 +3737,7 @@ mod tests {
                 "the broker receives the exact evidence the palette verified"
             );
             ActionPalette::dispatch_encoded(
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 pending.encoded().expect("fixed encoding"),
                 &registry(),
                 &mut transport,
@@ -3394,9 +3813,14 @@ mod tests {
                 palette.take_operation().is_none(),
                 "a destructive value waits for confirmation"
             );
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             palette.field.set_query("CONFIRM");
-            palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+            palette.handle_key(
+                &enter(),
+                &Modifiers::default(),
+                &mut crate::widget::Edits::lend(&mut doc),
+                &ROOT,
+            );
             let pending = palette
                 .take_operation()
                 .expect("the confirmed destructive value queues");
@@ -3405,25 +3829,11 @@ mod tests {
     }
 
     fn enter_key() -> KeyEvent {
-        // SAFETY: `handle_key` only reads `logical_key` + `state`.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(NamedKey::Enter);
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        ev
+        crate::synthetic_input::key_event(Key::Named(NamedKey::Enter), None, ElementState::Pressed)
     }
 
     fn enter() -> WindowEvent {
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: enter_key(),
-            is_synthetic: false,
-        }
+        crate::synthetic_input::keyboard_input(enter_key())
     }
 
     #[test]
@@ -3462,8 +3872,13 @@ mod tests {
             palette.take_operation().is_none(),
             "Back to live keeps ready work behind explicit continuation"
         );
-        let mut doc = AutoCommit::new();
-        palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+        let mut doc = automerge::AutoCommit::new();
+        palette.handle_key(
+            &enter(),
+            &Modifiers::default(),
+            &mut crate::widget::Edits::lend(&mut doc),
+            &ROOT,
+        );
         let pending = palette
             .take_operation()
             .expect("ready work remains in the same palette");
@@ -3496,9 +3911,14 @@ mod tests {
             .unwrap();
         palette.set_cursor(idx);
         palette.activate_selected();
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         palette.field.set_query("MARK THING");
-        palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+        palette.handle_key(
+            &enter(),
+            &Modifiers::default(),
+            &mut crate::widget::Edits::lend(&mut doc),
+            &ROOT,
+        );
         assert!(palette.pending_dispatch.is_some());
 
         palette.suspend_for_history();
@@ -3507,7 +3927,12 @@ mod tests {
         assert!(palette.in_argument_mode());
         assert!(palette.query().is_empty(), "old affirmative is not reused");
         palette.field.set_query("MARK THING");
-        palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+        palette.handle_key(
+            &enter(),
+            &Modifiers::default(),
+            &mut crate::widget::Edits::lend(&mut doc),
+            &ROOT,
+        );
         assert_eq!(
             palette.take_operation().unwrap().confirmation_evidence(),
             &serde_json::json!({ "confirmation_phrase": "MARK THING" })
@@ -3566,11 +3991,16 @@ mod tests {
         palette.open();
         palette.activate_selected();
         palette.field.set_query("{\"rows\":\"bad\"}");
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let enter =
-            crate::synthetic_input::key_event(&Key::Named(NamedKey::Enter), ElementState::Pressed);
-        palette.handle_key(&enter, &Modifiers::default(), &mut doc, &root);
+            crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
+        palette.handle_key(
+            &enter,
+            &Modifiers::default(),
+            &mut crate::widget::Edits::lend(&mut doc),
+            &root,
+        );
         assert!(palette.confirm.is_none());
         assert!(palette.arg.is_some());
         assert!(palette.is_open());
@@ -3581,11 +4011,21 @@ mod tests {
                 .contains("Invalid arguments")
         );
         palette.field.set_query("{\"rows\":2}");
-        palette.handle_key(&enter, &Modifiers::default(), &mut doc, &root);
+        palette.handle_key(
+            &enter,
+            &Modifiers::default(),
+            &mut crate::widget::Edits::lend(&mut doc),
+            &root,
+        );
         assert!(palette.confirm.is_some());
         assert!(palette.take_operation().is_none());
         palette.field.set_query("CONFIRM");
-        palette.handle_key(&enter, &Modifiers::default(), &mut doc, &root);
+        palette.handle_key(
+            &enter,
+            &Modifiers::default(),
+            &mut crate::widget::Edits::lend(&mut doc),
+            &root,
+        );
         assert_eq!(
             palette.take_operation().unwrap().confirmation_evidence(),
             &serde_json::json!({"confirm":true})

@@ -11,10 +11,11 @@
 
 use std::path::{Component, Path};
 
-use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, now_ms};
+use super::{EIO, EISDIR, ENOENT, ENOTDIR, FileType, Hash, QuickFS, document_codec_for, now_ms};
 use crate::namespace::{
     ContentAuthority, LeaseRequest, PosixAttrs, ROOT_INO, VersionFence, WriteLease,
 };
+use tilo_lock::MutexRecover as _;
 
 /// One file or directory of the workspace tree as the record plane sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,7 +36,7 @@ pub struct TreeEntry {
     /// not empty, just not known.
     pub known: bool,
     /// The stable record this path is. A rename keeps it.
-    pub record: Option<collab_types::FileRecordId>,
+    pub record: Option<fs_protocol::FileRecordId>,
     /// Replicated permission bits and whether the content is a symbolic
     /// link's target.
     pub posix: PosixAttrs,
@@ -410,7 +411,12 @@ impl QuickFS {
             let entries = self.visible_entries(dir).unwrap_or_default();
             for (ino, kind, name) in entries {
                 let name = name.as_bytes();
-                if name == b"." || name == b".." {
+                if !projectable_name(name) {
+                    tracing::warn!(
+                        target: "fs::native",
+                        ino,
+                        "not projecting an entry whose name is not one path component",
+                    );
                     continue;
                 }
                 let mut path = prefix.clone();
@@ -523,26 +529,23 @@ impl QuickFS {
         {
             eprintln!("records are published one by one: {error}");
         }
-        *self
-            .deferred_deltas
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Vec::new());
+        *self.deferred_deltas.lock_recover() = Some(Vec::new());
         self.ns().begin_incremental_batch();
         let store = std::sync::Arc::clone(&self.hydrator.store);
         store.defer_sync();
         let value = apply();
-        let rt = self.hydrator.runtime_handle.clone();
-        if let Err(error) = rt.block_on(store.end_deferred_sync()) {
+        if let Err(error) = self.hydrator.block_on(store.end_deferred_sync()) {
             eprintln!("content stays pending: {error:#}");
         }
-        let mut durable = true;
-        if let Some(deferral) = deferral
+        let mut durable = if let Some(deferral) = deferral
             && let Err(error) = deferral.finish()
         {
             // The records wait for the history that describes them.
             eprintln!("history stays pending: {error}");
-            durable = false;
-        }
+            false
+        } else {
+            true
+        };
         if durable && let Some(publisher) = publisher {
             match publisher.commit_changeset() {
                 Ok(Some(changeset)) if std::env::var_os("TILO_FS_NATIVE_TRACE").is_some() => {
@@ -561,14 +564,16 @@ impl QuickFS {
         // Taken before the namespace is persisted: a full save moves the
         // incremental cursor past the batch.
         let batch = self.ns().end_incremental_batch();
-        if durable && let Some(hook) = self.durability_hook.get() {
-            hook();
+        if durable
+            && let Some(hook) = self.durability_hook.get()
+            && let Err(error) = hook()
+        {
+            eprintln!("the namespace placing the changeset stays pending: {error}");
         }
         drop(gate);
         let mut deltas = self
             .deferred_deltas
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lock_recover()
             .take()
             .unwrap_or_default();
         deltas.push(batch);
@@ -577,25 +582,14 @@ impl QuickFS {
         } else {
             // Not durable yet: the next changeset broadcasts these with its
             // own, once both are on disk.
-            *self
-                .deferred_deltas
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-            self.held_deltas
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .extend(deltas);
+            *self.deferred_deltas.lock_recover() = None;
+            self.held_deltas.lock_recover().extend(deltas);
         }
         value
     }
 
     fn broadcast_deltas(&self, deltas: Vec<Vec<u8>>) {
-        let held = std::mem::take(
-            &mut *self
-                .held_deltas
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let held = std::mem::take(&mut *self.held_deltas.lock_recover());
         let any = !held.is_empty() || !deltas.is_empty();
         if any && self.enforcement.is_some() {
             self.refresh_acl_visible_record_index();
@@ -608,12 +602,6 @@ impl QuickFS {
         if any {
             self.wake_pinned_hydration();
         }
-    }
-
-    /// Sets what runs after each changeset (persisting the namespace that
-    /// places its records). Set once.
-    pub fn set_durability_hook(&self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
-        let _ = self.durability_hook.set(hook);
     }
 
     /// The current time as the record plane stamps it.
@@ -696,11 +684,17 @@ impl QuickFS {
     pub fn read_path_range(&self, rel: &Path, offset: u64, len: u64) -> Result<Vec<u8>, i32> {
         let components = path_components(rel)?;
         let ino = self.ino_at(&components).ok_or(ENOENT)?;
-        let (attr, hash) = self.ns().attr_and_hash(ino).ok_or(ENOENT)?;
-        if attr.kind == FileType::Directory {
+        // One namespace lock for the inode's kind, content and document-ness.
+        let view = self.inode_view(ino, false).ok_or(ENOENT)?;
+        if view.attr.kind == FileType::Directory {
             return Err(EISDIR);
         }
-        if self.is_document(ino) || self.buffers().contains_key(&ino) {
+        if let Some(stage) = self.stage(ino) {
+            return self
+                .read_stage_blocking(&stage, offset, len)
+                .map_err(|e| to_errno(&e));
+        }
+        if view.document {
             let whole = self.read_full_blocking(ino).map_err(|e| to_errno(&e))?;
             let start = usize::try_from(offset)
                 .unwrap_or(usize::MAX)
@@ -710,15 +704,12 @@ impl QuickFS {
                 .min(whole.len());
             return Ok(whole.get(start..end).unwrap_or_default().to_vec());
         }
-        let Some(hash) = hash else {
+        let Some(hash) = view.hash else {
             return Ok(Vec::new());
         };
-        let hydrator = self.hydrator.clone();
-        let rt = hydrator.runtime_handle.clone();
-        tokio::task::block_in_place(|| {
-            rt.block_on(async move { hydrator.read(hash, offset, len).await })
-        })
-        .map_err(|_| EIO)
+        self.hydrator
+            .block_on(self.hydrator.read(hash, offset, len))
+            .map_err(|_| EIO)
     }
 
     /// The entries of the directory at `rel`, as [`Self::tree_snapshot`]
@@ -770,7 +761,7 @@ impl QuickFS {
         let read = || std::fs::read(snapshot).map_err(|e| to_errno(&e));
         match self.lookup_kind(parent, name) {
             Some((ino, FileType::RegularFile)) if self.is_document(ino) => {
-                self.commit_buffer(ino, &read()?)
+                self.commit_bytes(ino, &read()?)
             }
             None => {
                 if let Some(codec) = self.new_document_codec(name) {
@@ -782,7 +773,7 @@ impl QuickFS {
                 if !self.signed()
                     && let Some((ino, _)) = self.lookup_kind(parent, name)
                 {
-                    self.record_version(ino, collab_types::FileProvenance::Create, None);
+                    self.record_version(ino, fs_protocol::FileProvenance::Create, None);
                 }
                 Ok(())
             }
@@ -805,9 +796,7 @@ impl QuickFS {
         if self.signed() || self.ns().content_authority() != ContentAuthority::LegacyNamespace {
             return None;
         }
-        std::str::from_utf8(name)
-            .ok()
-            .and_then(|name| self.document_codec_for(name))
+        std::str::from_utf8(name).ok().and_then(document_codec_for)
     }
 
     /// Creates the document `name` in `parent` with `data` as its content,
@@ -829,11 +818,11 @@ impl QuickFS {
             (ino, ns.save_incremental())
         };
         self.publish(delta);
-        self.record_version(ino, collab_types::FileProvenance::Create, None);
+        self.record_version(ino, fs_protocol::FileProvenance::Create, None);
         if data.is_empty() {
             return Ok(());
         }
-        let committed = self.commit_buffer(ino, data);
+        let committed = self.commit_bytes(ino, data);
         if committed.is_err() {
             // A document its codec refuses must not stay behind empty.
             let _ = self.delete_named(parent, name.as_bytes(), false);
@@ -852,7 +841,7 @@ impl QuickFS {
     /// Who held `record`'s write lease in `epoch`.
     pub fn lease_holder_of(&self, record: [u8; 16], epoch: u64) -> Option<[u8; 32]> {
         self.ns().lease_holder(
-            collab_types::FileRecordId(uuid::Uuid::from_bytes(record)),
+            fs_protocol::FileRecordId(uuid::Uuid::from_bytes(record)),
             epoch,
         )
     }
@@ -912,12 +901,7 @@ impl QuickFS {
                 .take_lease(record, me, ttl, granted)
                 .map(|l| (l, LeaseSource::Local));
         };
-        let nonce = u64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos()),
-        )
-        .unwrap_or(u64::MAX);
+        let nonce = tilo_clock::unix_now_ns();
         let delta = {
             let mut ns = self.ns();
             if !ns.put_lease_request(record, me, LeaseRequest { nonce }) {
@@ -969,7 +953,7 @@ impl QuickFS {
     pub fn arbitrate_lease_requests(
         &self,
         ttl: std::time::Duration,
-        answered: &mut std::collections::HashSet<(collab_types::FileRecordId, [u8; 32], u64)>,
+        answered: &mut std::collections::HashSet<(fs_protocol::FileRecordId, [u8; 32], u64)>,
     ) -> Vec<(std::path::PathBuf, WriteLease)> {
         let ttl_ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
         let mut granted = Vec::new();
@@ -1006,7 +990,7 @@ impl QuickFS {
 
     fn take_lease(
         &self,
-        record: collab_types::FileRecordId,
+        record: fs_protocol::FileRecordId,
         me: [u8; 32],
         ttl: std::time::Duration,
         granted: bool,
@@ -1110,6 +1094,41 @@ impl QuickFS {
                 Some((rel, lease))
             })
             .collect()
+    }
+}
+
+/// Whether a namespace entry's name is exactly one path component.
+///
+/// The native data plane turns these names into real paths under the live
+/// tree, as root. Local creates validate names, but a name merged from a
+/// peer's document is whatever bytes the peer wrote, so a separator, a NUL
+/// or a dot-link in it must never reach `Path::join`: `../../etc/cron.d/x`
+/// would leave the tree, and `/etc/cron.d/x` would replace it.
+pub fn projectable_name(name: &[u8]) -> bool {
+    !name.is_empty() && name != b"." && name != b".." && !name.contains(&b'/') && !name.contains(&0)
+}
+
+#[cfg(test)]
+mod projectable_name_tests {
+    use super::projectable_name;
+
+    #[test]
+    fn only_single_components_are_projected() {
+        for name in [&b"notes.md"[..], b"..hidden", b"a b", "é.txt".as_bytes()] {
+            assert!(projectable_name(name), "{name:?} is one component");
+        }
+        for name in [
+            &b""[..],
+            b".",
+            b"..",
+            b"../etc",
+            b"../../../../etc/cron.d/x",
+            b"/etc/cron.d/x",
+            b"a/b",
+            b"a\0b",
+        ] {
+            assert!(!projectable_name(name), "{name:?} must not be projected");
+        }
     }
 }
 

@@ -113,6 +113,7 @@ fn local_record_restart_keeps_exact_records_and_drops_mismatches() {
         let mut tree = WorkspaceTree::bootstrap_default();
         tree.persist_path = Some(path.clone());
         let tab = adopt(&mut tree, next_id());
+        crate::shell::persist::wait_for_saves();
         let mut json: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         json.as_object_mut().unwrap().remove("local_app_records");
@@ -132,6 +133,7 @@ fn local_record_restart_keeps_exact_records_and_drops_mismatches() {
             let record = next_id();
             let tab = adopt(&mut tree, record);
             let room = tree.desktop.active_workspace().unwrap().room;
+            crate::shell::persist::wait_for_saves();
             let mut json: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             let recorded_room = if mode == "room" { RoomId::new() } else { room };
@@ -150,6 +152,7 @@ fn local_record_restart_keeps_exact_records_and_drops_mismatches() {
                         app_id: APP.into(),
                         label: "Remote fixture".into(),
                         note: String::new(),
+                        missing: None,
                     })
                     .unwrap();
             }
@@ -216,7 +219,7 @@ fn local_record_restart_removes_closed_and_revalidates_live_tabs() {
             let tile = &mut workspace.strips[0].window_groups[0].tabs[0].tile;
             let remote_record = next_id();
             match mode {
-                "room" => workspace.room = RoomId::new(),
+                "room" => workspace.set_room(RoomId::new()),
                 "app" => {
                     *tile = TileContent::LocalApp {
                         app_id: "dev.tilo.changed-record-test".into(),
@@ -229,6 +232,7 @@ fn local_record_restart_removes_closed_and_revalidates_live_tabs() {
                         app_id: APP.into(),
                         label: "Remote".into(),
                         note: String::new(),
+                        missing: None,
                     };
                     global_registry().lock().unwrap().store_remote_record(
                         room,
@@ -248,4 +252,63 @@ fn local_record_restart_removes_closed_and_revalidates_live_tabs() {
 
     local_record_restart_removes_closed_tab_metadata();
     local_record_restart_revalidates_live_tab_before_each_staging();
+}
+
+#[test]
+fn explicitly_reopening_a_saved_window_stages_its_record_and_adopts_into_its_tab() {
+    let _runtime = RuntimeReset::new();
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let record = next_id();
+    let tab = adopt(&mut tree, record);
+    let sibling_record = next_id();
+    let sibling = adopt(&mut tree, sibling_record);
+    let records = tree.local_app_records.clone();
+    let group = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
+    group
+        .tabs
+        .iter_mut()
+        .find(|item| item.id == tab)
+        .unwrap()
+        .tile = TileContent::LocalApp {
+        app_id: APP.into(),
+        label: "Saved window".into(),
+        note: "Interrupted".into(),
+    };
+    assert!(!retry_local_restore(&mut tree, tab, "dev.tilo.wrong"));
+    assert!(!retry_local_restore(&mut tree, next_id(), APP));
+    assert!(retry_local_restore(&mut tree, tab, APP));
+    assert!(
+        !retry_local_restore(&mut tree, tab, APP),
+        "repeated recovery is inert"
+    );
+    assert_eq!(
+        staged(&tree, tab),
+        Some(record),
+        "stage the exact saved record"
+    );
+    launcher::set_pending_placement(APP, Placement::IntoTab(tab));
+    let surface = next_id();
+    let placement = launcher::placement_for_toplevel(APP, surface).unwrap();
+    assert_eq!(placement, Placement::IntoTab(tab));
+    let adopted = crate::shell::tab_binding::adopt_toplevel_at(
+        &mut tree,
+        surface,
+        Some(APP.into()),
+        placement,
+    );
+    assert_eq!(adopted, tab);
+    assert_eq!(tree.local_app_records, records);
+    assert!(
+        !retry_local_restore(&mut tree, tab, APP),
+        "a mapped window cannot retry"
+    );
+    assert!(
+        tree.desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .any(|item| item.id == sibling)
+    );
 }

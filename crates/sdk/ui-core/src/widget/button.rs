@@ -1,16 +1,17 @@
 use crate::i18n;
+use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
-use crate::tokens::TypeScale;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::ActionEmitter;
+use crate::widget::ControlSize;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
@@ -37,43 +38,40 @@ pub struct Button {
     compact_presentation: Option<(String, Option<String>, Option<String>)>,
     rect: Rect,
     is_hovered: bool,
-    is_pressed: bool,
+    /// The press this button took, carried to a rebuilt button in its place.
+    press: crate::pointer_replay::HeldPress,
     is_focused: bool,
+    /// Focus came from pressing the button: the pointer already shows where
+    /// the person is, so the focus ring is kept for keyboard focus.
+    pressed_into_focus: bool,
     /// Drawn instead of (icon-only) or before (icon + label) the text,
     /// so toolbars render crisp lucide icons without depending on a
     /// Nerd Font being installed.
     icon: Option<crate::icons::Icon>,
-    /// Defaults to 120×40.
-    size: Option<(f32, f32)>,
-    /// Optional target-height floor independent of intrinsic content sizing.
-    min_height: Option<f32>,
-    /// Stretch to the containing column while retaining an explicit height.
-    /// This is distinct from `fit_content`, which derives a compact width
-    /// from the label.
+    /// A picture drawn in the icon's place (an icon-only button), with an
+    /// optional badge pill on its corner: what an extension's toolbar action
+    /// shows. The glyph in `icon` remains the fallback and the layout key.
+    image: Option<vello::peniko::ImageData>,
+    badge: Option<String>,
+    /// Stretch to the parent's width instead of sizing to the label.
     fill_width: bool,
-    /// Drives the fill / border / label colours via [`face_colors`], the
-    /// same source of truth the immediate-mode [`Button::paint`] face uses.
-    style: ButtonStyle,
-    on_click_path: Option<String>, // Path in CRDT to mutate
-    /// Optional string to write instead of the default counter/boolean pulse.
-    /// This lets command-bus users share the standard button implementation.
-    click_value: Option<String>,
-    /// Size the width from the visible label rather than using the 120px default.
-    fit_content: bool,
-    measured_fit_width: Option<f32>,
-    /// The settled footprint of a default-sized button — [`DEFAULT_SIZE`]
-    /// grown to hold the measured label. Seeds the next `build_layout` so a
-    /// stable label costs no extra layout pass; cleared whenever the label
-    /// can have changed shape (theme type step, locale).
-    default_footprint: Option<(f32, f32)>,
-    content_sized: bool,
-    content_padding: f32,
-    /// The theme's resolved label size (its base type step, text scale
-    /// included), captured in `build_layout` for `measure`, which has no
-    /// theme of its own; `draw` reads the theme it is handed. Converted to
-    /// the renderer's input size at the point of use; see
-    /// [`renderer_label_size`].
-    label_size: f32,
+    /// What the button does, which decides its whole look (see
+    /// [`ButtonRole`]).
+    role: ButtonRole,
+    /// `Some` for a toggle button; `Some(true)` paints the lift and is
+    /// announced as pressed.
+    toggled: Option<bool>,
+    /// Trailing keyboard shortcut, spelled with the platform's keycaps.
+    shortcut: Option<crate::platform::Shortcut>,
+    /// The width `measure` settled on, pinned onto the node so a stretching
+    /// parent cannot widen an intrinsic button.
+    measured_width: Option<f32>,
+    /// Sets the label role and the height (see [`ControlSize`]).
+    control_size: ControlSize,
+    /// The geometry resolved against the theme seen in `build_layout`, for
+    /// `measure`, which has no theme of its own; `draw` reads the theme it
+    /// is handed.
+    metrics: FaceMetrics,
     /// Fires on release-while-hovered *in addition to* any
     /// `on_click_path` CRDT mutation, for app code that isn't modelling
     /// its control flow in the CRDT (e.g. the file explorer's command sink).
@@ -90,11 +88,19 @@ pub struct Button {
     permission_scope: Option<PermissionScope>,
     /// When `false`: skipped by focus, rejects input, renders dimmed.
     enabled: bool,
+    /// Where `enabled` comes from, when the app keeps it in a state.
+    enabled_binding: Option<crate::widget::binding::BoxedBinding<bool>>,
+    /// The page's encouraged action: a focus reset lands here, so Enter
+    /// activates it.
+    default_focus: bool,
     /// Holds the last emitted body/border/label primitives at *logical*
     /// coordinates; the App's transform is reapplied on `Scene::append`.
     cached: vello::Scene,
     dirty: bool,
     layout_dirty: bool,
+    /// Whether the layout solver has ever placed it. A button only its host
+    /// places ([`Self::apply_layout_external`]) has no node to measure.
+    solver_placed: bool,
     i18n_revision: u64,
     interaction: crate::interaction::InteractionEnvironment,
     /// Compared *by size* to the current rect — pure translation is
@@ -103,13 +109,46 @@ pub struct Button {
     cache_rect: Rect,
     /// Snapshot the cache was emitted from; any change invalidates it.
     last_state: (bool, bool, bool, bool), // (hovered, pressed, focused, enabled)
+    /// The theme roles the cached face was painted from, so a theme change
+    /// that keeps the layout (dark to light, a new emphasis) repaints it.
+    last_theme: Option<ThemeKey>,
+}
+
+/// The theme roles a button face reads.
+type ThemeKey = (
+    vello::peniko::Color,
+    vello::peniko::Color,
+    vello::peniko::Color,
+    vello::peniko::Color,
+    vello::peniko::Color,
+    vello::peniko::Color,
+    u32,
+);
+
+fn theme_key(theme: &Theme) -> ThemeKey {
+    let colors = &theme.tokens.colors;
+    (
+        colors.surfaces.raised,
+        colors.intent.inverted,
+        colors.intent.on_inverted,
+        colors.text_primary,
+        colors.semantic.danger,
+        colors.intent.you,
+        theme.tokens.radii.control.to_bits(),
+    )
 }
 
 impl Button {
+    /// Focus a person needs to be shown: keyboard focus, not the focus a
+    /// click on the button gave it.
+    fn focus_visible(&self) -> bool {
+        self.is_focused && !self.pressed_into_focus
+    }
+
     fn effectively_enabled(&self) -> bool {
         self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
     }
-    pub fn new(id: &str, label: &str, on_click_path: Option<&str>) -> Self {
+    pub fn new(id: &str, label: &str) -> Self {
         Self {
             id: id.to_string(),
             label: label.to_string(),
@@ -118,21 +157,20 @@ impl Button {
             compact_presentation: None,
             rect: Rect::ZERO,
             is_hovered: false,
-            is_pressed: false,
+            press: crate::pointer_replay::HeldPress::default(),
             is_focused: false,
+            pressed_into_focus: false,
             icon: None,
-            size: None,
-            min_height: None,
+            image: None,
+            badge: None,
             fill_width: false,
-            style: ButtonStyle::Neutral,
-            on_click_path: on_click_path.map(std::string::ToString::to_string),
-            click_value: None,
-            fit_content: false,
-            measured_fit_width: None,
-            default_footprint: None,
-            content_sized: false,
-            content_padding: 16.0,
-            label_size: TypeScale::default().base,
+            role: ButtonRole::Secondary,
+            toggled: None,
+            shortcut: None,
+            measured_width: None,
+            control_size: ControlSize::Regular,
+            metrics: FaceMetrics::stock(ControlSize::Regular),
+            default_focus: false,
             on_click: None,
             action: None,
             native_resource: None,
@@ -140,13 +178,16 @@ impl Button {
             presence_path: Vec::new(),
             permission_scope: None,
             enabled: true,
+            enabled_binding: None,
             cached: vello::Scene::new(),
             dirty: true,
             layout_dirty: false,
+            solver_placed: false,
             i18n_revision: crate::i18n::I18nManager::revision(),
             interaction: crate::interaction::InteractionEnvironment::default(),
             cache_rect: Rect::ZERO,
             last_state: (false, false, false, true),
+            last_theme: None,
         }
     }
 
@@ -165,8 +206,8 @@ impl Button {
     }
 
     /// Fires once per completed click (left-button release while the
-    /// cursor is still over the button), in addition to any
-    /// `on_click_path` CRDT mutation.
+    /// cursor is still over the button), Enter, Space or an assistive
+    /// `Activate`.
     #[must_use]
     pub fn on_click<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_click = Some(Box::new(f));
@@ -179,8 +220,6 @@ impl Button {
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
         self.action = Some(ActionEmitter::new(binding));
-        self.on_click_path = None;
-        self.click_value = None;
         self.on_click = None;
         self
     }
@@ -214,17 +253,20 @@ impl Button {
     ) -> Self {
         const TYPE_ID: &str = "tilo.ui.control.invoke";
         let resource_id = format!("tilo.control:{}", self.id);
-        let mut spec = tilo_actions::ActionSpec::operation(
-            "invoke",
-            self.label.clone(),
-            kind,
-            TYPE_ID,
-            &self.id,
-        )
-        .expect("a control id is always JSON serializable");
-        spec.contract.discovery = tilo_actions::DiscoveryScope::Launchable;
-        let resource = tilo_actions::Resource::new(resource_id, "tilo.control", self.label.clone())
-            .with_action(spec);
+        // An icon-only button is named by what a screen reader announces.
+        let label = if self.label.is_empty() {
+            self.accessible_name
+                .clone()
+                .or_else(|| self.tooltip.clone())
+                .unwrap_or_default()
+        } else {
+            self.label.clone()
+        };
+        let spec =
+            tilo_actions::ActionSpec::operation("invoke", label.clone(), kind, TYPE_ID, &self.id)
+                .expect("a control id is always JSON serializable");
+        let resource =
+            tilo_actions::Resource::new(resource_id, "tilo.control", label).with_action(spec);
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "invoke")
             .expect("the synthesized invoke action is nullary");
         self = self.on_action(binding);
@@ -238,6 +280,16 @@ impl Button {
     #[must_use]
     pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
         self.icon = Some(icon);
+        self
+    }
+
+    /// Draw `image` where the icon would be, and a small pill with `badge`
+    /// on its bottom-right corner. Only an icon-only button shows either.
+    #[must_use]
+    pub fn with_image(mut self, image: vello::peniko::ImageData, badge: Option<&str>) -> Self {
+        self.image = Some(image);
+        self.badge = badge.filter(|text| !text.is_empty()).map(str::to_owned);
+        self.dirty = true;
         self
     }
 
@@ -266,86 +318,104 @@ impl Button {
         self.tooltip = text;
     }
 
+    /// Change what an icon-only button is announced (and published) as, for
+    /// a control whose meaning flips with state ("Show sidebar" / "Hide
+    /// sidebar").
+    pub fn set_accessible_name(&mut self, name: &str) {
+        if self.accessible_name.as_deref() != Some(name) {
+            self.accessible_name = Some(name.to_owned());
+            self.dirty = true;
+        }
+    }
+
     fn observe_i18n_revision(&mut self) {
         let revision = crate::i18n::I18nManager::revision();
         if revision != self.i18n_revision {
             self.i18n_revision = revision;
             self.dirty = true;
-            self.layout_dirty |= self.fit_content || self.content_sized;
-            // A new locale re-shapes the label; the default footprint it
-            // settled to may no longer hold it.
-            self.default_footprint = None;
+            // A new locale re-shapes the label, and the width follows it.
+            self.layout_dirty = true;
         }
     }
 
-    /// Overrides the default 120×40 intrinsic size.
-    #[must_use]
-    pub fn with_size(mut self, width: f32, height: f32) -> Self {
-        self.size = Some((width, height));
-        self.fill_width = false;
-        self.fit_content = false;
-        self.content_sized = false;
-        self
+    /// An icon-only button: `icon` is what it shows, `label` is what a
+    /// screen reader announces and what its tooltip says. It is a square of
+    /// its [`ControlSize`]'s height (never under the minimum pointer target)
+    /// and, like every toolbar glyph, a [`ButtonRole::Plain`] button unless
+    /// a role is given.
+    pub fn icon_only(id: &str, icon: crate::icons::Icon, label: &str) -> Self {
+        Self::new(id, "")
+            .with_icon(icon)
+            .with_accessible_name(label)
+            .tooltip(label)
+            .role(ButtonRole::Plain)
     }
 
-    /// Keep at least this logical target height without capping intrinsic
-    /// content. Negative values clamp to zero; non-finite values clear the floor.
+    /// Stretch to the parent's width. The height still comes from the
+    /// [`ControlSize`]; without this a button is as wide as its label.
     #[must_use]
-    pub fn with_min_height(mut self, height: f32) -> Self {
-        self.min_height = height.is_finite().then_some(height.max(0.0));
-        self
-    }
-
-    /// Fill the available parent width at the supplied height.
-    #[must_use]
-    pub fn fill_width(mut self, height: f32) -> Self {
-        self.size = Some((0.0, height));
+    pub fn fill_width(mut self) -> Self {
         self.fill_width = true;
-        self.fit_content = false;
-        self.content_sized = false;
+        self.layout_dirty = true;
         self
     }
 
-    /// Measure the actual label and icon width, retaining the supplied fixed height.
-    /// Long text may intentionally overflow that explicit height.
-    ///
-    /// App and `FrameHarness` settle the measured width before applying layout.
-    /// Manual hosts must use [`crate::widget::compute_widget_layout`]; direct
-    /// Taffy computation skips this settlement and can stretch the auto width.
-    /// Rebuild layout after changing renderer metrics or localization so the
-    /// next measurement resolves current content rather than a previous width.
+    /// How big this button is: its height and label role together (see
+    /// [`ControlSize`]).
     #[must_use]
-    pub fn fit_content(mut self, height: f32) -> Self {
-        self.fit_content = true;
-        self.content_sized = false;
-        self.fill_width = false;
-        self.size = Some((0.0, height));
+    pub fn control_size(mut self, size: ControlSize) -> Self {
+        self.control_size = size;
+        self.metrics = FaceMetrics::stock(size);
+        self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
-    /// Size both dimensions from the measured label, wrapping to available width.
+    /// What the button does; the role decides its whole look.
     #[must_use]
-    pub fn content_sized(mut self) -> Self {
-        self.content_sized = true;
-        self.fit_content = false;
-        self.fill_width = false;
-        self.size = None;
+    pub fn role(mut self, role: ButtonRole) -> Self {
+        self.role = role;
+        self.dirty = true;
         self
     }
 
-    pub(crate) fn with_action_sizing(self) -> Self {
-        if self.size.is_none() {
-            self.content_sized()
-        } else {
-            self
+    pub fn set_role(&mut self, role: ButtonRole) {
+        if self.role != role {
+            self.role = role;
+            self.dirty = true;
         }
     }
 
-    /// Write `value` to the click path on activation instead of pulsing it as a
-    /// boolean/counter. A button without an `on_click_path` ignores this value.
+    /// Make this a toggle button: while `on` it stands on a lift of its
+    /// ground (a selected toolbar glyph, HIG §9.3) and is announced as a
+    /// pressed toggle. Use it on a [`ButtonRole::Plain`] glyph.
     #[must_use]
-    pub fn with_click_value(mut self, value: impl Into<String>) -> Self {
-        self.click_value = Some(value.into());
+    pub fn toggled(mut self, on: bool) -> Self {
+        self.set_toggled(on);
+        self
+    }
+
+    /// Turn a toggle button on or off (the host syncing from its model).
+    pub fn set_toggled(&mut self, on: bool) {
+        if self.toggled != Some(on) {
+            self.toggled = Some(on);
+            self.dirty = true;
+        }
+    }
+
+    /// Whether this is a toggle button that is on.
+    pub fn is_toggled(&self) -> bool {
+        self.toggled == Some(true)
+    }
+
+    /// Show the keyboard shortcut that does the same thing, after the label,
+    /// in the platform's keycap legends (`Ctrl+Enter` on Linux and Windows,
+    /// `⌘↩` on macOS). It is part of the button's width.
+    #[must_use]
+    pub fn shortcut_hint(mut self, shortcut: crate::platform::Shortcut) -> Self {
+        self.shortcut = Some(shortcut);
+        self.dirty = true;
+        self.layout_dirty = true;
         self
     }
 
@@ -362,45 +432,24 @@ impl Button {
         }
     }
 
-    /// Colours resolve through [`face_colors`], so the retained widget
-    /// and the immediate-mode [`Button::paint`] face stay pixel-identical
-    /// for the same style + interaction state.
+    /// Follow `state` for whether the button can act ("Save" enabled while
+    /// there is something to save): a change through any clone of it shows
+    /// on the next sync.
     #[must_use]
-    pub fn with_style(mut self, style: ButtonStyle) -> Self {
-        self.style = style;
+    pub fn enabled_from(mut self, state: &crate::LocalState<bool>) -> Self {
+        let (enabled, binding) = super::binding::local(state);
+        self.enabled = enabled;
+        self.enabled_binding = Some(binding);
         self
     }
 
+    /// Mark this button as its page's encouraged action: when the page is
+    /// rebuilt with a focus reset, keyboard focus starts here, so Enter
+    /// activates it.
     #[must_use]
-    pub fn primary(mut self) -> Self {
-        self.style = ButtonStyle::Primary;
+    pub fn with_default_focus(mut self) -> Self {
+        self.default_focus = true;
         self
-    }
-
-    #[must_use]
-    pub fn danger(mut self) -> Self {
-        self.style = ButtonStyle::Danger;
-        self
-    }
-
-    #[must_use]
-    pub fn ghost(mut self) -> Self {
-        self.style = ButtonStyle::Ghost;
-        self
-    }
-
-    /// Outlined destructive action; see [`ButtonStyle::DangerOutline`].
-    #[must_use]
-    pub fn danger_outline(mut self) -> Self {
-        self.style = ButtonStyle::DangerOutline;
-        self
-    }
-
-    pub fn set_style(&mut self, style: ButtonStyle) {
-        if self.style != style {
-            self.style = style;
-            self.dirty = true;
-        }
     }
 
     /// Prefer the icon in a space-constrained toolbar while retaining the
@@ -440,6 +489,17 @@ impl Button {
         }
     }
 
+    /// Whether [`Self::set_compact_toolbar_presentation`] leaves a glyph:
+    /// a labelled button with an icon (or one already shown icon-only).
+    pub(crate) fn compacts_to_icon(&self) -> bool {
+        self.icon.is_some() && (!self.label.is_empty() || self.compact_presentation.is_some())
+    }
+
+    /// Whether the button is shown icon-only by a responsive toolbar.
+    pub(crate) fn is_compact_presentation(&self) -> bool {
+        self.compact_presentation.is_some()
+    }
+
     /// The counterpart to `TextInput::apply_layout_external` for an app
     /// that hand-positions a shared control over its own painted chrome;
     /// the button still owns its focus / a11y / activation contract, only
@@ -456,25 +516,42 @@ impl Button {
     }
 }
 
-/// `Ghost` is borderless and transparent at rest, tinting to `bg_hover` /
-/// `bg_active` only on interaction with a dim label/icon — the look a
-/// close-`X`, toolbar icon, or overlay affordance wants, replacing the
-/// per-app "draw a bare icon and hit-test the rect" pattern.
+/// What a button does. The role is a button's whole appearance: an app never
+/// picks a fill, an ink, an edge or a radius for one.
 ///
-/// `DangerOutline` is the quiet destructive action: transparent at rest
-/// like `Ghost`, but outlined and lettered in the danger ink, so a
-/// secondary "Delete" beside a primary "Save" reads as destructive without
-/// the weight of a filled `Danger` face. Hover and press tint the fill the
-/// same way `Ghost` does; the ink is resolved once so it clears the
-/// readability floor on every one of those grounds.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum ButtonStyle {
-    #[default]
-    Neutral,
+/// | Role | Use | Face |
+/// |---|---|---|
+/// | `Primary` | the one main action of a view | inverted: primary ink as the fill, the content surface as the label |
+/// | `Secondary` | every other action | a raised control with a derived edge and primary ink |
+/// | `Destructive` | deletes, removes or revokes something | the secondary face lettered in danger ink; filled only inside the confirmation step |
+/// | `Plain` | inline text actions, toolbar glyphs, close buttons | nothing at rest, a lift of its ground under the pointer; a labelled one's ink sits on its layout edge and its lift and hit area reach outward |
+/// | `Key` | a keypad or keyboard key (a calculator digit, an on-screen key, a one-letter toggle) | a faint lift of its ground at rest, its label in `Title` |
+///
+/// Every role has the control radius (`radii.control`): buttons are not
+/// pills.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
+pub enum ButtonRole {
     Primary,
-    Danger,
-    Ghost,
-    DangerOutline,
+    #[default]
+    Secondary,
+    Destructive,
+    Plain,
+    /// A key of a keypad or an on-screen keyboard.
+    Key,
+}
+
+impl ButtonRole {
+    /// A labelled face of this role sets its ink on its layout edge and
+    /// reaches outward for its lift and hit area.
+    const fn flush(self) -> bool {
+        matches!(self, Self::Plain)
+    }
+}
+
+/// Glyphs authored as one closed outline, so a toggle that is on draws them
+/// filled (a starred item, a pinned one).
+fn fills_when_on(icon: crate::icons::Icon) -> bool {
+    matches!(icon, crate::icons::Icon::Star | crate::icons::Icon::Pin)
 }
 
 /// The retained [`Button`] tracks these itself; an immediate-mode caller
@@ -492,208 +569,596 @@ pub struct ButtonInteract {
     pub disabled: bool,
 }
 
-fn danger_face_colors(
-    theme: &Theme,
-    interact: ButtonInteract,
-) -> (
+/// `(fill, edge, ink)` of one button face.
+type FaceColors = (
     vello::peniko::Color,
     Option<vello::peniko::Color>,
     vello::peniko::Color,
-) {
-    use crate::color_compat::ColorCompat;
-    use vello::peniko::Color;
-    let d = theme.tokens.colors.semantic.danger;
-    // The label is resolved first: the feedback has to respect it.
-    let fg = theme
-        .tokens
-        .colors
-        .ink_on(d, Color::WHITE, ON_FILL_MIN_CONTRAST);
-    // Hover/press shift the fill ~15%, and the direction is not a
-    // constant: lifting a mid-tone danger toward white took a
-    // white label from 4.97:1 at rest to 3.96:1 the moment the
-    // pointer arrived. A control can't buy feedback with its own
-    // label's legibility, so the shift always moves the fill
-    // *away* from the ink that sits on it.
-    let toward: u8 = if crate::a11y::contrast_ratio(fg, Color::WHITE)
-        > crate::a11y::contrast_ratio(fg, Color::from_rgb8(0, 0, 0))
-    {
-        255
-    } else {
-        0
-    };
-    let shift = |a: u8| {
-        let blended = (f32::from(a) * 0.85 + f32::from(toward) * 0.15)
-            .round()
-            .clamp(0.0, 255.0);
-        // `blended` is a convex combination of two `u8`-derived
-        // values (weights 0.85 + 0.15), clamped immediately above,
-        // so it can't wrap or flip sign on the way into `u8`.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "blended is clamped to [0.0, 255.0] on the line above"
-        )]
-        {
-            blended as u8
-        }
-    };
-    let active = Color::from_rgba8(shift(d.r()), shift(d.g()), shift(d.b()), d.a());
-    let bg = if interact.hovered || interact.pressed {
+);
+
+/// The filled destructive face: the confirmation step of a destructive
+/// action, and nowhere else.
+fn confirmation_face_colors(theme: &Theme, interact: ButtonInteract) -> FaceColors {
+    let colors = &theme.tokens.colors;
+    let rest = colors.semantic.danger;
+    let active = colors.lift_on(rest, 0.5);
+    // The label is resolved over both fills, so it does not change under
+    // the pointer, and the feedback never costs it its contrast.
+    let ink = colors.ink_on_any(
+        &[rest, active],
+        colors.intent.on_inverted,
+        ON_FILL_MIN_CONTRAST,
+    );
+    let fill = if interact.hovered || interact.pressed {
         active
     } else {
-        d
+        rest
     };
-    (bg, None, fg)
+    (fill, None, ink)
 }
 
-/// The single source of truth for both the retained widget's look and
-/// the immediate-mode [`Button::paint`]. `border` is `None` for the
-/// accent-filled styles, whose fill is self-defining; the painter adds a
-/// focus ring on top when focused.
-pub fn face_colors(
-    theme: &Theme,
-    style: ButtonStyle,
-    interact: ButtonInteract,
-) -> (
-    vello::peniko::Color,
-    Option<vello::peniko::Color>,
-    vello::peniko::Color,
-) {
+/// The colours of `role` in `interact`: the single source of truth for the
+/// retained [`Button`] and the immediate-mode [`Button::paint`].
+///
+/// `edge` is `None` where the fill defines the shape by itself (an inverted
+/// primary face) or there is no face (a plain button); the painters stroke
+/// the focus ring, in your colour, on top when focused.
+pub fn face_colors(theme: &Theme, role: ButtonRole, interact: ButtonInteract) -> FaceColors {
     use vello::peniko::Color;
+    let colors = &theme.tokens.colors;
+    let intent = &colors.intent;
 
-    // Disabled actions must not retain the semantic fill of an enabled
-    // primary or destructive action — a translucent blue "Save" still reads
-    // as actionable. Every style resolves to the *neutral rest face*
-    // (raised fill, derived edge, primary ink) and the painters lay that
-    // face down under `widget::DISABLED_ALPHA`, so rest and disabled never
-    // look alike (HIG §9.5 "Rest edges") while the edge keeps the control's
-    // bounds discoverable without implying that it can be activated.
+    // Disabled never keeps the fill of an enabled primary or destructive
+    // action: a translucent "Save" still reads as actionable. A faced role
+    // falls back to the secondary rest face and a plain one stays bare; the
+    // painters lay either under `widget::DISABLED_ALPHA`, keeping the edge
+    // at full strength so the control's bounds stay visible in light.
     if interact.disabled {
-        let bg = theme.tokens.colors.surfaces.raised;
-        let fg = theme.tokens.colors.ink_on_any(
-            &[bg],
-            theme.tokens.colors.text_primary,
+        let ink = colors.ink_on_any(
+            &[colors.surfaces.raised],
+            colors.text_primary,
             ON_FILL_MIN_CONTRAST,
         );
-        return (bg, Some(crate::surface::edge_on(bg)), fg);
+        return if role == ButtonRole::Plain {
+            (Color::TRANSPARENT, None, ink)
+        } else if role == ButtonRole::Key {
+            (colors.lift_on(colors.surfaces.content, 0.5), None, ink)
+        } else {
+            let rest = colors.surfaces.raised;
+            (rest, Some(crate::surface::edge_on(rest)), ink)
+        };
     }
 
-    match style {
-        ButtonStyle::Neutral => {
-            let rest = theme.tokens.colors.surfaces.raised;
-            let bg = if interact.pressed {
-                theme.bg_active
+    match role {
+        ButtonRole::Primary => {
+            let (rest, hover, pressed) = (
+                intent.inverted,
+                intent.inverted_hover,
+                colors.inverted_pressed(),
+            );
+            let fill = if interact.pressed {
+                pressed
             } else if interact.hovered {
-                theme.bg_hover
+                hover
             } else {
                 rest
             };
-            let fg = theme.tokens.colors.ink_on_any(
-                &[rest, theme.bg_hover, theme.bg_active],
-                theme.tokens.colors.text_primary,
+            // The label of the inverted fill is the theme's own
+            // (`intent.on_inverted`, the window ground), resolved over every
+            // fill so it does not change under the pointer.
+            let ink = colors.ink_on_any(
+                &[rest, hover, pressed],
+                intent.on_inverted,
                 ON_FILL_MIN_CONTRAST,
             );
-            // The edge is derived from the rest surface and held across
-            // hover and press: a declared `border_standard` is three shades
-            // from the dark raised tier and simply vanished there.
-            (bg, Some(crate::surface::edge_on(rest)), fg)
+            (fill, None, ink)
         }
-        ButtonStyle::Primary => {
-            let rest = theme.accent_primary;
-            let active = theme.accent_hover;
-            let bg = if interact.hovered || interact.pressed {
+        ButtonRole::Secondary | ButtonRole::Destructive => {
+            let rest = colors.surfaces.raised;
+            let (hover, active) = (colors.lift_on(rest, 0.5), colors.lift_on(rest, 1.0));
+            let fill = if interact.pressed {
                 active
+            } else if interact.hovered {
+                hover
             } else {
                 rest
             };
-            // White is the label this style wants and, on a dark enough
-            // accent, what comes back; on a bright one it walks out far
-            // enough to be read — resolved once over both fills so it
-            // doesn't change under the pointer.
-            let fg =
-                theme
-                    .tokens
-                    .colors
-                    .ink_on_any(&[rest, active], Color::WHITE, ON_FILL_MIN_CONTRAST);
-            (bg, None, fg)
+            let wanted = if role == ButtonRole::Destructive {
+                colors.semantic.danger
+            } else {
+                colors.text_primary
+            };
+            let ink = colors.ink_on_any(&[rest, hover, active], wanted, ON_FILL_MIN_CONTRAST);
+            // The edge is derived from the rest face and held across hover
+            // and press.
+            (fill, Some(crate::surface::edge_on(rest)), ink)
         }
-        ButtonStyle::Danger => danger_face_colors(theme, interact),
-        ButtonStyle::Ghost => {
-            let bg = if interact.pressed {
-                theme.bg_active
+        ButtonRole::Key => {
+            // A key rests on a faint lift of its ground and lifts further
+            // under the pointer and the press.
+            let ground = colors.surfaces.content;
+            let (rest, hover, pressed) = (
+                colors.lift_on(ground, 0.5),
+                colors.lift_on(ground, 1.0),
+                colors.lift_on(ground, 1.5),
+            );
+            let fill = if interact.pressed {
+                pressed
             } else if interact.hovered {
-                theme.bg_hover
+                hover
+            } else {
+                rest
+            };
+            let ink = colors.ink_on_any(
+                &[rest, hover, pressed],
+                colors.text_primary,
+                ON_FILL_MIN_CONTRAST,
+            );
+            (fill, None, ink)
+        }
+        ButtonRole::Plain => {
+            let fill = if interact.pressed {
+                intent.selection
+            } else if interact.hovered {
+                intent.selection_hover
             } else {
                 Color::TRANSPARENT
             };
-            // At rest the ghost paints nothing, so the base surface is
-            // the closest the widget can know as "the ground". The label
-            // is most at risk on `bg_hover`, close enough to the dim
-            // tier that it can all but vanish.
-            let fg = theme.tokens.colors.ink_on_any(
+            // At rest a plain button paints nothing: it stands on the ground
+            // its container handed it (`surfaces.content`, re-pointed by
+            // `Theme::on_ground` inside a region), and hover and press are
+            // that ground's lift.
+            let ink = colors.ink_on_any(
                 &[
-                    theme.tokens.colors.surfaces.base,
-                    theme.bg_hover,
-                    theme.bg_active,
+                    colors.surfaces.content,
+                    intent.selection_hover,
+                    intent.selection,
                 ],
-                theme.tokens.colors.text_dim,
+                colors.text_primary,
                 ON_FILL_MIN_CONTRAST,
             );
-            (bg, None, fg)
-        }
-        ButtonStyle::DangerOutline => {
-            // Same grounds as `Ghost` — transparent at rest, the theme's
-            // opaque hover/active fills under the pointer — so the danger
-            // ink can be measured against every fill it will sit on. A
-            // translucent danger tint (what apps hand-painted here) has no
-            // measurable ground; the shared face uses the opaque tiers.
-            let bg = if interact.pressed {
-                theme.bg_active
-            } else if interact.hovered {
-                theme.bg_hover
-            } else {
-                Color::TRANSPARENT
-            };
-            let ink = theme.tokens.colors.ink_on_any(
-                &[
-                    theme.tokens.colors.surfaces.base,
-                    theme.bg_hover,
-                    theme.bg_active,
-                ],
-                theme.tokens.colors.semantic.danger,
-                ON_FILL_MIN_CONTRAST,
-            );
-            // One colour for outline and label: the border is what says
-            // "button" at rest, so it must be as readable as the word.
-            (bg, Some(ink), ink)
+            (fill, None, ink)
         }
     }
 }
 
-/// Built fluently: `ButtonFace::new(rect, "Save").primary().hovered(hit)`.
-/// Defaults to a neutral, medium-weight, 14 px label and the theme's
-/// `radii.md` corner (8 px at 1×, read from the [`Theme`] handed to
-/// [`Button::paint`]).
+fn resolve_face_colors(
+    theme: &Theme,
+    role: ButtonRole,
+    confirms: bool,
+    interact: ButtonInteract,
+) -> FaceColors {
+    if confirms && role == ButtonRole::Destructive && !interact.disabled {
+        confirmation_face_colors(theme, interact)
+    } else {
+        face_colors(theme, role, interact)
+    }
+}
+
+/// A button's geometry in one theme: everything its size decides.
+#[derive(Clone, Debug, PartialEq)]
+struct FaceMetrics {
+    /// The [`ControlSize`] height, grown with the label's line at large
+    /// text.
+    height: f64,
+    /// Inset of the content from each side.
+    pad_x: f64,
+    /// Edge of a leading or sole icon.
+    icon: f64,
+    /// Between the icon and the label.
+    icon_gap: f64,
+    /// Between the label and the shortcut hint.
+    hint_gap: f64,
+    label_style: TextStyle,
+}
+
+impl FaceMetrics {
+    fn of(size: ControlSize, theme: &Theme) -> Self {
+        let metrics = &theme.tokens.metrics;
+        let spacing = &theme.tokens.spacing;
+        let (pad_x, icon) = match size {
+            ControlSize::Small => (spacing.s2, metrics.icon_sm),
+            ControlSize::Regular => (spacing.s3, metrics.icon_md),
+            ControlSize::Large => (spacing.s4, metrics.icon_lg),
+        };
+        let height = size.height(theme);
+        // The icon grows with the label at a large text scale, never past
+        // the face's inner band.
+        let icon = (f64::from(icon) * f64::from(theme.text_scale.max(1.0)))
+            .min(height - 2.0 * f64::from(spacing.s1))
+            .round();
+        Self {
+            height,
+            pad_x: f64::from(pad_x),
+            icon,
+            icon_gap: f64::from(metrics.icon_label_gap),
+            hint_gap: f64::from(spacing.s3),
+            label_style: size.label_style(theme),
+        }
+    }
+
+    /// The geometry of `size` for a face of `role`: a key sets its label in
+    /// `Title` and its icon to that line.
+    fn of_role(size: ControlSize, role: ButtonRole, theme: &Theme) -> Self {
+        let mut metrics = Self::of(size, theme);
+        if role == ButtonRole::Key {
+            metrics.label_style = theme.text(crate::tokens::TextRole::Title);
+            metrics.icon = f64::from(metrics.label_style.size).round();
+        }
+        metrics
+    }
+
+    /// The geometry of `size` in the stock theme: what a button measures
+    /// with before it has seen the active theme.
+    fn stock(size: ControlSize) -> Self {
+        static STOCK: std::sync::LazyLock<[FaceMetrics; 3]> = std::sync::LazyLock::new(|| {
+            let theme = Theme::dark();
+            [
+                FaceMetrics::of(ControlSize::Small, &theme),
+                FaceMetrics::of(ControlSize::Regular, &theme),
+                FaceMetrics::of(ControlSize::Large, &theme),
+            ]
+        });
+        let index = match size {
+            ControlSize::Small => 0,
+            ControlSize::Regular => 1,
+            ControlSize::Large => 2,
+        };
+        STOCK
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| Self::of(size, &Theme::dark()))
+    }
+}
+
+/// A button face's geometry captured from the theme in `build_layout`, for a
+/// toolkit control that lays itself out like a [`Button`] and measures
+/// without a theme of its own.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FaceSizer {
+    metrics: FaceMetrics,
+}
+
+impl FaceSizer {
+    pub(crate) fn of(size: ControlSize, theme: &Theme) -> Self {
+        Self {
+            metrics: FaceMetrics::of(size, theme),
+        }
+    }
+
+    pub(crate) fn stock(size: ControlSize) -> Self {
+        Self {
+            metrics: FaceMetrics::stock(size),
+        }
+    }
+
+    pub(crate) fn height(&self) -> f64 {
+        self.metrics.height
+    }
+
+    pub(crate) fn intrinsic_width(
+        &self,
+        text: &mut TextRenderer,
+        icon: Option<crate::icons::Icon>,
+        label: &str,
+    ) -> f64 {
+        FaceContent {
+            icon,
+            image: None,
+            badge: None,
+            label,
+            hint: None,
+            flush: false,
+            filled_icon: false,
+        }
+        .intrinsic_width(&self.metrics, text, self.metrics.height)
+    }
+}
+
+/// A badge pill on the bottom-right corner of `rect`.
+fn paint_corner_badge(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str) {
+    use crate::widget::badge::BadgeFace;
+    let height = BadgeFace::height(ctx.theme);
+    let width = BadgeFace::intrinsic_width(label, ctx.text, ctx.theme).min(rect.width());
+    let pill = Rect::new(rect.x1 - width, rect.y1 - height, rect.x1, rect.y1);
+    BadgeFace::new(pill, label).paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
+}
+
+/// What sits inside a button's face: an optional leading icon, the label and
+/// an optional trailing shortcut hint.
+struct FaceContent<'a> {
+    icon: Option<crate::icons::Icon>,
+    /// Painted instead of `icon` on an icon-only face.
+    image: Option<&'a vello::peniko::ImageData>,
+    badge: Option<&'a str>,
+    label: &'a str,
+    hint: Option<String>,
+    /// A labelled plain face: no inner padding, the ink on the layout edge.
+    flush: bool,
+    /// Draw the icon filled (a toggle that is on, with a closed glyph).
+    filled_icon: bool,
+}
+
+impl FaceContent<'_> {
+    /// The narrowest face of `height` that shows everything without eliding:
+    /// an icon-only face is a square, and a labelled one is at least twice
+    /// its height, so a one-word label still reads as a button.
+    fn intrinsic_width(&self, metrics: &FaceMetrics, text: &mut TextRenderer, height: f64) -> f64 {
+        if self.label.is_empty() && self.hint.is_none() {
+            return height;
+        }
+        let pad = if self.flush { 0.0 } else { metrics.pad_x };
+        let mut width = 2.0 * pad;
+        if self.icon.is_some() {
+            width += metrics.icon + metrics.icon_gap;
+        }
+        if !self.label.is_empty() {
+            width += f64::from(text.measure_style(self.label, None, &metrics.label_style).0);
+        }
+        if let Some(hint) = &self.hint {
+            width += metrics.hint_gap
+                + f64::from(text.measure_style(hint, None, &metrics.label_style).0);
+        }
+        if self.flush {
+            width.ceil()
+        } else {
+            width.ceil().max(2.0 * height)
+        }
+    }
+
+    /// `image` stretched over `rect`.
+    fn draw_image(&self, ctx: &mut PaintCtx<'_>, image: &vello::peniko::ImageData, rect: Rect) {
+        let (width, height) = (f64::from(image.width), f64::from(image.height));
+        if width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        let place = Affine::translate((rect.x0, rect.y0))
+            * Affine::scale_non_uniform(rect.width() / width, rect.height() / height);
+        ctx.scene.fill(
+            vello::peniko::Fill::NonZero,
+            ctx.transform,
+            &vello::peniko::ImageBrush::new(image.clone()),
+            Some(place),
+            &rect,
+        );
+    }
+
+    fn draw_icon(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        icon: crate::icons::Icon,
+        rect: Rect,
+        ink: vello::peniko::Color,
+    ) {
+        if self.filled_icon {
+            icon.draw_filled(ctx.scene, ctx.transform, rect, ink);
+        } else {
+            crate::icons::draw_icon(
+                ctx.scene,
+                ctx.transform,
+                rect,
+                icon,
+                ink,
+                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+        }
+    }
+
+    /// Paints the content centred in `rect`. A label that does not fit is
+    /// elided, never painted across the edge; the hint is dropped before the
+    /// label is shortened.
+    fn paint(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        rect: Rect,
+        metrics: &FaceMetrics,
+        ink: vello::peniko::Color,
+        hint_ink: vello::peniko::Color,
+    ) {
+        let icon_px = metrics.icon.min(rect.height());
+        if self.label.is_empty() {
+            if let Some(image) = self.image {
+                let ix = rect.center().x - icon_px / 2.0;
+                let iy = rect.center().y - icon_px / 2.0;
+                self.draw_image(ctx, image, Rect::new(ix, iy, ix + icon_px, iy + icon_px));
+                if let Some(badge) = self.badge {
+                    paint_corner_badge(ctx, rect, badge);
+                }
+                return;
+            }
+            if let Some(icon) = self.icon {
+                let ix = rect.center().x - icon_px / 2.0;
+                let iy = rect.center().y - icon_px / 2.0;
+                self.draw_icon(
+                    ctx,
+                    icon,
+                    Rect::new(ix, iy, ix + icon_px, iy + icon_px),
+                    ink,
+                );
+            }
+            return;
+        }
+        let style = &metrics.label_style;
+        let lead = if self.icon.is_some() {
+            icon_px + metrics.icon_gap
+        } else {
+            0.0
+        };
+        let pad = if self.flush { 0.0 } else { metrics.pad_x };
+        let room = (rect.width() - 2.0 * pad - lead).max(1.0);
+        let hint = self.hint.as_ref().and_then(|hint| {
+            let label_w = f64::from(ctx.text.measure_style(self.label, None, style).0);
+            let hint_w = f64::from(ctx.text.measure_style(hint, None, style).0);
+            (label_w + metrics.hint_gap + hint_w <= room).then_some((hint.as_str(), hint_w))
+        });
+        let label_room = hint.map_or(room, |(_, hint_w)| room - metrics.hint_gap - hint_w);
+        // Half a pixel of slack: a face sized to its measured label never
+        // elides it over shaping round-off.
+        let label =
+            ctx.text
+                .elide_to_width_style(self.label, f32_of_f64(label_room.max(1.0) + 0.5), style);
+        let (label_w, label_h) = ctx.text.measure_style(&label, None, style);
+        let hint_w = hint.map_or(0.0, |(_, w)| metrics.hint_gap + w);
+        let cluster = lead + f64::from(label_w) + hint_w;
+        let start_x = rect.center().x - cluster / 2.0;
+        if let Some(icon) = self.icon {
+            let iy = rect.center().y - icon_px / 2.0;
+            self.draw_icon(
+                ctx,
+                icon,
+                Rect::new(start_x, iy, start_x + icon_px, iy + icon_px),
+                ink,
+            );
+        }
+        let text_y = rect.y0 + (rect.height() - f64::from(label_h)) / 2.0;
+        let label_x = start_x + lead;
+        ctx.text(&label, style, ink, Point::new(label_x, text_y), None);
+        if let Some((hint, _)) = hint {
+            let hint_x = label_x + f64::from(label_w) + metrics.hint_gap;
+            ctx.text(hint, style, hint_ink, Point::new(hint_x, text_y), None);
+        }
+    }
+}
+
+/// The ink of a shortcut hint: the label's own ink on an inverted or filled
+/// face, the secondary tier on a raised or bare one.
+fn hint_ink(
+    theme: &Theme,
+    role: ButtonRole,
+    ink: vello::peniko::Color,
+    fill: vello::peniko::Color,
+) -> vello::peniko::Color {
+    match role {
+        ButtonRole::Primary => ink,
+        ButtonRole::Secondary | ButtonRole::Destructive | ButtonRole::Plain | ButtonRole::Key => {
+            let ground = if fill.components[3] > 0.0 {
+                fill
+            } else {
+                theme.tokens.colors.surfaces.content
+            };
+            theme.tokens.colors.ink_on_any(
+                &[ground],
+                theme.tokens.colors.text_dim,
+                ON_FILL_MIN_CONTRAST,
+            )
+        }
+    }
+}
+
+/// The shortcut as the platform spells it on its keycaps.
+fn shortcut_text(shortcut: &crate::platform::Shortcut) -> String {
+    shortcut.label(crate::platform::PlatformConventions::new(
+        crate::platform::Platform::current(),
+    ))
+}
+
+/// One button face, painted: the shared body of the retained [`Button`] and
+/// the immediate-mode [`Button::paint`], so the two are pixel-identical.
+struct FacePaint<'a> {
+    rect: Rect,
+    role: ButtonRole,
+    confirms: bool,
+    /// A toggle that is on: the face stands on the selection lift.
+    on: bool,
+    interact: ButtonInteract,
+    content: FaceContent<'a>,
+    metrics: &'a FaceMetrics,
+}
+
+impl FacePaint<'_> {
+    fn paint(&self, ctx: &mut PaintCtx<'_>) {
+        let theme = ctx.theme;
+        let disabled = self.interact.disabled;
+        let on = self.on && !disabled;
+        // An "on" toggle is a lift and stays one under the pointer; a press
+        // still answers.
+        let interact = ButtonInteract {
+            hovered: self.interact.hovered && !on,
+            ..self.interact
+        };
+        let (fill, edge, ink) = resolve_face_colors(theme, self.role, self.confirms, interact);
+        let fill = if on && !interact.pressed {
+            theme.tokens.colors.intent.selection
+        } else {
+            fill
+        };
+        let radius = f64::from(theme.tokens.radii.control);
+        // A labelled plain face keeps its ink on its layout edge; its lift
+        // (and focus ring) reach outward by the padding it does not take.
+        let face_rect = if self.content.flush {
+            self.rect.inflate(self.metrics.pad_x, 0.0)
+        } else {
+            self.rect
+        };
+        let shape = RoundedRect::from_rect(face_rect, radius);
+        // Disabled is the rest face under one group alpha (HIG §9.5), the
+        // same signal every other control gives.
+        if disabled {
+            ctx.scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                ctx.transform,
+                &shape,
+            );
+        }
+        if fill.components[3] > 0.0 {
+            ctx.scene.fill(
+                vello::peniko::Fill::NonZero,
+                ctx.transform,
+                fill,
+                None,
+                &shape,
+            );
+        }
+        let hint = hint_ink(theme, self.role, ink, fill);
+        self.content.paint(ctx, self.rect, self.metrics, ink, hint);
+        if disabled {
+            ctx.scene.pop_layer();
+        }
+        // Rest edge and focus ring share one half-pixel-inset outline. The
+        // edge stays at full strength while disabled so the bounds of a
+        // disabled control stay visible on a light ground.
+        let outline = crate::surface::edge_outline(face_rect, radius);
+        if self.interact.focused && !disabled {
+            ctx.scene.stroke(
+                &vello::kurbo::Stroke::new(FOCUS_RING_WIDTH),
+                ctx.transform,
+                theme.tokens.colors.intent.you,
+                None,
+                &outline,
+            );
+        } else if let Some(edge) = edge {
+            ctx.scene.stroke(
+                &vello::kurbo::Stroke::new(REST_BORDER_WIDTH),
+                ctx.transform,
+                edge,
+                None,
+                &outline,
+            );
+        }
+    }
+}
+
+/// An immediate-mode button: the [`Button`] look for a canvas host that owns
+/// its own hit-testing. Built fluently:
+/// `ButtonFace::new(rect, "Save").role(ButtonRole::Primary).hovered(hit)`.
 ///
-/// The label size is *renderer-relative*, like every legacy `measure` /
-/// `draw_text` size: a canvas host measures its rect with
-/// `text_renderer.measure(label, 14.0, ..)` and this face paints with the
-/// same 14, so rect and glyphs scale together under the renderer's
-/// accessibility factor. (The retained [`Button`] instead follows the theme's
-/// type step, because it measures its own rect.)
+/// Size the rect from the face itself, so rect and glyphs agree at every
+/// scale: [`ButtonFace::height`] for the height,
+/// [`ButtonFace::intrinsic_width`] for the width, and hit-test with
+/// [`ButtonFace::hit_rect`] (never smaller than the minimum pointer target).
 pub struct ButtonFace<'a> {
     rect: Rect,
     label: &'a str,
     icon: Option<crate::icons::Icon>,
-    style: ButtonStyle,
+    role: ButtonRole,
+    confirms: bool,
+    on: bool,
     interact: ButtonInteract,
-    /// `None` resolves to `theme.tokens.radii.md` at paint time.
-    radius: Option<f64>,
-    weight: crate::text_render::TextWeight,
-    /// Renderer-relative label size.
-    text_size: f32,
+    control_size: ControlSize,
+    shortcut: Option<crate::platform::Shortcut>,
     accessible_name: Option<&'a str>,
-    wrap_label: bool,
 }
 
 impl<'a> ButtonFace<'a> {
@@ -702,45 +1167,33 @@ impl<'a> ButtonFace<'a> {
             rect,
             label,
             icon: None,
-            style: ButtonStyle::Neutral,
+            role: ButtonRole::Secondary,
+            confirms: false,
+            on: false,
             interact: ButtonInteract::default(),
-            radius: None,
-            weight: crate::text_render::TextWeight::Medium,
-            text_size: TypeScale::default().base,
+            control_size: ControlSize::Regular,
+            shortcut: None,
             accessible_name: None,
-            wrap_label: false,
         }
     }
-    /// Wrap the label inside this manually assigned rectangle using theme insets.
+    /// An icon-only face; `name` is its accessible name.
+    pub fn icon_only(rect: Rect, icon: crate::icons::Icon, name: &'a str) -> Self {
+        Self::new(rect, "")
+            .icon(icon)
+            .accessible_name(name)
+            .role(ButtonRole::Plain)
+    }
+    /// What the button does; the role decides its whole look.
     #[must_use]
-    pub fn wrap_label(mut self) -> Self {
-        self.wrap_label = true;
+    pub fn role(mut self, role: ButtonRole) -> Self {
+        self.role = role;
         self
     }
+    /// The confirmation step of a destructive action, the one place a
+    /// destructive face is filled.
     #[must_use]
-    pub fn style(mut self, style: ButtonStyle) -> Self {
-        self.style = style;
-        self
-    }
-    #[must_use]
-    pub fn primary(mut self) -> Self {
-        self.style = ButtonStyle::Primary;
-        self
-    }
-    #[must_use]
-    pub fn danger(mut self) -> Self {
-        self.style = ButtonStyle::Danger;
-        self
-    }
-    #[must_use]
-    pub fn ghost(mut self) -> Self {
-        self.style = ButtonStyle::Ghost;
-        self
-    }
-    /// Outlined destructive action; see [`ButtonStyle::DangerOutline`].
-    #[must_use]
-    pub fn danger_outline(mut self) -> Self {
-        self.style = ButtonStyle::DangerOutline;
+    pub(crate) fn confirming(mut self) -> Self {
+        self.confirms = true;
         self
     }
     #[must_use]
@@ -748,23 +1201,22 @@ impl<'a> ButtonFace<'a> {
         self.icon = Some(icon);
         self
     }
-    /// Override the theme's `radii.md` corner.
+    /// The face's height and label role.
     #[must_use]
-    pub fn radius(mut self, radius: f64) -> Self {
-        self.radius = Some(radius);
+    pub fn control_size(mut self, size: ControlSize) -> Self {
+        self.control_size = size;
         self
     }
+    /// A trailing keyboard shortcut in the platform's keycap legends.
     #[must_use]
-    pub fn weight(mut self, weight: crate::text_render::TextWeight) -> Self {
-        self.weight = weight;
+    pub fn shortcut_hint(mut self, shortcut: crate::platform::Shortcut) -> Self {
+        self.shortcut = Some(shortcut);
         self
     }
-    /// Override the 14 px default. Renderer-relative like every legacy
-    /// `measure`/`draw_text` size: the renderer applies the accessibility
-    /// text scale on top, so measure the host rect with the same value.
+    /// A toggle that is on: the face stands on the selection lift.
     #[must_use]
-    pub fn text_size(mut self, size: f32) -> Self {
-        self.text_size = size;
+    pub fn toggled(mut self, on: bool) -> Self {
+        self.on = on;
         self
     }
     #[must_use]
@@ -801,82 +1253,48 @@ impl<'a> ButtonFace<'a> {
             self.label
         }
     }
-    /// Exposed for tests and callers that want the resolved palette
-    /// without painting.
-    pub fn colors(
-        &self,
-        theme: &Theme,
-    ) -> (
-        vello::peniko::Color,
-        Option<vello::peniko::Color>,
-        vello::peniko::Color,
-    ) {
-        face_colors(theme, self.style, self.interact)
+    /// The resolved palette without painting: `(fill, edge, ink)`.
+    pub fn colors(&self, theme: &Theme) -> FaceColors {
+        resolve_face_colors(theme, self.role, self.confirms, self.interact)
+    }
+    /// The height of a face of `size` in `theme`.
+    pub fn height(size: ControlSize, theme: &Theme) -> f64 {
+        FaceMetrics::of(size, theme).height
+    }
+    /// The narrowest rect width that shows this face's icon, label and
+    /// shortcut without eliding.
+    pub fn intrinsic_width(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
+        let label = localized_label(self.label);
+        let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
+        FaceContent {
+            icon: self.icon,
+            image: None,
+            badge: None,
+            label: &label,
+            hint: self.shortcut.as_ref().map(shortcut_text),
+            flush: false,
+            filled_icon: false,
+        }
+        .intrinsic_width(&metrics, text, metrics.height)
+    }
+    /// Where a pointer activates this face: its rect, grown about its centre
+    /// to the minimum pointer target.
+    pub fn hit_rect(&self, theme: &Theme) -> Rect {
+        let target = f64::from(theme.tokens.metrics.min_pointer_target);
+        let grow_x = ((target - self.rect.width()) / 2.0).max(0.0);
+        let grow_y = ((target - self.rect.height()) / 2.0).max(0.0);
+        self.rect.inflate(grow_x, grow_y)
+    }
+    /// Whether `point` activates this face.
+    pub fn contains(&self, theme: &Theme, point: Point) -> bool {
+        self.hit_rect(theme).contains(point)
     }
 }
-
-/// Footprint of a retained [`Button`] when no size, `fit_content` or
-/// `content_sized` was requested: 40 px tall so it shares a centre line with
-/// the 40 px dropdown and text field in a mixed row, 120 px wide. Not a
-/// floor — `fit_content` measures down to [`FIT_MIN_WIDTH`]. Both axes are
-/// floored at the interaction environment's minimum target.
-const DEFAULT_SIZE: (f32, f32) = (120.0, 40.0);
 
 /// Focus ring and rest border, stroked centred on the face outline like
 /// every other control (checkbox, toggle, segmented strip).
 const FOCUS_RING_WIDTH: f64 = 2.0;
 const REST_BORDER_WIDTH: f64 = 1.0;
-
-/// Icon edge inside a face: the face height less one base-size text line,
-/// held between 12 and 22 px — 22 in the 40 px default, 18 at the 32 px
-/// minimum target, 14 in a 28 px dense row. Deliberately off the spacing
-/// scale: it tracks the label's line, not a layout gap.
-const ICON_INSET: f64 = 14.0;
-const ICON_MIN_EDGE: f64 = 12.0;
-const ICON_MAX_EDGE: f64 = 22.0;
-
-/// Gap between icon and label. 6 px sits between `s1` (4 — the glyph
-/// crowds the first letter) and `s2` (8 — icon and label read as two
-/// clusters); kept at its shipped value so no existing button moves.
-const ICON_LABEL_GAP: f64 = 6.0;
-
-/// Horizontal allowance `fit_content` adds around its measured label when
-/// the button keeps an explicit height: 15 px a side, the pre-measurement
-/// width every fit-content button has shipped with. `content_sized`
-/// buttons use `theme.padding_standard` instead.
-const FIT_SIDE_PADDING: f32 = 15.0;
-/// Narrowest a `fit_content` button gets, so a one-letter label still
-/// reads as a button rather than a square.
-const FIT_MIN_WIDTH: f32 = 64.0;
-
-/// One formula for the icon edge, shared by [`label_width`],
-/// [`paint_icon_and_label`] and [`Widget::measure`] so the three cannot
-/// drift apart.
-fn icon_edge(face_height: f64) -> f64 {
-    (face_height - ICON_INSET).clamp(ICON_MIN_EDGE, ICON_MAX_EDGE)
-}
-
-/// `measure` works in taffy's `f32`; the painters work in kurbo's `f64`.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "logical pixel counts far below f32 precision"
-)]
-fn px_f32(value: f64) -> f32 {
-    value as f32
-}
-
-/// Convert the theme's resolved label size into the renderer-relative size
-/// `measure`/`draw_text` consume. The theme folds the accessibility text
-/// scale into its type steps and the renderer applies the same factor again
-/// while shaping, so a theme size handed over unconverted would be scaled
-/// twice under a scaled host — and a bare `14.0` is not scaled at all under
-/// a host that scales its theme but not its renderer. At 1× both paths
-/// produce the same 14 px line.
-fn renderer_label_size(theme_size: f32, renderer: &TextRenderer) -> f32 {
-    renderer
-        .renderer_input_style(&TextStyle::new(theme_size))
-        .size
-}
 
 /// Resolve a label key for painting, measuring or speaking. An empty key is
 /// an icon-only face and stays empty: routed through `i18n!` it would come
@@ -891,104 +1309,9 @@ fn localized_label(key: &str) -> String {
     }
 }
 
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "logical layout width narrows to renderer precision"
-)]
-fn label_width(rect: Rect, icon: Option<crate::icons::Icon>, padding: f32) -> f32 {
-    let icon_width = if icon.is_some() {
-        icon_edge(rect.height()) + ICON_LABEL_GAP
-    } else {
-        0.0
-    };
-    (rect.width() as f32 - padding * 2.0 - icon_width as f32).max(0.0)
-}
-
-/// What sits inside a button's face: an optional icon, the label, the style
-/// it is set in, and the width it wraps to (if any).
-struct ButtonLabel<'a> {
-    icon: Option<crate::icons::Icon>,
-    text: &'a str,
-    style: TextStyle,
-    wrap_width: Option<f32>,
-}
-
-impl ButtonLabel<'_> {
-    /// Paints the icon and/or label centred in `rect`: icon-only centres the
-    /// glyph, otherwise the icon (if any) sits left of the label with a fixed
-    /// gap, the cluster as a whole centred. Shared by the immediate-mode
-    /// [`Button::paint`] and the retained widget's cached [`Widget::draw`] so
-    /// the two stay pixel-identical.
-    fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect, fg: vello::peniko::Color) {
-        let icon_px = icon_edge(rect.height());
-        match (self.icon, self.text.is_empty()) {
-            (Some(icon), true) => {
-                // Icon-only — centre the glyph.
-                let ix = rect.center().x - icon_px / 2.0;
-                let iy = rect.center().y - icon_px / 2.0;
-                crate::icons::draw_icon(
-                    ctx.scene,
-                    ctx.transform,
-                    Rect::new(ix, iy, ix + icon_px, iy + icon_px),
-                    icon,
-                    fg,
-                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-                );
-            }
-            (icon, _) => {
-                let gap = if icon.is_some() { ICON_LABEL_GAP } else { 0.0 };
-                let icon_w = if icon.is_some() { icon_px } else { 0.0 };
-                // A single-line label wider than its face is elided, never
-                // painted across the edge; the inset keeps it off the edge.
-                // A face too small for any text keeps the ellipsis, so a
-                // labelled control never reads as icon-only.
-                let elided;
-                let label = if self.wrap_width.is_none() {
-                    let inset = f64::from(ctx.theme.tokens.spacing.s2);
-                    let room = rect.width() - 2.0 * inset - icon_w - gap;
-                    elided = ctx.text.elide_to_width_style(
-                        self.text,
-                        px_f32(room.max(1.0)),
-                        &self.style,
-                    );
-                    elided.as_str()
-                } else {
-                    self.text
-                };
-                let (text_width, text_height) =
-                    ctx.text.measure_style(label, self.wrap_width, &self.style);
-                let cluster_w = icon_w + gap + f64::from(text_width);
-                let start_x = rect.center().x - cluster_w / 2.0;
-                if let Some(icon) = icon {
-                    let iy = rect.center().y - icon_px / 2.0;
-                    crate::icons::draw_icon(
-                        ctx.scene,
-                        ctx.transform,
-                        Rect::new(start_x, iy, start_x + icon_px, iy + icon_px),
-                        icon,
-                        fg,
-                        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-                    );
-                }
-                let text_x = start_x + icon_w + gap;
-                let text_y = rect.y0 + (rect.height() - f64::from(text_height)) / 2.0;
-                ctx.text(
-                    label,
-                    &self.style,
-                    fg,
-                    Point::new(text_x, text_y),
-                    self.wrap_width,
-                );
-            }
-        }
-    }
-}
-
 impl Button {
-    /// Matches the retained [`Button`]'s look. For canvas/immediate-mode
-    /// apps that own their own rect hit-testing: call this to paint, keep
-    /// your existing hit-test to fire the action. Shares `face_colors`
-    /// with the retained draw rather than forking a second painter.
+    /// Paint a [`ButtonFace`]: the retained [`Button`]'s look for a canvas
+    /// host that owns its own hit-testing ([`ButtonFace::contains`]).
     pub fn paint(
         scene: &mut Scene,
         transform: Affine,
@@ -996,63 +1319,27 @@ impl Button {
         theme: &Theme,
         face: &ButtonFace<'_>,
     ) {
-        let (bg, border, fg) = face_colors(theme, face.style, face.interact);
-        let radius = face
-            .radius
-            .unwrap_or_else(|| f64::from(theme.tokens.radii.md));
-        let shape = RoundedRect::from_rect(face.rect, radius);
-
-        // Disabled is the rest face under one group alpha (HIG §9.5), the
-        // same signal every other control gives, so rest and disabled are
-        // never the same picture.
-        if face.interact.disabled {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &shape,
-            );
-        }
-        scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
-        // Rest edge and focus ring share one half-pixel-inset outline, so
-        // the hairline never bleeds onto the ground.
-        let outline = crate::surface::edge_outline(face.rect, radius);
-        if face.interact.focused && !face.interact.disabled {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(FOCUS_RING_WIDTH),
-                transform,
-                theme.border_focus,
-                None,
-                &outline,
-            );
-        } else if let Some(bc) = border {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(REST_BORDER_WIDTH),
-                transform,
-                bc,
-                None,
-                &outline,
-            );
-        }
-
         let label = localized_label(face.label);
-        ButtonLabel {
-            icon: face.icon,
-            text: &label,
-            style: TextStyle::new(face.text_size).with_weight(face.weight),
-            wrap_width: face
-                .wrap_label
-                .then(|| label_width(face.rect, face.icon, theme.padding_standard)),
+        let metrics = FaceMetrics::of_role(face.control_size, face.role, theme);
+        FacePaint {
+            rect: face.rect,
+            role: face.role,
+            confirms: face.confirms,
+            on: face.on,
+            interact: face.interact,
+            content: FaceContent {
+                icon: face.icon,
+                image: None,
+                badge: None,
+                label: &label,
+                hint: face.shortcut.as_ref().map(shortcut_text),
+                // A painted face fills the rect its host gave it.
+                flush: false,
+                filled_icon: face.on && face.icon.is_some_and(fills_when_on),
+            },
+            metrics: &metrics,
         }
-        .paint(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            face.rect,
-            fg,
-        );
-        if face.interact.disabled {
-            scene.pop_layer();
-        }
+        .paint(&mut PaintCtx::new(scene, transform, text_renderer, theme));
     }
 
     /// Appends the cached face scene. The disabled group alpha is encoded
@@ -1062,48 +1349,74 @@ impl Button {
         out_scene.append(&self.cached, Some(inner));
     }
 
-    /// No explicit size, no fit/fill height, not content-sized: the button
-    /// stands at [`DEFAULT_SIZE`], grown only when the label needs more.
-    fn uses_default_footprint(&self) -> bool {
-        self.size.is_none() && !self.content_sized
+    fn content(&self) -> (String, Option<String>) {
+        (
+            localized_label(&self.label),
+            self.shortcut.as_ref().map(shortcut_text),
+        )
     }
 
-    /// [`DEFAULT_SIZE`] floored at the measured label: the height grows from
-    /// the label's measured line plus the content padding (the same rule the
-    /// `content_sized` face uses, so the two auto-height modes agree at
-    /// every scale), the width from label + icon + the fit-content side
-    /// allowance. At 1× a base-size line is 17.5 px and a label under 90 px
-    /// wide, so the result is exactly 120×40; at 2× text the 35 px line
-    /// lifts the face to 47 px and a wide label pushes it past 120 instead
-    /// of painting outside it.
-    fn measured_default_footprint(&self, text: &mut TextRenderer) -> (f32, f32) {
-        let label = localized_label(&self.label);
-        let (label_width, line_height) =
-            text.measure(&label, renderer_label_size(self.label_size, text), None);
-        let minimum_target = self.interaction.minimum_target();
-        let height = DEFAULT_SIZE
-            .1
-            .max((line_height + self.content_padding).ceil())
-            .max(minimum_target);
-        let icon_width = if self.icon.is_some() {
-            let gap = if label.is_empty() {
-                0.0
-            } else {
-                ICON_LABEL_GAP
-            };
-            px_f32(icon_edge(f64::from(height)) + gap)
+    /// The face height in the current theme. A fine pointer keeps the
+    /// size's height and reaches the minimum target through the hit rect
+    /// ([`Self::hit_rect`]); a coarse pointer grows the face to it.
+    fn face_height(&self) -> f64 {
+        if self.interaction.supports_hover() {
+            self.metrics.height
         } else {
-            0.0
+            self.metrics
+                .height
+                .max(f64::from(self.interaction.minimum_target()))
+        }
+    }
+
+    /// The face's width with everything shown, measured with the geometry
+    /// captured in `build_layout`.
+    fn intrinsic_width(&self, text: &mut TextRenderer) -> f32 {
+        let (label, hint) = self.content();
+        f32_of_f64(
+            FaceContent {
+                flush: self.role.flush() && !label.is_empty(),
+                icon: self.icon,
+                image: None,
+                badge: None,
+                label: &label,
+                hint,
+                filled_icon: false,
+            }
+            .intrinsic_width(&self.metrics, text, self.face_height()),
+        )
+    }
+
+    /// Where a pointer activates the button: the face, grown about its
+    /// centre to the minimum pointer target; a labelled plain button also
+    /// reaches outward by the padding its ink does not take.
+    fn hit_rect(&self) -> Rect {
+        let rect = if self.role.flush() && !self.label.is_empty() {
+            self.rect.inflate(self.metrics.pad_x, 0.0)
+        } else {
+            self.rect
         };
-        let width = DEFAULT_SIZE
-            .0
-            .max((label_width + icon_width + FIT_SIDE_PADDING * 2.0).ceil())
-            .max(minimum_target);
-        (width, height)
+        self.interaction.minimum_target_rect(rect)
     }
 }
 
 impl Button {
+    fn pin_measured_width(&self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Some(width) = self.measured_width.filter(|_| !self.fill_width) else {
+            return false;
+        };
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let width = Dimension::length(width);
+        if style.size.width == width {
+            return false;
+        }
+        let mut style = style.clone();
+        style.size.width = width;
+        taffy.set_style(node, style).is_ok()
+    }
+
     /// Run the native handler for a `tilo.ui.control.invoke` addressed to
     /// this button. `Ok(false)` when the operation is not this button's.
     fn invoke_native_control(
@@ -1146,13 +1459,16 @@ impl Widget for Button {
             self.is_hovered &= environment.supports_hover();
             self.layout_dirty = true;
             self.dirty = true;
-            // The footprint is floored at the environment's minimum target.
-            self.default_footprint = None;
         }
     }
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.observe_i18n_revision();
+        if let Some(binding) = &mut self.enabled_binding
+            && let crate::widget::binding::Pulled::Value(enabled) = binding.pull(state, path)
+        {
+            self.set_enabled(enabled);
+        }
     }
 
     fn build_layout(
@@ -1162,203 +1478,81 @@ impl Widget for Button {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.observe_i18n_revision();
-        self.measured_fit_width = None;
-        let label_size = theme.tokens.typography.scale.base;
-        if label_size.to_bits() != self.label_size.to_bits()
-            || theme.padding_standard.to_bits() != self.content_padding.to_bits()
-        {
-            // A theme scale change re-shapes or re-wraps the label; the
-            // cached face must not survive at the old metrics. (The live App
-            // rebuilds widgets on a theme change; a relayout-only host such
-            // as `FrameHarness::set_theme` relies on this.)
+        self.measured_width = None;
+        let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
+        if metrics != self.metrics {
+            // A theme scale change re-shapes the label; the cached face must
+            // not survive at the old metrics. (The live App rebuilds widgets
+            // on a theme change; a relayout-only host such as
+            // `FrameHarness::set_theme` relies on this.)
             self.dirty = true;
-            self.default_footprint = None;
+            self.metrics = metrics;
         }
-        self.label_size = label_size;
-        self.content_padding = theme.padding_standard;
-        // A default-sized button starts from its last settled footprint so
-        // the solver's first pass already agrees with the measurement
-        // `adjust_layout_with_measure` will make; `DEFAULT_SIZE` until then.
-        let (mut w, mut h) = self
-            .size
-            .or_else(|| {
-                self.default_footprint
-                    .filter(|_| self.uses_default_footprint())
-            })
-            .unwrap_or(DEFAULT_SIZE);
-        let minimum_target = self.interaction.minimum_target();
-        w = w.max(minimum_target);
-        h = h.max(minimum_target);
-        let node = taffy.leaf_node(Style {
-            flex_shrink: if self.content_sized { 1.0 } else { 0.0 },
-            min_size: Size {
-                width: Dimension::length(0.0),
-                height: self.min_height.map_or(Dimension::auto(), Dimension::length),
-            },
+        let height = f32_of_f64(self.face_height());
+        let style = Style {
+            // An intrinsic button never shrinks below its label: a parent
+            // with room shows it whole, and only a parent without room
+            // (capped by `max_size`) makes the painter elide it.
+            flex_shrink: 0.0,
+            min_size: Size::from_lengths(height, height),
             max_size: Size {
-                width: if self.content_sized {
-                    Dimension::percent(1.0)
-                } else {
-                    Dimension::auto()
-                },
+                width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
             size: Size {
                 width: if self.fill_width {
                     Dimension::percent(1.0)
-                } else if self.fit_content || self.content_sized {
-                    Dimension::auto()
                 } else {
-                    Dimension::length(w)
-                },
-                height: if self.content_sized {
                     Dimension::auto()
-                } else {
-                    Dimension::length(h)
                 },
+                height: Dimension::length(height),
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
         &mut self,
         known: Size<Option<f32>>,
-        available: Size<taffy::AvailableSpace>,
+        _available: Size<taffy::AvailableSpace>,
         text: &mut TextRenderer,
     ) -> Size<f32> {
-        let label = localized_label(&self.label);
-        let fixed_height = self
-            .size
-            .map_or(DEFAULT_SIZE.1, |(_, h)| h)
-            .max(self.interaction.minimum_target());
-        let icon_width = if self.icon.is_some() {
-            px_f32(if self.content_sized {
-                ICON_MAX_EDGE
-            } else {
-                icon_edge(f64::from(fixed_height))
-            })
-        } else {
-            0.0
-        };
-        let icon_gap = if self.icon.is_some() && !label.is_empty() {
-            px_f32(ICON_LABEL_GAP)
-        } else {
-            0.0
-        };
-        let horizontal = if self.content_sized {
-            self.content_padding * 2.0
-        } else {
-            FIT_SIDE_PADDING * 2.0
-        };
-        let extra_width = icon_width + icon_gap + horizontal;
-        let max_width = if self.content_sized {
-            known
-                .width
-                .or(match available.width {
-                    taffy::AvailableSpace::Definite(width) => Some(width),
-                    taffy::AvailableSpace::MinContent => Some(0.0),
-                    taffy::AvailableSpace::MaxContent => None,
-                })
-                .map(|width| (width.floor() - extra_width).max(0.0))
-        } else {
-            None
-        };
-        let (width, height) = text.measure(
-            &label,
-            renderer_label_size(self.label_size, text),
-            max_width,
-        );
-        let intrinsic_width = (width + extra_width)
-            .ceil()
-            .max(if self.content_sized {
-                0.0
-            } else {
-                FIT_MIN_WIDTH
-            })
-            .max(self.interaction.minimum_target());
-        if self.fit_content {
-            // Capture the real width even when a stretching parent supplies
-            // a known width. The shared solver pins it before geometry lands.
-            self.measured_fit_width = Some(intrinsic_width);
+        let intrinsic = self.intrinsic_width(text);
+        if !self.fill_width {
+            // Pinned onto the node after the pass, so a stretching parent
+            // cannot widen an intrinsic button.
+            self.measured_width = Some(intrinsic);
         }
         Size {
-            width: known.width.unwrap_or(intrinsic_width),
-            height: known.height.unwrap_or_else(|| {
-                if self.content_sized {
-                    (height.max(icon_width) + self.content_padding)
-                        .max(DEFAULT_SIZE.1)
-                        .max(self.interaction.minimum_target())
-                } else {
-                    fixed_height
-                }
-            }),
+            width: known.width.unwrap_or(intrinsic),
+            height: known
+                .height
+                .unwrap_or_else(|| f32_of_f64(self.face_height())),
         }
     }
 
-    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
-        let Some(width) = self.measured_fit_width.filter(|_| self.fit_content) else {
-            return false;
-        };
-        let Ok(style) = taffy.style(node) else {
-            return false;
-        };
-        let width = Dimension::length(width);
-        if style.size.width == width {
-            return false;
-        }
-        let mut style = style.clone();
-        style.size.width = width;
-        taffy.set_style(node, style).is_ok()
-    }
-
-    /// A default-sized button pins both dimensions as `length`, so taffy
-    /// never consults `measure` for it (both axes are known before the leaf
-    /// is reached). The label is measured here instead, after each pass,
-    /// and the node grown to `Self::measured_default_footprint` when it
-    /// does not hold the label — at 1× that is `DEFAULT_SIZE` for every
-    /// label narrower than the face, so nothing shipped moves.
-    fn adjust_layout_with_measure(
+    /// An intrinsic button's width is its measured content. Taffy only asks
+    /// `measure` for an axis it cannot resolve, so the label is measured
+    /// here as well and the width pinned when the solver has not done so.
+    fn adjust_layout_style(
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
-        if !self.uses_default_footprint() {
-            return self.adjust_layout_style(taffy, node);
-        }
-        let (width, height) = if let Some(footprint) = self.default_footprint {
-            footprint
-        } else {
-            let footprint = self.measured_default_footprint(text);
-            self.default_footprint = Some(footprint);
-            footprint
-        };
-        let Ok(current) = taffy.style(node) else {
-            return false;
-        };
-        let size = Size {
-            width: Dimension::length(width),
-            height: Dimension::length(height),
-        };
-        if current.size == size {
+        if self.fill_width {
             return false;
         }
-        let mut style = current.clone();
-        style.size = size;
-        taffy.set_style(node, style).is_ok()
+        if self.measured_width.is_none() {
+            self.measured_width = Some(self.intrinsic_width(text));
+        }
+        self.pin_measured_width(taffy, node)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.solver_placed = true;
         // Bitwise: this asks whether the cached size is stale at all, not
         // whether it drifted by more than some tolerance.
         let size_changed = self.rect.width().to_bits() != self.cache_rect.width().to_bits()
@@ -1374,18 +1568,23 @@ impl Widget for Button {
         out_transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
         self.observe_i18n_revision();
         let current_state = (
             self.is_hovered,
-            self.is_pressed,
-            self.is_focused,
+            self.press.is_held(),
+            self.focus_visible(),
             self.effectively_enabled(),
         );
         if current_state != self.last_state {
             self.dirty = true;
             self.last_state = current_state;
+        }
+        let key = theme_key(theme);
+        if self.last_theme != Some(key) {
+            self.dirty = true;
+            self.last_theme = Some(key);
         }
         let needs_emit = self.dirty || self.cache_rect == Rect::ZERO;
         if !needs_emit {
@@ -1393,95 +1592,57 @@ impl Widget for Button {
             let dy = self.rect.y0 - self.cache_rect.y0;
             let inner = out_transform.pre_translate(Vec2::new(dx, dy));
             self.append_cached(out_scene, inner);
+            crate::widget::draw_gate_and_peer_focus(
+                self,
+                out_scene,
+                out_transform,
+                theme,
+                presence,
+            );
             return;
         }
         // cache_rect tracks *where* the cache was emitted so subsequent
         // frames can translate without re-encoding.
         self.cached.reset();
         let enabled = self.effectively_enabled();
-        let scene = &mut self.cached;
-        let transform = Affine::IDENTITY;
-        let (bg_color, border_opt, fg_color) = face_colors(
-            theme,
-            self.style,
-            ButtonInteract {
+        // The geometry is read from the theme handed in, so a host that
+        // positions the button without a `build_layout` pass still gets the
+        // theme's type; `measure` uses the copy captured in `build_layout`,
+        // the same value on every taffy-driven path.
+        let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
+        let (label, hint) = self.content();
+        let on = self.is_toggled();
+        FacePaint {
+            rect: self.rect,
+            role: self.role,
+            confirms: false,
+            on,
+            interact: ButtonInteract {
                 hovered: self.is_hovered,
-                pressed: self.is_pressed,
-                focused: self.is_focused,
+                pressed: self.press.is_held(),
+                focused: self.focus_visible(),
                 disabled: !enabled,
             },
-        );
-
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-        // Disabled is the rest face under one group alpha (HIG §9.5); the
-        // layer lives inside the cache so a cached frame carries it too.
-        if !enabled {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &shape,
-            );
+            content: FaceContent {
+                flush: self.role.flush() && !label.is_empty(),
+                icon: self.icon,
+                image: self.image.as_ref(),
+                badge: self.badge.as_deref(),
+                label: &label,
+                hint,
+                filled_icon: on && self.icon.is_some_and(fills_when_on),
+            },
+            metrics: &metrics,
         }
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            bg_color,
-            None,
-            &shape,
-        );
-
-        // Focus ring wins over the style border; an accent-filled style
-        // has no rest border, so it only strokes when focused.
-        let outline = crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.md));
-        if self.is_focused && enabled {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(FOCUS_RING_WIDTH),
-                transform,
-                theme.border_focus,
-                None,
-                &outline,
-            );
-        } else if let Some(border_color) = border_opt {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(REST_BORDER_WIDTH),
-                transform,
-                border_color,
-                None,
-                &outline,
-            );
-        }
-
-        // Regular weight at the theme's base label size — read from the
-        // theme handed in, so a host that positions the button without a
-        // `build_layout` pass still gets the theme's size; `measure` uses
-        // the copy captured in `build_layout`, which is the same value on
-        // every taffy-driven path. Spelled out here since this goes through
-        // the `_weighted` entry points shared with `ButtonFace`'s
-        // (independently weighted/sized) immediate-mode path.
-        let label = localized_label(&self.label);
-        ButtonLabel {
-            icon: self.icon,
-            text: &label,
-            style: TextStyle::new(renderer_label_size(
-                theme.tokens.typography.scale.base,
-                text_renderer,
-            )),
-            wrap_width: self
-                .content_sized
-                .then(|| label_width(self.rect, self.icon, self.content_padding)),
-        }
-        .paint(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            self.rect,
-            fg_color,
-        );
-        if !enabled {
-            scene.pop_layer();
-        }
+        .paint(&mut PaintCtx::new(
+            &mut self.cached,
+            Affine::IDENTITY,
+            text_renderer,
+            theme,
+        ));
         self.cache_rect = self.rect;
         self.append_cached(out_scene, out_transform);
+        crate::widget::draw_gate_and_peer_focus(self, out_scene, out_transform, theme, presence);
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1489,8 +1650,8 @@ impl Widget for Button {
             || self.i18n_revision != crate::i18n::I18nManager::revision()
             || (
                 self.is_hovered,
-                self.is_pressed,
-                self.is_focused,
+                self.press.is_held(),
+                self.focus_visible(),
                 self.effectively_enabled(),
             ) != self.last_state
     }
@@ -1503,12 +1664,24 @@ impl Widget for Button {
     /// The `Rect::ZERO` sentinel keeps the first frame's
     /// `compute_layout` running so `apply_layout` can populate the rect;
     /// after that it stays clean (pure translation handled via the
-    /// cache's append transform, no taffy involvement).
+    /// cache's append transform, no taffy involvement). The sentinel is the
+    /// laid-out rect, not the paint cache's: a button that is not drawn
+    /// (scrolled or panned out of view) has nothing new to measure.
     fn is_layout_dirty(&self) -> bool {
-        self.cache_rect == Rect::ZERO
+        self.rect == Rect::ZERO
             || self.layout_dirty
-            || ((self.fit_content || self.content_sized)
-                && self.i18n_revision != crate::i18n::I18nManager::revision())
+            || self.i18n_revision != crate::i18n::I18nManager::revision()
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        // A missing paint cache asks for drawing, not another intrinsic
+        // measurement. Geometry is available as soon as layout is applied.
+        // A button only its host places has no node for the solver to
+        // measure: the host sizes it, however hidden or unplaced it is.
+        self.solver_placed
+            && (self.rect == Rect::ZERO
+                || self.layout_dirty
+                || self.i18n_revision != crate::i18n::I18nManager::revision())
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -1522,9 +1695,8 @@ impl Widget for Button {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical_pos =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                let hover = self.rect.contains(logical_pos);
+                let logical_pos = ctx.logical(position);
+                let hover = self.hit_rect().contains(logical_pos);
                 // A hover change is a repaint (`needs_redraw` compares the
                 // state), not consumed input: a parent that stops at the
                 // first handled child must still deliver this move to the
@@ -1538,23 +1710,35 @@ impl Widget for Button {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.is_hovered {
-                    let pressed = *element_state == ElementState::Pressed;
-                    if pressed != self.is_pressed {
-                        self.is_pressed = pressed;
+                use crate::pointer_replay::{PressAt, Release};
+                let rect = self.hit_rect();
+                let at = PressAt::one(&self.id, rect);
+                match element_state {
+                    ElementState::Pressed if self.is_hovered && !self.press.is_held() => {
+                        self.press.press(at);
                         *ctx.handled = true;
-
-                        if self.is_pressed {
-                            *ctx.focus_target = Some(ctx.node_id);
-                        }
-
-                        if !self.is_pressed {
-                            self.activate(ctx.state, ctx.path);
+                        self.pressed_into_focus |= !self.is_focused;
+                        *ctx.focus_target = Some(ctx.node_id);
+                    }
+                    ElementState::Pressed => {
+                        if !self.is_hovered && self.press.is_held() {
+                            self.press.cancel();
+                            *ctx.handled = true;
                         }
                     }
-                } else if self.is_pressed {
-                    self.is_pressed = false;
-                    *ctx.handled = true;
+                    // The press this button took, or the one a button it
+                    // replaced took at this place (a rebuild while the
+                    // button was held), completes here.
+                    ElementState::Released => {
+                        match self.press.release(self.is_hovered.then_some(at)) {
+                            Release::Click(()) => {
+                                *ctx.handled = true;
+                                self.activate();
+                            }
+                            Release::Cancelled => *ctx.handled = true,
+                            Release::NotHeld => {}
+                        }
+                    }
                 }
             }
             _ => {}
@@ -1563,6 +1747,16 @@ impl Widget for Button {
 
     fn name(&self) -> &'static str {
         "Button"
+    }
+
+    /// A host that lays buttons out (a header row) reaches their
+    /// presentation through this.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -1580,7 +1774,7 @@ impl Widget for Button {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.rect.contains(point) {
+        if self.hit_rect().contains(point) {
             Some(winit::window::CursorIcon::Pointer)
         } else {
             None
@@ -1590,7 +1784,12 @@ impl Widget for Button {
     fn is_focusable(&self) -> bool {
         true
     }
+    fn is_default_keyboard_focus(&self) -> bool {
+        self.default_focus
+    }
     fn set_focus(&mut self, focused: bool) {
+        // A press that focused it keeps its mark; losing focus clears it.
+        self.pressed_into_focus &= focused;
         self.is_focused = focused;
     }
     fn is_focused(&self) -> bool {
@@ -1610,7 +1809,7 @@ impl Widget for Button {
     fn start_operation(
         &mut self,
         op: &super::ResourceOperation<'_>,
-        _doc: &mut AutoCommit,
+        _doc: &mut crate::widget::Edits<'_>,
         _path: &ObjId,
     ) -> Result<Option<super::ResourceOperationStart>, String> {
         let Some(request) = op.unscoped() else {
@@ -1628,17 +1827,17 @@ impl Widget for Button {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
-        root: &ModelPath,
+        _key_path: &[u64],
+        _state: &mut crate::widget::Edits<'_>,
+        _root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
-        let (state, root) = crate::doc::document(state, root);
         if !self.effectively_enabled() {
             return false;
         }
         match action {
             Action::Activate => {
-                self.activate(state, root);
+                self.activate();
                 true
             }
             _ => false,
@@ -1660,66 +1859,29 @@ impl Widget for Button {
         } else {
             Some(label)
         };
-        let mut node = AccessNode::new(Role::Button)
+        let role = if self.toggled.is_some() {
+            Role::ToggleButton
+        } else {
+            Role::Button
+        };
+        let node = AccessNode::new(role)
             .with_semantic_key(&self.id)
+            .with_bounds(self.rect)
             .with_optional_name(name)
             .with_state(AccessState {
                 focusable: self.is_focusable(),
                 focused: self.is_focused(),
                 disabled: !self.is_enabled(),
+                checked: self.toggled,
                 ..Default::default()
             });
-        if self.action.is_none() && self.on_click_path.is_some() {
-            node = node.with_action_target(&self.id);
-        }
         Some(node)
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
     }
 }
 
 impl crate::presence::capability::PublishesPresence for Button {
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
+        PresenceKey::widget(&self.presence_path)
     }
 }
 
@@ -1734,19 +1896,21 @@ impl crate::resources::PublishesResources for Button {
         let Some(mut resource) = self.native_resource.clone() else {
             return Vec::new();
         };
-        // The action directory refuses unnamed resources and actions, and
-        // an icon-only button learns its accessible name or tooltip after
-        // `on_effect` built the resource; publish the name it is announced by.
-        if resource.label.trim().is_empty()
+        // The action directory refuses unnamed resources and actions, and an
+        // icon-only button is named by what it is announced as now: its
+        // accessible name or tooltip may be set after `on_effect` built the
+        // resource, or change with its state ("Hide sidebar" / "Show
+        // sidebar"). Publish the current name.
+        if self.label.is_empty()
             && let Some(name) = self
                 .accessible_name
                 .as_ref()
                 .or(self.tooltip.as_ref())
                 .filter(|name| !name.trim().is_empty())
         {
-            resource.label.clone_from(name);
+            let stale = std::mem::replace(&mut resource.label, name.clone());
             for action in &mut resource.actions {
-                if action.label.trim().is_empty() {
+                if action.label.trim().is_empty() || action.label == stale {
                     action.label.clone_from(name);
                 }
             }
@@ -1756,30 +1920,13 @@ impl crate::resources::PublishesResources for Button {
 }
 
 impl crate::widget::controls::ActionControls for Button {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
+    crate::widget::controls::optional_emitter_controls!(custody);
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         use crate::widget::{ControlBindingKind, ControlBindingMetadata};
         if let Some(action) = &self.action {
             return vec![action.metadata(self.id.clone())];
         }
         let mut bindings = Vec::new();
-        if let Some(path) = &self.on_click_path {
-            bindings.push(ControlBindingMetadata {
-                control_id: self.id.clone(),
-                kind: ControlBindingKind::CollaborativeDocument(path.clone()),
-            });
-        }
         if self.on_click.is_some() {
             bindings.push(ControlBindingMetadata {
                 control_id: self.id.clone(),
@@ -1806,33 +1953,12 @@ impl crate::widget::controls::ActionControls for Button {
 }
 
 impl Button {
-    fn activate(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn activate(&mut self) {
         if let Some(action) = &mut self.action {
             if let Err(error) = action.emit(()) {
                 tracing::warn!(%error, button = %self.id, "action-bound control refused its arguments");
             }
             return;
-        }
-        if let Some(path) = &self.on_click_path {
-            if let Some(value) = &self.click_value {
-                let _ = state.put(root, path.as_str(), value.as_str());
-            } else {
-                match state.get(root, path.as_str()) {
-                    Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                        automerge::ScalarValue::Counter(_) => {
-                            let _ = state.increment(root, path.as_str(), 1);
-                        }
-                        // Boolean and every other scalar type both just
-                        // get set true.
-                        _ => {
-                            let _ = state.put(root, path.as_str(), true);
-                        }
-                    },
-                    _ => {
-                        let _ = state.put(root, path.as_str(), true);
-                    }
-                }
-            }
         }
         if let Some(cb) = &mut self.on_click {
             cb();
@@ -1843,7 +1969,7 @@ impl Button {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ColorCompat;
+    use crate::tokens::TextRole;
     use crate::widget::Widget;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1853,7 +1979,7 @@ mod tests {
         let clicks = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&clicks);
         let mut column = crate::widget::Column::new().push(Box::new(
-            Button::new("files.retry", "Retry", None).on_view(move || {
+            Button::new("files.retry", "Retry").on_view(move || {
                 counted.fetch_add(1, Ordering::SeqCst);
             }),
         ));
@@ -1867,7 +1993,11 @@ mod tests {
             "tilo.ui.control.invoke",
             payload,
         )
-        .start(&mut column, &mut doc, &automerge::ROOT)
+        .start(
+            &mut column,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        )
         .unwrap();
         assert!(
             started
@@ -1943,44 +2073,35 @@ mod tests {
     }
 
     #[test]
-    fn fit_content_width_stays_compact_and_aligned_in_hosts() {
-        fn fit_content_stays_compact_in_stretched_flex_column() {
-            let mut host = fit_host(
-                0,
-                Button::new("back", "Back to apps", None).fit_content(40.0),
-            );
+    fn intrinsic_width_stays_compact_and_aligned_in_hosts() {
+        fn intrinsic_width_stays_compact_in_stretched_flex_column() {
+            let mut host = fit_host(0, Button::new("back", "Back to apps"));
             let rect = layout_fit_host(
                 host.as_mut(),
                 taffy::AlignItems::Stretch,
                 &Theme::dark(),
                 &mut TextRenderer::new(),
             );
-            assert!(rect.width() < 300.0, "fit_content stretched: {rect:?}");
-            assert_eq!(rect.height(), 40.0);
+            assert!(rect.width() < 300.0, "intrinsic width stretched: {rect:?}");
+            assert_eq!(rect.height(), 32.0);
         }
 
-        fn fit_content_stays_compact_in_intrinsic_grid_column() {
-            let mut host = fit_host(
-                1,
-                Button::new("back", "Back to apps", None).fit_content(40.0),
-            );
+        fn intrinsic_width_stays_compact_in_intrinsic_grid_column() {
+            let mut host = fit_host(1, Button::new("back", "Back to apps"));
             let rect = layout_fit_host(
                 host.as_mut(),
                 taffy::AlignItems::Stretch,
                 &Theme::dark(),
                 &mut TextRenderer::new(),
             );
-            assert!(rect.width() < 300.0, "fit_content stretched: {rect:?}");
-            assert_eq!(rect.height(), 40.0);
+            assert!(rect.width() < 300.0, "intrinsic width stretched: {rect:?}");
+            assert_eq!(rect.height(), 32.0);
         }
 
         fn compact_fit_width_preserves_host_center_and_end_alignment() {
             for kind in 0..3 {
                 for alignment in [taffy::AlignItems::Center, taffy::AlignItems::End] {
-                    let mut host = fit_host(
-                        kind,
-                        Button::new("back", "Back to apps", None).fit_content(40.0),
-                    );
+                    let mut host = fit_host(kind, Button::new("back", "Back to apps"));
                     let rect = layout_fit_host(
                         host.as_mut(),
                         alignment,
@@ -2004,11 +2125,9 @@ mod tests {
         fn compact_fit_width_is_the_prepaint_click_and_focus_geometry() {
             let fired = Arc::new(AtomicUsize::new(0));
             let clicks = Arc::clone(&fired);
-            let button = Button::new("back", "Back to apps", None)
-                .fit_content(40.0)
-                .on_click(move || {
-                    clicks.fetch_add(1, Ordering::SeqCst);
-                });
+            let button = Button::new("back", "Back to apps").on_click(move || {
+                clicks.fetch_add(1, Ordering::SeqCst);
+            });
             let mut harness = crate::headless::FrameHarness::new_with_theme(
                 crate::State::new(),
                 fit_host(1, button),
@@ -2037,10 +2156,7 @@ mod tests {
         }
 
         fn explicit_fill_width_still_stretches_in_intrinsic_column() {
-            let mut host = fit_host(
-                1,
-                Button::new("fill", "Back to apps", None).fill_width(40.0),
-            );
+            let mut host = fit_host(1, Button::new("fill", "Back to apps").fill_width());
             let rect = layout_fit_host(
                 host.as_mut(),
                 taffy::AlignItems::Stretch,
@@ -2050,16 +2166,16 @@ mod tests {
             assert_eq!(rect.width(), 600.0);
         }
 
-        fit_content_stays_compact_in_stretched_flex_column();
-        fit_content_stays_compact_in_intrinsic_grid_column();
+        intrinsic_width_stays_compact_in_stretched_flex_column();
+        intrinsic_width_stays_compact_in_intrinsic_grid_column();
         compact_fit_width_preserves_host_center_and_end_alignment();
         compact_fit_width_is_the_prepaint_click_and_focus_geometry();
         explicit_fill_width_still_stretches_in_intrinsic_column();
     }
 
     #[test]
-    fn content_sized_buttons_remeasure_and_keep_usable_targets() {
-        fn retained_fit_width_remeasures_scale_and_locale_after_rebuild() {
+    fn intrinsic_buttons_remeasure_and_size_from_their_control_size() {
+        fn retained_width_remeasures_scale_and_locale_after_rebuild() {
             use crate::i18n::I18nManager;
             I18nManager::install(
                 "en-US",
@@ -2070,10 +2186,7 @@ mod tests {
                 ],
             )
             .unwrap();
-            let mut host = fit_host(
-                1,
-                Button::new("refresh", "fit-refresh", None).fit_content(40.0),
-            );
+            let mut host = fit_host(1, Button::new("refresh", "fit-refresh"));
             let mut text = TextRenderer::new();
             let normal = layout_fit_host(
                 host.as_mut(),
@@ -2082,10 +2195,11 @@ mod tests {
                 &mut text,
             );
             text.set_text_scale(2.0);
+            let large_theme = Theme::dark().with_text_scale(2.0);
             let large = layout_fit_host(
                 host.as_mut(),
                 taffy::AlignItems::Stretch,
-                &Theme::dark().with_text_scale(2.0),
+                &large_theme,
                 &mut text,
             );
             assert!(
@@ -2097,127 +2211,112 @@ mod tests {
             let localized = layout_fit_host(
                 host.as_mut(),
                 taffy::AlignItems::Stretch,
-                &Theme::dark().with_text_scale(2.0),
+                &large_theme,
                 &mut text,
             );
+            I18nManager::set_locale("en-US");
             assert!(
                 localized.width() > large.width(),
                 "locale must refresh retained width: {large:?} -> {localized:?}"
             );
-            assert_eq!(localized.height(), 40.0);
-        }
-
-        fn content_sized_minimum_height_keeps_targets_and_grows_for_large_text() {
-            let ordinary = measured_button_rect(
-                Button::new("ordinary", "Restart", None).content_sized(),
-                1.0,
-            );
-            let minimum = measured_button_rect(
-                Button::new("minimum", "Restart", None)
-                    .content_sized()
-                    .with_min_height(44.0),
-                1.0,
-            );
-            assert_eq!(ordinary.height(), 40.0, "default sizing stays unchanged");
             assert_eq!(
-                minimum.height(),
-                44.0,
-                "explicit floor preserves the target"
+                localized.height(),
+                ControlSize::Regular.height(&large_theme)
             );
+        }
 
-            let label = "Restart the computer";
-            let theme = Theme::dark().with_text_scale(4.0);
-            let harness = crate::headless::FrameHarness::new_with_theme(
-                crate::State::new(),
-                Box::new(
-                    crate::widget::Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .push(Box::new(
-                            Button::new("restart", label, None)
-                                .with_icon(crate::icons::Icon::Refresh)
-                                .content_sized()
-                                .with_min_height(44.0),
-                        )),
-                ),
-                (220, 1000),
-                theme.clone(),
-            );
-            let rect = harness.inspection().root.children[0].rect;
+        fn intrinsic_width_holds_the_whole_label() {
             let mut text = TextRenderer::new();
-            text.set_text_scale(4.0);
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "bounded logical test viewport"
-            )]
-            let available = rect[2] as f32 - theme.padding_standard * 2.0 - 28.0;
-            let (_, label_height) = text.measure(label, 14.0, Some(available));
-            assert!(label_height > 60.0, "the real scaled label must wrap");
-            assert!(rect[2] <= 220.0 && rect[3] > 44.0);
-            assert!(
-                rect[3] >= f64::from(label_height + theme.padding_standard),
-                "minimum must not cap intrinsic wrapped height: {rect:?}, text={label_height}"
-            );
-        }
-
-        fn invalid_minimum_heights_leave_finite_usable_targets() {
-            for minimum in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -20.0] {
-                let rect = measured_button_rect(
-                    Button::new("minimum", "Restart", None)
-                        .content_sized()
-                        .with_min_height(minimum),
-                    1.0,
-                );
-                assert!(
-                    rect.height().is_finite() && rect.height() >= 40.0,
-                    "invalid floor must not poison layout: {minimum:?}, {rect:?}"
-                );
-            }
-        }
-
-        fn content_sized_wraps_long_scaled_actions_inside_available_width() {
-            let label = "Refresh all remote connections and discover updates";
-            let harness = crate::headless::FrameHarness::new_with_theme(
-                crate::State::new(),
-                Box::new(
-                    crate::widget::Column::new()
-                        .with_no_padding()
-                        .with_intrinsic_height()
-                        .push(Box::new(
-                            Button::new("refresh", label, None)
-                                .with_icon(crate::icons::Icon::Search)
-                                .content_sized(),
-                        )),
-                ),
-                (220, 400),
-                Theme::dark().with_text_scale(2.0),
-            );
-            let rect = harness.inspection().root.children[0].rect;
-            assert!(rect[2] <= 220.0);
-            assert!(
-                rect[3] > 70.0,
-                "wrapped action must grow in height: {rect:?}"
-            );
-        }
-
-        fn intrinsic_width_rounding_does_not_wrap_a_fitting_single_line() {
-            let mut text = TextRenderer::new();
+            let theme = Theme::dark();
             for label in ["Install workspace", "Refresh connections", "View details"] {
-                let rect =
-                    measured_button_rect(Button::new("action", label, None).content_sized(), 1.0);
-                let (width, _) = text.measure(label, 14.0, None);
+                let rect = measured_button_rect(Button::new("action", label), 1.0);
+                let (width, _) = text.measure_style(label, None, &theme.text(TextRole::Label));
                 assert!(
-                    rect.width() >= f64::from(width + Theme::dark().padding_standard * 2.0),
-                    "rounded width clips or wraps {label}: {rect:?}, text {width}"
+                    rect.width() >= f64::from(width + theme.tokens.spacing.s3 * 2.0),
+                    "the label must fit without eliding: {label}: {rect:?}, text {width}"
                 );
             }
         }
 
-        retained_fit_width_remeasures_scale_and_locale_after_rebuild();
-        content_sized_minimum_height_keeps_targets_and_grows_for_large_text();
-        invalid_minimum_heights_leave_finite_usable_targets();
-        content_sized_wraps_long_scaled_actions_inside_available_width();
-        intrinsic_width_rounding_does_not_wrap_a_fitting_single_line();
+        fn each_control_size_has_its_height_and_grows_with_large_text() {
+            for (size, height) in [
+                (ControlSize::Small, 28.0),
+                (ControlSize::Regular, 32.0),
+                (ControlSize::Large, 40.0),
+            ] {
+                let rect =
+                    measured_button_rect(Button::new("save", "Save").control_size(size), 1.0);
+                assert_eq!(rect.height(), height, "{size:?}");
+                assert!(
+                    rect.width() >= 2.0 * height,
+                    "{size:?} labelled minimum: {rect:?}"
+                );
+            }
+            let theme = Theme::dark().with_text_scale(2.0);
+            let rect = measured_button_rect(Button::new("save", "Save"), 2.0);
+            let line = f64::from(theme.text(TextRole::Label).line_height_px());
+            assert!(rect.height() > 32.0 && rect.height() >= line, "{rect:?}");
+        }
+
+        fn icon_only_buttons_are_square_named_and_plain() {
+            let button = Button::icon_only("close", crate::icons::Icon::X, "Close");
+            assert_eq!(button.role, ButtonRole::Plain);
+            assert_eq!(Widget::tooltip(&button), Some("Close"));
+            assert_eq!(
+                Widget::accessibility(&button).unwrap().name.as_deref(),
+                Some("Close")
+            );
+            let rect = measured_button_rect(button, 1.0);
+            assert_eq!((rect.width(), rect.height()), (32.0, 32.0));
+        }
+
+        fn a_shortcut_hint_widens_the_button_and_paints_after_the_label() {
+            let shortcut = crate::platform::Shortcut::command("Enter");
+            let plain = measured_button_rect(Button::new("run", "Run query"), 1.0);
+            let hinted = measured_button_rect(
+                Button::new("run", "Run query").shortcut_hint(shortcut.clone()),
+                1.0,
+            );
+            assert!(hinted.width() > plain.width(), "{plain:?} -> {hinted:?}");
+            let label = shortcut.label(crate::platform::PlatformConventions::new(
+                crate::platform::Platform::current(),
+            ));
+            if crate::platform::Platform::current() == crate::platform::Platform::Linux {
+                assert!(!label.contains('⌘'), "no Apple legend on Linux: {label}");
+            }
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let face = ButtonFace::new(Rect::ZERO, "Run query").shortcut_hint(shortcut);
+            let width = face.intrinsic_width(&mut text, &theme);
+            let face = ButtonFace::new(Rect::new(0.0, 0.0, width, 32.0), "Run query")
+                .shortcut_hint(crate::platform::Shortcut::command("Enter"));
+            let mut scene = Scene::new();
+            Button::paint(&mut scene, Affine::IDENTITY, &mut text, &theme, &face);
+            let origins = glyph_origins(&scene);
+            assert_eq!(origins.len(), 2, "label and hint are two runs");
+            assert!(origins[1][0] > origins[0][0], "the hint trails the label");
+        }
+
+        fn a_face_hit_rect_is_never_under_the_pointer_target() {
+            let theme = Theme::dark();
+            let face = ButtonFace::icon_only(
+                Rect::new(10.0, 10.0, 30.0, 30.0),
+                crate::icons::Icon::X,
+                "Close",
+            );
+            let hit = face.hit_rect(&theme);
+            assert_eq!((hit.width(), hit.height()), (32.0, 32.0));
+            assert_eq!(hit.center(), face.rect.center());
+            assert!(face.contains(&theme, Point::new(8.0, 20.0)));
+            assert!(!face.contains(&theme, Point::new(40.0, 20.0)));
+        }
+
+        retained_width_remeasures_scale_and_locale_after_rebuild();
+        intrinsic_width_holds_the_whole_label();
+        each_control_size_has_its_height_and_grows_with_large_text();
+        icon_only_buttons_are_square_named_and_plain();
+        a_shortcut_hint_widens_the_button_and_paints_after_the_label();
+        a_face_hit_rect_is_never_under_the_pointer_target();
     }
 
     fn measured_button_rect(button: Button, scale: f32) -> Rect {
@@ -2233,50 +2332,13 @@ mod tests {
 
     #[test]
     fn label_face_geometry_follows_the_theme_scale() {
-        fn label_line_box_is_centered_at_scaled_size() {
-            let mut text = TextRenderer::new();
-            text.set_text_scale(2.0);
-            let mut scene = Scene::new();
-            let rect = Rect::new(0.0, 0.0, 200.0, 40.0);
-            let (_, height) = text.measure("Refresh", 14.0, None);
-            ButtonLabel {
-                icon: None,
-                text: "Refresh",
-                style: TextStyle::new(14.0),
-                wrap_width: None,
-            }
-            .paint(
-                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark()),
-                rect,
-                vello::peniko::Color::WHITE,
-            );
-            let actual = &scene.encoding().resources.glyph_runs[0];
-            let mut expected = Scene::new();
-            text.draw_text_weighted(
-                &mut expected,
-                "Refresh",
-                14.0,
-                vello::peniko::Color::WHITE,
-                Affine::translate((0.0, (40.0 - f64::from(height)) / 2.0)),
-                None,
-                crate::text_render::TextWeight::Regular,
-            );
-            let reference = &expected.encoding().resources.glyph_runs[0];
-            assert_eq!(
-                actual.transform.translation[1],
-                reference.transform.translation[1]
-            );
-        }
-
-        fn wrapped_retained_and_immediate_labels_share_geometry() {
+        fn retained_and_immediate_labels_share_geometry() {
             let theme = Theme::dark().with_text_scale(2.0);
             let mut text = TextRenderer::new();
             text.set_text_scale(2.0);
-            let label = "Refresh all remote connections";
-            let rect = Rect::new(10.0, 20.0, 230.0, 180.0);
-            let mut button = Button::new("action", label, None)
-                .content_sized()
-                .with_icon(crate::icons::Icon::Refresh);
+            let label = "Refresh";
+            let rect = Rect::new(10.0, 20.0, 330.0, 84.0);
+            let mut button = Button::new("action", label).with_icon(crate::icons::Icon::Refresh);
             let mut tree = TaffyTree::new();
             button.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
             button.apply_layout_external(rect);
@@ -2294,10 +2356,7 @@ mod tests {
                 Affine::IDENTITY,
                 &mut text,
                 &theme,
-                &ButtonFace::new(rect, label)
-                    .icon(crate::icons::Icon::Refresh)
-                    .wrap_label()
-                    .weight(crate::text_render::TextWeight::Regular),
+                &ButtonFace::new(rect, label).icon(crate::icons::Icon::Refresh),
             );
             let a = &retained.encoding().resources.glyph_runs;
             let b = &immediate.encoding().resources.glyph_runs;
@@ -2309,9 +2368,9 @@ mod tests {
             }
         }
 
-        /// A default `ButtonFace` reads its corner and label size from the theme
-        /// and paints byte-for-byte what the former hard-coded 8 px / 14 px did.
-        fn default_face_matches_the_legacy_explicit_metrics_at_one_x() {
+        /// A default `ButtonFace` reads its corner from the theme and sets its
+        /// label in the Regular size's role; Large sets it in Body.
+        fn default_face_reads_its_corner_and_label_role_from_the_theme() {
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
             let rect = Rect::new(10.0, 10.0, 130.0, 50.0);
@@ -2324,8 +2383,7 @@ mod tests {
             let explicit = paint(
                 ButtonFace::new(rect, "Save")
                     .icon(crate::icons::Icon::Refresh)
-                    .radius(8.0)
-                    .text_size(14.0),
+                    .control_size(ControlSize::Regular),
             );
             assert_eq!(themed.encoding().path_data, explicit.encoding().path_data);
             let a = &themed.encoding().resources.glyph_runs;
@@ -2333,18 +2391,24 @@ mod tests {
             assert_eq!(a.len(), 1);
             assert_eq!(a[0].transform, b[0].transform);
             assert_eq!(a[0].font_size, b[0].font_size);
-            assert!((a[0].font_size - 14.0).abs() < 1e-6);
+            assert!((a[0].font_size - theme.text(TextRole::Label).size).abs() < 1e-6);
+            let large = paint(ButtonFace::new(rect, "Save").control_size(ControlSize::Large));
+            assert!(
+                (large.encoding().resources.glyph_runs[0].font_size
+                    - theme.text(TextRole::Body).size)
+                    .abs()
+                    < 1e-6
+            );
         }
 
-        /// The retained label follows the theme's type scale — 28 px under a 2×
-        /// theme — whether the shared renderer is matched (2×, the live App and
-        /// `FrameHarness`) or left at 1× (the apps' raw `--shots` loop), and
-        /// whether or not a `build_layout` pass preceded the draw. The
-        /// immediate-mode `ButtonFace` default deliberately stays
-        /// renderer-relative (14 × renderer scale) because canvas hosts size its
-        /// rect with the same renderer-relative measure.
+        /// The retained and immediate labels follow the theme's type scale —
+        /// 2× the Label role under a 2× theme — whether the shared renderer is
+        /// matched (2×, the live App and `FrameHarness`) or left at 1× (the
+        /// apps' raw `--shots` loop), and whether or not a `build_layout` pass
+        /// preceded the draw.
         fn retained_label_follows_the_theme_scale_in_matched_and_unmatched_hosts() {
             let theme = Theme::dark().with_text_scale(2.0);
+            let label = theme.text(TextRole::Label).size;
             let rect = Rect::new(0.0, 0.0, 160.0, 40.0);
             let presence = crate::presence::PresenceCtx::default();
             let font_size = |scene: &Scene| scene.encoding().resources.glyph_runs[0].font_size;
@@ -2352,7 +2416,7 @@ mod tests {
                 let mut text = TextRenderer::new();
                 text.set_text_scale(renderer_scale);
 
-                let mut laid_out = Button::new("save", "Save", None);
+                let mut laid_out = Button::new("save", "Save");
                 laid_out.build_layout(
                     &mut TaffyTree::new(),
                     &theme,
@@ -2368,13 +2432,13 @@ mod tests {
                     &presence,
                 );
                 assert!(
-                    (font_size(&retained) - 28.0).abs() < 1e-3,
+                    (font_size(&retained) - label).abs() < 1e-3,
                     "retained label at renderer {renderer_scale}×: {}",
                     font_size(&retained)
                 );
 
                 // Positioned by a canvas host: no taffy pass at all.
-                let mut external = Button::new("save", "Save", None);
+                let mut external = Button::new("save", "Save");
                 external.apply_layout_external(rect);
                 let mut external_scene = Scene::new();
                 external.draw(
@@ -2385,7 +2449,7 @@ mod tests {
                     &presence,
                 );
                 assert!(
-                    (font_size(&external_scene) - 28.0).abs() < 1e-3,
+                    (font_size(&external_scene) - label).abs() < 1e-3,
                     "externally laid-out label at renderer {renderer_scale}×: {}",
                     font_size(&external_scene)
                 );
@@ -2398,10 +2462,9 @@ mod tests {
                     &theme,
                     &ButtonFace::new(rect, "Save"),
                 );
-                let expected_face = 14.0 * renderer_scale;
                 assert!(
-                    (font_size(&immediate) - expected_face).abs() < 1e-3,
-                    "ButtonFace default at renderer {renderer_scale}×: {} (expected {expected_face})",
+                    (font_size(&immediate) - label).abs() < 1e-3,
+                    "ButtonFace default at renderer {renderer_scale}×: {} (expected {label})",
                     font_size(&immediate)
                 );
             }
@@ -2412,7 +2475,7 @@ mod tests {
         fn theme_text_scale_change_invalidates_the_cached_face() {
             let rect = Rect::new(0.0, 0.0, 160.0, 40.0);
             let mut text = TextRenderer::new();
-            let mut button = Button::new("save", "Save", None);
+            let mut button = Button::new("save", "Save");
             let presence = crate::presence::PresenceCtx::default();
             let one = Theme::dark();
             button.build_layout(
@@ -2440,85 +2503,20 @@ mod tests {
             button.draw(&mut second, Affine::IDENTITY, &mut text, &larger, &presence);
             let before = first.encoding().resources.glyph_runs[0].font_size;
             let after = second.encoding().resources.glyph_runs[0].font_size;
-            assert!((before - 14.0).abs() < 1e-3, "{before}");
-            assert!((after - 21.0).abs() < 1e-3, "{after}");
+            assert!((before - 13.0).abs() < 1e-3, "{before}");
+            assert!((after - 19.5).abs() < 1e-3, "{after}");
         }
 
-        label_line_box_is_centered_at_scaled_size();
-        wrapped_retained_and_immediate_labels_share_geometry();
-        default_face_matches_the_legacy_explicit_metrics_at_one_x();
+        retained_and_immediate_labels_share_geometry();
+        default_face_reads_its_corner_and_label_role_from_the_theme();
         retained_label_follows_the_theme_scale_in_matched_and_unmatched_hosts();
         theme_text_scale_change_invalidates_the_cached_face();
     }
 
     #[test]
-    fn manual_size_modifiers_own_dimensions_over_content_sizing() {
-        fn manual_modifiers_replace_fully_content_sized_mode() {
-            let rect = measured_button_rect(
-                Button::new("action", "A long scaled label", None)
-                    .content_sized()
-                    .with_size(81.0, 35.0),
-                2.0,
-            );
-            assert_eq!(rect.size(), vello::kurbo::Size::new(81.0, 35.0));
-            let rect = measured_button_rect(
-                Button::new("action", "Short", None)
-                    .content_sized()
-                    .fit_content(36.0),
-                2.0,
-            );
-            assert_eq!(rect.height(), 36.0);
-        }
-
-        fn fit_content_contains_real_scaled_label_and_icon() {
-            let label = "WWW Refresh remote connections";
-            let mut text = TextRenderer::new();
-            text.set_text_scale(2.0);
-            let (width, _) = text.measure(label, 14.0, None);
-            let rect = measured_button_rect(
-                Button::new("refresh", label, None)
-                    .with_icon(crate::icons::Icon::Search)
-                    .fit_content(40.0),
-                2.0,
-            );
-            assert!(
-                rect.width() >= f64::from(width) + 22.0 + 6.0,
-                "measured label and icon escape button: {rect:?}, text width {width}"
-            );
-            assert_eq!(rect.height(), 40.0, "fit_content keeps explicit height");
-        }
-
-        fn manual_size_after_fit_content_owns_both_dimensions() {
-            let rect = measured_button_rect(
-                Button::new("manual", "Long label intentionally clipped", None)
-                    .fit_content(40.0)
-                    .with_size(81.0, 35.0),
-                2.0,
-            );
-            assert_eq!(rect.size(), vello::kurbo::Size::new(81.0, 35.0));
-        }
-
-        /// Explicit sizes are the caller's decision: neither a scaled theme nor a
-        /// wide label grows a `with_size` button.
-        fn an_explicit_size_is_never_grown_by_the_measured_footprint() {
-            let rect = measured_button_rect(
-                Button::new("remove", "Remove every remote connection", None)
-                    .with_size(120.0, 40.0),
-                2.0,
-            );
-            assert_eq!((rect.width(), rect.height()), (120.0, 40.0), "{rect:?}");
-        }
-
-        manual_modifiers_replace_fully_content_sized_mode();
-        fit_content_contains_real_scaled_label_and_icon();
-        manual_size_after_fit_content_owns_both_dimensions();
-        an_explicit_size_is_never_grown_by_the_measured_footprint();
-    }
-
-    #[test]
     fn action_mode_and_availability_gate_mutation_and_callbacks() {
         fn button_test_id_is_stable_constructor_id() {
-            let b = Button::new("id", "Save", None);
+            let b = Button::new("id", "Save");
             assert_eq!(Widget::test_id(&b), Some("id"));
             assert_eq!(
                 Widget::accessibility(&b).unwrap().name.as_deref(),
@@ -2540,15 +2538,13 @@ mod tests {
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
             let calls = Arc::new(AtomicUsize::new(0));
             let callback_calls = calls.clone();
-            let mut button = Button::new("save", "Save", Some("legacy"))
+            let mut button = Button::new("save", "Save")
                 .on_action(binding)
                 // Builder order cannot accidentally restore an imperative path.
                 .on_click(move || {
                     callback_calls.fetch_add(1, Ordering::SeqCst);
                 });
-            let mut doc = AutoCommit::new();
-            button.activate(&mut doc, &automerge::ROOT);
-            assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
+            button.activate();
             assert_eq!(calls.load(Ordering::SeqCst), 0);
             let intent =
                 crate::widget::controls::take_control_invocation(&mut button).expect("one intent");
@@ -2575,8 +2571,8 @@ mod tests {
                 .unwrap(),
             );
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
-            let mut button = Button::new("save", "Save", None).on_action(binding);
-            button.activate(&mut AutoCommit::new(), &automerge::ROOT);
+            let mut button = Button::new("save", "Save").on_action(binding);
+            button.activate();
             crate::widget::controls::refresh_control_action_availability(
                 &mut button,
                 &std::collections::HashSet::new(),
@@ -2612,12 +2608,8 @@ mod tests {
         }
 
         fn legacy_button_paths_are_explicit_in_inventory() {
-            let button = Button::new("legacy", "Legacy", Some("flag")).on_click(|| {});
+            let button = Button::new("legacy", "Legacy").on_click(|| {});
             let bindings = crate::widget::controls::control_action_bindings(&button);
-            assert!(bindings.iter().any(|entry| matches!(
-                entry.kind,
-                crate::widget::ControlBindingKind::CollaborativeDocument(_)
-            )));
             assert!(bindings.iter().any(|entry| matches!(
                 entry.kind,
                 crate::widget::ControlBindingKind::LegacyCallback
@@ -2630,195 +2622,188 @@ mod tests {
         legacy_button_paths_are_explicit_in_inventory();
     }
 
+    /// A theme switched under a live tree repaints a plain button's face
+    /// in the new theme's roles, rather than keeping the cached dark-theme
+    /// ink that all but vanishes on a light ground.
     #[test]
-    fn face_colors_per_style_track_state_and_stay_readable() {
-        fn face_colors_neutral_tracks_hover_and_press() {
-            let theme = Theme::dark();
-            let rest = ButtonInteract::default();
-            let hover = ButtonInteract {
-                hovered: true,
-                ..Default::default()
-            };
-            let press = ButtonInteract {
-                pressed: true,
-                ..Default::default()
-            };
-            let (bg, border, fg) = face_colors(&theme, ButtonStyle::Neutral, rest);
+    fn a_cached_face_follows_a_theme_switch() {
+        let mut button = Button::new("plain", "Undo").role(ButtonRole::Plain);
+        button.rect = Rect::new(0.0, 0.0, 80.0, 32.0);
+        let presence = crate::presence::PresenceCtx::default();
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        for theme in [Theme::dark(), Theme::light()] {
+            button.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
             assert_eq!(
-                bg, theme.tokens.colors.surfaces.raised,
-                "rest fill = raised surface"
-            );
-            assert_eq!(
-                border,
-                Some(crate::surface::edge_on(theme.tokens.colors.surfaces.raised)),
-                "neutral shows an edge derived from its rest surface"
-            );
-            assert_eq!(fg, theme.tokens.colors.text_primary);
-            assert_eq!(
-                face_colors(&theme, ButtonStyle::Neutral, hover).0,
-                theme.bg_hover
-            );
-            assert_eq!(
-                face_colors(&theme, ButtonStyle::Neutral, press).0,
-                theme.bg_active
+                button.last_theme,
+                Some(theme_key(&theme)),
+                "the face is painted in {}",
+                theme.name
             );
         }
+    }
 
-        fn face_colors_ghost_is_transparent_at_rest_then_tints() {
-            use crate::a11y::contrast_ratio;
-            let theme = Theme::dark();
-            let rest = ButtonInteract::default();
-            let hover = ButtonInteract {
-                hovered: true,
-                ..Default::default()
-            };
-            let press = ButtonInteract {
-                pressed: true,
-                ..Default::default()
-            };
-            let (bg, border, fg) = face_colors(&theme, ButtonStyle::Ghost, rest);
-            assert_eq!(
-                bg,
-                vello::peniko::Color::TRANSPARENT,
-                "ghost rest fill is transparent"
-            );
-            assert_eq!(border, None, "ghost has no border");
-            // Quiet is a rank, not a licence to be unreadable: the tone starts
-            // at `text_dim` and steps out only as far as the hover surface demands.
-            let base = theme.tokens.colors.surfaces.base;
-            assert!(
-                contrast_ratio(fg, base) < contrast_ratio(theme.tokens.colors.text_primary, base),
-                "ghost label must stay quieter than the primary tier",
-            );
-            assert!(
-                contrast_ratio(fg, theme.bg_hover) >= ON_FILL_MIN_CONTRAST,
-                "ghost label must survive the surface hover paints under it",
-            );
-            assert_eq!(
-                face_colors(&theme, ButtonStyle::Ghost, hover).0,
-                theme.bg_hover
-            );
-            assert_eq!(
-                face_colors(&theme, ButtonStyle::Ghost, press).0,
-                theme.bg_active
-            );
+    /// Only a node the layout solver placed can be measured again: a button
+    /// its host places never asks for a measure, placed or hidden, while one
+    /// in the solver's tree asks when what it shows may change its width.
+    #[test]
+    fn a_host_placed_button_never_asks_the_solver_for_a_measure() {
+        let mut hosted = Button::new("history", "History");
+        for rect in [Rect::ZERO, Rect::new(0.0, 0.0, 32.0, 32.0), Rect::ZERO] {
+            hosted.apply_layout_external(rect);
+            assert!(!hosted.layout_needs_measure(), "placed at {rect:?}");
         }
 
-        fn face_colors_primary_is_accent_borderless_and_readable() {
-            use crate::a11y::contrast_ratio;
-            let theme = Theme::dark();
-            let rest = ButtonInteract::default();
-            let hover = ButtonInteract {
-                hovered: true,
-                ..Default::default()
-            };
-            let (bg, border, fg) = face_colors(&theme, ButtonStyle::Primary, rest);
-            assert_eq!(bg, theme.accent_primary, "primary rest = accent fill");
-            assert_eq!(border, None, "accent fill is self-defining — no border");
-            let r = contrast_ratio(fg, bg);
-            assert!(
-                r >= ON_FILL_MIN_CONTRAST,
-                "primary label {fg:?} on {bg:?} is {r:.2}:1, under the {ON_FILL_MIN_CONTRAST}:1 floor",
-            );
-            let (hbg, _, hfg) = face_colors(&theme, ButtonStyle::Primary, hover);
-            assert_eq!(
-                hbg, theme.accent_hover,
-                "primary hover darkens to the accent-hover token"
-            );
-            assert_eq!(
-                hfg, fg,
-                "the label must not change colour under the pointer"
-            );
-        }
+        let mut laid_out = Button::new("save", "Save");
+        let mut tree = TaffyTree::new();
+        let node = laid_out.build_layout(
+            &mut tree,
+            &Theme::dark(),
+            &mut std::collections::HashMap::new(),
+        );
+        tree.compute_layout(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::MaxContent,
+                height: taffy::AvailableSpace::MaxContent,
+            },
+        )
+        .unwrap();
+        laid_out.apply_layout(&tree, node, Point::ZERO);
+        assert!(!laid_out.layout_needs_measure(), "laid out and unchanged");
+        laid_out.set_interaction_environment(
+            crate::interaction::InteractionEnvironment::default().with_touch_modality(),
+        );
+        assert!(
+            laid_out.layout_needs_measure(),
+            "a touch target may be wider"
+        );
+    }
 
-        fn face_colors_danger_is_solid_at_rest_borderless_and_readable() {
-            use crate::a11y::contrast_ratio;
-            let theme = Theme::dark();
-            let rest = ButtonInteract::default();
-            let hover = ButtonInteract {
-                hovered: true,
-                ..Default::default()
-            };
-            let (bg, border, fg) = face_colors(&theme, ButtonStyle::Danger, rest);
-            assert_eq!(
-                bg, theme.tokens.colors.semantic.danger,
-                "danger rest = solid danger"
-            );
-            assert_eq!(border, None);
-            let r = contrast_ratio(fg, bg);
-            assert!(
-                r >= ON_FILL_MIN_CONTRAST,
-                "danger label {fg:?} on {bg:?} is {r:.2}:1, under the {ON_FILL_MIN_CONTRAST}:1 floor",
-            );
-            let (hbg, _, hfg) = face_colors(&theme, ButtonStyle::Danger, hover);
-            assert_ne!(
-                hbg, theme.tokens.colors.semantic.danger,
-                "danger hover lifts off the rest colour for feedback",
-            );
-            let hr = contrast_ratio(hfg, hbg);
-            assert!(
-                hr >= ON_FILL_MIN_CONTRAST,
-                "danger hover label {hfg:?} on {hbg:?} is {hr:.2}:1"
-            );
-            assert_eq!(
-                hfg, fg,
-                "the label must not change colour under the pointer"
-            );
-        }
+    #[test]
+    fn face_colors_per_role_track_state_and_stay_readable() {
+        use crate::a11y::contrast_ratio;
+        let hover = ButtonInteract {
+            hovered: true,
+            ..Default::default()
+        };
+        let press = ButtonInteract {
+            pressed: true,
+            ..Default::default()
+        };
+        let rest = ButtonInteract::default();
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let colors = &theme.tokens.colors;
+            let raised = colors.surfaces.raised;
 
-        /// Transparent at rest with the danger ink as both outline and label;
-        /// under the pointer the theme's opaque hover/active fills, so the ink
-        /// can be measured against every ground it sits on.
-        fn face_colors_danger_outline_is_transparent_at_rest_and_outlined_in_its_ink() {
-            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let rest = face_colors(
-                    &theme,
-                    ButtonStyle::DangerOutline,
-                    ButtonInteract::default(),
-                );
+            // Primary is inverted: primary ink as the fill, never a hue.
+            let (fill, edge, ink) = face_colors(&theme, ButtonRole::Primary, rest);
+            assert_eq!(fill, colors.intent.inverted, "{}", theme.name);
+            assert_eq!(edge, None);
+            assert!(contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST);
+            let (hover_fill, _, hover_ink) = face_colors(&theme, ButtonRole::Primary, hover);
+            assert_eq!(hover_fill, colors.intent.inverted_hover);
+            assert_eq!(
+                hover_ink, ink,
+                "the label does not change under the pointer"
+            );
+            // Pressed reads past hover: rest, hover and press are three
+            // distinct steps, and the label holds across all of them.
+            let (press_fill, _, press_ink) = face_colors(&theme, ButtonRole::Primary, press);
+            assert_eq!(press_fill, colors.inverted_pressed(), "{}", theme.name);
+            assert_ne!(press_fill, hover_fill, "{}", theme.name);
+            let step = |a, b| crate::chrome::shell::lightness_step(a, b);
+            assert!(
+                step(press_fill, fill) > step(hover_fill, fill),
+                "{}: press must move further from rest than hover",
+                theme.name
+            );
+            assert_eq!(press_ink, ink);
+            assert!(contrast_ratio(press_ink, press_fill) >= ON_FILL_MIN_CONTRAST);
+
+            // Secondary is the raised control with its derived edge.
+            let (fill, edge, ink) = face_colors(&theme, ButtonRole::Secondary, rest);
+            assert_eq!(fill, raised);
+            assert_eq!(edge, Some(crate::surface::edge_on(raised)));
+            assert!(contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST);
+            assert_eq!(
+                face_colors(&theme, ButtonRole::Secondary, hover).0,
+                colors.lift_on(raised, 0.5)
+            );
+            assert_eq!(
+                face_colors(&theme, ButtonRole::Secondary, press).0,
+                colors.lift_on(raised, 1.0)
+            );
+
+            // Destructive is the same neutral control lettered in danger ink.
+            for interact in [rest, hover, press] {
+                let (fill, edge, ink) = face_colors(&theme, ButtonRole::Destructive, interact);
+                assert_eq!(fill, face_colors(&theme, ButtonRole::Secondary, interact).0);
+                assert_eq!(edge, Some(crate::surface::edge_on(raised)));
                 assert!(
-                    rest.0.components[3] <= 0.0,
-                    "{}: rest fill is transparent",
+                    contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST,
+                    "{}: danger ink on the neutral face",
                     theme.name
                 );
-                assert_eq!(
-                    rest.1,
-                    Some(rest.2),
-                    "{}: outline is the label ink",
-                    theme.name
-                );
-                let ratio = crate::a11y::contrast_ratio(rest.2, theme.tokens.colors.surfaces.base);
-                assert!(
-                    ratio >= ON_FILL_MIN_CONTRAST,
-                    "{}: danger ink {ratio:.2}:1 on the base surface",
-                    theme.name
-                );
-                let hovered = face_colors(
-                    &theme,
-                    ButtonStyle::DangerOutline,
-                    ButtonInteract {
-                        hovered: true,
-                        ..ButtonInteract::default()
-                    },
-                );
-                assert_eq!(
-                    hovered.0, theme.bg_hover,
-                    "{}: hover tints the fill",
-                    theme.name
-                );
-                assert_eq!(
-                    hovered.2, rest.2,
-                    "{}: the ink does not change under the pointer",
+                assert_ne!(
+                    ink, colors.text_primary,
+                    "{}: reads as destructive",
                     theme.name
                 );
             }
-        }
 
-        face_colors_neutral_tracks_hover_and_press();
-        face_colors_ghost_is_transparent_at_rest_then_tints();
-        face_colors_primary_is_accent_borderless_and_readable();
-        face_colors_danger_is_solid_at_rest_borderless_and_readable();
-        face_colors_danger_outline_is_transparent_at_rest_and_outlined_in_its_ink();
+            // Plain paints nothing at rest and lifts its ground under the pointer.
+            let (fill, edge, ink) = face_colors(&theme, ButtonRole::Plain, rest);
+            assert!(fill.components[3] <= 0.0);
+            assert_eq!(edge, None);
+            assert!(contrast_ratio(ink, colors.surfaces.content) >= ON_FILL_MIN_CONTRAST);
+            assert_eq!(
+                face_colors(&theme, ButtonRole::Plain, hover).0,
+                colors.intent.selection_hover
+            );
+            assert_eq!(
+                face_colors(&theme, ButtonRole::Plain, press).0,
+                colors.intent.selection
+            );
+        }
+    }
+
+    /// The filled danger face exists only in a confirmation step.
+    #[test]
+    fn only_the_confirmation_step_fills_a_destructive_button() {
+        use crate::a11y::contrast_ratio;
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let rect = Rect::new(0.0, 0.0, 120.0, 32.0);
+            let plain = ButtonFace::new(rect, "Delete").role(ButtonRole::Destructive);
+            assert_ne!(plain.colors(&theme).0, theme.tokens.colors.semantic.danger);
+            let confirm = ButtonFace::new(rect, "Delete")
+                .role(ButtonRole::Destructive)
+                .confirming();
+            for face in [
+                confirm.hovered(false),
+                ButtonFace::new(rect, "Delete")
+                    .role(ButtonRole::Destructive)
+                    .confirming()
+                    .hovered(true),
+            ] {
+                let (fill, edge, ink) = face.colors(&theme);
+                assert_eq!(edge, None);
+                assert!(
+                    contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST,
+                    "{}: confirmation label {:.2}:1",
+                    theme.name,
+                    contrast_ratio(ink, fill)
+                );
+            }
+            assert_eq!(
+                ButtonFace::new(rect, "Delete")
+                    .role(ButtonRole::Destructive)
+                    .confirming()
+                    .colors(&theme)
+                    .0,
+                theme.tokens.colors.semantic.danger
+            );
+        }
     }
 
     #[test]
@@ -2835,10 +2820,9 @@ mod tests {
             for name in Theme::ALL {
                 let theme = Theme::named(name).expect("shipped theme resolves");
                 for style in [
-                    ButtonStyle::Primary,
-                    ButtonStyle::Neutral,
-                    ButtonStyle::Danger,
-                    ButtonStyle::Ghost,
+                    ButtonRole::Primary,
+                    ButtonRole::Secondary,
+                    ButtonRole::Destructive,
                 ] {
                     let (bg, border, fg) = face_colors(&theme, style, disabled);
                     assert_eq!(
@@ -2856,6 +2840,12 @@ mod tests {
                         "{name} {style:?}: disabled label is only {ratio:.2}:1 on {bg:?}"
                     );
                 }
+                let (bg, border, _) = face_colors(&theme, ButtonRole::Plain, disabled);
+                assert!(
+                    bg.components[3] <= 0.0,
+                    "{name}: a disabled plain button stays bare"
+                );
+                assert_eq!(border, None);
             }
         }
 
@@ -2866,7 +2856,6 @@ mod tests {
         #[ignore = "developer visual audit writes /tmp/tilo-button-disabled-audit"]
         fn disabled_button_visual_audit() {
             use std::path::Path;
-            use vello::peniko::Color;
 
             let output = Path::new("/tmp/tilo-button-disabled-audit");
             std::fs::create_dir_all(output).expect("visual-audit output directory");
@@ -2878,15 +2867,15 @@ mod tests {
                 let mut scene = Scene::new();
                 let mut text = TextRenderer::new();
                 let faces = [
-                    (ButtonStyle::Primary, "Primary", None),
-                    (ButtonStyle::Neutral, "Secondary", None),
-                    (ButtonStyle::Danger, "Destructive", None),
-                    (ButtonStyle::Primary, "", Some(crate::icons::Icon::Check)),
+                    (ButtonRole::Primary, "Primary", None),
+                    (ButtonRole::Secondary, "Secondary", None),
+                    (ButtonRole::Destructive, "Destructive", None),
+                    (ButtonRole::Primary, "", Some(crate::icons::Icon::Check)),
                 ];
                 for (index, (style, label, icon)) in faces.into_iter().enumerate() {
                     let y = 88.0 + f64::from(u32::try_from(index).expect("four audit rows")) * 86.0;
                     let mut face = ButtonFace::new(Rect::new(80.0, y, 360.0, y + 52.0), label)
-                        .style(style)
+                        .role(style)
                         .disabled(true)
                         .hovered(true)
                         .focused(true);
@@ -2898,28 +2887,28 @@ mod tests {
                 let mut renderer = crate::offscreen::OffscreenRenderer::new(440, 480);
                 renderer.render_png(
                     &scene,
-                    Color::from_rgba8(theme.bg_app.r(), theme.bg_app.g(), theme.bg_app.b(), 255),
+                    theme.tokens.colors.surfaces.content,
                     output.join(format!("{name}.png")),
                 );
             }
         }
 
         fn with_enabled_false_is_reported_by_is_enabled() {
-            let b = Button::new("id", "Go", None).with_enabled(false);
+            let b = Button::new("id", "Go").with_enabled(false);
             assert!(!Widget::is_enabled(&b));
-            let b2 = Button::new("id", "Go", None);
+            let b2 = Button::new("id", "Go");
             assert!(Widget::is_enabled(&b2), "default is enabled");
         }
 
         fn disabled_button_rejects_input() {
             use std::cell::Cell;
             use std::rc::Rc;
-            use winit::event::{DeviceId, ElementState, MouseButton};
+            use winit::event::{ElementState, MouseButton};
 
             let fired = Rc::new(Cell::new(0u32));
             let mut b = {
                 let fired = fired.clone();
-                Button::new("id", "Go", Some("clicked"))
+                Button::new("id", "Go")
                     .on_click(move || fired.set(fired.get() + 1))
                     .with_enabled(false)
             };
@@ -2938,10 +2927,8 @@ mod tests {
             .unwrap();
             b.apply_layout(&tree, node, Point::ZERO);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
+            let device = winit::event::DeviceId::dummy();
+            let mut at_node = crate::testing::Dispatch::new().layout(&tree, node);
             let mut focus = None;
             let mut handled = false;
 
@@ -2961,28 +2948,14 @@ mod tests {
                     button: MouseButton::Left,
                 },
             ] {
-                b.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: &mut doc,
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                let sent = at_node.send(&mut b, &ev);
+                handled |= sent.handled;
+                focus = sent.focus_target.or(focus);
             }
 
             assert_eq!(fired.get(), 0, "disabled button must not fire on_click");
             assert!(focus.is_none(), "disabled button must not request focus");
             assert!(!handled, "disabled button must not swallow input");
-            assert!(
-                doc.get(&root, "clicked").unwrap().is_none(),
-                "disabled button must not write the CRDT path"
-            );
         }
 
         disabled_faces_are_neutral_bordered_and_readable_in_every_theme();
@@ -2995,13 +2968,12 @@ mod tests {
     fn button_face_builder_paints_fill_label_and_icon_only_faces() {
         fn button_face_builder_sets_style_and_state() {
             let f = ButtonFace::new(Rect::new(0.0, 0.0, 80.0, 32.0), "Send")
-                .primary()
+                .role(ButtonRole::Primary)
                 .hovered(true)
-                .weight(crate::text_render::TextWeight::Bold)
-                .text_size(13.0);
+                .control_size(ControlSize::Small);
             let theme = Theme::dark();
             let (bg, border, fg) = f.colors(&theme);
-            assert_eq!(bg, theme.accent_hover);
+            assert_eq!(bg, theme.tokens.colors.intent.inverted_hover);
             assert_eq!(border, None);
             // Resolves through `face_colors`, so it carries the same derived
             // label rather than a literal of its own.
@@ -3009,7 +2981,7 @@ mod tests {
                 fg,
                 face_colors(
                     &theme,
-                    ButtonStyle::Primary,
+                    ButtonRole::Primary,
                     ButtonInteract {
                         hovered: true,
                         ..Default::default()
@@ -3038,7 +3010,8 @@ mod tests {
                 Affine::IDENTITY,
                 &mut tr,
                 &theme,
-                &ButtonFace::new(Rect::new(10.0, 10.0, 110.0, 46.0), "Go").primary(),
+                &ButtonFace::new(Rect::new(10.0, 10.0, 110.0, 46.0), "Go")
+                    .role(ButtonRole::Primary),
             );
             let fills = scene
                 .encoding()
@@ -3095,7 +3068,7 @@ mod tests {
         fn icon_only_button_speaks_its_tooltip_under_the_pseudo_locale() {
             use crate::i18n::{I18nManager, PseudoLocale};
             I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
-            let button = Button::new("close", "", None)
+            let button = Button::new("close", "")
                 .with_icon(crate::icons::Icon::X)
                 .tooltip("Close");
             let name = Widget::accessibility(&button).and_then(|node| node.name);
@@ -3119,7 +3092,7 @@ mod tests {
             let mut text = TextRenderer::new();
             let rect = Rect::new(100.0, 0.0, 220.0, 40.0);
             let label = "Standard wiederherstellen";
-            let (natural, _) = text.measure(label, 14.0, None);
+            let (natural, _) = text.measure_style(label, None, &theme.text(TextRole::Body));
             assert!(
                 f64::from(natural) > rect.width(),
                 "the fixture must overflow"
@@ -3130,7 +3103,7 @@ mod tests {
                 Affine::IDENTITY,
                 &mut text,
                 &theme,
-                &ButtonFace::new(rect, label).text_size(14.0),
+                &ButtonFace::new(rect, label).control_size(ControlSize::Large),
             );
             let origins = glyph_origins(&scene);
             assert!(!origins.is_empty(), "the elided label still paints");
@@ -3163,77 +3136,27 @@ mod tests {
     }
 
     #[test]
-    fn default_footprint_is_120_by_40_and_grows_with_the_measured_label() {
-        /// The shipped default footprint is untouched at 1×: a base-size label
-        /// shapes a 17.5 px line and "Save" is far narrower than the face, so the
-        /// measured floor resolves to exactly `DEFAULT_SIZE`.
-        fn default_footprint_is_exactly_the_shipped_120_by_40_at_one_x() {
-            let rect = measured_button_rect(Button::new("save", "Save", None), 1.0);
-            assert_eq!(
-                (rect.width(), rect.height()),
-                (120.0, 40.0),
-                "default button at 1×: {rect:?}"
-            );
+    fn the_intrinsic_footprint_follows_the_label_and_never_moves_it() {
+        /// A short label stands at the labelled minimum, twice the height.
+        fn a_short_label_is_at_the_labelled_minimum() {
+            let rect = measured_button_rect(Button::new("save", "Save"), 1.0);
+            assert_eq!((rect.width(), rect.height()), (64.0, 32.0), "{rect:?}");
         }
 
-        /// At 2× text the label line is 35 px; a 40 px face would leave it 2.5 px
-        /// of slack. The default footprint grows from the measured line plus the
-        /// content padding — the `content_sized` rule — so both auto-height
-        /// modes agree, and the width holds at 120 for a label that fits.
-        fn default_footprint_grows_from_the_measured_line_at_two_x() {
-            let theme = Theme::dark().with_text_scale(2.0);
-            let mut text = TextRenderer::new();
-            text.set_text_scale(2.0);
-            let (label_w, line_h) = text.measure(
-                "Save",
-                renderer_label_size(theme.tokens.typography.scale.base, &text),
-                None,
-            );
-            assert!((line_h - 35.0).abs() < 1e-3, "2× base line: {line_h}");
-            let expected_height = (line_h + theme.padding_standard).ceil();
-            assert!(expected_height > 40.0);
-            assert!(
-                label_w + FIT_SIDE_PADDING * 2.0 < 120.0,
-                "fixture label must fit 120"
-            );
-
-            let rect = measured_button_rect(Button::new("save", "Save", None), 2.0);
-            assert!(
-                (rect.height() - f64::from(expected_height)).abs() < 1e-6,
-                "2× default height {} should be the 35 px line + padding = {expected_height}",
-                rect.height()
-            );
-            assert!(
-                (rect.width() - 120.0).abs() < 1e-6,
-                "a label that fits keeps the 120 px default, got {}",
-                rect.width()
-            );
-        }
-
-        /// A label wider than the face used to paint outside it; the default
-        /// footprint now widens to hold it (label + the fit-content side
-        /// allowance) — the only case in which a default button leaves 120 at 1×.
-        fn a_wide_label_widens_the_default_button_instead_of_overflowing_it() {
+        /// A long label widens the button to hold it, never elided while the
+        /// parent has room.
+        fn a_wide_label_widens_the_button_instead_of_overflowing_it() {
             let label = "Remove every remote connection";
+            let theme = Theme::dark();
             let mut text = TextRenderer::new();
-            let (label_w, _) = text.measure(
-                label,
-                renderer_label_size(Theme::dark().tokens.typography.scale.base, &text),
-                None,
-            );
-            let expected = (label_w + FIT_SIDE_PADDING * 2.0).ceil();
+            let (label_w, _) = text.measure_style(label, None, &theme.text(TextRole::Label));
+            let expected = (f64::from(label_w) + 2.0 * f64::from(theme.tokens.spacing.s3)).ceil();
+            let rect = measured_button_rect(Button::new("remove", label), 1.0);
             assert!(
-                expected > 120.0,
-                "fixture label must exceed the default face"
+                (rect.width() - expected).abs() < 1e-6,
+                "{rect:?} vs {expected}"
             );
-
-            let rect = measured_button_rect(Button::new("remove", label, None), 1.0);
-            assert!(
-                (rect.width() - f64::from(expected)).abs() < 1e-6,
-                "width {} should be the measured label + 2×{FIT_SIDE_PADDING} = {expected}",
-                rect.width()
-            );
-            assert_eq!(rect.height(), 40.0, "the height stays at the shipped 40");
+            assert_eq!(rect.height(), 32.0);
         }
 
         /// Hover, press, focus and disabled recolour the face; none of them may
@@ -3275,17 +3198,16 @@ mod tests {
                 ),
             ];
             for style in [
-                ButtonStyle::Neutral,
-                ButtonStyle::Primary,
-                ButtonStyle::Danger,
-                ButtonStyle::Ghost,
-                ButtonStyle::DangerOutline,
+                ButtonRole::Secondary,
+                ButtonRole::Primary,
+                ButtonRole::Destructive,
+                ButtonRole::Plain,
             ] {
                 let mut reference: Option<[f32; 2]> = None;
                 for (name, interact) in states {
                     let mut scene = Scene::new();
                     let face = ButtonFace::new(rect, "Delete")
-                        .style(style)
+                        .role(style)
                         .hovered(interact.hovered)
                         .pressed(interact.pressed)
                         .focused(interact.focused)
@@ -3303,16 +3225,15 @@ mod tests {
             }
         }
 
-        default_footprint_is_exactly_the_shipped_120_by_40_at_one_x();
-        default_footprint_grows_from_the_measured_line_at_two_x();
-        a_wide_label_widens_the_default_button_instead_of_overflowing_it();
+        a_short_label_is_at_the_labelled_minimum();
+        a_wide_label_widens_the_button_instead_of_overflowing_it();
         interaction_states_do_not_move_the_face_or_its_label();
     }
 
     #[test]
-    fn pointer_click_fires_callback_and_writes_click_value() {
+    fn pointer_click_fires_the_callback() {
         fn cursor_shape_is_pointer_over_button() {
-            let mut b = Button::new("id", "Go", None);
+            let mut b = Button::new("id", "Go");
             let mut tree = TaffyTree::<()>::new();
             let mut node_map = std::collections::HashMap::new();
             let theme = Theme::dark();
@@ -3342,12 +3263,12 @@ mod tests {
         fn on_click_callback_fires_on_release_over_button() {
             use std::cell::Cell;
             use std::rc::Rc;
-            use winit::event::{DeviceId, ElementState, MouseButton};
+            use winit::event::{ElementState, MouseButton};
 
             let fired = Rc::new(Cell::new(0u32));
             let mut b = {
                 let fired = fired.clone();
-                Button::new("id", "Go", None).on_click(move || fired.set(fired.get() + 1))
+                Button::new("id", "Go").on_click(move || fired.set(fired.get() + 1))
             };
 
             let mut tree = TaffyTree::<()>::new();
@@ -3364,26 +3285,10 @@ mod tests {
             .unwrap();
             b.apply_layout(&tree, node, Point::ZERO);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
+            let device = winit::event::DeviceId::dummy();
+            let mut at_node = crate::testing::Dispatch::new().layout(&tree, node);
             let mut dispatch = |b: &mut Button, ev: WindowEvent| {
-                let mut handled = false;
-                let mut focus = None;
-                b.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &mods,
-                        state: &mut doc,
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &tree,
-                    },
-                );
+                at_node.send(b, &ev);
             };
 
             dispatch(
@@ -3413,42 +3318,15 @@ mod tests {
             assert_eq!(fired.get(), 1, "fired once on release over the button");
         }
 
-        fn click_value_writes_a_string_command() {
-            let mut button = Button::new("id", "Apply", Some("command"))
-                .with_click_value("apply")
-                .fit_content(34.0);
-            let mut doc = AutoCommit::new();
-            button.activate(&mut doc, &automerge::ROOT);
-
-            let (value, _) = doc.get(&automerge::ROOT, "command").unwrap().unwrap();
-            assert_eq!(value.as_str(), Some("apply"));
-        }
-
-        fn semantic_activation_uses_the_same_click_value_contract() {
-            let mut button = Button::new("id", "Apply", Some("command")).with_click_value("apply");
-            let mut doc = AutoCommit::new();
-
-            assert!(button.perform_action(
-                &crate::a11y::Action::Activate,
-                &mut doc,
-                &automerge::ROOT,
-            ));
-
-            let (value, _) = doc.get(&automerge::ROOT, "command").unwrap().unwrap();
-            assert_eq!(value.as_str(), Some("apply"));
-        }
-
         cursor_shape_is_pointer_over_button();
         on_click_callback_fires_on_release_over_button();
-        click_value_writes_a_string_command();
-        semantic_activation_uses_the_same_click_value_contract();
     }
 
     #[test]
     fn accessibility_reports_role_name_state_and_icon_only_naming() {
         fn accessibility_reports_button_role_name_and_state() {
             use crate::a11y::Role;
-            let b = Button::new("id", "Save", None);
+            let b = Button::new("id", "Save");
             let node = Widget::accessibility(&b).expect("button is not presentational");
             assert_eq!(node.role, Role::Button);
             assert_eq!(node.name.as_deref(), Some("Save"));
@@ -3459,7 +3337,7 @@ mod tests {
         }
 
         fn accessibility_reflects_disabled_and_focus() {
-            let mut b = Button::new("id", "Save", None).with_enabled(false);
+            let mut b = Button::new("id", "Save").with_enabled(false);
             b.set_focus(true);
             let node = Widget::accessibility(&b).unwrap();
             assert!(node.state.disabled);
@@ -3467,13 +3345,13 @@ mod tests {
         }
 
         fn accessibility_icon_only_button_without_name_is_silent() {
-            let b = Button::new("id", "", None).with_icon(crate::icons::Icon::Check);
+            let b = Button::new("id", "").with_icon(crate::icons::Icon::Check);
             let node = Widget::accessibility(&b).unwrap();
             assert_eq!(node.name, None);
         }
 
         fn accessibility_icon_only_button_uses_accessible_name() {
-            let b = Button::new("id", "", None)
+            let b = Button::new("id", "")
                 .with_icon(crate::icons::Icon::Check)
                 .with_accessible_name("Confirm");
             let node = Widget::accessibility(&b).unwrap();
@@ -3481,7 +3359,7 @@ mod tests {
         }
 
         fn accessibility_visible_label_wins_over_accessible_name() {
-            let b = Button::new("id", "Save", None).with_accessible_name("Persist");
+            let b = Button::new("id", "Save").with_accessible_name("Persist");
             let node = Widget::accessibility(&b).unwrap();
             assert_eq!(node.name.as_deref(), Some("Save"));
         }
@@ -3496,16 +3374,16 @@ mod tests {
     #[test]
     fn tooltip_naming_precedence_and_compact_toolbar_semantics() {
         fn tooltip_is_exposed_to_the_host() {
-            let b = Button::new("id", "", None)
+            let b = Button::new("id", "")
                 .with_icon(crate::icons::Icon::Search)
                 .tooltip("Search");
             assert_eq!(Widget::tooltip(&b), Some("Search"));
-            let plain = Button::new("id", "Save", None);
+            let plain = Button::new("id", "Save");
             assert_eq!(Widget::tooltip(&plain), None, "no tooltip unless attached");
         }
 
         fn compact_toolbar_presentation_round_trips_authored_semantics() {
-            let mut button = Button::new("publish", "Publish", None)
+            let mut button = Button::new("publish", "Publish")
                 .with_icon(crate::icons::Icon::CloudDownload)
                 .with_accessible_name("Publish document")
                 .tooltip("Publish this document now");
@@ -3539,7 +3417,7 @@ mod tests {
         }
 
         fn icon_only_tooltip_doubles_as_accessible_name() {
-            let b = Button::new("id", "", None)
+            let b = Button::new("id", "")
                 .with_icon(crate::icons::Icon::Search)
                 .tooltip("Search");
             let node = Widget::accessibility(&b).unwrap();
@@ -3547,7 +3425,7 @@ mod tests {
         }
 
         fn explicit_accessible_name_wins_over_tooltip() {
-            let b = Button::new("id", "", None)
+            let b = Button::new("id", "")
                 .with_icon(crate::icons::Icon::MoreHorizontal)
                 .with_accessible_name("View options")
                 .tooltip("More");
@@ -3557,11 +3435,11 @@ mod tests {
 
         fn icon_only_effect_publishes_its_spoken_name() {
             let doc = AutoCommit::new();
-            let named = Button::new("private", "", None)
+            let named = Button::new("private", "")
                 .with_icon(crate::icons::Icon::Shield)
                 .with_accessible_name("New Private Window")
                 .on_effect(|| {});
-            let tooltip_after = Button::new("search", "", None)
+            let tooltip_after = Button::new("search", "")
                 .with_icon(crate::icons::Icon::Search)
                 .on_effect(|| {})
                 .tooltip("Search");
@@ -3583,5 +3461,85 @@ mod tests {
         icon_only_tooltip_doubles_as_accessible_name();
         explicit_accessible_name_wins_over_tooltip();
         icon_only_effect_publishes_its_spoken_name();
+    }
+
+    #[test]
+    fn keys_plain_ink_and_bound_state() {
+        fn a_key_rests_on_a_faint_lift_with_a_title_label() {
+            let theme = Theme::dark();
+            let ground = theme.tokens.colors.surfaces.content;
+            let (rest, edge, _) = face_colors(&theme, ButtonRole::Key, ButtonInteract::default());
+            assert_ne!(rest, ground, "a key is lifted off its ground");
+            assert!(edge.is_none());
+            let (hover, _, _) = face_colors(
+                &theme,
+                ButtonRole::Key,
+                ButtonInteract {
+                    hovered: true,
+                    ..ButtonInteract::default()
+                },
+            );
+            assert_ne!(hover, rest);
+            let metrics = FaceMetrics::of_role(ControlSize::Regular, ButtonRole::Key, &theme);
+            assert_eq!(metrics.label_style, theme.text(TextRole::Title));
+        }
+
+        fn a_plain_label_sits_on_its_layout_edge() {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let label = f64::from(
+                text.measure_style("Show details", None, &theme.text(TextRole::Label))
+                    .0,
+            );
+            let plain = measured_button_rect(
+                Button::new("details", "Show details").role(ButtonRole::Plain),
+                1.0,
+            );
+            let secondary = measured_button_rect(Button::new("details", "Show details"), 1.0);
+            assert!(
+                (plain.width() - label.ceil()).abs() <= 1.0,
+                "a plain button is as wide as its ink: {plain:?} vs {label}"
+            );
+            assert!(secondary.width() > plain.width());
+            let mut button = Button::new("details", "Show details").role(ButtonRole::Plain);
+            button.metrics = FaceMetrics::of(ControlSize::Regular, &theme);
+            button.apply_layout_external(plain);
+            let hit = button.hit_rect();
+            assert!(
+                hit.x0 < plain.x0 && hit.x1 > plain.x1,
+                "the hit area reaches out"
+            );
+        }
+
+        fn closed_glyphs_fill_when_on() {
+            assert!(fills_when_on(crate::icons::Icon::Star));
+            assert!(fills_when_on(crate::icons::Icon::Pin));
+            assert!(!fills_when_on(crate::icons::Icon::Refresh));
+        }
+
+        fn icons_grow_with_the_text_scale() {
+            let one = FaceMetrics::of(ControlSize::Regular, &Theme::dark());
+            let two = FaceMetrics::of(ControlSize::Regular, &Theme::dark().with_text_scale(2.0));
+            assert!(two.icon > one.icon);
+            assert!(two.icon <= two.height);
+        }
+
+        fn enabled_follows_its_state_and_bounds_are_spoken() {
+            let can_save = crate::LocalState::new(false);
+            let mut button = Button::new("save", "Save").enabled_from(&can_save);
+            assert!(!Widget::is_enabled(&button));
+            can_save.set(true);
+            Widget::sync(&mut button, &AutoCommit::new(), &automerge::ROOT);
+            assert!(Widget::is_enabled(&button));
+            button.apply_layout_external(Rect::new(4.0, 8.0, 84.0, 40.0));
+            let node = Widget::accessibility(&button).expect("semantics");
+            assert!(node.bounds.is_some());
+        }
+
+        a_key_rests_on_a_faint_lift_with_a_title_label();
+        a_plain_label_sits_on_its_layout_edge();
+        closed_glyphs_fill_when_on();
+        icons_grow_with_the_text_scale();
+        enabled_follows_its_state_and_bounds_are_spoken();
     }
 }

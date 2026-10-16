@@ -7,7 +7,7 @@
 //! Every call is async: the UI spawns it on the app runtime
 //! (`ui::rt::app()`) and receives the outcome through its wake mechanism.
 
-use collab_types::{
+use fs_protocol::{
     RECIPIENT_CONTROL_FRAMING, RECIPIENT_CONTROL_VERSION, RecipientControlOperationV1,
     RecipientControlRequestV1, RecipientControlResponseV1, RecipientControlResultV1,
     RecipientSubscriptionStatusV1,
@@ -17,6 +17,46 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use wire_frame::FrameError;
 
 use crate::i18n::{arg, t, t_args};
+
+/// How a received share link starts: the recipient service decodes the rest.
+pub const LINK_SCHEME: &str = "tilo-file://";
+
+/// The launch switch that hands Files a received link on standard input,
+/// which keeps the bearer secret out of the process list.
+pub const STDIN_FLAG: &str = "--open-share-stdin";
+
+/// The longest received link Files reads.
+const MAX_LINK_BYTES: usize = 16 * 1024;
+
+/// Read one received link from `input` (standard input for
+/// [`STDIN_FLAG`]).
+///
+/// # Errors
+///
+/// Returns a localized reason when the input cannot be read, is too long,
+/// is not text or is empty.
+pub fn read_link(input: impl std::io::Read) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    if input
+        .take((MAX_LINK_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return Err(crate::i18n::t("files-received-link-read-failed"));
+    }
+    if bytes.len() > MAX_LINK_BYTES {
+        return Err(crate::i18n::t("files-received-link-too-large"));
+    }
+    let Ok(uri) = String::from_utf8(bytes) else {
+        return Err(crate::i18n::t("files-received-link-invalid-text"));
+    };
+    let uri = uri.trim_end_matches(['\r', '\n']);
+    if uri.is_empty() {
+        return Err(crate::i18n::t("files-received-link-empty"));
+    }
+    Ok(uri.to_owned())
+}
 
 /// Admit a copied bearer link through the inherited recipient service.
 ///
@@ -34,27 +74,6 @@ pub async fn admit_link(uri: String) -> Result<RecipientSubscriptionStatusV1, St
                 &[arg("code", format!("{code:?}"))],
             )),
             RecipientControlResultV1::Status(_) => Err(t("files-received-wrong-response")),
-        })
-}
-
-/// Retry one previously admitted received-file subscription.
-///
-/// # Errors
-///
-/// Returns a localized error when the service is unavailable, refuses the
-/// retry, or returns an invalid response.
-pub async fn retry(
-    key: collab_types::RecipientSubscriptionKeyV1,
-) -> Result<RecipientSubscriptionStatusV1, String> {
-    transact(RecipientControlOperationV1::Retry { key })
-        .await
-        .and_then(|response| match response.result {
-            RecipientControlResultV1::Status(status) => Ok(status),
-            RecipientControlResultV1::Error { code } => Err(t_args(
-                "files-received-retry-refused",
-                &[arg("code", format!("{code:?}"))],
-            )),
-            RecipientControlResultV1::Admitted { .. } => Err(t("files-received-wrong-response")),
         })
 }
 
@@ -76,8 +95,8 @@ async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
         protocol_version: RECIPIENT_CONTROL_VERSION,
         operation,
     };
-    let bytes =
-        collab_types::canonical_bytes(&request).map_err(|_| t("files-received-encode-failed"))?;
+    let bytes = fs_protocol::canonical::canonical_bytes(&request)
+        .map_err(|_| t("files-received-encode-failed"))?;
     let frame = RECIPIENT_CONTROL_FRAMING
         .encode(&bytes)
         .map_err(|_| t("files-received-request-too-large"))?;
@@ -97,7 +116,7 @@ async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
         Err(FrameError::Truncated) => return Err(t("files-received-response-truncated")),
         Ok(None) | Err(_) => return Err(t("files-received-no-response")),
     };
-    collab_types::canonical::from_canonical_bytes(&response)
+    fs_protocol::canonical::from_canonical_bytes(&response)
         .map_err(|_| t("files-received-response-invalid"))
 }
 
@@ -113,7 +132,8 @@ fn connected_service_stream() -> Result<local_socket::Stream, String> {
     })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
@@ -129,15 +149,15 @@ mod tests {
         runtime.block_on(async {
             let (mut client, mut service) = tokio::io::duplex(64 * 1024);
             let operation = RecipientControlOperationV1::AdmitV2 { uri: "u".into() };
-            let body = collab_types::canonical_bytes(&RecipientControlRequestV1 {
+            let body = fs_protocol::canonical::canonical_bytes(&RecipientControlRequestV1 {
                 protocol_version: RECIPIENT_CONTROL_VERSION,
                 operation: operation.clone(),
             })
             .unwrap();
-            let response = collab_types::canonical_bytes(&RecipientControlResponseV1 {
+            let response = fs_protocol::canonical::canonical_bytes(&RecipientControlResponseV1 {
                 protocol_version: RECIPIENT_CONTROL_VERSION,
                 result: RecipientControlResultV1::Error {
-                    code: collab_types::RecipientControlErrorCode::NotFound,
+                    code: fs_protocol::RecipientControlErrorCode::NotFound,
                 },
             })
             .unwrap();
@@ -152,7 +172,7 @@ mod tests {
             assert!(matches!(
                 decoded.result,
                 RecipientControlResultV1::Error {
-                    code: collab_types::RecipientControlErrorCode::NotFound
+                    code: fs_protocol::RecipientControlErrorCode::NotFound
                 }
             ));
             let mut sent = vec![0_u8; 4 + body.len()];
@@ -163,5 +183,19 @@ mod tests {
             service.write_all(&[0, 0, 0, 0]).await.unwrap();
             assert!(exchange(&mut client, operation).await.is_err());
         });
+    }
+
+    /// A link on standard input is read whole, without its line ending;
+    /// empty, oversized and non-text input is refused.
+    #[test]
+    fn a_link_on_standard_input_is_read_and_checked() {
+        crate::i18n::set_locale("en-US");
+        assert_eq!(
+            read_link(&b"tilo-file://v2/abc#key\n"[..]).unwrap(),
+            "tilo-file://v2/abc#key"
+        );
+        assert!(read_link(&b"\n"[..]).is_err());
+        assert!(read_link(&[0xff, 0xfe][..]).is_err());
+        assert!(read_link(&vec![b'a'; MAX_LINK_BYTES + 1][..]).is_err());
     }
 }

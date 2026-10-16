@@ -5,34 +5,11 @@
 //! See `crates/sdk/ui-core/src/widget/slash_menu.rs` and `block_editor.rs` for the
 //! unit-level pins on each part of the flow.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use tilo_ui::widget::{BlockEditor, BlockKind};
-use winit::event::{ElementState, KeyEvent, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey, SmolStr};
+use winit::event::WindowEvent;
+use winit::keyboard::{Key, NamedKey, SmolStr};
 
-fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = logical_key;
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = text.map(SmolStr::new);
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
+use tilo_ui::synthetic_input::key_press;
 
 fn char_press(c: &str) -> WindowEvent {
     key_press(Key::Character(SmolStr::new(c)), Some(c))
@@ -59,7 +36,7 @@ fn slash_menu_converts_the_focused_block_or_leaves_it_on_escape() {
             "filter `h2` should isolate Heading 2"
         );
         assert_eq!(
-            editor.slash_menu().highlighted_kind(),
+            editor.slash_menu().highlighted(),
             Some(&BlockKind::Heading(2)),
         );
 

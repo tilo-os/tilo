@@ -28,9 +28,12 @@ pub struct RemoteSeat {
     /// separate from keyboard focus so leaving a tile cannot kill a caret.
     pub pointer_surface: Option<SurfaceId>,
     /// The surface this peer may send keyboard input to. New viewers update
-    /// it with `KeyboardFocus`; `PointerEnter` also sets it for compatibility
-    /// with older viewers. Pointer leave deliberately does not clear it.
+    /// it with `KeyboardFocus`; `PointerEnter` sets it only until the viewer
+    /// first uses that protocol. Pointer leave deliberately does not clear it.
     pub focused_surface: Option<SurfaceId>,
+    /// Once an accepted `KeyboardFocus` packet arrives, hover must never
+    /// reclaim the keyboard, including after an explicit blur.
+    pub(super) explicit_keyboard_focus: bool,
     /// Keys this peer currently holds, in evdev keycode space. The target
     /// client still sees one Wayland seat; this attribution exists solely so
     /// one collaborator cannot release another's held key or leave a modifier
@@ -48,13 +51,13 @@ impl RemoteSeat {
         Self::default()
     }
 
-    /// Record a `PointerEnter` for the peer. Returns the previously focused
+    /// Record a keyboard target for the peer. Returns the previously focused
     /// surface, if any.
     pub fn enter(&mut self, surface: SurfaceId) -> Option<SurfaceId> {
         self.focused_surface.replace(surface)
     }
 
-    /// Record a `PointerLeave` for the peer. Returns the previously
+    /// Release the peer's keyboard target. Returns the previously
     /// focused surface, if any.
     pub fn leave(&mut self) -> Option<SurfaceId> {
         self.focused_surface.take()
@@ -118,6 +121,16 @@ impl RemoteSeats {
         self.seats.get(&peer)
     }
 
+    /// Whether a press of `keycode` by `peer` repeats a key it holds: the
+    /// sender's auto-repeat. Modifiers never repeat.
+    pub fn repeats(&self, peer: PeerId, keycode: u32) -> bool {
+        !is_modifier_key(keycode)
+            && self
+                .seats
+                .get(&peer)
+                .is_some_and(|seat| seat.pressed_keys.contains(&keycode))
+    }
+
     /// Fold one peer's key transition into the single seat presented to a
     /// legacy app. Returns `true` only when the physical Wayland seat should
     /// receive the transition.
@@ -173,6 +186,14 @@ impl RemoteSeats {
                 false
             }
         }
+    }
+
+    /// Whether [`Self::local_key_transition`] would let the physical
+    /// keyboard's release of `keycode` reach apps now: it holds the key and
+    /// no one else does.
+    pub fn local_release_reaches_apps(&self, keycode: u32) -> bool {
+        self.local_pressed_keys.contains(&keycode)
+            && self.key_holders.get(&keycode).copied() == Some(1)
     }
 
     /// Retire every key owned by the physical keyboard. Returned transitions

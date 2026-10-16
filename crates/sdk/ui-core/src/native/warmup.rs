@@ -1,10 +1,10 @@
 //! Cold-start warmup for expensive first-frame work.
 //!
-//! Two things dominate time-to-first-paint on a cold process:
-//! `cosmic_text::FontSystem::new()` mmaps every installed font face (up to
-//! ~1s on release builds), and `vello::Renderer::new()` compiles ~30 WGSL
-//! pipelines against the live wgpu device, stalling whichever thread runs
-//! it. Only the fonts side ships enabled by default:
+//! Two things dominate time-to-first-paint on a cold process: loading the
+//! font system (verifying the font catalog and mapping every installed face,
+//! up to ~1s on release builds), and `vello::Renderer::new()`, which compiles
+//! ~30 WGSL pipelines against the live wgpu device, stalling whichever thread
+//! runs it. Only the fonts side ships enabled by default:
 //!
 //! | Configuration          | median first-paint | notes                 |
 //! |-------------------------|--------------------|-----------------------|
@@ -16,16 +16,16 @@
 //! mutex through its scratch render, blocking main's `OffscreenRenderer::new`
 //! on the same lock — left opt-in behind `TILO_STARTUP_WARM_VELLO`. Fonts
 //! wins because it never touches the GPU: it shapes strings on a background
-//! thread, warming the OS page cache so the compositor's own
-//! `FontSystem::new` hits already-resident pages.
+//! thread, building the process's shared font database so the compositor's own
+//! `configured_font_system` call finds it ready.
 //!
 //! `TILO_STARTUP_WARM=off` (also `0`/`false`/`no`) disables warmup for A/B
 //! measurement. Stages mark through [`tilo_startup_metrics::span`]:
 //! `warmup-spawn`, `warmup-fonts`(-end), `warmup-vello`(-end).
 //!
-//! Not persistence — a persistent `wgpu::PipelineCache` would extend the
-//! win across restarts, but needs driver support not ubiquitous on the
-//! Mesa releases Tilo ships against, and wouldn't help first boot at all.
+//! Not persistence: compiled pipelines are kept across launches by
+//! `crate::pipeline_cache` (the app's own) and `crate::pipeline_seed` (the
+//! session's), where the backend has pipeline caches.
 #![allow(
     clippy::disallowed_methods,
     reason = "native host runner: cold-start warmup overlaps font and GPU setup on a thread"
@@ -124,7 +124,7 @@ pub fn spawn_warmup(no_vello: bool) -> Option<thread::JoinHandle<()>> {
         .name("tilo-startup-warmup".into())
         .spawn(move || {
             tilo_startup_metrics::span("warmup-fonts", || {
-                let mut fs = FontSystem::new();
+                let mut fs = crate::text_render::configured_font_system();
                 let _ = shape_canonical_strings(&mut fs);
             });
             if no_vello {

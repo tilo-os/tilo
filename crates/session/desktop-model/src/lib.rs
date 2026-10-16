@@ -1,7 +1,7 @@
 //! The canonical desktop model shared by every host.
 //!
-//! `Workspace → Strip → WindowGroup → Tab`, plus the collaborators,
-//! capabilities and tasks a workspace carries. Everything here is plain data
+//! `Workspace → Strip → WindowGroup → Tab`, plus the collaborators, grants,
+//! sandbox and tasks a workspace carries. Everything here is plain data
 //! and pure functions over it: no windowing, rendering, transport, async
 //! runtime or host filesystem. Hosts own id minting (see [`IdMinter`]),
 //! persistence and admission of peer changes.
@@ -10,24 +10,15 @@
 //! writes, and [`commands`] the vocabulary a desktop surface uses to ask a
 //! room's topology owner for a change, with the owner's pure reduction.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod app;
 pub mod apps;
 pub mod capability;
 pub mod collaborator;
 pub mod commands;
 pub mod desktop_doc;
+pub mod first_party;
 pub mod grants;
+pub mod history;
 pub mod ids;
 pub mod layout;
 pub mod partition;
@@ -50,18 +41,24 @@ pub use ids::{
     FileId, GroupId, IdMinter, MintIds, PEER_ID_COUNTER_MASK, PEER_ID_SALT_SHIFT, RoomId, StripId,
     TabId, TabRef, WorkspaceId, compose_id, counter_of, mint_in_namespace, peer_salt_of,
 };
-pub use layout::{Strip, Tab, TileContent, WindowGroup};
+pub use layout::{MissingApp, Strip, Tab, TileContent, WindowGroup};
 pub use partition::{Display, OutputPartition};
 pub use shared_surfaces::SharedSurfaces;
 pub use task::{
-    WorkspaceEffectReceipt, WorkspaceTask, WorkspaceTaskAuditEvent, WorkspaceTaskResource,
+    MAX_WORKSPACE_TASK_DIRECTION_BYTES, MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
+    MAX_WORKSPACE_TASK_SUMMARY_BYTES, TASK_KIND, WorkspaceAgentRequest, WorkspaceEffectReceipt,
+    WorkspaceTask, WorkspaceTaskActiveRun, WorkspaceTaskApproval, WorkspaceTaskAuditEvent,
+    WorkspaceTaskControl, WorkspaceTaskDirection, WorkspaceTaskDirectionApplied,
+    WorkspaceTaskExecution, WorkspaceTaskExecutionAuthority, WorkspaceTaskExecutionPhase,
+    WorkspaceTaskMutationReceipt, WorkspaceTaskMutationResult, WorkspaceTaskResource,
     WorkspaceTaskRoute, WorkspaceTaskStatus,
 };
 pub use topology::{DropTarget, GroupShape, RemovedTab, TabMove};
 pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};
 pub use width::WindowWidth;
 pub use workspace::{
-    APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, PROFILE_ASSIGN_ACTION_ID,
-    PROFILE_SAVE_ACTION_ID, PermissionProfileMutationError, UserId, WORKSPACE_GOVERNANCE_APP_ID,
-    Workspace, WorkspaceDefaultError, role_from_id, role_id,
+    APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, GRANT_ACTION_ID,
+    PRESET_ASSIGN_ACTION_ID, PRESET_SAVE_ACTION_ID, PresetMutationError, REVOKE_ACTION_ID, UserId,
+    WORKSPACE_GOVERNANCE_APP_ID, Workspace, WorkspaceDefaultError, context_at, governance_of,
+    governance_resource_id, preset_assign_node, role_from_id, role_id, session_id, task_bound,
 };

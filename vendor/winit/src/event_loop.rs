@@ -213,7 +213,10 @@ impl<T> EventLoop<T> {
     /// Start building a new event loop, with the given type as the user event
     /// type.
     pub fn with_user_event() -> EventLoopBuilder<T> {
-        EventLoopBuilder { platform_specific: Default::default(), _p: PhantomData }
+        EventLoopBuilder {
+            platform_specific: Default::default(),
+            _p: PhantomData,
+        }
     }
 
     /// See [`run_app`].
@@ -262,20 +265,25 @@ impl<T> EventLoop<T> {
     #[inline]
     #[cfg(not(all(web_platform, target_feature = "exception-handling")))]
     pub fn run_app<A: ApplicationHandler<T>>(self, app: &mut A) -> Result<(), EventLoopError> {
-        self.event_loop.run(|event, event_loop| dispatch_event_for_app(app, event_loop, event))
+        self.event_loop
+            .run(|event, event_loop| dispatch_event_for_app(app, event_loop, event))
     }
 
     /// Creates an [`EventLoopProxy`] that can be used to dispatch user events
     /// to the main event loop, possibly from another thread.
     pub fn create_proxy(&self) -> EventLoopProxy<T> {
-        EventLoopProxy { event_loop_proxy: self.event_loop.create_proxy() }
+        EventLoopProxy {
+            event_loop_proxy: self.event_loop.create_proxy(),
+        }
     }
 
     /// Gets a persistent reference to the underlying platform display.
     ///
     /// See the [`OwnedDisplayHandle`] type for more information.
     pub fn owned_display_handle(&self) -> OwnedDisplayHandle {
-        OwnedDisplayHandle { platform: self.event_loop.window_target().p.owned_display_handle() }
+        OwnedDisplayHandle {
+            platform: self.event_loop.window_target().p.owned_display_handle(),
+        }
     }
 
     /// Change if or when [`DeviceEvent`]s are captured.
@@ -290,12 +298,18 @@ impl<T> EventLoop<T> {
         )
         .entered();
 
-        self.event_loop.window_target().p.listen_device_events(allowed);
+        self.event_loop
+            .window_target()
+            .p
+            .listen_device_events(allowed);
     }
 
     /// Sets the [`ControlFlow`].
     pub fn set_control_flow(&self, control_flow: ControlFlow) {
-        self.event_loop.window_target().p.set_control_flow(control_flow)
+        self.event_loop
+            .window_target()
+            .p
+            .set_control_flow(control_flow)
     }
 
     /// Create a window.
@@ -318,7 +332,10 @@ impl<T> EventLoop<T> {
 
     /// Create custom cursor.
     pub fn create_custom_cursor(&self, custom_cursor: CustomCursorSource) -> CustomCursor {
-        self.event_loop.window_target().p.create_custom_cursor(custom_cursor)
+        self.event_loop
+            .window_target()
+            .p
+            .create_custom_cursor(custom_cursor)
     }
 }
 
@@ -399,7 +416,10 @@ impl ActiveEventLoop {
         let _span = tracing::debug_span!("winit::ActiveEventLoop::available_monitors",).entered();
 
         #[allow(clippy::useless_conversion)] // false positive on some platforms
-        self.p.available_monitors().into_iter().map(|inner| MonitorHandle { inner })
+        self.p
+            .available_monitors()
+            .into_iter()
+            .map(|inner| MonitorHandle { inner })
     }
 
     /// Returns the primary monitor of the system.
@@ -413,7 +433,9 @@ impl ActiveEventLoop {
     pub fn primary_monitor(&self) -> Option<MonitorHandle> {
         let _span = tracing::debug_span!("winit::ActiveEventLoop::primary_monitor",).entered();
 
-        self.p.primary_monitor().map(|inner| MonitorHandle { inner })
+        self.p
+            .primary_monitor()
+            .map(|inner| MonitorHandle { inner })
     }
 
     /// Change if or when [`DeviceEvent`]s are captured.
@@ -478,7 +500,9 @@ impl ActiveEventLoop {
     ///
     /// See the [`OwnedDisplayHandle`] type for more information.
     pub fn owned_display_handle(&self) -> OwnedDisplayHandle {
-        OwnedDisplayHandle { platform: self.p.owned_display_handle() }
+        OwnedDisplayHandle {
+            platform: self.p.owned_display_handle(),
+        }
     }
 }
 
@@ -552,7 +576,9 @@ pub struct EventLoopProxy<T: 'static> {
 
 impl<T: 'static> Clone for EventLoopProxy<T> {
     fn clone(&self) -> Self {
-        Self { event_loop_proxy: self.event_loop_proxy.clone() }
+        Self {
+            event_loop_proxy: self.event_loop_proxy.clone(),
+        }
     }
 }
 

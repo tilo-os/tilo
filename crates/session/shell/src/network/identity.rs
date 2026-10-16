@@ -33,6 +33,7 @@ use tilo_user_identity::{
 };
 
 use crate::shell::state::PeerOrigin;
+use tilo_lock::RwLockRecover as _;
 
 /// Everything the shell knows about a peer's identity.
 ///
@@ -114,40 +115,59 @@ impl PeerIdentityStore {
         now_ns: u64,
     ) -> Result<PeerIdentity, DeviceCertError> {
         let identity = PeerIdentity::from_cert(cert, now_ns)?;
-        let mut inner = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner.by_peer.insert(peer, identity.clone());
+        let mut inner = self.inner.write_recover();
+        let changed = inner
+            .by_peer
+            .insert(peer, identity.clone())
+            .is_none_or(|previous| previous.device_cert != identity.device_cert);
         drop(inner);
+        // Channel stewards read the devices the session authenticated; a
+        // handshake that repeats what is known changes nothing they read.
+        if changed {
+            tilo_identity_host::policy_change::announce();
+        }
         Ok(identity)
     }
 
     /// Drop a peer's cached identity — used on disconnect. Idempotent.
     pub fn remove(&self, peer: &PeerOrigin) {
-        let mut inner = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner.by_peer.remove(peer);
+        let mut inner = self.inner.write_recover();
+        let removed = inner.by_peer.remove(peer).is_some();
+        drop(inner);
+        if removed {
+            tilo_identity_host::policy_change::announce();
+        }
+    }
+
+    /// The first instant after `now_ns` at which [`Self::devices_of`] can
+    /// answer differently with nothing written: a certificate expiring or a
+    /// revocation dated ahead taking effect. `None` while none is ahead.
+    pub fn next_change_after(&self, now_ns: u64) -> Option<u64> {
+        let inner = self.inner.read_recover();
+        let expiries = inner
+            .by_peer
+            .values()
+            .filter_map(|identity| identity.device_cert.expires_at_ns);
+        let revocations = inner
+            .revocations
+            .values()
+            .flat_map(RevocationList::iter)
+            .map(|entry| entry.revoked_at_ns);
+        let next = expiries.chain(revocations).filter(|at| *at > now_ns).min();
+        drop(inner);
+        next
     }
 
     /// Look up a peer by its [`PeerOrigin`].
     pub fn get(&self, peer: &PeerOrigin) -> Option<PeerIdentity> {
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.read_recover();
         inner.by_peer.get(peer).cloned()
     }
 
     /// The certificates of `user_pubkey`'s devices the transport authenticated
     /// and that are valid and not revoked at `now_ns`.
     pub fn devices_of(&self, user_pubkey: &[u8; 32], now_ns: u64) -> Vec<DeviceCert> {
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.read_recover();
         let revoked = |device: &[u8; 32]| {
             inner
                 .revocations
@@ -164,27 +184,46 @@ impl PeerIdentityStore {
             .collect()
     }
 
+    /// The person (user root key) behind every authenticated peer whose
+    /// certificate is still valid and not revoked at `now_ns`.
+    pub fn authenticated_persons(
+        &self,
+        now_ns: u64,
+    ) -> std::collections::HashMap<PeerOrigin, [u8; 32]> {
+        let inner = self.inner.read_recover();
+        inner
+            .by_peer
+            .iter()
+            .filter(|(_, identity)| !identity.device_cert.is_expired_at(now_ns))
+            .filter(|(_, identity)| {
+                !inner
+                    .revocations
+                    .get(&identity.user_pubkey)
+                    .is_some_and(|list| list.is_revoked_at(&identity.device_pubkey, now_ns))
+            })
+            .map(|(peer, identity)| (peer.clone(), identity.user_pubkey))
+            .collect()
+    }
+
     /// Merge a user's revocation list — additive, see [`RevocationList::insert`].
     pub fn set_revocations(&self, user_pubkey: [u8; 32], list: &RevocationList) {
-        let mut inner = self
-            .inner
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inner = self.inner.write_recover();
         let current = inner.revocations.entry(user_pubkey).or_default();
+        let mut changed = false;
         for entry in list.iter().cloned() {
             // Never let a later handshake erase or postpone a revocation that
             // this device has already verified.
-            let _ = current.insert(entry);
+            changed |= current.insert(entry).unwrap_or(false);
         }
         drop(inner);
+        if changed {
+            tilo_identity_host::policy_change::announce();
+        }
     }
 
     /// True if `device_pubkey` has been revoked under `user_pubkey` at or before `at_ns`.
     pub fn is_revoked(&self, user_pubkey: &[u8; 32], device_pubkey: &[u8; 32], at_ns: u64) -> bool {
-        let inner = self
-            .inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let inner = self.inner.read_recover();
         inner
             .revocations
             .get(user_pubkey)
@@ -513,5 +552,62 @@ mod tests {
             // … but not under Alice's identity space.
             assert!(!store.is_revoked(&alice_user_pk, &bob_device_pk, 700));
         }
+    }
+
+    /// #4022: channel stewards read the authenticated devices without a
+    /// clock, so the store announces each change and names the instant its
+    /// answer next changes by time alone.
+    #[test]
+    fn authenticated_devices_announce_changes_and_name_their_next_expiry() {
+        use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
+        let (root, _, mut cert) = fresh_identity(DeviceCapabilities::primary());
+        cert.expires_at_ns = Some(5_000);
+        sign_device_cert(&mut cert, &root).unwrap();
+        let user = cert.user_public_key;
+        let device = cert.device_public_key;
+        let store = PeerIdentityStore::new();
+        assert_eq!(store.next_change_after(500), None);
+
+        let epoch = tilo_identity_host::policy_change::epoch();
+        store.insert(peer(1), cert, 500).unwrap();
+        assert_ne!(
+            tilo_identity_host::policy_change::epoch(),
+            epoch,
+            "a newly authenticated device is announced"
+        );
+        assert_eq!(store.next_change_after(500), Some(5_000), "its expiry");
+
+        // A revocation dated ahead of the certificate's end takes effect
+        // first.
+        let mut revocation = RevocationEntry {
+            user_public_key: user,
+            revoked_device_public_key: device,
+            revoked_at_ns: 2_000,
+            reason: RevocationReason::Compromised,
+            signature: [0u8; 64],
+        };
+        sign_revocation_entry(&mut revocation, &root).unwrap();
+        let mut list = RevocationList::new();
+        list.insert(revocation).unwrap();
+        let epoch = tilo_identity_host::policy_change::epoch();
+        store.set_revocations(user, &list);
+        assert_ne!(
+            tilo_identity_host::policy_change::epoch(),
+            epoch,
+            "a new revocation is announced"
+        );
+        assert_eq!(store.next_change_after(500), Some(2_000));
+        assert_eq!(store.next_change_after(2_000), Some(5_000));
+        assert_eq!(store.next_change_after(5_000), None);
+        assert_eq!(store.devices_of(&user, 1_999).len(), 1);
+        assert!(store.devices_of(&user, 2_000).is_empty());
+
+        let epoch = tilo_identity_host::policy_change::epoch();
+        store.remove(&peer(1));
+        assert_ne!(
+            tilo_identity_host::policy_change::epoch(),
+            epoch,
+            "a disconnected device is announced"
+        );
     }
 }

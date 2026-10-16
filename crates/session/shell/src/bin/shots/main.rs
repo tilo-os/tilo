@@ -8,6 +8,7 @@
 mod diff;
 mod driver;
 mod mode;
+mod own_device;
 mod scenario;
 
 use std::path::PathBuf;
@@ -241,6 +242,9 @@ impl Args {
                 args.outputs = Some(outputs);
             }
             "--list-scenarios" => args.list_scenarios = true,
+            "--theme" => {
+                shell::shell::frame::request_shots_theme(take_value(rest, "--theme")?);
+            }
             "--sweep" => args.sweep = Some(apply_sweep_flag(rest)?),
             "--per-frame" => args.per_frame = Some(apply_per_frame_flag(rest)?),
             "--baseline" => args.baseline = Some(PathBuf::from(take_value(rest, "--baseline")?)),
@@ -415,6 +419,8 @@ Common flags:\n\
                         the topbar clock + system monitor which update from\n\
                         live data and produce a small per-frame delta\n\
   --list-scenarios      print the built-in catalogue and exit\n\
+  --theme NAME          dark (default), light or high-contrast; the same as\n\
+                        TILO_SHOTS_THEME=NAME\n\
 \n\
 Scene catalogue (legacy):\n  {scene_list}\n\
 \n\
@@ -443,6 +449,11 @@ Examples:\n\
 }
 
 fn main() -> Result<(), String> {
+    // Room documents are admitted in automerge isolation workers that
+    // re-enter this binary, as they re-enter the shell; serve them first.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        std::process::exit(i32::from(code));
+    }
     // Same env-var contract as `shell`: TILO_STARTUP_METRICS_PATH=/tmp/x.json
     // dumps JSON timings on exit; without it every `mark` is a no-op.
     // `shots` is the harness that measures the cold-start warmup win.

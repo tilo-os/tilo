@@ -182,21 +182,6 @@ impl EngineRequest {
             Self::OAuthAuthorize { .. } => EngineRequestKind::OAuthAuthorize,
         }
     }
-
-    /// The account this request targets, for the connect/fetch dedupe + error
-    /// context. Empty for requests without a single account (OAuth carries its
-    /// own id).
-    pub fn account_email(&self) -> String {
-        match self {
-            EngineRequest::Connect { account, .. }
-            | EngineRequest::Fetch { account, .. }
-            | EngineRequest::StoreFlag { account, .. }
-            | EngineRequest::Move { account, .. }
-            | EngineRequest::Purge { account, .. }
-            | EngineRequest::Send { account, .. } => account.email.clone(),
-            EngineRequest::OAuthAuthorize { account_id, .. } => account_id.clone(),
-        }
-    }
 }
 
 /// The operation class of a completed engine request.  Kept deliberately
@@ -765,6 +750,9 @@ pub mod live {
     /// when it is due).
     fn resolve_auth(custodian: &Custodian, account: &AccountConfig) -> Result<AuthCreds, String> {
         let user = login_user(account);
+        if account.import_pending {
+            return Err(crate::i18n::t("mail-import-sign-in-required"));
+        }
         match account.auth {
             AuthMethod::Password => {
                 if account.password.is_empty() {
@@ -803,9 +791,7 @@ pub mod live {
         } else {
             account.imap_port
         };
-        let tcp = tokio::net::TcpStream::connect((host, port))
-            .await
-            .map_err(|e| classify_conn_failure(&e.to_string()))?;
+        let tcp = crate::connect::tcp(host, port).await?;
         let connector = tokio_rustls::TlsConnector::from(tls);
         let server_name = rustls::pki_types::ServerName::try_from(host.to_string())
             .map_err(|e| format!("invalid IMAP host name: {e}"))?;
@@ -820,7 +806,7 @@ pub mod live {
                 .await
                 .map_err(|(e, _)| classify_conn_failure(&e.to_string())),
             AuthCreds::XOAuth2 { user, token } => {
-                let auth = XOAuth2 {
+                let auth = crate::oauth::XOAuth2 {
                     user: user.clone(),
                     token: token.clone(),
                 };
@@ -829,20 +815,6 @@ pub mod live {
                     .await
                     .map_err(|(e, _)| classify_conn_failure(&e.to_string()))
             }
-        }
-    }
-
-    /// async-imap `XOAUTH2` authenticator. `process` returns the RAW SASL
-    /// string; async-imap base64-encodes it before sending.
-    struct XOAuth2 {
-        user: String,
-        token: String,
-    }
-
-    impl async_imap::Authenticator for XOAuth2 {
-        type Response = String;
-        fn process(&mut self, _challenge: &[u8]) -> Self::Response {
-            format!("user={}\x01auth=Bearer {}\x01\x01", self.user, self.token)
         }
     }
 
@@ -1052,8 +1024,7 @@ pub mod live {
         tls_override: Option<lettre::transport::smtp::client::TlsParameters>,
     ) -> Result<(), String> {
         use lettre::transport::smtp::authentication::{Credentials, Mechanism};
-        use lettre::transport::smtp::client::{Tls, TlsParameters};
-        use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
+        use lettre::transport::smtp::client::TlsParameters;
 
         let host = account.smtp_host.trim();
         if host.is_empty() {
@@ -1069,16 +1040,6 @@ pub mod live {
             None => TlsParameters::new(host.to_string())
                 .map_err(|e| classify_conn_failure(&e.to_string()))?,
         };
-        // 465 → implicit TLS (Wrapper); anything else (587/25) → STARTTLS upgrade.
-        let tls = if port == 465 {
-            Tls::Wrapper(params)
-        } else {
-            Tls::Required(params)
-        };
-        let builder = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
-            .port(port)
-            .tls(tls);
-
         let (creds_l, mech) = match creds {
             AuthCreds::Password { user, pass } => (
                 Credentials::new(user.clone(), pass.clone()),
@@ -1089,17 +1050,23 @@ pub mod live {
                 Mechanism::Xoauth2,
             ),
         };
-        let mailer: AsyncSmtpTransport<Tokio1Executor> = builder
-            .credentials(creds_l)
-            .authentication(vec![mech])
-            .build();
-
         let envelope = build_envelope(account, draft)?;
-        mailer
-            .send_raw(&envelope, mime)
-            .await
-            .map_err(|e| classify_conn_failure(&e.to_string()))?;
-        Ok(())
+        // 465 → implicit TLS; anything else (587/25) → a required STARTTLS
+        // upgrade. The connection races the host's addresses.
+        let mut connection = crate::connect::smtp(host, port, build_tls_config(), params).await?;
+        let sent = async {
+            connection
+                .auth(&[mech], &creds_l)
+                .await
+                .map_err(|e| classify_conn_failure(&e.to_string()))?;
+            connection
+                .send(&envelope, mime)
+                .await
+                .map_err(|e| classify_conn_failure(&e.to_string()))
+        }
+        .await;
+        let _ = connection.quit().await;
+        sent.map(drop)
     }
 
     /// Construct the SMTP envelope (return-path + recipients) from the account
@@ -1147,66 +1114,9 @@ pub mod live {
         use crate::model::{AccountConfig, Addr, AuthMethod, Draft, Folder};
         use crate::transport::build_mime;
 
-        /// A rustls client verifier that accepts the single local test server
-        /// certificate. Signature verification stays real (delegated to the ring
-        /// provider); only the chain-of-trust anchor is bypassed, exactly as any
-        /// local-server test must do for a self-signed cert.
-        #[derive(Debug)]
-        struct AcceptLocalCert(Arc<rustls::crypto::CryptoProvider>);
-
-        impl rustls::client::danger::ServerCertVerifier for AcceptLocalCert {
-            fn verify_server_cert(
-                &self,
-                _end_entity: &rustls::pki_types::CertificateDer<'_>,
-                _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-                _server_name: &rustls::pki_types::ServerName<'_>,
-                _ocsp_response: &[u8],
-                _now: rustls::pki_types::UnixTime,
-            ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-                Ok(rustls::client::danger::ServerCertVerified::assertion())
-            }
-            fn verify_tls12_signature(
-                &self,
-                message: &[u8],
-                cert: &rustls::pki_types::CertificateDer<'_>,
-                dss: &rustls::DigitallySignedStruct,
-            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
-            {
-                rustls::crypto::verify_tls12_signature(
-                    message,
-                    cert,
-                    dss,
-                    &self.0.signature_verification_algorithms,
-                )
-            }
-            fn verify_tls13_signature(
-                &self,
-                message: &[u8],
-                cert: &rustls::pki_types::CertificateDer<'_>,
-                dss: &rustls::DigitallySignedStruct,
-            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
-            {
-                rustls::crypto::verify_tls13_signature(
-                    message,
-                    cert,
-                    dss,
-                    &self.0.signature_verification_algorithms,
-                )
-            }
-            fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-                self.0.signature_verification_algorithms.supported_schemes()
-            }
-        }
-
+        /// The mock servers present a fresh self-signed certificate.
         fn accepting_client_config() -> Arc<rustls::ClientConfig> {
-            let provider = Arc::new(rustls::crypto::ring::default_provider());
-            let cfg = rustls::ClientConfig::builder_with_provider(provider.clone())
-                .with_safe_default_protocol_versions()
-                .unwrap()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(AcceptLocalCert(provider)))
-                .with_no_client_auth();
-            Arc::new(cfg)
+            Arc::new(tilo_net::pinned_client_config(|_| true).unwrap())
         }
 
         /// A fresh self-signed cert + rustls server config for the mock servers.

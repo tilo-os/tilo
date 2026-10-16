@@ -10,7 +10,9 @@
 //! Backends:
 //!  * [`test_engine::TestEngine`] — deterministic, dependency-free engine
 //!    used by unit tests and `--shots` headless renders.
-//!  * WPE `WebKit` — the Tilo system engine, rendering real pages offscreen.
+//!  * [`chromium::ChromiumEngine`] — the Tilo system engine: a Chromium
+//!    (CEF) host process rendering real pages offscreen, delivered as its
+//!    own signed runtime (see [`chromium::runtime`]).
 //!
 //! Coordinates in commands are **physical pixels relative to the web
 //! view's top-left corner** — the widget does the logical→physical
@@ -23,15 +25,14 @@ pub use credentials::{
     CredentialRequest,
 };
 pub mod page;
+pub mod paint;
+pub mod text_input;
 pub use page::{PageFailure, PageKey, PageReply, PageRequest};
 pub mod profile;
 pub mod test_engine;
 
 #[cfg(feature = "webview-adblock")]
 pub mod adblock;
-
-#[cfg(feature = "webview-wpe")]
-pub mod wpe;
 
 pub(crate) mod frame_trace;
 mod scroll_marker;
@@ -135,6 +136,33 @@ impl NavigationDirection {
     }
 }
 
+/// An owned main-frame navigation. Its final URL may differ after redirects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NavigationCommand {
+    Navigate { url: String },
+    Back,
+    Forward,
+    Reload,
+    HistoryEntry { history_request_id: u32, id: u32 },
+}
+
+impl NavigationCommand {
+    pub(crate) fn valid(&self) -> bool {
+        match self {
+            Self::Navigate { url } => !url.is_empty() && url.len() <= 8192,
+            Self::HistoryEntry {
+                history_request_id,
+                id,
+            } => navigation_request_id(*history_request_id) && navigation_request_id(*id),
+            Self::Back | Self::Forward | Self::Reload => true,
+        }
+    }
+}
+
+pub(crate) fn navigation_request_id(id: u32) -> bool {
+    id > 0 && i32::try_from(id).is_ok()
+}
+
 /// Bounded snapshot for one committed top-level origin and document generation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SiteStatus {
@@ -158,6 +186,16 @@ pub struct SiteStatus {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
+    /// A DevTools command for extension management: the engine allows only
+    /// the `Extensions` domain and what reading an extension's service worker
+    /// needs. The reply is a [`WebViewEvent::DevToolsResult`] with the same
+    /// `request_id`. `session` addresses an attached service-worker target.
+    DevTools {
+        request_id: u32,
+        method: String,
+        params: serde_json::Value,
+        session: Option<String>,
+    },
     Credentials(CredentialRequest),
     SetSiteExceptions(Vec<String>),
     RequestSiteStatus {
@@ -172,6 +210,15 @@ pub enum WebViewCommand {
     },
     /// Load the given (already normalised) URL.
     Navigate(String),
+    /// Transport representation only: use `WebViewEngine::navigate_owned`
+    /// to observe admission before relying on an owned outcome.
+    ScopedNavigation {
+        request_id: u32,
+        command: NavigationCommand,
+    },
+    CancelScopedNavigation {
+        request_id: u32,
+    },
     RequestNavigationHistory {
         request_id: u32,
         direction: NavigationDirection,
@@ -280,6 +327,18 @@ pub enum WebViewCommand {
         request_id: u32,
         request: PageRequest,
     },
+    /// Capture the page's layout for the paint stream: every box and text
+    /// line the engine laid out (see `tilo_paint_stream::snapshot`). Exactly
+    /// one [`WebViewEvent::PaintSnapshot`] with the same id answers it.
+    PaintCapture {
+        request_id: u32,
+    },
+    /// The bytes of a resource the page already loaded, read from the
+    /// engine's cache. One [`WebViewEvent::PaintResource`] answers it.
+    PaintResource {
+        request_id: u32,
+        url: String,
+    },
     /// Clear all persistent website data (cookies, caches, storage,
     /// service workers). Backends without a data store ignore this.
     ClearWebsiteData,
@@ -322,6 +381,13 @@ pub enum WebViewCommand {
 /// into its own state (address bar text, title, progress) during `sync`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewEvent {
+    /// The reply to a [`WebViewCommand::DevTools`]: the JSON `result` when
+    /// `ok`, otherwise the JSON `error` (or a message).
+    DevToolsResult {
+        request_id: u32,
+        ok: bool,
+        body: String,
+    },
     CredentialResult(CredentialReply),
     SiteStatus(SiteStatus),
     SiteResult {
@@ -411,6 +477,12 @@ pub enum WebViewEvent {
     /// Load progress in `0.0..=1.0`.
     LoadProgress(f64),
     LoadFinished,
+    /// A terminal outcome for an admitted request, independent of visual load events.
+    NavigationOutcome {
+        request_id: u32,
+        uri: String,
+        error: Option<String>,
+    },
     /// Completion tagged with its document URL, so stale startup loads can be ignored.
     LoadFinishedAt {
         uri: String,
@@ -433,6 +505,16 @@ pub enum WebViewEvent {
     PageResult {
         request_id: u32,
         result: Result<PageReply, PageFailure>,
+    },
+    /// The raw layout snapshot (JSON), or `None` when the engine could not
+    /// take one.
+    PaintSnapshot {
+        request_id: u32,
+        snapshot: Option<String>,
+    },
+    PaintResource {
+        request_id: u32,
+        bytes: Option<Vec<u8>>,
     },
     /// `WebKit` received response metadata and is waiting for the host's file
     /// portal to grant an explicit destination.
@@ -471,34 +553,34 @@ pub struct MediaElementInfo {
     pub label: String,
 }
 
-/// One plane of a [`DmabufFrame`]: its own fd + layout. A GPU-tiled RGBA
-/// buffer has 2 planes (pixels + compression metadata); a linear one, 1.
-#[derive(Debug)]
-#[cfg(unix)]
-pub struct DmabufPlane {
-    pub fd: media::dmabuf::DmabufHandle,
-    pub stride: u32,
-    pub offset: u32,
-}
-
-/// A GPU frame exported as a DMA-BUF handle (the `webview-wpe` EGL export
-/// path). Feature-neutral so it can cross the engine trait — only the WPE
-/// engine produces one and only the wgpu import consumes it. `fourcc` +
-/// `modifier` describe the pixel format and tiling.
-#[derive(Debug)]
-#[cfg(unix)]
-pub struct DmabufFrame {
-    pub planes: Vec<DmabufPlane>,
-    pub fourcc: u32,
-    pub modifier: u64,
-    pub width: u32,
-    pub height: u32,
-}
-
 /// A running web engine instance. Implementations are `Send + Sync` so
 /// the widget, the host app, and the engine's own thread can share one
 /// handle.
 pub trait WebViewEngine: Send + Sync {
+    fn supports_text_input(&self) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.supports_text_input())
+    }
+
+    /// Whether original-field acknowledged Undo/Redo is supported.
+    fn supports_guarded_edit_history(&self) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.supports_guarded_edit_history())
+    }
+
+    /// Offer system Undo/Redo to this page's native editing history.
+    /// True means the backend consumed the request, not that a history entry
+    /// existed or that an asynchronous edit has already completed.
+    fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.handle_undo_request(request))
+    }
+
+    /// Private text transactions never enter the app event or page-agent stream.
+    fn text_input(&self, request: text_input::Request) -> Option<text_input::Receipt> {
+        self.wrapped()?.text_input(request)
+    }
+
     /// Create an independent document in the same runtime/profile.
     ///
     /// # Errors
@@ -511,7 +593,11 @@ pub trait WebViewEngine: Send + Sync {
     /// Suspend painting without discarding the document or its session history.
     fn set_visible(&self, _visible: bool) {}
     /// Keep pointer modifiers current even when no key event reaches the page.
-    fn set_modifiers(&self, _modifiers: KeyModifiers) {}
+    fn set_modifiers(&self, modifiers: KeyModifiers) {
+        if let Some(engine) = self.wrapped() {
+            engine.set_modifiers(modifiers);
+        }
+    }
     /// Native new-window intents, delivered to browser chrome as tab requests.
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
         Vec::new()
@@ -524,6 +610,23 @@ pub trait WebViewEngine: Send + Sync {
 
     /// Enqueue a command. Must never block on engine work.
     fn send(&self, cmd: WebViewCommand);
+
+    /// Admit a navigation and reserve its terminal outcome. IDs must increase
+    /// strictly within this engine's lifetime and fit a positive CEF signed integer.
+    ///
+    /// # Errors
+    /// Returns an error without admission if the backend, request or capacity
+    /// cannot support the operation. A successful admission completes only with
+    /// the matching `NavigationOutcome`, or is invalidated by cancellation.
+    fn navigate_owned(&self, request_id: u32, command: NavigationCommand) -> Result<(), String> {
+        if !navigation_request_id(request_id) || !command.valid() {
+            return Err("Invalid owned navigation request".into());
+        }
+        if let Some(engine) = self.wrapped() {
+            return engine.navigate_owned(request_id, command);
+        }
+        Err("This engine does not support owned navigation".into())
+    }
 
     fn frames(&self) -> FrameSlot;
 
@@ -546,72 +649,34 @@ pub trait WebViewEngine: Send + Sync {
     /// on engine activity. Synchronous engines don't need one.
     fn set_waker(&self, _waker: Box<dyn Fn() + Send + Sync>) {}
 
-    /// The zero-copy path, if a GPU frame is pending. Default: none — SHM
-    /// and test engines deliver pixels through [`frames`](Self::frames).
-    #[cfg(unix)]
-    fn take_dmabuf(&self) -> Option<DmabufFrame> {
+    /// A view drew this engine's page just now. Engines that stop painting
+    /// pages nobody draws (see [`paint::PaintEngine`]) resume here.
+    fn presented(&self) {}
+
+    /// The engine this one wraps, for what only a backend can answer.
+    fn wrapped(&self) -> Option<&SharedEngine> {
         None
+    }
+
+    /// The page as a display list. An engine that has one is drawn from it
+    /// instead of [`frames`](Self::frames) (see [`paint`]).
+    fn paint_frame(&self) -> Option<Arc<tilo_paint_stream::Frame>> {
+        None
+    }
+
+    /// Encoded bytes of an image a [`paint_frame`](Self::paint_frame) references.
+    fn paint_blob(&self, _hash: &[u8; 32]) -> Option<Arc<Vec<u8>>> {
+        None
+    }
+
+    /// The page as a stream for a session to share: a whole frame when
+    /// `keyframe` (or when the consumer must start over), else the patches
+    /// since the last call, followed by images not sent yet. Empty for an
+    /// engine without a display list.
+    fn take_paint_stream(&self, _keyframe: bool) -> Vec<tilo_paint_stream::wire::Payload> {
+        Vec::new()
     }
 }
 
 /// Shared engine handle, as stored by the widget and the host app.
 pub type SharedEngine = Arc<dyn WebViewEngine>;
-
-/// Normalise user-typed address-bar input into a loadable URL: pass
-/// through explicit schemes, otherwise treat input with spaces or
-/// without dots as a search query and everything else as an `https://`
-/// host.
-pub fn normalise_url(input: &str) -> String {
-    let trimmed = input.trim();
-    if trimmed.starts_with("http://")
-        || trimmed.starts_with("https://")
-        || trimmed.starts_with("file://")
-        || trimmed.starts_with("about:")
-    {
-        return trimmed.to_string();
-    }
-    let looks_like_host =
-        !trimmed.contains(' ') && (trimmed.contains('.') || trimmed.starts_with("localhost"));
-    if looks_like_host {
-        format!("https://{trimmed}")
-    } else {
-        format!(
-            "https://duckduckgo.com/?q={}",
-            form_urlencoded::byte_serialize(trimmed.as_bytes()).collect::<String>()
-        )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalise_keeps_schemes_prepends_https_and_searches_queries() {
-        // phase: normalise_passes_through_schemes
-        {
-            assert_eq!(
-                normalise_url("https://example.org/a"),
-                "https://example.org/a"
-            );
-            assert_eq!(normalise_url("http://example.org"), "http://example.org");
-            assert_eq!(normalise_url("about:blank"), "about:blank");
-        }
-        // phase: normalise_prepends_https_for_hosts
-        {
-            assert_eq!(normalise_url("example.org"), "https://example.org");
-            assert_eq!(normalise_url("localhost:8080"), "https://localhost:8080");
-        }
-        // phase: normalise_searches_for_queries
-        {
-            assert_eq!(
-                normalise_url("rust webview"),
-                "https://duckduckgo.com/?q=rust+webview"
-            );
-            assert_eq!(
-                normalise_url("what is Tilo?"),
-                "https://duckduckgo.com/?q=what+is+Tilo%3F"
-            );
-        }
-    }
-}

@@ -1,7 +1,7 @@
 [Unit]
 Description=Roll back to the previous deployment
 Documentation=file:///usr/share/doc/tilo/recovery.md
-RequiresMountsFor=/boot
+RequiresMountsFor=/boot /boot/efi
 After=local-fs.target
 
 [Service]

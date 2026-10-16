@@ -5,13 +5,14 @@
 use super::tests::tree_of;
 use super::*;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
-use parking_lot::RwLock;
-use std::{sync::Arc, time::SystemTime};
+use neighbour_wire::NeighbourMsg;
+use std::time::SystemTime;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_joined_room::testing as internals;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_peer_state::{StatePeer, TransportOrigin};
 
 fn edit(
     owner: &NativeWorkspaceOwner,
@@ -29,7 +30,7 @@ fn edit(
             ));
             let heads = doc.get_heads();
             doc.put(ROOT, "offline-edit", value).unwrap();
-            doc.commit();
+            doc.commit_edit("fixture", "offline-edit");
             view.peer().clone().publish_incremental(
                 "so.tilo.chat",
                 "",
@@ -91,7 +92,7 @@ fn native_outgoing_offline_commit_preserves_exact_bytes_and_retry_across_restart
     drop(owner);
     let mut tree = persist::load_tree_from(&path).unwrap();
     tree.persist_path = Some(path);
-    let owner = open(Arc::new(RwLock::new(tree))).unwrap();
+    let owner = open(crate::shell::state::WorkspaceTreeHandle::new(tree)).unwrap();
     let bytes = owner
         .with_outgoing(room, now, |_, outgoing| {
             Ok(outgoing
@@ -110,8 +111,8 @@ fn native_outgoing_failed_barrier_cannot_return_success_or_publish_a_frame() {
     let path = directory.path().join("state.json");
     let before = std::fs::read(&path).unwrap();
     let (request, _) = edit(&owner, room, &key, now, 2);
-    let result = atomic_file::test_support::with_failure(
-        atomic_file::test_support::Checkpoint::BeforePublish,
+    let result = tilo_files::native::atomic::test_support::with_failure(
+        tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
         || owner.commit_document(request, now),
     );
     assert!(result.is_err());
@@ -270,8 +271,8 @@ fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_dur
             .unwrap();
         let before_ack = std::fs::read(directory.path().join("state.json")).unwrap();
         assert!(
-            atomic_file::test_support::with_failure(
-                atomic_file::test_support::Checkpoint::BeforePublish,
+            tilo_files::native::atomic::test_support::with_failure(
+                tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
                 || owner.receive(room, origin, acknowledgement[1].clone(), later)
             )
             .is_err()
@@ -295,6 +296,7 @@ fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_dur
                 let original: NeighbourMsg = postcard::from_bytes(&original).unwrap();
                 assert!(
                     view.peer()
+                        .outbox()
                         .lookup_retained_local_document(&original, key.verifying_key().to_bytes())
                         .unwrap()
                         .is_some(),
@@ -332,6 +334,7 @@ fn native_outgoing_capacity_refuses_new_success_and_inbound_ack_can_release_spac
     tilo_user_identity::sign_revocation_entry(&mut revoked, &SigningKey::from_bytes(&[62; 32]))
         .unwrap();
     remote
+        .governance_mut()
         .publish_governed_revocations(&[revoked.clone()], &governor_key, now)
         .unwrap();
     owner
@@ -378,7 +381,7 @@ fn native_outgoing_capacity_refuses_new_success_and_inbound_ack_can_release_spac
 
 #[test]
 fn native_outgoing_uncertain_append_fences_and_reopens_exact_committed_bytes() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     for point in [Checkpoint::AfterPublish, Checkpoint::BeforeCommit] {
         let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
         let (request, expected) = edit(&owner, room, &key, now, 51);
@@ -389,7 +392,7 @@ fn native_outgoing_uncertain_append_fences_and_reopens_exact_committed_bytes() {
         let path = directory.path().join("state.json");
         let mut tree = persist::load_tree_from(&path).unwrap();
         tree.persist_path = Some(path);
-        let owner = open(Arc::new(RwLock::new(tree))).unwrap();
+        let owner = open(crate::shell::state::WorkspaceTreeHandle::new(tree)).unwrap();
         assert_eq!(
             owner
                 .with_outgoing(room, now, |_, outgoing| Ok(outgoing
@@ -400,6 +403,82 @@ fn native_outgoing_uncertain_append_fences_and_reopens_exact_committed_bytes() {
             vec![expected]
         );
     }
+}
+
+/// A member write carrying only history the room already holds, as an app
+/// does when it sends its whole record after a frontier reset.
+fn resend_known_history(
+    owner: &NativeWorkspaceOwner,
+    room: RoomId,
+    key: &SigningKey,
+    now: SystemTime,
+) -> OwnerCommitRequest {
+    let message = owner
+        .with_current(room, |view| {
+            let mut doc =
+                AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap()).unwrap();
+            view.peer().clone().publish_incremental(
+                "so.tilo.chat",
+                "",
+                doc.save_after(&[]),
+                key,
+                now,
+            )
+        })
+        .unwrap();
+    let NeighbourMsg::AppDocument {
+        app_id,
+        record_id,
+        envelope,
+        ..
+    } = message
+    else {
+        unreachable!()
+    };
+    OwnerCommitRequest {
+        room: room.to_string(),
+        operation: CommitOperation::Document {
+            app: app_id,
+            record: record_id,
+            envelope,
+        },
+    }
+}
+
+#[test]
+fn native_outgoing_acknowledged_history_reuses_one_projection_until_retired() {
+    let (_directory, owner, room, now, key) = super::tests::test_enrolled_owner();
+    let mut remote = governor(&owner, room);
+    owner
+        .commit_document(resend_known_history(&owner, room, &key, now), now)
+        .unwrap();
+    // The governor's durable receipt already holds this history, but not the
+    // write's own sequence, so the original still awaits its watermark.
+    checkpoint(&owner, room, &mut remote, now, 600);
+    owner.reconcile_outgoing(room, &key, now).unwrap();
+    let sent = visible(&owner, room, now);
+    assert_eq!(sent.len(), 2, "the original and one recovery projection");
+    for _ in 0..3 {
+        owner.reconcile_outgoing(room, &key, now).unwrap();
+        assert_eq!(
+            visible(&owner, room, now),
+            sent,
+            "reconciliation must not sign another retransmission of the same obligation"
+        );
+    }
+    for bytes in &sent {
+        remote
+            .receive_from_report(
+                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                postcard::from_bytes(bytes).unwrap(),
+                now,
+            )
+            .unwrap();
+    }
+    checkpoint(&owner, room, &mut remote, now, 601);
+    owner.reconcile_outgoing(room, &key, now).unwrap();
+    assert!(visible(&owner, room, now).is_empty());
+    assert_eq!(owner.outgoing_status(room, now).unwrap().pending, 0);
 }
 
 #[test]
@@ -503,6 +582,7 @@ fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admis
                 let projected: NeighbourMsg = postcard::from_bytes(&frames[0]).unwrap();
                 assert!(
                     view.peer()
+                        .outbox()
                         .lookup_retained_local_document(&projected, key.verifying_key().to_bytes())
                         .unwrap()
                         .is_none()
@@ -516,7 +596,7 @@ fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admis
         drop(owner);
         let mut tree = persist::load_tree_from(&path).unwrap();
         tree.persist_path = Some(path.clone());
-        owner = open(Arc::new(RwLock::new(tree))).unwrap();
+        owner = open(crate::shell::state::WorkspaceTreeHandle::new(tree)).unwrap();
         owner
             .with_current(room, |view| {
                 // Durable watermarks originate in a HashMap. Restoring may
@@ -560,7 +640,7 @@ fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admis
 )]
 #[test]
 fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
     let mut remote = governor(&owner, room);
     let (request, original) = edit(&owner, room, &key, now, 400);
@@ -677,7 +757,7 @@ fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody
 
 #[test]
 fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamper_refuses() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     for point in [Checkpoint::AfterPublish, Checkpoint::BeforeCommit] {
         let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
         let mut remote = governor(&owner, room);
@@ -704,7 +784,7 @@ fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamp
         .unwrap();
         let projection = published.projection[0].clone();
         tree.persist_path = Some(path.clone());
-        let owner = open(Arc::new(RwLock::new(tree))).unwrap();
+        let owner = open(crate::shell::state::WorkspaceTreeHandle::new(tree)).unwrap();
         assert!(
             visible(&owner, room, later).is_empty(),
             "uncertain publication preserves custody, not transient governor freshness"
@@ -744,7 +824,7 @@ fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamp
         let mut tree = persist::load_tree_from(&path).unwrap();
         tree.persist_path = Some(path);
         assert!(
-            open(Arc::new(RwLock::new(tree))).is_err(),
+            open(crate::shell::state::WorkspaceTreeHandle::new(tree)).is_err(),
             "restore must derive capacity proof from actual obligations"
         );
     }
@@ -792,7 +872,7 @@ fn native_outgoing_projection_history_substitution_cannot_restore() {
     let mut tree = persist::load_tree_from(&path).unwrap();
     tree.persist_path = Some(path);
     assert!(
-        open(Arc::new(RwLock::new(tree))).is_err(),
+        open(crate::shell::state::WorkspaceTreeHandle::new(tree)).is_err(),
         "valid local signature and reserved sequence cannot substitute uncommitted history"
     );
 }
@@ -829,9 +909,11 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
     // Incompressible text makes the actual native history large while staying
     // inside the original wire cap. The candidate itself fits; its mandatory
     // future recovery representation does not fit the authority envelope.
+    // Originals are base64 now, so the fixture needs more text than when
+    // their byte arrays consumed most of that envelope themselves.
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut random = 0x1234_5678_u32;
-    let text: String = (0..1024 * 1024)
+    let text: String = (0..2 * 1024 * 1024)
         .map(|_| {
             random ^= random << 13;
             random ^= random >> 17;
@@ -845,7 +927,7 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
                 AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap()).unwrap();
             let heads = doc.get_heads();
             doc.put(ROOT, "large-offline", text).unwrap();
-            doc.commit();
+            doc.commit_edit("fixture", "large-offline");
             view.peer().clone().publish_incremental(
                 "so.tilo.chat",
                 "",
@@ -877,7 +959,11 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
     store::preflight(&prospective.native_authority, store::MAX_AUTHORITY_BYTES).unwrap();
     assert!(
         tilo_joined_room::preflight_storage(&prospective.native_authority).is_err(),
-        "the refusal must come from the required recovery reserve"
+        "the refusal must come from the required recovery reserve: encoded={}, allowed={:?}",
+        serde_json::to_vec_pretty(&prospective.native_authority)
+            .unwrap()
+            .len(),
+        tilo_joined_room::authority_limit(&prospective.native_authority),
     );
     let path = directory.path().join("state.json");
     let before = std::fs::read(&path).unwrap();
@@ -925,6 +1011,7 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
             active_tab: 990_001,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         });
         index
     };
@@ -933,7 +1020,7 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
     internals::bump_revision(&mut prospective.native_authority);
     // Use the actual sanitizer/serializer on the small tree to derive this
     // fixture. Adding ASCII title text changes only title and durable label.
-    let small = persist::encode_tree(&prospective).unwrap();
+    let small = persist::encode_tree(&prospective).unwrap().bytes;
     let sanitized: crate::shell::state::WorkspaceTree = serde_json::from_slice(&small).unwrap();
     let reserved = publication::required_tree_bytes(&sanitized).unwrap() - small.len();
     assert!(reserved > 2);
@@ -956,7 +1043,7 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
     let before = std::fs::read(&path).unwrap();
     let checkpoints = Rc::new(Cell::new(0usize));
     let observed = checkpoints.clone();
-    let result = atomic_file::test_support::with_observer(
+    let result = tilo_files::native::atomic::test_support::with_observer(
         move |_| observed.set(observed.get() + 1),
         || owner.commit_document(request, now),
     );
@@ -972,4 +1059,50 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert_eq!(owner.outgoing_status(room, now).unwrap().pending, 0);
     owner.health().unwrap();
+}
+
+#[test]
+fn native_document_checkpoint_invalidates_old_authority_snapshot_without_grant_change() {
+    let (_directory, owner, room, now, key) = super::tests::test_enrolled_owner();
+    let tree = tree_of(&owner);
+    let (witness, before, capabilities) = {
+        let tree = tree.read();
+        (
+            tree.native_runtime.authority_witness(),
+            tree.native_authority.clone(),
+            tree.desktop
+                .workspaces
+                .iter()
+                .find(|slot| slot.room == room)
+                .expect("the enrolled owner must project its real room")
+                .sandbox
+                .clone(),
+        )
+    };
+    assert_eq!(witness.authority_status(&before, room), Ok(()));
+    let (request, _) = edit(&owner, room, &key, now, 1);
+    owner.commit_document(request, now).unwrap();
+    let after = tree.read();
+    assert_eq!(
+        after
+            .desktop
+            .workspaces
+            .iter()
+            .find(|slot| slot.room == room)
+            .unwrap()
+            .sandbox,
+        capabilities,
+        "a document checkpoint does not withdraw accepted filesystem grants",
+    );
+    assert_eq!(
+        witness.authority_status(&before, room),
+        Err(store::AuthorityRejection::StaleAcceptedSnapshot),
+        "the original whole-authority snapshot must not renew current policy",
+    );
+    assert!(!witness.authority_is_current(&before, room));
+    assert_eq!(
+        witness.authority_status(&after.native_authority, room),
+        Ok(())
+    );
+    assert!(witness.authority_is_current(&after.native_authority, room));
 }

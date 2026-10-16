@@ -16,9 +16,58 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use ui::widget::{Button, Widget};
+use ui::framework::{EffectAnswer, EffectCx, Effected};
+use ui::tilo_resource;
+use ui::widget::{Button, Row, Spacer, Widget};
 
-use crate::widgets::{caption, card, hero, rows, value_row};
+use crate::host::PaneCx;
+use crate::i18n::t;
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
+use crate::widgets::{block_section, card, hero, note, row, rows, value_row};
+
+/// What About offers to do with this device's identity.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum AboutEffect {
+    /// Open the identity backup, to carry the person's identity to a new
+    /// device.
+    #[effect(job, label = "Back up identity")]
+    BackUpIdentity,
+}
+
+/// Answer `effect` by opening the tool it names.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "every area answers through the effect vocabulary's one signature"
+)]
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: AboutEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    match effect {
+        AboutEffect::BackUpIdentity => {
+            if !app.host().reaches_devices() {
+                return Err("only a window someone uses opens the identity backup".into());
+            }
+            Ok(cx.thread(
+                move |_| os_actions::open_tool(portable_identity_backup_intent()),
+                |_: &mut SettingsApp, opened: Result<(), String>, _| {
+                    opened.map(|()| Effected::done())
+                },
+            ))
+        }
+    }
+}
+
+fn fact(value: &str) -> String {
+    if value == "unknown" {
+        t("settings-about-unknown")
+    } else {
+        value.to_string()
+    }
+}
 
 pub const PORTABLE_BACKUP_BUTTON: &str = "about.identity-backup.button";
 
@@ -138,61 +187,72 @@ impl AboutInfo {
     }
 }
 
-pub fn build() -> Box<dyn Widget> {
-    build_with(&AboutInfo::from_system())
+pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
+    build_with(cx, &AboutInfo::from_system())
 }
 
-pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
+pub fn build_with(cx: &PaneCx, info: &AboutInfo) -> Box<dyn Widget> {
     // A device-identity hero: the machine's name in the accent, the OS beneath.
-    let hero_block = hero(ui::icons::Icon::Monitor, &info.hostname, &info.pretty_name);
+    let hero_block = block_section(Box::new(
+        ui::widget::Column::new()
+            .with_no_padding()
+            .push(hero(ui::icons::Icon::Monitor, &info.hostname))
+            .push(Box::new(
+                ui::widget::Text::new(&info.pretty_name)
+                    .with_role(ui::tokens::typography::TextRole::Body),
+            )),
+    ));
 
+    let person = info
+        .identity_name
+        .as_deref()
+        .map_or_else(|| t("settings-about-not-connected"), str::to_string);
+    let pretty = fact(&info.pretty_name);
+    let kernel = fact(&info.kernel);
+    let arch = fact(&info.arch);
+    let uptime = fact(&info.uptime);
+    let cpu = fact(&info.cpu);
+    let memory = fact(&info.memory);
+    let backup_label = t("settings-about-backup-button");
     let identity = card(
-        "Workspace identity",
+        &t("settings-about-identity-card"),
         rows(vec![
-            value_row(
-                "Person",
-                info.identity_name.as_deref().unwrap_or("Not connected"),
-            ),
-            value_row("Identity", &info.fingerprint()),
-            caption(
-                "This is the identity selected for the current workspace. \
-                 Apps receive its public profile; private signing material stays outside the sandbox.",
-            ),
+            value_row(&t("settings-about-person"), &person),
+            value_row(&t("settings-about-identity"), &info.fingerprint()),
+            note(&t("settings-about-identity-caption")),
         ]),
     );
 
     let backup = card(
-        "Identity backup",
+        &t("settings-about-backup-card"),
         rows(vec![
-            caption(
-                "Create an encrypted portable copy of your identity. Tilo asks for a passphrase, \
-                 lets you choose where to save it, and verifies the copy before confirming success.",
-            ),
-            Box::new(
-                Button::new(PORTABLE_BACKUP_BUTTON, "Create encrypted backup…", None)
-                    .with_size(236.0, 40.0)
-                    .on_effect(|| {
-                        let _ = os_actions::open_tool(portable_identity_backup_intent());
-                    }),
-            ),
+            note(&t("settings-about-backup-caption")),
+            row(Box::new(
+                Row::new()
+                    .push(Box::new(cx.bind_invocation(
+                        Button::new(PORTABLE_BACKUP_BUTTON, &backup_label),
+                        AboutEffect::BackUpIdentity,
+                    )))
+                    .push(Box::new(Spacer::new())),
+            )),
         ]),
     );
 
     let system = card(
-        "System",
+        &t("settings-about-system-card"),
         rows(vec![
-            value_row("OS", &info.pretty_name),
-            value_row("Kernel", &info.kernel),
-            value_row("Architecture", &info.arch),
-            value_row("Uptime", &info.uptime),
+            value_row(&t("settings-about-os"), &pretty),
+            value_row(&t("settings-about-kernel"), &kernel),
+            value_row(&t("settings-about-architecture"), &arch),
+            value_row(&t("settings-about-uptime"), &uptime),
         ]),
     );
 
     let hardware = card(
-        "Hardware",
+        &t("settings-about-hardware-card"),
         rows(vec![
-            value_row("Processor", &info.cpu),
-            value_row("Memory", &info.memory),
+            value_row(&t("settings-about-processor"), &cpu),
+            value_row(&t("settings-about-memory"), &memory),
         ]),
     );
 

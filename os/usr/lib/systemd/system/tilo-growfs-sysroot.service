@@ -28,7 +28,10 @@ IOWeight=20
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 UMask=0077
-NoNewPrivileges=yes
+# No NoNewPrivileges=: the remount and the grow belong in their own SELinux
+# domains (mount_t, fsadm_t). NNP forbids those transitions, so every boot
+# logged two denials and both ran in the script's initrc_t instead.
+# Capabilities and the sandbox below still bound what the unit can do.
 PrivateTmp=yes
 PrivateNetwork=yes
 PrivateIPC=yes
@@ -54,7 +57,7 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RemoveIPC=yes
-# Filesystem resize ioctls require CAP_SYS_ADMIN; retain no other capability.
-CapabilityBoundingSet=CAP_SYS_ADMIN
+# Btrfs needs CAP_SYS_ADMIN; Ext4 online resize also needs CAP_SYS_RESOURCE.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_RESOURCE
 AmbientCapabilities=
 SystemCallArchitectures=native

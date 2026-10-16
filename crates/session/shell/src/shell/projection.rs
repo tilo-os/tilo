@@ -5,23 +5,35 @@
 //! Google Cast, `AirPlay` and `FCast` have different discovery and authentication
 //! handshakes, but the UI must not grow four subtly different connection flows.
 //!
-//! The production integration point is `/usr/libexec/tilo-projector`. It speaks
-//! newline-free JSON on stdout for discovery and receives one protocol-neutral
-//! connection request. Tests replace it with an in-memory backend, so every state
-//! transition is exercised without pretending a receiver exists.
+//! The production integration point is the `tilo-projector` service's control
+//! socket (`tilo_projector::control`): typed requests in, session events out,
+//! over one connection the shell holds. Tests replace it with an in-memory
+//! backend, so every state transition is exercised without pretending a
+//! receiver exists.
 
 use std::fmt;
-use std::process::Command;
-use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::time::Duration;
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+use tilo_lock::MutexRecover as _;
+use tilo_projector::CaptureProfile;
+use tilo_projector::control::{self, ConnectStage, Credential, ProjectorEvent, ProjectorRequest};
 pub use tilo_projector::{
     DisplayResolutionLimit, DisplayStreamPolicy, ProjectionDevice, ProjectionMode,
     ProjectionOptions, ProjectionProtocol,
 };
 
-const PROJECTOR_OUTPUT_LIMIT: usize = 1024 * 1024;
-const PROJECTOR_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long a discovery listens for receivers.
+const DISCOVERY_WINDOW_MS: u64 = 1_500;
+/// Replies may take their own bound plus this much: the service's 15 s ready
+/// timeout and 3 s stop bound for a connect, the 3 s stop bound for a
+/// disconnect.
+const DISCOVER_REPLY_TIMEOUT: Duration = Duration::from_millis(6_500);
+const CONNECT_REPLY_TIMEOUT: Duration = Duration::from_secs(25);
+const DISCONNECT_REPLY_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectionStatus {
@@ -57,94 +69,210 @@ pub trait ProjectionBackend: Send + 'static {
     /// Returns a user-facing message if the projection service refuses
     /// or fails the disconnect.
     fn disconnect(&mut self, device: &ProjectionDevice) -> Result<(), String>;
+
+    /// Gives the backend somewhere to report session changes nobody asked
+    /// for. Backends without a live service (tests) have none to report.
+    fn set_notice_sink(&mut self, _sink: NoticeSink) {}
+}
+
+/// A session change the backend learns of without being asked: the receiver
+/// went away, or the projection service itself did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProjectionNotice {
+    Ended {
+        device_id: String,
+        error: Option<String>,
+    },
+    ServiceLost,
+}
+
+/// Where a backend delivers [`ProjectionNotice`]s.
+pub type NoticeSink = Arc<dyn Fn(ProjectionNotice) + Send + Sync>;
+
+/// Capture profiles the projection service asks for, fanned out to the
+/// compositor's capture tap. The service reports a profile only when it
+/// changes, so the tap drains a channel instead of reading anything per frame.
+static CAPTURE_PROFILES: Mutex<Vec<Sender<CaptureProfile>>> = Mutex::new(Vec::new());
+
+/// A channel of every capture profile the projection service sends from now on.
+pub fn subscribe_capture_profiles() -> Receiver<CaptureProfile> {
+    let (tx, rx) = mpsc::channel();
+    CAPTURE_PROFILES.lock_recover().push(tx);
+    rx
+}
+
+fn publish_capture_profile(profile: CaptureProfile) {
+    CAPTURE_PROFILES
+        .lock_recover()
+        .retain(|tx| tx.send(profile).is_ok());
 }
 
 /// Production adapter for the small privileged projection broker provided by
 /// the OS image. The compositor never grants a third-party app raw `PipeWire`,
 /// Wi-Fi Direct or mDNS access just to populate this picker.
-#[derive(Clone, Debug)]
+///
+/// It holds one connection to the broker's control socket for as long as the
+/// shell runs. That connection is the broker's reason to keep a session
+/// going: when the shell exits or crashes, the broker stops projecting.
 pub struct SystemProjectionBackend {
-    helper: String,
+    socket: Option<PathBuf>,
+    link: Option<ControlLink>,
+    notices: Option<NoticeSink>,
+}
+
+impl fmt::Debug for SystemProjectionBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SystemProjectionBackend")
+            .field("socket", &self.socket)
+            .field("connected", &self.link.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for SystemProjectionBackend {
     fn default() -> Self {
         #[cfg(test)]
-        crate::shell::test_support::ambient_start("projection helper resolver");
-        Self {
-            helper: std::env::var("TILO_PROJECTOR_HELPER")
-                .unwrap_or_else(|_| "/usr/libexec/tilo-projector".into()),
-        }
+        crate::shell::test_support::ambient_start("projection service resolver");
+        Self::with_socket(control::control_socket())
     }
 }
 
+/// One open control connection: the write half, and the events its reader
+/// thread forwards.
+struct ControlLink {
+    writer: UnixStream,
+    events: Receiver<ProjectorEvent>,
+}
+
 impl SystemProjectionBackend {
-    pub fn with_helper(helper: impl Into<String>) -> Self {
+    pub fn with_socket(socket: Option<PathBuf>) -> Self {
         Self {
-            helper: helper.into(),
+            socket,
+            link: None,
+            notices: None,
         }
     }
 
-    fn run(
-        &self,
-        args: &[&str],
-        credential: Option<&str>,
-    ) -> Result<bounded_command::Output, String> {
-        let mut command = Command::new(&self.helper);
-        command.args(args);
-        if let Some(credential) = credential {
-            command.env("TILO_PROJECTION_CREDENTIAL", credential);
+    fn unavailable(error: impl fmt::Display) -> String {
+        crate::shell::i18n::t_args(
+            "projection-service-unavailable-detail",
+            &[("error", error.to_string().into())],
+        )
+    }
+
+    fn open(&self) -> Result<ControlLink, String> {
+        let socket = self
+            .socket
+            .as_ref()
+            .ok_or_else(|| Self::unavailable("XDG_RUNTIME_DIR is unavailable"))?;
+        let writer = UnixStream::connect(socket).map_err(Self::unavailable)?;
+        let mut reader = writer.try_clone().map_err(Self::unavailable)?;
+        let (tx, events) = mpsc::channel();
+        let notices = self.notices.clone();
+        std::thread::Builder::new()
+            .name("tilo-projection-events".into())
+            .spawn(move || {
+                while let Ok(Some(event)) = control::read_event(&mut reader) {
+                    match event {
+                        ProjectorEvent::CaptureProfile(profile) => {
+                            publish_capture_profile(profile);
+                        }
+                        ProjectorEvent::Ended { device_id, error } => {
+                            if let Some(notices) = notices.as_ref() {
+                                notices(ProjectionNotice::Ended {
+                                    device_id: device_id.clone(),
+                                    error: error.clone(),
+                                });
+                            }
+                            let _ = tx.send(ProjectorEvent::Ended { device_id, error });
+                        }
+                        event => {
+                            let _ = tx.send(event);
+                        }
+                    }
+                }
+                if let Some(notices) = notices.as_ref() {
+                    notices(ProjectionNotice::ServiceLost);
+                }
+            })
+            .map_err(Self::unavailable)?;
+        Ok(ControlLink { writer, events })
+    }
+
+    /// Sends `request` on the shared connection, opening (or reopening, after
+    /// the broker restarted) it as needed, and returns the event stream to
+    /// read the reply from. Events nobody waited for are dropped first.
+    fn send(&mut self, request: &ProjectorRequest) -> Result<&Receiver<ProjectorEvent>, String> {
+        let mut last_error = None;
+        for _ in 0..2 {
+            let mut link = match self.link.take() {
+                Some(link) => link,
+                None => self.open()?,
+            };
+            let open = loop {
+                match link.events.try_recv() {
+                    Ok(_) => {}
+                    Err(TryRecvError::Empty) => break true,
+                    Err(TryRecvError::Disconnected) => break false,
+                }
+            };
+            if !open {
+                continue;
+            }
+            match control::write_request(&mut link.writer, request) {
+                Ok(()) => return Ok(&self.link.insert(link).events),
+                Err(error) => last_error = Some(error.to_string()),
+            }
         }
-        bounded_command::run_prepared(command, None, PROJECTOR_OUTPUT_LIMIT, PROJECTOR_TIMEOUT)
-            .map_err(|e| {
-                crate::shell::i18n::t_args(
-                    "projection-service-unavailable-detail",
-                    &[("error", e.to_string().into())],
-                )
-            })
+        Err(Self::unavailable(
+            last_error.unwrap_or_else(|| "the connection closed".to_owned()),
+        ))
     }
 
-    fn checked(&self, args: &[&str]) -> Result<bounded_command::Output, String> {
-        self.checked_with_credential(args, None)
-    }
-
-    fn checked_with_credential(
-        &self,
-        args: &[&str],
-        credential: Option<&str>,
-    ) -> Result<bounded_command::Output, String> {
-        let out = self.run(args, credential)?;
-        if out.status.success() {
-            Ok(out)
-        } else {
-            let message = String::from_utf8_lossy(&out.stderr)
-                .chars()
-                .filter(|character| !character.is_control() || *character == ' ')
-                .take(512)
-                .collect::<String>();
-            let message = message.trim();
-            Err(if message.is_empty() {
-                crate::shell::i18n::t_args(
-                    "projection-service-exited",
-                    &[("status", out.status.to_string().into())],
-                )
-            } else {
-                message.to_owned()
-            })
+    /// Reads events until `reply` turns one into a result, or `timeout`
+    /// passes.
+    fn reply<T>(
+        &mut self,
+        request: &ProjectorRequest,
+        timeout: Duration,
+        mut answer: impl FnMut(ProjectorEvent) -> Option<Result<T, String>>,
+    ) -> Result<T, String> {
+        let deadline = Instant::now().checked_add(timeout);
+        let events = self.send(request)?;
+        loop {
+            let remaining = deadline.map_or(timeout, |deadline| {
+                deadline.saturating_duration_since(Instant::now())
+            });
+            match events.recv_timeout(remaining) {
+                Ok(event) => {
+                    if let Some(result) = answer(event) {
+                        return result;
+                    }
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(Self::unavailable("no reply in time"));
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(crate::shell::i18n::t("projection-service-stopped"));
+                }
+            }
         }
     }
 }
 
 impl ProjectionBackend for SystemProjectionBackend {
     fn discover(&mut self) -> Result<Vec<ProjectionDevice>, String> {
-        let out = self.checked(&["discover", "--json"])?;
-        let mut devices: Vec<ProjectionDevice> =
-            serde_json::from_slice(&out.stdout).map_err(|e| {
-                crate::shell::i18n::t_args(
-                    "projection-service-invalid-discovery",
-                    &[("error", e.to_string().into())],
-                )
-            })?;
+        let mut devices = self.reply(
+            &ProjectorRequest::Discover {
+                timeout_ms: DISCOVERY_WINDOW_MS,
+            },
+            DISCOVER_REPLY_TIMEOUT,
+            |event| match event {
+                ProjectorEvent::Devices(devices) => Some(Ok(devices)),
+                ProjectorEvent::Failed(error) => Some(Err(error)),
+                _ => None,
+            },
+        )?;
         // A receiver advertised on two interfaces must be one row. Sorting also
         // makes refreshes stable instead of visually shuffling the picker.
         devices.sort_by(|a, b| {
@@ -160,7 +288,7 @@ impl ProjectionBackend for SystemProjectionBackend {
     fn connect(
         &mut self,
         device: &ProjectionDevice,
-        options: ProjectionOptions,
+        mut options: ProjectionOptions,
     ) -> Result<(), String> {
         if !device.supports(options.mode) {
             return Err(crate::shell::i18n::t_args(
@@ -171,66 +299,51 @@ impl ProjectionBackend for SystemProjectionBackend {
                 ],
             ));
         }
-        let protocol = serde_json::to_value(device.protocol)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_else(|| "miracast".into());
-        let mode = serde_json::to_value(options.mode)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_else(|| "mirror".into());
-        let port = device.port.to_string();
-        let resolution_limit = serde_json::to_value(options.stream_policy.resolution_limit)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_else(|| "native".into());
-        let max_fps = options.stream_policy.max_fps.to_string();
-        self.checked_with_credential(
-            &[
-                "connect",
-                "--protocol",
-                &protocol,
-                "--device",
-                &device.id,
-                "--address",
-                device.addresses.first().map_or("", String::as_str),
-                "--port",
-                &port,
-                "--mode",
-                &mode,
-                "--resolution-limit",
-                &resolution_limit,
-                "--max-fps",
-                &max_fps,
-                if options.stream_policy.adaptive {
-                    "--adaptive"
-                } else {
-                    "--fixed"
-                },
-                if options.audio {
-                    "--audio"
-                } else {
-                    "--no-audio"
-                },
-            ],
-            options.credential.as_deref(),
-        )?;
-        Ok(())
+        // The secret crosses the socket in the request itself, never in an
+        // environment or argument, and is wiped once sent.
+        let credential = options.credential.take().map(Credential::new);
+        let request = ProjectorRequest::Connect {
+            device: device.clone(),
+            options,
+            credential,
+        };
+        // A running session to the same receiver ends before this one
+        // starts; only events after this session's start answer it.
+        let mut started = false;
+        self.reply(&request, CONNECT_REPLY_TIMEOUT, |event| match event {
+            ProjectorEvent::Connecting { device_id, stage } if device_id == device.id => {
+                started |= stage == ConnectStage::Starting;
+                None
+            }
+            ProjectorEvent::Connected { device_id } if started && device_id == device.id => {
+                Some(Ok(()))
+            }
+            ProjectorEvent::Ended { device_id, error } if started && device_id == device.id => {
+                Some(Err(error.unwrap_or_else(|| {
+                    crate::shell::i18n::t("projection-service-stopped")
+                })))
+            }
+            ProjectorEvent::Failed(error) => Some(Err(error)),
+            _ => None,
+        })
     }
 
-    fn disconnect(&mut self, device: &ProjectionDevice) -> Result<(), String> {
-        let protocol = serde_json::to_value(device.protocol)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_owned))
-            .unwrap_or_else(|| "miracast".into());
-        self.checked(&[
-            "disconnect",
-            "--protocol",
-            &protocol,
-            "--device",
-            &device.id,
-        ])?;
-        Ok(())
+    fn disconnect(&mut self, _device: &ProjectionDevice) -> Result<(), String> {
+        self.reply(
+            &ProjectorRequest::Disconnect,
+            DISCONNECT_REPLY_TIMEOUT,
+            |event| match event {
+                ProjectorEvent::Idle => Some(Ok(())),
+                ProjectorEvent::Failed(error) => Some(Err(error)),
+                _ => None,
+            },
+        )
+    }
+
+    fn set_notice_sink(&mut self, sink: NoticeSink) {
+        self.notices = Some(sink);
+        // A connection opened before this would not report to the sink.
+        self.link = None;
     }
 }
 
@@ -244,6 +357,7 @@ enum WorkerEvent {
     Discovered(Result<Vec<ProjectionDevice>, String>),
     Connected(String, Result<(), String>),
     Disconnected(String, Result<(), String>),
+    Notice(ProjectionNotice),
 }
 
 /// Non-blocking façade consumed by the overlay.
@@ -279,6 +393,10 @@ impl ProjectionController {
         crate::shell::test_support::ambient_start("projection live worker");
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
+        let notice_tx = event_tx.clone();
+        backend.set_notice_sink(Arc::new(move |notice| {
+            let _ = notice_tx.send(WorkerEvent::Notice(notice));
+        }));
         let spawned = std::thread::Builder::new()
             .name("tilo-projection".into())
             .spawn(move || {
@@ -429,10 +547,32 @@ impl ProjectionController {
                     };
                     changed = true;
                 }
+                Ok(WorkerEvent::Notice(notice)) => {
+                    if let Some(status) = self.status_after(notice) {
+                        self.status = status;
+                        changed = true;
+                    }
+                }
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
             }
         }
         changed
+    }
+
+    /// What an unrequested session change means for the picker: only the
+    /// session it shows as connected can end under it. A connect or
+    /// disconnect in flight reports its own outcome.
+    fn status_after(&self, notice: ProjectionNotice) -> Option<ProjectionStatus> {
+        let ProjectionStatus::Connected { device_id: current } = &self.status else {
+            return None;
+        };
+        match notice {
+            ProjectionNotice::Ended { device_id, error } => (device_id == *current)
+                .then(|| error.map_or(ProjectionStatus::Idle, ProjectionStatus::Error)),
+            ProjectionNotice::ServiceLost => Some(ProjectionStatus::Error(crate::shell::i18n::t(
+                "projection-service-stopped",
+            ))),
+        }
     }
 
     pub fn move_selection(&mut self, delta: isize) {
@@ -611,5 +751,133 @@ mod tests {
         unsupported_layout_falls_back_to_duplicate_before_connecting();
         airplay_pairing_secret_crosses_once_and_is_immediately_forgotten();
         unsupported_layouts_are_exposed_as_disabled_to_the_overlay();
+    }
+
+    /// The production backend against a stand-in broker on a real socket:
+    /// one connection for every request, the credential inside the connect
+    /// request, profiles to the capture tap and an unrequested end reported.
+    #[test]
+    fn system_backend_speaks_the_projector_control_socket() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().expect("runtime dir");
+        let socket = dir.path().join("control.sock");
+        let listener = UnixListener::bind(&socket).expect("broker socket");
+        let receiver = device(ProjectionProtocol::AirPlay);
+        let broker_device = receiver.clone();
+        let broker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("shell connects");
+            let Some(ProjectorRequest::Discover { .. }) =
+                control::read_request(&mut stream).expect("discover")
+            else {
+                panic!("expected a discovery request");
+            };
+            control::write_event(
+                &mut stream,
+                &ProjectorEvent::Devices(vec![broker_device.clone()]),
+            )
+            .expect("devices");
+            let Some(ProjectorRequest::Connect { credential, .. }) =
+                control::read_request(&mut stream).expect("connect")
+            else {
+                panic!("expected a connect request");
+            };
+            let credential = credential.map(|secret| secret.expose().to_owned());
+            for event in [
+                ProjectorEvent::Connecting {
+                    device_id: broker_device.id.clone(),
+                    stage: ConnectStage::Starting,
+                },
+                ProjectorEvent::CaptureProfile(CaptureProfile::new(1280, 720, 30, 4_000)),
+                ProjectorEvent::Connected {
+                    device_id: broker_device.id.clone(),
+                },
+                ProjectorEvent::Ended {
+                    device_id: broker_device.id.clone(),
+                    error: Some("receiver went to sleep".to_owned()),
+                },
+            ] {
+                control::write_event(&mut stream, &event).expect("session event");
+            }
+            // Only one connection: a second accept would mean the backend
+            // reconnected per request.
+            listener.set_nonblocking(true).expect("nonblocking");
+            assert!(
+                listener.accept().is_err(),
+                "one connection serves every request"
+            );
+            credential
+        });
+
+        let profiles = subscribe_capture_profiles();
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let mut backend = SystemProjectionBackend::with_socket(Some(socket));
+        let seen = notices.clone();
+        backend.set_notice_sink(Arc::new(move |notice| seen.lock().unwrap().push(notice)));
+        assert_eq!(
+            backend.discover().expect("discover"),
+            std::slice::from_ref(&receiver)
+        );
+        let options = ProjectionOptions {
+            credential: Some("4821".to_owned()),
+            ..ProjectionOptions::default()
+        };
+        backend.connect(&receiver, options).expect("connect");
+        assert_eq!(
+            broker.join().expect("broker").as_deref(),
+            Some("4821"),
+            "the credential crossed inside the connect request"
+        );
+        assert_eq!(
+            profiles
+                .recv_timeout(tilo_test_env::hang_bound())
+                .expect("profile reaches the capture tap"),
+            CaptureProfile::new(1280, 720, 30, 4_000)
+        );
+        let deadline = tilo_test_env::hang_deadline();
+        while notices.lock().unwrap().len() < 2 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(
+            *notices.lock().unwrap(),
+            [
+                ProjectionNotice::Ended {
+                    device_id: receiver.id.clone(),
+                    error: Some("receiver went to sleep".to_owned()),
+                },
+                ProjectionNotice::ServiceLost,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_connected_session_that_ends_unasked_returns_the_picker_to_idle_or_error() {
+        let mut controller = ProjectionController::new(Box::new(FakeBackend::default()));
+        controller.status = ProjectionStatus::Connected {
+            device_id: "studio".to_owned(),
+        };
+        assert_eq!(
+            controller.status_after(ProjectionNotice::Ended {
+                device_id: "other".to_owned(),
+                error: None,
+            }),
+            None,
+            "another receiver's session is not this one"
+        );
+        assert_eq!(
+            controller.status_after(ProjectionNotice::Ended {
+                device_id: "studio".to_owned(),
+                error: Some("receiver went to sleep".to_owned()),
+            }),
+            Some(ProjectionStatus::Error("receiver went to sleep".to_owned()))
+        );
+        controller.status = ProjectionStatus::Connecting {
+            device_id: "studio".to_owned(),
+        };
+        assert_eq!(
+            controller.status_after(ProjectionNotice::ServiceLost),
+            None,
+            "a request in flight reports its own outcome"
+        );
     }
 }

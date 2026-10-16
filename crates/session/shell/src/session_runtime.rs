@@ -10,8 +10,9 @@
 //! Peer sync keeps a separate runtime (see `ShellNetwork::spawn`), because it
 //! is torn down and rebuilt with the network and its tasks must end with it.
 
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
+use tilo_lock::MutexRecover as _;
 use tokio::runtime::Runtime;
 
 /// Two workers: the services here wait on the bus, they do not compute.
@@ -151,6 +152,34 @@ where
     PendingStart { mailbox }
 }
 
+/// The thread session start's blocking jobs run on, one at a time in the
+/// order they were started: binding the collaboration broker opens its
+/// invocation journal (directory and file syncs), its MLS vault (the system
+/// secret store) and every channel's sealed state. A thread of its own, so
+/// a slow keyring holds up neither the loop nor the state writer, and so
+/// it can be started before a test denies its loop thread disk syncs.
+pub fn start_worker() -> &'static crate::shell::durable_writer::DurableWriter {
+    static WORKER: OnceLock<crate::shell::durable_writer::DurableWriter> = OnceLock::new();
+    WORKER.get_or_init(|| crate::shell::durable_writer::DurableWriter::spawn("tilo-session-start"))
+}
+
+/// Run `job` on [`start_worker`] and deliver its outcome to the loop
+/// through `wake`. A job that panics is reported by [`PendingStart::poll`]
+/// as ended without an outcome, never waited on.
+pub fn start_on_worker<T, F>(wake: Wake, job: F) -> PendingStart<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    let (delivery, mailbox) = mailbox(wake);
+    match start_worker().submit_ordered(move || delivery.deliver(job())) {
+        Ok(()) => PendingStart { mailbox },
+        Err(error) => PendingStart::finished(Err(format!(
+            "the session start worker is unavailable: {error}"
+        ))),
+    }
+}
+
 enum Slot<T> {
     Pending,
     Registered(T),
@@ -188,7 +217,7 @@ impl<T: Send + 'static> Registration<T> {
             match register.await {
                 Ok(handle) => {
                     registered(&handle);
-                    let mut slot = task_slot.lock().unwrap_or_else(PoisonError::into_inner);
+                    let mut slot = task_slot.lock_recover();
                     if matches!(*slot, Slot::Pending) {
                         *slot = Slot::Registered(handle);
                     }
@@ -205,19 +234,13 @@ impl<T: Send + 'static> Registration<T> {
 
     /// Whether the registration has completed and is being held.
     pub fn is_registered(&self) -> bool {
-        matches!(
-            *self.slot.lock().unwrap_or_else(PoisonError::into_inner),
-            Slot::Registered(_)
-        )
+        matches!(*self.slot.lock_recover(), Slot::Registered(_))
     }
 }
 
 impl<T> Drop for Registration<T> {
     fn drop(&mut self) {
-        let released = std::mem::replace(
-            &mut *self.slot.lock().unwrap_or_else(PoisonError::into_inner),
-            Slot::Released,
-        );
+        let released = std::mem::replace(&mut *self.slot.lock_recover(), Slot::Released);
         drop(released);
     }
 }
@@ -238,7 +261,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
         let wake: Wake = Arc::new(move || {
-            let _ = tx.lock().unwrap_or_else(PoisonError::into_inner).send(());
+            let _ = tx.lock_recover().send(());
         });
         (wake, rx)
     }

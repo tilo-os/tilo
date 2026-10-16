@@ -13,6 +13,7 @@ use super::{
     Frame, FrameSlot, MediaElementInfo, PageFailure, PageReply, PageRequest, WebViewCommand,
     WebViewEngine, WebViewEvent,
 };
+use tilo_lock::MutexRecover as _;
 
 /// Height of the darker "chrome" band painted at the top of every test
 /// page, in physical pixels.
@@ -21,6 +22,7 @@ const HEADER_BAND_PX: u32 = 24;
 #[derive(Default)]
 struct Inner {
     history: Vec<String>,
+    last_navigation_request: u32,
     history_snapshot: Option<(u32, Vec<usize>)>,
     /// `history.is_empty()` means nothing loaded yet.
     index: usize,
@@ -33,6 +35,11 @@ struct Inner {
     page_replies: std::collections::VecDeque<Result<PageReply, PageFailure>>,
     next_download: u64,
     downloads: std::collections::HashMap<String, String>,
+    /// Every `set_visible` the engine was told, oldest first.
+    visibility: Vec<bool>,
+    /// What a paint capture answers with; `None` until a test sets one.
+    paint_snapshot: Option<String>,
+    paint_resources: std::collections::HashMap<String, Vec<u8>>,
 }
 
 pub struct TestEngine {
@@ -68,6 +75,17 @@ impl TestEngine {
         self.lock_inner().media_element = media;
     }
 
+    /// Every visibility change the engine was told, oldest first.
+    pub fn visibility_changes(&self) -> Vec<bool> {
+        self.lock_inner().visibility.clone()
+    }
+
+    /// Answer every later paint capture with this layout snapshot (raw
+    /// `DOMSnapshot` JSON), as a real engine would for its current page.
+    pub fn set_paint_snapshot(&self, snapshot: impl Into<String>) {
+        self.lock_inner().paint_snapshot = Some(snapshot.into());
+    }
+
     /// Queue the answer to the next page request. Without one, an outline
     /// is a single document line and every other request succeeds.
     pub fn push_page_reply(&self, reply: Result<PageReply, PageFailure>) {
@@ -83,8 +101,21 @@ impl TestEngine {
         }
         let url = inner.history.get(inner.index).cloned().unwrap_or_default();
         Ok(PageReply {
-            outline: matches!(request, PageRequest::Outline)
+            outline: matches!(request, PageRequest::Outline | PageRequest::Changes)
                 .then(|| format!("- document \"{url} — test page\"")),
+            // Logs and lookups answer with an empty, well-formed finding.
+            data: match request {
+                PageRequest::Console { .. } | PageRequest::Network { .. } => {
+                    Some(serde_json::json!({"entries": [], "next": 0, "dropped": 0}))
+                }
+                PageRequest::At { x, y } => {
+                    Some(serde_json::json!({"x": x, "y": y, "element": null}))
+                }
+                PageRequest::Settle { .. } => {
+                    Some(serde_json::json!({"settled": true, "waited_ms": 0}))
+                }
+                _ => None,
+            },
             message: "Done".into(),
             url,
             navigated: false,
@@ -154,6 +185,48 @@ impl TestEngine {
 }
 
 impl TestEngine {
+    fn navigate_locked(
+        &self,
+        inner: &mut Inner,
+        command: super::NavigationCommand,
+    ) -> Result<(), String> {
+        match command {
+            super::NavigationCommand::Navigate { url } => {
+                if !inner.history.is_empty() {
+                    inner.history.truncate(inner.index.saturating_add(1));
+                }
+                inner.history.push(url);
+                inner.index = inner.history.len().saturating_sub(1);
+            }
+            super::NavigationCommand::Back if inner.index > 0 => inner.index -= 1,
+            super::NavigationCommand::Forward
+                if inner.index.saturating_add(1) < inner.history.len() =>
+            {
+                inner.index += 1
+            }
+            super::NavigationCommand::Reload if !inner.history.is_empty() => {}
+            super::NavigationCommand::HistoryEntry {
+                history_request_id,
+                id,
+            } => {
+                let index = usize::try_from(id.saturating_sub(1)).unwrap_or(usize::MAX);
+                if !inner
+                    .history_snapshot
+                    .as_ref()
+                    .is_some_and(|(request, indices)| {
+                        *request == history_request_id && indices.contains(&index)
+                    })
+                {
+                    return Err("The history entry is no longer available".into());
+                }
+                inner.index = index;
+            }
+            _ => return Err("Navigation is unavailable".into()),
+        }
+        self.emit_navigation_locked(inner);
+        Ok(())
+    }
+
     fn emit_history_locked(
         inner: &mut Inner,
         request_id: u32,
@@ -203,28 +276,73 @@ impl TestEngine {
     /// holding the lock, rather than making every later call into the
     /// engine panic too.
     fn lock_inner(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner.lock_recover()
     }
 
     /// Same recovery as [`Self::lock_inner`], for the frame slot.
     fn lock_frames(&self) -> std::sync::MutexGuard<'_, Option<Frame>> {
-        self.frames
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.frames.lock_recover()
     }
 }
 
 impl WebViewEngine for TestEngine {
+    fn navigate_owned(
+        &self,
+        request_id: u32,
+        command: super::NavigationCommand,
+    ) -> Result<(), String> {
+        if !super::navigation_request_id(request_id) || !command.valid() {
+            return Err("Invalid owned navigation request".into());
+        }
+        let mut inner = self.lock_inner();
+        if request_id <= inner.last_navigation_request {
+            return Err("Navigation request IDs must increase without reuse".into());
+        }
+        if inner
+            .events
+            .iter()
+            .filter(|event| matches!(event, WebViewEvent::NavigationOutcome { .. }))
+            .count()
+            >= 32
+        {
+            return Err("Navigation outcome capacity reached".into());
+        }
+        inner.last_navigation_request = request_id;
+        inner.commands.push(WebViewCommand::ScopedNavigation {
+            request_id,
+            command: command.clone(),
+        });
+        let error = self.navigate_locked(&mut inner, command).err();
+        let uri = inner.history.get(inner.index).cloned().unwrap_or_default();
+        inner.events.push(WebViewEvent::NavigationOutcome {
+            request_id,
+            uri,
+            error,
+        });
+        Ok(())
+    }
+    fn set_visible(&self, visible: bool) {
+        self.lock_inner().visibility.push(visible);
+    }
     #[allow(
         clippy::too_many_lines,
         reason = "the deterministic command interpreter keeps each WebView command's recorded test effect in one exhaustive match"
     )]
     fn send(&self, cmd: WebViewCommand) {
+        if let WebViewCommand::ScopedNavigation {
+            request_id,
+            command,
+        } = cmd
+        {
+            let _ = self.navigate_owned(request_id, command);
+            return;
+        }
         let mut inner = self.lock_inner();
         inner.commands.push(cmd.clone());
         match cmd {
+            WebViewCommand::CancelScopedNavigation { request_id } => {
+                inner.events.retain(|event| !matches!(event, WebViewEvent::NavigationOutcome { request_id: id, .. } if *id == request_id));
+            }
             WebViewCommand::SetAudioMuted(muted) => {
                 inner.events.push(WebViewEvent::AudioMutedChanged(muted));
             }
@@ -283,11 +401,13 @@ impl WebViewEngine for TestEngine {
                 inner.scale_factor = scale_factor;
                 self.render_locked(&inner);
             }
-            // Input and filter commands are recorded (above) but have no
-            // observable page effect in the test engine.
-            WebViewCommand::SetBlockingScripts(_)
+            // Owned navigation returned before locking; input/filter commands
+            // are recorded above but have no observable page effect here.
+            WebViewCommand::ScopedNavigation { .. }
+            | WebViewCommand::SetBlockingScripts(_)
             | WebViewCommand::SetSiteExceptions(_)
             | WebViewCommand::RequestSiteStatus { .. }
+            | WebViewCommand::DevTools { .. }
             | WebViewCommand::Credentials(_)
             | WebViewCommand::SiteAction { .. }
             | WebViewCommand::StopLoading
@@ -330,6 +450,19 @@ impl WebViewEngine for TestEngine {
                 inner
                     .events
                     .push(WebViewEvent::PageResult { request_id, result });
+            }
+            WebViewCommand::PaintCapture { request_id } => {
+                let snapshot = inner.paint_snapshot.clone();
+                inner.events.push(WebViewEvent::PaintSnapshot {
+                    request_id,
+                    snapshot,
+                });
+            }
+            WebViewCommand::PaintResource { request_id, url } => {
+                let bytes = inner.paint_resources.get(&url).cloned();
+                inner
+                    .events
+                    .push(WebViewEvent::PaintResource { request_id, bytes });
             }
             WebViewCommand::StartDownload { uri } => {
                 if !(uri.starts_with("http://") || uri.starts_with("https://")) {

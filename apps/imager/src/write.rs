@@ -31,8 +31,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
-#[cfg(any(test, target_os = "macos", target_os = "windows"))]
-use ui::time::Instant;
 
 use crate::model::{
     Action, InstallProfile, JobPhase, Progress, Source, SourceIdentity, TargetDrive,
@@ -73,7 +71,7 @@ pub enum WriteBackend {
     /// Raw-device effects are unavailable in this process (tests and shots).
     Disabled,
     /// Real raw write via a direct block-device open. Selecting this is itself
-    /// gated (see [`WriteBackend::system`]); it is never the default.
+    /// gated (see [`WriteBackend::for_window`]); it is never the default.
     System,
     /// The unprivileged live UI will authenticate a short-lived platform
     /// helper at write time.
@@ -85,19 +83,18 @@ pub enum WriteBackend {
 }
 
 impl WriteBackend {
-    /// Choose the backend for the running process. The allow gate is retained
-    /// for deliberate root-side diagnostics; normal live UI uses the narrow
-    /// helper, while tests and shots remain disabled.
-    pub fn system() -> Self {
+    /// Choose the backend for a window: `live` when someone uses it, never
+    /// for a screenshot, a past version or a test. The allow gate is
+    /// retained for deliberate root-side diagnostics; a live window uses the
+    /// narrow helper.
+    pub fn for_window(live: bool) -> Self {
         if cfg!(all(target_os = "linux", feature = "flatpak-media-writer"))
             && std::env::var("TILO_IMAGER_FLATPAK").as_deref() == Ok("1")
         {
             WriteBackend::Udisks2
         } else if allow_write() {
             WriteBackend::System
-        } else if cfg!(feature = "host-media-writer")
-            || std::env::var("IMAGER_LIVE").as_deref() == Ok("1")
-        {
+        } else if cfg!(feature = "host-media-writer") || live {
             WriteBackend::PrivilegedHelper
         } else {
             WriteBackend::Disabled
@@ -110,15 +107,6 @@ impl WriteBackend {
     pub fn is_available(self) -> bool {
         self != WriteBackend::Disabled
     }
-}
-
-/// Whether the running process has a real raw-media write path.
-///
-/// The live application normally returns `true` because it authenticates a
-/// narrow privileged helper at write time. `TILO_IMAGER_ALLOW_WRITE` is only
-/// the explicit diagnostic opt-in for writing directly in this process.
-pub fn write_available() -> bool {
-    WriteBackend::system().is_available()
 }
 
 /// The env allow-gate. `TILO_IMAGER_ALLOW_WRITE=1` is the single switch that
@@ -984,13 +972,13 @@ fn run_system_job(
                     "could not apply Wi-Fi and identity onto the written disk: {error}"
                 ));
             }
-            let _ = std::fs::remove_dir_all(stage);
         }
         if result.is_success() && should_cancel() {
             result = JobResult::Cancelled;
         }
         finish_target(&req.target, &result);
     }
+    release_handoff_stage(req);
     // Keep the per-device exclusion through platform finalization, then make
     // its release point explicit before reporting the terminal event.
     drop(target_lock);
@@ -1097,6 +1085,7 @@ fn run_udisks_job(
     let mut device = match open_udisks_device(&req.target) {
         Ok(device) => device,
         Err(error) => {
+            release_handoff_stage(req);
             let result = JobResult::WriteFailed(error.to_string());
             on_progress(Progress {
                 phase: JobPhase::Failed,
@@ -1121,8 +1110,8 @@ fn run_udisks_job(
                 "could not apply Wi-Fi and identity onto the written disk: {error}"
             ));
         }
-        let _ = std::fs::remove_dir_all(stage);
     }
+    release_handoff_stage(req);
     let error = match &result {
         JobResult::Verified => None,
         JobResult::WriteFailed(message) => Some(format!("Could not write the drive: {message}")),
@@ -1153,8 +1142,41 @@ fn run_udisks_job(
 
 const WRITE_HELPER_ARG: &str = "--tilo-write-helper";
 
-/// Mount the written disk and copy the staged Wi-Fi / identity tree onto it.
-#[cfg(target_os = "linux")]
+/// The staged tree holds the Wi-Fi passphrase and possibly a device key.
+/// It goes away on every exit, including a write that never started.
+fn release_handoff_stage(req: &WriteRequest) {
+    if let Some(stage) = req.handoff_stage.as_deref() {
+        let _ = std::fs::remove_dir_all(stage);
+    }
+}
+
+/// Customize only a regular disk image through the shared installed-root path.
+///
+/// # Errors
+/// Returns target metadata, mounted-root discovery, or copy errors.
+pub(crate) fn apply_handoff_stage_to_image_file(image: &Path, staged: &Path) -> io::Result<()> {
+    let meta = std::fs::symlink_metadata(image)?;
+    if !meta.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "customization target must be a regular image file",
+        ));
+    }
+    let mountpoint = tempfile::Builder::new()
+        .prefix("tilo-imager-root-")
+        .tempdir()?;
+    if block_devices::installed_root::with_written_root(image, mountpoint.path(), |mnt| {
+        apply_handoff_stage_onto_mounted_root(mnt, staged)
+    })? {
+        Ok(())
+    } else {
+        Err(io::Error::other(
+            "the image has no installed Tilo root; customization was not applied",
+        ))
+    }
+}
+
+/// Apply the staged tree through the shared native disk boundary.
 fn apply_handoff_stage_to_device(
     device: &Path,
     staged: &Path,
@@ -1167,119 +1189,67 @@ fn apply_handoff_stage_to_device(
             "setup handoff staging directory is missing",
         ));
     }
-    let loop_dev = {
-        let output = match std::process::Command::new("losetup")
-            .args(["-fP", "--show"])
-            .arg(device)
-            .output()
-        {
-            Ok(output) if output.status.success() => output,
-            _ => {
-                return crate::handoff::embed_setup_handoff(device, image_len, device_len, staged);
-            }
-        };
-        String::from_utf8(output.stdout)
-            .map_err(io::Error::other)?
-            .trim()
-            .to_string()
-    };
-    let finish = |result: io::Result<()>| {
-        let _ = std::process::Command::new("losetup")
-            .args(["-d", &loop_dev])
-            .status();
-        result
-    };
-    let embed = || crate::handoff::embed_setup_handoff(device, image_len, device_len, staged);
-    let Some(root_part) = find_tilo_root_partition(&loop_dev) else {
-        return finish(embed());
-    };
-    let mnt = tempfile::Builder::new()
+    let mountpoint = tempfile::Builder::new()
         .prefix("tilo-imager-root-")
         .tempdir()?;
-    let mount = std::process::Command::new("mount")
-        .args([&root_part, mnt.path().to_str().unwrap_or("/tmp")])
-        .status();
-    match mount {
-        Ok(status) if status.success() => {}
-        _ => return finish(embed()),
+    if block_devices::installed_root::with_written_root(device, mountpoint.path(), |mnt| {
+        apply_handoff_stage_onto_mounted_root(mnt, staged)
+    })? {
+        Ok(())
+    } else {
+        handoff_when_root_was_not_found(device, image_len, device_len, staged)
     }
-    let applied = apply_handoff_stage_onto_mounted_root(mnt.path(), staged);
-    let _ = std::process::Command::new("umount")
-        .arg(mnt.path())
-        .status();
-    if applied
-        .as_ref()
-        .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
-    {
-        return finish(embed());
-    }
-    finish(applied)
 }
 
-/// Copy a staged handoff tree onto an already-mounted installed root.
-///
-/// Production mounts via losetup; tests exercise this with a fixture tree.
 pub(crate) fn apply_handoff_stage_onto_mounted_root(mnt: &Path, staged: &Path) -> io::Result<()> {
     crate::handoff::install_staged_onto_mounted_root(mnt, staged)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn apply_handoff_stage_to_device(
-    _device: &Path,
-    _staged: &Path,
-    _image_len: u64,
-    _device_len: u64,
+#[cfg(test)]
+use block_devices::installed_root::{
+    mountpoint_listing_is_busy, root_listing_waits_for_filesystem_type, select_tilo_root_partition,
+};
+
+#[cfg(test)]
+fn copy_handoff_onto_installed_root(root_part: &str, staged: &Path) -> io::Result<()> {
+    let mountpoint = tempfile::tempdir()?;
+    block_devices::installed_root::with_mounted_root(root_part, mountpoint.path(), |mnt| {
+        apply_handoff_stage_onto_mounted_root(mnt, staged)
+    })
+}
+
+/// No installed root was found, either because `losetup` failed or because
+/// the loop device had no Tilo filesystem. A block device in that state is
+/// an installer stick: the slack handoff is what the live installer reads.
+/// A regular file that is a GUID-partition or qcow2 disk image is not.
+/// Hiding Wi-Fi and identity in its slack reports success, and a VM boot of
+/// that file never reads it.
+fn handoff_when_root_was_not_found(
+    device: &Path,
+    image_len: u64,
+    device_len: u64,
+    staged: &Path,
 ) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "applying Wi-Fi and identity onto a written disk requires Linux",
-    ))
+    if regular_file_is_disk_image(device)? {
+        return Err(io::Error::other(
+            "could not inspect the written image for an installed root, so Wi-Fi and identity were not applied",
+        ));
+    }
+    crate::handoff::embed_setup_handoff(device, image_len, device_len, staged)
 }
 
-#[cfg(target_os = "linux")]
-fn find_tilo_root_partition(loop_dev: &str) -> Option<String> {
-    // `losetup -P` creates the partition nodes before udev has identified
-    // their filesystems. Giving up on the first empty probe embeds the
-    // handoff in slack the installed system never reads.
-    for attempt in 0..8 {
-        if let Ok(output) = std::process::Command::new("lsblk")
-            .args(["-ln", "-o", "PATH,FSTYPE"])
-            .arg(loop_dev)
-            .output()
-            && output.status.success()
-        {
-            let text = String::from_utf8_lossy(&output.stdout);
-            if let Some(part) = select_tilo_root_partition(loop_dev, &text) {
-                return Some(part);
-            }
-        }
-        if attempt + 1 < 8 {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
+fn regular_file_is_disk_image(device: &Path) -> io::Result<bool> {
+    let meta = std::fs::metadata(device)?;
+    if !meta.is_file() {
+        return Ok(false);
     }
-    None
-}
-
-/// Prefer a child partition with a Linux root filesystem; fall back to the
-/// loop device itself when the image is a single filesystem.
-pub(crate) fn select_tilo_root_partition(loop_dev: &str, lsblk_text: &str) -> Option<String> {
-    let mut fallback = None;
-    for line in lsblk_text.lines() {
-        let mut parts = line.split_whitespace();
-        let Some(path) = parts.next() else {
-            continue;
-        };
-        let Some(fstype) = parts.next() else {
-            continue;
-        };
-        if matches!(fstype, "btrfs" | "ext4" | "xfs") {
-            if path != loop_dev {
-                return Some(path.to_string());
-            }
-            fallback = Some(path.to_string());
-        }
+    let mut file = std::fs::File::open(device)?;
+    let mut head = [0_u8; 520];
+    let read = file.read(&mut head)?;
+    if read >= 4 && &head[..4] == b"QFI\xfb" {
+        return Ok(true);
     }
-    fallback
+    Ok(read >= 520 && &head[512..520] == b"EFI PART")
 }
 
 // `Start-Process` flattens its `ArgumentList` into a native command line. A
@@ -1481,7 +1451,7 @@ fn validate_helper_paths(request: &Path, progress: &Path, cancel: &Path) -> io::
 /// caller-named source path with root authority.
 #[cfg(target_os = "linux")]
 fn bind_linux_helper_source(request: &mut WriteRequest, _caller_uid: u32) -> io::Result<()> {
-    if unsafe { libc::geteuid() } != 0 {
+    if tilo_process::effective_uid() != 0 {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "write helper must run through pkexec",
@@ -1952,23 +1922,8 @@ fn run_finite_status(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut child = command.spawn()?;
-    let deadline = ui::time::now()
-        .checked_add(timeout)
-        .unwrap_or_else(Instant::now);
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(status);
-        }
-        if ui::time::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "platform media command timed out",
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    bounded_command::wait_or_kill(&mut child, timeout)?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "platform media command timed out"))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -1985,12 +1940,12 @@ fn finish_target(_target: &TargetDrive, _result: &JobResult) {}
 pub fn spawn_job(
     req: WriteRequest,
     typed: &str,
+    backend: WriteBackend,
 ) -> (JobStart, Option<Receiver<Progress>>, Option<JobControl>) {
     let start = begin_job(&req, typed);
     if start != JobStart::Started {
         return (start, None, None);
     }
-    let backend = WriteBackend::system();
     if backend == WriteBackend::Disabled {
         return (JobStart::WriteDisabled, None, None);
     }
@@ -2148,8 +2103,8 @@ mod tests {
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             // No opt-in env var set → unavailable, never a fake success.
-            env.remove("TILO_IMAGER_ALLOW_WRITE").remove("IMAGER_LIVE");
-            assert_eq!(WriteBackend::system(), WriteBackend::Disabled);
+            env.remove("TILO_IMAGER_ALLOW_WRITE");
+            assert_eq!(WriteBackend::for_window(false), WriteBackend::Disabled);
             assert!(!allow_write());
         }
 
@@ -2157,18 +2112,22 @@ mod tests {
         #[cfg(feature = "host-media-writer")]
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("TILO_IMAGER_ALLOW_WRITE").remove("IMAGER_LIVE");
-            assert_eq!(WriteBackend::system(), WriteBackend::PrivilegedHelper);
-            assert!(write_available());
+            env.remove("TILO_IMAGER_ALLOW_WRITE");
+            assert_eq!(
+                WriteBackend::for_window(false),
+                WriteBackend::PrivilegedHelper
+            );
+            assert!(WriteBackend::for_window(false).is_available());
         }
 
         // Phase `live_ui_uses_short_lived_privileged_helper`.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
-            env.remove("TILO_IMAGER_ALLOW_WRITE")
-                .set("IMAGER_LIVE", "1");
-            assert_eq!(WriteBackend::system(), WriteBackend::PrivilegedHelper);
-            assert!(write_available());
+            env.remove("TILO_IMAGER_ALLOW_WRITE");
+            assert_eq!(
+                WriteBackend::for_window(true),
+                WriteBackend::PrivilegedHelper
+            );
         }
 
         // Phase `flatpak_selects_udisks_without_enabling_direct_device_writes`.
@@ -2176,9 +2135,8 @@ mod tests {
         {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.remove("TILO_IMAGER_ALLOW_WRITE")
-                .remove("IMAGER_LIVE")
                 .set("TILO_IMAGER_FLATPAK", "1");
-            assert_eq!(WriteBackend::system(), WriteBackend::Udisks2);
+            assert_eq!(WriteBackend::for_window(false), WriteBackend::Udisks2);
             assert!(!allow_write(), "the sandbox never gains direct /dev access");
         }
 
@@ -2198,14 +2156,14 @@ mod tests {
             // disabled path and the real device write.
             env.set("TILO_IMAGER_ALLOW_WRITE", "1");
             assert!(allow_write());
-            assert_eq!(WriteBackend::system(), WriteBackend::System);
+            assert_eq!(WriteBackend::for_window(false), WriteBackend::System);
             env.remove("TILO_IMAGER_ALLOW_WRITE");
             let expected = if cfg!(feature = "host-media-writer") {
                 WriteBackend::PrivilegedHelper
             } else {
                 WriteBackend::Disabled
             };
-            assert_eq!(WriteBackend::system(), expected);
+            assert_eq!(WriteBackend::for_window(false), expected);
         }
 
         // Phase `spawn_refuses_instead_of_simulating_with_gate_off`.
@@ -2214,10 +2172,10 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             // Validation remains pure, but the live start refuses rather than
             // reporting synthetic progress and success.
-            env.remove("TILO_IMAGER_ALLOW_WRITE").remove("IMAGER_LIVE");
+            env.remove("TILO_IMAGER_ALLOW_WRITE");
             let r = req();
             assert_eq!(begin_job(&r, "sdb"), JobStart::Started);
-            let (start, rx, control) = spawn_job(r, "sdb");
+            let (start, rx, control) = spawn_job(r, "sdb", WriteBackend::for_window(false));
             assert_eq!(start, JobStart::WriteDisabled);
             assert!(rx.is_none());
             assert!(control.is_none());
@@ -2251,7 +2209,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             let mut env = tilo_test_env::ScopedEnv::new();
             #[cfg(target_os = "linux")]
-            env.set("PKEXEC_UID", unsafe { libc::geteuid() }.to_string());
+            env.set("PKEXEC_UID", tilo_process::effective_uid().to_string());
             let work = tempfile::Builder::new()
                 .prefix("tilo-imager-write-")
                 .tempdir()
@@ -2296,7 +2254,7 @@ mod tests {
             let request_path = work.path().join("request.json");
             std::fs::write(&request_path, b"{}").unwrap();
             std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-            env.set("PKEXEC_UID", unsafe { libc::geteuid() }.to_string());
+            env.set("PKEXEC_UID", tilo_process::effective_uid().to_string());
 
             let error = read_linux_helper_request(&request_path).unwrap_err();
 
@@ -2318,7 +2276,7 @@ mod tests {
             std::fs::write(&outside, b"root-only payload").unwrap();
             symlink(&outside, &request).unwrap();
             std::fs::set_permissions(work.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-            env.set("PKEXEC_UID", unsafe { libc::geteuid() }.to_string());
+            env.set("PKEXEC_UID", tilo_process::effective_uid().to_string());
 
             let error = read_linux_helper_request(&request).unwrap_err();
 
@@ -2986,6 +2944,82 @@ mod tests {
             );
         }
 
+        // A partition node whose type has not arrived yet is not proof that
+        // the disk has no installed root. A vfat-only listing is complete.
+        assert!(root_listing_waits_for_filesystem_type(
+            "/dev/sda",
+            "/dev/sda\n/dev/sda1\n/dev/sda2 vfat\n"
+        ));
+        assert!(!root_listing_waits_for_filesystem_type(
+            "/dev/sda",
+            "/dev/sda\n/dev/sda1 vfat\n"
+        ));
+
+        // The Orange Pi disk is a loader hole, a FAT ESP, then the btrfs root.
+        // The hole has no filesystem type; the write must land on the root.
+        {
+            let lsblk = "\
+/dev/loop0\n\
+/dev/loop0p1\n\
+/dev/loop0p2 vfat\n\
+/dev/loop0p3 btrfs\n";
+            assert_eq!(
+                select_tilo_root_partition("/dev/loop0", lsblk).as_deref(),
+                Some("/dev/loop0p3")
+            );
+        }
+
+        // An ext4 boot partition listed before the btrfs root is not the
+        // installed system. The handoff has to land on the root.
+        {
+            let lsblk = "\
+/dev/sda\n\
+/dev/sda1 vfat\n\
+/dev/sda2 ext4\n\
+/dev/sda3 btrfs\n";
+            assert_eq!(
+                select_tilo_root_partition("/dev/sda", lsblk).as_deref(),
+                Some("/dev/sda3")
+            );
+        }
+
+        // The installer's ext4 boot partition is not a root. With no btrfs
+        // beside it, the handoff stays out of that partition.
+        {
+            let lsblk = "\
+/dev/sda\n\
+/dev/sda1 vfat\n\
+/dev/sda2 ext4 TILO_BOOT\n";
+            assert_eq!(select_tilo_root_partition("/dev/sda", lsblk), None);
+        }
+
+        // The boot partition and the btrfs root together: skip the boot
+        // partition and use the root.
+        {
+            let lsblk = "\
+/dev/sda\n\
+/dev/sda1 vfat\n\
+/dev/sda2 ext4 TILO_BOOT\n\
+/dev/sda3 btrfs\n";
+            assert_eq!(
+                select_tilo_root_partition("/dev/sda", lsblk).as_deref(),
+                Some("/dev/sda3")
+            );
+        }
+
+        // `loop1` is a prefix of `loop10`. The later disk's filesystem is
+        // not this disk's root.
+        {
+            let lsblk = "\
+/dev/loop1\n\
+/dev/loop10 btrfs\n\
+/dev/loop1p1 btrfs\n";
+            assert_eq!(
+                select_tilo_root_partition("/dev/loop1", lsblk).as_deref(),
+                Some("/dev/loop1p1")
+            );
+        }
+
         // Phase `apply_handoff_stage_onto_mounted_root_copies_etc_and_var`.
         {
             let staged = tempfile::tempdir().unwrap();
@@ -3014,5 +3048,119 @@ mod tests {
                 b"secret"
             );
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn installed_root_mount_failure_does_not_hide_the_handoff() {
+        let staged = tempfile::tempdir().unwrap();
+        std::fs::write(staged.path().join("marker"), b"wifi-secret").unwrap();
+        let device = tempfile::NamedTempFile::new().unwrap();
+        let before = std::fs::read(device.path()).unwrap();
+        let error = copy_handoff_onto_installed_root("/dev/tilo-no-such-root", staged.path())
+            .expect_err("a missing installed root must fail the write");
+        assert!(
+            error.to_string().contains("could not mount"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(std::fs::read(device.path()).unwrap(), before);
+        assert!(
+            !before
+                .windows(20)
+                .any(|window| window == b"TILO_SETUP_HANDOFF")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn disk_image_file_is_not_a_successful_slack_handoff_when_it_cannot_be_inspected() {
+        let staged = tempfile::tempdir().unwrap();
+        std::fs::write(staged.path().join("marker"), b"wifi-secret").unwrap();
+        let mut bytes = vec![0_u8; 520];
+        bytes[512..520].copy_from_slice(b"EFI PART");
+        let device = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(device.path(), &bytes).unwrap();
+        let error = handoff_when_root_was_not_found(device.path(), 520, 520, staged.path())
+            .expect_err("a GPT image that cannot be loop-mounted must fail");
+        assert!(
+            error.to_string().contains("were not applied"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(std::fs::read(device.path()).unwrap(), bytes);
+
+        let mut qcow = vec![0_u8; 16];
+        qcow[..4].copy_from_slice(b"QFI\xfb");
+        let qcow_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(qcow_file.path(), &qcow).unwrap();
+        let error = handoff_when_root_was_not_found(qcow_file.path(), 16, 16, staged.path())
+            .expect_err("a qcow2 image that cannot be loop-mounted must fail");
+        assert!(
+            error.to_string().contains("were not applied"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(std::fs::read(qcow_file.path()).unwrap(), qcow);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_mountpoint_listing_means_the_disk_is_busy() {
+        assert!(!mountpoint_listing_is_busy(""));
+        assert!(!mountpoint_listing_is_busy("\n"));
+        assert!(mountpoint_listing_is_busy("/run/media/tilo\n"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn image_customization_does_not_fake_a_home_file_slack_success() {
+        let image = tempfile::NamedTempFile::new().unwrap();
+        let before = b"not-a-disk-image";
+        std::fs::write(image.path(), before).unwrap();
+        let staged = tempfile::tempdir().unwrap();
+        std::fs::create_dir(staged.path().join(crate::handoff::ACCOUNT_HOME_FILES)).unwrap();
+        std::fs::write(
+            staged
+                .path()
+                .join(crate::handoff::ACCOUNT_HOME_FILES)
+                .join("SETUP.md"),
+            b"private setup",
+        )
+        .unwrap();
+        let error = apply_handoff_stage_to_image_file(image.path(), staged.path())
+            .expect_err("a home-only request needs an installed root, not empty installer slack");
+        assert!(error.to_string().contains("installed"), "{error}");
+        assert_eq!(std::fs::read(image.path()).unwrap(), before);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn image_file_is_not_rejected_before_the_loop_mount() {
+        let staged = tempfile::tempdir().unwrap();
+        std::fs::write(staged.path().join("marker"), b"wifi-secret").unwrap();
+        let device = tempfile::NamedTempFile::new().unwrap();
+        let before = b"not-a-disk-image";
+        std::fs::write(device.path(), before).unwrap();
+        let mountpoint = tempfile::tempdir().unwrap();
+        let observed = std::cell::Cell::new(None);
+        let result = block_devices::installed_root::with_written_root_observed(
+            device.path(),
+            mountpoint.path(),
+            |mnt| apply_handoff_stage_onto_mounted_root(mnt, staged.path()),
+            |attached| observed.set(Some(attached)),
+        );
+        // A message-based check mistakes a failed post-attachment partition
+        // probe for rejection before losetup. Observe the real bounded attempt.
+        let attached = observed
+            .get()
+            .expect("a regular file must reach the loop attachment attempt");
+        if attached {
+            let error = result.expect_err("an attached file without partitions must fail closed");
+            assert!(error.to_string().contains("installed root"), "{error}");
+        } else {
+            assert!(
+                matches!(result, Ok(false)),
+                "a failed loop attachment cannot report a copied root: {result:?}"
+            );
+        }
+        assert_eq!(std::fs::read(device.path()).unwrap(), before);
     }
 }

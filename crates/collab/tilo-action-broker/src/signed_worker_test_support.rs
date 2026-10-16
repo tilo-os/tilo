@@ -12,6 +12,10 @@ pub struct CurrentHost {
     pub additional_certificates: Mutex<Vec<DeviceCert>>,
     pub checks: AtomicUsize,
     pub time: Option<crate::peer_actions::PolicyTime>,
+    /// Whether this host governs its room, as a standalone runtime governs its
+    /// own: then only its own device (or this host itself) escapes the
+    /// foreign-device cap there.
+    pub governs_room: std::sync::atomic::AtomicBool,
 }
 
 impl CurrentHost {
@@ -26,6 +30,7 @@ impl CurrentHost {
             additional_certificates: Mutex::new(vec![]),
             checks: AtomicUsize::new(0),
             time,
+            governs_room: std::sync::atomic::AtomicBool::new(false),
         })
     }
 }
@@ -33,6 +38,17 @@ impl CurrentHost {
 impl crate::peer_actions::CertificateAuthority for CurrentHost {
     fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
         Ok(self.time.clone())
+    }
+    fn governs(&self, room: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
+        self.governs_room.load(Ordering::SeqCst)
+            && room.to_string() == self.route.cluster_id
+            && device.is_none_or(|device| {
+                self.certificate
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|cert| &cert.device_public_key == device)
+            })
     }
     fn authorize(&self, room: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
         if room.to_string() != self.route.cluster_id
@@ -72,7 +88,7 @@ impl action_directory::Server for HeldHostDirectory {
         Promise::from_future(async move {
             self.entered.send("query").unwrap();
             self.release.notified().await;
-            write_directory_page(
+            runtime_collab::write_action_directory_page(
                 results.get().init_page(),
                 &runtime_collab::ActionDirectoryPage {
                     revision: "directory-r1".into(),
@@ -93,8 +109,10 @@ impl action_directory::Server for HeldHostDirectory {
         Promise::from_future(async move {
             self.entered.send("resolve").unwrap();
             self.release.notified().await;
-            write_directory_row(results.get().init_resolution().init_found(), &self.row);
-            Ok(())
+            runtime_collab::write_action_directory_row(
+                results.get().init_resolution().init_found(),
+                &self.row,
+            )
         })
     }
 }
@@ -134,12 +152,15 @@ impl action_directory::Server for DurableDirectory {
             ..tilo_actions::ActionContract::default()
         };
         assert!(contract.validate_declaration().is_empty());
-        let encoded = serde_json::to_string(&contract).unwrap();
         let descriptor = row.descriptor.as_mut().unwrap();
-        descriptor.operation_kind = "effect".into();
-        descriptor.contract_json.clone_from(&encoded);
-        row.visibility_contract_json = encoded;
-        write_directory_row(results.get().init_resolution().init_found(), &row);
+        descriptor.operation_kind = tilo_actions::OperationKind::Effect;
+        descriptor.contract.clone_from(&contract);
+        row.visibility.as_mut().unwrap().contract = contract;
+        runtime_collab::write_action_directory_row(
+            results.get().init_resolution().init_found(),
+            &row,
+        )
+        .expect("test directory row encodes");
         Promise::ok(())
     }
 }
@@ -323,6 +344,33 @@ impl OriginalRoom {
         expires_at_ns: Option<u64>,
         persist_path: Option<std::path::PathBuf>,
     ) -> Self {
+        Self::hosting(capabilities, expires_at_ns, persist_path, None)
+    }
+
+    /// The room on a host that keeps record content through `content`:
+    /// `room` when it is the same room another host holds.
+    pub fn with_record_content(
+        content: Arc<crate::record_content::RouteContent>,
+        room: Option<tilo_desktop_model::RoomId>,
+    ) -> Self {
+        Self::hosting(
+            DeviceCapabilities::host(),
+            None,
+            None,
+            Some((content, room)),
+        )
+    }
+
+    fn hosting(
+        capabilities: DeviceCapabilities,
+        expires_at_ns: Option<u64>,
+        persist_path: Option<std::path::PathBuf>,
+        record_content: Option<(
+            Arc<crate::record_content::RouteContent>,
+            Option<tilo_desktop_model::RoomId>,
+        )>,
+    ) -> Self {
+        let (record_content, room) = record_content.unzip();
         let root = SigningKey::from_bytes(&[83; 32]);
         let key = SigningKey::from_bytes(&[84; 32]);
         let cert = signed_device(&root, &key, "original worker", capabilities, expires_at_ns);
@@ -332,13 +380,21 @@ impl OriginalRoom {
             crate::test_support::WorkspaceId(83),
             "Original room",
         );
-        workspace.set_owner(principal_id_for_root(cert.user_public_key));
-        workspace.owner = None;
-        workspace.capabilities = workspace
-            .capabilities
-            .into_iter()
-            .map(|cap| cap.with_expiry(100))
-            .collect();
+        if let Some(room) = room.flatten() {
+            workspace.set_room(room);
+        }
+        // Someone the room grants everything until 100s, and nothing after.
+        let principal = principal_id_for_root(cert.user_public_key);
+        let changes = tilo_action_policy::Grant::new(
+            "changes-for-a-while",
+            tilo_action_policy::Subject::Person(principal.clone()),
+            workspace.node(),
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Subject::Person(principal),
+        )
+        .with_lifetime(tilo_action_policy::Lifetime::Until(100_000));
+        workspace.grant(changes);
         let route = CrdtRoute::record(
             "so.tilo.word-processor",
             workspace.room.to_string(),
@@ -353,12 +409,16 @@ impl OriginalRoom {
             crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
         let publisher =
             PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
-        let (state, _) = CapnpBrokerState::new(
+        let mut services = membership.services();
+        services.record_content = record_content;
+        let (state, bridge_rx) = CapnpBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             publisher,
-            Some(membership.clone()),
+            Some(membership.authority()),
             None,
+            None,
+            services,
         );
         let authority = CurrentHost::new(&route, &cert, Some(origin.capture().unwrap()));
         assert!(state.certificate_authority.set(authority.clone()).is_ok());
@@ -371,7 +431,7 @@ impl OriginalRoom {
             membership,
             state,
             authority,
-            directories: empty_directories(),
+            directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
             _clock: clock,
             _owner_mailbox: owner_mailbox,
         }

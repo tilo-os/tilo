@@ -1,4 +1,4 @@
-//! Interaction coverage that drives `NotesApp::handle_event` on a live,
+//! Interaction coverage that drives the hosted notebook surface on a live,
 //! settled taffy layout — the same five-pass cycle `ui::App` runs — so
 //! the tests exercise the *real* event path (focus gates, pointer
 //! hit-tests, keyboard routing) rather than internal helper methods.
@@ -11,23 +11,19 @@
 //!   - Alt-↑ / Alt-↓ reorder a page among its siblings.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
 use std::collections::HashMap;
-use ui::headless::{FrameOptions, Framed};
+use ui::headless::Framed;
+use ui::widget::Edits;
 
-use notes::NotesApp;
+use crate::framework_support::{notes, with_note};
 use notes::sidebar::OutEvent;
+use notes::{NotesApp, NotesShell};
 use taffy::prelude::*;
-use tempfile::TempDir;
-use ui::permissions::PermissionContext;
+use ui::framework::testing::TestApp;
 use ui::presence::PresenceCtx;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -270,7 +266,7 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
         assert!(editor.perform_semantic_action(
             &format!("notes.block-move:{first}:down"),
             &ui::a11y::Action::Activate,
-            &mut state,
+            &mut Edits::lend(&mut state),
             &automerge::ROOT,
         ));
         relayout_block_editor(&mut editor);
@@ -287,7 +283,7 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
             !editor.perform_semantic_action(
                 &before[0],
                 &ui::a11y::Action::Activate,
-                &mut state,
+                &mut Edits::lend(&mut state),
                 &automerge::ROOT,
             ),
             "a removed fence must never copy another fence at its old position"
@@ -332,11 +328,16 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
             0..11,
             Mark::Transclusion(uuid::Uuid::new_v4()),
         )]);
-        for block in [
-            Block::table("| Key | Value |\n| --- | --- |\n| Name | Test |", true),
-            Block::paragraph("![Diagram](diagram.png)"),
-            embedded,
-        ] {
+        // Pushed one by one: a literal array of three blocks is too large
+        // for the stack.
+        let mut blocks = Vec::with_capacity(3);
+        blocks.push(Block::table(
+            "| Key | Value |\n| --- | --- |\n| Name | Test |",
+            true,
+        ));
+        blocks.push(Block::paragraph("![Diagram](diagram.png)"));
+        blocks.push(embedded);
+        for block in blocks {
             let mut editor = BlockEditor::new().with_wrap_lines(true);
             editor.set_blocks(vec![block]);
             let mut editor = layout_block_editor(editor, 400.0);
@@ -364,16 +365,12 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
         // Bug: code blocks rendered as separate lines with gaps. A multi-line
         // fenced block must render as ONE contiguous unit — consecutive code
         // lines butt together (no inter-line gap), each in the monospace face.
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let id = app.workspace_pages_for_test()[0].id;
         let body = "Intro line.\n\n```rust\nlet a = 1;\nlet b = 2;\nlet c = 3;\n```\n\nAfter.\n";
-        app.main_panel_mut().load_page(id, "T", body);
+        let (mut app, _) = with_note("T", body);
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        app.harness().relayout_at((1200, 800)).unwrap();
 
-        let editor = app.main_panel_mut().editor();
+        let editor = n(&mut app).main_panel_mut().editor();
         let blocks = editor.blocks();
         let code_idx: Vec<usize> = blocks
             .iter()
@@ -436,36 +433,35 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         // editor both hold focus. A Backspace at the very start of the note
         // used to fall through to the tree's page-delete binding, deleting the
         // note and jumping the user to another one. It must be a no-op now.
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let welcome = app.workspace_pages_for_test()[0].id;
+        let mut app = starter();
+        let welcome = n(&mut app).workspace_pages_for_test()[0].id;
         // A second root page so a stray delete would visibly "switch" pages.
-        app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-        app.sync_sidebar_for_test();
+        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        app.harness().relayout();
+        app.harness().relayout();
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        app.harness().relayout_at((1200, 800)).unwrap();
 
         // Select the first page from the tree — this is the dual-focus state
         // (tree focused for its shortcuts, editor focused for typing).
         click_row(&mut app, 0).unwrap();
-        assert_eq!(app.selected_for_test(), Some(welcome));
+        assert_eq!(n(&mut app).selected_for_test(), Some(welcome));
         // Put the caret at the very start of the first block.
-        app.main_panel_mut().editor_mut().blocks_mut()[0]
+        n(&mut app).main_panel_mut().editor_mut().blocks_mut()[0]
             .line
             .set_cursor_pos(0);
 
-        let before = app.workspace_pages_for_test().len();
+        let before = n(&mut app).workspace_pages_for_test().len();
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &named_key(NamedKey::Backspace));
 
         assert_eq!(
-            app.workspace_pages_for_test().len(),
+            n(&mut app).workspace_pages_for_test().len(),
             before,
             "Backspace at the start of a note must NOT delete a page"
         );
         assert_eq!(
-            app.selected_for_test(),
+            n(&mut app).selected_for_test(),
             Some(welcome),
             "Backspace at the start of a note must NOT switch pages"
         );
@@ -477,17 +473,14 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         // double-click inside a note block must select exactly the word under
         // the cursor (via the ui TextInput's multi-click ladder), never a
         // stray partial or cross-block range.
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let id = app.workspace_pages_for_test()[0].id;
-        app.main_panel_mut()
-            .load_page(id, "T", "the quick brown fox\n");
+        let (mut app, _) = with_note("T", "the quick brown fox\n");
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        app.harness().relayout_at((1200, 800)).unwrap();
 
         // Click a point a few characters into the first block.
-        let rect = app.main_panel_mut().editor().blocks()[0].line.get_rect();
+        let rect = n(&mut app).main_panel_mut().editor().blocks()[0]
+            .line
+            .get_rect();
         let x = rect.x0 + 60.0;
         let y = rect.y0 + rect.height() / 2.0;
         let no_mods = Modifiers::default();
@@ -497,7 +490,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         dispatch(&mut app, no_mods, &mouse_press());
         dispatch(&mut app, no_mods, &mouse_release());
         assert!(
-            app.main_panel_mut().editor().blocks()[0]
+            n(&mut app).main_panel_mut().editor().blocks()[0]
                 .line
                 .selection_range()
                 .is_none(),
@@ -509,7 +502,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         dispatch(&mut app, no_mods, &mouse_press());
         dispatch(&mut app, no_mods, &mouse_release());
 
-        let block = &app.main_panel_mut().editor().blocks()[0];
+        let block = &n(&mut app).main_panel_mut().editor().blocks()[0];
         let text = block.text().to_string();
         let (s, e) = block
             .line
@@ -534,21 +527,19 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         // Clicking the prominent title opens an inline rename; committing it renames
         // the page in the model AND re-syncs the sidebar row — the in-note title and
         // the tree stay in step.
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let welcome = app.workspace_pages_for_test()[0].id;
+        let mut app = starter();
+        let welcome = n(&mut app).workspace_pages_for_test()[0].id;
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
-        assert_eq!(app.sidebar_row_title_for_test(0), Some("Welcome"));
+        app.harness().relayout_at((1200, 800)).unwrap();
+        assert_eq!(n(&mut app).sidebar_row_title_for_test(0), Some("Welcome"));
 
         // Click the title band → begin editing (whole title selected).
-        let c = app.main_title_center_for_test();
+        let c = n(&mut app).main_title_center_for_test();
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press());
         assert!(
-            app.main_title_editing_for_test(),
+            n(&mut app).main_title_editing_for_test(),
             "clicking the title opens the inline rename"
         );
 
@@ -559,36 +550,39 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         dispatch(&mut app, no_mods, &named_key(NamedKey::Enter));
 
         assert!(
-            !app.main_title_editing_for_test(),
+            !n(&mut app).main_title_editing_for_test(),
             "Enter commits and ends the edit"
         );
-        let pages = app.workspace_pages_for_test();
+        let pages = n(&mut app).workspace_pages_for_test();
         let renamed = pages.iter().find(|p| p.id == welcome).unwrap();
         assert_eq!(
             renamed.title, "Roadmap",
             "committing the title renames the page"
         );
         assert_eq!(
-            app.main_panel_mut().title(),
+            n(&mut app).main_panel_mut().title(),
             Some("Roadmap"),
             "the panel shows the new title"
         );
         assert_eq!(
-            app.sidebar_row_title_for_test(0),
+            n(&mut app).sidebar_row_title_for_test(0),
             Some("Roadmap"),
             "the rename propagates into the sidebar row"
         );
 
         // Escape must cancel without renaming.
-        let c = app.main_title_center_for_test();
+        let c = n(&mut app).main_title_center_for_test();
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press());
         for ch in ["N", "o", "p", "e"] {
             dispatch(&mut app, no_mods, &char_key(ch));
         }
         dispatch(&mut app, no_mods, &named_key(NamedKey::Escape));
-        assert!(!app.main_title_editing_for_test(), "Escape ends the edit");
-        let pages = app.workspace_pages_for_test();
+        assert!(
+            !n(&mut app).main_title_editing_for_test(),
+            "Escape ends the edit"
+        );
+        let pages = n(&mut app).workspace_pages_for_test();
         let after = pages.iter().find(|p| p.id == welcome).unwrap();
         assert_eq!(
             after.title, "Roadmap",
@@ -603,22 +597,21 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         // strips the `# ` prefix. This is the sequence a user actually types —
         // the old code only fired when the block was empty *before* the keystroke,
         // so the space (typed into a non-empty "#") never promoted.
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+        let mut app = starter();
         // A fresh, empty page so the first block is an empty paragraph.
-        app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-        app.sync_sidebar_for_test();
+        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        app.harness().relayout();
+        app.harness().relayout();
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
-        assert!(app.main_panel_mut().editor_mut().is_focused());
+        app.harness().relayout_at((1200, 800)).unwrap();
+        assert!(n(&mut app).main_panel_mut().editor_mut().is_focused());
 
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &char_key("#"));
         // A lone `#` must NOT promote — the prefix isn't complete yet.
         assert!(
             matches!(
-                app.main_panel_mut().editor().blocks()[0].kind,
+                n(&mut app).main_panel_mut().editor().blocks()[0].kind,
                 ui::widget::BlockKind::Paragraph
             ),
             "a bare `#` stays a paragraph until the space completes the prefix"
@@ -626,7 +619,7 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
         dispatch(&mut app, no_mods, &char_key(" "));
 
         {
-            let blocks = app.main_panel_mut().editor().blocks();
+            let blocks = n(&mut app).main_panel_mut().editor().blocks();
             assert_eq!(blocks.len(), 1);
             assert!(
                 matches!(blocks[0].kind, ui::widget::BlockKind::Heading(1)),
@@ -641,16 +634,15 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
 
         // `## ` and `### ` promote to H2 / H3 on their own fresh pages.
         for (hashes, level) in [("##", 2u8), ("###", 3u8)] {
-            app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-            app.sync_sidebar_for_test();
-            Framed::harness_mut(&mut app)
-                .relayout_at((1200, 800))
-                .unwrap();
+            n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+            app.harness().relayout();
+            app.harness().relayout();
+            app.harness().relayout_at((1200, 800)).unwrap();
             for ch in hashes.chars() {
                 dispatch(&mut app, no_mods, &char_key(&ch.to_string()));
             }
             dispatch(&mut app, no_mods, &char_key(" "));
-            let blocks = app.main_panel_mut().editor().blocks();
+            let blocks = n(&mut app).main_panel_mut().editor().blocks();
             assert!(
                 matches!(blocks[0].kind, ui::widget::BlockKind::Heading(l) if l == level),
                 "`{hashes} ` promotes to a level-{level} heading"
@@ -661,22 +653,21 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
 
     eprintln!("phase greater_than_space_promotes_paragraph_to_quote_through_the_event_path");
     {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-        app.sync_sidebar_for_test();
+        let mut app = starter();
+        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        app.harness().relayout();
+        app.harness().relayout();
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        app.harness().relayout_at((1200, 800)).unwrap();
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &char_key(">"));
         assert!(matches!(
-            app.main_panel_mut().editor().blocks()[0].kind,
+            n(&mut app).main_panel_mut().editor().blocks()[0].kind,
             ui::widget::BlockKind::Paragraph
         ));
         dispatch(&mut app, no_mods, &char_key(" "));
 
-        let blocks = app.main_panel_mut().editor().blocks();
+        let blocks = n(&mut app).main_panel_mut().editor().blocks();
         assert!(matches!(blocks[0].kind, ui::widget::BlockKind::Quote));
         assert_eq!(blocks[0].text(), "");
     }
@@ -688,6 +679,17 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
 )]
 fn block_event(editor: &mut Framed<ui::widget::BlockEditor>, event: WindowEvent) {
     Framed::harness_mut(editor).dispatch_to_root_with(&event, &Modifiers::default());
+}
+
+/// Where every block's text starts: past the editor's handle column and
+/// the line's own inset.
+fn content_edge(editor: &Framed<ui::widget::BlockEditor>) -> f64 {
+    editor.get_rect().x0 + editor.text_inset(&Theme::dark())
+}
+
+/// The x of a drag handle's centre, left of the content edge.
+fn handle_x(editor: &Framed<ui::widget::BlockEditor>) -> f64 {
+    content_edge(editor) - 14.0
 }
 
 /// Run a frame and return the scene it drew.
@@ -705,6 +707,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         let mut editor = block_gesture_fixture();
         let idle = block_scene(&mut editor).encoding().draw_tags.len();
         let row = editor.blocks()[0].line.get_rect();
+        let handle = handle_x(&editor);
         block_event(&mut editor, cursor_moved(row.center().x, row.center().y));
         let hovered = block_scene(&mut editor).encoding().draw_tags.len();
         assert_eq!(
@@ -712,7 +715,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             idle + 6,
             "only the hovered block gets six handle dots"
         );
-        block_event(&mut editor, cursor_moved(row.x0 - 14.0, row.center().y));
+        block_event(&mut editor, cursor_moved(handle, row.center().y));
         assert_eq!(
             block_scene(&mut editor).encoding().draw_tags.len(),
             hovered + 1,
@@ -721,7 +724,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         block_event(
             &mut editor,
             WindowEvent::CursorLeft {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
             },
         );
         assert_eq!(block_scene(&mut editor).encoding().draw_tags.len(), idle);
@@ -739,7 +742,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         block_event(
             &mut editor,
             WindowEvent::CursorLeft {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
             },
         );
         assert_eq!(
@@ -763,7 +766,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         block_event(
             &mut editor,
             WindowEvent::CursorLeft {
-                device_id: unsafe { std::mem::zeroed() },
+                device_id: winit::event::DeviceId::dummy(),
             },
         );
         editor.set_focus(false);
@@ -780,11 +783,12 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         let first = editor.blocks()[0].line.get_rect();
         let second = editor.blocks()[1].line.get_rect();
         let third = editor.blocks()[2].line.get_rect();
-        block_event(&mut editor, cursor_moved(first.x0 - 14.0, first.center().y));
+        let handle = handle_x(&editor);
+        block_event(&mut editor, cursor_moved(handle, first.center().y));
         block_event(&mut editor, mouse_press());
         let before = block_scene(&mut editor).encoding().draw_tags.len();
         let gap = f64::midpoint(second.y0, first.y1);
-        block_event(&mut editor, cursor_moved(first.x0 - 14.0, gap));
+        block_event(&mut editor, cursor_moved(handle, gap));
         let preview = block_scene(&mut editor);
         assert!(
             preview.encoding().draw_tags.len() > before + 2,
@@ -794,7 +798,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         marker_brush.fill(
             vello::peniko::Fill::NonZero,
             Affine::IDENTITY,
-            Theme::dark().tokens.colors.accent[5],
+            Theme::dark().tokens.colors.intent.you,
             None,
             &Rect::new(0.0, 0.0, 1.0, 1.0),
         );
@@ -807,7 +811,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             "the insertion marker must remain visible above the opaque drag preview"
         );
         let transforms = format!("{:?}", preview.encoding().transforms);
-        block_event(&mut editor, cursor_moved(first.x0 - 10.0, gap));
+        block_event(&mut editor, cursor_moved(handle, gap + 2.0));
         assert_ne!(
             transforms,
             format!("{:?}", block_scene(&mut editor).encoding().transforms),
@@ -818,14 +822,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             "first",
             "preview must not mutate document order"
         );
-        block_event(
-            &mut editor,
-            WindowEvent::MouseInput {
-                device_id: unsafe { std::mem::zeroed() },
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-        );
+        block_event(&mut editor, ui::synthetic_input::mouse_release());
         assert_eq!(
             editor
                 .blocks()
@@ -848,18 +845,19 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             Block::bullet(1, "Child B"),
         ]);
         let mut editor = layout_block_editor(editor, 400.0);
-        let root_x = editor.get_rect().x0;
+        let root_x = content_edge(&editor);
+        let handle = handle_x(&editor);
         let first = editor.blocks()[0].line.get_rect();
         let last = editor.blocks()[3].line.get_rect();
-        block_event(&mut editor, cursor_moved(root_x - 14.0, first.center().y));
+        block_event(&mut editor, cursor_moved(handle, first.center().y));
         block_event(&mut editor, mouse_press());
-        block_event(&mut editor, cursor_moved(root_x - 14.0, last.center().y));
+        block_event(&mut editor, cursor_moved(handle, last.center().y));
         let scene = block_scene(&mut editor);
         let mut expected_marker = Scene::new();
         expected_marker.fill(
             vello::peniko::Fill::NonZero,
             Affine::IDENTITY,
-            Theme::dark().tokens.colors.accent[5],
+            Theme::dark().tokens.colors.intent.you,
             None,
             &Rect::new(root_x - 4.0, last.y1 - 1.0, last.x1, last.y1 + 1.0),
         );
@@ -872,25 +870,51 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         );
     }
 
+    eprintln!("phase block_drag_near_the_visible_edge_asks_the_host_to_scroll");
+    {
+        let mut editor = block_gesture_fixture();
+        let handle = handle_x(&editor);
+        let first = editor.blocks()[0].line.get_rect();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 600.0);
+        let frame = std::time::Duration::from_millis(100);
+        // No drag, no scroll.
+        assert!(editor.tick_block_drag(viewport, frame).abs() < f64::EPSILON);
+        block_event(&mut editor, cursor_moved(handle, first.center().y));
+        block_event(&mut editor, mouse_press());
+        // Pressed but not yet a drag.
+        assert!(editor.tick_block_drag(viewport, frame).abs() < f64::EPSILON);
+        // Mid-viewport: a drag that does not scroll.
+        block_event(&mut editor, cursor_moved(handle, 300.0));
+        assert!(editor.block_drag_active());
+        assert!(editor.tick_block_drag(viewport, frame).abs() < f64::EPSILON);
+        // In the bottom edge band: scrolls down, faster closer to the edge.
+        block_event(&mut editor, cursor_moved(handle, 575.0));
+        let slow = editor.tick_block_drag(viewport, frame);
+        block_event(&mut editor, cursor_moved(handle, 599.0));
+        let fast = editor.tick_block_drag(viewport, frame);
+        assert!(slow > 0.0 && fast > slow, "{slow} then {fast}");
+        // In the top edge band: scrolls up.
+        block_event(&mut editor, cursor_moved(handle, 5.0));
+        assert!(editor.tick_block_drag(viewport, frame) < 0.0);
+        // Escape ends the drag, and the scrolling with it.
+        block_event(&mut editor, named_key(NamedKey::Escape));
+        assert!(!editor.block_drag_active());
+        assert!(editor.tick_block_drag(viewport, frame).abs() < f64::EPSILON);
+    }
+
     eprintln!("phase block_drag_escape_and_focus_loss_preserve_order");
     {
         for cancel in [named_key(NamedKey::Escape), WindowEvent::Focused(false)] {
             let mut editor = block_gesture_fixture();
             let first = editor.blocks()[0].line.get_rect();
             let last = editor.blocks()[3].line.get_rect();
-            block_event(&mut editor, cursor_moved(first.x0 - 14.0, first.center().y));
+            let handle = handle_x(&editor);
+            block_event(&mut editor, cursor_moved(handle, first.center().y));
             block_event(&mut editor, mouse_press());
-            block_event(&mut editor, cursor_moved(first.x0 - 14.0, last.center().y));
+            block_event(&mut editor, cursor_moved(handle, last.center().y));
             block_scene(&mut editor);
             block_event(&mut editor, cancel);
-            block_event(
-                &mut editor,
-                WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                },
-            );
+            block_event(&mut editor, ui::synthetic_input::mouse_release());
             assert_eq!(
                 editor
                     .blocks()
@@ -904,97 +928,53 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
 }
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
-use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{ModifiersState, NamedKey};
 
-fn cursor_moved(x: f64, y: f64) -> WindowEvent {
-    WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: winit::dpi::PhysicalPosition::new(x, y),
-    }
-}
+use ui::synthetic_input::cursor_moved;
 
-fn mouse_press() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    }
-}
+use ui::synthetic_input::mouse_press;
 
 fn mouse_press_right() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Right,
-    }
-}
-
-fn mouse_release() -> WindowEvent {
-    WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    }
-}
-
-/// A printable-character keyboard event (mirrors `text_input`'s test
-/// helper — `KeyEvent` has a `pub(crate)` field so it can't be built by
-/// struct literal).
-fn char_key(s: &str) -> WindowEvent {
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Character(SmolStr::new(s));
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = Some(SmolStr::new(s));
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
-
-fn named_key(key: NamedKey) -> WindowEvent {
-    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = Key::Named(key);
-    ev.physical_key =
-        winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = winit::keyboard::KeyLocation::Standard;
-    ev.state = ElementState::Pressed;
-    ev.repeat = false;
-    ev.text = None;
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
-}
-
-/// Mount `app` over `state` and run the production frame at `w`x`h`.
-fn settle_layout(app: NotesApp, state: ui::State, w: u16, h: u16) -> Framed<NotesApp> {
-    Framed::with_options(
-        state,
-        app,
-        (u32::from(w), u32::from(h)),
-        FrameOptions {
-            text: Some(crate::component_support::renderer()),
-            ..FrameOptions::default()
-        },
+    ui::synthetic_input::mouse_input(
+        ui::winit::event::ElementState::Pressed,
+        ui::winit::event::MouseButton::Right,
     )
 }
 
-fn dispatch(app: &mut Framed<NotesApp>, modifiers: Modifiers, event: &WindowEvent) -> bool {
-    Framed::harness_mut(app).dispatch_to_root_with(event, &modifiers)
+use ui::synthetic_input::mouse_release;
+
+use ui::synthetic_input::char_key;
+
+use ui::synthetic_input::named_key;
+
+/// Notes with a Welcome note that uses every block kind, open.
+fn starter() -> TestApp<NotesShell> {
+    with_note(
+        "Welcome",
+        crate::welcome_page_renders_all_block_kinds::WELCOME_BODY,
+    )
+    .0
+}
+
+/// The notebook surface, between the events a test sends.
+fn n(app: &mut TestApp<NotesShell>) -> &mut NotesApp {
+    app.surface_mut::<NotesApp>()
+}
+
+/// Deliver `event`, then the frame that follows it, where the notebook
+/// applies what the event asked for.
+fn dispatch(app: &mut TestApp<NotesShell>, modifiers: Modifiers, event: &WindowEvent) -> bool {
+    let handled = app.harness().dispatch_to_root_with(event, &modifiers);
+    app.harness().relayout();
+    handled
 }
 
 /// Click the centre of sidebar row `idx` to select it AND give the
 /// sidebar keyboard focus (the gate the tree's key commands require).
-fn click_row(app: &mut Framed<NotesApp>, idx: usize) -> Result<(), String> {
+fn click_row(app: &mut TestApp<NotesShell>, idx: usize) -> Result<(), String> {
     let no_mods = Modifiers::default();
-    let c = app
+    let c = n(app)
         .sidebar_row_center_for_test(idx)
         .ok_or_else(|| "row laid out".to_string())?;
     dispatch(app, no_mods, &cursor_moved(c.x, c.y));
@@ -1002,34 +982,18 @@ fn click_row(app: &mut Framed<NotesApp>, idx: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Paint once after layout so immediate-mode affordances (including the
-/// first-note CTA) resolve their hit rects exactly as they do in the app.
-fn paint(app: &mut NotesApp) {
-    let mut scene = Scene::new();
-    let mut text = crate::component_support::renderer();
-    app.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text,
-        &Theme::dark(),
-        &PresenceCtx::empty(),
-        &PermissionContext::permissive(),
-    );
-}
-
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
 fn first_note_empty_state_and_help_shortcut_respect_focus() {
     eprintln!("phase first_note_empty_state_has_a_working_primary_action");
     {
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn(tmp.path().into()).unwrap();
-        assert!(app.workspace_pages_for_test().is_empty());
+        let mut app = notes();
+        assert!(n(&mut app).workspace_pages_for_test().is_empty());
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1024, 720);
-        paint(&mut app);
-        let c = app
+        app.harness().relayout_at((1024, 720)).unwrap();
+        // Paint once so the first-note action resolves its hit rect.
+        app.harness().relayout();
+        let c = n(&mut app)
             .main_panel_mut()
             .empty_action_center_for_test()
             .expect("empty state renders a Create note action");
@@ -1041,42 +1005,38 @@ fn first_note_empty_state_and_help_shortcut_respect_focus() {
             "the first-note action consumes its click"
         );
 
-        assert_eq!(app.workspace_pages_for_test().len(), 1);
-        assert!(app.selected_for_test().is_some());
+        assert_eq!(n(&mut app).workspace_pages_for_test().len(), 1);
+        assert!(n(&mut app).selected_for_test().is_some());
     }
 
     eprintln!("phase focused_first_note_action_activates_with_enter");
     {
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn(tmp.path().into()).unwrap();
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1024, 720);
+        let mut app = notes();
+        app.harness().relayout_at((1024, 720)).unwrap();
 
-        app.main_panel_mut().set_focus(true);
+        n(&mut app).main_panel_mut().set_focus(true);
         let no_mods = Modifiers::default();
         assert!(
             dispatch(&mut app, no_mods, &named_key(NamedKey::Enter),),
             "Enter activates the focused Create note button"
         );
-        assert_eq!(app.workspace_pages_for_test().len(), 1);
-        assert!(app.selected_for_test().is_some());
+        assert_eq!(n(&mut app).workspace_pages_for_test().len(), 1);
+        assert!(n(&mut app).selected_for_test().is_some());
     }
 
     eprintln!("phase focused_first_note_action_activates_with_space");
     {
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn(tmp.path().into()).unwrap();
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1024, 720);
+        let mut app = notes();
+        app.harness().relayout_at((1024, 720)).unwrap();
 
-        app.main_panel_mut().set_focus(true);
+        n(&mut app).main_panel_mut().set_focus(true);
         let no_mods = Modifiers::default();
         assert!(
             dispatch(&mut app, no_mods, &char_key(" "),),
             "Space activates the focused Create note button"
         );
-        assert_eq!(app.workspace_pages_for_test().len(), 1);
-        assert!(app.selected_for_test().is_some());
+        assert_eq!(n(&mut app).workspace_pages_for_test().len(), 1);
+        assert!(n(&mut app).selected_for_test().is_some());
     }
 
     eprintln!("phase question_mark_types_into_focused_note_and_does_not_open_help");
@@ -1084,23 +1044,21 @@ fn first_note_empty_state_and_help_shortcut_respect_focus() {
         // Regression guard: `?` must be a literal character in a note. The
         // editor holds focus after load, so the global help shortcut must
         // yield to typing.
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
-        assert!(app.main_panel_mut().editor_mut().is_focused());
+        let mut app = starter();
+        app.harness().relayout_at((1200, 800)).unwrap();
+        assert!(n(&mut app).main_panel_mut().editor_mut().is_focused());
 
         let no_mods = Modifiers::default();
         let handled = dispatch(&mut app, no_mods, &char_key("?"));
 
         assert!(
-            !app.shortcuts_visible_for_test(),
+            !n(&mut app).shortcuts_visible_for_test(),
             "`?` must NOT open the shortcuts overlay while a note is focused"
         );
         assert!(
-            app.editor_text_for_test().contains('?'),
+            n(&mut app).editor_text_for_test().contains('?'),
             "`?` must be typed into the focused note; got {:?}",
-            app.editor_text_for_test()
+            n(&mut app).editor_text_for_test()
         );
         assert!(handled, "the editor should consume the typed `?`");
     }
@@ -1108,22 +1066,20 @@ fn first_note_empty_state_and_help_shortcut_respect_focus() {
     eprintln!("phase question_mark_opens_help_when_no_note_is_focused");
     {
         // With the tree (not the editor) focused, `?` is the help shortcut.
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        let mut app = starter();
+        app.harness().relayout_at((1200, 800)).unwrap();
 
-        let before = app.editor_text_for_test();
-        app.blur_editor_for_test();
+        let before = n(&mut app).editor_text_for_test();
+        n(&mut app).blur_editor_for_test();
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &char_key("?"));
 
         assert!(
-            app.shortcuts_visible_for_test(),
+            n(&mut app).shortcuts_visible_for_test(),
             "`?` must open the shortcuts overlay when no note is focused"
         );
         assert_eq!(
-            app.editor_text_for_test(),
+            n(&mut app).editor_text_for_test(),
             before,
             "opening help must not mutate the note body"
         );
@@ -1131,28 +1087,26 @@ fn first_note_empty_state_and_help_shortcut_respect_focus() {
 
     eprintln!("phase open_help_overlay_blocks_the_editor");
     {
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        let mut app = starter();
+        app.harness().relayout_at((1200, 800)).unwrap();
 
-        app.shortcuts_mut().set_visible(true);
-        let before = app.editor_text_for_test();
+        n(&mut app).shortcuts_mut().set_visible(true);
+        let before = n(&mut app).editor_text_for_test();
         let no_mods = Modifiers::default();
         let handled = dispatch(&mut app, no_mods, &char_key("x"));
 
         assert!(handled, "the overlay must consume keystrokes while visible");
         assert_eq!(
-            app.editor_text_for_test(),
+            n(&mut app).editor_text_for_test(),
             before,
             "no keystroke may reach the editor while the overlay is up"
         );
-        assert!(app.shortcuts_visible_for_test());
+        assert!(n(&mut app).shortcuts_visible_for_test());
 
         // Escape closes it.
         dispatch(&mut app, no_mods, &named_key(NamedKey::Escape));
         assert!(
-            !app.shortcuts_visible_for_test(),
+            !n(&mut app).shortcuts_visible_for_test(),
             "Esc must close the overlay"
         );
     }
@@ -1166,21 +1120,19 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         // The core reachability bug: Cmd-N used to no-op unless the sidebar
         // was focused, but the editor holds focus on load. Handled at the
         // app level it must work regardless.
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let root = app.workspace_pages_for_test()[0].id;
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
-        assert!(app.main_panel_mut().editor_mut().is_focused());
-        assert_eq!(app.selected_for_test(), Some(root));
+        let mut app = starter();
+        let root = n(&mut app).workspace_pages_for_test()[0].id;
+        app.harness().relayout_at((1200, 800)).unwrap();
+        assert!(n(&mut app).main_panel_mut().editor_mut().is_focused());
+        assert_eq!(n(&mut app).selected_for_test(), Some(root));
 
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
         let handled = dispatch(&mut app, ctrl, &char_key("n"));
 
         assert!(handled, "Cmd-N must be consumed at the app level");
-        let pages = app.workspace_pages_for_test();
+        let pages = n(&mut app).workspace_pages_for_test();
         assert_eq!(pages.len(), 2, "Cmd-N must add exactly one page");
-        let new_id = app.selected_for_test().expect("new child selected");
+        let new_id = n(&mut app).selected_for_test().expect("new child selected");
         assert_ne!(new_id, root);
         let new_meta = pages.iter().find(|p| p.id == new_id).unwrap();
         assert_eq!(
@@ -1192,21 +1144,52 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
 
     eprintln!("phase plus_button_creates_a_root_page");
     {
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
-        assert_eq!(app.workspace_pages_for_test().len(), 1);
+        let mut app = starter();
+        app.harness().relayout_at((1200, 800)).unwrap();
+        assert_eq!(n(&mut app).workspace_pages_for_test().len(), 1);
 
         let no_mods = Modifiers::default();
-        let btn = app.sidebar_new_page_btn_center_for_test();
+        let btn = n(&mut app).sidebar_new_page_btn_center_for_test();
         dispatch(&mut app, no_mods, &cursor_moved(btn.x, btn.y));
         let handled = dispatch(&mut app, no_mods, &mouse_press());
+        let mut release = mouse_press();
+        if let WindowEvent::MouseInput { state, .. } = &mut release {
+            *state = ElementState::Released;
+        }
+        // Keep the direct root press diagnostic above, then admit its
+        // release through the host that owns queued native control actions.
+        app.harness().send(&release);
+        app.settle();
 
         assert!(handled, "clicking the + button must be consumed");
-        let pages = app.workspace_pages_for_test();
+        assert!(
+            app.harness().control_failures().is_empty(),
+            "{:?}",
+            app.harness().control_failures()
+        );
+        let pages = n(&mut app).workspace_pages_for_test();
+        if pages.len() != 2 {
+            let resources = app.harness().resources();
+            eprintln!(
+                "new-note target {:?}; native controls {:?}; contract violations {:?}",
+                app.harness().targets().get("new-note"),
+                resources
+                    .iter()
+                    .filter(|resource| resource.kind == "tilo.control")
+                    .map(|resource| (
+                        &resource.id,
+                        resource
+                            .actions
+                            .iter()
+                            .map(|action| &action.id)
+                            .collect::<Vec<_>>()
+                    ))
+                    .collect::<Vec<_>>(),
+                app.harness().component_contract_violations()
+            );
+        }
         assert_eq!(pages.len(), 2, "the + button must add exactly one page");
-        let new_id = app.selected_for_test().unwrap();
+        let new_id = n(&mut app).selected_for_test().unwrap();
         let new_meta = pages.iter().find(|p| p.id == new_id).unwrap();
         assert_eq!(
             new_meta.parent, None,
@@ -1216,31 +1199,32 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
 
     eprintln!("phase delete_key_removes_selected_page_after_focusing_tree");
     {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let welcome = app.workspace_pages_for_test()[0].id;
-        app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-        let victim = app.selected_for_test().unwrap();
-        app.sync_sidebar_for_test();
+        let mut app = starter();
+        let welcome = n(&mut app).workspace_pages_for_test()[0].id;
+        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        app.harness().relayout();
+        let victim = n(&mut app).selected_for_test().unwrap();
+        app.harness().relayout();
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        app.harness().relayout_at((1200, 800)).unwrap();
 
         // Row 1 is the newly-created second root page. Click focuses the
         // tree AND selects it; then Delete removes it through the gated
         // keyboard path.
         click_row(&mut app, 1).unwrap();
-        assert_eq!(app.selected_for_test(), Some(victim));
+        assert_eq!(n(&mut app).selected_for_test(), Some(victim));
 
         let no_mods = Modifiers::default();
         let handled = dispatch(&mut app, no_mods, &named_key(NamedKey::Delete));
 
         assert!(handled, "Delete must be consumed by the focused tree");
-        let pages = app.workspace_pages_for_test();
+        // Deleting a page asks first; the person confirms.
+        assert!(app.confirm_asked().is_some(), "the host asks first");
+        let pages = n(&mut app).workspace_pages_for_test();
         assert_eq!(pages.len(), 1, "Delete must remove the page");
         assert_eq!(pages[0].id, welcome);
         assert_eq!(
-            app.selected_for_test(),
+            n(&mut app).selected_for_test(),
             Some(welcome),
             "selection falls back"
         );
@@ -1251,19 +1235,18 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         // Without focusing the tree (editor holds focus after load), Delete
         // must NOT delete a page — it belongs to the editor. This proves the
         // focus gate is real, not bypassed.
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-        app.sync_sidebar_for_test();
-        let before = app.workspace_pages_for_test().len();
+        let mut app = starter();
+        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        app.harness().relayout();
+        app.harness().relayout();
+        let before = n(&mut app).workspace_pages_for_test().len();
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        app.harness().relayout_at((1200, 800)).unwrap();
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &named_key(NamedKey::Delete));
 
         assert_eq!(
-            app.workspace_pages_for_test().len(),
+            n(&mut app).workspace_pages_for_test().len(),
             before,
             "Delete must not delete a page while the editor holds focus"
         );
@@ -1271,48 +1254,45 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
 
     eprintln!("phase f2_opens_inline_rename_after_focusing_tree");
     {
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        let mut app = starter();
+        app.harness().relayout_at((1200, 800)).unwrap();
 
         click_row(&mut app, 0).unwrap();
-        assert!(!app.sidebar_is_renaming_for_test());
+        assert!(!n(&mut app).sidebar_is_renaming_for_test());
 
         let no_mods = Modifiers::default();
         let handled = dispatch(&mut app, no_mods, &named_key(NamedKey::F2));
         assert!(handled, "F2 must be consumed by the focused tree");
         assert!(
-            app.sidebar_is_renaming_for_test(),
+            n(&mut app).sidebar_is_renaming_for_test(),
             "F2 must open the inline rename editor"
         );
     }
 
     eprintln!("phase arrow_keys_move_selection_after_focusing_tree");
     {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let welcome = app.workspace_pages_for_test()[0].id;
-        app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-        let second = app.selected_for_test().unwrap();
-        app.sync_sidebar_for_test();
+        let mut app = starter();
+        let welcome = n(&mut app).workspace_pages_for_test()[0].id;
+        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        app.harness().relayout();
+        let second = n(&mut app).selected_for_test().unwrap();
+        app.harness().relayout();
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        app.harness().relayout_at((1200, 800)).unwrap();
 
         click_row(&mut app, 0).unwrap();
-        assert_eq!(app.selected_for_test(), Some(welcome));
+        assert_eq!(n(&mut app).selected_for_test(), Some(welcome));
 
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &named_key(NamedKey::ArrowDown));
         assert_eq!(
-            app.selected_for_test(),
+            n(&mut app).selected_for_test(),
             Some(second),
             "ArrowDown moves selection to the next row"
         );
         dispatch(&mut app, no_mods, &named_key(NamedKey::ArrowUp));
         assert_eq!(
-            app.selected_for_test(),
+            n(&mut app).selected_for_test(),
             Some(welcome),
             "ArrowUp moves selection back up"
         );
@@ -1320,36 +1300,35 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
 
     eprintln!("phase alt_arrow_reorders_selected_page_among_siblings");
     {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let welcome = app.workspace_pages_for_test()[0].id;
-        app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-        let p1 = app.selected_for_test().unwrap();
-        app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-        let p2 = app.selected_for_test().unwrap();
-        app.sync_sidebar_for_test();
+        let mut app = starter();
+        let welcome = n(&mut app).workspace_pages_for_test()[0].id;
+        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        app.harness().relayout();
+        let p1 = n(&mut app).selected_for_test().unwrap();
+        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        app.harness().relayout();
+        let p2 = n(&mut app).selected_for_test().unwrap();
+        app.harness().relayout();
 
         // Sanity: creation order is [welcome, p1, p2].
-        let order_ids = |app: &NotesApp| -> Vec<uuid::Uuid> {
-            let mut ps = app.workspace_pages_for_test();
+        let order_ids = |app: &mut TestApp<NotesShell>| -> Vec<uuid::Uuid> {
+            let mut ps = n(app).workspace_pages_for_test();
             ps.retain(|p| p.parent.is_none());
-            ps.sort_by_key(|p| p.order);
             ps.into_iter().map(|p| p.id).collect()
         };
-        assert_eq!(order_ids(&app), vec![welcome, p1, p2]);
+        assert_eq!(order_ids(&mut app), vec![welcome, p1, p2]);
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        app.harness().relayout_at((1200, 800)).unwrap();
 
         // Focus the tree with `welcome` selected, then Alt-↓ once.
         click_row(&mut app, 0).unwrap();
-        assert_eq!(app.selected_for_test(), Some(welcome));
+        assert_eq!(n(&mut app).selected_for_test(), Some(welcome));
 
         let alt = Modifiers::from(ModifiersState::ALT);
         let handled = dispatch(&mut app, alt, &named_key(NamedKey::ArrowDown));
         assert!(handled, "Alt-↓ must be consumed by the focused tree");
         assert_eq!(
-            order_ids(&app),
+            order_ids(&mut app),
             vec![p1, welcome, p2],
             "Alt-↓ must move `welcome` down one slot among its siblings"
         );
@@ -1357,7 +1336,7 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         // And Alt-↑ moves it back.
         dispatch(&mut app, alt, &named_key(NamedKey::ArrowUp));
         assert_eq!(
-            order_ids(&app),
+            order_ids(&mut app),
             vec![welcome, p1, p2],
             "Alt-↑ must move `welcome` back up"
         );
@@ -1369,74 +1348,69 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
 fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
     eprintln!("phase disclosure_triangle_click_toggles_child_visibility");
     {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let welcome = app.workspace_pages_for_test()[0].id;
+        let mut app = starter();
+        let welcome = n(&mut app).workspace_pages_for_test()[0].id;
         // Give `welcome` a child so it becomes a collapsible branch.
-        app.apply_event_for_test(OutEvent::CreateChild {
+        n(&mut app).apply_event_for_test(OutEvent::CreateChild {
             parent: Some(welcome),
         });
-        app.sync_sidebar_for_test();
+        app.harness().relayout();
+        app.harness().relayout();
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        app.harness().relayout_at((1200, 800)).unwrap();
 
         // Creating a child reveals it (its branch expands), so both rows show.
-        assert!(app.sidebar_row_center_for_test(0).is_some());
+        assert!(n(&mut app).sidebar_row_center_for_test(0).is_some());
         assert!(
-            app.sidebar_row_center_for_test(1).is_some(),
+            n(&mut app).sidebar_row_center_for_test(1).is_some(),
             "the newly-created child is revealed under its parent"
         );
 
         // Click the disclosure triangle (leftmost glyph of row 0) to COLLAPSE.
-        let row0 = app.sidebar_row_center_for_test(0).unwrap();
-        let glyph_x = app.sidebar_disclosure_x_for_test(0).unwrap();
+        let row0 = n(&mut app).sidebar_row_center_for_test(0).unwrap();
+        let glyph_x = n(&mut app).sidebar_disclosure_x_for_test(0).unwrap();
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &cursor_moved(glyph_x, row0.y));
         dispatch(&mut app, no_mods, &mouse_press());
         // Re-settle so the re-flattened rows lay out.
-        Framed::harness_mut(&mut app)
-            .relayout_at((1200, 800))
-            .unwrap();
+        app.harness().relayout_at((1200, 800)).unwrap();
         assert!(
-            app.sidebar_row_center_for_test(1).is_none(),
+            n(&mut app).sidebar_row_center_for_test(1).is_none(),
             "collapsing must hide the child row through the event path"
         );
 
         // Click again → the child row reappears.
-        let row0 = app.sidebar_row_center_for_test(0).unwrap();
-        let glyph_x = app.sidebar_disclosure_x_for_test(0).unwrap();
+        let row0 = n(&mut app).sidebar_row_center_for_test(0).unwrap();
+        let glyph_x = n(&mut app).sidebar_disclosure_x_for_test(0).unwrap();
         dispatch(&mut app, no_mods, &cursor_moved(glyph_x, row0.y));
         dispatch(&mut app, no_mods, &mouse_press());
-        Framed::harness_mut(&mut app)
-            .relayout_at((1200, 800))
-            .unwrap();
+        app.harness().relayout_at((1200, 800)).unwrap();
         assert!(
-            app.sidebar_row_center_for_test(1).is_some(),
+            n(&mut app).sidebar_row_center_for_test(1).is_some(),
             "expanding must reveal the child row again"
         );
     }
 
     eprintln!("phase double_click_row_opens_inline_rename");
     {
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        let mut app = starter();
+        app.harness().relayout_at((1200, 800)).unwrap();
 
-        let c = app.sidebar_row_center_for_test(0).expect("row 0 laid out");
+        let c = n(&mut app)
+            .sidebar_row_center_for_test(0)
+            .expect("row 0 laid out");
         let no_mods = Modifiers::default();
         // Two presses at the same spot in quick succession → double-click.
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press());
         assert!(
-            !app.sidebar_is_renaming_for_test(),
+            !n(&mut app).sidebar_is_renaming_for_test(),
             "single click must not rename"
         );
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press());
         assert!(
-            app.sidebar_is_renaming_for_test(),
+            n(&mut app).sidebar_is_renaming_for_test(),
             "double-click on a row must open the inline rename editor"
         );
     }
@@ -1445,29 +1419,30 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
     {
         // Bug: the rename field was a jarring boxed input that never deselected.
         // It must be plain-chrome (styled like the row) and commit on focus-out.
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let welcome = app.workspace_pages_for_test()[0].id;
+        let mut app = starter();
+        let welcome = n(&mut app).workspace_pages_for_test()[0].id;
         // Second root page so we can click a DIFFERENT row to blur + commit.
-        app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-        app.sync_sidebar_for_test();
+        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        app.harness().relayout();
+        app.harness().relayout();
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        app.harness().relayout_at((1200, 800)).unwrap();
 
         // Double-click row 0 to open the in-place rename field.
-        let c = app.sidebar_row_center_for_test(0).expect("row 0 laid out");
+        let c = n(&mut app)
+            .sidebar_row_center_for_test(0)
+            .expect("row 0 laid out");
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press());
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press());
         assert!(
-            app.sidebar_is_renaming_for_test(),
+            n(&mut app).sidebar_is_renaming_for_test(),
             "double-click opens the rename field"
         );
         assert_eq!(
-            app.sidebar_rename_is_plain_for_test(),
+            n(&mut app).sidebar_rename_is_plain_for_test(),
             Some(true),
             "the rename field is plain-chrome (styled like the row, not a boxed input)"
         );
@@ -1475,15 +1450,17 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
         // Type an edit into the field, then click a DIFFERENT row → focus-out
         // must COMMIT (not discard) and end editing.
         dispatch(&mut app, no_mods, &char_key("!"));
-        let c1 = app.sidebar_row_center_for_test(1).expect("row 1 laid out");
+        let c1 = n(&mut app)
+            .sidebar_row_center_for_test(1)
+            .expect("row 1 laid out");
         dispatch(&mut app, no_mods, &cursor_moved(c1.x, c1.y));
         dispatch(&mut app, no_mods, &mouse_press());
 
         assert!(
-            !app.sidebar_is_renaming_for_test(),
+            !n(&mut app).sidebar_is_renaming_for_test(),
             "clicking outside the field must end editing (it deselects/blurs)"
         );
-        let pages = app.workspace_pages_for_test();
+        let pages = n(&mut app).workspace_pages_for_test();
         let renamed = pages.iter().find(|p| p.id == welcome).unwrap();
         assert_eq!(
             renamed.title, "Welcome!",
@@ -1495,18 +1472,18 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
     {
         // Bug: right-click on a page row did nothing. It must open the context
         // menu, and its actions must actually run.
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let welcome = app.workspace_pages_for_test()[0].id;
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        let mut app = starter();
+        let welcome = n(&mut app).workspace_pages_for_test()[0].id;
+        app.harness().relayout_at((1200, 800)).unwrap();
 
-        let c = app.sidebar_row_center_for_test(0).expect("row 0 laid out");
+        let c = n(&mut app)
+            .sidebar_row_center_for_test(0)
+            .expect("row 0 laid out");
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &cursor_moved(c.x, c.y));
         dispatch(&mut app, no_mods, &mouse_press_right());
         assert!(
-            app.sidebar_menu_open_for_test(),
+            n(&mut app).sidebar_menu_open_for_test(),
             "right-click on a page row must open the context menu"
         );
 
@@ -1515,7 +1492,7 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
         dispatch(&mut app, no_mods, &named_key(NamedKey::ArrowDown));
         dispatch(&mut app, no_mods, &named_key(NamedKey::Enter));
 
-        let pages = app.workspace_pages_for_test();
+        let pages = n(&mut app).workspace_pages_for_test();
         assert_eq!(pages.len(), 2, "the New child action must create a page");
         let children_count = pages.iter().filter(|p| p.parent == Some(welcome)).count();
         assert_eq!(
@@ -1523,30 +1500,30 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
             "New child must nest the new page under the right-clicked page"
         );
         assert!(
-            !app.sidebar_menu_open_for_test(),
+            !n(&mut app).sidebar_menu_open_for_test(),
             "the menu closes after an action is chosen"
         );
     }
 
     eprintln!("phase keyboard_context_menu_opens_on_the_selected_page");
     {
-        let tmp = TempDir::new().unwrap();
-        let app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
-        let row = app.sidebar_row_center_for_test(0).expect("row laid out");
+        let mut app = starter();
+        app.harness().relayout_at((1200, 800)).unwrap();
+        let row = n(&mut app)
+            .sidebar_row_center_for_test(0)
+            .expect("row laid out");
         let no_mods = Modifiers::default();
         dispatch(&mut app, no_mods, &cursor_moved(row.x, row.y));
         dispatch(&mut app, no_mods, &mouse_press());
 
         dispatch(&mut app, no_mods, &named_key(NamedKey::ContextMenu));
-        assert!(app.sidebar_menu_open_for_test());
+        assert!(n(&mut app).sidebar_menu_open_for_test());
         dispatch(&mut app, no_mods, &named_key(NamedKey::Escape));
 
         let shift = Modifiers::from(ModifiersState::SHIFT);
         dispatch(&mut app, shift, &named_key(NamedKey::F10));
         assert!(
-            app.sidebar_menu_open_for_test(),
+            n(&mut app).sidebar_menu_open_for_test(),
             "Shift+F10 opens the same selected-page menu"
         );
     }
@@ -1555,31 +1532,30 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
     {
         // Bug: the sidebar rendered a flat list despite the model's hierarchy.
         // A child of the selected page must show one indent level below it.
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let welcome = app.workspace_pages_for_test()[0].id;
+        let mut app = starter();
+        let welcome = n(&mut app).workspace_pages_for_test()[0].id;
         // Creating a child auto-selects it, so revealing it proves the tree
         // expands its ancestors (not a collapsed flat list).
-        app.apply_event_for_test(OutEvent::CreateChild {
+        n(&mut app).apply_event_for_test(OutEvent::CreateChild {
             parent: Some(welcome),
         });
-        app.sync_sidebar_for_test();
+        app.harness().relayout();
+        app.harness().relayout();
 
-        let state = ui::State::new();
-        let app = settle_layout(app, state, 1200, 800);
+        app.harness().relayout_at((1200, 800)).unwrap();
 
         assert_eq!(
-            app.sidebar_row_depth_for_test(0),
+            n(&mut app).sidebar_row_depth_for_test(0),
             Some(0),
             "parent sits at depth 0"
         );
         assert_eq!(
-            app.sidebar_row_has_children_for_test(0),
+            n(&mut app).sidebar_row_has_children_for_test(0),
             Some(true),
             "the parent shows it has children (disclosure triangle)"
         );
         assert_eq!(
-            app.sidebar_row_depth_for_test(1),
+            n(&mut app).sidebar_row_depth_for_test(1),
             Some(1),
             "the child renders one level indented under its parent — a real tree"
         );
@@ -1587,15 +1563,16 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
 
     eprintln!("phase sidebar_tab_and_shift_tab_edit_the_page_hierarchy");
     {
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        let first = app.workspace_pages_for_test()[0].id;
-        app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-        let second = app.selected_for_test().expect("new root is selected");
-        app.sync_sidebar_for_test();
+        let mut app = starter();
+        let first = n(&mut app).workspace_pages_for_test()[0].id;
+        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        app.harness().relayout();
+        let second = n(&mut app)
+            .selected_for_test()
+            .expect("new root is selected");
+        app.harness().relayout();
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
+        app.harness().relayout_at((1200, 800)).unwrap();
         click_row(&mut app, 1).unwrap();
 
         assert!(dispatch(
@@ -1604,7 +1581,8 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
             &named_key(NamedKey::Tab),
         ));
         assert_eq!(
-            app.workspace_pages_for_test()
+            n(&mut app)
+                .workspace_pages_for_test()
                 .iter()
                 .find(|page| page.id == second)
                 .and_then(|page| page.parent),
@@ -1614,14 +1592,15 @@ fn page_tree_rows_disclose_rename_indent_and_open_context_menus() {
 
         // The sidebar re-flattens synchronously after the canonical action so the
         // moved page remains visible and the inverse command is immediately usable.
-        assert_eq!(app.sidebar_row_depth_for_test(1), Some(1));
+        assert_eq!(n(&mut app).sidebar_row_depth_for_test(1), Some(1));
         assert!(dispatch(
             &mut app,
             Modifiers::from(ModifiersState::SHIFT),
             &named_key(NamedKey::Tab),
         ));
         assert_eq!(
-            app.workspace_pages_for_test()
+            n(&mut app)
+                .workspace_pages_for_test()
                 .iter()
                 .find(|page| page.id == second)
                 .and_then(|page| page.parent),
@@ -1639,21 +1618,20 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
         // Drive the real path: `/number` + Enter converts the focused block to
         // a numbered list; pressing Enter continues the list; the rendered
         // ordinals increment and the saved markdown numbers sequentially.
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+        let mut app = starter();
         // A fresh, empty page so the slash command has a clean paragraph.
-        app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-        app.sync_sidebar_for_test();
+        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        app.harness().relayout();
+        app.harness().relayout();
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
-        assert!(app.main_panel_mut().editor_mut().is_focused());
+        app.harness().relayout_at((1200, 800)).unwrap();
+        assert!(n(&mut app).main_panel_mut().editor_mut().is_focused());
 
         let no_mods = Modifiers::default();
         // Open the slash menu and filter to "Numbered list".
         dispatch(&mut app, no_mods, &char_key("/"));
         assert!(
-            app.editor_slash_menu_visible_for_test(),
+            n(&mut app).editor_slash_menu_visible_for_test(),
             "typing `/` opens the block menu"
         );
         for c in ["n", "u", "m", "b", "e", "r"] {
@@ -1662,11 +1640,11 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
         // Enter commits the highlighted row (the sole match) → Numbered.
         dispatch(&mut app, no_mods, &named_key(NamedKey::Enter));
         assert!(
-            !app.editor_slash_menu_visible_for_test(),
+            !n(&mut app).editor_slash_menu_visible_for_test(),
             "committing the menu closes it"
         );
         {
-            let blocks = app.main_panel_mut().editor().blocks();
+            let blocks = n(&mut app).main_panel_mut().editor().blocks();
             assert_eq!(blocks.len(), 1);
             assert!(
                 matches!(
@@ -1686,22 +1664,18 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
         for c in ["o", "n", "e"] {
             dispatch(&mut app, no_mods, &char_key(c));
         }
-        Framed::harness_mut(&mut app)
-            .relayout_at((1200, 800))
-            .unwrap();
+        app.harness().relayout_at((1200, 800)).unwrap();
         dispatch(&mut app, no_mods, &named_key(NamedKey::Enter));
         for c in ["t", "w", "o"] {
             dispatch(&mut app, no_mods, &char_key(c));
         }
-        Framed::harness_mut(&mut app)
-            .relayout_at((1200, 800))
-            .unwrap();
+        app.harness().relayout_at((1200, 800)).unwrap();
         dispatch(&mut app, no_mods, &named_key(NamedKey::Enter));
         for c in ["s", "i", "x"] {
             dispatch(&mut app, no_mods, &char_key(c));
         }
 
-        let editor = app.main_panel_mut().editor();
+        let editor = n(&mut app).main_panel_mut().editor();
         let blocks = editor.blocks();
         assert_eq!(blocks.len(), 3, "each Enter continues the numbered list");
         for b in blocks {
@@ -1717,7 +1691,7 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
         );
 
         // The saved markdown numbers the list sequentially.
-        let md = app.main_panel_mut().take_body_snapshot();
+        let md = n(&mut app).main_panel_mut().take_body_snapshot();
         assert_eq!(md, "1. one\n\n2. two\n\n3. six\n");
     }
 
@@ -1726,34 +1700,37 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
         // Selecting a slash command with the MOUSE must delete the `/…` trigger
         // and apply the block kind — the old menu had no mouse handler, so a click
         // just dismissed it and left the literal `/` behind.
-        let tmp = TempDir::new().unwrap();
-        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-        app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-        app.sync_sidebar_for_test();
+        let mut app = starter();
+        n(&mut app).apply_event_for_test(OutEvent::CreateChild { parent: None });
+        app.harness().relayout();
+        app.harness().relayout();
 
-        let state = ui::State::new();
-        let mut app = settle_layout(app, state, 1200, 800);
-        assert!(app.main_panel_mut().editor_mut().is_focused());
+        app.harness().relayout_at((1200, 800)).unwrap();
+        assert!(n(&mut app).main_panel_mut().editor_mut().is_focused());
 
         let no_mods = Modifiers::default();
         // Open the menu and filter to the single "Heading 1" row.
         dispatch(&mut app, no_mods, &char_key("/"));
         assert!(
-            app.editor_slash_menu_visible_for_test(),
+            n(&mut app).editor_slash_menu_visible_for_test(),
             "`/` opens the block menu"
         );
         for c in ["h", "1"] {
             dispatch(&mut app, no_mods, &char_key(c));
         }
         assert_eq!(
-            app.main_panel_mut().editor().slash_menu().visible_len(),
+            n(&mut app)
+                .main_panel_mut()
+                .editor()
+                .slash_menu()
+                .visible_len(),
             1,
             "`/h1` narrows to exactly the Heading 1 row"
         );
 
         // Click that row through the real pointer path.
         let (cx, cy) = {
-            let rect = app
+            let rect = n(&mut app)
                 .main_panel_mut()
                 .editor()
                 .slash_menu()
@@ -1765,10 +1742,10 @@ fn slash_commands_apply_block_kinds_and_continue_lists() {
         dispatch(&mut app, no_mods, &mouse_press());
 
         assert!(
-            !app.editor_slash_menu_visible_for_test(),
+            !n(&mut app).editor_slash_menu_visible_for_test(),
             "clicking a row closes the menu"
         );
-        let blocks = app.main_panel_mut().editor().blocks();
+        let blocks = n(&mut app).main_panel_mut().editor().blocks();
         assert_eq!(blocks.len(), 1);
         assert!(
             matches!(blocks[0].kind, ui::widget::BlockKind::Heading(1)),

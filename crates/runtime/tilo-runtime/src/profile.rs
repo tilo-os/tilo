@@ -52,7 +52,7 @@ impl MediaHost {
                 .block_on(tilo_fs::ContentStore::open(content))
                 .map_err(io::Error::other)?,
         );
-        let media = tilo_fs::document_media::DocumentMedia::new(Arc::clone(&store), None);
+        let media = tilo_fs::document_media::DocumentMedia::new(Arc::clone(&store));
         let server = {
             let _entered = runtime.enter();
             tilo_fs::document_media::serve_socket(socket, media).map_err(io::Error::other)?
@@ -83,6 +83,28 @@ impl Drop for MediaHost {
             runtime.shutdown_background();
         })
         .join();
+    }
+}
+
+/// The content service of one room, read as each app reads it.
+pub struct BlobMedia {
+    blob_socket: std::path::PathBuf,
+    room: String,
+}
+
+impl BlobMedia {
+    #[must_use]
+    pub fn new(blob_socket: &Path, room: &str) -> Self {
+        Self {
+            blob_socket: blob_socket.to_path_buf(),
+            room: room.to_owned(),
+        }
+    }
+}
+
+impl crate::MediaReader for BlobMedia {
+    fn read(&self, app_id: &str, hash: &str) -> io::Result<Option<Vec<u8>>> {
+        read_media(&self.blob_socket, &self.room, app_id, hash)
     }
 }
 

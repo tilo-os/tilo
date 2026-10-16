@@ -18,7 +18,7 @@
 #   owner key      the RFC 8032 test-vector key the CI build-validation lane uses
 #                  (.forgejo/workflows/build-image.yml), never a production key.
 #   series         TILO_ALLOW_EMPTY_SERIES=1, as in that lane.
-#   browser        TILO_WITH_BROWSER=0 (the WPE engine is ~45 minutes cold).
+#   browser        TILO_WITH_BROWSER=0 (no Browser or engine runtime).
 #   debug info     TILO_RUST_DEBUGINFO=0, as CI's dev image lane.
 #   layer epoch    TILO_LAYER_EPOCH=base: layers dated by the base image, so a new
 #                  commit alone does not invalidate podman's layer cache.

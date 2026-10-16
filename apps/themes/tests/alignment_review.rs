@@ -1,393 +1,267 @@
-//! Geometry regressions from the 2026-09-16 UI alignment review (unit A3).
-//!
-//! Themes lays its panes out by hand in taffy; these tests run the real
-//! `ThemesApp` through `sync → build_layout → compute_layout → apply_layout`
-//! and check the resulting rectangles against the app's named gutters and the
-//! shared control heights.
+//! Alignment contracts exercised on Theme Studio's admitted resource view.
+//! The shared `NavShell`, `Form` and wrapping `Row` widgets now own the geometry that the
+//! earlier customizer painted. Tests observe their production layout.
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
     clippy::float_cmp,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use themes::ThemesApp;
-use themes::app::{NARROW_CONTENT_GUTTER, TOPBAR_H};
-use themes::customizer::{
-    chip_grid_height, chip_rows_for_width, intrinsic_height_for_width,
-    intrinsic_height_for_width_scaled,
-};
-use themes::model::default_catalog;
-use themes::widgets::{ROW_H, ThemeRow};
-use ui::headless::{FrameOptions, Framed};
+use themes::{App, SCENARIO_THEME, Studio};
+use ui::headless::SemanticExpectation;
+use ui::prelude::{Id, TestApp};
+use ui::theme::Preset;
+use ui::vello::kurbo::Rect;
 use ui::widget::Widget;
-use vello::kurbo::Rect;
 
-/// The production frame for any widget under a large-text preference: the
-/// theme carries `text_scale` and the harness tells the renderer the same
-/// scale, exactly as the live host and the shared launcher do. The host box
-/// is a column so a measured, auto-height child keeps its own height instead
-/// of being stretched to the box.
-fn lay_out_widget_scaled<W: Widget + 'static>(
-    widget: W,
-    (w, h): (u32, u32),
-    text_scale: f32,
-) -> Framed<W> {
-    Framed::with_options(
-        ui::State::new(),
-        widget,
-        (w, h),
-        FrameOptions {
-            theme: Some(ui::Theme::dark().with_text_scale(text_scale)),
-            host_style: Some(taffy::Style {
-                display: taffy::Display::Flex,
-                flex_direction: taffy::FlexDirection::Column,
-                ..Default::default()
-            }),
-            ..FrameOptions::default()
-        },
-    )
-}
-
-fn lay_out(app: ThemesApp, viewport: (u32, u32)) -> Framed<ThemesApp> {
-    Framed::new(ui::State::new(), app, viewport, ui::Theme::dark())
-}
-
-fn walk(w: &dyn Widget, f: &mut dyn FnMut(&dyn Widget)) {
-    f(w);
-    for child in w.children() {
-        walk(child, f);
-    }
-}
-
-fn by_test_id(root: &dyn Widget, id: &str) -> Rect {
-    let mut out = None;
-    walk(root, &mut |w| {
-        if out.is_none() && w.test_id() == Some(id) {
-            out = Some(w.get_rect());
-        }
-    });
-    out.unwrap_or_else(|| panic!("no widget with test id {id:?}"))
-}
-
-fn by_widget_name(root: &dyn Widget, name: &str) -> Vec<Rect> {
-    let mut out = Vec::new();
-    walk(root, &mut |w| {
-        if w.name() == name {
-            out.push(w.get_rect());
-        }
-    });
-    out
-}
-
-fn close(a: f64, b: f64, what: &str) {
-    assert!(
-        (a - b).abs() < 0.5,
-        "{what}: expected {b}, got {a} (difference {})",
-        a - b
-    );
-}
-
-fn narrow_customize_app() -> ThemesApp {
-    let mut app = ThemesApp::new_demo();
-    app.seed_shot(480.0, "customize");
+fn frame(scenario: &str, viewport: (u32, u32), scale: f32) -> TestApp<App> {
+    let mut app = TestApp::<App>::capture_at(Some(scenario), viewport).unwrap();
+    app.harness()
+        .relayout_themed(viewport, ui::Theme::dark().with_text_scale(scale))
+        .unwrap();
     app
 }
 
-/// Narrow selector gutter, chip wrapping, action heights and the shared gallery toggle.
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "cases merged from separate tests; each case stays self-contained"
-)]
-fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
-    // Case `narrow_view_selector_keeps_the_content_gutter_on_three_sides`.
-    {
-        let app = lay_out(narrow_customize_app(), (480, 900));
-        let tabs = by_widget_name(&*app, "ToggleGroup")[0];
-        let gutter = f64::from(NARROW_CONTENT_GUTTER);
-        // The selector is content-sized and left-aligned to the content gutter
-        // (the accepted narrow view-selector alignment); above it the same gutter
-        // separates it from the top bar's hairline.
-        close(tabs.x0, gutter, "selector left gutter");
-        assert!(
-            tabs.x1 <= 480.0 - gutter,
-            "selector {tabs:?} stays inside the right gutter"
-        );
-        close(
-            tabs.y0,
-            f64::from(TOPBAR_H) + gutter,
-            "selector no longer sits flush on the top bar hairline",
-        );
-    }
+fn rect(app: &mut TestApp<App>, id: &str) -> Rect {
+    app.harness()
+        .targets()
+        .get(id)
+        .copied()
+        .unwrap_or_else(|| panic!("no production target {id}"))
+}
 
-    // Case `customizer_chip_grid_wraps_to_the_width_it_is_given`.
-    {
-        // Docked column: 344 − 2·16 = 312 px of content → two chip rows.
-        assert_eq!(chip_rows_for_width(312.0), 2);
-        // Narrow window: 480 − 2·16 = 448 px → every chip fits on one row.
-        assert_eq!(chip_rows_for_width(448.0), 1);
-        // One fewer row is exactly one chip (28) plus one gap (8) shorter, so the
-        // caption follows the chips instead of leaving a dead band beneath them.
-        close(
-            f64::from(chip_grid_height(312.0) - chip_grid_height(448.0)),
-            28.0 + 8.0,
-            "grid height difference between two rows and one",
-        );
-        assert!(
-            intrinsic_height_for_width(480.0) < intrinsic_height_for_width(344.0),
-            "the stacked panel's intrinsic height follows the chip rows"
-        );
+fn widgets(root: &dyn Widget, name: &str, out: &mut Vec<Rect>) {
+    if root.name() == name {
+        out.push(root.get_rect());
     }
-
-    // Case `customizer_actions_match_the_dropdown_control_height`.
-    {
-        let app = lay_out(narrow_customize_app(), (480, 900));
-        let duplicate = by_test_id(&*app, "themes.duplicate");
-        let reset = by_test_id(&*app, "themes.reset");
-        let delete = by_test_id(&*app, "themes.delete");
-        let font = by_test_id(&*app, "font_dropdown");
-        for (name, button) in [
-            ("Duplicate", duplicate),
-            ("Reset", reset),
-            ("Delete", delete),
-        ] {
-            close(
-                button.height(),
-                font.height(),
-                &format!("{name} button height vs the font dropdown"),
-            );
-            close(
-                button.y0,
-                duplicate.y0,
-                &format!("{name} shares the action row"),
-            );
-        }
-        // The chooser and the actions share the panel's left inset.
-        close(
-            duplicate.x0,
-            font.x0,
-            "actions start on the dropdown's left edge",
-        );
-    }
-
-    // Case `gallery_toggle_is_a_shared_button_on_the_bar_control_height`.
-    // The overlay gallery's toggle is the shared icon-only `Button`, laid out
-    // in the top bar's leading slot: a `bar_height` square on the content
-    // gutter, centred in the bar, on the same centre line and control height as
-    // the bar's actions (round one's U5 replaced a hand-painted 34 px rect).
-    {
-        let app = lay_out(narrow_customize_app(), (480, 900));
-        let metrics = ui::tokens::Metrics::default();
-        let toggle = by_test_id(&*app, "themes.gallery_toggle");
-        close(
-            toggle.width(),
-            f64::from(metrics.bar_height),
-            "toggle width",
-        );
-        close(
-            toggle.height(),
-            f64::from(metrics.bar_height),
-            "toggle height",
-        );
-        close(
-            toggle.x0,
-            f64::from(NARROW_CONTENT_GUTTER),
-            "toggle starts on the content gutter",
-        );
-        close(
-            toggle.center().y,
-            f64::from(TOPBAR_H) / 2.0,
-            "toggle centred in the 1× bar",
-        );
-        for id in ["themes.new", "themes.export", "themes.apply"] {
-            let action = by_test_id(&*app, id);
-            close(
-                action.center().y,
-                toggle.center().y,
-                &format!("{id} shares the toggle's centre line"),
-            );
-            close(
-                action.height(),
-                toggle.height(),
-                &format!("{id} shares the control height"),
-            );
-        }
-        // The toggle is a real child of the tree (reachable by assistive
-        // technology), not a painted rect, and it speaks the action it will
-        // perform: showing a hidden gallery here…
-        let spoken = |app: &ThemesApp| {
-            app.children()
-                .iter()
-                .find(|c| c.test_id() == Some("themes.gallery_toggle"))
-                .and_then(|c| c.accessibility().and_then(|n| n.name))
-                .unwrap_or_else(|| panic!("the toggle is a child widget of the app"))
-        };
-        assert_eq!(spoken(&app), "Show themes");
-        // …and hiding a shown one. The "menu" shot opens the gallery flap, so
-        // the toggle in that tree is the close control.
-        let mut open = ThemesApp::new_demo();
-        open.seed_shot(480.0, "menu");
-        let open = lay_out(open, (480, 900));
-        assert_eq!(spoken(&open), "Hide themes");
-        let close_toggle = by_test_id(&*open, "themes.gallery_toggle");
-        close(
-            close_toggle.x0,
-            toggle.x0,
-            "the close control keeps the toggle's slot",
-        );
-        close(
-            close_toggle.width(),
-            toggle.width(),
-            "the close control keeps the toggle's size",
-        );
+    for child in root.children() {
+        widgets(child, name, out);
     }
 }
 
-// ---- round two (2026-09-17) ----
+fn named(app: &mut TestApp<App>, name: &str) -> Vec<Rect> {
+    let mut out = Vec::new();
+    widgets(app.harness().root_widget(), name, &mut out);
+    out
+}
 
-/// Under large text the top bar wraps, gallery rows grow on the s2 rhythm, and specimen/customizer reflow.
+fn disjoint(a: Rect, b: Rect) -> bool {
+    let overlap = a.intersect(b);
+    overlap.width() <= 0.0 || overlap.height() <= 0.0
+}
+
+fn near(a: f64, b: f64, why: &str) {
+    assert!((a - b).abs() < 0.5, "{why}: {a} vs {b}");
+}
+
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "cases merged from separate tests; each case stays self-contained"
-)]
-fn large_text_reflows_the_bar_gallery_and_specimen() {
-    // Case `top_bar_wraps_its_actions_under_large_text_instead_of_covering_the_toggle`.
-    // Under large text on a phone-width window the bar's actions no longer fit
-    // beside the toggle. They wrap onto their own line(s) inside the window
-    // instead of being painted over the toggle, and the content starts below
-    // the taller bar.
-    {
-        let app = lay_out_widget_scaled(narrow_customize_app(), (480, 900), 2.0);
-        let toggle = by_test_id(&*app, "themes.gallery_toggle");
-        let mut bar_bottom = toggle.y1;
-        for id in ["themes.new", "themes.export", "themes.apply"] {
-            let action = by_test_id(&*app, id);
-            let overlap = toggle.intersect(action);
+fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
+    let mut app = frame("editor", (480, 2400), 1.0);
+    let toggle = rect(&mut app, "nav-shell-sidebar");
+    assert!(toggle.width() > 0.0 && toggle.height() > 0.0);
+    let preview = rect(&mut app, "theme-preview");
+    let gutter = f64::from(app.harness().theme().tokens.spacing.s4);
+    assert!(
+        preview.x0 >= gutter && preview.x1 <= 480.0 - gutter,
+        "preview {preview:?} retains content gutters"
+    );
+    assert!(
+        preview.y0 >= toggle.y1,
+        "content starts below shared chrome"
+    );
+
+    let action_ids = [
+        "theme-apply",
+        "theme-export",
+        "theme-duplicate",
+        "theme-reset",
+        "theme-delete",
+    ];
+    let actions: Vec<_> = action_ids.iter().map(|id| rect(&mut app, id)).collect();
+    for (i, action) in actions.iter().enumerate() {
+        assert!(
+            action.width() > 0.0 && action.x0 >= 0.0 && action.x1 <= 480.0,
+            "{} remains inside the window: {action:?}",
+            action_ids[i]
+        );
+        near(
+            action.height(),
+            actions[0].height(),
+            "actions share control height",
+        );
+        for other in &actions[i + 1..] {
             assert!(
-                overlap.width() <= 0.0 || overlap.height() <= 0.0,
-                "{id} {action:?} must not cover the toggle {toggle:?}"
+                disjoint(*action, *other),
+                "actions overlap: {action:?} / {other:?}"
             );
-            assert!(
-                action.x0 >= 0.0 && action.x1 <= 480.0,
-                "{id} {action:?} stays inside the window"
-            );
-            bar_bottom = bar_bottom.max(action.y1);
         }
-        let tabs = by_widget_name(&*app, "ToggleGroup")[0];
-        assert!(
-            tabs.y0 >= bar_bottom,
-            "the view selector {tabs:?} starts below the wrapped bar (bottom {bar_bottom})"
+    }
+    assert!(
+        actions.iter().any(|r| r.y0 > actions[0].y0),
+        "narrow action row wraps instead of clipping"
+    );
+    let dropdowns = named(&mut app, "Dropdown");
+    assert!(
+        !dropdowns.is_empty(),
+        "production choices are shared dropdowns"
+    );
+    for dropdown in dropdowns {
+        assert!(dropdown.width() > 0.0);
+        near(
+            dropdown.height(),
+            actions[0].height(),
+            "choices and actions share control height",
         );
     }
+    app.harness()
+        .expect(&SemanticExpectation::named("nav-shell-sidebar").enabled(true))
+        .unwrap();
+    app.harness().click_named("nav-shell-sidebar").unwrap();
+    app.harness()
+        .expect(&SemanticExpectation::named("themes-gallery").enabled(true))
+        .unwrap();
+    let shown = rect(&mut app, "nav-shell-sidebar");
+    near(toggle.x0, shown.x0, "sidebar control keeps its slot");
+    near(
+        toggle.width(),
+        shown.width(),
+        "sidebar control keeps its size",
+    );
+}
 
-    // Case `gallery_rows_keep_their_1x_height_and_grow_with_large_text`.
-    // A gallery row is exactly its 1× height at 1× and grows from its measured
-    // name and tag lines under large text, so the tag no longer stacks over the
-    // name (round one's U6).
-    {
-        let spec = default_catalog()
-            .into_iter()
-            .next()
-            .expect("a preset theme");
-        let row = ThemeRow::from_spec(&spec, false);
-        let row = lay_out_widget_scaled(row, (272, 400), 1.0);
-        close(row.get_rect().height(), f64::from(ROW_H), "1× row height");
-        close(row.get_rect().width(), 272.0, "row fills the gallery width");
-
-        let large = ThemeRow::from_spec(&spec, false);
-        let large = lay_out_widget_scaled(large, (272, 400), 2.0);
-        let tall = large.get_rect().height();
-        assert!(
-            tall > f64::from(ROW_H) + 20.0,
-            "200 % row ({tall}) seats two doubled text lines, not the 1× {ROW_H}"
-        );
-        // The inline-editor rect follows the drawn name line.
-        let name = large.name_rect();
-        assert!(
-            name.y0 >= large.get_rect().y0 && name.y1 <= large.get_rect().y1,
-            "name rect {name:?} stays inside the row {:?}",
-            large.get_rect()
-        );
-    }
-
-    // Case `specimen_and_customizer_reflow_with_large_text`.
-    // The specimen's text-driven sections and the customizer's hand-laid
-    // header, caption and control labels follow the text scale, so the narrow
-    // stack reflows instead of overprinting itself (round one's U6).
-    {
-        assert!(
-            intrinsic_height_for_width_scaled(480.0, 2.0)
-                > intrinsic_height_for_width(480.0) + 100.0,
-            "the customizer's intrinsic height grows with the type"
-        );
-        close(
-            f64::from(intrinsic_height_for_width_scaled(480.0, 1.0)),
-            f64::from(intrinsic_height_for_width(480.0)),
-            "1× is exactly the unscaled height",
-        );
-
-        let mut one = ThemesApp::new_demo();
-        one.seed_shot(480.0, "preview");
-        let one = lay_out_widget_scaled(one, (480, 900), 1.0);
-        let specimen_1x = by_widget_name(&*one, "PreviewPane")[0];
-
-        let mut two = ThemesApp::new_demo();
-        two.seed_shot(480.0, "preview");
-        let two = lay_out_widget_scaled(two, (480, 900), 2.0);
-        let specimen_2x = by_widget_name(&*two, "PreviewPane")[0];
-        assert!(
-            specimen_2x.height() > specimen_1x.height() + 200.0,
-            "the full-preview specimen grows with the type ({} → {})",
-            specimen_1x.height(),
-            specimen_2x.height()
-        );
-    }
-
-    // Case `gallery_rows_stack_on_the_s2_step_and_never_touch`.
-    // The gallery is one rhythm (HIG §7b): every row sits exactly one `s2` —
-    // the gallery's related-rows step — below the row above it, inset `s4`
-    // from the pane on both sides, and no two rows ever touch (the 1× polish
-    // bar). Measured on the real docked layout, not on the constants.
-    {
-        let sp = ui::tokens::Spacing::BASE;
-        let mut app = ThemesApp::new_demo();
-        app.seed_shot(1280.0, "");
-        let app = lay_out(app, (1280, 1500));
-        let mut rows = by_widget_name(&*app, "ThemeRow");
-        rows.retain(|r| r.width() > 0.0 && r.height() > 0.0);
-        rows.sort_by(|a, b| a.y0.total_cmp(&b.y0));
-        assert!(
-            rows.len() >= 3,
-            "the demo gallery lists its presets and the custom theme, found {}",
-            rows.len()
-        );
-        for pair in rows.windows(2) {
-            let gap = pair[1].y0 - pair[0].y1;
+#[test]
+fn gallery_cards_wrap_to_available_width_with_measured_gaps() {
+    for width in [480, 1280] {
+        let mut app = frame("gallery", (width, 2400), 1.0);
+        let gap = f64::from(app.harness().theme().tokens.spacing.s2);
+        let cards: Vec<_> = Preset::ALL
+            .iter()
+            .map(|preset| rect(&mut app, &format!("preset-{}", preset.id())))
+            .collect();
+        assert!(cards.len() >= 3, "all preset choices must be observed");
+        for (i, card) in cards.iter().enumerate() {
             assert!(
-                gap >= f64::from(sp.s1),
-                "gallery rows touch: {:?} → {:?} (gap {gap})",
-                pair[0],
-                pair[1]
+                card.width() > 0.0
+                    && card.height() > 0.0
+                    && card.x0 >= 0.0
+                    && card.x1 <= f64::from(width),
+                "preset card clipped: {card:?}"
             );
-            close(gap, f64::from(sp.s2), "row to row");
-            close(pair[0].x0, pair[1].x0, "rows share a left edge");
-            close(pair[0].x1, pair[1].x1, "rows share a right edge");
+            for other in &cards[i + 1..] {
+                assert!(
+                    disjoint(*card, *other),
+                    "preset cards overlap: {card:?} / {other:?}"
+                );
+                if (card.x0 - other.x0).abs() < 0.5 {
+                    assert!(
+                        other.y0 - card.y1 >= gap,
+                        "related cards need the theme's gap"
+                    );
+                }
+            }
         }
-        let gallery = by_widget_name(&*app, "Gallery")[0];
-        close(
-            rows[0].x0 - gallery.x0,
-            f64::from(sp.s4),
-            "row inset from the gallery edge",
-        );
-        close(
-            gallery.x1 - rows[0].x1,
-            f64::from(sp.s4),
-            "row inset from the gallery edge",
-        );
+        if width == 480 {
+            for pair in cards.windows(2) {
+                near(
+                    pair[0].x0,
+                    pair[1].x0,
+                    "stacked cards share their left inset",
+                );
+                near(
+                    pair[0].x1,
+                    pair[1].x1,
+                    "stacked cards share their right inset",
+                );
+                assert!(pair[1].y0 > pair[0].y1);
+            }
+        }
     }
+}
+
+#[test]
+fn large_text_reflows_controls_and_the_form_without_covering_chrome() {
+    let mut one = frame("editor", (480, 4000), 1.0);
+    let mut two = frame("editor", (480, 4000), 2.0);
+    let toggle = rect(&mut two, "nav-shell-sidebar");
+    let preview = rect(&mut two, "theme-preview");
+    assert!(
+        preview.y0 >= toggle.y1,
+        "preview remains below scaled shared chrome"
+    );
+    let ids = [
+        "theme-apply",
+        "theme-export",
+        "theme-duplicate",
+        "theme-reset",
+        "theme-delete",
+    ];
+    let actions: Vec<_> = ids.iter().map(|id| rect(&mut two, id)).collect();
+    for (i, action) in actions.iter().enumerate() {
+        assert!(
+            disjoint(toggle, *action),
+            "action must not cover the sidebar control"
+        );
+        assert!(action.x0 >= 0.0 && action.x1 <= 480.0);
+        assert!(
+            action.height() > rect(&mut one, ids[i]).height(),
+            "large type increases its real control height"
+        );
+        for other in &actions[i + 1..] {
+            assert!(disjoint(*action, *other));
+        }
+    }
+    let name = rect(&mut two, "theme-name");
+    assert!(
+        name.y0 >= actions.iter().map(|r| r.y1).fold(0.0, f64::max),
+        "form starts below wrapped actions"
+    );
+    let one_form = named(&mut one, "Form");
+    let two_form = named(&mut two, "Form");
+    assert_eq!(one_form.len(), 1, "the production editor hosts one form");
+    assert_eq!(two_form.len(), 1);
+    assert!(
+        two_form[0].height() > one_form[0].height() + 100.0,
+        "the editor reflows from measured large text"
+    );
+    let face = rect(&mut two, "theme-face");
+    assert!(face.height() > rect(&mut one, "theme-face").height());
+    assert!(
+        face.y0 >= name.y1,
+        "the face editor cannot cover the name editor"
+    );
+}
+
+#[test]
+fn reset_preserves_identity_and_restores_the_preset_through_the_public_action() {
+    let mut app = frame("tinted", (1280, 2400), 1.0);
+    let id = Id::from_raw(SCENARIO_THEME);
+    let before = app
+        .state()
+        .themes
+        .get(&id)
+        .unwrap()
+        .document(SCENARIO_THEME);
+    app.invoke(Studio::RESET.with(id.clone())).unwrap();
+    let state = app.state();
+    let theme = state.themes.get(&id).unwrap();
+    assert_eq!(theme.name, "Ember");
+    let after = theme.document(SCENARIO_THEME);
+    assert_ne!(before, after, "reset changes the edited properties");
+    assert_eq!(
+        after.shape,
+        Preset::find("dark-graphite").unwrap().document().shape
+    );
+    assert!(after.findings().is_empty());
+    assert!(app.undo());
+    assert_eq!(
+        app.state()
+            .themes
+            .get(&id)
+            .unwrap()
+            .document(SCENARIO_THEME),
+        before,
+        "reset remains one reversible resource action"
+    );
 }

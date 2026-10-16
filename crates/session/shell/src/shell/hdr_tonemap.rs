@@ -84,7 +84,7 @@ impl HdrTonemapConfig {
 /// plane is 4:2:0 (half-res both axes); this function subsamples nearest.
 ///
 /// The caller hands tight buffers per the
-/// [`crate::network::decoder::VideoDecoder`] 10-bit output contract
+/// [`tilo_callstream::surface_decoder::VideoDecoder`] 10-bit output contract
 /// (`y.len() >= y_stride * height`); a shorter buffer never panics —
 /// pixels whose sample would fall outside `y`/`uv` are left as
 /// transparent black instead.

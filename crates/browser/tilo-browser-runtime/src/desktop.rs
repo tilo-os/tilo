@@ -8,7 +8,7 @@
 //! documents. A profile with no stored desktop is seeded with a window per
 //! requested application.
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,42 +17,79 @@ use durable_store::{DurableStore, StorageKey, WriteOp};
 use tilo_desktop_model::{DesktopTree, IdMinter, Tab, TabId, TileContent, Workspace};
 use tilo_desktop_surface::navigation::Application;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
+use tilo_lock::MutexRecover as _;
 use ui::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
+use ui::automerge::AutoCommit;
 use ui::permissions::{PermissionContext, UserId};
 use ui::record::{RecordCheckout, RecordId, RecordOwners, RecordStore};
 use ui::widget::TileHost;
 
-/// Applications the page can open, in launcher order: the built-in Scratch,
-/// then every application the bundle registered from its manifests
-/// (`ui::application::registry`). The first is what a group's new-tab
-/// control opens.
+/// Applications the page can open, in launcher order: every application
+/// the bundle registered from its manifests (`ui::application::registry`),
+/// else the built-in Scratch, so a runtime without apps still opens one. A
+/// bundle whose apps are all still deferred has apps, just none loaded yet.
 pub(crate) fn applications() -> Vec<&'static ApplicationDefinition> {
-    let mut applications = vec![crate::scratch::definition()];
-    applications.extend(ui::application::registry::applications());
+    let mut applications = if ui::application::registry::catalogue().is_empty() {
+        vec![crate::scratch::definition()]
+    } else {
+        ui::application::registry::applications()
+    };
+    if !applications
+        .iter()
+        .any(|app| app.app_id == tilo_desktop::feedback::PACKAGE)
+    {
+        applications.push(tilo_desktop::feedback::definition());
+    }
     applications
 }
 
+/// An application the page can open by id whose code is loaded, Scratch
+/// included: windows a desktop saved before keep their application.
 pub(crate) fn application(app: &str) -> Option<&'static ApplicationDefinition> {
     applications()
         .into_iter()
+        .chain(std::iter::once(crate::scratch::definition()))
         .find(|definition| definition.app_id == app)
 }
 
-pub(crate) fn catalogue() -> Vec<Application> {
-    applications()
+/// Every application the page can open, as `(id, title)` in launcher
+/// order: those loaded ([`applications`]) and those whose code is fetched
+/// when they first open (`ui::application::registry::defer`).
+pub(crate) fn known_applications() -> Vec<(&'static str, &'static str)> {
+    let mut known = ui::application::registry::catalogue();
+    for definition in applications() {
+        if !known.iter().any(|(id, _)| *id == definition.app_id) {
+            known.push((definition.app_id, definition.title));
+        }
+    }
+    known
+}
+
+/// The title of an application the page can open by id, loaded or not.
+pub(crate) fn known_application(app: &str) -> Option<&'static str> {
+    let scratch = crate::scratch::definition();
+    known_applications()
         .into_iter()
-        .map(|definition| Application {
-            id: definition.app_id.into(),
-            label: definition.title.into(),
+        .chain(std::iter::once((scratch.app_id, scratch.title)))
+        .find_map(|(id, title)| (id == app).then_some(title))
+}
+
+pub(crate) fn catalogue() -> Vec<Application> {
+    known_applications()
+        .into_iter()
+        .map(|(id, title)| Application {
+            id: id.into(),
+            label: title.into(),
         })
         .collect()
 }
 
 /// Everything a tab's component is prepared with.
 pub(crate) struct Inputs {
+    pub feedback: Option<tilo_desktop::feedback::transport::Startup>,
     pub owners: RecordOwners,
     pub views: Rc<InstanceViewStore>,
     pub device: String,
@@ -65,14 +102,21 @@ pub(crate) struct Inputs {
     pub permissions: Rc<RefCell<PermissionContext>>,
 }
 
+/// The person who made each strip or opened each window, by its id. Kept
+/// with the desktop so whoever wants to know can ask; it grants nothing.
+pub(crate) type Authors = Rc<RefCell<BTreeMap<u64, String>>>;
+
 /// State the mount and the tile source share.
 #[derive(Clone, Default)]
 pub(crate) struct Shared {
+    /// Trusted host custody, never configured from a launch URL or draft.
+    pub feedback: Rc<RefCell<Option<tilo_desktop::feedback::PrivateFeedback>>>,
     /// Every package's record owner opened so far, flushed with the mount.
     pub stores: Rc<RefCell<Vec<RecordStore>>>,
     pub images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     /// Set by any tab component's wake; the host relayouts before drawing.
     pub woken: Arc<AtomicBool>,
+    pub owner_wakes: ui::owner_wake::OwnerWakeQueue,
     /// The applications whose components woke the mount since it last
     /// looked, for the frame metrics.
     wakers: Arc<std::sync::Mutex<Vec<&'static str>>>,
@@ -80,9 +124,79 @@ pub(crate) struct Shared {
     records: Rc<RefCell<HashMap<TabId, RecordCheckout>>>,
     /// A tab bound a record since the desktop was last saved.
     records_changed: Rc<Cell<bool>>,
-    /// Tabs bound to a record that could not open yet: a peer's desktop
-    /// named it before the record itself arrived.
+    /// Tabs that could not open yet: a peer's desktop named a record
+    /// before the record itself arrived, or the tab's application is still
+    /// loading.
     waiting: Rc<RefCell<std::collections::HashSet<TabId>>>,
+    /// Record ids of tabs whose application is not loaded yet: the record's
+    /// kind comes with the application, so they are bound once it is.
+    unbound: Rc<RefCell<HashMap<TabId, String>>>,
+    /// Who made each strip and opened each window, by strip or tab id.
+    pub authors: Authors,
+    /// Applications whose code is being fetched.
+    loading: Rc<RefCell<std::collections::HashSet<&'static str>>>,
+    /// Applications whose code failed to load since their tabs last asked.
+    failed: Rc<RefCell<std::collections::HashSet<String>>>,
+    /// An application finished loading (or failed to) since the mount last
+    /// looked: its waiting tabs are built again.
+    arrived: Rc<Cell<bool>>,
+    /// The windows showing another member's legacy windows, by tab.
+    peer_windows: Rc<RefCell<HashMap<TabId, PeerWindow>>>,
+    /// Legacy windows asked for and not opened yet, by key.
+    pending_peer_windows: Rc<RefCell<HashMap<String, PeerWindow>>>,
+    /// Legacy windows the person closed while they still streamed: not
+    /// opened again, and reported once so the page closes them at their
+    /// source.
+    dismissed_peer_windows: Rc<RefCell<std::collections::HashSet<String>>>,
+    /// Of those, the ones not reported yet.
+    newly_dismissed: Rc<RefCell<Vec<String>>>,
+    /// The applications the node beside the host runs that this desktop
+    /// does not (legacy ones, Tilo apps that need a host), which the person
+    /// can open there and see here as legacy windows.
+    node_apps: Rc<RefCell<Vec<NodeApp>>>,
+    /// Node applications the person asked to open, by id, for the page to
+    /// ask the node.
+    node_app_requests: Rc<RefCell<Vec<String>>>,
+    /// Pages a host streams as display lists (`tilo-paint`), by window key:
+    /// drawn here by the toolkit instead of decoded as video.
+    paint_pages: Rc<RefCell<HashMap<String, Arc<tilo_browser_peer::remote_page::RemotePage>>>>,
+}
+
+/// Launch name of an application the node runs.
+pub(crate) const NODE_APP_LAUNCH: &str = "tilo.node-app:";
+
+/// What search says of an application the node runs.
+const NODE_APP_DESCRIPTION: &str = "Runs on the node";
+
+/// An application on the node: its launch id there, its name, and for a
+/// Tilo application its package id.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct NodeApp {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub app: Option<String>,
+}
+
+/// Launch name of the window showing the legacy window `key`.
+pub(crate) const PEER_WINDOW_LAUNCH: &str = "tilo.peer-window:";
+
+/// Another member's legacy window, as the page streams it: its key (the
+/// page's name for the stream), app id, title and codec.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct PeerWindow {
+    pub key: String,
+    pub app: String,
+    pub title: String,
+    #[serde(default)]
+    pub codec: String,
+}
+
+impl PeerWindow {
+    /// A page this desktop draws itself rather than a video it is shown.
+    fn is_paint(&self) -> bool {
+        self.codec == tilo_relay_protocol::legacy_window::PAINT
+    }
 }
 
 impl Shared {
@@ -104,18 +218,249 @@ impl Shared {
         self.wake();
     }
 
+    /// Whether an application finished loading since the last call.
+    pub fn take_arrived(&self) -> bool {
+        self.arrived.replace(false)
+    }
+
     pub fn take_wake(&self) -> bool {
         self.woken.swap(false, Ordering::AcqRel)
     }
 
     /// The applications whose components woke the mount since the last call.
     pub fn take_wakers(&self) -> Vec<&'static str> {
-        std::mem::take(
-            &mut *self
-                .wakers
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        std::mem::take(&mut *self.wakers.lock_recover())
+    }
+
+    /// The page behind a painted window, created on first use.
+    pub fn paint_page(&self, key: &str) -> Arc<tilo_browser_peer::remote_page::RemotePage> {
+        Arc::clone(
+            self.paint_pages
+                .borrow_mut()
+                .entry(key.to_owned())
+                .or_insert_with(tilo_browser_peer::remote_page::RemotePage::new),
         )
+    }
+
+    /// Input on painted windows since the last call, by window key.
+    pub fn take_paint_input(
+        &self,
+    ) -> Vec<(String, Vec<tilo_relay_protocol::legacy_window::InputEvent>)> {
+        self.paint_pages
+            .borrow()
+            .iter()
+            .map(|(key, page)| (key.clone(), page.take_input()))
+            .filter(|(_, events)| !events.is_empty())
+            .collect()
+    }
+
+    /// The legacy window `tab` shows, if it shows one.
+    pub fn peer_window_of(&self, tab: TabId) -> Option<String> {
+        self.peer_windows
+            .borrow()
+            .get(&tab)
+            .map(|window| window.key.clone())
+    }
+
+    /// The tab showing the legacy window `key`, if one does.
+    pub fn peer_window_tab(&self, key: &str) -> Option<TabId> {
+        self.peer_windows
+            .borrow()
+            .iter()
+            .find_map(|(tab, window)| (window.key == key).then_some(*tab))
+    }
+
+    /// Reconcile the windows showing legacy windows with `wanted`: the
+    /// launch names of the ones to open, and the tabs to close (no longer
+    /// wanted, or restored from a saved desktop that streamed them before).
+    pub fn reconcile_peer_windows(
+        &self,
+        tree: &tilo_desktop_model::DesktopTree,
+        wanted: Vec<PeerWindow>,
+    ) -> (Vec<String>, Vec<TabId>) {
+        let live: std::collections::HashSet<_> = tree
+            .workspaces
+            .iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect();
+        let mut open = self.peer_windows.borrow_mut();
+        self.note_dismissed(&mut open, &live);
+        let mut dismissed = self.dismissed_peer_windows.borrow_mut();
+        dismissed.retain(|key| wanted.iter().any(|window| window.key == *key));
+        let wanted: Vec<PeerWindow> = wanted
+            .into_iter()
+            .filter(|window| !dismissed.contains(&window.key))
+            .collect();
+        drop(dismissed);
+        // A page no longer shared stops being kept.
+        self.paint_pages.borrow_mut().retain(|key, _| {
+            wanted
+                .iter()
+                .any(|window| window.key == *key && window.is_paint())
+        });
+        let mut close = Vec::new();
+        for tab in tree
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .filter(|tab| matches!(tab.tile, TileContent::PeerWindow { .. }))
+        {
+            if open
+                .get(&tab.id)
+                .is_none_or(|window| !wanted.iter().any(|wanted| wanted.key == window.key))
+            {
+                close.push(tab.id);
+            }
+        }
+        let mut pending = self.pending_peer_windows.borrow_mut();
+        pending.clear();
+        let mut launch = Vec::new();
+        for window in wanted {
+            if open.values().any(|open| open.key == window.key) {
+                continue;
+            }
+            launch.push(format!("{PEER_WINDOW_LAUNCH}{}", window.key));
+            pending.insert(window.key.clone(), window);
+        }
+        (launch, close)
+    }
+
+    /// The applications the node runs, as the page listed them, but for
+    /// the Tilo applications this desktop opens itself.
+    pub fn set_node_apps(&self, mut apps: Vec<NodeApp>) {
+        apps.retain(|node| {
+            node.app
+                .as_deref()
+                .is_none_or(|package| known_application(package).is_none())
+        });
+        *self.node_apps.borrow_mut() = apps;
+    }
+
+    /// The search entries of the applications the node runs, then of the
+    /// catalog's apps this desktop cannot open, the node's left out.
+    fn node_search_entries(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
+        let node_apps = self.node_apps.borrow();
+        let hosted: Vec<&str> = node_apps
+            .iter()
+            .filter_map(|node| node.app.as_deref())
+            .collect();
+        node_apps
+            .iter()
+            .map(|node| tilo_desktop_search::providers::AppEntry {
+                id: format!("{NODE_APP_LAUNCH}{}", node.id),
+                title: node.title.clone(),
+                category: node.app.as_deref().and_then(|package| {
+                    tilo_desktop_search::availability::catalog()
+                        .iter()
+                        .find(|app| app.id == package && !app.category.is_empty())
+                        .map(|app| app.category.into())
+                }),
+                description: Some(NODE_APP_DESCRIPTION.into()),
+                unavailable: None,
+            })
+            .chain(tilo_desktop_search::availability::unavailable_on(
+                &["web"],
+                &hosted,
+            ))
+            .collect()
+    }
+
+    /// The node applications the person asked to open since the last call.
+    pub fn take_node_app_requests(&self) -> Vec<String> {
+        std::mem::take(&mut *self.node_app_requests.borrow_mut())
+    }
+
+    /// The applications this desktop opens: the bundle's, then the node's.
+    pub fn catalogue(&self) -> Vec<Application> {
+        catalogue()
+            .into_iter()
+            .chain(self.node_apps.borrow().iter().map(|app| Application {
+                id: format!("{NODE_APP_LAUNCH}{}", app.id),
+                label: app.title.clone(),
+            }))
+            .collect()
+    }
+
+    /// Forget the legacy window `tab` showed.
+    pub fn closed_peer_window(&self, tab: TabId) {
+        self.peer_windows.borrow_mut().remove(&tab);
+    }
+
+    /// Move the windows whose tabs are gone from `live` (the person closed
+    /// them) to the dismissed ones.
+    fn note_dismissed(
+        &self,
+        open: &mut HashMap<TabId, PeerWindow>,
+        live: &std::collections::HashSet<TabId>,
+    ) {
+        let mut dismissed = self.dismissed_peer_windows.borrow_mut();
+        let mut newly = self.newly_dismissed.borrow_mut();
+        open.retain(|tab, window| {
+            if live.contains(tab) {
+                return true;
+            }
+            if dismissed.insert(window.key.clone()) {
+                newly.push(window.key.clone());
+            }
+            false
+        });
+    }
+
+    /// The legacy windows the person closed since the last call, by key:
+    /// the page asks their sources to close them.
+    pub fn take_dismissed_peer_windows(
+        &self,
+        tree: &tilo_desktop_model::DesktopTree,
+    ) -> Vec<String> {
+        let live: std::collections::HashSet<_> = tree
+            .workspaces
+            .iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| tab.id)
+            .collect();
+        self.note_dismissed(&mut self.peer_windows.borrow_mut(), &live);
+        std::mem::take(&mut *self.newly_dismissed.borrow_mut())
+    }
+
+    /// Every tab's bound record.
+    pub fn bound_records(&self) -> Vec<(TabId, RecordCheckout)> {
+        self.records
+            .borrow()
+            .iter()
+            .map(|(tab, checkout)| (*tab, checkout.clone()))
+            .collect()
+    }
+
+    /// The record `tab` shows as the room's live layer names it: its
+    /// application and the record id, empty for the package's primary
+    /// record.
+    pub fn live_record_of(&self, tree: &DesktopTree, tab: TabId) -> Option<(String, String)> {
+        let app = tree
+            .workspaces
+            .iter()
+            .flat_map(|w| &w.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|candidate| candidate.id == tab)
+            .and_then(|tab| match &tab.tile {
+                TileContent::LocalApp { app_id, .. } => Some(app_id.clone()),
+                _ => None,
+            })?;
+        let records = self.records.borrow();
+        let id = &records.get(&tab)?.id;
+        let record = if id.is_package_primary() {
+            String::new()
+        } else {
+            id.as_str().to_owned()
+        };
+        Some((app, record))
     }
 
     /// The record `tab` shows, once its component bound one.
@@ -149,12 +494,46 @@ impl Tiles {
         Ok(store)
     }
 
-    fn component(&mut self, tab: &Tab) -> Result<AppComponent, String> {
+    /// The app `tab` shows once it can be built here, or the line the
+    /// window shows instead.
+    fn ready_app<'t>(&self, tab: &'t Tab) -> Result<&'t str, String> {
+        if let TileContent::PeerWindow { label, .. } = &tab.tile {
+            // The page draws the stream over this window's content.
+            return Err(if self.shared.peer_windows.borrow().contains_key(&tab.id) {
+                format!("Connecting to {label}…")
+            } else {
+                format!("{label} is no longer shared")
+            });
+        }
         let TileContent::LocalApp { app_id, .. } = &tab.tile else {
             return Err("This window has no application in the browser".into());
         };
+        if self.shared.failed.borrow_mut().remove(app_id.as_str()) {
+            return Err(format!(
+                "{} could not be loaded. Check the connection, then open it again.",
+                tab.title
+            ));
+        }
+        if ui::application::registry::is_deferred(app_id) {
+            self.load(app_id);
+            self.shared.waiting.borrow_mut().insert(tab.id);
+            return Err(format!("Opening {}…", tab.title));
+        }
+        Ok(app_id)
+    }
+
+    fn component(&mut self, tab: &Tab) -> Result<AppComponent, String> {
+        let app_id = self.ready_app(tab)?;
         let definition = application(app_id)
             .ok_or_else(|| format!("{app_id} is not available in the browser"))?;
+        let unbound = self.shared.unbound.borrow_mut().remove(&tab.id);
+        if let Some(id) = unbound.as_deref().and_then(RecordId::parse) {
+            let checkout = RecordCheckout::new(id, definition.record_kind.clone());
+            self.shared.records.borrow_mut().insert(tab.id, checkout);
+        }
+        if definition.app_id == tilo_desktop::feedback::PACKAGE {
+            return self.private_feedback(tab.id);
+        }
         let store = self.store(definition)?;
         let saved = self.shared.records.borrow().get(&tab.id).cloned();
         let (target, named_new) = match saved {
@@ -165,7 +544,12 @@ impl Tiles {
                 },
                 None,
             ),
-            None if definition.keeps_room_record() => (definition.unsaved_target(&store), None),
+            None if definition.keeps_room_record() => (
+                definition
+                    .unsaved_target(&store)
+                    .map_err(|error| error.to_string())?,
+                None,
+            ),
             None => self.unbound_target(definition, &store, tab.id)?,
         };
         let restore = self
@@ -203,11 +587,9 @@ impl Tiles {
         let notify = Arc::clone(&self.notify);
         let app_id = definition.app_id;
         component
-            .mount(move |_| {
+            .mount_with_owner_queue(&self.shared.owner_wakes, move |_| {
                 woken.store(true, Ordering::Release);
-                let mut wakers = wakers
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut wakers = wakers.lock_recover();
                 if !wakers.contains(&app_id) {
                     wakers.push(app_id);
                 }
@@ -229,6 +611,55 @@ impl Tiles {
 }
 
 impl Tiles {
+    /// Fetch a deferred application's code; its tabs are built again once
+    /// it is in, or show that it failed.
+    fn load(&self, app_id: &str) {
+        let Some((id, _)) = ui::application::registry::catalogue()
+            .into_iter()
+            .find(|(id, _)| *id == app_id)
+        else {
+            return;
+        };
+        if !self.shared.loading.borrow_mut().insert(id) {
+            return;
+        }
+        let shared = self.shared.clone();
+        let notify = Arc::clone(&self.notify);
+        wasm_bindgen_futures::spawn_local(async move {
+            let loaded = ui::application::registry::load(id).await.is_some();
+            shared.loading.borrow_mut().remove(id);
+            if !loaded {
+                shared.failed.borrow_mut().insert(id.to_owned());
+            }
+            shared.arrived.set(true);
+            shared.wake();
+            notify();
+        });
+    }
+
+    fn private_feedback(&self, instance: TabId) -> Result<AppComponent, String> {
+        let mut component = match self.shared.feedback.borrow().as_ref() {
+            Some(feedback) => feedback.prepare(&self.inputs.device, &self.inputs.author, instance),
+            None => tilo_desktop::feedback::unconfigured(
+                &self.inputs.device,
+                &self.inputs.author,
+                instance,
+            ),
+        }
+        .map_err(|error| error.to_string())?;
+        let woken = Arc::clone(&self.shared.woken);
+        let notify = Arc::clone(&self.notify);
+        component
+            .mount_with_owner_queue(&self.shared.owner_wakes, move |_| {
+                woken.store(true, Ordering::Release);
+                notify();
+            })
+            .map_err(|error| error.to_string())?;
+        // Its ephemeral draft owner never enters Shared.stores/records:
+        // neither replication nor desktop restore can publish raw text.
+        Ok(component)
+    }
+
     /// What a tab no record is bound to opens: the room's default record
     /// while no other window of the app shows it (the record a native
     /// launch into the room opens too), otherwise a new one. The second
@@ -270,6 +701,20 @@ impl TileSource for Tiles {
         if let Some(notice) = crate::crash::quarantined(tab.id, &tab.title) {
             return TileHost::new(notice);
         }
+        // A painted page is a window this desktop draws, like its own apps.
+        let painted = self
+            .shared
+            .peer_windows
+            .borrow()
+            .get(&tab.id)
+            .filter(|window| window.is_paint())
+            .map(|window| window.key.clone());
+        if let Some(key) = painted {
+            let view = ui::widget::WebView::new(self.shared.paint_page(&key))
+                .with_test_id("peer-page")
+                .with_accessible_name(tab.title.clone());
+            return TileHost::new(ui::widget::TileContent::App(Box::new(view)));
+        }
         match self.component(tab) {
             Ok(component) => {
                 self.shared.waiting.borrow_mut().remove(&tab.id);
@@ -287,37 +732,69 @@ impl TileSource for Tiles {
         }
     }
 
-    fn new_tab(&mut self, _: &Workspace, id: TabId) -> Option<Tab> {
-        let definition = applications().into_iter().next()?;
-        Some(app_tab(id, definition))
-    }
-
     fn launch(&mut self, _: &Workspace, id: TabId, app: &str) -> Option<Tab> {
-        Some(app_tab(id, application(app)?))
+        if let Some(node_app) = app.strip_prefix(NODE_APP_LAUNCH) {
+            // Opened on the node; its window arrives as a legacy window.
+            if self
+                .shared
+                .node_apps
+                .borrow()
+                .iter()
+                .any(|known| known.id == node_app)
+            {
+                self.shared
+                    .node_app_requests
+                    .borrow_mut()
+                    .push(node_app.to_owned());
+                self.shared.wake();
+            }
+            return None;
+        }
+        if let Some(key) = app.strip_prefix(PEER_WINDOW_LAUNCH) {
+            let window = self.shared.pending_peer_windows.borrow_mut().remove(key)?;
+            let tab = Tab {
+                id,
+                title: window.title.clone(),
+                tile: TileContent::PeerWindow {
+                    app_id: window.app.clone(),
+                    label: window.title.clone(),
+                    note: String::new(),
+                    missing: None,
+                },
+            };
+            self.shared.peer_windows.borrow_mut().insert(id, window);
+            return Some(tab);
+        }
+        let title = known_application(app)?;
+        self.shared
+            .authors
+            .borrow_mut()
+            .insert(id, self.inputs.author.clone());
+        Some(app_tab(id, app, title))
     }
 
     fn search_applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
-        applications()
+        known_applications()
             .into_iter()
-            .map(|definition| tilo_desktop_search::providers::AppEntry {
-                id: definition.app_id.into(),
-                title: definition.title.into(),
+            .map(|(id, title)| tilo_desktop_search::providers::AppEntry {
+                id: id.into(),
+                title: title.into(),
                 category: None,
                 description: None,
                 unavailable: None,
             })
-            .chain(tilo_desktop_search::availability::unavailable_on(&["web"]))
+            .chain(self.shared.node_search_entries())
             .collect()
     }
 }
 
-fn app_tab(id: TabId, definition: &ApplicationDefinition) -> Tab {
+fn app_tab(id: TabId, app: &str, title: &str) -> Tab {
     Tab {
         id,
-        title: definition.title.into(),
+        title: title.into(),
         tile: TileContent::LocalApp {
-            app_id: definition.app_id.into(),
-            label: definition.title.into(),
+            app_id: app.into(),
+            label: title.into(),
             note: String::new(),
         },
     }
@@ -338,7 +815,7 @@ fn peer_salt(device: &str) -> u16 {
 
 /// Where a room's desktop lives in the profile. Changing it orphans stored
 /// desktops.
-const DESKTOP_PACKAGE: &str = "so.tilo.browser-desktop";
+pub(crate) const DESKTOP_PACKAGE: &str = "so.tilo.browser-desktop";
 
 /// The stored form of a room's desktop.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -346,6 +823,9 @@ struct StoredDesktop {
     tree: DesktopTree,
     /// `(tab, record id)` for every tab whose component bound a record.
     records: Vec<(TabId, String)>,
+    /// Who made each strip and opened each window still on the desktop.
+    #[serde(default)]
+    authors: BTreeMap<u64, String>,
 }
 
 /// Saves a mounted desktop to the profile whenever its tree or its tabs'
@@ -357,6 +837,17 @@ pub(crate) struct Persistence {
     saved_revision: Cell<u64>,
     records_changed: Rc<Cell<bool>>,
     records: Rc<RefCell<HashMap<TabId, RecordCheckout>>>,
+    unbound: Rc<RefCell<HashMap<TabId, String>>>,
+    authors: Authors,
+    /// Every change of this device's desktop, for Activity
+    /// (`tilo_desktop_surface::history_log`).
+    pub history: Rc<RefCell<AutoCommit>>,
+    history_key: StorageKey,
+    history_dirty: Cell<bool>,
+    pub notifications: tilo_desktop_surface::DesktopNotifications,
+    notifications_key: StorageKey,
+    saved_notifications_revision: Cell<u64>,
+    author: String,
 }
 
 impl Persistence {
@@ -365,15 +856,67 @@ impl Persistence {
     /// # Errors
     /// The store refused the write; the next change retries.
     pub fn save(&self, handle: &DesktopHandle) -> Result<(), String> {
+        let notifications_revision = self.notifications.revision();
+        if notifications_revision != self.saved_notifications_revision.get() {
+            // Asks are the page's to make again: one kept past a reload
+            // could no longer be answered.
+            let history: Vec<_> = self
+                .notifications
+                .log()
+                .history()
+                .iter()
+                .filter(|notification| !tilo_desktop_surface::is_host_offer(notification))
+                .cloned()
+                .collect();
+            let bytes = tilo_desktop_surface::notifications::encode_history(
+                &history,
+                ui::time::SystemTime::now(),
+                ui::time::now(),
+            )
+            .map_err(|error| error.to_string())?;
+            self.store
+                .write(&self.notifications_key, WriteOp::Replace(bytes), None)
+                .map_err(|error| error.to_string())?;
+            self.saved_notifications_revision
+                .set(notifications_revision);
+        }
         let revision = handle.revision();
-        if revision == self.saved_revision.get() && !self.records_changed.get() {
+        if revision == self.saved_revision.get()
+            && !self.records_changed.get()
+            && !self.history_dirty.get()
+        {
             return Ok(());
         }
-        let stored = stored_desktop(handle, &self.records.borrow());
-        let bytes = serde_json::to_vec(&stored).map_err(|error| error.to_string())?;
+        let stored = stored_desktop(
+            handle,
+            &self.records.borrow(),
+            &self.unbound.borrow(),
+            &self.authors.borrow(),
+        );
+        let value = serde_json::to_value(&stored).map_err(|error| error.to_string())?;
+        let bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
         self.store
             .write(&self.key, WriteOp::Replace(bytes), None)
             .map_err(|error| error.to_string())?;
+        let mut history = self.history.borrow_mut();
+        if tilo_desktop_surface::history_log::record(
+            &mut history,
+            &value,
+            &self.author,
+            ui::time::unix_now_i64(),
+        ) {
+            self.history_dirty.set(true);
+        }
+        tilo_desktop_surface::history_log::save_pending(
+            &mut history,
+            &self.history_dirty,
+            |bytes| {
+                self.store
+                    .write(&self.history_key, WriteOp::Replace(bytes), None)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            },
+        )?;
         self.saved_revision.set(revision);
         self.records_changed.set(false);
         Ok(())
@@ -383,11 +926,15 @@ impl Persistence {
 fn stored_desktop(
     handle: &DesktopHandle,
     bindings: &HashMap<TabId, RecordCheckout>,
+    unbound: &HashMap<TabId, String>,
+    authors: &BTreeMap<u64, String>,
 ) -> StoredDesktop {
     handle.read(|tree| {
         let mut live = std::collections::HashSet::new();
+        let mut strips = std::collections::HashSet::new();
         for workspace in &tree.workspaces {
             for strip in &workspace.strips {
+                strips.insert(strip.id.0);
                 for group in &strip.window_groups {
                     live.extend(group.tabs.iter().map(|tab| tab.id));
                 }
@@ -397,19 +944,37 @@ fn stored_desktop(
             .iter()
             .filter(|(tab, _)| live.contains(tab))
             .map(|(tab, checkout)| (*tab, checkout.id.as_str().to_owned()))
+            .chain(
+                unbound
+                    .iter()
+                    .filter(|(tab, _)| live.contains(tab) && !bindings.contains_key(tab))
+                    .map(|(tab, record)| (*tab, record.clone())),
+            )
             .collect();
         records.sort_unstable();
+        let authors = authors
+            .iter()
+            .filter(|(id, _)| strips.contains(*id) || live.contains(*id))
+            .map(|(id, author)| (*id, author.clone()))
+            .collect();
         StoredDesktop {
             tree: tree.clone(),
             records,
+            authors,
         }
     })
 }
 
 /// The desktop as peers share it: the tree and each tab's record.
 pub(crate) fn shared_value(handle: &DesktopHandle, shared: &Shared) -> serde_json::Value {
-    serde_json::to_value(stored_desktop(handle, &shared.records.borrow()))
-        .unwrap_or(serde_json::Value::Null)
+    let mut desktop = stored_desktop(
+        handle,
+        &shared.records.borrow(),
+        &shared.unbound.borrow(),
+        &shared.authors.borrow(),
+    );
+    desktop.tree = handle.shared_tree();
+    serde_json::to_value(desktop).unwrap_or(serde_json::Value::Null)
 }
 
 /// Take a desktop a peer shared: bind its tabs' records, then hand the tree
@@ -428,8 +993,15 @@ pub(crate) fn apply_shared(
         return Err("a desktop needs a workspace".into());
     }
     {
+        let (bound, unbound) = stored_records(&desktop);
+        shared.unbound.borrow_mut().extend(unbound);
+        let mut authors = shared.authors.borrow_mut();
+        for (id, author) in &desktop.authors {
+            authors.entry(*id).or_insert_with(|| author.clone());
+        }
+        drop(authors);
         let mut records = shared.records.borrow_mut();
-        for (tab, checkout) in stored_records(&desktop) {
+        for (tab, checkout) in bound {
             if records
                 .get(&tab)
                 .is_none_or(|bound| bound.id != checkout.id)
@@ -439,7 +1011,8 @@ pub(crate) fn apply_shared(
             }
         }
     }
-    handle.replace_tree(desktop.tree);
+    let local_tabs: Vec<_> = shared.peer_windows.borrow().keys().copied().collect();
+    handle.replace_shared_tree(desktop.tree, &local_tabs);
     shared.wake();
     Ok(())
 }
@@ -451,8 +1024,11 @@ fn load_stored(store: &dyn DurableStore, key: &StorageKey) -> Option<StoredDeskt
 }
 
 /// The record bindings of a stored desktop, for the tabs whose application
-/// the page still registers.
-fn stored_records(desktop: &StoredDesktop) -> HashMap<TabId, RecordCheckout> {
+/// the page still registers: bound where the application is loaded, as
+/// record ids where it is not yet.
+fn stored_records(
+    desktop: &StoredDesktop,
+) -> (HashMap<TabId, RecordCheckout>, HashMap<TabId, String>) {
     let mut apps = HashMap::new();
     for workspace in &desktop.tree.workspaces {
         for strip in &workspace.strips {
@@ -465,18 +1041,22 @@ fn stored_records(desktop: &StoredDesktop) -> HashMap<TabId, RecordCheckout> {
             }
         }
     }
-    desktop
-        .records
-        .iter()
-        .filter_map(|(tab, record)| {
-            let definition = application(apps.get(tab)?)?;
-            let id = RecordId::parse(record)?;
-            Some((
-                *tab,
-                RecordCheckout::new(id, definition.record_kind.clone()),
-            ))
-        })
-        .collect()
+    let mut bound = HashMap::new();
+    let mut unbound = HashMap::new();
+    for (tab, record) in &desktop.records {
+        let Some(app) = apps.get(tab) else { continue };
+        if let Some(definition) = application(app) {
+            if let Some(id) = RecordId::parse(record) {
+                bound.insert(
+                    *tab,
+                    RecordCheckout::new(id, definition.record_kind.clone()),
+                );
+            }
+        } else if known_application(app).is_some() {
+            unbound.insert(*tab, record.clone());
+        }
+    }
+    (bound, unbound)
 }
 
 /// Mount the room's desktop from the profile, or seed one: one workspace
@@ -486,40 +1066,97 @@ fn stored_records(desktop: &StoredDesktop) -> HashMap<TabId, RecordCheckout> {
 /// # Errors
 /// Refuses an application id the page does not register.
 pub(crate) fn mount(
-    inputs: Inputs,
+    mut inputs: Inputs,
     store: Rc<dyn DurableStore>,
     apps: Option<&[String]>,
+    workspace_name: Option<&str>,
     notify: Arc<dyn Fn() + Send + Sync>,
 ) -> Result<(DesktopSurface, DesktopHandle, Shared, Persistence), String> {
     let key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "desktop");
     let salt = peer_salt(&inputs.salt);
     let shared = Shared::default();
+    if let Some(startup) = inputs.feedback.take() {
+        if startup.reporter().principal()
+            != &tilo_actions::remote::CallerPrincipal::Person(inputs.author.clone())
+        {
+            return Err("feedback reporter does not own this profile".into());
+        }
+        startup
+            .install(Rc::clone(&store), &mut shared.feedback.borrow_mut())
+            .map_err(|error| error.to_string())?;
+    }
     let tree = if let Some(stored) = load_stored(store.as_ref(), &key) {
-        *shared.records.borrow_mut() = stored_records(&stored);
+        let (bound, unbound) = stored_records(&stored);
+        *shared.records.borrow_mut() = bound;
+        *shared.unbound.borrow_mut() = unbound;
+        *shared.authors.borrow_mut() = stored.authors;
         stored.tree
     } else {
-        let definitions: Vec<&'static ApplicationDefinition> = match apps {
+        let definitions: Vec<(&str, &'static str)> = match apps {
             Some(ids) => ids
                 .iter()
-                .map(|id| application(id).ok_or_else(|| format!("unsupported application {id}")))
+                .map(|id| {
+                    known_application(id)
+                        .map(|title| (id.as_str(), title))
+                        .ok_or_else(|| format!("unsupported application {id}"))
+                })
                 .collect::<Result<_, _>>()?,
-            // Every registered app is in the launcher; a fresh desktop opens
-            // only the first.
-            None => applications().into_iter().take(1).collect(),
+            // A fresh desktop opens no window: its empty workspace shows the
+            // launchpad, and every registered app is in search.
+            None => Vec::new(),
         };
         let mut minter = IdMinter::new(salt);
         let tabs = definitions
             .into_iter()
-            .map(|definition| app_tab(minter.mint(), definition))
+            .map(|(app, title)| app_tab(minter.mint(), app, title))
             .collect();
-        tilo_desktop_surface::seed_tree(&mut minter, "Workspace", tabs)
+        let name = workspace_name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or("Workspace");
+        tilo_desktop_surface::seed_tree(&mut minter, name, tabs)
     };
+    let history_key = StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "history");
+    let history = store
+        .read(&history_key)
+        .ok()
+        .flatten()
+        .and_then(|stored| AutoCommit::load(&stored.bytes).ok())
+        .unwrap_or_default();
+    let notifications_key =
+        StorageKey::record(DESKTOP_PACKAGE, inputs.room.clone(), "notifications");
+    let notifications = tilo_desktop_surface::DesktopNotifications::default();
+    if let Some(history) = store
+        .read(&notifications_key)
+        .ok()
+        .flatten()
+        .and_then(|stored| {
+            tilo_desktop_surface::notifications::decode_history(
+                &stored.bytes,
+                ui::time::SystemTime::now(),
+                ui::time::now(),
+            )
+            .ok()
+        })
+    {
+        notifications.restore_history(history);
+    }
+    let saved_notifications_revision = Cell::new(notifications.revision());
     let persistence = Persistence {
         store,
         key,
         saved_revision: Cell::new(0),
         records_changed: Rc::clone(&shared.records_changed),
         records: Rc::clone(&shared.records),
+        unbound: Rc::clone(&shared.unbound),
+        authors: Rc::clone(&shared.authors),
+        history: Rc::new(RefCell::new(history)),
+        history_key,
+        history_dirty: Cell::new(false),
+        notifications,
+        notifications_key,
+        saved_notifications_revision,
+        author: inputs.author.clone(),
     };
     let tiles = Tiles {
         inputs,

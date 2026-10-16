@@ -46,11 +46,25 @@ pub enum Command {
         x_to: f64,
         y_to: f64,
         steps: Option<u32>,
+        /// Draw the drag with a pen rather than the mouse: the tip's
+        /// pressure (`0.0..=1.0`), one value for the whole stroke or several
+        /// spread evenly from its start to its end. The pen comes into range
+        /// at the start, touches down, moves, lifts and leaves range at the
+        /// end, so an app sees exactly what a tablet sends.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pressure: Option<Vec<f64>>,
     },
     /// Per-surface frame counters for every tracked foreign toplevel. Read-only; lets a harness tell a painted app from one still showing the first-frame placeholder.
     ForeignFrames,
+    /// The compositor process's own memory by kind of mapping (heap, stacks, GPU driver memory, fonts, files), glibc's heap split and its threads by name, in KiB ([`crate::shell::memory_report`]). Read-only; vm-acceptance R01 records it because Tilo's kernel has no smaps.
+    ProcessMemory,
     /// Inject a key press + release. `key` is a winit-style name or a single character; unknown names return `parse_error`.
     Key { key: String },
+    /// Inject a key press + release the way a keyboard attached to the machine delivers it: the
+    /// compositor loop takes it from its input funnel with the backend's own events, so routing,
+    /// shortcuts and whether it asks for a frame are decided exactly as for a physical key.
+    /// `key` is named as for [`Command::Key`]. Test-only.
+    SeatKey { key: String },
     /// Press `key` and hold it (pairs with [`Command::KeyUp`]). Also accepts the bare modifiers `"Shift"`, `"Control"`, `"Alt"`, `"Super"` — holding a real modifier keycode across another keystroke is the only way to drive xkb modifier state like hardware does.
     KeyDown { key: String },
     /// Release a key held by [`Command::KeyDown`].
@@ -70,27 +84,49 @@ pub enum Command {
     Snapshot { path: String },
     /// Say whether a viewer is looking at a headless session's frames. Unwatched, the headless backend lays frames out and hands clients their frame callbacks but does not rasterize them; attaching a viewer paints a fresh frame, and shared legacy windows are encoded only while watched. `snapshot` renders on demand either way. Other backends always paint. Answered by the native transport; the agent-control socket accepts it, so a partner's `POST /watch` lease reaches it.
     Watch { watching: bool },
-    /// Read-only snapshot of the live `shell::state::WorkspaceTree` plus [`ChromeState`](crate::shell::chrome_state::ChromeState), both as opaque `serde_json::Value` so future fields don't break the wire.
-    StateDump,
-    /// Grant a capability on the active workspace on behalf of the user at this session, through `Workspace::grant_as` — the production authority check, so a grantor without ownership or `Admin` is refused, not worked around.
+    /// Read-only snapshot of the live `shell::state::WorkspaceTree` plus [`ChromeState`](crate::shell::chrome_state::ChromeState), both opaque JSON so future fields don't break the wire.
     ///
-    /// `subject` is `person:<id>` / `app:<id>` / `agent:<id>`; `scope` is `workspace`, `room`, `app:<id>` or `action:<app>/<action>`; `verb` is read / comment / write / invite / admin.
+    /// The tree is the desktop as it is now. A workspace's append-only history — effect receipts, task audit trails, ownership-transfer records — grows with every action ever taken, so it is left out unless `include_history` asks for it (`tilo_desktop_model::history`).
+    StateDump {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        include_history: bool,
+    },
+    /// The open windows, one row per tab: `workspace`, `strip`, `group`, `tab`, `kind`, `app_id`, `title`, and `active` for the tab in front of the active workspace's active group. Read straight off the live tree, so it costs the windows, not a state dump.
+    Windows,
+    /// Grant a sandbox capability on the active workspace on behalf of the user at this session, through the tree's governance entry point — the production authority check, so a grantor who may not grant in the room is refused, not worked around.
+    ///
+    /// `subject` is `person:<id>` / `app:<id>` / `agent:<id>`; `scope` is `workspace`, `room`, `fs:<path>` or `device:<id>`; `access` is read / write.
     Grant {
         subject: String,
         scope: String,
-        verb: String,
+        access: String,
         /// Stable capability id so a later `revoke` can name it; minted when omitted.
         #[serde(default)]
         id: Option<String>,
     },
-    /// Revoke capability `id` on the active workspace, through `Workspace::revoke_as` — same authority check as `grant`.
+    /// Revoke sandbox capability `id` on the active workspace — same authority check as `grant`.
     Revoke { id: String },
-    /// Ask `shell::actions::check_action` whether `actor` may invoke `app`'s `action`, against the live workspace.
+    /// Give `subject` (`person:<id>` / `app:<id>` / `agent:<id>`) `answer` (allow / ask / deny) for actions of `kinds` (read / undoable / outside) at `node`, a path below the room such as `app:so.tilo.notes`, on the active workspace, as the user at this session — through the room's governance, so a grantor who may not grant there is refused.
+    Allow {
+        subject: String,
+        node: String,
+        kinds: Vec<String>,
+        answer: String,
+        /// Stable grant id so a later `disallow` can name it; minted when omitted.
+        #[serde(default)]
+        id: Option<String>,
+    },
+    /// Take back grant `id` on the active workspace — same authority check as `allow`.
+    Disallow { id: String },
+    /// Admit `person` to the active workspace with `role` (viewer / commenter / editor), as the user at this session.
+    Admit { person: String, role: String },
+    /// Ask the room's policy what `actor` gets for `action` on `app`'s `resource`, an action of `kind` (read / undoable / outside), against the live workspace.
     CheckAction {
         actor: String,
         app: String,
+        resource: String,
         action: String,
-        verb: String,
+        kind: String,
         #[serde(default)]
         destructive: bool,
     },
@@ -176,9 +212,26 @@ pub enum Command {
         primary: bool,
     },
     /// Enumerate the actions/resources the shell exports now, through the same provider registry that feeds the Ctrl+K palette. Read-only — no invoke handles in the reply. An empty `query` lists every provider's defaults.
+    ///
+    /// The answer is one page of the listing ([`ListingRequest`]); a request without paging fields gets the first.
     ActionsEnumerate {
         #[serde(default)]
         query: String,
+        #[serde(default)]
+        include_programmatic: bool,
+        #[serde(flatten)]
+        page: ListingRequest,
+        /// Hold the answer until the listing is `complete` — no index build
+        /// or app directory page that would change it still owed — for at
+        /// most this many milliseconds (capped at 30 s). The answer says
+        /// whether it `settled`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_ms: Option<u64>,
+        /// With `wait_ms`: a listing with this `revision` was already seen,
+        /// so only a different one settles the wait — "answer when this
+        /// changes", e.g. when an app just opened publishes its actions.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_revision: Option<String>,
     },
     /// Invoke one enumerated action by its `(provider, id)` address, with no window, scene or synthetic input.
     ///
@@ -192,9 +245,21 @@ pub enum Command {
         /// instead of being resolved against this machine's catalogue.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device: Option<String>,
+        /// Hold the answer until the invocation settles — succeeds, fails or
+        /// is cancelled — for at most this many milliseconds (capped at 30
+        /// s), and answer its latest receipt then. Absent, the answer is the
+        /// admission receipt. Ignored with `device`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_ms: Option<u64>,
     },
     /// Read the latest broker lifecycle state for an invocation receipt id.
-    ActionsStatus { invocation_id: u64 },
+    ActionsStatus {
+        invocation_id: u64,
+        /// Hold the answer until the invocation settles, as
+        /// `actions_invoke`'s `wait_ms` does.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_ms: Option<u64>,
+    },
     /// Request cooperative cancellation for an invocation receipt id.
     ActionsCancel { invocation_id: u64 },
     /// Seat the request's [`Agent`] without injecting input: its strip takes
@@ -222,12 +287,20 @@ pub struct Agent {
 }
 
 /// One parsed request line: a [`Command`], optionally on behalf of an agent
-/// named by the line's `agent` (and `agent_label`) fields.
+/// named by the line's `agent` (and `agent_label`) fields, and optionally
+/// aimed at one app's window by its `window` field (the window's app id).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Request {
     pub command: Command,
     pub agent: Option<Agent>,
+    /// The app id of the window an agent acts in: its window takes focus, the
+    /// command's coordinates are relative to the window's top-left and its
+    /// screenshots show the window alone.
+    pub window: Option<String>,
 }
+
+/// Longest `window` app id a request may name.
+pub const MAX_WINDOW_CHARS: usize = 255;
 
 /// Top-level response envelope: an `ok` payload (per-command shape) or a structured `err`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -248,7 +321,8 @@ pub enum Response {
     ForeignFrames { frames: serde_json::Value },
     /// `state_dump` response — persisted `WorkspaceTree` + [`ChromeState`](crate::shell::chrome_state::ChromeState), both opaque.
     State {
-        workspace_tree: serde_json::Value,
+        /// Serialised once, straight from the tree, and written into the reply as it is.
+        workspace_tree: RawJson,
         chrome: serde_json::Value,
         /// The peers this session would paint, straight off the `PresenceCtx` the overlay reads.
         peers: serde_json::Value,
@@ -260,6 +334,243 @@ pub enum Response {
     Answer(serde_json::Value),
     /// `clipboard_paste` response. `None` means nothing has been copied — distinct from `Some("")`, an owned empty selection.
     Clipboard { text: Option<String> },
+}
+
+/// Rows an `actions_enumerate` page holds when the request names no `limit`.
+/// A stock desktop's whole surface fits, so a client that predates paging
+/// still sees all of it there, and `truncated` says when it does not.
+pub const DEFAULT_LISTING_LIMIT: usize = 200;
+/// Most rows one `actions_enumerate` page holds, whatever `limit` asks.
+pub const MAX_LISTING_LIMIT: usize = 2_000;
+
+/// Which page of an `actions_enumerate` listing to answer, and how much of
+/// each row. Every field is optional on the wire.
+///
+/// The answer carries `count` (rows in this page), `total` (rows in the
+/// listing), `truncated` and `next_cursor`: while `truncated`, send the same
+/// query again with `cursor` set to `next_cursor` for the next page. A
+/// cursor names a position in one listing; if the listing has changed since,
+/// the request is refused with `stale_cursor` and the caller starts again.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListingRequest {
+    /// Rows in the page: [`DEFAULT_LISTING_LIMIT`] when absent, at least one
+    /// and at most [`MAX_LISTING_LIMIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    /// The previous page's `next_cursor`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    /// How much of each row: `full` (the default) or `compact`, which leaves
+    /// out each row's `contract`, most of a row's size. Every other field,
+    /// including `params`, stays, so a compact row can still be invoked.
+    #[serde(default, skip_serializing_if = "ListingDetail::is_full")]
+    pub detail: ListingDetail,
+    /// Only rows of these kinds (`application`, `action`, `note`, `file`, …;
+    /// singular or plural, any case). Absent: every kind but files and
+    /// folders.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<String>,
+    /// Also list files and folders. They stay out of a listing unless asked
+    /// (here or by naming their kind): a search for an app's action is
+    /// answered by hundreds of same-named files otherwise, ahead of it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub files: bool,
+}
+
+/// How much of each row a listing carries; see [`ListingRequest::detail`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListingDetail {
+    #[default]
+    Full,
+    Compact,
+}
+
+impl ListingDetail {
+    #[must_use]
+    pub const fn is_full(&self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
+
+/// The rows of a listing one page holds, as [`ListingRequest::window`] cut it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListingWindow {
+    /// Indices of this page's rows in the whole listing.
+    pub rows: std::ops::Range<usize>,
+    /// Rows in the whole listing.
+    pub total: usize,
+    /// Where the next page starts; `None` on the last page.
+    pub next_cursor: Option<String>,
+}
+
+impl ListingWindow {
+    /// Record this page's place in `answer`: `count`, `total`, `truncated`
+    /// and `next_cursor`.
+    pub fn describe(&self, answer: &mut serde_json::Map<String, serde_json::Value>) {
+        answer.insert("count".into(), self.rows.len().into());
+        answer.insert("total".into(), self.total.into());
+        answer.insert("truncated".into(), self.next_cursor.is_some().into());
+        answer.insert(
+            "next_cursor".into(),
+            self.next_cursor
+                .clone()
+                .map_or(serde_json::Value::Null, Into::into),
+        );
+    }
+}
+
+/// An identity for one listing: its rows' addresses, in order. A cursor cut
+/// from one listing is stale against any other.
+pub fn listing_fingerprint<'a>(addresses: impl IntoIterator<Item = (&'a str, &'a str)>) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::hash::DefaultHasher::new();
+    for (provider, id) in addresses {
+        provider.hash(&mut hasher);
+        id.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+impl ListingRequest {
+    /// The rows of a listing of `total` rows, identified by `fingerprint`
+    /// ([`listing_fingerprint`]), that this page holds.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_arguments` for a cursor this socket never handed out, and
+    /// `stale_cursor` for one cut from a listing that has changed since.
+    pub fn window(&self, total: usize, fingerprint: u64) -> Result<ListingWindow, ActionRefusal> {
+        let start = match self.cursor.as_deref() {
+            None => 0,
+            Some(cursor) => {
+                let (offset, listing) = cursor
+                    .split_once('.')
+                    .and_then(|(offset, listing)| {
+                        Some((
+                            offset.parse::<usize>().ok()?,
+                            u64::from_str_radix(listing, 16).ok()?,
+                        ))
+                    })
+                    .ok_or_else(|| {
+                        ActionRefusal::invalid_arguments(
+                            "cursor is not a next_cursor this listing handed out",
+                        )
+                    })?;
+                if listing != fingerprint || offset > total {
+                    return Err(ActionRefusal::stale_cursor());
+                }
+                offset
+            }
+        };
+        let limit = self
+            .limit
+            .unwrap_or(DEFAULT_LISTING_LIMIT)
+            .clamp(1, MAX_LISTING_LIMIT);
+        let end = start.saturating_add(limit).min(total);
+        Ok(ListingWindow {
+            rows: start..end,
+            total,
+            next_cursor: (end < total).then(|| format!("{end}.{fingerprint:016x}")),
+        })
+    }
+
+    /// Cut this page out of a whole listing already in `answer` — `actions`,
+    /// one row per action — and describe it there ([`ListingWindow::describe`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::window`].
+    pub fn apply(&self, answer: &mut serde_json::Value) -> Result<(), ActionRefusal> {
+        let Some(answer) = answer.as_object_mut() else {
+            return Ok(());
+        };
+        let mut rows = match answer.remove("actions") {
+            Some(serde_json::Value::Array(rows)) => rows,
+            _ => Vec::new(),
+        };
+        let field = |row: &serde_json::Value, name: &str| {
+            row.get(name)
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let addresses: Vec<(String, String)> = rows
+            .iter()
+            .map(|row| (field(row, "provider"), field(row, "id")))
+            .collect();
+        let window = self.window(
+            rows.len(),
+            listing_fingerprint(
+                addresses
+                    .iter()
+                    .map(|(provider, id)| (provider.as_str(), id.as_str())),
+            ),
+        )?;
+        rows.truncate(window.rows.end);
+        let mut page: Vec<serde_json::Value> = rows.drain(window.rows.clone()).collect();
+        if !self.detail.is_full() {
+            for row in &mut page {
+                if let Some(row) = row.as_object_mut() {
+                    row.remove("contract");
+                }
+            }
+        }
+        answer.insert("actions".into(), page.into());
+        window.describe(answer);
+        Ok(())
+    }
+}
+
+/// JSON text serialised once, straight from a typed value, and written into
+/// the reply as it is. Going through a `serde_json::Value` tree instead costs
+/// several times the serialisation itself for a whole desktop tree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RawJson(Box<serde_json::value::RawValue>);
+
+impl RawJson {
+    /// JSON `null`.
+    #[must_use]
+    pub fn null() -> Self {
+        Self(serde_json::value::RawValue::NULL.to_owned())
+    }
+
+    /// `value` as JSON text, or `null` if it will not serialise. The derived
+    /// `Serialize` impls are infallible in practice, and this crate builds
+    /// with `panic = "abort"`, so a hypothetical bad value must not take the
+    /// compositor down.
+    pub fn of<T: Serialize + ?Sized>(value: &T) -> Self {
+        serde_json::value::to_raw_value(value).map_or_else(
+            |error| {
+                tracing::error!(
+                    target: "shell::compositor::test_control",
+                    %error,
+                    "failed to serialise a state dump field; answering null"
+                );
+                Self::null()
+            },
+            Self,
+        )
+    }
+
+    /// The JSON text.
+    #[must_use]
+    pub fn get(&self) -> &str {
+        self.0.get()
+    }
+
+    /// Parsed into a [`serde_json::Value`], for a reader that walks it.
+    #[must_use]
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::from_str(self.get()).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+impl PartialEq for RawJson {
+    fn eq(&self, other: &Self) -> bool {
+        self.get() == other.get()
+    }
 }
 
 /// One `list_targets` entry. `rect` is `(x, y, w, h)` in the compositor's coordinate space.
@@ -282,9 +593,17 @@ impl TargetEntry {
 pub trait ControlState {
     /// Snapshot of every addressable widget in the live widget tree.
     fn widget_registry(&self) -> HashMap<String, Rect>;
-    /// JSON view of the persisted `WorkspaceTree` — same shape `TILO_TEST_STATE_DUMP` writes on every frame tick. Defaults to `Null` so mock fixtures that only need `widget_registry` don't have to spell out a tree.
-    fn workspace_tree_json(&self) -> serde_json::Value {
-        serde_json::Value::Null
+    /// JSON view of the persisted `WorkspaceTree` — same shape `TILO_TEST_STATE_DUMP` writes on every frame tick, less the workspaces' history unless `include_history` (see [`Command::StateDump`]). Defaults to `null` so mock fixtures that only need `widget_registry` don't have to spell out a tree.
+    fn workspace_tree_json(&self, _include_history: bool) -> RawJson {
+        RawJson::null()
+    }
+    /// The open windows, one row per tab ([`Command::Windows`]), from the live tree. Default impl refuses: "no tree" must not read as "no windows".
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable refusal when this control state has no live tree.
+    fn windows_json(&self) -> Result<serde_json::Value, String> {
+        Err("no live workspace tree on this control state".to_string())
     }
     /// JSON view of [`ChromeState`](crate::shell::chrome_state::ChromeState) (`overlays`, `search_scope`, `ws_settings_tab`, `revision`, `editing_workspace_name`). Defaults to `Null`.
     fn chrome_state_json(&self) -> serde_json::Value {
@@ -304,18 +623,52 @@ pub trait ControlState {
         serde_json::Value::Array(Vec::new())
     }
 
-    /// Grant a capability on the active workspace via `Workspace::grant_as`. Default impl refuses: a `ControlState` with no live tree has nothing to administer, and answering anything else would let a harness believe it proved something about authority.
+    /// Grant a sandbox capability on the active workspace. Default impl refuses: a `ControlState` with no live tree has nothing to administer, and answering anything else would let a harness believe it proved something about authority.
     ///
     /// # Errors
     ///
-    /// Returns a human-readable refusal reason whenever the grant is not recorded — no live workspace, an unauthorised grantor, or an invalid subject/scope/verb.
+    /// Returns a human-readable refusal reason whenever the grant is not recorded — no live workspace, an unauthorised grantor, or an invalid subject/scope/access.
     fn grant_capability(
         &self,
         _subject: &str,
         _scope: &str,
-        _verb: &str,
+        _access: &str,
         _id: Option<&str>,
     ) -> Result<serde_json::Value, String> {
+        Err("no live workspace on this control state".to_string())
+    }
+
+    /// Give a grant on the active workspace through its governance. Default impl refuses, as `grant_capability` does.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable refusal reason whenever the grant is not recorded.
+    fn allow(
+        &self,
+        _subject: &str,
+        _node: &str,
+        _kinds: &[String],
+        _answer: &str,
+        _id: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        Err("no live workspace on this control state".to_string())
+    }
+
+    /// Take back a grant on the active workspace through its governance.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable refusal reason whenever nothing is revoked.
+    fn disallow(&self, _id: &str) -> Result<serde_json::Value, String> {
+        Err("no live workspace on this control state".to_string())
+    }
+
+    /// Admit a person to the active workspace with a role, through its governance.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable refusal reason whenever nobody is admitted.
+    fn admit(&self, _person: &str, _role: &str) -> Result<serde_json::Value, String> {
         Err("no live workspace on this control state".to_string())
     }
 
@@ -328,7 +681,7 @@ pub trait ControlState {
         Err("no live workspace on this control state".to_string())
     }
 
-    /// Run `shell::actions::check_action` against the active workspace.
+    /// Answer [`Command::CheckAction`] against the active workspace.
     ///
     /// # Errors
     ///
@@ -337,8 +690,9 @@ pub trait ControlState {
         &self,
         _actor: &str,
         _app: &str,
+        _resource: &str,
         _action: &str,
-        _verb: &str,
+        _kind: &str,
         _destructive: bool,
     ) -> Result<serde_json::Value, String> {
         Err("no live workspace on this control state".to_string())
@@ -351,6 +705,32 @@ pub trait ControlState {
     /// Returns a human-readable refusal reason whenever the surface cannot be enumerated at all — no live action registry on this control state.
     fn enumerate_actions(&self, _query: &str) -> Result<serde_json::Value, String> {
         Err("no live action registry on this control state".to_string())
+    }
+
+    /// One `page` of the listing for `query`, with the bounded machine
+    /// catalogue only when explicitly supported. The default impl pages
+    /// [`Self::enumerate_actions`]' whole listing.
+    ///
+    /// # Errors
+    /// `enumerate_failed` if this state does not support programmatic
+    /// discovery, or if the underlying action catalogue is unavailable; a
+    /// cursor refusal from [`ListingRequest::window`].
+    fn enumerate_actions_with_programmatic(
+        &self,
+        query: &str,
+        include_programmatic: bool,
+        page: &ListingRequest,
+    ) -> Result<serde_json::Value, ActionRefusal> {
+        if include_programmatic {
+            return Err(ActionRefusal::listing_failed(
+                "this control state cannot enumerate programmatic actions",
+            ));
+        }
+        let mut answer = self
+            .enumerate_actions(query)
+            .map_err(ActionRefusal::listing_failed)?;
+        page.apply(&mut answer)?;
+        Ok(answer)
     }
 
     /// Resolve `(provider, id)` against a fresh catalogue and report what it addresses, without invoking it — the validation half of `actions_invoke`, so the transport can refuse instead of planning an invocation that silently does nothing.
@@ -403,6 +783,26 @@ impl ActionRefusal {
             message: message.into(),
         }
     }
+
+    /// The listing could not be enumerated at all.
+    pub fn listing_failed(message: impl Into<String>) -> Self {
+        Self {
+            code: "enumerate_failed",
+            message: message.into(),
+        }
+    }
+
+    /// A listing cursor names a place in a listing that has changed since it
+    /// was handed out; list again from the start.
+    #[must_use]
+    pub fn stale_cursor() -> Self {
+        Self {
+            code: "stale_cursor",
+            message:
+                "the listing changed since this cursor was handed out; list again without a cursor"
+                    .into(),
+        }
+    }
 }
 
 fn default_release() -> bool {
@@ -443,8 +843,21 @@ pub enum PlannedAction {
         x: f64,
         y: f64,
     },
+    /// One event of a virtual pen at `(x, y)` in compositor coordinates,
+    /// with the tip pressed at `pressure` (`0.0..=1.0`). Routed like a real
+    /// tablet's: a tablet-aware client gets the tool, anything else a
+    /// pointer.
+    Pen {
+        phase: crate::compositor::backend::TabletPhase,
+        x: f64,
+        y: f64,
+        pressure: f64,
+    },
     /// Inject a keyboard press or release for `key`. The transport maps `KeyTag` to `winit::keyboard::Key` and synthesises a `WindowEvent::KeyboardInput`.
     KeyboardKey { key: KeyTag, pressed: bool },
+    /// Queue a keyboard press or release for the compositor loop's input funnel, where a
+    /// physical keyboard's events arrive ([`Command::SeatKey`]).
+    SeatKey { key: KeyTag, pressed: bool },
     /// Inject a discrete wheel scroll of `(dx, dy)` notches at the cursor. The transport synthesises a `WindowEvent::MouseWheel` carrying a `LineDelta`.
     MouseWheel { dx: f32, dy: f32 },
     /// Update the modifier mask carried by the executor. Modifiers are state, not events — mutated on `TestControlCtx::modifiers` directly rather than via `WindowEvent::ModifiersChanged`, since chord handlers read the snapshot inline.
@@ -589,8 +1002,18 @@ pub fn dispatch_command<S: ControlState>(
             x_to,
             y_to,
             steps,
+            pressure: None,
         } => drag(*x_from, *y_from, *x_to, *y_to, *steps),
+        Command::Drag {
+            x_from,
+            y_from,
+            x_to,
+            y_to,
+            steps,
+            pressure: Some(pressure),
+        } => pen_drag((*x_from, *y_from), (*x_to, *y_to), *steps, pressure),
         Command::Key { key } => key_press_release(key),
+        Command::SeatKey { key } => seat_key_press_release(key),
         Command::Scroll { dx, dy } => (
             Response::Ok { frame: 0 },
             vec![PlannedAction::MouseWheel { dx: *dx, dy: *dy }],
@@ -612,24 +1035,59 @@ pub fn dispatch_command<S: ControlState>(
         }),
         Command::Snapshot { path } => snapshot(path),
         Command::ForeignFrames => foreign_frames(state),
-        Command::StateDump => state_dump(state),
+        Command::ProcessMemory => (
+            Response::Answer(crate::shell::memory_report::report()),
+            Vec::new(),
+        ),
+        Command::StateDump { include_history } => state_dump(state, *include_history),
+        Command::Windows => (
+            answer_or_err(
+                state
+                    .windows_json()
+                    .map(|windows| serde_json::json!({ "windows": windows })),
+                "windows_failed",
+            ),
+            Vec::new(),
+        ),
         Command::Grant {
             subject,
             scope,
-            verb,
+            access,
             id,
-        } => grant(state, subject, scope, verb, id.as_deref()),
+        } => grant(state, subject, scope, access, id.as_deref()),
         Command::Revoke { id } => (
             answer_or_err(state.revoke_capability(id), "revoke_refused"),
+            Vec::new(),
+        ),
+        Command::Allow {
+            subject,
+            node,
+            kinds,
+            answer,
+            id,
+        } => (
+            answer_or_err(
+                state.allow(subject, node, kinds, answer, id.as_deref()),
+                "grant_refused",
+            ),
+            Vec::new(),
+        ),
+        Command::Disallow { id } => (
+            answer_or_err(state.disallow(id), "revoke_refused"),
+            Vec::new(),
+        ),
+        Command::Admit { person, role } => (
+            answer_or_err(state.admit(person, role), "admit_refused"),
             Vec::new(),
         ),
         Command::CheckAction {
             actor,
             app,
+            resource,
             action,
-            verb,
+            kind,
             destructive,
-        } => check_action(state, actor, app, action, verb, *destructive),
+        } => check_action(state, actor, app, resource, action, kind, *destructive),
         Command::PlaceNextWindow { app_id } => {
             crate::shell::launcher::set_pending_placement(
                 app_id,
@@ -713,20 +1171,34 @@ pub fn dispatch_command<S: ControlState>(
         Command::ClipboardCopy { text, primary } => clipboard_copy(text, *primary),
         Command::ClipboardCopyImage => clipboard_copy_image(),
         Command::ClipboardPaste { primary } => clipboard_paste(*primary),
-        Command::ActionsEnumerate { query } => (
-            answer_or_err(state.enumerate_actions(query), "enumerate_failed"),
+        // Whether a listing waits is the transport's: it holds the reply.
+        Command::ActionsEnumerate {
+            query,
+            include_programmatic,
+            page,
+            ..
+        } => (
+            match state.enumerate_actions_with_programmatic(query, *include_programmatic, page) {
+                Ok(answer) => Response::Answer(answer),
+                Err(refusal) => Response::Err {
+                    code: refusal.code.to_string(),
+                    message: refusal.message,
+                },
+            },
             Vec::new(),
         ),
+        // How long the answer waits is the transport's: it holds the reply.
         Command::ActionsInvoke {
             provider,
             id,
             args,
             device,
+            wait_ms: _,
         } => match device {
             Some(device) => plan_enrolled_device_action(device, provider, id, args),
             None => actions_invoke(state, provider, id, args),
         },
-        Command::ActionsStatus { invocation_id } => invocation_control(
+        Command::ActionsStatus { invocation_id, .. } => invocation_control(
             crate::shell::search::providers::live_app_actions::job_status_id(*invocation_id),
         ),
         Command::ActionsCancel { invocation_id } => invocation_control(
@@ -829,6 +1301,73 @@ fn drag(
     (Response::Ok { frame: 0 }, actions)
 }
 
+/// Most pressures a pen drag may name, one per point at most.
+const MAX_PEN_PRESSURES: usize = 1024;
+
+/// [`Command::Drag`] with a pen: into range and down at `from`, `steps`
+/// motions to `to` with the pressure interpolated along `pressure`, then up
+/// and out of range.
+fn pen_drag(
+    from: (f64, f64),
+    to: (f64, f64),
+    steps: Option<u32>,
+    pressure: &[f64],
+) -> (Response, Vec<PlannedAction>) {
+    use crate::compositor::backend::TabletPhase;
+    if pressure.is_empty()
+        || pressure.len() > MAX_PEN_PRESSURES
+        || pressure.iter().any(|p| !(0.0..=1.0).contains(p))
+    {
+        return (
+            Response::Err {
+                code: "parse_error".into(),
+                message: format!("pressure is 1 to {MAX_PEN_PRESSURES} values, each from 0 to 1"),
+            },
+            Vec::new(),
+        );
+    }
+    let steps = steps.unwrap_or(8).clamp(1, MAX_GESTURE_STEPS);
+    let at = |t| pressure_at(pressure, t);
+    let pen = |phase, (x, y): (f64, f64), pressure| PlannedAction::Pen {
+        phase,
+        x,
+        y,
+        pressure,
+    };
+    let mut actions = Vec::with_capacity((steps as usize).saturating_add(4));
+    actions.push(pen(TabletPhase::ProximityIn, from, 0.0));
+    actions.push(pen(TabletPhase::TipDown, from, at(0.0)));
+    for s in 0..steps {
+        let t = if steps == 1 {
+            0.0
+        } else {
+            f64::from(s) / f64::from(steps.saturating_sub(1))
+        };
+        let point = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+        actions.push(pen(TabletPhase::Motion, point, at(t)));
+    }
+    actions.push(pen(TabletPhase::TipUp, to, 0.0));
+    actions.push(pen(TabletPhase::ProximityOut, to, 0.0));
+    (Response::Ok { frame: 0 }, actions)
+}
+
+/// The pressure `t` (`0.0..=1.0`) of the way along a stroke whose
+/// `pressure` values (at least one) are spread evenly over it.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "indices are at most MAX_PEN_PRESSURES, exact as f64, and t is within 0..=1"
+)]
+fn pressure_at(pressure: &[f64], t: f64) -> f64 {
+    let last = pressure.len().saturating_sub(1);
+    let position = t.clamp(0.0, 1.0) * last as f64;
+    let below = (position.floor() as usize).min(last);
+    let value = |index: usize| pressure.get(index.min(last)).copied().unwrap_or(0.0);
+    let (start, end) = (value(below), value(below.saturating_add(1)));
+    start + (end - start) * (position - below as f64)
+}
+
 /// Most updates a synthetic gesture is split into: a 144 Hz touchpad
 /// reports about this many over a two-second swipe.
 const MAX_GESTURE_STEPS: u32 = 288;
@@ -920,6 +1459,19 @@ fn key_press_release(key: &str) -> (Response, Vec<PlannedAction>) {
             Vec::new(),
         ),
     }
+}
+
+/// [`Command::SeatKey`]: a press+release pair for the compositor's input funnel.
+fn seat_key_press_release(key: &str) -> (Response, Vec<PlannedAction>) {
+    let (response, actions) = key_press_release(key);
+    let actions = actions
+        .into_iter()
+        .map(|action| match action {
+            PlannedAction::KeyboardKey { key, pressed } => PlannedAction::SeatKey { key, pressed },
+            other => other,
+        })
+        .collect();
+    (response, actions)
 }
 
 /// [`Command::KeyDown`]/[`Command::KeyUp`]: hold or release one key.
@@ -1032,10 +1584,10 @@ fn foreign_frames<S: ControlState>(state: &S) -> (Response, Vec<PlannedAction>) 
 }
 
 /// [`Command::StateDump`]: the persisted tree, chrome state and peers, read-only.
-fn state_dump<S: ControlState>(state: &S) -> (Response, Vec<PlannedAction>) {
+fn state_dump<S: ControlState>(state: &S, include_history: bool) -> (Response, Vec<PlannedAction>) {
     (
         Response::State {
-            workspace_tree: state.workspace_tree_json(),
+            workspace_tree: state.workspace_tree_json(include_history),
             chrome: state.chrome_state_json(),
             peers: state.peers_json(),
             sharing: state.sharing_json(),
@@ -1044,17 +1596,71 @@ fn state_dump<S: ControlState>(state: &S) -> (Response, Vec<PlannedAction>) {
     )
 }
 
+/// [`Command::Windows`]: one row per tab of `desktop` — where it is, which
+/// app shows it, and whether it is the tab in front of the active
+/// workspace's active strip and group. A workspace or strip without a name
+/// is named by its id; `kind` is the tile's variant and `app_id` the app it
+/// names, if any.
+#[must_use]
+pub fn window_rows(desktop: &crate::shell::state::DesktopTree) -> Vec<serde_json::Value> {
+    fn named(name: &str, id: u64) -> serde_json::Value {
+        if name.is_empty() {
+            id.into()
+        } else {
+            name.into()
+        }
+    }
+    let mut rows = Vec::new();
+    for workspace in &desktop.workspaces {
+        let workspace_active = workspace.id == desktop.active;
+        let active_strip = desktop.active_strip.get(&workspace.id);
+        for strip in &workspace.strips {
+            let strip_active = workspace_active && active_strip == Some(&strip.id);
+            let active_group = desktop.active_group.get(&strip.id);
+            for group in &strip.window_groups {
+                let group_active = strip_active && active_group == Some(&group.id);
+                for tab in &group.tabs {
+                    let (kind, app_id) = tile_kind(&tab.tile);
+                    rows.push(serde_json::json!({
+                        "workspace": named(&workspace.name, workspace.id.0),
+                        "strip": named(&strip.name, strip.id.0),
+                        "group": group.id,
+                        "tab": tab.id,
+                        "kind": kind,
+                        "app_id": app_id,
+                        "title": tab.title,
+                        "active": group_active && group.active_tab == tab.id,
+                    }));
+                }
+            }
+        }
+    }
+    rows
+}
+
+/// A tile's variant name and the `app_id` it carries, as its JSON spells them.
+fn tile_kind(tile: &crate::shell::state::TileContent) -> (String, serde_json::Value) {
+    match serde_json::to_value(tile).unwrap_or_default() {
+        serde_json::Value::String(kind) => (kind, serde_json::Value::Null),
+        serde_json::Value::Object(variant) => variant.into_iter().next().map_or_else(
+            || (String::new(), serde_json::Value::Null),
+            |(kind, body)| (kind, body.get("app_id").cloned().unwrap_or_default()),
+        ),
+        _ => (String::new(), serde_json::Value::Null),
+    }
+}
+
 /// [`Command::Grant`]: grant a capability through the authority check.
 fn grant<S: ControlState>(
     state: &S,
     subject: &str,
     scope: &str,
-    verb: &str,
+    access: &str,
     id: Option<&str>,
 ) -> (Response, Vec<PlannedAction>) {
     (
         answer_or_err(
-            state.grant_capability(subject, scope, verb, id),
+            state.grant_capability(subject, scope, access, id),
             "grant_refused",
         ),
         Vec::new(),
@@ -1066,13 +1672,14 @@ fn check_action<S: ControlState>(
     state: &S,
     actor: &str,
     app: &str,
+    resource: &str,
     action: &str,
-    verb: &str,
+    kind: &str,
     destructive: bool,
 ) -> (Response, Vec<PlannedAction>) {
     (
         answer_or_err(
-            state.check_action(actor, app, action, verb, destructive),
+            state.check_action(actor, app, resource, action, kind, destructive),
             "check_failed",
         ),
         Vec::new(),
@@ -1261,54 +1868,78 @@ pub fn parse_subject(s: &str) -> Result<crate::shell::state::Subject, String> {
     }
 }
 
-/// Parse a scope string against the room `room_key` names. `room_key` is the workspace's own id, the same key `Workspace::set_owner`/`role_of` use for `Scope::Room`, so a scope written here matches what the compositor writes.
+/// Parse a sandbox scope string.
 ///
 /// # Errors
 ///
-/// Returns a human-readable message when `s` matches none of `workspace`, `room`, `app:<id>`, `fs:<path>`, `device:<id>` or `action:<app>/<action>`.
-pub fn parse_scope(s: &str, room_key: &str) -> Result<crate::shell::state::Scope, String> {
+/// Returns a human-readable message when `s` matches neither `fs:<path>` nor `device:<id>`.
+pub fn parse_scope(s: &str) -> Result<crate::shell::state::Scope, String> {
     use crate::shell::state::Scope;
-    match s {
-        "workspace" => return Ok(Scope::Workspace),
-        "room" => return Ok(Scope::Room(room_key.to_string())),
-        _ => {}
-    }
     match s.split_once(':') {
-        Some(("app", id)) => Ok(Scope::App(id.to_string())),
         Some(("fs", path)) => Ok(Scope::FsPath(path.to_string())),
         Some(("device", d)) => Ok(Scope::Device(d.to_string())),
-        Some(("action", rest)) => match rest.split_once('/') {
-            Some((app, action)) => Ok(Scope::Action {
-                app: app.to_string(),
-                action: action.to_string(),
-            }),
-            None => Err(format!(
-                "action scope must be action:<app>/<action>, got `{s}`"
-            )),
-        },
+        _ => Err(format!("scope must be fs:<path> or device:<id>, got `{s}`")),
+    }
+}
+
+/// Parse a sandbox access name.
+///
+/// # Errors
+///
+/// Returns a human-readable message when `s` is not read / write.
+pub fn parse_access(s: &str) -> Result<crate::shell::state::Access, String> {
+    use crate::shell::state::Access;
+    match s {
+        "read" => Ok(Access::Read),
+        "write" => Ok(Access::Write),
+        _ => Err(format!("access must be read / write, got `{s}`")),
+    }
+}
+
+/// Parse an action kind name.
+///
+/// # Errors
+///
+/// Returns a human-readable message when `s` is not read / undoable / outside.
+pub fn parse_kind(s: &str) -> Result<tilo_action_policy::ActionKind, String> {
+    use tilo_action_policy::ActionKind;
+    match s {
+        "read" => Ok(ActionKind::Read),
+        "undoable" => Ok(ActionKind::Undoable),
+        "outside" => Ok(ActionKind::Outside),
+        _ => Err(format!("kind must be read / undoable / outside, got `{s}`")),
+    }
+}
+
+/// Parse a grant subject: `person:<id>`, `app:<id>` or `agent:<id>`.
+///
+/// # Errors
+///
+/// Returns a human-readable message for any other spelling.
+pub fn parse_policy_subject(s: &str) -> Result<tilo_action_policy::Subject, String> {
+    use tilo_action_policy::Subject;
+    match s.split_once(':') {
+        Some(("person", id)) => Ok(Subject::person(id)),
+        Some(("app", id)) => Ok(Subject::app(id)),
+        Some(("agent", id)) => Ok(Subject::agent(id)),
         _ => Err(format!(
-            "scope must be workspace, room, app:<id>, fs:<path>, device:<id> \
-             or action:<app>/<action>, got `{s}`"
+            "subject must be person:<id>, app:<id> or agent:<id>, got `{s}`"
         )),
     }
 }
 
-/// Parse a verb name.
+/// Parse a grant's answer: allow / ask / deny.
 ///
 /// # Errors
 ///
-/// Returns a human-readable message when `s` is not one of read / comment / write / invite / admin.
-pub fn parse_verb(s: &str) -> Result<crate::shell::state::Verb, String> {
-    use crate::shell::state::Verb;
+/// Returns a human-readable message for any other word.
+pub fn parse_answer(s: &str) -> Result<tilo_action_policy::Answer, String> {
+    use tilo_action_policy::Answer;
     match s {
-        "read" => Ok(Verb::Read),
-        "comment" => Ok(Verb::Comment),
-        "write" => Ok(Verb::Write),
-        "invite" => Ok(Verb::Invite),
-        "admin" => Ok(Verb::Admin),
-        _ => Err(format!(
-            "verb must be read / comment / write / invite / admin, got `{s}`"
-        )),
+        "allow" => Ok(Answer::Allow),
+        "ask" => Ok(Answer::Ask),
+        "deny" => Ok(Answer::Deny),
+        _ => Err(format!("answer must be allow / ask / deny, got `{s}`")),
     }
 }
 
@@ -1348,9 +1979,13 @@ pub fn parse_request(line: &str) -> Result<Request, Response> {
     };
     let mut value = serde_json::from_str::<serde_json::Value>(line.trim())
         .map_err(|e| parse_error(format!("invalid JSON command: {e}")))?;
-    let (agent, label) = match value.as_object_mut() {
-        Some(fields) => (fields.remove("agent"), fields.remove("agent_label")),
-        None => (None, None),
+    let (agent, label, window) = match value.as_object_mut() {
+        Some(fields) => (
+            fields.remove("agent"),
+            fields.remove("agent_label"),
+            fields.remove("window"),
+        ),
+        None => (None, None, None),
     };
     let command = serde_json::from_value::<Command>(value)
         .map_err(|e| parse_error(format!("invalid JSON command: {e}")))?;
@@ -1386,14 +2021,66 @@ pub fn parse_request(line: &str) -> Result<Request, Response> {
         }
         Some(_) => return Err(invalid("agent must be a string")),
     };
-    Ok(Request { command, agent })
+    let window = match window {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(app_id))
+            if !app_id.is_empty()
+                && app_id.chars().count() <= MAX_WINDOW_CHARS
+                && !app_id.chars().any(char::is_control) =>
+        {
+            Some(app_id)
+        }
+        Some(_) => {
+            return Err(Response::Err {
+                code: "invalid_window".to_string(),
+                message: "window must be an app id: 1 to 255 characters without control characters"
+                    .to_string(),
+            });
+        }
+    };
+    Ok(Request {
+        command,
+        agent,
+        window,
+    })
 }
 
 /// Protocol error for a command an agent-control connection may not send.
 pub const AGENT_CONTROL_NOT_PERMITTED: &str =
     "the agent-control socket serves input, screenshots and the watch signal only";
 
+/// Protocol error for a command the device admin's control socket does not
+/// serve. It names where the rest of the protocol lives, so a caller that
+/// reached for input learns the semantic route rather than retrying.
+pub const ADMIN_CONTROL_NOT_PERMITTED: &str = "the admin control socket serves the action model only \
+     (actions list/invoke/status/cancel, windows, state-dump, foreign-frames); synthetic input and \
+     screenshots exist only on a development session's test-control socket ($TILO_TEST_CONTROL)";
+
+/// Protocol error for an action or screenshot asked for while the session
+/// is locked: nothing ran, and only the person at the device can unlock it.
+pub const SESSION_LOCKED: &str = "the session is locked; unlock it at the device, then retry";
+
 impl Command {
+    /// Whether the device admin's control socket serves this command: the
+    /// action model — enumerate, invoke, status, cancel — and read-only state.
+    /// Synthetic input, screenshots, grants, fixtures and agent seats are not:
+    /// the admin drives the session the way an assistive tool or an agent
+    /// does, through typed actions, and a person's screen is not something a
+    /// socket client reads or clicks.
+    #[must_use]
+    pub const fn admin_permitted(&self) -> bool {
+        matches!(
+            self,
+            Self::ActionsEnumerate { .. }
+                | Self::ActionsInvoke { .. }
+                | Self::ActionsStatus { .. }
+                | Self::ActionsCancel { .. }
+                | Self::StateDump { .. }
+                | Self::Windows
+                | Self::ForeignFrames
+        )
+    }
+
     /// Whether an agent-control connection may send this command: pointer,
     /// keyboard and clipboard input, screenshots, read-only frame and target
     /// inventories, and the partner watch signal, which only decides whether
@@ -1514,7 +2201,28 @@ mod tests {
             // Phase `parse_state_dump_command_round_trips`.
             {
                 let cmd = parse_command(r#"{"op":"state_dump"}"#).unwrap();
-                assert_eq!(cmd, Command::StateDump);
+                assert_eq!(
+                    cmd,
+                    Command::StateDump {
+                        include_history: false
+                    }
+                );
+                // An older client's request is unchanged on the wire.
+                assert_eq!(
+                    serde_json::to_value(&cmd).unwrap(),
+                    serde_json::json!({ "op": "state_dump" })
+                );
+                let cmd = parse_command(r#"{"op":"state_dump","include_history":true}"#).unwrap();
+                assert_eq!(
+                    cmd,
+                    Command::StateDump {
+                        include_history: true
+                    }
+                );
+                assert_eq!(
+                    parse_command(r#"{"op":"windows"}"#).unwrap(),
+                    Command::Windows
+                );
             }
 
             // Phase `serialise_response_emits_kebab_friendly_json`.
@@ -1544,7 +2252,7 @@ mod tests {
             // Phase `serialise_state_response_emits_workspace_tree_chrome_and_peers`.
             {
                 let resp = Response::State {
-                    workspace_tree: serde_json::json!({ "workspaces": [] }),
+                    workspace_tree: RawJson::of(&serde_json::json!({ "workspaces": [] })),
                     chrome: serde_json::json!({ "overlays": {} }),
                     peers: serde_json::json!({ "pointers": [] }),
                     sharing: serde_json::json!({ "exposures": [] }),
@@ -1558,6 +2266,12 @@ mod tests {
                 assert!(out.contains("\"chrome\""), "got {out}");
                 assert!(out.contains("\"peers\""), "got {out}");
                 assert!(out.contains("\"sharing\""), "got {out}");
+                // The pre-serialised tree is spliced in as JSON, not as a string.
+                let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+                assert_eq!(
+                    parsed["state"]["workspace_tree"],
+                    serde_json::json!({ "workspaces": [] })
+                );
             }
         }
 
@@ -1609,7 +2323,12 @@ mod tests {
                         "revision": 7_u64,
                     }),
                 };
-                let (resp, actions) = dispatch_command(&Command::StateDump, &state);
+                let (resp, actions) = dispatch_command(
+                    &Command::StateDump {
+                        include_history: false,
+                    },
+                    &state,
+                );
                 assert!(actions.is_empty(), "state_dump must have no side effects");
                 let Response::State {
                     workspace_tree,
@@ -1620,6 +2339,7 @@ mod tests {
                 else {
                     panic!("expected Response::State, got something else");
                 };
+                let workspace_tree = workspace_tree.to_value();
                 assert!(
                     workspace_tree.get("workspaces").is_some(),
                     "workspace_tree should carry `workspaces` key; got {workspace_tree:?}"
@@ -1635,7 +2355,12 @@ mod tests {
             // Phase `state_dump_default_impl_returns_nulls`.
             {
                 let state = StaticState::new(&[]);
-                let (resp, actions) = dispatch_command(&Command::StateDump, &state);
+                let (resp, actions) = dispatch_command(
+                    &Command::StateDump {
+                        include_history: false,
+                    },
+                    &state,
+                );
                 assert!(actions.is_empty());
                 let Response::State {
                     workspace_tree,
@@ -1646,10 +2371,112 @@ mod tests {
                 else {
                     panic!("expected Response::State");
                 };
-                assert!(workspace_tree.is_null());
+                assert!(workspace_tree.to_value().is_null());
                 assert!(chrome.is_null());
             }
+
+            // Phase `windows_answers_rows_or_refuses_without_a_tree`.
+            {
+                let (resp, actions) = dispatch_command(&Command::Windows, &StaticState::new(&[]));
+                assert!(actions.is_empty());
+                let Response::Err { code, .. } = resp else {
+                    panic!("no tree is not the same answer as no windows");
+                };
+                assert_eq!(code, "windows_failed");
+                let state = StateDumpMockState {
+                    workspace_tree: serde_json::Value::Null,
+                    chrome: serde_json::Value::Null,
+                };
+                let (resp, actions) = dispatch_command(&Command::Windows, &state);
+                assert!(actions.is_empty());
+                assert_eq!(
+                    resp,
+                    Response::Answer(serde_json::json!({ "windows": [{ "tab": 1 }] }))
+                );
+            }
         }
+    }
+
+    /// One workspace, two strips; the active strip holds two groups, the
+    /// active one with two tabs.
+    fn windows_fixture() -> crate::shell::state::DesktopTree {
+        use crate::shell::state::{
+            AppKind, DesktopTree, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId,
+        };
+        let tab = |id, title: &str, tile| Tab {
+            id,
+            title: title.to_string(),
+            tile,
+        };
+        let group = |id, tabs: Vec<Tab>, active_tab| WindowGroup {
+            id,
+            tabs,
+            active_tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        };
+        let notes = || TileContent::Foreign {
+            app_id: "so.tilo.notes".into(),
+            surface_id: 9,
+        };
+        let mut home = Workspace::new(WorkspaceId(1), "Home");
+        let mut main = Strip::new(crate::shell::state::StripId(10), "Main");
+        main.window_groups = vec![
+            group(
+                100,
+                vec![
+                    tab(1000, "Notes", notes()),
+                    tab(
+                        1001,
+                        "Placeholder",
+                        TileContent::Stub {
+                            kind: AppKind::Terminal,
+                            label: "Terminal".into(),
+                        },
+                    ),
+                ],
+                1001,
+            ),
+            group(101, vec![tab(1010, "Notes 2", notes())], 1010),
+        ];
+        let mut unnamed = Strip::new(crate::shell::state::StripId(11), "");
+        unnamed.window_groups = vec![group(
+            110,
+            vec![tab(1100, "Activity", TileContent::WorkspaceActivity)],
+            1100,
+        )];
+        home.strips = vec![main, unnamed];
+        let mut tree = DesktopTree {
+            workspaces: vec![home],
+            active: WorkspaceId(1),
+            ..DesktopTree::default()
+        };
+        tree.active_strip
+            .insert(WorkspaceId(1), crate::shell::state::StripId(10));
+        tree.active_group
+            .insert(crate::shell::state::StripId(10), 100);
+        tree
+    }
+
+    #[test]
+    fn windows_list_every_tab_with_its_app_place_and_the_one_in_front() {
+        let rows = window_rows(&windows_fixture());
+        assert_eq!(
+            serde_json::Value::Array(rows),
+            serde_json::json!([
+                {"workspace": "Home", "strip": "Main", "group": 100, "tab": 1000, "kind": "Foreign",
+                 "app_id": "so.tilo.notes", "title": "Notes", "active": false},
+                {"workspace": "Home", "strip": "Main", "group": 100, "tab": 1001, "kind": "Stub",
+                 "app_id": null, "title": "Placeholder", "active": true},
+                {"workspace": "Home", "strip": "Main", "group": 101, "tab": 1010, "kind": "Foreign",
+                 "app_id": "so.tilo.notes", "title": "Notes 2", "active": false},
+                // An unnamed strip is named by its id; a unit tile by its variant.
+                {"workspace": "Home", "strip": 11, "group": 110, "tab": 1100, "kind": "WorkspaceActivity",
+                 "app_id": null, "title": "Activity", "active": false},
+            ])
+        );
     }
 
     #[test]
@@ -1855,6 +2682,7 @@ mod tests {
                         x_to: 100.0,
                         y_to: 100.0,
                         steps: Some(4),
+                        pressure: None,
                     },
                     &state,
                 );
@@ -1895,11 +2723,86 @@ mod tests {
                         x_to: 80.0,
                         y_to: 0.0,
                         steps: None,
+                        pressure: None,
                     },
                     &state,
                 );
                 assert_eq!(actions.len(), 11);
             }
+        }
+    }
+
+    #[test]
+    fn a_drag_with_pressure_is_a_pen_stroke_with_pressure_spread_along_it() {
+        use crate::compositor::backend::TabletPhase;
+        let state = StaticState::new(&[]);
+        let wire: Command = serde_json::from_value(serde_json::json!({
+            "op": "drag", "x_from": 0.0, "y_from": 10.0, "x_to": 30.0, "y_to": 10.0,
+            "steps": 4, "pressure": [0.2, 1.0]
+        }))
+        .unwrap();
+        let (response, actions) = dispatch_command(&wire, &state);
+        assert!(matches!(response, Response::Ok { .. }));
+        let planned: Vec<_> = actions
+            .iter()
+            .map(|action| match action {
+                PlannedAction::Pen {
+                    phase, x, pressure, ..
+                } => (*phase, x.round(), (pressure * 100.0).round()),
+                other => panic!("a pen drag plans only pen events: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            planned,
+            [
+                (TabletPhase::ProximityIn, 0.0, 0.0),
+                (TabletPhase::TipDown, 0.0, 20.0),
+                (TabletPhase::Motion, 0.0, 20.0),
+                (TabletPhase::Motion, 10.0, 47.0),
+                (TabletPhase::Motion, 20.0, 73.0),
+                (TabletPhase::Motion, 30.0, 100.0),
+                (TabletPhase::TipUp, 30.0, 0.0),
+                (TabletPhase::ProximityOut, 30.0, 0.0),
+            ]
+        );
+
+        let constant = Command::Drag {
+            x_from: 0.0,
+            y_from: 0.0,
+            x_to: 5.0,
+            y_to: 5.0,
+            steps: Some(2),
+            pressure: Some(vec![0.6]),
+        };
+        let (_, actions) = dispatch_command(&constant, &state);
+        assert!(actions.iter().all(|action| matches!(
+            action,
+            PlannedAction::Pen { phase: TabletPhase::Motion | TabletPhase::TipDown, pressure, .. }
+                if (pressure - 0.6).abs() < 1e-9
+        ) || matches!(
+            action,
+            PlannedAction::Pen {
+                phase: TabletPhase::ProximityIn | TabletPhase::TipUp | TabletPhase::ProximityOut,
+                ..
+            }
+        )));
+
+        for bad in [vec![], vec![1.5], vec![-0.1, 0.5]] {
+            let (response, actions) = dispatch_command(
+                &Command::Drag {
+                    x_from: 0.0,
+                    y_from: 0.0,
+                    x_to: 5.0,
+                    y_to: 5.0,
+                    steps: None,
+                    pressure: Some(bad.clone()),
+                },
+                &state,
+            );
+            assert!(
+                matches!(response, Response::Err { .. }) && actions.is_empty(),
+                "{bad:?} is refused"
+            );
         }
     }
 
@@ -2311,11 +3214,14 @@ mod tests {
         fn widget_registry(&self) -> HashMap<String, Rect> {
             HashMap::new()
         }
-        fn workspace_tree_json(&self) -> serde_json::Value {
-            self.workspace_tree.clone()
+        fn workspace_tree_json(&self, _include_history: bool) -> RawJson {
+            RawJson::of(&self.workspace_tree)
         }
         fn chrome_state_json(&self) -> serde_json::Value {
             self.chrome.clone()
+        }
+        fn windows_json(&self) -> Result<serde_json::Value, String> {
+            Ok(serde_json::json!([{ "tab": 1 }]))
         }
     }
 
@@ -2367,6 +3273,219 @@ mod tests {
         }
     }
 
+    #[test]
+    fn programmatic_discovery_wire_preserves_defaults_and_refuses_unsupported_states() {
+        let normal: Command = serde_json::from_value(serde_json::json!({
+            "op": "actions_enumerate", "query": "settings"
+        }))
+        .unwrap();
+        assert!(matches!(
+            &normal,
+            Command::ActionsEnumerate {
+                include_programmatic: false,
+                ..
+            }
+        ));
+        let (response, effects) = dispatch_command(&normal, &ActionState);
+        assert!(matches!(response, Response::Answer(_)));
+        assert!(effects.is_empty());
+        let machine: Command = serde_json::from_value(serde_json::json!({
+            "op": "actions_enumerate", "query": "settings", "include_programmatic": true
+        }))
+        .unwrap();
+        let (response, effects) = dispatch_command(&machine, &ActionState);
+        let Response::Err { code, message } = response else {
+            panic!("unsupported machine catalogue must fail: {response:?}");
+        };
+        assert_eq!(code, "enumerate_failed");
+        assert!(message.contains("cannot enumerate programmatic actions"));
+        assert!(effects.is_empty());
+    }
+
+    /// A listing of `rows` actions, each with a contract, or of the
+    /// `renamed` set when the listing has changed under a cursor.
+    struct ManyActions {
+        rows: usize,
+        renamed: std::cell::Cell<bool>,
+    }
+
+    impl ControlState for ManyActions {
+        fn widget_registry(&self) -> HashMap<String, Rect> {
+            HashMap::new()
+        }
+
+        fn enumerate_actions(&self, query: &str) -> Result<serde_json::Value, String> {
+            let prefix = if self.renamed.get() {
+                "renamed"
+            } else {
+                "action"
+            };
+            let actions: Vec<_> = (0..self.rows)
+                .map(|n| {
+                    serde_json::json!({
+                        "provider": "shell.actions",
+                        "id": format!("{prefix}.{n}"),
+                        "params": [],
+                        "contract": { "permission": "write" },
+                    })
+                })
+                .collect();
+            Ok(serde_json::json!({ "query": query, "count": actions.len(), "actions": actions }))
+        }
+    }
+
+    fn list(page: ListingRequest) -> Command {
+        Command::ActionsEnumerate {
+            query: String::new(),
+            include_programmatic: false,
+            page,
+            wait_ms: None,
+            after_revision: None,
+        }
+    }
+
+    fn answer(response: Response) -> serde_json::Value {
+        let Response::Answer(answer) = response else {
+            panic!("expected an answer, got {response:?}");
+        };
+        answer
+    }
+
+    #[test]
+    fn listings_come_in_pages_an_old_client_sees_the_first_of() {
+        let state = ManyActions {
+            rows: 450,
+            renamed: std::cell::Cell::new(false),
+        };
+        // A request without paging fields parses and is answered as before,
+        // as the first page, which says the listing goes on.
+        let old = parse_command(r#"{"op":"actions_enumerate","query":""}"#).unwrap();
+        assert_eq!(old, list(ListingRequest::default()));
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            serde_json::json!({"op": "actions_enumerate", "query": "", "include_programmatic": false})
+        );
+        let first = answer(dispatch_command(&old, &state).0);
+        assert_eq!(first["count"], DEFAULT_LISTING_LIMIT);
+        assert_eq!(
+            first["actions"].as_array().unwrap().len(),
+            DEFAULT_LISTING_LIMIT
+        );
+        assert_eq!(first["total"], 450);
+        assert_eq!(first["truncated"], true);
+        assert_eq!(first["actions"][0]["contract"]["permission"], "write");
+
+        // Following `next_cursor` visits every row once, in order.
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        loop {
+            let request = parse_command(
+                &serde_json::json!({
+                    "op": "actions_enumerate", "limit": 100, "cursor": cursor, "detail": "compact",
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let page = answer(dispatch_command(&request, &state).0);
+            for row in page["actions"].as_array().unwrap() {
+                assert!(
+                    row.get("contract").is_none(),
+                    "compact rows carry no contract"
+                );
+                assert!(
+                    row.get("params").is_some(),
+                    "compact rows can still be invoked"
+                );
+                seen.push(row["id"].as_str().unwrap().to_owned());
+            }
+            assert_eq!(page["count"], page["actions"].as_array().unwrap().len());
+            if page["truncated"] == false {
+                assert!(page["next_cursor"].is_null());
+                break;
+            }
+            cursor = page["next_cursor"].as_str().map(str::to_owned);
+        }
+        let expected: Vec<String> = (0..450).map(|n| format!("action.{n}")).collect();
+        assert_eq!(seen, expected);
+
+        // A cursor into a listing that has since changed is refused, not
+        // silently applied to the new one; a made-up one is a bad argument.
+        let page = answer(
+            dispatch_command(
+                &list(ListingRequest {
+                    limit: Some(10),
+                    ..ListingRequest::default()
+                }),
+                &state,
+            )
+            .0,
+        );
+        let cursor = page["next_cursor"].as_str().unwrap().to_owned();
+        state.renamed.set(true);
+        let (response, _) = dispatch_command(
+            &list(ListingRequest {
+                cursor: Some(cursor),
+                ..ListingRequest::default()
+            }),
+            &state,
+        );
+        assert!(
+            matches!(&response, Response::Err { code, .. } if code == "stale_cursor"),
+            "{response:?}"
+        );
+        let (response, _) = dispatch_command(
+            &list(ListingRequest {
+                cursor: Some("nonsense".into()),
+                ..ListingRequest::default()
+            }),
+            &state,
+        );
+        assert!(
+            matches!(&response, Response::Err { code, .. } if code == "invalid_arguments"),
+            "{response:?}"
+        );
+
+        // `limit` is clamped, never trusted to size a reply.
+        let window = ListingRequest {
+            limit: Some(usize::MAX),
+            ..ListingRequest::default()
+        }
+        .window(10_000, 7)
+        .unwrap();
+        assert_eq!(window.rows, 0..MAX_LISTING_LIMIT);
+        let window = ListingRequest {
+            limit: Some(0),
+            ..ListingRequest::default()
+        }
+        .window(5, 7)
+        .unwrap();
+        assert_eq!(window.rows, 0..1);
+    }
+
+    /// A listing narrows by kind and lists files only when asked, on the wire
+    /// as the CLI sends it; a request that says neither keeps its old shape.
+    #[test]
+    fn a_listing_narrows_by_kind_and_lists_files_only_when_asked() {
+        let page = |line: &str| {
+            let Command::ActionsEnumerate { page, .. } = serde_json::from_str(line).unwrap() else {
+                panic!("not an enumerate: {line}");
+            };
+            page
+        };
+        let asked = page(
+            r#"{"op":"actions_enumerate","query":"x","kinds":["application","note"],"files":true}"#,
+        );
+        assert_eq!(asked.kinds, ["application", "note"]);
+        assert!(asked.files);
+        let plain = page(r#"{"op":"actions_enumerate","query":"x"}"#);
+        assert_eq!(plain, ListingRequest::default());
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap(),
+            serde_json::json!({}),
+            "the defaults add nothing to the wire"
+        );
+    }
+
     const MOCK_INSERT_PARAMS: &[crate::shell::search::action_api::ActionParam] = &[
         crate::shell::search::action_api::ActionParam::required(
             "text",
@@ -2386,6 +3505,7 @@ mod tests {
             id: id.to_string(),
             args: args.as_object().cloned().unwrap_or_default(),
             device: None,
+            wait_ms: None,
         }
     }
 
@@ -2402,7 +3522,11 @@ mod tests {
             {
                 let (resp, actions) = dispatch_command(
                     &Command::ActionsEnumerate {
+                        include_programmatic: false,
                         query: String::new(),
+                        page: ListingRequest::default(),
+                        wait_ms: None,
+                        after_revision: None,
                     },
                     &ActionState,
                 );
@@ -2451,6 +3575,7 @@ mod tests {
                         id: "app.files/open".into(),
                         args: serde_json::Map::new(),
                         device: Some(device.clone()),
+                        wait_ms: None,
                     },
                     &ActionState,
                 );
@@ -2474,6 +3599,7 @@ mod tests {
                         id: "not-an-address".into(),
                         args: serde_json::Map::new(),
                         device: Some("33".repeat(32)),
+                        wait_ms: None,
                     },
                     &ActionState,
                 );
@@ -2485,7 +3611,10 @@ mod tests {
             {
                 for (command, expected) in [
                     (
-                        Command::ActionsStatus { invocation_id: 37 },
+                        Command::ActionsStatus {
+                            invocation_id: 37,
+                            wait_ms: None,
+                        },
                         crate::shell::search::providers::live_app_actions::job_status_id(37),
                     ),
                     (
@@ -2532,7 +3661,11 @@ mod tests {
                 let state = StaticState::new(&[]);
                 let (resp, actions) = dispatch_command(
                     &Command::ActionsEnumerate {
+                        include_programmatic: false,
                         query: String::new(),
+                        page: ListingRequest::default(),
+                        wait_ms: None,
+                        after_revision: None,
                     },
                     &state,
                 );
@@ -2551,7 +3684,11 @@ mod tests {
                 assert_eq!(
                     enumerate,
                     Command::ActionsEnumerate {
-                        query: "settings".to_string()
+                        include_programmatic: false,
+                        query: "settings".to_string(),
+                        page: ListingRequest::default(),
+                        wait_ms: None,
+                        after_revision: None,
                     }
                 );
 
@@ -2560,7 +3697,11 @@ mod tests {
                 assert_eq!(
                     bare,
                     Command::ActionsEnumerate {
-                        query: String::new()
+                        include_programmatic: false,
+                        query: String::new(),
+                        page: ListingRequest::default(),
+                        wait_ms: None,
+                        after_revision: None,
                     }
                 );
 
@@ -2573,6 +3714,54 @@ mod tests {
                         id: "i".to_string(),
                         args: serde_json::Map::new(),
                         device: None,
+                        wait_ms: None,
+                    }
+                );
+                let Command::ActionsInvoke { wait_ms, .. } = parse_command(
+                    r#"{"op":"actions_invoke","provider":"p","id":"i","wait_ms":5000}"#,
+                )
+                .expect("actions_invoke should parse with a wait") else {
+                    panic!("expected ActionsInvoke");
+                };
+                assert_eq!(wait_ms, Some(5000));
+
+                // A listing and a job read wait the same way; without the
+                // fields they answer at once, and serialise as before.
+                let waited_listing = parse_command(
+                    r#"{"op":"actions_enumerate","query":"read","wait_ms":2000,"after_revision":"r1"}"#,
+                )
+                .expect("actions_enumerate should parse with a wait");
+                assert_eq!(
+                    waited_listing,
+                    Command::ActionsEnumerate {
+                        include_programmatic: false,
+                        query: "read".to_string(),
+                        page: ListingRequest::default(),
+                        wait_ms: Some(2000),
+                        after_revision: Some("r1".to_string()),
+                    }
+                );
+                assert_eq!(
+                    serde_json::to_value(&bare).expect("serialise"),
+                    serde_json::json!({"op": "actions_enumerate", "query": "", "include_programmatic": false})
+                );
+                let status = parse_command(r#"{"op":"actions_status","invocation_id":4}"#)
+                    .expect("actions_status should parse");
+                assert_eq!(
+                    status,
+                    Command::ActionsStatus {
+                        invocation_id: 4,
+                        wait_ms: None
+                    }
+                );
+                let waited_status =
+                    parse_command(r#"{"op":"actions_status","invocation_id":4,"wait_ms":10}"#)
+                        .expect("actions_status should parse with a wait");
+                assert_eq!(
+                    waited_status,
+                    Command::ActionsStatus {
+                        invocation_id: 4,
+                        wait_ms: Some(10)
                     }
                 );
 
@@ -2714,8 +3903,8 @@ mod tests {
 }
 
 use std::io::BufRead;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
-use winit::keyboard::{Key, KeyLocation, PhysicalKey};
+use winit::event::{ElementState, WindowEvent};
+use winit::keyboard::Key;
 pub const TEST_CONTROL_MAX_LINE_BYTES: usize = 64 * 1024;
 /// Read up to one `\n`-terminated line from `reader`, capped at
 /// `TEST_CONTROL_MAX_LINE_BYTES`. Returns:
@@ -2738,99 +3927,152 @@ pub fn read_bounded_line<R: BufRead>(
     out: &mut String,
     max_bytes: usize,
 ) -> Result<Option<()>, ReadLineError> {
-    let mut buf = Vec::with_capacity(256);
-    loop {
-        let available = match reader.fill_buf() {
-            Ok(b) => b,
-            Err(e) => return Err(ReadLineError::Io(e)),
-        };
-        if available.is_empty() {
-            // EOF: return accumulated bytes as a best-effort line if any, else None.
-            if buf.is_empty() {
-                return Ok(None);
-            }
-            match String::from_utf8(buf) {
-                Ok(s) => {
-                    out.push_str(&s);
-                    return Ok(Some(()));
+    BoundedLineBuffer::default().read(reader, out, max_bytes)
+}
+
+/// One connection's bounded request prefix. Nonblocking readers retain it
+/// across `WouldBlock`, including a UTF-8 character split between reads.
+/// Consumed request bytes are zeroized after delivery and on connection drop.
+#[derive(Default)]
+pub struct BoundedLineBuffer(zeroize::Zeroizing<Vec<u8>>);
+
+impl BoundedLineBuffer {
+    /// Read one bounded line, preserving an incomplete prefix until more
+    /// bytes arrive. A nonempty final fragment at EOF keeps the existing policy.
+    ///
+    /// # Errors
+    /// Returns `TooLarge` for the cumulative line size, or an I/O/UTF-8 error.
+    /// `WouldBlock` preserves the pending bytes for the next call.
+    pub fn read<R: BufRead>(
+        &mut self,
+        reader: &mut R,
+        out: &mut String,
+        max_bytes: usize,
+    ) -> Result<Option<()>, ReadLineError> {
+        loop {
+            let available = match reader.fill_buf() {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    if error.kind() != std::io::ErrorKind::WouldBlock {
+                        zeroize::Zeroize::zeroize(&mut *self.0);
+                    }
+                    return Err(ReadLineError::Io(error));
                 }
-                Err(e) => {
-                    return Err(ReadLineError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    )));
-                }
+            };
+            if available.is_empty() {
+                return if self.0.is_empty() {
+                    Ok(None)
+                } else {
+                    self.finish(out)
+                };
             }
-        }
-        // Find the newline (if any) in the available slice.
-        let (consumed, found_nl) = match available.iter().position(|&b| b == b'\n') {
-            Some(idx) => (idx.saturating_add(1), true),
-            None => (available.len(), false),
-        };
-        if buf.len().saturating_add(consumed) > max_bytes {
-            // Cap reached: consume up to the cap so we don't leave garbage in the reader, then bail.
-            let remaining = max_bytes.saturating_sub(buf.len());
-            // `remaining < consumed <= available.len()` by construction, so this
-            // never misses — `unwrap_or(available)` is just a defensive fallback.
-            let take = available.get(..remaining).unwrap_or(available);
+            let (consumed, found_newline) = available
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or((available.len(), false), |index| {
+                    (index.saturating_add(1), true)
+                });
+            if self.0.len().saturating_add(consumed) > max_bytes {
+                reader.consume(max_bytes.saturating_sub(self.0.len()));
+                zeroize::Zeroize::zeroize(&mut *self.0);
+                return Err(ReadLineError::TooLarge);
+            }
+            let take = available.get(..consumed).unwrap_or(available);
             let taken = take.len();
-            buf.extend_from_slice(take);
+            self.0.extend_from_slice(take);
             reader.consume(taken);
-            return Err(ReadLineError::TooLarge);
-        }
-        // `consumed` is either `idx + 1` (a valid position in `available`) or
-        // `available.len()`, so this too never misses.
-        let take = available.get(..consumed).unwrap_or(available);
-        let taken = take.len();
-        buf.extend_from_slice(take);
-        reader.consume(taken);
-        if found_nl {
-            match String::from_utf8(buf) {
-                Ok(s) => {
-                    out.push_str(&s);
-                    return Ok(Some(()));
-                }
-                Err(e) => {
-                    return Err(ReadLineError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        e,
-                    )));
-                }
+            if found_newline {
+                return self.finish(out);
             }
         }
+    }
+
+    fn finish(&mut self, out: &mut String) -> Result<Option<()>, ReadLineError> {
+        let result = std::str::from_utf8(&self.0)
+            .map(|line| out.push_str(line))
+            .map_err(|error| {
+                ReadLineError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+            });
+        zeroize::Zeroize::zeroize(&mut *self.0);
+        result.map(|()| Some(()))
     }
 }
 
-/// Build a `WindowEvent::KeyboardInput` for `key`. Mirrors
-/// `shots/driver.rs::key_press_event`: winit's `KeyEvent` has a
-/// `pub(crate)` `platform_specific` field, so we zero-init and overwrite
-/// only the fields the host reads; `text` is set for `Character` keys so
-/// text-input branches see the same glyph real hardware would send.
+/// Build a `WindowEvent::KeyboardInput` for `key`; `text` is set for
+/// `Character` keys so text-input branches see the same glyph real hardware
+/// would send.
 pub fn keyboard_input_event(key: &Key, pressed: bool) -> WindowEvent {
-    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-    ev.logical_key = key.clone();
-    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-    ev.location = KeyLocation::Standard;
-    ev.state = if pressed {
-        ElementState::Pressed
-    } else {
-        ElementState::Released
-    };
-    ev.repeat = false;
-    ev.text = if let Key::Character(s) = key {
-        Some(s.clone())
-    } else {
-        None
-    };
-    WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
-        event: ev,
-        is_synthetic: false,
-    }
+    ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        key.clone(),
+        if let Key::Character(s) = key {
+            Some(s.clone())
+        } else {
+            None
+        },
+        if pressed {
+            ElementState::Pressed
+        } else {
+            ElementState::Released
+        },
+    ))
 }
 #[cfg(test)]
 mod framing_tests {
     use super::*;
+    #[test]
+    fn nonblocking_line_retains_split_utf8_and_the_next_line() {
+        use std::io::{BufReader, Write as _};
+        use std::os::unix::net::UnixStream;
+
+        let (server, mut client) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let mut reader = BufReader::new(server);
+        let mut pending = BoundedLineBuffer::default();
+        let mut out = String::new();
+        client.write_all(&[0xf0, 0x9f]).unwrap();
+        assert!(matches!(
+            pending.read(&mut reader, &mut out, 64),
+            Err(ReadLineError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+        assert!(out.is_empty(), "a UTF-8 prefix is not yet a request");
+        client.write_all(&[0x98, 0x80, b'\n']).unwrap();
+        client.write_all(b"next\n").unwrap();
+        assert!(matches!(
+            pending.read(&mut reader, &mut out, 64),
+            Ok(Some(()))
+        ));
+        assert_eq!(out, "😀\n");
+        out.clear();
+        assert!(matches!(
+            pending.read(&mut reader, &mut out, 64),
+            Ok(Some(()))
+        ));
+        assert_eq!(out, "next\n", "delivery resets only the completed prefix");
+    }
+
+    #[test]
+    fn nonblocking_line_cap_applies_across_fragments() {
+        use std::io::{BufReader, Write as _};
+        use std::os::unix::net::UnixStream;
+
+        let (server, mut client) = UnixStream::pair().unwrap();
+        server.set_nonblocking(true).unwrap();
+        let mut reader = BufReader::new(server);
+        let mut pending = BoundedLineBuffer::default();
+        let mut out = String::new();
+        client.write_all(b"abc").unwrap();
+        assert!(matches!(
+            pending.read(&mut reader, &mut out, 4),
+            Err(ReadLineError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+        client.write_all(b"def\n").unwrap();
+        assert!(matches!(
+            pending.read(&mut reader, &mut out, 4),
+            Err(ReadLineError::TooLarge)
+        ));
+        assert!(out.is_empty(), "an oversized line must never be dispatched");
+    }
+
     /// `read_bounded_line` caps a malicious/buggy client's input at
     /// `TEST_CONTROL_MAX_LINE_BYTES`; the caller closes the connection on `TooLarge`.
     #[test]
@@ -2889,6 +4131,7 @@ mod agent_request_tests {
                     id: "mcp:1".into(),
                     label: Some("Claude Code".into()),
                 }),
+                window: None,
             }
         );
         let plain =
@@ -2916,6 +4159,24 @@ mod agent_request_tests {
         }
         let error = parse_request(r#"{"op":"go_fishing","agent":"a"}"#).err();
         assert_eq!(error.map(code).as_deref(), Some("parse_error"));
+    }
+
+    #[test]
+    fn a_request_can_aim_at_one_apps_window() {
+        let request = parse_request(r#"{"op":"click_at","x":1,"y":2,"window":"so.tilo.canvas"}"#)
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(request.window.as_deref(), Some("so.tilo.canvas"));
+        assert_eq!(request.command, Command::ClickAt { x: 1.0, y: 2.0 });
+        for line in [
+            r#"{"op":"key","key":"a","window":""}"#,
+            r#"{"op":"key","key":"a","window":5}"#,
+            r#"{"op":"key","key":"a","window":"a\u0000b"}"#,
+        ] {
+            let error = parse_request(line)
+                .err()
+                .unwrap_or_else(|| panic!("{line}"));
+            assert_eq!(code(error), "invalid_window", "{line}");
+        }
     }
 
     #[test]

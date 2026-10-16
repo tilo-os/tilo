@@ -1,0 +1,227 @@
+{
+  "schema": 1,
+  "assets": [
+    {
+      "file": "TiloSans[wdth,wght].ttf",
+      "bytes": 325400,
+      "sha256": "903aac545b421e1c050552980762613e9373b4a01b491e45c9737f42525888d6",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/903aac545b421e1c050552980762613e9373b4a01b491e45c9737f42525888d6/font-903aac545b421e1c050552980762613e9373b4a01b491e45c9737f42525888d6.ttf"
+    },
+    {
+      "file": "TiloSans-Italic[wdth,wght].ttf",
+      "bytes": 338224,
+      "sha256": "72d98aff60fd0447e5081c48895b08656aa9f2b219c0698866e97f3cd20c5743",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/72d98aff60fd0447e5081c48895b08656aa9f2b219c0698866e97f3cd20c5743/font-72d98aff60fd0447e5081c48895b08656aa9f2b219c0698866e97f3cd20c5743.ttf"
+    },
+    {
+      "file": "AtkinsonHyperlegibleNext[wght].ttf",
+      "bytes": 114552,
+      "sha256": "5a455d1cfa099b601ab70751bb9673e8fe1854dc4500c80e1a220d0d75e31745",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/5a455d1cfa099b601ab70751bb9673e8fe1854dc4500c80e1a220d0d75e31745/font-5a455d1cfa099b601ab70751bb9673e8fe1854dc4500c80e1a220d0d75e31745.ttf"
+    },
+    {
+      "file": "AtkinsonHyperlegibleNext-Italic[wght].ttf",
+      "bytes": 123916,
+      "sha256": "ce9cffed32742ad2d9238c561a93220385e5934cdc02b8eb4097a50efa957dc6",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/ce9cffed32742ad2d9238c561a93220385e5934cdc02b8eb4097a50efa957dc6/font-ce9cffed32742ad2d9238c561a93220385e5934cdc02b8eb4097a50efa957dc6.ttf"
+    },
+    {
+      "file": "Onest-Cyrillic[wght].ttf",
+      "bytes": 80696,
+      "sha256": "efc3cf7b09f5bb11880ece503a7df2f5d6c2bf3177f2bd88dca5e709aeb10895",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/efc3cf7b09f5bb11880ece503a7df2f5d6c2bf3177f2bd88dca5e709aeb10895/font-efc3cf7b09f5bb11880ece503a7df2f5d6c2bf3177f2bd88dca5e709aeb10895.ttf"
+    },
+    {
+      "file": "NotoSans[wght].ttf",
+      "bytes": 712460,
+      "sha256": "fb53504de62e767a54695416123d68d67f71c9b69722175184ad56e7dd13547b",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/fb53504de62e767a54695416123d68d67f71c9b69722175184ad56e7dd13547b/font-fb53504de62e767a54695416123d68d67f71c9b69722175184ad56e7dd13547b.ttf"
+    },
+    {
+      "file": "NotoSans-Italic[wght].ttf",
+      "bytes": 739728,
+      "sha256": "28602f4b032ed8f5d91445e830585f34aba54ff9d3ac3e58c0b8834f3d6ae684",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/28602f4b032ed8f5d91445e830585f34aba54ff9d3ac3e58c0b8834f3d6ae684/font-28602f4b032ed8f5d91445e830585f34aba54ff9d3ac3e58c0b8834f3d6ae684.ttf"
+    },
+    {
+      "file": "NewCM10-Book.otf",
+      "bytes": 694392,
+      "sha256": "005f9b4e13b2a133df36d4ebfbb8f5fe402854bcb5882deb500b9c0f72b1bb49",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/005f9b4e13b2a133df36d4ebfbb8f5fe402854bcb5882deb500b9c0f72b1bb49/font-005f9b4e13b2a133df36d4ebfbb8f5fe402854bcb5882deb500b9c0f72b1bb49.otf"
+    },
+    {
+      "file": "NewCM10-BookItalic.otf",
+      "bytes": 699696,
+      "sha256": "d01f6c7b5bcdee2545823f1cf0a35698b9ccff1891a2f79a8e9938e5b8ea561e",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/d01f6c7b5bcdee2545823f1cf0a35698b9ccff1891a2f79a8e9938e5b8ea561e/font-d01f6c7b5bcdee2545823f1cf0a35698b9ccff1891a2f79a8e9938e5b8ea561e.otf"
+    },
+    {
+      "file": "NotoSansMono[wght].ttf",
+      "bytes": 569204,
+      "sha256": "3c874b97ce11dc54de004c81df02c8f0974033ed1b113377130cbdd71d478f11",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/3c874b97ce11dc54de004c81df02c8f0974033ed1b113377130cbdd71d478f11/font-3c874b97ce11dc54de004c81df02c8f0974033ed1b113377130cbdd71d478f11.ttf"
+    },
+    {
+      "file": "NotoSansMath-Regular.ttf",
+      "bytes": 990564,
+      "sha256": "d51afd5739c7ba6c44fcab35a88160e25dfb69a2d4ad0bd99533f8d894af1f96",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/d51afd5739c7ba6c44fcab35a88160e25dfb69a2d4ad0bd99533f8d894af1f96/font-d51afd5739c7ba6c44fcab35a88160e25dfb69a2d4ad0bd99533f8d894af1f96.ttf"
+    },
+    {
+      "file": "NotoSansArabic[wght].ttf",
+      "bytes": 239324,
+      "sha256": "3fae4d7239d1faa55b234bda8091019a5251ff79df40d5e29367d84bed2a8138",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/3fae4d7239d1faa55b234bda8091019a5251ff79df40d5e29367d84bed2a8138/font-3fae4d7239d1faa55b234bda8091019a5251ff79df40d5e29367d84bed2a8138.ttf"
+    },
+    {
+      "file": "NotoSansHebrew[wght].ttf",
+      "bytes": 25296,
+      "sha256": "9d81d81ad592644487b03843da73a87b99cd28a2c4da4a096e1db8fbd14fda61",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/9d81d81ad592644487b03843da73a87b99cd28a2c4da4a096e1db8fbd14fda61/font-9d81d81ad592644487b03843da73a87b99cd28a2c4da4a096e1db8fbd14fda61.ttf"
+    },
+    {
+      "file": "NotoSansDevanagari[wght].ttf",
+      "bytes": 276816,
+      "sha256": "ffb0d05ef3d8e6d0c3d7c9380099127b003854242c11d0751b6a2e85e1f8f1b5",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/ffb0d05ef3d8e6d0c3d7c9380099127b003854242c11d0751b6a2e85e1f8f1b5/font-ffb0d05ef3d8e6d0c3d7c9380099127b003854242c11d0751b6a2e85e1f8f1b5.ttf"
+    },
+    {
+      "file": "NotoSansBengali[wght].ttf",
+      "bytes": 165368,
+      "sha256": "71647364a0b9851a07db3207431256279bb8db9e8a4ba9d487ff2fe7431f5fcd",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/71647364a0b9851a07db3207431256279bb8db9e8a4ba9d487ff2fe7431f5fcd/font-71647364a0b9851a07db3207431256279bb8db9e8a4ba9d487ff2fe7431f5fcd.ttf"
+    },
+    {
+      "file": "NotoSansThai[wght].ttf",
+      "bytes": 31912,
+      "sha256": "13f52f79b04f01f2751a81052a5dee2df639fd4e13f4ac30821ab45c8dd5f7e7",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/13f52f79b04f01f2751a81052a5dee2df639fd4e13f4ac30821ab45c8dd5f7e7/font-13f52f79b04f01f2751a81052a5dee2df639fd4e13f4ac30821ab45c8dd5f7e7.ttf"
+    },
+    {
+      "file": "NotoSansCJK-VF.ttc",
+      "bytes": 32682580,
+      "sha256": "d3d8256cdec8dbcb3552284bc6b20c734dd60c2ee9df83b5758e34807c4bac32",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/d3d8256cdec8dbcb3552284bc6b20c734dd60c2ee9df83b5758e34807c4bac32/font-d3d8256cdec8dbcb3552284bc6b20c734dd60c2ee9df83b5758e34807c4bac32.ttc"
+    },
+    {
+      "file": "NotoSansSymbols[wght].ttf",
+      "bytes": 239720,
+      "sha256": "63724daeff6755a45933b9a5e3a3b41df5df8fe925c0f4c991f2f68c08a4182d",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/63724daeff6755a45933b9a5e3a3b41df5df8fe925c0f4c991f2f68c08a4182d/font-63724daeff6755a45933b9a5e3a3b41df5df8fe925c0f4c991f2f68c08a4182d.ttf"
+    },
+    {
+      "file": "NotoSansSymbols2-Regular.ttf",
+      "bytes": 671568,
+      "sha256": "c4a0a80f0041ce4be81e2478faad22776d23edb98ae3f0d19bd37044820ecf9d",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/c4a0a80f0041ce4be81e2478faad22776d23edb98ae3f0d19bd37044820ecf9d/font-c4a0a80f0041ce4be81e2478faad22776d23edb98ae3f0d19bd37044820ecf9d.ttf"
+    },
+    {
+      "file": "Noto-COLRv1.ttf",
+      "bytes": 4812896,
+      "sha256": "94c6c870925aaafd3fdda338fc4b2e4dfb74260c9aefa87d4aa8a145a993a5a2",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/94c6c870925aaafd3fdda338fc4b2e4dfb74260c9aefa87d4aa8a145a993a5a2/font-94c6c870925aaafd3fdda338fc4b2e4dfb74260c9aefa87d4aa8a145a993a5a2.ttf"
+    },
+    {
+      "file": "NewCM10-Regular.otf",
+      "bytes": 717588,
+      "sha256": "328698d764ccdf7acf6bc1088aefd83a237f6a1d8b812de1e77ac5e4483bf3d1",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/328698d764ccdf7acf6bc1088aefd83a237f6a1d8b812de1e77ac5e4483bf3d1/font-328698d764ccdf7acf6bc1088aefd83a237f6a1d8b812de1e77ac5e4483bf3d1.otf"
+    },
+    {
+      "file": "NewCM10-Italic.otf",
+      "bytes": 721176,
+      "sha256": "a55d07607eec48889b6e7e7d51d7703c3beb915a39690f34fe01b4e2a744a9d6",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/a55d07607eec48889b6e7e7d51d7703c3beb915a39690f34fe01b4e2a744a9d6/font-a55d07607eec48889b6e7e7d51d7703c3beb915a39690f34fe01b4e2a744a9d6.otf"
+    },
+    {
+      "file": "NewCM10-Bold.otf",
+      "bytes": 629288,
+      "sha256": "40b0b32b63655fe802679ee4a14adb29c762a4712095d9c84cf7df7852b5152e",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/40b0b32b63655fe802679ee4a14adb29c762a4712095d9c84cf7df7852b5152e/font-40b0b32b63655fe802679ee4a14adb29c762a4712095d9c84cf7df7852b5152e.otf"
+    },
+    {
+      "file": "NewCM10-BoldItalic.otf",
+      "bytes": 609000,
+      "sha256": "fb53f43500c8ffbcc6dfdea5a519961d475543174ea2a0dcbe16c08510299fdf",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/fb53f43500c8ffbcc6dfdea5a519961d475543174ea2a0dcbe16c08510299fdf/font-fb53f43500c8ffbcc6dfdea5a519961d475543174ea2a0dcbe16c08510299fdf.otf"
+    },
+    {
+      "file": "NewCM08-Book.otf",
+      "bytes": 676440,
+      "sha256": "dd00447c2bf13d1923dccbc0ee90a0faf7e3a893442463255e170fd8599495fb",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/dd00447c2bf13d1923dccbc0ee90a0faf7e3a893442463255e170fd8599495fb/font-dd00447c2bf13d1923dccbc0ee90a0faf7e3a893442463255e170fd8599495fb.otf"
+    },
+    {
+      "file": "LibertinusSerif-Regular.otf",
+      "bytes": 337132,
+      "sha256": "fcf06307a77367394fcb0ccb241e59eea70dba3d732be309647611224679c733",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/fcf06307a77367394fcb0ccb241e59eea70dba3d732be309647611224679c733/font-fcf06307a77367394fcb0ccb241e59eea70dba3d732be309647611224679c733.otf"
+    },
+    {
+      "file": "LibertinusSerif-Italic.otf",
+      "bytes": 332312,
+      "sha256": "9a393d63d6e05f620d3dc0190dfd35a8ede58c0808cf0fc9de7fcb9c723e4c24",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/9a393d63d6e05f620d3dc0190dfd35a8ede58c0808cf0fc9de7fcb9c723e4c24/font-9a393d63d6e05f620d3dc0190dfd35a8ede58c0808cf0fc9de7fcb9c723e4c24.otf"
+    },
+    {
+      "file": "LibertinusSerif-Bold.otf",
+      "bytes": 293908,
+      "sha256": "0264914210ed51b3231ebc92ce529e9f2e166ba9eebf0cd4a579558690a27b64",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/0264914210ed51b3231ebc92ce529e9f2e166ba9eebf0cd4a579558690a27b64/font-0264914210ed51b3231ebc92ce529e9f2e166ba9eebf0cd4a579558690a27b64.otf"
+    },
+    {
+      "file": "LibertinusSerif-BoldItalic.otf",
+      "bytes": 259176,
+      "sha256": "47a665259f09f554f5d133d7718cdad43ff462c6a6b2328f38023465e62d57ce",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/47a665259f09f554f5d133d7718cdad43ff462c6a6b2328f38023465e62d57ce/font-47a665259f09f554f5d133d7718cdad43ff462c6a6b2328f38023465e62d57ce.otf"
+    },
+    {
+      "file": "LibertinusSerifDisplay-Regular.otf",
+      "bytes": 263688,
+      "sha256": "7734b4d4cc5f3b98926f47a1389d775107496c813269cfed238dae5bd9329d44",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/7734b4d4cc5f3b98926f47a1389d775107496c813269cfed238dae5bd9329d44/font-7734b4d4cc5f3b98926f47a1389d775107496c813269cfed238dae5bd9329d44.otf"
+    },
+    {
+      "file": "Literata[opsz,wght].ttf",
+      "bytes": 955132,
+      "sha256": "b41138c9373112f32abb589cc22e8674b06ed4048b0c513be922bdd26f274440",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/b41138c9373112f32abb589cc22e8674b06ed4048b0c513be922bdd26f274440/font-b41138c9373112f32abb589cc22e8674b06ed4048b0c513be922bdd26f274440.ttf"
+    },
+    {
+      "file": "Literata-Italic[opsz,wght].ttf",
+      "bytes": 902728,
+      "sha256": "d483dfaeba9cbf4ce71d32a52ee65df82f7e35b15fff8d1011cdb242d1fcd465",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/d483dfaeba9cbf4ce71d32a52ee65df82f7e35b15fff8d1011cdb242d1fcd465/font-d483dfaeba9cbf4ce71d32a52ee65df82f7e35b15fff8d1011cdb242d1fcd465.ttf"
+    },
+    {
+      "file": "EBGaramond[wght].ttf",
+      "bytes": 851176,
+      "sha256": "ef9512f92f6d579e5dc75af59a5a4b1b8b47d2eda89e00b954d44520e5369027",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/ef9512f92f6d579e5dc75af59a5a4b1b8b47d2eda89e00b954d44520e5369027/font-ef9512f92f6d579e5dc75af59a5a4b1b8b47d2eda89e00b954d44520e5369027.ttf"
+    },
+    {
+      "file": "EBGaramond-Italic[wght].ttf",
+      "bytes": 754468,
+      "sha256": "bba2c4499c93c9612b90b9825d32b07da52fce2fe57562a1eb6b833553f93c4e",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/bba2c4499c93c9612b90b9825d32b07da52fce2fe57562a1eb6b833553f93c4e/font-bba2c4499c93c9612b90b9825d32b07da52fce2fe57562a1eb6b833553f93c4e.ttf"
+    },
+    {
+      "file": "SourceSerif4Variable-Roman.ttf",
+      "bytes": 1204208,
+      "sha256": "14d360ee1b76655da9276628b229e11671bc1f5d1083636144db6677d452cf55",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/14d360ee1b76655da9276628b229e11671bc1f5d1083636144db6677d452cf55/font-14d360ee1b76655da9276628b229e11671bc1f5d1083636144db6677d452cf55.ttf"
+    },
+    {
+      "file": "SourceSerif4Variable-Italic.ttf",
+      "bytes": 850036,
+      "sha256": "6a059a64838978d54e8fab71ed86b0d82e948c0e12b2664d0c15166326dcff82",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/6a059a64838978d54e8fab71ed86b0d82e948c0e12b2664d0c15166326dcff82/font-6a059a64838978d54e8fab71ed86b0d82e948c0e12b2664d0c15166326dcff82.ttf"
+    },
+    {
+      "file": "AdwaitaSans-Regular.ttf",
+      "bytes": 879796,
+      "sha256": "8381c33b9a44f066f2b99dba3d416a2342891e28c956a35dfd8d16ee2987e6d4",
+      "url": "https://code.tilo.so/api/packages/tilo/generic/source-evidence/8381c33b9a44f066f2b99dba3d416a2342891e28c956a35dfd8d16ee2987e6d4/font-8381c33b9a44f066f2b99dba3d416a2342891e28c956a35dfd8d16ee2987e6d4.ttf"
+    }
+  ]
+}

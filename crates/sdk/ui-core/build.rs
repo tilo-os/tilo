@@ -1,36 +1,45 @@
-/// # Errors
-///
-/// Returns an error if the `webview-wpe` feature is enabled and any of the
-/// WPE stack's `pkg-config` libraries can't be probed (not installed, or
-/// `PKG_CONFIG_PATH` doesn't point at the prefix built by
-/// `os/dev/build-wpe.sh`).
+fn emit_hex_fixture(text: &str, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let digits: String = text
+        .chars()
+        .filter(|value| !value.is_ascii_whitespace())
+        .collect();
+    let pairs = digits.as_bytes().chunks_exact(2);
+    if !pairs.remainder().is_empty() {
+        return Err("invalid fixture hex encoding".into());
+    }
+    let mut bytes = Vec::new();
+    for pair in pairs {
+        bytes.push(u8::from_str_radix(std::str::from_utf8(pair)?, 16)?);
+    }
+    let output =
+        std::path::PathBuf::from(std::env::var_os("OUT_DIR").ok_or("missing build output")?);
+    std::fs::write(output.join(filename), bytes)?;
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // The WPE WebKit backend (feature `webview-wpe`) links the WPE
-    // stack. Fedora ships no WPE packages — build them with
-    // os/dev/build-wpe.sh and point PKG_CONFIG_PATH at the prefix.
-    // Without the feature this script is a no-op, so the workspace
-    // builds on machines without the libraries.
-    if std::env::var_os("CARGO_FEATURE_WEBVIEW_WPE").is_none() {
-        return Ok(());
-    }
-    for lib in [
-        "wpe-webkit-2.0",
-        "wpebackend-fdo-1.0",
-        "wpe-1.0",
-        "wayland-server",
-        "glib-2.0",
-        "gobject-2.0",
-        // DMA-BUF zero-copy path (TILO_WEBVIEW_DMABUF=1): EGL to receive
-        // WebKit's exported EGLImage + gbm to open the render node.
-        "egl",
-        "gbm",
+    // Without an explicit input list Cargo watches the whole package, so a
+    // documentation or test edit needlessly rebuilds the toolkit and relinks
+    // every app using it. These fixtures are the script's only inputs; Rust
+    // sources remain tracked by rustc's normal dependency information.
+    for source in [
+        "tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex",
+        "tests/fixtures/test_image.png.hex",
+        "../../browser/paint-stream/tests/fixtures/layers.top.png.hex",
     ] {
-        pkg_config::probe_library(lib).map_err(|err| {
-            format!(
-                "feature `webview-wpe` needs {lib} (build the stack with \
-                 os/dev/build-wpe.sh and set PKG_CONFIG_PATH to the prefix): {err}"
-            )
-        })?;
+        println!("cargo::rerun-if-changed={source}");
     }
+    emit_hex_fixture(
+        include_str!("tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex"),
+        "TiloSansFeaturesFixture-Regular.ttf",
+    )?;
+    emit_hex_fixture(
+        include_str!("tests/fixtures/test_image.png.hex"),
+        "test_image.png",
+    )?;
+    emit_hex_fixture(
+        include_str!("../../browser/paint-stream/tests/fixtures/layers.top.png.hex"),
+        "layers.top.png",
+    )?;
     Ok(())
 }

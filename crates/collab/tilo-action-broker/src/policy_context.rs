@@ -18,12 +18,7 @@ pub(super) fn sample(
     };
     let now = match &retained {
         Some(time) => time.now_ns().map_err(|error| error.to_string())?,
-        None => std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| "legacy clock unavailable")?
-            .as_nanos()
-            .try_into()
-            .map_err(|_| "legacy clock overflow")?,
+        None => tilo_clock::try_unix_now_ns().ok_or("legacy clock unavailable")?,
     };
     Ok((retained, now))
 }

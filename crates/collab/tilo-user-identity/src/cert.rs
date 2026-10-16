@@ -22,10 +22,24 @@ pub const DEVCERT_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v1\0";
 /// marker cannot accept it as native.
 pub const DEVCERT_V2_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v2\0";
 
+/// Signing-domain tag for a certificate that grants administration (see
+/// [`DeviceCapabilities::can_administer_devices`]), foreign or not. It never
+/// verifies under the v1 or v2 tags, so no older verifier can take it for a
+/// certificate that grants less.
+pub const DEVCERT_V3_PREIMAGE_TAG: &[u8] = b"tilo-devcert-v3\0";
+
 /// First byte of a foreign device's capabilities in binary encodings. A
 /// verifier that predates the marker decodes that position as a `bool` and
 /// refuses any byte other than 0 or 1.
 const FOREIGN_BINARY_MARKER: u8 = 2;
+
+/// First byte of capabilities that grant administration in binary encodings,
+/// followed by one byte of [`EXTENDED_FOREIGN`] | [`EXTENDED_ADMINISTER`] and
+/// then the four flags. Verifiers that predate it refuse the byte, as they
+/// refuse [`FOREIGN_BINARY_MARKER`].
+const EXTENDED_BINARY_MARKER: u8 = 3;
+const EXTENDED_FOREIGN: u8 = 1;
+const EXTENDED_ADMINISTER: u8 = 2;
 
 /// What a device may do on behalf of its user.
 ///
@@ -79,6 +93,14 @@ pub struct DeviceCapabilities {
     /// under [`DEVCERT_V2_PREIMAGE_TAG`] and encoded so that verifiers which
     /// predate this field reject it; a native one keeps the v1 encoding.
     pub foreign: bool,
+
+    /// May administer the person's other devices: open their device-admin
+    /// route (`tilo-device-admin/1`) and drive the dev daemon behind it.
+    /// Granted on purpose to a developer's machine, never by a preset. A
+    /// certificate that grants it is signed under
+    /// [`DEVCERT_V3_PREIMAGE_TAG`] and encoded so that verifiers which predate
+    /// this field reject it; every other certificate keeps its encoding.
+    pub can_administer_devices: bool,
 }
 
 /// The v1 JSON shape plus the optional foreign marker, omitted when false so
@@ -96,6 +118,8 @@ struct CapabilitiesJson {
     can_read_all_workspaces: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     foreign: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    can_administer_devices: bool,
 }
 
 impl Serialize for DeviceCapabilities {
@@ -108,20 +132,30 @@ impl Serialize for DeviceCapabilities {
                 can_act_as_host: self.can_act_as_host,
                 can_read_all_workspaces: self.can_read_all_workspaces,
                 foreign: self.foreign,
+                can_administer_devices: self.can_administer_devices,
             }
             .serialize(serializer);
         }
         // Positional binary formats (postcard) encode each bool as one byte;
-        // a foreign device prefixes the four flags with the marker byte.
+        // a foreign device prefixes the four flags with the marker byte, and
+        // one that may administer with the extended marker and its byte.
         let flags = [
             self.can_own_workspaces,
             self.can_admit_devices,
             self.can_act_as_host,
             self.can_read_all_workspaces,
         ];
-        let len = if self.foreign { 5 } else { 4 };
+        let len = match (self.can_administer_devices, self.foreign) {
+            (true, _) => 6,
+            (false, true) => 5,
+            (false, false) => 4,
+        };
         let mut tuple = serializer.serialize_tuple(len)?;
-        if self.foreign {
+        if self.can_administer_devices {
+            let extended = EXTENDED_ADMINISTER | if self.foreign { EXTENDED_FOREIGN } else { 0 };
+            tuple.serialize_element(&EXTENDED_BINARY_MARKER)?;
+            tuple.serialize_element(&extended)?;
+        } else if self.foreign {
             tuple.serialize_element(&FOREIGN_BINARY_MARKER)?;
         }
         for flag in flags {
@@ -141,11 +175,13 @@ impl<'de> Deserialize<'de> for DeviceCapabilities {
                 can_act_as_host: json.can_act_as_host,
                 can_read_all_workspaces: json.can_read_all_workspaces,
                 foreign: json.foreign,
+                can_administer_devices: json.can_administer_devices,
             });
         }
         // Postcard reads only the elements the visitor asks for, so the upper
-        // bound admits the four native flags as well as marker + four flags.
-        deserializer.deserialize_tuple(5, BinaryCapabilities)
+        // bound admits the four native flags, marker + four flags, and the
+        // extended marker + its byte + four flags.
+        deserializer.deserialize_tuple(6, BinaryCapabilities)
     }
 }
 
@@ -155,7 +191,8 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
     type Value = DeviceCapabilities;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("four capability flags, optionally after the foreign marker")
+        formatter
+            .write_str("four capability flags, optionally after the foreign or extended marker")
     }
 
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
@@ -165,10 +202,27 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 .ok_or_else(|| A::Error::invalid_length(index, &"four capability flags"))
         };
         let first = next(0)?;
-        let (foreign, flags) = if first == FOREIGN_BINARY_MARKER {
-            (true, [next(1)?, next(2)?, next(3)?, next(4)?])
-        } else {
-            (false, [first, next(1)?, next(2)?, next(3)?])
+        let (foreign, administer, flags) = match first {
+            FOREIGN_BINARY_MARKER => (true, false, [next(1)?, next(2)?, next(3)?, next(4)?]),
+            EXTENDED_BINARY_MARKER => {
+                let extended = next(1)?;
+                // Only administration needs the extended form; anything else
+                // has exactly one encoding already.
+                if extended & !(EXTENDED_FOREIGN | EXTENDED_ADMINISTER) != 0
+                    || extended & EXTENDED_ADMINISTER == 0
+                {
+                    return Err(A::Error::invalid_value(
+                        serde::de::Unexpected::Unsigned(extended.into()),
+                        &"extended capabilities that grant administration",
+                    ));
+                }
+                (
+                    extended & EXTENDED_FOREIGN != 0,
+                    true,
+                    [next(2)?, next(3)?, next(4)?, next(5)?],
+                )
+            }
+            _ => (false, false, [first, next(1)?, next(2)?, next(3)?]),
         };
         let flag = |byte: u8| match byte {
             0 => Ok(false),
@@ -184,6 +238,7 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
             can_act_as_host: flag(flags[2])?,
             can_read_all_workspaces: flag(flags[3])?,
             foreign,
+            can_administer_devices: administer,
         })
     }
 }
@@ -198,6 +253,7 @@ impl DeviceCapabilities {
             can_act_as_host: false,
             can_read_all_workspaces: true,
             foreign: false,
+            can_administer_devices: false,
         }
     }
 
@@ -211,6 +267,7 @@ impl DeviceCapabilities {
             can_act_as_host: false,
             can_read_all_workspaces: false,
             foreign: false,
+            can_administer_devices: false,
         }
     }
 
@@ -225,6 +282,21 @@ impl DeviceCapabilities {
             can_act_as_host: true,
             can_read_all_workspaces: true,
             foreign: false,
+            can_administer_devices: false,
+        }
+    }
+
+    /// Capability set for a developer's machine that administers the
+    /// person's devices and does nothing else: it owns, admits, hosts and
+    /// reads nothing.
+    pub fn administrator() -> Self {
+        Self {
+            can_own_workspaces: false,
+            can_admit_devices: false,
+            can_act_as_host: false,
+            can_read_all_workspaces: false,
+            foreign: false,
+            can_administer_devices: true,
         }
     }
 }
@@ -274,7 +346,7 @@ pub struct DeviceCert {
 
     /// Ed25519 signature. 64 bytes. Covers everything else in this
     /// struct via `blake3(DEVCERT_PREIMAGE_TAG || postcard(view))`.
-    #[serde(with = "serde_bytes_64")]
+    #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
 }
 
@@ -394,7 +466,9 @@ pub fn sign_device_cert(
 /// Returns [`DeviceCertError::Canonical`] if the cert cannot be
 /// canonically encoded (effectively unreachable).
 pub fn device_cert_signing_digest(cert: &DeviceCert) -> Result<[u8; 32], DeviceCertError> {
-    let tag = if cert.capabilities.foreign {
+    let tag = if cert.capabilities.can_administer_devices {
+        DEVCERT_V3_PREIMAGE_TAG
+    } else if cert.capabilities.foreign {
         DEVCERT_V2_PREIMAGE_TAG
     } else {
         DEVCERT_PREIMAGE_TAG
@@ -489,32 +563,6 @@ pub fn verify_device_cert_at(cert: &DeviceCert, now_ns: u64) -> Result<(), Devic
         return Err(DeviceCertError::Expired);
     }
     Ok(())
-}
-
-/// Serde helper: a 64-byte-array serialiser that emits a length-
-/// prefixed byte string rather than 64 separate `u8`s. Saves 63
-/// bytes of varint overhead per signature on the wire.
-pub(crate) mod serde_bytes_64 {
-    use serde::de::Error as _;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8; 64], s: S) -> Result<S::Ok, S::Error> {
-        serde_bytes::Bytes::new(bytes).serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 64], D::Error> {
-        let v: serde_bytes::ByteBuf = serde_bytes::ByteBuf::deserialize(d)?;
-        let bytes = v.into_vec();
-        if bytes.len() != 64 {
-            return Err(D::Error::custom(format!(
-                "expected 64-byte signature, got {}",
-                bytes.len()
-            )));
-        }
-        let mut out = [0u8; 64];
-        out.copy_from_slice(&bytes);
-        Ok(out)
-    }
 }
 
 #[cfg(test)]
@@ -633,6 +681,7 @@ mod tests {
                     can_act_as_host: false,
                     can_read_all_workspaces: false,
                     foreign: false,
+                    can_administer_devices: false,
                 },
                 issued_at_ns: 1_000_000,
                 expires_at_ns: None,
@@ -753,15 +802,19 @@ mod tests {
     }
 
     fn golden_cert(foreign: bool) -> DeviceCert {
+        golden_cert_with(DeviceCapabilities {
+            foreign,
+            ..DeviceCapabilities::member()
+        })
+    }
+
+    fn golden_cert_with(capabilities: DeviceCapabilities) -> DeviceCert {
         let root_sk = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
         let mut cert = DeviceCert {
             user_public_key: root_sk.verifying_key().to_bytes(),
             device_public_key: [2u8; 32],
             device_label: "golden".to_string(),
-            capabilities: DeviceCapabilities {
-                foreign,
-                ..DeviceCapabilities::member()
-            },
+            capabilities,
             issued_at_ns: 1_000_000,
             expires_at_ns: Some(2_000_000),
             signature: [0u8; 64],
@@ -856,7 +909,7 @@ mod tests {
             pub capabilities: DeviceCapabilities,
             pub issued_at_ns: u64,
             pub expires_at_ns: Option<u64>,
-            #[serde(with = "super::serde_bytes_64")]
+            #[serde(with = "serde_bytes")]
             pub signature: [u8; 64],
         }
     }
@@ -882,6 +935,73 @@ mod tests {
         // instead of misreading the fields that follow.
         let foreign_wire = postcard::to_allocvec(&(&foreign, nonce)).unwrap();
         assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&foreign_wire).is_err());
+    }
+
+    /// Administration signs under its own tag, round-trips in both encodings
+    /// (alone and together with the foreign marker), survives no flip of the
+    /// flag, and is refused by every verifier that predates it.
+    #[test]
+    fn administration_certificates_sign_under_their_own_tag_and_old_verifiers_refuse_them() {
+        let native = golden_cert(false);
+        let nonce = [9u8; 32];
+        for foreign in [false, true] {
+            let admin = golden_cert_with(DeviceCapabilities {
+                foreign,
+                ..DeviceCapabilities::administrator()
+            });
+            verify_device_cert(&admin).unwrap();
+            assert_eq!(
+                device_cert_signing_digest(&admin).unwrap(),
+                signing_digest(DEVCERT_V3_PREIMAGE_TAG, &admin.view()).unwrap()
+            );
+            let json = serde_json::to_string(&admin).unwrap();
+            assert!(json.contains(r#""can_administer_devices":true"#));
+            assert_eq!(serde_json::from_str::<DeviceCert>(&json).unwrap(), admin);
+            let bytes = crate::canonical::canonical_bytes(&admin).unwrap();
+            let marker = 32 + 32 + 1 + "golden".len();
+            assert_eq!(bytes[marker], EXTENDED_BINARY_MARKER);
+            assert_eq!(
+                crate::canonical::from_canonical_bytes::<DeviceCert>(&bytes).unwrap(),
+                admin
+            );
+
+            let mut stripped = admin.clone();
+            stripped.capabilities.can_administer_devices = false;
+            assert_eq!(
+                verify_device_cert(&stripped).unwrap_err(),
+                DeviceCertError::BadSignature
+            );
+
+            let json_error = serde_json::from_str::<v1::DeviceCert>(&json).unwrap_err();
+            assert!(
+                json_error.to_string().contains("unknown field"),
+                "{json_error}"
+            );
+            let wire = postcard::to_allocvec(&(&admin, nonce)).unwrap();
+            assert!(postcard::from_bytes::<(v1::DeviceCert, [u8; 32])>(&wire).is_err());
+        }
+        let mut granted = native;
+        granted.capabilities.can_administer_devices = true;
+        assert_eq!(
+            verify_device_cert(&granted).unwrap_err(),
+            DeviceCertError::BadSignature
+        );
+    }
+
+    #[test]
+    fn extended_capabilities_refuse_bytes_that_do_not_grant_administration() {
+        let admin = golden_cert_with(DeviceCapabilities::administrator());
+        let bytes = crate::canonical::canonical_bytes(&admin).unwrap();
+        let marker = 32 + 32 + 1 + "golden".len();
+        assert_eq!(bytes[marker + 1], EXTENDED_ADMINISTER);
+        for extended in [0, EXTENDED_FOREIGN, 4, 0x80] {
+            let mut changed = bytes.clone();
+            changed[marker + 1] = extended;
+            assert!(
+                crate::canonical::from_canonical_bytes::<DeviceCert>(&changed).is_err(),
+                "extended byte {extended}"
+            );
+        }
     }
 
     #[test]

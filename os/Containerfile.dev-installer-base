@@ -1,0 +1,50 @@
+# Adapt a CI-built, unsealed generic dev image to the existing UKI installer.
+# No component is compiled here. Only the boot layout changes; the existing
+# installer disk builder subsequently closes the derived composefs seal.
+ARG BASE_IMAGE
+ARG RPMS_REF
+FROM ${RPMS_REF} AS rpms
+
+# The kernel the UKI embeds, split out of the same root (os/Containerfile's
+# `kernel` stage). This image keeps its own split-out pair as well: it is a
+# development target, whose kernel tilo-installer-dev-target-uki.py checks
+# against the UKI.
+FROM ${BASE_IMAGE} AS kernel
+RUN mkdir -p /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
+
+FROM ${BASE_IMAGE} AS split
+RUN test "$(cat /usr/lib/tilo/image-flavour)" = dev \
+    && test -x /usr/bin/tilo-installer \
+    && test ! -e /usr/lib/tilo/hardware-profile.json \
+    && mkdir -p /kernel \
+    && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
+
+# The sealing stages are os/Containerfile's, kept identical by
+# tools/policy/check_uki_pipeline.py; only uki-tools' FROM differs. No composefs
+# digest is passed here, so os/dev/uki.sh computes it over the split rootfs.
+FROM ${BASE_IMAGE} AS uki-tools
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
+COPY os/dev/uki-tools.packages /usr/local/share/tilo/uki-tools.packages
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    grep -v '^#' /usr/local/share/tilo/uki-tools.packages \
+    | xargs dnf install -y --setopt=reposdir=/repo \
+    && dnf clean all
+COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py /usr/local/bin/
+
+FROM uki-tools AS uki
+# Empty here: the installer disk builder closes the derived seal (header).
+ARG TILO_CFS_DIGEST=
+ENV CFS_DIGEST=${TILO_CFS_DIGEST}
+# 0 builds os/dev/uki.sh's negative control, a UKI without tilo.generation=.
+ARG TILO_SEAL_GENERATION=1
+ENV TILO_SEAL_GENERATION=${TILO_SEAL_GENERATION}
+RUN --mount=type=tmpfs,target=/tmp \
+    --mount=type=tmpfs,target=/run \
+    --mount=type=bind,from=split,target=/target,rw \
+    --mount=type=bind,from=kernel,source=/kernel,target=/kernel,rw \
+    bash /usr/local/bin/uki.sh
+
+FROM split AS final
+COPY --from=uki /out/*.efi /boot/EFI/Linux/
+LABEL org.opencontainers.image.title="Tilo dev installer base (not for production)"

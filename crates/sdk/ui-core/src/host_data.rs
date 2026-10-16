@@ -6,7 +6,8 @@
 //! Builds that embed their data never ask, and a host that never drains
 //! leaves every request pending.
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
+use tilo_lock::MutexRecover as _;
 
 /// Where a requested name stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,7 +28,7 @@ enum Entry {
 static DATA: Mutex<BTreeMap<String, Entry>> = Mutex::new(BTreeMap::new());
 
 fn with<R>(f: impl FnOnce(&mut BTreeMap<String, Entry>) -> R) -> R {
-    f(&mut DATA.lock().unwrap_or_else(PoisonError::into_inner))
+    f(&mut DATA.lock_recover())
 }
 
 /// The bytes for `name` if the host supplied them; otherwise records the

@@ -29,6 +29,8 @@ os/tests/test_foreign_boot_fixture.py
 apps/imager/packaging/test_generate_winget.py
 os/tests/kernel_module_signing_test.sh
 os/tests/boot_performance_gate_test.sh
+os/tests/boot_units_gate_test.sh
+os/tests/unit_sandbox_paths.py
 os/tests/no_openssl_runtime.sh
 os/tests/media_subprocess_invariants.sh
 os/tests/os_actions_subprocess_invariants.sh
@@ -52,12 +54,11 @@ os/tests/authenticode_envelope.sh
 os/tests/installer_guided_alongside.sh
 os/tests/store_volume.sh
 os/tests/installer_boot_menu.sh
-os/tests/staging_handoff_test.py
-os/tests/staging_reclaim_test.py
 os/tests/internal_install_cycle_test.py
 os/tests/live_recovery.sh
 os/tests/boot_ux_invariants.sh
 os/tests/greeter_auth_security.sh
+os/tests/secret_service_single_provider.sh
 os/tests/repair_mode.sh
 os/tests/installer_profile_transport.sh
 os/tests/imager_release_invariants.sh
@@ -65,7 +66,6 @@ os/tests/imager_broker_credentials.sh
 os/tests/imager_ephemeral_runner.sh
 os/tests/imager_ephemeral_runner_windows.sh
 os/tests/imager_linux_release_trust.sh
-os/tests/wpe_reproducibility_invariants.sh
 os/tests/generation_series_security.sh
 os/tests/system_extension_invariants.sh
 os/tests/tinker_subprocess_invariants.sh

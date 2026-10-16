@@ -65,9 +65,11 @@ async fn compute_session_routes_and_replays_unacknowledged_status() {
                 worker: worker_key,
                 workspace_id: 77,
                 apps: BTreeSet::from(["org.tilo.render".into()]),
-                gpu: false,
+                accelerators: BTreeSet::new(),
                 assignment_capacity: 1,
                 active_assignments: 0,
+                environment_capacity: 0,
+                active_environments: 0,
                 power: PowerAvailability::External,
                 energy_saver: false,
                 issued_at_ms,
@@ -150,6 +152,21 @@ async fn compute_session_routes_and_replays_unacknowledged_status() {
         .await
         .unwrap();
 
+    // Sending a frame does not establish processing order with a new
+    // connection. Fence the status on this ordered stream before reconnecting,
+    // as the offline-cancel scenario does for its durable enqueue.
+    worker_client.send(&ComputeEnvelope::Ping).await.unwrap();
+    assert!(matches!(
+        tilo_test_env::within(
+            "relay processed status before reconnect",
+            worker_client.receive()
+        )
+        .await
+        .unwrap()
+        .envelope,
+        ComputeEnvelope::Pong
+    ));
+
     let mut requester_again = ComputeClient::connect(
         client_endpoint().await,
         relay_address,
@@ -190,7 +207,12 @@ async fn compute_session_routes_and_replays_unacknowledged_status() {
     clippy::too_many_lines,
     reason = "one end-to-end session scenario that reads top to bottom"
 )]
-async fn compute_session_replays_offline_exact_cancel_until_ack() {
+/// A worker that drops its connection while it holds a job does not leave
+/// the job hanging: the relay ends it as `worker_lost` and tells the
+/// requester at once, durably, replaying the result until the requester
+/// acknowledges it. The job is over, so the requester's late cancel goes
+/// nowhere, and the returning worker is handed nothing stale.
+async fn compute_session_ends_a_lost_workers_job_and_replays_it_until_ack() {
     let user = TestUser::fresh("compute cancel owner");
     let relay_device = user.enrol("relay", DeviceCapabilities::host());
     let relay_key = relay_device.device_pubkey();
@@ -237,9 +259,11 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
                 worker: worker_key,
                 workspace_id: 88,
                 apps: BTreeSet::from(["org.tilo.render".into()]),
-                gpu: false,
+                accelerators: BTreeSet::new(),
                 assignment_capacity: 1,
                 active_assignments: 0,
+                environment_capacity: 0,
+                active_environments: 0,
                 power: PowerAvailability::External,
                 energy_saver: false,
                 issued_at_ms,
@@ -254,8 +278,8 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
         relay_address.clone(),
         user.user_pk,
         Some(relay_key),
-        requester.cert,
-        requester.sk,
+        requester.cert.clone(),
+        requester.sk.clone(),
         RevocationList::new(),
     )
     .await
@@ -305,12 +329,26 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     ));
     drop(worker_client);
 
+    // The worker is gone holding the job: the requester hears at once.
     let binding = ComputeJobBinding {
         workspace_id: 88,
         job_id: specification.job_id,
         requester: requester_key,
         worker: worker_key,
     };
+    let lost = ComputeJobPhase::Failed {
+        code: "worker_lost".into(),
+    };
+    let told = tilo_test_env::within("the lost worker's result", requester_client.receive())
+        .await
+        .unwrap();
+    let durable_sequence = told.sequence.expect("the result must be durable");
+    assert!(matches!(
+        &told.envelope,
+        ComputeEnvelope::Result { result }
+            if result.binding == binding && result.phase == lost && result.sequence == 1
+    ));
+    // Cancelling an ended job routes nothing.
     requester_client.cancel(&binding).await.unwrap();
     requester_client.send(&ComputeEnvelope::Ping).await.unwrap();
     assert!(matches!(
@@ -320,70 +358,73 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
             .envelope,
         ComputeEnvelope::Pong
     ));
+    drop(requester_client);
 
-    let mut first_reconnect = ComputeClient::connect(
+    // Unacknowledged, the result is replayed to the requester's next
+    // session, and gone once acknowledged.
+    let mut requester_again = ComputeClient::connect(
         client_endpoint().await,
         relay_address.clone(),
         user.user_pk,
         Some(relay_key),
-        worker_cert.clone(),
-        worker_keypair.clone(),
+        requester.cert.clone(),
+        requester.sk.clone(),
         RevocationList::new(),
     )
     .await
     .unwrap();
-    first_reconnect.attach(88).await.unwrap();
-    let first_cancel =
-        tilo_test_env::within("a message on first_reconnect", first_reconnect.receive())
-            .await
-            .unwrap();
-    assert!(matches!(
-        &first_cancel.envelope,
-        ComputeEnvelope::Cancel { binding: delivered } if delivered == &binding
-    ));
-    let durable_sequence = first_cancel.sequence.expect("cancel must be durable");
-    drop(first_reconnect);
-
-    let mut second_reconnect = ComputeClient::connect(
-        client_endpoint().await,
-        relay_address.clone(),
-        user.user_pk,
-        Some(relay_key),
-        worker_cert.clone(),
-        worker_keypair.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    second_reconnect.attach(88).await.unwrap();
-    let replayed =
-        tilo_test_env::within("a message on second_reconnect", second_reconnect.receive())
-            .await
-            .unwrap();
+    requester_again.attach(88).await.unwrap();
+    let replayed = tilo_test_env::within("the replayed result", requester_again.receive())
+        .await
+        .unwrap();
     assert_eq!(replayed.sequence, Some(durable_sequence));
     assert!(matches!(
         &replayed.envelope,
-        ComputeEnvelope::Cancel { binding: delivered } if delivered == &binding
+        ComputeEnvelope::Result { result } if result.binding == binding && result.phase == lost
     ));
-    second_reconnect.acknowledge(&replayed).await.unwrap();
+    requester_again.acknowledge(&replayed).await.unwrap();
     assert!(matches!(
-        second_reconnect.receive().await.unwrap().envelope,
+        requester_again.receive().await.unwrap().envelope,
         ComputeEnvelope::Ready {
             workspace_id: 88,
             pending: 1
         }
     ));
-    second_reconnect.send(&ComputeEnvelope::Ping).await.unwrap();
+    requester_again.send(&ComputeEnvelope::Ping).await.unwrap();
     assert!(matches!(
-        tilo_test_env::within("a message on second_reconnect", second_reconnect.receive())
+        tilo_test_env::within("a message on requester_again", requester_again.receive())
             .await
             .unwrap()
             .envelope,
         ComputeEnvelope::Pong
     ));
-    drop(second_reconnect);
+    drop(requester_again);
 
     let mut after_ack = ComputeClient::connect(
+        client_endpoint().await,
+        relay_address.clone(),
+        user.user_pk,
+        Some(relay_key),
+        requester.cert,
+        requester.sk,
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    after_ack.attach(88).await.unwrap();
+    assert!(matches!(
+        tilo_test_env::within("a message on after_ack", after_ack.receive())
+            .await
+            .unwrap()
+            .envelope,
+        ComputeEnvelope::Ready {
+            workspace_id: 88,
+            pending: 0
+        }
+    ));
+
+    // The returning worker is handed neither the ended job nor its cancel.
+    let mut returning = ComputeClient::connect(
         client_endpoint().await,
         relay_address,
         user.user_pk,
@@ -394,9 +435,9 @@ async fn compute_session_replays_offline_exact_cancel_until_ack() {
     )
     .await
     .unwrap();
-    after_ack.attach(88).await.unwrap();
+    returning.attach(88).await.unwrap();
     assert!(matches!(
-        tilo_test_env::within("a message on after_ack", after_ack.receive())
+        tilo_test_env::within("a message on returning", returning.receive())
             .await
             .unwrap()
             .envelope,

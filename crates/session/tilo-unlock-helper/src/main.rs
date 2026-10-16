@@ -21,19 +21,6 @@
 //! * `TILO_UNLOCK_PAM_SERVICE` — PAM service name (default `login`).
 //! * `TILO_PAM_LIB` — libpam soname to dlopen (default `libpam.so.0`).
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 mod pam;
 
 use std::io::{self, BufRead};

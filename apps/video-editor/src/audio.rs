@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
 use crate::model::{ClipId, MediaId, Project, TrackId, TrackKind};
+use ui::lock::MutexRecover as _;
 
 /// Everything mixes at one rate, so summing never has to resample.
 pub const SAMPLE_RATE: u32 = 48_000;
@@ -516,11 +517,6 @@ impl DecodedPcm {
         }
     }
 
-    /// How many media this source could read audio from.
-    pub fn readable(&self) -> usize {
-        self.paths.len()
-    }
-
     fn pcm_for(&mut self, media: MediaId) -> Option<std::sync::Arc<Vec<f32>>> {
         if let Some(hit) = self.loaded.get(&media) {
             return hit.clone();
@@ -551,7 +547,8 @@ impl PcmSource for DecodedPcm {
 /// [`decode_pcm`] for tests that need to read audio back out of a file the
 /// export wrote. Same decode the mixer uses, so a stream it cannot read is a
 /// stream the editor cannot read either.
-#[cfg(all(test, any(feature = "gst", feature = "decode")))]
+#[cfg(test)]
+#[cfg(any(feature = "gst", feature = "decode"))]
 pub fn decode_pcm_for_test(uri: &str) -> Option<Vec<f32>> {
     decode_pcm(uri)
 }
@@ -1020,8 +1017,7 @@ impl MonitorSink for NullSink {
 /// [`NullSink`] where none does.
 ///
 /// A box with no audio device is a normal state, not a failure — a headless
-/// CI runner is one — so it plays silently rather than refusing to play. The
-/// caller can tell which it got from [`output_is_audible`].
+/// CI runner is one — so it plays silently rather than refusing to play.
 #[cfg(any(feature = "gst", feature = "decode"))]
 pub fn open_output() -> Box<dyn MonitorSink> {
     if let Some(s) = SystemSink::open() {
@@ -1030,14 +1026,6 @@ pub fn open_output() -> Box<dyn MonitorSink> {
         tracing::info!("no audio output available; monitoring silently");
         Box::new(NullSink)
     }
-}
-
-/// Whether this machine has an audio output at all, for an honest UI: the
-/// transport can then say it is playing *silently* rather than implying
-/// sound the user is not getting.
-#[cfg(any(feature = "gst", feature = "decode"))]
-pub fn output_is_audible() -> bool {
-    SystemSink::open().is_some()
 }
 
 /// What the monitor thread reads and the UI writes.
@@ -1095,15 +1083,9 @@ impl AudioMonitor {
                     let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(10));
                     continue;
                 }
-                let at = *state
-                    .position
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let at = *state.position.lock_recover();
                 let (block, report) = {
-                    let project = state
-                        .project
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let project = state.project.lock_recover();
                     mix_block_metered(&project, at, MONITOR_BLOCK, source.as_mut())
                 };
                 // Recorded before the push, so a device that goes away
@@ -1116,10 +1098,7 @@ impl AudioMonitor {
                 // Advance by exactly what was mixed, so the audio clock
                 // is the sample count rather than wall time and cannot
                 // drift away from the picture.
-                *state
-                    .position
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = at + block_secs;
+                *state.position.lock_recover() = at + block_secs;
             }
         })
         .ok();
@@ -1267,11 +1246,10 @@ impl Drop for SystemSink {
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "decode")]
-    #[allow(dead_code, reason = "only the media-stack check is used here")]
-    mod generated_clip {
+    mod media_stack {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/support/generated_clip.rs"
+            "/tests/support/media_stack.rs"
         ));
     }
 
@@ -1353,8 +1331,8 @@ mod tests {
     /// nothing.
     #[cfg(feature = "decode")]
     fn sample(name: &str) -> std::path::PathBuf {
-        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("sample-media/media")
+        let p = crate::media::bundled_sample_media()
+            .join("media")
             .join(name);
         assert!(p.exists(), "the bundled fixture {name} is missing");
         p
@@ -1369,7 +1347,7 @@ mod tests {
         // has to come back with it. A decoder that returned `None` here would
         // make every "the export is silent" assertion in this crate vacuous.
         'case: {
-            if !generated_clip::media_stack() {
+            if !media_stack::media_stack() {
                 break 'case;
             }
             let uri = crate::media::engine_source(&sample("Ambient_Pad.wav"))
@@ -1762,7 +1740,6 @@ mod tests {
                 fps: 0.0,
                 palette: 0,
                 path: crate::media::workspace_path("a.wav"),
-                hydration: crate::media::Hydration::Projected,
                 ..Default::default()
             });
             id

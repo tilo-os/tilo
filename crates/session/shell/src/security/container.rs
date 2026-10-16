@@ -55,10 +55,10 @@ pub fn app_log_dir() -> io::Result<PathBuf> {
 /// Returns the filesystem error, `PermissionDenied` for a foreign or linked
 /// directory, and `AlreadyExists` when anything already occupies the path.
 pub fn create_app_log(dir: &Path, tab_id: Uuid) -> io::Result<(PathBuf, File)> {
-    private_fs::directory(dir)?;
+    tilo_files::native::private::directory(dir)?;
     prune_app_logs(dir, MAX_APP_LOGS.saturating_sub(1));
     let path = dir.join(format!("{tab_id}{LOG_SUFFIX}"));
-    let file = private_fs::create_new(&path)?;
+    let file = tilo_files::native::private::create_new(&path)?;
     Ok((path, file))
 }
 
@@ -179,7 +179,7 @@ impl Container {
 
         // 5. Wayland Socket
         let host_runtime_dir =
-            xdg_paths::xdg::runtime_dir().unwrap_or_else(|| "/run/user/1000".into());
+            tilo_paths::xdg::runtime_dir().unwrap_or_else(|| "/run/user/1000".into());
         let host_socket_path = format!("{}/{wayland_socket}", host_runtime_dir.display());
 
         let sandbox_runtime_dir = "/tmp/runtime";
@@ -313,7 +313,7 @@ mod tests {
             assert_eq!(mode(&path), 0o600);
             let metadata = std::fs::symlink_metadata(&path).unwrap();
             assert!(metadata.is_file());
-            assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
+            assert_eq!(metadata.uid(), rustix::process::geteuid().as_raw());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello");
         }
         // Phase `a_symlink_planted_at_the_log_path_is_not_followed`.

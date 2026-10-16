@@ -16,29 +16,30 @@ name = "app"
 path = "src/main.rs"
 
 [features]
-# Honour the developer-only environment overrides (`src/dev_env.rs`) in a
-# release build. Debug builds always honour them; shipped images never enable
-# this.
-dev-overrides = []
+# Honour the developer-only environment overrides (`package_store::dev_env`)
+# in a release build. Debug builds always honour them; shipped images never
+# enable this.
+dev-overrides = ["package-store/dev-overrides"]
 
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 bounded-command = { path = "../../system/bounded-command" }
 # The registry wire format + the per-entry publisher signature check.
 registry-types = { path = "../registry-types" }
 # Read side of the `tilo-install` registry — the same list the desktop
 # enumerates installed apps from, so "available" is exactly "not in
 # there".
-launcher = { path = "../launcher" }
 package-store = { path = "../package-store" }
 # Canonical application tapp wire-size ceiling; catalogue downloads enforce
 # the same boundary as the installer rather than duplicating a number.
 tilo-app-package = { path = "../tilo-app-package" }
+# Where an installed runtime build lives, the lookup the launcher makes.
+runtime-bundle = { path = "../runtime-bundle" }
 clap.workspace = true
 clap_complete.workspace = true
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 hex.workspace = true
 blake3.workspace = true
 serde.workspace = true
@@ -49,12 +50,19 @@ reqwest = { workspace = true, features = ["blocking", "json"] }
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 workspace-hack = { version = "0.1" }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["fs"] }
+
 [dev-dependencies]
 # The end-to-end test packs, publishes, and installs a .tapp.
 app-registry = { path = "../app-registry" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+# The tests confine a checkpoint write with the launcher's Landlock plan and
+# resolve an installed app's service binds the way a launch does. The library
+# reads manifests through tilo-app-package and never links the launcher.
+launcher = { path = "../launcher" }
 
 [[test]]
 name = "it"

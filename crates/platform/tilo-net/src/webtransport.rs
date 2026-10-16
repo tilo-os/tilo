@@ -73,10 +73,6 @@ impl std::fmt::Debug for Session {
     }
 }
 
-#[allow(
-    clippy::manual_async_fn,
-    reason = "the written-out bound keeps these futures `Send` on every target"
-)]
 impl Session {
     /// Open a bidirectional stream.
     ///

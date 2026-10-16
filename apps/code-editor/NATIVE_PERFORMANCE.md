@@ -3,9 +3,9 @@
 Build the app and its fixture helper, then seed a **new** source path:
 
 ```sh
-cargo build -p code_editor --bin code_editor --example seed-code-editor-fixture
+cargo build -p code-editor --bin code-editor --example seed-code-editor-fixture
 ./target/debug/examples/seed-code-editor-fixture /tmp/new-editor-fixture.rs
-./target/debug/code_editor --path /tmp/new-editor-fixture.rs
+./target/debug/code-editor /tmp/new-editor-fixture.rs
 ```
 
 The helper creates exactly 2,000 deterministic ASCII Rust source lines using

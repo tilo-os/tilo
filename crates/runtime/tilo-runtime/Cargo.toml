@@ -20,10 +20,12 @@ name = "tilo-runtime"
 path = "src/bin/tilo-runtime.rs"
 
 [dependencies]
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+tilo-action-policy = { path = "../../collab/action-policy" }
+tilo-paths.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 automerge.workspace = true
 base64.workspace = true
 # Seals and opens the channel state this device keeps for its encrypted routes.
@@ -31,6 +33,7 @@ channel-crypto = { path = "../../collab/channel-crypto" }
 blake3.workspace = true
 chrono = { workspace = true, features = ["std"] }
 collab-types = { path = "../../collab/collab-types" }
+fs-protocol = { path = "../../system/fs-protocol" }
 ed25519-dalek.workspace = true
 # The random key sealing the channel state.
 getrandom.workspace = true
@@ -48,6 +51,8 @@ libc.workspace = true
 package-store = { path = "../../packaging/package-store" }
 postcard = { workspace = true, features = ["alloc"] }
 rand_core.workspace = true
+# Existing certified Join encoder; no new wire schema or credential.
+runtime-collab = { path = "../runtime-collab", default-features = false }
 runtime-fs = { path = "../runtime-fs" }
 runtime-identity = { path = "../runtime-identity" }
 serde.workspace = true
@@ -69,11 +74,22 @@ tilo-installed-apps = { path = "../../packaging/installed-apps" }
 # Joined rooms: their enrolled replicas, invitation redemption and relay sessions.
 tilo-joined-room = { path = "../../collab/tilo-joined-room" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
-tilo-relay = { path = "../../hosting/tilo-relay" }
+# The neighbour wire messages joined rooms exchange.
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+# The owner commit service a standalone room owner implements.
+tilo-owner-commit = { path = "../../collab/owner-commit" }
+# The content store app surfaces are read from.
+tilo-content = { path = "../../system/content" }
+# The relay session a joined room syncs through.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# The offload route a session's action door places offloadable actions
+# through: the compute session with the home relay, placement and the
+# room-scoped route (`tilo_relay::offload`). Its tests also start real relays.
+tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-rt.workspace = true
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-tokio = { workspace = true, features = ["net", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid.workspace = true
@@ -116,3 +132,6 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

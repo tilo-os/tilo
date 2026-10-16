@@ -19,7 +19,7 @@ path = "src/lib.rs"
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
 fnv.workspace = true
-tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-paths.workspace = true
 tilo-app-package = { path = "../tilo-app-package" }
 # The one installed-package registry and content store, shared with the
 # launcher, the shell and the app host.
@@ -27,7 +27,7 @@ package-store = { path = "../package-store", features = ["store"] }
 runtime-bundle = { path = "../runtime-bundle" }
 clap.workspace = true
 hex.workspace = true
-serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 semver.workspace = true
@@ -35,6 +35,9 @@ semver.workspace = true
 # and downloads it over iroh-blobs. Same crate the app-host daemon
 # uses, so there is one implementation of "fetch and verify a tapp".
 app-registry = { path = "../app-registry" }
+# The sidecar contract the PATH shim reads; its library half has no
+# dependencies beyond serde.
+cli-shim = { path = "../cli-shim" }
 tilo-rt.workspace = true
 workspace-hack = { version = "0.1" }
 
@@ -46,6 +49,9 @@ tilo-os-search = { path = "../../runtime/os-search" }
 getrandom.workspace = true
 ed25519-dalek.workspace = true
 tempfile.workspace = true
+# A sealed runtime needs a filesystem with fs-verity; the test says so where
+# there is none.
+tilo-test-env = { path = "../../dev/test-env" }
 
 [[test]]
 name = "it"

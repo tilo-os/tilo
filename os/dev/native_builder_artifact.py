@@ -15,18 +15,19 @@ import stat
 import struct
 import tempfile
 
-spec = importlib.util.spec_from_file_location('native_wpe_tools', Path(__file__).with_name('wpe-stage-artifact.py'))
+spec = importlib.util.spec_from_file_location('registry_artifact', Path(__file__).with_name('registry_artifact.py'))
 tools = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tools)
 require = tools.require
 METADATA = 'out/tilo-native-builder-artifact.json'
 ROOTS = ('out', 'usr/lib/tilo-runtime', 'usr/share/tilo-apps')
 ANCESTORS = {'usr', 'usr/lib', 'usr/share'}
+IMAGE_TREE = re.compile(r'usr/share/tilo-apps/pkgs/[0-9a-f]{64}/.+')
 PURPOSE = 'tilo-development-native-builder'
-REQUIRED = ('shell fs terminal file-explorer settings tilo-model-manager tilo-model-gateway '
+REQUIRED = ('shell fs tilo-model-manager tilo-speech-worker tilo-model-gateway tilo-secret-service '
             'tilo-relay tilo-relay-admin tilo-enroll tilo-home-peer-control tilo-greeter tilo-installer '
-            'tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init '
-            'tilo tilo-app-package tilo-install tilo-cli-shim tilo-ush tilo-system-extension-manager '
+            'tilo-runtime-mcp tilo-runtime-bundle tilo-launcher tilo-app-host tilo-unlock-helper tilo-rollback tilo-crypto tilo-image-trust tilo-device-key-init '
+            'tilo tilo-app-package tilo-install tilo-cli-shim tilo-ush ush-editor/bash-editor.so tilo-system-extension-manager '
             'tilo-projector tilo-windows-vm-control tilo-windows-rail tilo-windows-runtime').split()
 
 
@@ -36,8 +37,8 @@ def immutable(value):
     return value
 
 
-def expected_inputs(repo, revision, architecture, base, rpms, wpe_reference,
-                    wpe_receipt_sha256, epoch, jobs=2, runtime_version='2026.07'):
+def expected_inputs(repo, revision, architecture, base, rpms, epoch, jobs=2,
+                    runtime_version='2026.07', engine_runtime_version='2026.10.1-chromium'):
     repo = Path(repo)
     require(re.fullmatch('[0-9a-f]{40}', revision) and architecture in tools.ARCHES, 'source/native architecture required')
     require(tools.command('git', '-C', str(repo), 'rev-parse', 'HEAD').decode().strip() == revision,
@@ -46,12 +47,12 @@ def expected_inputs(repo, revision, architecture, base, rpms, wpe_reference,
             'builder source checkout must be clean')
     require(type(epoch) is int and 0 <= epoch <= 253402300799 and type(jobs) is int and 1 <= jobs <= 128,
             'bounded epoch/jobs required')
-    require(re.fullmatch('[0-9a-f]{64}', wpe_receipt_sha256), 'independent WPE receipt hash required')
-    require(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', runtime_version), 'invalid runtime version')
+    for version in (runtime_version, engine_runtime_version):
+        require(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', version), 'invalid runtime version')
     return {'schema': 1, 'revision': revision, 'architecture': architecture,
-            'base': immutable(base), 'rpms': immutable(rpms), 'wpe_reference': immutable(wpe_reference),
-            'wpe_receipt_sha256': wpe_receipt_sha256, 'epoch': epoch, 'jobs': jobs,
-            'runtime_version': runtime_version, 'browser': True, 'prebuilt_apps': False,
+            'base': immutable(base), 'rpms': immutable(rpms), 'epoch': epoch, 'jobs': jobs,
+            'runtime_version': runtime_version, 'engine_runtime_version': engine_runtime_version,
+            'browser': True, 'prebuilt_apps': False,
             'prebuilt_desktop': False, 'app_collection_publisher': '',
             'containerfile_sha256': tools.file_hash(repo / 'os/Containerfile', 2 * 1024 * 1024)}
 
@@ -95,8 +96,12 @@ def inventory(root, inputs):
             continue
         row = {'mode': stat.S_IMODE(info.st_mode)}
         if stat.S_ISLNK(info.st_mode):
-            require(not path.readlink().is_absolute(), 'absolute artifact symlink forbidden')
-            path.resolve(strict=True).relative_to(root)
+            # Application trees never hold links; an environment image's tree
+            # (the env-runtime) does, signed with it, and its targets are read
+            # inside an environment, never on this host. Record them verbatim.
+            if not IMAGE_TREE.match(name):
+                require(not path.readlink().is_absolute(), 'absolute artifact symlink forbidden')
+                path.resolve(strict=True).relative_to(root)
             row.update(type='symlink', target=str(path.readlink()))
         elif stat.S_ISDIR(info.st_mode):
             row['type'] = 'directory'
@@ -111,16 +116,18 @@ def inventory(root, inputs):
             row.update(type='file', **data)
         result[name] = row
         require(len(result) <= 100000, 'builder payload file count exceeds bound')
-    for name in (*REQUIRED, 'optional/browser'):
-        row = result.get('out/' + name, {})
+    engine = f"usr/lib/tilo-runtime/{inputs['engine_runtime_version']}/lib/chromium/tilo-chromium-host"
+    for name in (*('out/' + name for name in REQUIRED), engine):
+        row = result.get(name, {})
         require(row.get('type') == 'file' and row.get('mode', 0) & 0o111 and row.get('size', 0),
                 'required native builder output missing: ' + name)
-        with (root / 'out' / name).open('rb') as stream:
+        with (root / name).open('rb') as stream:
             require(stream.read(4) == b'\x7fELF', 'required builder executable is not ELF')
     for name in ('runtime-bundle-publisher.hex', 'app-publisher.hex'):
         require(re.fullmatch(rb'[0-9a-f]{64}\n?', tools.read_bounded(root / 'out' / name, 128)),
                 'builder publisher identity missing')
-    require((root / 'usr/lib/tilo-runtime' / inputs['runtime_version']).is_dir()
+    # The runtime is baked under its release and ABI digest.
+    require(len(list((root / 'usr/lib/tilo-runtime').glob(inputs['runtime_version'] + '+native.*'))) == 1
             and (root / 'usr/share/tilo-apps/registry.toml').is_file(), 'runtime or app store missing')
     return result
 

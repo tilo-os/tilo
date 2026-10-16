@@ -1,48 +1,63 @@
 //! Compositor entry point.
 //!
-//! The shell binary supports two run modes: [`Mode::Native`] (default) spins up a real
-//! smithay-driven Wayland server (auto-binds `wayland-N`) and paints chrome through vello+wgpu;
-//! [`Mode::Hosted`] is the legacy `winit`-on-host iced loop, an explicit dev opt-in via `--mode hosted` for when no DRM/KMS or spare Wayland session is available.
+//! The shell binary has one session: a real smithay-driven Wayland server (auto-binds
+//! `wayland-N`) that paints chrome through vello+wgpu — see [`native::run`]. Where it draws is the
+//! backend's business (`--backend <winit|drm|headless>`): `winit` is a window inside an existing
+//! desktop for development, `drm` the shipped session, `headless` a display-free one for CI.
 //!
-//! Mode selection is a single `--mode <hosted|native>` (or `--mode=<...>`) flag; anything unrecognised, including the flag being absent, falls back to [`Mode::Native`].
+//! The legacy `--mode hosted` loop was removed; [`removed_run_mode_refusal`] refuses it rather than
+//! silently booting a different session. Its bootstrap now lives once, in [`session_bootstrap`].
 
 #[cfg(target_os = "linux")]
 pub mod accessibility;
 #[cfg(target_os = "linux")]
 pub mod activation;
+pub mod activity;
+#[cfg(target_os = "linux")]
+pub(crate) mod admin_control;
+#[cfg(target_os = "linux")]
+pub(crate) mod agent_door;
 #[cfg(target_os = "linux")]
 pub mod agent_seats;
 #[cfg(target_os = "linux")]
 mod audio_capture;
 pub mod backend;
 #[cfg(target_os = "linux")]
-pub mod bridge;
-#[cfg(target_os = "linux")]
 pub mod capture;
+#[cfg(target_os = "linux")]
+pub(crate) mod capture_io;
 #[cfg(target_os = "linux")]
 pub mod chooser_service;
 #[cfg(target_os = "linux")]
 pub mod client_cursor;
 #[cfg(target_os = "linux")]
 pub mod client_input;
+#[cfg(target_os = "linux")]
+pub mod client_settle;
+#[cfg(target_os = "linux")]
+pub(crate) mod control_invocation;
+#[cfg(target_os = "linux")]
+pub(crate) mod control_listing;
 pub mod controller_nav;
 pub mod cursor;
 pub mod dev_env;
 pub mod dev_test_identity;
 #[cfg(target_os = "linux")]
 pub mod device_rotation;
+pub(crate) mod diagnostic_actions;
+#[cfg(target_os = "linux")]
+pub mod dictation;
+pub mod dictation_status;
 pub mod drag_feedback;
 #[cfg(target_os = "linux")]
 pub mod floating_service;
 pub mod foreign;
 pub mod frame;
+pub mod frame_stall;
+#[cfg(target_os = "linux")]
+pub mod gpu_health;
 #[cfg(target_os = "linux")]
 pub mod gpu_import;
-#[cfg(target_os = "linux")]
-pub mod hosted;
-#[cfg(feature = "hosted-test-control")]
-#[cfg(target_os = "linux")]
-pub mod hosted_test_control;
 pub mod idle;
 #[cfg(target_os = "linux")]
 pub mod idle_inhibit;
@@ -50,15 +65,20 @@ pub mod input_environment;
 pub mod input_method;
 #[cfg(target_os = "linux")]
 pub mod input_method_service;
+pub mod key_latency;
+#[cfg(target_os = "linux")]
+pub mod liveness;
+pub(crate) mod lock_actions;
 pub mod lock_auth;
 pub mod lock_controller;
 pub mod lock_screen;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod metrics;
-pub mod mp4_recording;
 #[cfg(target_os = "linux")]
 pub mod native;
+#[cfg(target_os = "linux")]
+pub mod opaque_region;
 #[cfg(target_os = "linux")]
 pub mod output_globals;
 pub mod output_heads;
@@ -69,13 +89,30 @@ pub mod pad_layout;
 #[cfg(target_os = "linux")]
 pub mod pointer_lock;
 pub mod present;
+#[cfg(target_os = "linux")]
+pub mod presentation;
+#[cfg(target_os = "linux")]
+pub mod private_text_input;
 pub mod projection_capture;
+pub mod published_room;
 #[cfg(target_os = "linux")]
 pub mod remote_seat;
 pub mod render_node;
+#[cfg(target_os = "linux")]
+pub mod scanout_feedback;
 pub mod screen_dim;
+#[cfg(target_os = "linux")]
+pub mod seat_lock;
 pub mod selection;
+#[cfg(target_os = "linux")]
+pub(crate) mod session_bootstrap;
 pub mod session_env;
+#[cfg(target_os = "linux")]
+mod session_recovery;
+#[cfg(target_os = "linux")]
+mod session_termination;
+#[cfg(target_os = "linux")]
+pub mod shell_text_input;
 #[cfg(target_os = "linux")]
 pub mod shortcut_inhibit;
 #[cfg(target_os = "linux")]
@@ -84,6 +121,7 @@ pub mod surface_outputs;
 #[cfg(target_os = "linux")]
 pub mod surface_readback;
 pub mod switch_control;
+pub mod switch_latency;
 pub mod tab_binding;
 #[cfg(target_os = "linux")]
 pub mod tablet;
@@ -95,21 +133,15 @@ pub mod test_control;
 pub mod text_commit;
 #[cfg(target_os = "linux")]
 pub mod toplevel_icon;
+pub mod touch_pointer;
 #[cfg(target_os = "linux")]
 pub mod window_previews;
+#[cfg(target_os = "linux")]
+mod window_provenance;
 #[cfg(target_os = "linux")]
 pub(crate) mod xwayland;
 #[cfg(target_os = "linux")]
 pub(crate) mod xwayland_composer;
-
-/// Which run mode the compositor should boot into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    /// The legacy `winit`-on-host iced loop, kept as an explicit dev opt-in via `--mode hosted`.
-    Hosted,
-    /// Default. Real smithay-driven Wayland server — see [`native::run`].
-    Native,
-}
 
 /// Whether this session is part of a complete Tilo installation or was added
 /// to an existing Linux host.
@@ -146,7 +178,7 @@ pub fn parse_install_mode(args: &[&str]) -> InstallMode {
     }
 }
 
-/// Which backend `Mode::Native` should drive: `--backend <winit|drm>` (or `--backend=<...>`), unknown/absent falling back to [`BackendKind::Winit`].
+/// Which backend the compositor should drive: `--backend <winit|drm>` (or `--backend=<...>`), unknown/absent falling back to [`BackendKind::Winit`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
     /// Default. Host on an existing Wayland/X11 session via `winit`.
@@ -156,14 +188,6 @@ pub enum BackendKind {
     /// Display-free wgpu-offscreen backend: no window, no event loop, no GPU surface — paints
     /// into an offscreen texture via [`backend::HeadlessBackend`]. Lets the live binary boot in CI, distrobox without a display, or SSH without X-forwarding; drivable via `TILO_TEST_CONTROL`.
     Headless,
-}
-
-/// Parse the run mode from the process's command-line arguments. Thin wrapper around
-/// [`parse_mode`] so callers don't materialise a `Vec<String>`; tests should drive [`parse_mode`] directly since `std::env::args` can't be monkey-patched.
-pub fn parse_mode_from_args() -> Mode {
-    let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
-    parse_mode(&borrowed)
 }
 
 /// Process-global wrapper around [`parse_peer_sync`]. Peer sync is part of a
@@ -185,79 +209,30 @@ pub fn parse_peer_sync_disabled(args: &[&str]) -> bool {
     args.contains(&"--disable-peer-sync")
 }
 
-/// Source of truth for the peer-sync marker file. Mockable so tests don't touch the
-/// filesystem; production wires up [`XdgConfigMarkerSource`], checking
-/// `$XDG_CONFIG_HOME/tilo-desktop/peer-sync.enabled` (falling back to `~/.config/...`). See
-/// `os/docs/peer-sync.md`: the `shell-peer-sync.service` user unit drops this marker so the next launch picks up peer-sync without the CLI flag.
-pub trait MarkerSource {
-    /// Returns true if the peer-sync marker exists.
-    fn peer_sync_marker_exists(&self) -> bool;
-}
+/// Run-mode flags that were removed, each with the reason `main` gives when
+/// refusing it. The argument parser is otherwise permissive, so without this a
+/// stale unit passing one would silently start a full compositor instead.
+const REMOVED_RUN_MODES: &[(&str, &str)] = &[(
+    "--portal-server-only",
+    "--portal-server-only was removed; the compositor serves the xdg-desktop-portal \
+     backend in-process (docs/architecture/security.md). Disable any unit that still passes it.",
+)];
 
-/// Production marker source — checks `$XDG_CONFIG_HOME/tilo-desktop/peer-sync.enabled`, falling back to `$HOME/.config/...` when `XDG_CONFIG_HOME` is unset.
-pub struct XdgConfigMarkerSource;
+/// Why `--mode hosted` is refused. The hosted loop kept its own copy of the
+/// session bootstrap — salt, tree load, ownership adoption, collaboration
+/// broker, portal — and the copies had drifted apart; the compositor's winit
+/// backend is the development session inside an existing desktop.
+const REMOVED_HOSTED_MODE: &str = "--mode hosted was removed; run the compositor in a window \
+     inside your desktop with `--backend winit` (the default) instead.";
 
-impl XdgConfigMarkerSource {
-    /// Resolve the marker file path using the same rules `peer_sync_marker_exists` uses; exposed for diagnostics and for tests asserting resolution without touching the filesystem.
-    pub fn marker_path() -> Option<std::path::PathBuf> {
-        peer_sync_marker_path_from_env(
-            std::env::var_os("XDG_CONFIG_HOME").as_deref(),
-            std::env::var_os("HOME").as_deref(),
-        )
-    }
-}
-
-impl MarkerSource for XdgConfigMarkerSource {
-    fn peer_sync_marker_exists(&self) -> bool {
-        Self::marker_path().is_some_and(|p| p.exists())
-    }
-}
-
-/// Pure helper for [`XdgConfigMarkerSource::marker_path`], so tests can drive the path-resolution rules with fixture env-var values.
-pub fn peer_sync_marker_path_from_env(
-    xdg_config_home: Option<&std::ffi::OsStr>,
-    home: Option<&std::ffi::OsStr>,
-) -> Option<std::path::PathBuf> {
-    Some(
-        xdg_paths::xdg::Base::Config
-            .resolve_from(xdg_config_home, home)?
-            .join("tilo-desktop")
-            .join("peer-sync.enabled"),
-    )
-}
-
-/// Combined peer-sync resolution. Sync is on by default; an explicit
-/// `--disable-peer-sync` always wins so a broken network stack can never keep
-/// a recovery or test session from starting. The old enable flag and marker
-/// remain accepted for compatibility with existing launchers.
-pub fn peer_sync_enabled_with(args: &[&str], markers: &dyn MarkerSource) -> bool {
-    if parse_peer_sync_disabled(args) {
-        return false;
-    }
-    if parse_peer_sync(args) {
-        return true;
-    }
-    let _legacy_marker = markers.peer_sync_marker_exists();
-    true
-}
-
-/// Process-global wrapper around [`peer_sync_enabled_with`], reading CLI args from
-/// `std::env::args` and the marker via [`XdgConfigMarkerSource`].
-pub fn peer_sync_enabled_from_env_or_marker() -> bool {
-    let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
-    peer_sync_enabled_with(&borrowed, &XdgConfigMarkerSource)
-}
-
-/// Pure, testable `--portal-server-only` flag parser (mirrors [`parse_peer_sync`]). When set,
-/// `main` runs only `portal::serve` and skips the compositor, so the portal unit doesn't race for `wayland-N`.
-pub fn parse_portal_server_only(args: &[&str]) -> bool {
-    args.contains(&"--portal-server-only")
-}
-
-/// Process-global wrapper around [`parse_portal_server_only`].
-pub fn parse_portal_server_only_from_args() -> bool {
-    process_args_match(parse_portal_server_only)
+/// Pure, testable check for a removed run-mode flag: the refusal `main` prints
+/// before exiting with status 2, or `None` when no removed flag is present.
+pub fn removed_run_mode_refusal(args: &[&str]) -> Option<&'static str> {
+    REMOVED_RUN_MODES
+        .iter()
+        .find(|(flag, _)| args.contains(flag))
+        .map(|(_, refusal)| *refusal)
+        .or_else(|| (flag_value(args, "--mode") == Some("hosted")).then_some(REMOVED_HOSTED_MODE))
 }
 
 /// Pure, testable `--firstboot` flag parser (mirrors [`parse_peer_sync`]) — a "make sure dirs exist before we proceed" hook, not a separate entry point.
@@ -316,64 +291,34 @@ fn process_args_match(parser: fn(&[&str]) -> bool) -> bool {
     parser(&borrowed)
 }
 
-/// Process-global wrapper around [`parse_portals`]: opt in via `--enable-portals` for the `xdg-desktop-portal` D-Bus backend. v1 default OFF, same shape as `parse_peer_sync`.
-pub fn parse_portals_from_args() -> bool {
-    let owned: Vec<String> = std::env::args().skip(1).collect();
-    let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
-    parse_portals(&borrowed)
-}
-
-/// Pure, testable `--enable-portals` flag parser, mirroring [`parse_peer_sync`] so the hosted boot path treats both flags identically.
-pub fn parse_portals(args: &[&str]) -> bool {
-    args.contains(&"--enable-portals")
-}
-
-/// Pure, testable mode parser. Accepts `--mode <value>` and `--mode=<value>`; unknown/missing values default to [`Mode::Native`] so a typo never refuses to start the compositor.
-pub fn parse_mode(args: &[&str]) -> Mode {
+/// The value of the first `<flag> <value>` or `<flag>=<value>`, if any. A
+/// trailing `<flag>` with no value has none.
+fn flag_value<'a>(args: &[&'a str], flag: &str) -> Option<&'a str> {
     let mut iter = args.iter().copied();
     while let Some(arg) = iter.next() {
-        if let Some(value) = arg.strip_prefix("--mode=") {
-            return value_to_mode(value);
-        }
-        if arg == "--mode"
-            && let Some(value) = iter.next()
+        if let Some(value) = arg
+            .strip_prefix(flag)
+            .and_then(|rest| rest.strip_prefix('='))
         {
-            return value_to_mode(value);
+            return Some(value);
         }
-        // Trailing `--mode` with no value: fall through to default.
+        if arg == flag {
+            return iter.next();
+        }
     }
-    Mode::Native
+    None
 }
 
-fn value_to_mode(value: &str) -> Mode {
-    match value {
-        "hosted" => Mode::Hosted,
-        _ => Mode::Native,
-    }
-}
-
-/// Process-global wrapper around [`parse_backend`], used by [`native::run`] to decide which [`backend::Backend`] impl `--mode native` instantiates.
+/// Process-global wrapper around [`parse_backend`], used by [`native::run`] to decide which [`backend::Backend`] impl the compositor instantiates.
 pub fn parse_backend_from_args() -> BackendKind {
     let owned: Vec<String> = std::env::args().skip(1).collect();
     let borrowed: Vec<&str> = owned.iter().map(std::string::String::as_str).collect();
     parse_backend(&borrowed)
 }
 
-/// Pure, testable backend parser, mirroring [`parse_mode`]: `--backend <value>`/`--backend=<value>`, defaulting to [`BackendKind::Winit`] for unknown/missing values.
+/// Pure, testable backend parser: `--backend <value>`/`--backend=<value>`, defaulting to [`BackendKind::Winit`] for unknown/missing values.
 pub fn parse_backend(args: &[&str]) -> BackendKind {
-    let mut iter = args.iter().copied();
-    while let Some(arg) = iter.next() {
-        if let Some(value) = arg.strip_prefix("--backend=") {
-            return value_to_backend(value);
-        }
-        if arg == "--backend"
-            && let Some(value) = iter.next()
-        {
-            return value_to_backend(value);
-        }
-        // Trailing `--backend` with no value: fall through to default.
-    }
-    BackendKind::Winit
+    flag_value(args, "--backend").map_or(BackendKind::Winit, value_to_backend)
 }
 
 fn value_to_backend(value: &str) -> BackendKind {
@@ -395,22 +340,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mode_and_install_mode_resolve_every_flag_form() {
-        let modes: &[(&str, &[&str], Mode)] = &[
-            // `cargo run -p tilo-desktop` (no flags) boots the real smithay server.
-            ("no flag", &[], Mode::Native),
-            ("--mode native", &["--mode", "native"], Mode::Native),
-            ("--mode=native", &["--mode=native"], Mode::Native),
-            // `--mode hosted` is the explicit dev opt-in for the legacy iced-on-winit path; guards that fallback stays reachable from the CLI.
-            ("--mode hosted", &["--mode", "hosted"], Mode::Hosted),
-            ("--mode=hosted", &["--mode=hosted"], Mode::Hosted),
-            // A typo doesn't demote to the hosted iced path — it falls through to the real Wayland server (hosted is opt-in only).
-            ("--mode junk", &["--mode", "junk"], Mode::Native),
-        ];
-        for (case, args, want) in modes {
-            assert_eq!(parse_mode(args), *want, "case {case}");
-        }
-
+    fn install_mode_resolves_every_flag_form() {
         let installs: &[(&str, &[&str], InstallMode)] = &[
             ("no flag", &[], InstallMode::FullSystem),
             (
@@ -478,35 +408,11 @@ mod tests {
             (
                 "peer_sync",
                 parse_peer_sync,
-                &[&[], &["--mode", "hosted"]],
+                &[&[], &["--mode", "native"]],
                 &[
                     &["--enable-peer-sync"],
-                    &["--mode", "hosted", "--enable-peer-sync"],
+                    &["--backend", "winit", "--enable-peer-sync"],
                     &["--enable-peer-sync", "--mode=native"],
-                ],
-            ),
-            (
-                "portals",
-                parse_portals,
-                &[&[], &["--mode", "hosted"], &["--enable-peer-sync"]],
-                &[
-                    &["--enable-portals"],
-                    &["--mode", "native", "--enable-portals"],
-                    &["--enable-portals", "--enable-peer-sync", "--mode=native"],
-                ],
-            ),
-            // --portal-server-only: bare cargo run -p tilo-desktop must still boot the compositor —
-            // no flag means no portal-only short-circuit. The systemd unit invokes
-            // `--portal-server-only` alone, but combining with other flags (e.g. tracing knobs)
-            // must still work.
-            (
-                "portal_server_only",
-                parse_portal_server_only,
-                &[&[], &["--mode", "native"], &["--enable-peer-sync"]],
-                &[
-                    &["--portal-server-only"],
-                    &["--mode", "native", "--portal-server-only"],
-                    &["--portal-server-only", "--enable-portals"],
                 ],
             ),
             (
@@ -552,84 +458,71 @@ mod tests {
         }
     }
 
-    // peer-sync marker file
-
-    struct FakeMarker {
-        present: bool,
-    }
-    impl MarkerSource for FakeMarker {
-        fn peer_sync_marker_exists(&self) -> bool {
-            self.present
-        }
-    }
-
     #[test]
-    fn peer_sync_resolution_combines_flag_marker_and_disable_override() {
-        let cases: &[(&str, &[&str], bool, bool)] = &[
-            // Default on without a marker.
-            ("default, no marker", &[], false, true),
-            ("mode, no marker", &["--mode", "native"], false, true),
-            // CLI flag enables peer-sync regardless of marker absence.
-            ("flag, no marker", &["--enable-peer-sync"], false, true),
-            // And marker presence + flag is still on (no double-disable).
-            ("flag and marker", &["--enable-peer-sync"], true, true),
-            // Existing marker-managed installations remain enabled without a CLI flag.
-            ("legacy marker", &[], true, true),
-            ("legacy marker with mode", &["--mode", "native"], true, true),
-            // The disable override wins over default enable and marker.
-            ("disable over marker", &["--disable-peer-sync"], true, false),
-            (
-                "disable over flag and marker",
-                &["--enable-peer-sync", "--disable-peer-sync"],
-                true,
-                false,
-            ),
+    fn a_removed_run_mode_is_refused_wherever_it_appears() {
+        // The retired portal unit passed `--portal-server-only` alone; a script
+        // may combine it with other flags. Either way it must be refused, not
+        // ignored into a compositor boot.
+        let refused: [&[&str]; 3] = [
+            &["--portal-server-only"],
+            &["--mode", "native", "--portal-server-only"],
+            &["--portal-server-only", "--enable-portals"],
         ];
-        for (case, args, marker, want) in cases {
-            let m = FakeMarker { present: *marker };
-            assert_eq!(peer_sync_enabled_with(args, &m), *want, "case {case}");
-        }
-        assert!(parse_peer_sync_disabled(&["--disable-peer-sync"]));
-    }
-
-    #[test]
-    fn marker_path_prefers_xdg_then_home_and_treats_empty_as_unset() {
-        use std::ffi::OsStr;
-        use std::path::PathBuf;
-        #[allow(
-            clippy::type_complexity,
-            reason = "one row per case: name and the three optional inputs"
-        )]
-        let cases: &[(&str, Option<&str>, Option<&str>, Option<&str>)] = &[
-            (
-                "prefers XDG_CONFIG_HOME",
-                Some("/custom/xdg"),
-                Some("/home/ignored"),
-                Some("/custom/xdg/tilo-desktop/peer-sync.enabled"),
-            ),
-            (
-                "falls back to HOME/.config",
-                None,
-                Some("/home/alice"),
-                Some("/home/alice/.config/tilo-desktop/peer-sync.enabled"),
-            ),
-            // POSIX convention: an empty env-var means "use the default".
-            (
-                "empty XDG treated as unset",
-                Some(""),
-                Some("/home/bob"),
-                Some("/home/bob/.config/tilo-desktop/peer-sync.enabled"),
-            ),
-            // No way to resolve a path → caller defaults to "marker absent".
-            ("no XDG, no HOME", None, None, None),
-            ("empty XDG and HOME", Some(""), Some(""), None),
-        ];
-        for (case, xdg, home, want) in cases {
-            assert_eq!(
-                peer_sync_marker_path_from_env(xdg.map(OsStr::new), home.map(OsStr::new)),
-                want.map(PathBuf::from),
-                "case {case}"
+        for args in refused {
+            let refusal = removed_run_mode_refusal(args)
+                .unwrap_or_else(|| panic!("{args:?} must be refused"));
+            assert!(
+                refusal.contains("--portal-server-only was removed")
+                    && refusal.contains("docs/architecture/security.md"),
+                "the refusal names the flag and where the portal lives now: {refusal}"
             );
         }
+        // The hosted loop is refused in both flag forms and among others,
+        // naming the backend that replaced it, so a stale script fails loudly
+        // instead of booting a session with different semantics.
+        let hosted: [&[&str]; 3] = [
+            &["--mode", "hosted"],
+            &["--mode=hosted"],
+            &["--enable-peer-sync", "--mode", "hosted", "--enable-portals"],
+        ];
+        for args in hosted {
+            let refusal = removed_run_mode_refusal(args)
+                .unwrap_or_else(|| panic!("{args:?} must be refused"));
+            assert!(
+                refusal.contains("--mode hosted was removed")
+                    && refusal.contains("--backend winit"),
+                "the refusal names the flag and its replacement: {refusal}"
+            );
+        }
+        // No removed flag: the ordinary boot paths are untouched, including
+        // the still-accepted `--mode native` and an unknown mode value.
+        let accepted: [&[&str]; 8] = [
+            &[],
+            &["--mode", "native"],
+            &["--mode=native"],
+            &["--mode", "junk"],
+            &["--mode"],
+            &["--enable-portals"],
+            &["--firstboot"],
+            &["--firstboot-only"],
+        ];
+        for args in accepted {
+            assert_eq!(removed_run_mode_refusal(args), None, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn peer_sync_is_on_unless_explicitly_disabled() {
+        assert!(!parse_peer_sync_disabled(&[]));
+        assert!(!parse_peer_sync_disabled(&["--mode", "native"]));
+        assert!(!parse_peer_sync_disabled(&["--enable-peer-sync"]));
+        assert!(parse_peer_sync_disabled(&["--disable-peer-sync"]));
+        assert!(parse_peer_sync_disabled(&[
+            "--enable-peer-sync",
+            "--disable-peer-sync"
+        ]));
     }
 }
+
+#[cfg(target_os = "linux")]
+mod spatial_pointer;

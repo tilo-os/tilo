@@ -100,7 +100,8 @@ UPSTREAM_SUFFICES = {
     "release panics on a GPU reset as before",
     "wgpu-hal": "Metal presentation observer (only the optional `presentation-feedback` "
     "feature uses it), the Windows DX12 shader cache and a Vulkan device-loss switch only tests "
-    "set; SDK apps use none of them",
+    "set; SDK apps use none of them. It also compiles Metal shaders without fast math; on the "
+    "release a partial redraw on macOS can differ from a full one by a channel step at edges",
     "workspace-hack": "hakari's feature union for this workspace; crates.io's "
     "workspace-hack 0.1.0 is its empty placeholder",
 }

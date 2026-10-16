@@ -32,6 +32,7 @@ use crate::custody::{OutboxEntry, PeerRecord, PeerStore};
 use crate::document::{
     Ciphers, ContentCipher, DocumentRoute, OpenedDocument, Reassembly, open_frame, sign_frame,
 };
+use tilo_lock::MutexRecover as _;
 
 /// Longest wait between reconnect attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -76,6 +77,13 @@ pub struct PeerConfig {
     pub host_cert: DeviceCert,
     /// Root-signed revocations this device knows about.
     pub revocations: RevocationList,
+    /// This page only watches the rooms it joins: a public room's
+    /// spectator. It writes nothing: no document, live frame, action,
+    /// compaction or presence of its own, no live join, and no channel
+    /// governance, so it never asks a channel for access. It takes the
+    /// content keys of the records it opens from the room's steward over
+    /// HTTPS instead ([`crate::carrier::channel_keys`]).
+    pub watching: bool,
 }
 
 /// Transport phase, in `SessionHealth` v1 vocabulary.
@@ -171,6 +179,9 @@ pub struct RouteStatus {
     pub last_seq: Option<u64>,
     /// Local store state, as reported with [`PeerHandle::set_local_state`].
     pub local: Option<LocalState>,
+    /// Sealed documents that arrived before this device held the route's
+    /// keys; they open once the keys do.
+    pub awaiting_keys: usize,
 }
 
 /// Everything a snapshot is derived from.
@@ -223,7 +234,8 @@ pub enum PeerEvent {
         /// Host order.
         seq: u64,
     },
-    /// A live frame another member published.
+    /// A live frame another member published, opened with its record's
+    /// channel keys.
     Live {
         /// The room's workspace.
         workspace_id: u64,
@@ -272,31 +284,91 @@ pub enum PeerEvent {
         /// Echo in [`PeerHandle::compact`].
         request: [u8; 16],
     },
+    /// What the host said about this device's calls.
+    Voice(crate::voice::VoiceEvent),
 }
 
 enum Command {
     Join(u64),
     Publish(DocumentRoute, Vec<Vec<u8>>),
     InstallCipher(DocumentRoute, Box<dyn ContentCipher>),
+    InstallChannelKeys(DocumentRoute, channel_crypto::ChannelContentKeys),
     OpenRoute(DocumentRoute),
     PinGovernor(String, [u8; 32]),
     LiveJoin(u64),
     Live(u64, Vec<u8>),
+    SealLive(u64, Vec<u8>, LiveCompletion),
+    OpenLive(u64, Vec<u8>, LiveCompletion),
     RemoteAction(u64, [u8; 32], Vec<u8>),
     Barrier(Completion),
     LiveGrant(u64, Option<String>, GrantCompletion),
+    VoiceCalls(u64),
+    VoiceCall(u64, [u8; 16], tilo_relay_protocol::voice::CallOperation),
+    VoiceJoin(u64, [u8; 32]),
+    VoiceLeave(u64),
+    LegacyInput(
+        tilo_relay_protocol::legacy_window::InputRequest,
+        InputCompletion,
+    ),
+    LegacyCodecs(
+        tilo_relay_protocol::legacy_window::CodecsRequest,
+        InputCompletion,
+    ),
+    Rooms(tilo_relay_protocol::rooms::RoomsRequest, RoomsCompletion),
+    Here(tilo_relay_protocol::web::HereRequest, HereCompletion),
+    Node(NodeCompletion),
     Compact([u8; 16], Vec<u8>),
+    /// What the room's steward answered a watching page asking for a
+    /// record's keys.
+    WatchedKeys(
+        DocumentRoute,
+        Result<channel_crypto::ChannelContentKeys, String>,
+    ),
     Reconnect,
     Refresh,
     Close,
 }
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
+
+/// What sealing a live frame came to.
+enum Sealing {
+    Sealed(Vec<u8>),
+    /// This device holds no keys for the record yet.
+    NoKeys(tilo_relay_protocol::live::LiveRecord),
+    /// Names no record, or does not seal: never sent.
+    Dropped,
+}
+
+/// What opening a sealed live frame came to.
+enum Opening {
+    Opened(Vec<u8>),
+    /// This device holds no keys for the channel yet.
+    NoKeys([u8; 16]),
+    /// Malformed, or does not open.
+    Dropped,
+}
 /// Called once with the outcome of a [`PeerHandle::barrier_then`].
 pub type Completion = Box<dyn FnOnce(Result<(), String>) + Send>;
 /// Called once with a live grant, see [`PeerHandle::live_grant_then`].
 pub type GrantCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::web::LiveGrant, String>) + Send>;
+/// Called once with a live frame sealed or opened with its record's channel
+/// keys, or `None` when this device holds none; see
+/// [`PeerHandle::seal_live_then`] and [`PeerHandle::open_live_then`].
+pub type LiveCompletion = Box<dyn FnOnce(Option<Vec<u8>>) + Send>;
+/// Called once with whether the host took a legacy window's input, see
+/// [`PeerHandle::legacy_input_then`].
+pub type InputCompletion = Box<dyn FnOnce(Result<bool, String>) + Send>;
+/// Called once with the session device the node runs beside the host (or
+/// `None`), see [`PeerHandle::node_session_then`].
+pub type NodeCompletion = Box<dyn FnOnce(Result<Option<[u8; 32]>, String>) + Send>;
+/// Called once with who is here, see [`PeerHandle::here_then`].
+pub type HereCompletion =
+    Box<dyn FnOnce(Result<tilo_relay_protocol::web::HereReply, String>) + Send>;
+/// Called once with the host's answer, see [`PeerHandle::rooms_then`].
+pub type RoomsCompletion =
+    Box<dyn FnOnce(Result<tilo_relay_protocol::rooms::RoomsReply, String>) + Send>;
 
 type Queue = Arc<Mutex<VecDeque<PeerEvent>>>;
 
@@ -321,18 +393,26 @@ pub struct PeerEvents(Queue);
 impl PeerEvents {
     /// Take every event produced since the last call.
     pub fn drain(&self) -> Vec<PeerEvent> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .drain(..)
-            .collect()
+        self.0.lock_recover().drain(..).collect()
     }
 }
 
 fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
-    shared
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    shared.lock_recover()
+}
+
+/// Apply `change` to the status, bump its generation and wake the watchers
+/// once the lock is released.
+fn change_status(shared: &Mutex<Shared>, change: impl FnOnce(&mut PeerStatus)) {
+    let wakes = {
+        let mut shared = lock(shared);
+        change(&mut shared.status);
+        shared.status.generation = shared.status.generation.wrapping_add(1);
+        shared.wakes.clone()
+    };
+    for wake in &wakes {
+        wake();
+    }
 }
 
 /// Add `failure`, replacing the one it supersedes: a session failure
@@ -403,13 +483,21 @@ impl PeerHandle {
         let mut channels = crate::channels::Channels::new(
             config.cert.device_public_key,
             config.cert.user_public_key,
+            store.channel_vault().unwrap_or_else(rand::random),
         );
+        channels.govern_by_host(&config.host_cert);
         let saved = store
             .load_channels()
-            .and_then(|bytes| postcard::from_bytes::<SavedPeerChannels>(&bytes).ok())
+            .and_then(|bytes| SavedPeerChannels::decode(&bytes))
             .unwrap_or_default();
-        channels.restore(saved.channels);
+        match saved.channels {
+            StoredChannels::Current(saved) => channels.restore(saved),
+            StoredChannels::Legacy(legacy) => channels.restore_legacy(legacy),
+        }
+        channels.restore_requests(saved.requests);
         let task = Task {
+            commands: commands.downgrade(),
+            watched: crate::watching::WatchedKeys::default(),
             config,
             signer,
             store,
@@ -424,6 +512,7 @@ impl PeerHandle {
             opened: BTreeMap::new(),
             refused: (0, String::new()),
             held_inbound: BTreeMap::new(),
+            held_live: crate::held_live::HeldLive::new(),
             held_outbound: saved.held.into_iter().collect(),
             reassembly: Reassembly::default(),
             positions: BTreeMap::new(),
@@ -434,6 +523,7 @@ impl PeerHandle {
             delivered: BTreeMap::new(),
             received: BTreeSet::new(),
             compactions: BTreeMap::new(),
+            voice: crate::voice::Participations::default(),
         };
         task.update(|status| {
             status.outgoing_pending = task.outbox.len();
@@ -510,6 +600,25 @@ impl PeerHandle {
         self.send(Command::InstallCipher(route, cipher))
     }
 
+    /// Hold `keys` as `route`'s channel keys, exactly as if the channel's
+    /// steward had admitted this session to it: documents held for them
+    /// open, the route's status stops awaiting keys, and edits held for them
+    /// go out sealed. For an application endpoint of the device that
+    /// stewards the channel, which hands it the keys it already holds
+    /// ([`channel_crypto::ChannelSteward::content_keys`]); any other session
+    /// is admitted by the steward over the channel itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn install_channel_keys(
+        &self,
+        route: DocumentRoute,
+        keys: channel_crypto::ChannelContentKeys,
+    ) -> Result<(), String> {
+        self.send(Command::InstallChannelKeys(route, keys))
+    }
+
     /// Take part in `route`'s encrypted channel: when a steward governs it,
     /// ask for access so documents on it can be opened and sealed. Routes
     /// are also opened by publishing on them or receiving their documents.
@@ -541,14 +650,48 @@ impl PeerHandle {
         self.send(Command::LiveJoin(workspace_id))
     }
 
-    /// Publish one encoded live frame. Dropped while disconnected: live
-    /// state is never queued.
+    /// Publish one canonical live frame, sealed with the channel keys of the
+    /// record it names. Dropped while disconnected (live state is never
+    /// queued), and dropped when it names no record or this device holds
+    /// none of that record's keys: a live frame never leaves in the clear.
     ///
     /// # Errors
     ///
     /// Returns an error once the session is closed.
     pub fn publish_live(&self, workspace_id: u64, frame: Vec<u8>) -> Result<(), String> {
         self.send(Command::Live(workspace_id, frame))
+    }
+
+    /// Seal one canonical live frame of `workspace_id` with the channel keys
+    /// of the record it names, for a carrier other than this session (the
+    /// page's live plane); `done` receives the sealed frame, or `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn seal_live_then(
+        &self,
+        workspace_id: u64,
+        frame: Vec<u8>,
+        done: LiveCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::SealLive(workspace_id, frame, done))
+    }
+
+    /// Open one sealed live frame of `workspace_id` that another carrier
+    /// delivered; `done` receives the canonical frame, or `None` when it
+    /// does not open with keys this device holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn open_live_then(
+        &self,
+        workspace_id: u64,
+        frame: Vec<u8>,
+        done: LiveCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::OpenLive(workspace_id, frame, done))
     }
 
     /// Send one remote-action frame to device `to` of the room (the host's
@@ -618,6 +761,120 @@ impl PeerHandle {
         self.send(Command::LiveGrant(workspace_id, Some(agent_id), done))
     }
 
+    /// Ask the host for the calls of `workspace_id`; the answer arrives as
+    /// [`VoiceEvent::Calls`](crate::voice::VoiceEvent::Calls).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn voice_calls(&self, workspace_id: u64) -> Result<(), String> {
+        self.send(Command::VoiceCalls(workspace_id))
+    }
+
+    /// Start, end or moderate a call of `workspace_id`; the answer arrives
+    /// as [`VoiceEvent::CallResult`](crate::voice::VoiceEvent::CallResult)
+    /// for `request`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn voice_call(
+        &self,
+        workspace_id: u64,
+        request: [u8; 16],
+        operation: tilo_relay_protocol::voice::CallOperation,
+    ) -> Result<(), String> {
+        self.send(Command::VoiceCall(workspace_id, request, operation))
+    }
+
+    /// Take part in `call` of `workspace_id` until [`Self::voice_leave`]:
+    /// the session keeps the participation alive across reconnects and
+    /// hands on its grants ([`crate::voice`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn voice_join(&self, workspace_id: u64, call: [u8; 32]) -> Result<(), String> {
+        self.send(Command::VoiceJoin(workspace_id, call))
+    }
+
+    /// Leave the call of `workspace_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn voice_leave(&self, workspace_id: u64) -> Result<(), String> {
+        self.send(Command::VoiceLeave(workspace_id))
+    }
+
+    /// Send input for a legacy window a member streams
+    /// ([`crate::carrier::legacy_input`]) over the current HTTPS session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn legacy_input_then(
+        &self,
+        request: tilo_relay_protocol::legacy_window::InputRequest,
+        done: InputCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::LegacyInput(request, done))
+    }
+
+    /// Tell the host which video codecs this page decodes
+    /// ([`crate::carrier::legacy_codecs`]) over the current HTTPS session;
+    /// `done` receives whether the host took the advert.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn legacy_codecs_then(
+        &self,
+        request: tilo_relay_protocol::legacy_window::CodecsRequest,
+        done: InputCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::LegacyCodecs(request, done))
+    }
+
+    /// Post this person's own recent actions ([`crate::carrier::here`]) over
+    /// the current HTTPS session; `done` receives who is here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn here_then(
+        &self,
+        request: tilo_relay_protocol::web::HereRequest,
+        done: HereCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::Here(request, done))
+    }
+
+    /// Send `request` to the host's room administration over the current
+    /// HTTPS session; `done` receives the answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn rooms_then(
+        &self,
+        request: tilo_relay_protocol::rooms::RoomsRequest,
+        done: RoomsCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::Rooms(request, done))
+    }
+
+    /// Ask the host which device runs the person's apps beside it (a
+    /// node's session), over the current HTTPS session; `done` receives it,
+    /// or `None` from a host that runs none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn node_session_then(&self, done: NodeCompletion) -> Result<(), String> {
+        self.send(Command::Node(done))
+    }
+
     /// Drop the connection and reconnect now, also after a failure.
     ///
     /// # Errors
@@ -644,15 +901,7 @@ impl PeerHandle {
     }
 
     fn change(&self, change: impl FnOnce(&mut PeerStatus)) {
-        let wakes = {
-            let mut shared = lock(&self.shared);
-            change(&mut shared.status);
-            shared.status.generation = shared.status.generation.wrapping_add(1);
-            shared.wakes.clone()
-        };
-        for wake in &wakes {
-            wake();
-        }
+        change_status(&self.shared, change);
     }
 
     /// Record the page store's durability of `route`. A failed write is the
@@ -666,7 +915,7 @@ impl PeerHandle {
                     Failure {
                         code: "storage-transaction-failed",
                         message: "Changes could not be saved on this device.".into(),
-                        at_ms: crate::clock::now_ms(),
+                        at_ms: tilo_clock::unix_now_ms(),
                         subject: FailureSubject::Storage,
                     },
                 );
@@ -712,7 +961,7 @@ impl PeerHandle {
                 Failure {
                     code,
                     message,
-                    at_ms: crate::clock::now_ms(),
+                    at_ms: tilo_clock::unix_now_ms(),
                     subject,
                 },
             );
@@ -794,6 +1043,11 @@ enum Exit {
 type HeldFrame = (Vec<u8>, [u8; 32]);
 
 struct Task {
+    /// This session's own command queue, for answers it waits on in the
+    /// background; weak, so the session still ends with its last handle.
+    commands: mpsc::WeakUnboundedSender<Command>,
+    /// The records a watching page asks the steward for keys of.
+    watched: crate::watching::WatchedKeys,
     config: PeerConfig,
     signer: Arc<dyn DeviceSigner>,
     store: Arc<dyn PeerStore>,
@@ -814,6 +1068,8 @@ struct Task {
     /// Sealed documents that arrived before this device held their keys,
     /// with their authenticated authors.
     held_inbound: BTreeMap<DocumentRoute, VecDeque<HeldFrame>>,
+    /// Live frames waiting for their record's keys.
+    held_live: crate::held_live::HeldLive,
     /// Frames published on an encrypted route before this device held its
     /// keys; they are sealed and committed once the keys arrive.
     held_outbound: BTreeMap<DocumentRoute, Vec<Vec<u8>>>,
@@ -833,12 +1089,15 @@ struct Task {
     /// Retained entry ids of every document delivered or published per
     /// route: what a snapshot of the route contains.
     delivered: BTreeMap<DocumentRoute, BTreeSet<[u8; 32]>>,
-    /// Entry ids delivered since this page last subscribed. A subscribe asks
-    /// for them again (a refresh wants the rooms whole), so it clears them.
+    /// Entry ids delivered since this page last subscribed whole. A resumed
+    /// subscription keeps them; a whole one asks for them again (a refresh
+    /// wants the rooms whole), so it clears them.
     received: BTreeSet<[u8; 32]>,
     /// Open compaction requests: room, route and the entries delivered when
     /// the request arrived.
     compactions: BTreeMap<[u8; 16], Compaction>,
+    /// This device's participation in the rooms' calls.
+    voice: crate::voice::Participations,
 }
 
 /// An open compaction request: room, route and the entries it covers.
@@ -865,6 +1124,10 @@ impl Task {
     /// certificate and that it answers compaction requests. Returns `false`
     /// when the session could not take them.
     fn announce(&self, client: &Link, workspace_id: u64) -> bool {
+        if self.config.watching {
+            // Its hello and volunteering would be writes the room refuses.
+            return true;
+        }
         if let Some(hello) = identity_hello(workspace_id, &self.config.cert)
             && client.send(hello).is_err()
         {
@@ -956,15 +1219,7 @@ impl Task {
     }
 
     fn update(&self, change: impl FnOnce(&mut PeerStatus)) {
-        let wakes = {
-            let mut shared = lock(&self.shared);
-            change(&mut shared.status);
-            shared.status.generation = shared.status.generation.wrapping_add(1);
-            shared.wakes.clone()
-        };
-        for wake in &wakes {
-            wake();
-        }
+        change_status(&self.shared, change);
     }
 
     fn emit(&self, event: &PeerEvent) {
@@ -974,10 +1229,7 @@ impl Task {
                 let Some(queue) = queue.upgrade() else {
                     return false;
                 };
-                queue
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push_back(event.clone());
+                queue.lock_recover().push_back(event.clone());
                 true
             });
             shared.wakes.clone()
@@ -999,7 +1251,7 @@ impl Task {
                 Failure {
                     code,
                     message,
-                    at_ms: crate::clock::now_ms(),
+                    at_ms: tilo_clock::unix_now_ms(),
                     subject,
                 },
             );
@@ -1037,7 +1289,7 @@ impl Task {
     /// A timeout is reported once per subscription.
     fn check_admission(&mut self) {
         let status = self.status();
-        match admission_state(&status, self.admission_since, crate::clock::now_ms()) {
+        match admission_state(&status, self.admission_since, tilo_clock::unix_now_ms()) {
             Admission::Admitted => {
                 self.admission_since = None;
                 if status
@@ -1072,11 +1324,42 @@ impl Task {
         lock(&self.shared).status.clone()
     }
 
+    fn bind_record_identity(&mut self) -> Result<(), &'static str> {
+        let same_identity = |saved: &DeviceCert, configured: &DeviceCert| {
+            saved.user_public_key == configured.user_public_key
+                && saved.device_public_key == configured.device_public_key
+        };
+        if self
+            .record
+            .cert
+            .as_ref()
+            .is_some_and(|saved| !same_identity(saved, &self.config.cert))
+            || self
+                .record
+                .host_cert
+                .as_ref()
+                .is_some_and(|saved| !same_identity(saved, &self.config.host_cert))
+        {
+            return Err("The saved peer identity or host does not match this session.");
+        }
+        // A read-only invited page may never publish. Keep its certificate
+        // and host pin before the first connection, as well as its outbox.
+        self.record.cert = Some(self.config.cert.clone());
+        self.record.host_cert = Some(self.config.host_cert.clone());
+        self.persist();
+        Ok(())
+    }
+
     async fn run(mut self, mut commands: mpsc::UnboundedReceiver<Command>) {
+        if let Err(message) = self.bind_record_identity() {
+            self.fail("certificate-rejected", message);
+            self.update(|status| status.phase = TransportPhase::Failed);
+            return;
+        }
         let mut attempt: u32 = 0;
         let mut refusals: u32 = 0;
         loop {
-            if self.config.cert.is_expired_at(crate::clock::now_ns()) {
+            if self.config.cert.is_expired_at(tilo_clock::unix_now_ns()) {
                 self.fail("certificate-expired", "This browser's certificate expired.");
                 self.update(|status| status.phase = TransportPhase::Failed);
                 if !self.wait_for_reconnect(&mut commands).await {
@@ -1138,7 +1421,8 @@ impl Task {
                 status.phase = TransportPhase::Offline;
                 status.authenticated = false;
                 status.attempt = attempt;
-                status.next_attempt_at_ms = Some(crate::clock::now_ms().saturating_add(delay_ms));
+                status.next_attempt_at_ms =
+                    Some(tilo_clock::unix_now_ms().saturating_add(delay_ms));
             });
             let sleep = n0_future::time::sleep(delay);
             tokio::pin!(sleep);
@@ -1150,6 +1434,7 @@ impl Task {
                         Some(Command::Reconnect) => break,
                         Some(Command::Refresh) => {
                             self.positions.clear();
+                            self.received.clear();
                             break;
                         }
                         Some(command) => {
@@ -1180,6 +1465,7 @@ impl Task {
                 Some(Command::Reconnect) => return true,
                 Some(Command::Refresh) => {
                     self.positions.clear();
+                    self.received.clear();
                     return true;
                 }
                 Some(command) => {
@@ -1194,29 +1480,14 @@ impl Task {
         mut client: Link,
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> Exit {
-        let mut sent_ok = true;
-        self.received.clear();
-        for workspace_id in &self.rooms {
-            sent_ok &= client.send(self.subscribe(&client, *workspace_id)).is_ok();
-        }
-        for workspace_id in &self.live {
-            sent_ok &= client
-                .send(Envelope::LiveJoin {
-                    workspace_id: *workspace_id,
-                })
-                .is_ok();
-        }
-        for entry in &self.outbox {
-            sent_ok &= client.send(commit(entry, &self.config.cert)).is_ok();
-        }
-        if !sent_ok {
+        if !self.resume_session(&client) {
             return Exit::Lost("host session saturated during resume".into());
         }
         self.update(|status| {
             status.phase = TransportPhase::Connected;
             status.authenticated = true;
             status.attempt = 0;
-            status.last_contact_at_ms = Some(crate::clock::now_ms());
+            status.last_contact_at_ms = Some(tilo_clock::unix_now_ms());
             status.failures.retain(|failure| {
                 !failure.code.starts_with("transport") && !failure.code.starts_with("certificate")
             });
@@ -1224,9 +1495,10 @@ impl Task {
                 *ready = false;
             }
         });
-        self.admission_since = Some(crate::clock::now_ms());
+        self.admission_since = Some(tilo_clock::unix_now_ms());
         let mut ping = n0_future::time::interval(PING_INTERVAL);
         let mut channel_tick = n0_future::time::interval(CHANNEL_TICK);
+        let mut heartbeat = n0_future::time::interval(tilo_relay_protocol::voice::HEARTBEAT);
         loop {
             if !self.settle_channels(Some(&client)).await {
                 return Exit::Lost("host session saturated".into());
@@ -1250,7 +1522,7 @@ impl Task {
                         if !self.resubscribe(&client) {
                             return Exit::Lost("host session saturated".into());
                         }
-                        self.admission_since = Some(crate::clock::now_ms());
+                        self.admission_since = Some(tilo_clock::unix_now_ms());
                     }
                     Some(command) => {
                         if !self.apply(command, Some(&client)).await {
@@ -1260,6 +1532,17 @@ impl Task {
                 },
                 envelope = client.recv() => match envelope {
                     Some(envelope) => {
+                        if let Some((event, reply)) = self.voice.inbound(&envelope) {
+                            if let Some(reply) = reply
+                                && client.send(reply).is_err()
+                            {
+                                return Exit::Lost("host session saturated".into());
+                            }
+                            if let Some(event) = event {
+                                self.emit(&PeerEvent::Voice(event));
+                            }
+                            continue;
+                        }
                         let admitted = matches!(envelope, Envelope::Ready { .. });
                         if let Envelope::Ready { workspace_id, .. } = &envelope
                             && !self.announce(&client, *workspace_id)
@@ -1280,8 +1563,15 @@ impl Task {
                     self.check_admission();
                 }
                 _ = channel_tick.tick() => {
-                    let changes = self.channels.tick(crate::clock::now_ms());
+                    let changes = self.channels.tick(tilo_clock::unix_now_ms());
                     self.absorb(changes);
+                }
+                _ = heartbeat.tick() => {
+                    for beat in self.voice.heartbeats() {
+                        if client.send(beat).is_err() {
+                            return Exit::Lost("host session saturated".into());
+                        }
+                    }
                 }
             }
         }
@@ -1290,32 +1580,17 @@ impl Task {
     /// Apply one command; `client` is the live session, if any. Returns
     /// `false` when the session could not take a durable envelope.
     async fn apply(&mut self, command: Command, client: Option<&Link>) -> bool {
+        let Some(command) = self.unless_watching(command) else {
+            return true;
+        };
         match command {
-            Command::Join(workspace_id) => {
-                self.rooms.insert(workspace_id);
-                if client.is_some() {
-                    self.admission_since
-                        .get_or_insert_with(crate::clock::now_ms);
-                }
-                self.update(|status| {
-                    status.rooms.entry(workspace_id).or_insert(false);
-                });
-                self.received.clear();
-                client
-                    .is_none_or(|client| client.send(self.subscribe(client, workspace_id)).is_ok())
-            }
+            Command::Join(workspace_id) => self.join(workspace_id, client),
             Command::LiveJoin(workspace_id) => {
                 self.live.insert(workspace_id);
                 client.is_none_or(|client| client.send(Envelope::LiveJoin { workspace_id }).is_ok())
             }
-            Command::Live(workspace_id, frame) => {
-                if let Some(client) = client {
-                    let _ = client.send(Envelope::Live {
-                        workspace_id,
-                        from_device_public_key: self.config.cert.device_public_key,
-                        frame,
-                    });
-                }
+            command @ (Command::Live(..) | Command::SealLive(..) | Command::OpenLive(..)) => {
+                self.apply_live(command, client);
                 true
             }
             Command::RemoteAction(workspace_id, to, frame) => {
@@ -1338,18 +1613,28 @@ impl Task {
                 true
             }
             Command::InstallCipher(route, cipher) => {
-                self.ciphers.insert(route, cipher);
+                self.ciphers.insert(route.clone(), cipher);
+                self.release_live(&route, client);
+                true
+            }
+            Command::InstallChannelKeys(route, keys) => {
+                // Settled with the next channel changes, the same way as
+                // keys the channel's own governance hands this session.
+                self.absorb(crate::channels::Changes {
+                    keys: vec![(route, keys)],
+                    outgoing: Vec::new(),
+                });
                 true
             }
             Command::OpenRoute(route) => {
-                let changes = self.channels.open(&route, crate::clock::now_ms());
+                let changes = self.channels.open(&route, tilo_clock::unix_now_ms());
                 self.absorb(changes);
                 true
             }
             Command::PinGovernor(room, governor) => {
-                let changes = self
-                    .channels
-                    .pin_governor(&room, governor, crate::clock::now_ms());
+                let changes =
+                    self.channels
+                        .pin_governor(&room, governor, tilo_clock::unix_now_ms());
                 self.absorb(changes);
                 true
             }
@@ -1365,25 +1650,520 @@ impl Task {
                 true
             }
             Command::LiveGrant(workspace_id, agent, done) => {
-                match client {
-                    Some(Link::Https(link)) => {
-                        let http = link.client().clone();
-                        let session = link.session().to_owned();
-                        n0_future::task::spawn(async move {
-                            let grant =
-                                live_grant(http.as_ref(), &session, workspace_id, agent).await;
-                            done(grant.map_err(|error| error.to_string()));
-                        });
-                    }
-                    #[cfg(feature = "iroh")]
-                    Some(Link::Iroh(_)) => done(Err("live grants are served over HTTPS".into())),
-                    None => done(Err("not connected to the host".into())),
-                }
+                Self::request_live_grant(workspace_id, agent, done, client);
                 true
             }
-            // Handled by the caller's loop.
-            Command::Reconnect | Command::Refresh | Command::Close => true,
+            Command::LegacyInput(request, done) => {
+                Self::request_legacy_input(request, done, client)
+            }
+            Command::LegacyCodecs(request, done) => {
+                Self::request_legacy_codecs(request, done, client)
+            }
+            Command::Here(request, done) => Self::request_here(request, done, client),
+            Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
+            Command::VoiceCall(room, request, op) => self.voice_call(room, request, op, client),
+            Command::VoiceJoin(workspace_id, call) => self.voice_join(workspace_id, call, client),
+            Command::VoiceLeave(workspace_id) => self.voice_leave(workspace_id, client),
+            Command::Rooms(request, done) => {
+                Self::request_rooms(request, done, client);
+                true
+            }
+            Command::Node(done) => {
+                Self::request_node(done, client);
+                true
+            }
+            // Handled by the caller's loop, and keys by `unless_watching`.
+            Command::Reconnect | Command::Refresh | Command::Close | Command::WatchedKeys(..) => {
+                true
+            }
         }
+    }
+
+    /// Subscribe to `workspace_id`, now or once connected.
+    fn join(&mut self, workspace_id: u64, client: Option<&Link>) -> bool {
+        self.rooms.insert(workspace_id);
+        if client.is_some() {
+            self.admission_since
+                .get_or_insert_with(tilo_clock::unix_now_ms);
+        }
+        self.update(|status| {
+            status.rooms.entry(workspace_id).or_insert(false);
+        });
+        self.received.clear();
+        client.is_none_or(|client| client.send(self.subscribe(client, workspace_id)).is_ok())
+    }
+
+    /// `command`, unless this page only watches and it would write: then
+    /// it is answered here, sending nothing, and `None` is returned. A
+    /// watching page joins no live plane, publishes, compacts and acts on
+    /// nothing, is not listed as here, and opens a record by asking its
+    /// steward for the record's keys.
+    fn unless_watching(&mut self, command: Command) -> Option<Command> {
+        if let Command::WatchedKeys(route, answer) = command {
+            self.watched
+                .answered(&route, answer.is_ok(), tilo_clock::unix_now_ms());
+            // Refused: the room keeps the record from those who watch, and
+            // its documents stay held, awaiting keys.
+            if let Ok(keys) = answer {
+                self.absorb(crate::channels::Changes {
+                    keys: vec![(route, keys)],
+                    outgoing: Vec::new(),
+                });
+            }
+            return None;
+        }
+        if !self.config.watching {
+            return Some(command);
+        }
+        match command {
+            Command::LiveJoin(_)
+            | Command::Live(..)
+            | Command::Publish(..)
+            | Command::Compact(..) => {}
+            Command::RemoteAction(workspace_id, to, _) => {
+                self.emit(&PeerEvent::RemoteActionUndeliverable {
+                    workspace_id,
+                    to,
+                    reason: "a page that only watches acts on nothing".into(),
+                });
+            }
+            Command::Here(_, done) => {
+                done(Err("a page that only watches is not listed as here".into()));
+            }
+            Command::OpenRoute(route) => self.watched.want(route),
+            command => return Some(command),
+        }
+        None
+    }
+
+    /// Restore this session's rooms, pending commits and call participations.
+    fn resume_session(&mut self, client: &Link) -> bool {
+        let mut sent_ok = true;
+        // A resuming subscription can replay a frame before its covering position.
+        // Keep duplicate detection until the host requests a whole subscription.
+        if !client.resumable() {
+            self.received.clear();
+        }
+        for workspace_id in &self.rooms {
+            sent_ok &= client.send(self.subscribe(client, *workspace_id)).is_ok();
+        }
+        for workspace_id in &self.live {
+            sent_ok &= client
+                .send(Envelope::LiveJoin {
+                    workspace_id: *workspace_id,
+                })
+                .is_ok();
+        }
+        for entry in &self.outbox {
+            sent_ok &= client.send(commit(entry, &self.config.cert)).is_ok();
+        }
+        for join in self.voice.resume() {
+            sent_ok &= client.send(join).is_ok();
+        }
+        sent_ok
+    }
+
+    fn voice_calls(&self, workspace_id: u64, client: Option<&Link>) -> bool {
+        if let Some(client) = client {
+            client.send(Envelope::VoiceCalls { workspace_id }).is_ok()
+        } else {
+            self.emit(&PeerEvent::Voice(crate::voice::VoiceEvent::Calls {
+                workspace_id,
+                result: Err("not connected to the host".into()),
+            }));
+            true
+        }
+    }
+
+    fn voice_call(
+        &self,
+        workspace_id: u64,
+        request: [u8; 16],
+        operation: tilo_relay_protocol::voice::CallOperation,
+        client: Option<&Link>,
+    ) -> bool {
+        if let Some(client) = client {
+            client
+                .send(Envelope::VoiceCall {
+                    workspace_id,
+                    request,
+                    operation,
+                })
+                .is_ok()
+        } else {
+            self.emit(&PeerEvent::Voice(crate::voice::VoiceEvent::CallResult {
+                workspace_id,
+                request,
+                result: Err("not connected to the host".into()),
+            }));
+            true
+        }
+    }
+
+    /// Offline, the next connection sends the join.
+    fn voice_join(&mut self, workspace_id: u64, call: [u8; 32], client: Option<&Link>) -> bool {
+        let out = self.voice.join(workspace_id, call);
+        client.is_none_or(|client| {
+            out.into_iter()
+                .all(|envelope| client.send(envelope).is_ok())
+        })
+    }
+
+    fn voice_leave(&mut self, workspace_id: u64, client: Option<&Link>) -> bool {
+        let out = self.voice.leave(workspace_id);
+        match (client, out) {
+            (Some(client), Some(leave)) => client.send(leave).is_ok(),
+            _ => true,
+        }
+    }
+
+    fn request_live_grant(
+        workspace_id: u64,
+        agent: Option<String>,
+        done: GrantCompletion,
+        client: Option<&Link>,
+    ) {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    let grant = live_grant(http.as_ref(), &session, workspace_id, agent).await;
+                    done(grant.map_err(|error| error.to_string()));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Err("live grants are served over HTTPS".into())),
+            None => done(Err("not connected to the host".into())),
+        }
+    }
+
+    /// Always `true`: the session takes it whatever the answer.
+    fn request_legacy_input(
+        request: tilo_relay_protocol::legacy_window::InputRequest,
+        done: InputCompletion,
+        client: Option<&Link>,
+    ) -> bool {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    let sent =
+                        crate::carrier::legacy_input(http.as_ref(), &session, &request).await;
+                    done(sent.map_err(|error| error.to_string()));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Err("legacy input is sent over HTTPS".into())),
+            None => done(Err("not connected to the host".into())),
+        }
+        true
+    }
+
+    /// Ask the room's steward for the keys of every record this watching
+    /// page waits on and is not asking for already; each answer comes back
+    /// as [`Command::WatchedKeys`].
+    fn ask_watched_keys(&mut self, client: Option<&Link>) {
+        let Some(Link::Https(link)) = client else {
+            return;
+        };
+        let seated = lock(&self.shared).status.rooms.clone();
+        let due = self.watched.due(tilo_clock::unix_now_ms(), |route| {
+            route
+                .workspace_id()
+                .is_ok_and(|room| seated.get(&room) == Some(&true))
+        });
+        for route in due {
+            let http = link.client().clone();
+            let session = link.session().to_owned();
+            let commands = self.commands.clone();
+            n0_future::task::spawn(async move {
+                let request = tilo_relay_protocol::web::ChannelKeysRequest {
+                    app_id: route.app_id.clone(),
+                    room: route.cluster_id.clone(),
+                    record: route.record.clone(),
+                };
+                let keys = crate::carrier::channel_keys(http.as_ref(), &session, &request)
+                    .await
+                    .map_err(|error| error.to_string());
+                if let Some(commands) = commands.upgrade() {
+                    let _ = commands.send(Command::WatchedKeys(route, keys));
+                }
+            });
+        }
+    }
+
+    /// Always `true`: the session takes it whatever the answer.
+    fn request_legacy_codecs(
+        request: tilo_relay_protocol::legacy_window::CodecsRequest,
+        done: InputCompletion,
+        client: Option<&Link>,
+    ) -> bool {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    let taken =
+                        crate::carrier::legacy_codecs(http.as_ref(), &session, &request).await;
+                    done(taken.map_err(|error| error.to_string()));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Err("codec adverts are sent over HTTPS".into())),
+            None => done(Err("not connected to the host".into())),
+        }
+        true
+    }
+
+    /// Always `true`: the session takes it whatever the answer.
+    fn request_here(
+        request: tilo_relay_protocol::web::HereRequest,
+        done: HereCompletion,
+        client: Option<&Link>,
+    ) -> bool {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    let reply = crate::carrier::here(http.as_ref(), &session, &request).await;
+                    done(reply.map_err(|error| error.to_string()));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Err("who is here is served over HTTPS".into())),
+            None => done(Err("not connected to the host".into())),
+        }
+        true
+    }
+
+    fn request_rooms(
+        request: tilo_relay_protocol::rooms::RoomsRequest,
+        done: RoomsCompletion,
+        client: Option<&Link>,
+    ) {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    let reply = crate::carrier::rooms(http.as_ref(), &session, &request).await;
+                    done(reply.map_err(|error| error.to_string()));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Err("rooms are administered over HTTPS".into())),
+            None => done(Err("not connected to the host".into())),
+        }
+    }
+
+    fn request_node(done: NodeCompletion, client: Option<&Link>) {
+        match client {
+            Some(Link::Https(link)) => {
+                let http = link.client().clone();
+                let session = link.session().to_owned();
+                n0_future::task::spawn(async move {
+                    // A host that answers no `/node` runs nothing beside it.
+                    let info = crate::carrier::node(http.as_ref(), &session).await;
+                    done(Ok(info.ok().and_then(|info| info.session)));
+                });
+            }
+            #[cfg(feature = "iroh")]
+            Some(Link::Iroh(_)) => done(Ok(None)),
+            None => done(Err("not connected to the host".into())),
+        }
+    }
+
+    /// Send, seal or open one live frame. Nothing leaves unsealed: a frame
+    /// whose record's keys are not here yet waits for them (bounded), and a
+    /// frame that names no record is dropped. Nothing is sent while
+    /// disconnected.
+    fn apply_live(&mut self, command: Command, client: Option<&Link>) {
+        use crate::held_live::Waiting;
+        let waiting = match command {
+            Command::Live(workspace_id, frame) if client.is_some() => Waiting::Send {
+                workspace_id,
+                frame,
+            },
+            Command::SealLive(workspace_id, frame, done) => Waiting::Seal {
+                workspace_id,
+                frame,
+                done,
+            },
+            Command::OpenLive(workspace_id, frame, done) => Waiting::Open {
+                workspace_id,
+                frame,
+                done,
+            },
+            _ => return,
+        };
+        self.live_frame(waiting, client, true);
+    }
+
+    /// Seal or open one live frame and deliver it; with `hold`, keep a
+    /// frame whose keys are missing until they arrive.
+    fn live_frame(
+        &mut self,
+        waiting: crate::held_live::Waiting,
+        client: Option<&Link>,
+        hold: bool,
+    ) {
+        use crate::held_live::Waiting;
+        match waiting {
+            Waiting::Send {
+                workspace_id,
+                frame,
+            } => match self.seal_live(workspace_id, &frame) {
+                Sealing::Sealed(sealed) => {
+                    if let Some(client) = client {
+                        let _ = client.send(Envelope::Live {
+                            workspace_id,
+                            from_device_public_key: self.config.cert.device_public_key,
+                            frame: sealed,
+                        });
+                    }
+                }
+                Sealing::NoKeys(record) if hold => self.held_live.hold_outbound(
+                    workspace_id,
+                    record,
+                    Waiting::Send {
+                        workspace_id,
+                        frame,
+                    },
+                ),
+                Sealing::NoKeys(_) | Sealing::Dropped => {}
+            },
+            Waiting::Seal {
+                workspace_id,
+                frame,
+                done,
+            } => match self.seal_live(workspace_id, &frame) {
+                Sealing::Sealed(sealed) => done(Some(sealed)),
+                Sealing::NoKeys(record) if hold => self.held_live.hold_outbound(
+                    workspace_id,
+                    record,
+                    Waiting::Seal {
+                        workspace_id,
+                        frame,
+                        done,
+                    },
+                ),
+                Sealing::NoKeys(_) | Sealing::Dropped => done(None),
+            },
+            Waiting::Receive {
+                workspace_id,
+                from,
+                frame,
+            } => match self.open_live(workspace_id, &frame) {
+                Opening::Opened(opened) => self.emit(&PeerEvent::Live {
+                    workspace_id,
+                    from,
+                    frame: opened,
+                }),
+                Opening::NoKeys(channel) if hold => self.held_live.hold_inbound(
+                    channel,
+                    Waiting::Receive {
+                        workspace_id,
+                        from,
+                        frame,
+                    },
+                ),
+                Opening::NoKeys(_) | Opening::Dropped => {}
+            },
+            Waiting::Open {
+                workspace_id,
+                frame,
+                done,
+            } => match self.open_live(workspace_id, &frame) {
+                Opening::Opened(opened) => done(Some(opened)),
+                Opening::NoKeys(channel) if hold => self.held_live.hold_inbound(
+                    channel,
+                    Waiting::Open {
+                        workspace_id,
+                        frame,
+                        done,
+                    },
+                ),
+                Opening::NoKeys(_) | Opening::Dropped => done(None),
+            },
+        }
+    }
+
+    /// `route`'s keys arrived: seal, send and open the live frames that
+    /// waited for them.
+    fn release_live(&mut self, route: &DocumentRoute, client: Option<&Link>) {
+        let Ok(workspace_id) = route.workspace_id() else {
+            return;
+        };
+        let record = tilo_relay_protocol::live::LiveRecord {
+            app: route.app_id.clone(),
+            record: route.record.clone(),
+        };
+        let channel = crate::channels::Channels::channel(route).0.into_bytes();
+        let released: Vec<_> = self
+            .held_live
+            .release(workspace_id, record, channel)
+            .collect();
+        for waiting in released {
+            self.live_frame(waiting, client, false);
+        }
+    }
+
+    /// Seal canonical live `frame` of `workspace_id` with the content cipher
+    /// of the record it names. A frame naming no record is never sent.
+    fn seal_live(&mut self, workspace_id: u64, frame: &[u8]) -> Sealing {
+        let Some(frame) = tilo_relay_protocol::live::LiveFrame::decode(frame).ok() else {
+            return Sealing::Dropped;
+        };
+        let Some((_, _, record)) = frame.seal_tags() else {
+            return Sealing::Dropped;
+        };
+        let cipher = self.ciphers.iter_mut().find_map(|(route, cipher)| {
+            let names = tilo_relay_protocol::live::LiveRecord {
+                app: route.app_id.clone(),
+                record: route.record.clone(),
+            };
+            (names == *record && route.workspace_id().ok() == Some(workspace_id)).then_some(cipher)
+        });
+        let Some(cipher) = cipher else {
+            return Sealing::NoKeys(record.clone());
+        };
+        tilo_relay_protocol::live::SealedLiveFrame::seal(
+            &frame,
+            |artifact, retention, cleartext| cipher.seal(artifact, retention, cleartext),
+        )
+        .map_or(Sealing::Dropped, Sealing::Sealed)
+    }
+
+    /// Open sealed live `frame` of `workspace_id` with the content cipher of
+    /// its channel into the canonical frame.
+    fn open_live(&mut self, workspace_id: u64, frame: &[u8]) -> Opening {
+        let Ok(sealed) = tilo_relay_protocol::live::SealedLiveFrame::decode(frame) else {
+            return Opening::Dropped;
+        };
+        let channel = sealed.channel_id();
+        let bound = self.ciphers.iter_mut().find_map(|(route, cipher)| {
+            (crate::channels::Channels::channel(route) == channel
+                && route.workspace_id().ok() == Some(workspace_id))
+            .then_some((route, cipher))
+        });
+        let Some((route, cipher)) = bound else {
+            return Opening::NoKeys(sealed.channel);
+        };
+        sealed
+            .open_in_record(
+                &route.cluster_id,
+                &tilo_relay_protocol::live::LiveRecord {
+                    app: route.app_id.clone(),
+                    record: route.record.clone(),
+                },
+                |artifact, metadata, payload| cipher.open(artifact, metadata, payload),
+            )
+            .ok()
+            .and_then(|frame| frame.encode().ok())
+            .map_or(Opening::Dropped, Opening::Opened)
     }
 
     async fn publish(
@@ -1396,25 +2176,27 @@ impl Task {
             self.fail("protocol-rejected", "A document names an invalid room.");
             return true;
         };
-        let changes = self.channels.open(&route, crate::clock::now_ms());
+        let changes = self.channels.open(&route, tilo_clock::unix_now_ms());
         self.absorb(changes);
-        if !self.ciphers.contains_key(&route) && self.channels.gated(&route) {
-            // Never in the clear on an encrypted channel, nor before the
-            // page knows whether it is one: the frames wait for this
-            // device's keys or for the room's replay to name no governor.
+        if !self.ciphers.contains_key(&route) {
+            // Never in the clear: the frames wait for this device's keys.
             self.held_outbound.entry(route).or_default().extend(frames);
             self.persist_channels(true);
             return true;
         }
         let mut delivered = true;
         for frame in frames {
-            let now = crate::clock::now_ns();
+            let now = tilo_clock::unix_now_ns();
             self.doc_seq = now.max(self.doc_seq.saturating_add(1));
+            let Some(cipher) = self.ciphers.get_mut(&route) else {
+                self.fail("signature-rejected", "the route's channel keys went away");
+                return delivered;
+            };
             let signed = match sign_frame(
                 &route,
                 frame,
                 self.signer.as_ref(),
-                self.ciphers.get_mut(&route),
+                cipher,
                 self.doc_seq,
                 now,
             )
@@ -1471,15 +2253,13 @@ impl Task {
     }
 
     fn inbound(&mut self, envelope: Envelope) {
-        let now = crate::clock::now_ms();
+        let now = tilo_clock::unix_now_ms();
         self.update(|status| status.last_contact_at_ms = Some(now));
         match envelope {
             Envelope::Ready { workspace_id, .. } => {
                 self.update(|status| {
                     status.rooms.insert(workspace_id, true);
                 });
-                let changes = self.channels.replayed(workspace_id);
-                self.absorb(changes);
                 self.emit(&PeerEvent::Ready { workspace_id });
             }
             Envelope::NotAuthorised { reason, .. } => {
@@ -1529,11 +2309,15 @@ impl Task {
                 workspace_id,
                 from_device_public_key,
                 frame,
-            } => self.emit(&PeerEvent::Live {
-                workspace_id,
-                from: from_device_public_key,
-                frame,
-            }),
+            } => self.live_frame(
+                crate::held_live::Waiting::Receive {
+                    workspace_id,
+                    from: from_device_public_key,
+                    frame,
+                },
+                None,
+                true,
+            ),
             Envelope::RemoteAction {
                 workspace_id,
                 from_device_public_key,
@@ -1569,7 +2353,7 @@ impl Task {
     /// One retained message from the host: channel governance, a member's
     /// certificate, or a document.
     fn inbound_body(&mut self, body: Vec<u8>, author: [u8; 32]) {
-        let now = crate::clock::now_ms();
+        let now = tilo_clock::unix_now_ms();
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body) {
             Ok(neighbour_wire::NeighbourMsg::IdentityHello { cert, .. }) => {
                 let changes = self.channels.note_cert(author, *cert, now);
@@ -1599,14 +2383,28 @@ impl Task {
                 {
                     return;
                 }
-                let changes = self.channels.open(&route, now);
-                self.absorb(changes);
-                if envelope.encryption.is_some() && !self.ciphers.contains_key(&route) {
-                    let held = self.held_inbound.entry(route).or_default();
+                if !self.config.watching {
+                    let changes = self.channels.open(&route, now);
+                    self.absorb(changes);
+                }
+                let awaiting_keys = envelope.encryption.is_some_and(|metadata| {
+                    self.ciphers
+                        .get(&route)
+                        .is_none_or(|cipher| !cipher.holds_epoch(metadata.epoch))
+                });
+                if awaiting_keys {
+                    if self.config.watching {
+                        self.watched.want(route.clone());
+                    }
+                    let held = self.held_inbound.entry(route.clone()).or_default();
                     if held.len() >= MAX_HELD_DOCUMENTS {
                         held.pop_front();
                     }
                     held.push_back((body, author));
+                    let count = held.len();
+                    self.update(|status| {
+                        status.routes.entry(route).or_default().awaiting_keys = count;
+                    });
                     return;
                 }
                 self.open_document(&body, author);
@@ -1665,14 +2463,15 @@ impl Task {
         };
         let saved = SavedPeerChannels {
             channels,
+            requests: self.channels.pending_requests(),
             held: self
                 .held_outbound
                 .iter()
                 .map(|(route, frames)| (route.clone(), frames.clone()))
                 .collect(),
         };
-        let result = postcard::to_stdvec(&saved)
-            .map_err(|error| error.to_string())
+        let result = saved
+            .encode()
             .and_then(|bytes| self.store.save_channels(&bytes));
         if let Err(error) = result {
             self.fail_on(FailureSubject::Storage, "storage-transaction-failed", error);
@@ -1683,11 +2482,13 @@ impl Task {
     /// seal and commit what was held, and sign and send governance. Returns
     /// `false` when the session could not take an envelope.
     async fn settle_channels(&mut self, client: Option<&Link>) -> bool {
+        if self.config.watching {
+            self.ask_watched_keys(client);
+        }
         let mut delivered = true;
         loop {
             let changes = std::mem::take(&mut self.channel_changes);
-            if changes.keys.is_empty() && changes.outgoing.is_empty() && changes.released.is_empty()
-            {
+            if changes.keys.is_empty() && changes.outgoing.is_empty() {
                 self.persist_channels(false);
                 let mut channels = self.channels.describe();
                 for ((route, from), count) in &self.opened {
@@ -1717,17 +2518,18 @@ impl Task {
                 return delivered;
             }
             let held_before = self.held_outbound.len();
-            for route in changes.released {
-                if let Some(frames) = self.held_outbound.remove(&route) {
-                    delivered &= self.publish(route, frames, client).await;
-                }
-            }
             for (route, keys) in changes.keys {
                 self.ciphers
                     .insert(route.clone(), Box::new(crate::channels::KeysCipher(keys)));
+                self.release_live(&route, client);
                 for (body, author) in self.held_inbound.remove(&route).unwrap_or_default() {
                     self.open_document(&body, author);
                 }
+                self.update(|status| {
+                    if let Some(status) = status.routes.get_mut(&route) {
+                        status.awaiting_keys = 0;
+                    }
+                });
                 if let Some(frames) = self.held_outbound.remove(&route) {
                     delivered &= self.publish(route, frames, client).await;
                 }
@@ -1737,6 +2539,11 @@ impl Task {
                 self.release_barriers();
             }
             for outgoing in changes.outgoing {
+                if self.config.watching {
+                    // A watching page is no channel member: it asks nothing
+                    // over the channel and acknowledges nothing there.
+                    continue;
+                }
                 let Some(client) = client else {
                     // Offline: overdue requests are sent again after the
                     // reconnect; acknowledgements go with the next frame.
@@ -1744,7 +2551,7 @@ impl Task {
                 };
                 let signer = Arc::clone(&self.signer);
                 let device = self.config.cert.device_public_key;
-                if let Some(envelope) = sign_governance(signer.as_ref(), device, outgoing).await {
+                for envelope in sign_governance(signer.as_ref(), device, outgoing).await {
                     delivered &= client.send(envelope).is_ok();
                 }
             }
@@ -1757,33 +2564,128 @@ impl Task {
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct SavedPeerChannels {
     channels: crate::channels::SavedChannels,
+    requests: Vec<collab_types::MlsAccessRequestV1>,
     held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
 }
 
+/// Version two retained channel membership and held edits but did not
+/// retain the pending access request that belongs to its member keys.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct V2SavedPeerChannels {
+    channels: crate::channels::SavedChannels,
+    held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
+}
+
+/// [`SavedPeerChannels`] as pages stored it with its vault inside.
+#[derive(serde::Deserialize)]
+struct LegacySavedPeerChannels {
+    channels: crate::channels::LegacySavedChannels,
+    held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
+}
+
+/// Stored channel state in either form.
+enum StoredChannels {
+    Current(crate::channels::SavedChannels),
+    Legacy(crate::channels::LegacySavedChannels),
+}
+
+impl Default for StoredChannels {
+    fn default() -> Self {
+        Self::Current(crate::channels::SavedChannels::default())
+    }
+}
+
+#[derive(Default)]
+struct LoadedChannels {
+    channels: StoredChannels,
+    requests: Vec<collab_types::MlsAccessRequestV1>,
+    held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
+}
+
+/// Opens stored channel state that keeps its vault apart. State stored
+/// before starts with 32 random vault bytes instead, which match this only
+/// by a 2^-192 chance.
+const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v3";
+const V2_SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v2";
+
+impl SavedPeerChannels {
+    fn encode(&self) -> Result<Vec<u8>, String> {
+        let mut bytes = SAVED_CHANNELS_TAG.to_vec();
+        postcard::to_io(self, &mut bytes).map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Option<LoadedChannels> {
+        if let Some(current) = bytes.strip_prefix(SAVED_CHANNELS_TAG) {
+            let saved: Self = postcard::from_bytes(current).ok()?;
+            return Some(LoadedChannels {
+                channels: StoredChannels::Current(saved.channels),
+                requests: saved.requests,
+                held: saved.held,
+            });
+        }
+        if let Some(v2) = bytes.strip_prefix(V2_SAVED_CHANNELS_TAG) {
+            let saved: V2SavedPeerChannels = postcard::from_bytes(v2).ok()?;
+            return Some(LoadedChannels {
+                channels: StoredChannels::Current(saved.channels),
+                requests: Vec::new(),
+                held: saved.held,
+            });
+        }
+        let legacy: LegacySavedPeerChannels = postcard::from_bytes(bytes).ok()?;
+        Some(LoadedChannels {
+            channels: StoredChannels::Legacy(legacy.channels),
+            requests: Vec::new(),
+            held: legacy.held,
+        })
+    }
+}
+
 /// Sign a governance message with the device key and wrap it for the host,
-/// which retains it for the steward.
+/// which retains it for the steward. An access request goes twice: routed,
+/// so the steward decides Read on the record, and plain, for a steward that
+/// predates routes.
 async fn sign_governance(
     signer: &dyn DeviceSigner,
     device: [u8; 32],
     outgoing: crate::channels::Outgoing,
-) -> Option<Envelope> {
+) -> Vec<Envelope> {
+    let Some(messages) = signed_governance(signer, outgoing).await else {
+        return Vec::new();
+    };
+    messages
+        .into_iter()
+        .filter_map(|(workspace_id, message)| governance_envelope(device, workspace_id, &message))
+        .collect()
+}
+
+/// `outgoing` signed, as the messages that carry it and their workspace.
+async fn signed_governance(
+    signer: &dyn DeviceSigner,
+    outgoing: crate::channels::Outgoing,
+) -> Option<Vec<(u64, neighbour_wire::NeighbourMsg)>> {
     {
         let (workspace_id, message) = match outgoing {
             crate::channels::Outgoing::Request {
                 workspace_id,
                 room,
                 mut request,
+                route,
             } => {
                 let signature = signer.sign(request.signing_bytes().ok()?).await.ok()?;
                 request.signature = collab_types::Signature::from_bytes(signature);
-                (
-                    workspace_id,
-                    neighbour_wire::NeighbourMsg::MlsAccessRequest {
-                        room,
-                        request: Box::new(request),
-                        delivery: rand::random(),
-                    },
-                )
+                let routed = neighbour_wire::NeighbourMsg::MlsRoutedAccessRequest {
+                    room: room.clone(),
+                    request: Box::new(request.clone()),
+                    route: Box::new(route),
+                    delivery: rand::random(),
+                };
+                let plain = neighbour_wire::NeighbourMsg::MlsAccessRequest {
+                    room,
+                    request: Box::new(request),
+                    delivery: rand::random(),
+                };
+                return Some(vec![(workspace_id, routed), (workspace_id, plain)]);
             }
             crate::channels::Outgoing::Ack {
                 workspace_id,
@@ -1802,20 +2704,29 @@ async fn sign_governance(
                 )
             }
         };
-        let (channel, _) = neighbour_wire::retention(&message, false)?;
-        Some(Envelope::Delta {
-            workspace_id,
-            author_device_public_key: device,
-            authored_at_ns: crate::clock::now_ns(),
-            delta: CoeditPayload::Checkpoint {
-                channel,
-                body: postcard::to_allocvec(&message).ok()?,
-            }
-            .encode()
-            .ok()?,
-            signature: [0; 64],
-        })
+        Some(vec![(workspace_id, message)])
     }
+}
+
+/// `message`, signed governance of `workspace_id`, wrapped for the host.
+fn governance_envelope(
+    device: [u8; 32],
+    workspace_id: u64,
+    message: &neighbour_wire::NeighbourMsg,
+) -> Option<Envelope> {
+    let (channel, _) = neighbour_wire::retention(message, false)?;
+    Some(Envelope::Delta {
+        workspace_id,
+        author_device_public_key: device,
+        authored_at_ns: tilo_clock::unix_now_ns(),
+        delta: CoeditPayload::Checkpoint {
+            channel,
+            body: postcard::to_allocvec(message).ok()?,
+        }
+        .encode()
+        .ok()?,
+        signature: [0; 64],
+    })
 }
 
 impl Task {
@@ -1898,7 +2809,7 @@ fn identity_hello(workspace_id: u64, cert: &DeviceCert) -> Option<Envelope> {
     Some(Envelope::Delta {
         workspace_id,
         author_device_public_key: cert.device_public_key,
-        authored_at_ns: crate::clock::now_ns(),
+        authored_at_ns: tilo_clock::unix_now_ns(),
         delta: CoeditPayload::Checkpoint { channel, body }.encode().ok()?,
         signature: [0; 64],
     })
@@ -1920,7 +2831,7 @@ fn commit(entry: &OutboxEntry, cert: &DeviceCert) -> Envelope {
         workspace_id: entry.workspace_id,
         op: entry.op,
         author_device_public_key: cert.device_public_key,
-        authored_at_ns: crate::clock::now_ns(),
+        authored_at_ns: tilo_clock::unix_now_ns(),
         delta: payload.encode().unwrap_or_default(),
     }
 }
@@ -1933,7 +2844,7 @@ fn commit(entry: &OutboxEntry, cert: &DeviceCert) -> Envelope {
 enum Link {
     Https(HttpsLink),
     #[cfg(feature = "iroh")]
-    Iroh(tilo_relay_client::RelayClient),
+    Iroh(tilo_relay_session::RelayClient),
 }
 
 impl Link {
@@ -1995,7 +2906,7 @@ async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link,
         .map(Link::Https),
         #[cfg(feature = "iroh")]
         Host::Iroh { addr, relay_url } => {
-            use tilo_relay_client::{ClientError, RelayClient};
+            use tilo_relay_session::RelayClient;
             let mut builder = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal);
             if let Some(url) = relay_url {
                 builder = builder.relay_mode(iroh::RelayMode::Custom(url.clone().into()));
@@ -2019,11 +2930,36 @@ async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link,
             )
             .await
             .map(Link::Iroh)
-            .map_err(|error| match error {
-                ClientError::Iroh(reason) => LinkError::Unavailable(reason),
-                ClientError::Sign(reason) => LinkError::Sign(reason),
-                other => LinkError::Refused(other.to_string()),
-            })
+            .map_err(iroh_link_error)
+        }
+    }
+}
+
+/// How a failed iroh dial reads to the session loop: reachability
+/// (`Unavailable`, retried with backoff) or a host that answered and turned
+/// this device away (`Refused`/`Malformed`, which fail the session after
+/// `REFUSALS_BEFORE_FAILING` in a row). Every variant is named, so a new
+/// client error must be classified here rather than fall into a default.
+#[cfg(feature = "iroh")]
+fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkError {
+    use tilo_relay_session::ClientError;
+    match error {
+        ClientError::UnsupportedProtocol => {
+            LinkError::Unavailable("host does not speak tilo-relay/1".into())
+        }
+        ClientError::Iroh(reason) => LinkError::Unavailable(reason),
+        // Only the v2 private channel closes this way; a v1 dial never
+        // produces it, and if one did the transport is simply gone.
+        ClientError::PrivateTransportClosed => {
+            LinkError::Unavailable(ClientError::PrivateTransportClosed.to_string())
+        }
+        ClientError::Sign(reason) => LinkError::Sign(reason),
+        ClientError::Codec(reason) => LinkError::Malformed(reason),
+        // A host that rejects the device either fails its ack (auth) or
+        // closes the handshake stream, which surfaces as an I/O error on the
+        // next frame read.
+        error @ (ClientError::Auth(_) | ClientError::Io(_)) => {
+            LinkError::Refused(error.to_string())
         }
     }
 }
@@ -2044,6 +2980,83 @@ async fn live_grant(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_pending_requests_and_held_edits_survive_reopen()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let route = DocumentRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "room".into(),
+            record: "note".into(),
+        };
+        let request = collab_types::MlsAccessRequestV1::unsigned(
+            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record),
+            collab_types::Ed25519PublicKey::from_bytes([3; 32]),
+            vec![1, 2, 3],
+            7,
+        );
+        let saved = SavedPeerChannels {
+            channels: crate::channels::SavedChannels::default(),
+            requests: vec![request.clone()],
+            held: vec![(route, vec![b"before the reload".to_vec()])],
+        };
+        let decoded =
+            SavedPeerChannels::decode(&saved.encode()?).ok_or("stored state did not decode")?;
+        if postcard::to_stdvec(&decoded.requests)? != postcard::to_stdvec(&vec![request])? {
+            return Err("the pending access request changed on reopen".into());
+        }
+        if decoded.held != saved.held {
+            return Err("the held edit changed on reopen".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn version_two_keeps_held_edits_when_reopened() -> Result<(), Box<dyn std::error::Error>> {
+        let route = DocumentRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "room".into(),
+            record: "note".into(),
+        };
+        let saved = V2SavedPeerChannels {
+            channels: crate::channels::SavedChannels::default(),
+            held: vec![(route, vec![b"before the reload".to_vec()])],
+        };
+        let mut bytes = V2_SAVED_CHANNELS_TAG.to_vec();
+        postcard::to_io(&saved, &mut bytes)?;
+        let decoded = SavedPeerChannels::decode(&bytes).ok_or("version two did not decode")?;
+        if !decoded.requests.is_empty()
+            || decoded.held != saved.held
+            || !matches!(decoded.channels, StoredChannels::Current(_))
+        {
+            return Err("version two lost held edits or decoded as another version".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_state_keeps_held_edits_when_reopened() -> Result<(), Box<dyn std::error::Error>> {
+        let route = DocumentRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: "room".into(),
+            record: "note".into(),
+        };
+        let channels = crate::channels::LegacySavedChannels {
+            vault: [4; 32],
+            governors: Vec::new(),
+            members: Vec::new(),
+        };
+        let held = vec![(route, vec![b"before the reload".to_vec()])];
+        let bytes = postcard::to_stdvec(&(channels, &held))?;
+        let decoded = SavedPeerChannels::decode(&bytes).ok_or("legacy state did not decode")?;
+        if !decoded.requests.is_empty()
+            || decoded.held != held
+            || !matches!(decoded.channels, StoredChannels::Legacy(_))
+        {
+            return Err("legacy state lost held edits or decoded as another version".into());
+        }
+        Ok(())
+    }
 
     fn status(rooms: &[(u64, bool)]) -> PeerStatus {
         PeerStatus {
@@ -2155,3 +3168,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, feature = "iroh"))]
+mod iroh_connect_tests;

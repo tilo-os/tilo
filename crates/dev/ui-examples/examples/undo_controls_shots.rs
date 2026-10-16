@@ -68,7 +68,7 @@ fn type_action(state: &mut State, text: &str) -> Result<(), String> {
 
 fn cursor_at(p: Point) -> winit::event::WindowEvent {
     winit::event::WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         position: winit::dpi::PhysicalPosition::new(p.x, p.y),
     }
 }
@@ -80,7 +80,7 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
         Case::Undoable | Case::Hovered => type_action(&mut state, "hello")?,
         Case::Redoable => {
             type_action(&mut state, "hello")?;
-            if state.undo_as(Some(&author()), None, None).is_none() {
+            if state.undo_as(Some(&author()), None, None, None).is_none() {
                 return Err("seed edit could not be undone".to_owned());
             }
         }
@@ -97,7 +97,7 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
-    row.sync(&mut state.doc, &state.root);
+    row.sync(&state.doc, &state.root);
     let node = row.build_layout(&mut taffy, theme, &mut node_map);
     taffy
         .compute_layout_with_measure(
@@ -150,7 +150,7 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
                 &mut tilo_ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state.doc,
+                    state: tilo_ui::widget::Edits::lend(&mut state.doc),
                     path: &state.root,
                     handled: &mut handled,
                     focus_target: &mut ft,
@@ -175,7 +175,7 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
     row.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {}", out.display());
     Ok(())
 }

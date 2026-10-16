@@ -48,12 +48,9 @@ pipewire = ["dep:pipewire"]
 test-support = ["dep:tilo-test-env"]
 
 [dependencies]
-tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
-# Transport CRDT. A tiny automerge document carries follow-the-host playback
-# state (playing / position / rate / epoch) between peers so a joiner follows
-# the host with drift correction. Same pin as `ui` so a single copy resolves.
-automerge.workspace = true
-tilo-automerge.workspace = true
+tilo-lock = { version = "0.1.0", path = "../tilo-lock" }
+tilo-platform-caps = { version = "0.1.0", path = "../tilo-platform-caps" }
+tilo-files = { version = "0.1.0", path = "../tilo-files" }
 blake3.workspace = true
 serde.workspace = true
 hex.workspace = true
@@ -126,7 +123,3 @@ tilo-advisory-lock = { path = "../../system/advisory-lock" }
 
 [lints]
 workspace = true
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-# Enable Automerge's own browser entropy and clock support.
-automerge = { workspace = true, features = ["wasm"] }

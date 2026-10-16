@@ -22,7 +22,7 @@ set -uo pipefail
 
 RUNNER="${RUNNER:-}"
 STORE="${STORE:-/usr/share/tilo-apps}"
-RUNTIME_VERSION="${RUNTIME_VERSION:-2026.07}"
+RUNTIME_RELEASE="${RUNTIME_RELEASE:-2026.07}"
 # How many packages the store must list. The image build fails unless every app
 # with a built binary installs, so this is a floor, not a guess — set it to what
 # the build reported and a silently-shrinking store is caught.
@@ -90,9 +90,17 @@ else
 fi
 
 # --- 3. the runtime bundle every app declares actually resolves --------------
-# This is what RuntimeBundleMissing is: the manifest names tilo-runtime/<v> and
-# the launcher refuses to start the app when /usr/lib/tilo-runtime/<v>/ has no
-# bundle.toml. Assert the file, then assert the tool agrees it is valid.
+# This is what RuntimeBundleMissing is: the manifest names the runtime build
+# tilo-runtime/<release>+native.<digest> and the launcher refuses to start the
+# app when /usr/lib/tilo-runtime/<that version>/ has no bundle.toml. Every
+# preinstalled app names the one build the image bakes. Assert the file, then
+# assert the tool agrees it is valid.
+RUNTIME_VERSION="$(on "sed -n 's|^runtime *= *\"tilo-runtime/\\($RUNTIME_RELEASE+native\\.[0-9a-f]*\\)\".*|\\1|p' $STORE/pkgs/*.pkg/manifest.toml | sort -u")"
+if [ -n "$RUNTIME_VERSION" ] && [ "$(printf '%s\n' "$RUNTIME_VERSION" | grep -c .)" = 1 ]; then
+  ok "every preinstalled app names one runtime build: $RUNTIME_VERSION"
+else
+  bad "preinstalled apps do not all name one runtime build of $RUNTIME_RELEASE: ${RUNTIME_VERSION:-none}"
+fi
 if on "test -f /usr/lib/tilo-runtime/$RUNTIME_VERSION/bundle.toml"; then
   ok "/usr/lib/tilo-runtime/$RUNTIME_VERSION/bundle.toml is present"
 else
@@ -142,6 +150,37 @@ else
   bad "tilo cannot discover its app/store/system provider commands"
 fi
 
+# --- 4b. a build linked against another runtime is refused, not installed ---
+# The field failure this guards: registry builds linked against a different
+# Rust libstd than the image's runtime were installed over the system apps,
+# and every one then died at exec. Repack a shipped app as if it had been
+# linked against another runtime build and install it into a scratch store
+# (nothing on the subject machine changes): the installer must refuse it and
+# say how to get the runtime it needs.
+refusal="$(on 'set -e
+scratch=$(mktemp -d); trap "rm -rf \"$scratch\"" EXIT
+pkg=$(ls -d '"$STORE"'/pkgs/*.pkg | head -1)
+payload=${pkg%.pkg}
+tilo-runtime-bundle key generate --out "$scratch/id.json" >/dev/null
+key=$(tilo-runtime-bundle key pubkey --identity "$scratch/id.json")
+sed -e "s|^\(identity *= *\)\"ed25519:[0-9a-fA-F]*\"|\1\"ed25519:$key\"|" \
+    -e "s|^runtime *= *\"tilo-runtime/\([0-9.]*\)+native\.[0-9a-f]*\"|runtime = \"tilo-runtime/\1+native.00000000000000000000000000000000\"|" \
+    "$pkg/manifest.toml" > "$scratch/manifest.toml"
+grep -q "+native.00000000000000000000000000000000" "$scratch/manifest.toml"
+tilo-app-package pack --manifest "$scratch/manifest.toml" --payload "$payload" \
+    --identity "$scratch/id.json" --output "$scratch/other.tapp" >/dev/null
+if TILO_APPS_DATA_DIR="$scratch/apps" XDG_DATA_HOME="$scratch/data" \
+   XDG_CONFIG_HOME="$scratch/config" HOME="$scratch" \
+   tilo-install install "$scratch/other.tapp" --allow-self-signed 2>&1; then
+  echo INSTALLED
+fi' 2>&1)"
+if grep -q "needs runtime" <<<"$refusal" && ! grep -q INSTALLED <<<"$refusal"; then
+  ok "an app linked against another runtime build is refused with the way to fetch it"
+else
+  bad "an app linked against another runtime build was not refused:
+$(printf '%s\n' "$refusal" | tail -5 | sed 's/^/      /')"
+fi
+
 # --- 5. the confined shell runtime the Terminal requires is serving ----------
 # apps/terminal declares ush = "required@1"; without this socket the launcher
 # refuses to start it at all.
@@ -162,7 +201,13 @@ fi
 # proves the guest created all four shims and can parse their supported surface;
 # the broker request/response and signed update mutation are covered by native
 # Rust integration tests so this boot check never changes the subject machine.
-if on "/usr/libexec/tilo-ush run -c 'app --help >/dev/null && store --help >/dev/null && tilo --help >/dev/null && system --help >/dev/null'"; then
+if on 'test "$(readlink -e /usr/bin/ush)" = /usr/libexec/tilo-ush'; then
+  ok "ush is available on PATH through the confined runtime"
+else
+  bad "ush is missing from PATH or does not use the confined runtime"
+fi
+
+if on "/usr/bin/ush -c 'app --help >/dev/null && store --help >/dev/null && tilo --help >/dev/null && system --help >/dev/null'"; then
   ok "the sandboxed Terminal exposes discoverable app and system commands"
 else
   bad "the sandboxed Terminal cannot discover its brokered management commands"

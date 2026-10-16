@@ -95,7 +95,7 @@ struct Results {
     sequence: u64,
     last_progress: Option<(usize, &'static str, u64)>,
     error: bool,
-    publication_error: Option<atomic_file::PublicationError>,
+    publication_error: Option<tilo_files::native::atomic::PublicationError>,
 }
 struct Control {
     cancel: AtomicBool,
@@ -866,11 +866,6 @@ struct PublishRequest<'a> {
     bytes: Option<&'a Vec<u8>>,
     moving: bool,
 }
-#[allow(
-    clippy::too_many_lines,
-    clippy::needless_pass_by_value,
-    reason = "keep owned source and durable publication/removal transitions in one auditable scope"
-)]
 fn copy_publish(
     ctx: &mut Context<'_>,
     request: PublishRequest<'_>,
@@ -939,7 +934,6 @@ fn copy_publish(
 }
 #[allow(
     clippy::too_many_lines,
-    clippy::needless_pass_by_value,
     reason = "one owner encloses every post-creation exit while the inner scope tracks publication/removal"
 )]
 fn copy_publish_staged(
@@ -1837,7 +1831,6 @@ fn trash(ctx: &Context<'_>, entry: &GrantedEntry) -> Result<ItemOutcome, FsError
 
 #[cfg(test)]
 #[allow(
-    clippy::arithmetic_side_effects,
     clippy::too_many_lines,
     reason = "bounded temporary fixtures and explicit lifecycle assertions"
 )]
@@ -1852,17 +1845,17 @@ pub(super) mod tests {
     };
     use tempfile::TempDir;
 
-    fn assert_publication(error: &FsError, expected: atomic_file::PublicationState) {
+    fn assert_publication(error: &FsError, expected: tilo_files::native::atomic::PublicationState) {
         let source = std::error::Error::source(error).expect("owned publication source");
         let publication = source
-            .downcast_ref::<atomic_file::PublicationError>()
+            .downcast_ref::<tilo_files::native::atomic::PublicationError>()
             .expect("typed publication error");
         assert_eq!(publication.state(), expected);
     }
 
     #[test]
     fn receipt_publication_initial_admission_phases() {
-        use atomic_file::{
+        use tilo_files::native::atomic::{
             PublicationState as State,
             test_support::{Checkpoint, with_failure},
         };
@@ -1895,7 +1888,7 @@ pub(super) mod tests {
 
     #[test]
     fn receipt_publication_worker_preserves_first_failure_and_drains_updates() {
-        use atomic_file::{PublicationState as State, test_support::Checkpoint};
+        use tilo_files::native::atomic::{PublicationState as State, test_support::Checkpoint};
         for phase in ["Staged", "Published", "Item", "Finished"] {
             for (fault, expected) in [
                 (Checkpoint::BeforeDataFlush, State::NotPublished),
@@ -2005,8 +1998,10 @@ pub(super) mod tests {
             })
             .unwrap();
         barrier.entered();
-        f.store.hooks.lock().unwrap().publication_failure =
-            Some(("Item", atomic_file::test_support::Checkpoint::BeforeCommit));
+        f.store.hooks.lock().unwrap().publication_failure = Some((
+            "Item",
+            tilo_files::native::atomic::test_support::Checkpoint::BeforeCommit,
+        ));
         barrier.release();
         let deadline = tilo_test_env::hang_deadline();
         // Wait for the terminal error without consuming the queued first item.
@@ -2023,7 +2018,7 @@ pub(super) mod tests {
         );
         assert_publication(
             &job.poll().unwrap_err(),
-            atomic_file::PublicationState::PublishedDurabilityUnknown,
+            tilo_files::native::atomic::PublicationState::PublishedDurabilityUnknown,
         );
         assert!(matches!(job.poll(), Err(FsError::StoreUnavailable)));
         assert_eq!(fs::read(f.dest("a")).unwrap(), b"first");
@@ -2037,7 +2032,7 @@ pub(super) mod tests {
         f.hooks(Hooks {
             publication_failure: Some((
                 "Published",
-                atomic_file::test_support::Checkpoint::BeforeDataFlush,
+                tilo_files::native::atomic::test_support::Checkpoint::BeforeDataFlush,
             )),
             ..Hooks::default()
         });
@@ -2051,7 +2046,10 @@ pub(super) mod tests {
             assert!(Instant::now() < deadline);
             std::thread::yield_now();
         };
-        assert_publication(&error, atomic_file::PublicationState::NotPublished);
+        assert_publication(
+            &error,
+            tilo_files::native::atomic::PublicationState::NotPublished,
+        );
         assert!(!f.source("a").exists());
         assert_eq!(fs::read(f.dest("a")).unwrap(), b"moved");
         drop(job);
@@ -2082,7 +2080,7 @@ pub(super) mod tests {
         f.hooks(Hooks {
             publication_failure: Some((
                 "Published",
-                atomic_file::test_support::Checkpoint::BeforeDataFlush,
+                tilo_files::native::atomic::test_support::Checkpoint::BeforeDataFlush,
             )),
             ..Hooks::default()
         });
@@ -2105,7 +2103,10 @@ pub(super) mod tests {
             assert!(Instant::now() < deadline);
             std::thread::yield_now();
         };
-        assert_publication(&error, atomic_file::PublicationState::NotPublished);
+        assert_publication(
+            &error,
+            tilo_files::native::atomic::PublicationState::NotPublished,
+        );
         assert_eq!(fs::read(f.dest("restored")).unwrap(), b"restore bytes");
         assert!(!stage.exists());
         assert!(
@@ -2136,7 +2137,7 @@ pub(super) mod tests {
         barrier.entered();
         f.store.hooks.lock().unwrap().publication_failure = Some((
             "SourceRemovalStarted",
-            atomic_file::test_support::Checkpoint::BeforeCommit,
+            tilo_files::native::atomic::test_support::Checkpoint::BeforeCommit,
         ));
         barrier.release();
         let deadline = tilo_test_env::hang_deadline();
@@ -2149,7 +2150,7 @@ pub(super) mod tests {
         };
         assert_publication(
             &error,
-            atomic_file::PublicationState::PublishedDurabilityUnknown,
+            tilo_files::native::atomic::PublicationState::PublishedDurabilityUnknown,
         );
         assert_eq!(fs::read(f.source("a")).unwrap(), b"retained source");
         assert_eq!(fs::read(f.dest("a")).unwrap(), b"retained source");
@@ -2164,7 +2165,10 @@ pub(super) mod tests {
     pub(crate) struct Hooks {
         pub rename_error: Option<rustix::io::Errno>,
         pub fail_checkpoint: Option<&'static str>,
-        pub publication_failure: Option<(&'static str, atomic_file::test_support::Checkpoint)>,
+        pub publication_failure: Option<(
+            &'static str,
+            tilo_files::native::atomic::test_support::Checkpoint,
+        )>,
         pub stop_after_stage: bool,
         pub copy_eio: bool,
         pub remove_error: bool,

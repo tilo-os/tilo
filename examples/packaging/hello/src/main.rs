@@ -1,24 +1,23 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
 )]
 
-use runtime::{collab, fs, identity, is_tilo_native, portal, portal_xdg};
+use runtime_collab as collab;
+use runtime_fs as fs;
+use runtime_identity as identity;
+use runtime_portal::{self as portal, NotAvailable, is_tilo_native};
 
 // Thin build only: pull the shared runtime SDK dylib
 // (`libruntime_dylib.so`) into the link graph. Without this reference
 // rustc's unused-crate elimination drops the wrapper, and
-// `-C prefer-dynamic` then satisfies `runtime` from its static rlib
+// `-C prefer-dynamic` then satisfies the runtime crates from their static rlibs
 // instead of the dylib. Naming it here forces the dylib to be linked,
-// so `runtime` (and its whole graph) is served dynamically and the
+// so the runtime crates (and their whole graph) are served dynamically and the
 // `tilo-hello` binary keeps only its own code. Compiled out entirely in
 // normal (static) builds.
 #[cfg(feature = "thin")]
@@ -51,13 +50,13 @@ fn main() {
     // identity.
     match identity::load() {
         Ok(id) => {
-            let hex = hex_encode(&id.group_public_key());
+            let hex = hex::encode(id.group_public_key());
             println!("  identity : connected (pubkey={hex})");
         }
-        Err(runtime::NotAvailable::ServiceFdMissing) => {
+        Err(NotAvailable::ServiceFdMissing) => {
             println!("  identity : unavailable (env var unset — graceful)");
         }
-        Err(runtime::NotAvailable::ConnectionFailed(e)) => {
+        Err(NotAvailable::ConnectionFailed(e)) => {
             println!("  identity : unavailable (load failed: {e})");
         }
         Err(other) => println!("  identity : unavailable ({other:?})"),
@@ -65,7 +64,7 @@ fn main() {
     println!();
 
     println!("== fds ==");
-    for name in ["collab", "fs", "spellcheck"] {
+    for name in ["collab", "fs"] {
         match portal::service_fd(name) {
             Some(fd) => println!("  {name:9}: fd={fd} (present)"),
             None => println!("  {name:9}: absent"),
@@ -115,101 +114,28 @@ fn main() {
     }
     println!();
 
-    println!("== xdg portal probes ==");
-    // Cheap presence check first. If the bus isn't there, all the
-    // portal calls will surface `NotAvailable` — the whole point of
-    // the graceful-degradation contract.
-    println!(
-        "  is_portal_available: {}",
-        portal_xdg::is_portal_available()
-    );
+    println!("== xdg portals ==");
+    // The launcher proxies the session bus in only for the portals the
+    // manifest's `[sandbox.portals]` declares.
     println!(
         "  DBUS_SESSION_BUS_ADDRESS: {}",
         std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap_or_else(|_| "(unset)".into())
-    );
-    // Notification: fire-and-forget — the portal returns as soon as
-    // the bubble is enqueued, so we can call it inline.
-    report_portal(
-        "notifications",
-        portal_xdg::Notification::send("tilo-hello reporting in"),
-    );
-    // Secret: this may prompt the user, so it can block on the portal
-    // frontend. Wrap in a short timeout so this probe never hangs the
-    // demo — a "timed-out" line still proves the bus is reachable.
-    report_portal(
-        "secret",
-        with_timeout(std::time::Duration::from_millis(750), || {
-            portal_xdg::Secret::retrieve().map(|_| ())
-        }),
     );
     println!();
 
     println!("tilo-hello: done.");
 }
 
-/// Run a fallible closure on a worker thread with a deadline. If it
-/// finishes in time we return its result; otherwise we return
-/// `Cancelled` (the closest existing `PortalError` variant meaning
-/// "no answer from the portal") — the worker thread is left running,
-/// which is fine for a short-lived probe.
-fn with_timeout<F>(dur: std::time::Duration, f: F) -> Result<(), portal_xdg::PortalError>
-where
-    F: FnOnce() -> Result<(), portal_xdg::PortalError> + Send + 'static,
-{
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(f());
-    });
-    match rx.recv_timeout(dur) {
-        Ok(r) => r,
-        Err(_) => Err(portal_xdg::PortalError::Cancelled),
-    }
-}
-
-fn report_portal(name: &str, result: Result<(), portal_xdg::PortalError>) {
-    match result {
-        Ok(()) => println!("  {name:14}: OK"),
-        Err(portal_xdg::PortalError::NotAvailable) => {
-            println!("  {name:14}: unavailable — graceful (no bus / launcher didn't plumb)");
-        }
-        Err(portal_xdg::PortalError::PortalNotFound) => {
-            println!("  {name:14}: bus reachable but no portal frontend installed");
-        }
-        Err(portal_xdg::PortalError::Cancelled) => {
-            println!(
-                "  {name:14}: no answer within timeout (portal likely blocking on user consent)"
-            );
-        }
-        Err(other) => println!("  {name:14}: error ({other})"),
-    }
-}
-
-/// Render a byte slice as lowercase hex. Used to print the loaded
-/// Ed25519 pubkey (32 bytes → 64 hex chars) — a maintainer grepping
-/// broker logs for a specific device's presence events wants the raw
-/// hex, not the base64 the wire uses.
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
-    for b in bytes {
-        // Both indices are nibbles (0..=15) so they're always in bounds;
-        // `.get()` + a fallback avoids `indexing_slicing` without changing behaviour.
-        out.push(HEX.get((b >> 4) as usize).copied().unwrap_or(b'?') as char);
-        out.push(HEX.get((b & 0xF) as usize).copied().unwrap_or(b'?') as char);
-    }
-    out
-}
-
-fn report(name: &str, result: Result<(), runtime::NotAvailable>) {
+fn report(name: &str, result: Result<(), NotAvailable>) {
     match result {
         Ok(()) => println!("  {name}: connected"),
-        Err(runtime::NotAvailable::ServiceFdMissing) => {
+        Err(NotAvailable::ServiceFdMissing) => {
             println!("  {name}: unavailable (no fd — graceful)");
         }
-        Err(runtime::NotAvailable::ConnectionFailed(e)) => {
+        Err(NotAvailable::ConnectionFailed(e)) => {
             println!("  {name}: unavailable (connect failed: {e})");
         }
-        Err(runtime::NotAvailable::ProtocolMismatch { expected, got }) => {
+        Err(NotAvailable::ProtocolMismatch { expected, got }) => {
             println!("  {name}: protocol mismatch (want v{expected}, got v{got})");
         }
         Err(other) => println!("  {name}: unavailable ({other:?})"),

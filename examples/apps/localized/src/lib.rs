@@ -1,7 +1,7 @@
 //! Localized: every word the user reads comes from a Fluent catalog.
 //!
 //! Widgets take message ids, never prose: `Text::new("localized-title")`,
-//! `Button::new(id, "localized-add", None)`, placeholders and labels alike.
+//! `Button::new(id, "localized-add")`, placeholders and labels alike.
 //! Values that vary go in as Fluent arguments, and the catalog decides the
 //! words around them, including plural forms, which differ by language:
 //! see `locales/en-US.ftl` and `locales/de-DE.ftl`.
@@ -23,10 +23,6 @@ pub const APP_TITLE: &str = "Localized";
 
 pub mod locales;
 
-fn install_catalog() {
-    locales::install();
-}
-
 use ui::prelude::*;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -35,14 +31,10 @@ pub struct Shelf {
     pub books: u32,
 }
 
+/// The reader's name is edited at its path; the shelf's verbs keep the count
+/// in range.
 #[resource(kind = "example.shelf", label = "Shelf")]
 impl Shelf {
-    /// Set the reader's name.
-    #[action]
-    pub fn set_reader(&mut self, #[param("Reader's name")] reader: String) {
-        self.reader = reader;
-    }
-
     /// Put a book on the shelf.
     #[action]
     pub fn add_book(&mut self) -> Result<(), &'static str> {
@@ -82,23 +74,22 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
+        Some(&crate::locales::CATALOG)
+    }
+
     fn view(cx: &mut ViewCx<Shelf>) -> Element {
-        install_catalog();
+        let p = cx.paths();
+        // Labels are the generated keys of locales/en-US.ftl: a misspelt one
+        // does not compile.
         let reader = cx
-            .input(|shelf| shelf.reader.clone(), Shelf::SET_READER)
+            .input(p.reader.clone())
             .with_id("reader-input")
             .with_placeholder("localized-reader-placeholder");
-        let name = cx.value(|shelf| shelf.reader.clone());
-        let books = cx.value(|shelf| shelf.books);
-        let actions = cx.actions();
-        let add = actions.bind_invocation(
-            Button::new("add-book", "localized-add", None),
-            Shelf::ADD_BOOK.invoke(),
-        );
-        let remove = actions.bind_invocation(
-            Button::new("remove-book", "localized-remove", None),
-            Shelf::REMOVE_BOOK.invoke(),
-        );
+        let name = cx.value_at(&p.reader);
+        let books = cx.value_at(&p.books);
+        let add = cx.button("localized-add", Shelf::ADD_BOOK.invoke());
+        let remove = cx.button("localized-remove", Shelf::REMOVE_BOOK.invoke());
         Box::new(ui::column![
             Text::new("localized-title").with_role(TextRole::Title),
             labeled_field("localized-reader-label", reader),

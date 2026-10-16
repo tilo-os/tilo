@@ -186,6 +186,10 @@ pub struct EncoderInit {
     pub hdr: Option<Hdr10Metadata>,
     /// Offer the zero-copy dmabuf path (compositor buffers are `BGRx`).
     pub dmabuf_input: bool,
+    /// Encode at this size rather than `width`×`height`: frames are scaled
+    /// down first, for receivers whose hardware decoders stop short of the
+    /// window's size.
+    pub output: Option<(u32, u32)>,
 }
 
 impl EncoderInit {
@@ -208,6 +212,7 @@ impl EncoderInit {
             colorimetry: Colorimetry::sdr_bt709(),
             hdr: None,
             dmabuf_input: false,
+            output: None,
         }
     }
 
@@ -250,27 +255,8 @@ impl EncoderInit {
             colorimetry: hdr.colorimetry(),
             hdr: Some(hdr.metadata),
             dmabuf_input: false,
+            output: None,
         }
-    }
-
-    /// HEVC Main10 HDR10.
-    pub fn hdr10_hevc(
-        width: u32,
-        height: u32,
-        fps: u32,
-        bitrate_kbps: u32,
-        keyframe_interval_secs: u32,
-        hdr: HdrConfig,
-    ) -> Self {
-        Self::hdr10(
-            Codec::HevcMain10,
-            width,
-            height,
-            fps,
-            bitrate_kbps,
-            keyframe_interval_secs,
-            hdr,
-        )
     }
 
     /// Bits per sample of the encoded stream.
@@ -291,6 +277,7 @@ impl EncoderChoice {
             EncoderChoice::Software => RealtimePolicy::SoftwareOnly,
             EncoderChoice::Vaapi => RealtimePolicy::Prefer(CodecFamily::Va),
             EncoderChoice::Nvenc => RealtimePolicy::Prefer(CodecFamily::NvCodec),
+            EncoderChoice::V4l2 => RealtimePolicy::Prefer(CodecFamily::V4l2),
         }
     }
 }
@@ -346,6 +333,7 @@ fn media_config(init: &EncoderInit, choice: EncoderChoice) -> EncoderConfig {
         InputFormat::Rgba
     };
     config.dmabuf_input = init.dmabuf_input;
+    config.output_size = init.output.map(|(width, height)| (width & !1, height & !1));
     config.color = colour(init.colorimetry);
     config.hdr = init.hdr.map(hdr_metadata);
     config.screen_content = true;
@@ -687,6 +675,12 @@ mod tests {
                 EncoderChoice::Nvenc.policy(),
                 RealtimePolicy::Prefer(CodecFamily::NvCodec)
             );
+            assert_eq!(
+                EncoderChoice::V4l2.policy(),
+                RealtimePolicy::Prefer(CodecFamily::V4l2)
+            );
+            let parsed: EncoderChoice = serde_json::from_str("\"v4l2\"").unwrap();
+            assert_eq!(parsed, EncoderChoice::V4l2);
         }
     }
 }

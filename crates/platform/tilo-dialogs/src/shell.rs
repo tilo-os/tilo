@@ -5,13 +5,14 @@
 //! ([`FD_ENV`]) and names the app and its workspace on it before the sandbox
 //! starts, so the shell knows who asks without trusting the app. Requests and
 //! replies are newline-delimited JSON ([`Request`], [`Reply`]). The shell
-//! shows its own file chooser on screen, limited to the files the app was
-//! granted, and opens a file in the app that owns it. When nobody is at the
+//! shows its own file chooser. Legacy path results remain limited to existing
+//! grants; owner-confirmed contents selections expose only bounded bytes on this
+//! connection, never a directory grant or a replayable host path. When nobody is at the
 //! computer it answers [`Reply::Nobody`] and the app falls back to the
 //! unattended picker ([`crate::unattended_picker`]).
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Read as _, Write};
+use std::io::{BufReader, Write};
 use std::os::fd::{FromRawFd as _, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -21,9 +22,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 
 use crate::portal::{
-    FileFilter, LaunchChannel, LaunchOutcome, LaunchRequest, MultiChannel, MultiOutcome,
-    OpenFileChannel, OpenFileOutcome, OpenedFile, PickKind, PickRequest, PortalChannel,
-    PortalOutcome,
+    ContentsChannel, ContentsOutcome, FileFilter, LaunchChannel, LaunchOutcome, LaunchRequest,
+    MultiChannel, MultiOutcome, OpenFileChannel, OpenFileOutcome, OpenedFile, PickKind,
+    PickRequest, PickedContents, PortalChannel, PortalOutcome,
 };
 use crate::{FilePicker, answered};
 
@@ -67,6 +68,20 @@ pub struct Filter {
     pub mimetypes: Vec<String>,
 }
 
+/// A private, read-only selection on one authenticated chooser connection.
+/// The token names an already-open regular file, never a replayable host path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilePortalGrant {
+    pub request: u64,
+    pub token: String,
+    pub name: String,
+    pub size: u64,
+}
+
+pub const MAX_CONTENT_BYTES: u64 = 64 * 1024 * 1024;
+pub const CONTENT_CHUNK_BYTES: u32 = 8192;
+pub const MAX_CONTENT_FILES: usize = 16;
+
 /// App → shell.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -87,15 +102,48 @@ pub enum Request {
         #[serde(default)]
         filters: Vec<Filter>,
     },
+    /// Owner selection for contents; the app supplies no filesystem path.
+    PickContents {
+        id: u64,
+        multiple: bool,
+        title: String,
+        accept_label: String,
+        filters: Vec<Filter>,
+    },
+    ReadContents {
+        id: u64,
+        grant: FilePortalGrant,
+        offset: u64,
+        max_bytes: u32,
+    },
+    ReleaseContents {
+        id: u64,
+        grant: FilePortalGrant,
+    },
     /// Open `path` in the app that owns its type; answered by
     /// [`Reply::Opened`] or [`Reply::Failed`].
-    Open { id: u64, path: PathBuf },
+    Open {
+        id: u64,
+        path: PathBuf,
+    },
 }
 
 /// Shell → app. Every reply names the request it answers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Reply {
+    ContentsGranted {
+        id: u64,
+        grants: Vec<FilePortalGrant>,
+    },
+    ContentsChunk {
+        id: u64,
+        bytes: Vec<u8>,
+        eof: bool,
+    },
+    ContentsReleased {
+        id: u64,
+    },
     Picked {
         id: u64,
         paths: Vec<PathBuf>,
@@ -120,7 +168,10 @@ impl Reply {
     #[must_use]
     pub fn id(&self) -> u64 {
         match self {
-            Reply::Picked { id, .. }
+            Reply::ContentsGranted { id, .. }
+            | Reply::ContentsChunk { id, .. }
+            | Reply::ContentsReleased { id }
+            | Reply::Picked { id, .. }
             | Reply::Cancelled { id }
             | Reply::Nobody { id }
             | Reply::Opened { id }
@@ -217,17 +268,7 @@ impl Connection {
 
 fn read_replies(connection: &Connection, stream: UnixStream) {
     let mut reader = BufReader::new(stream);
-    let mut frame = Vec::new();
-    loop {
-        frame.clear();
-        match (&mut reader)
-            .take((MAX_FRAME_BYTES as u64).saturating_add(1))
-            .read_until(b'\n', &mut frame)
-        {
-            Ok(0) | Err(_) => break,
-            Ok(_) if frame.last() != Some(&b'\n') => break,
-            Ok(_) => {}
-        }
+    while let Ok(Some(frame)) = wire_frame::read_line(&mut reader, MAX_FRAME_BYTES) {
         let Ok(reply) = serde_json::from_slice::<Reply>(frame.trim_ascii_end()) else {
             tracing::warn!("the session's file chooser sent an unreadable reply");
             break;
@@ -373,9 +414,7 @@ impl ShellChooser {
                         None => failed(NOBODY.to_owned()),
                     },
                     Reply::Failed { reason, .. } => failed(reason),
-                    Reply::Opened { .. } => {
-                        failed("the session's file chooser answered out of turn".to_owned())
-                    }
+                    _ => failed("the session's file chooser answered out of turn".to_owned()),
                 });
             }),
         );
@@ -386,7 +425,140 @@ fn closed_recv<T>(rx: &std::sync::mpsc::Receiver<T>, closed: T) -> T {
     rx.recv().unwrap_or(closed)
 }
 
+impl Drop for ShellChooser {
+    fn drop(&mut self) {
+        if let Ok(writer) = self.connection.writer.lock() {
+            let _ = writer.shutdown(std::net::Shutdown::Both);
+        }
+        self.connection.close();
+    }
+}
+
+fn read_contents(connection: &Connection, grants: Vec<FilePortalGrant>) -> ContentsOutcome {
+    let result = (|| {
+        if grants.is_empty() || grants.len() > MAX_CONTENT_FILES {
+            return Err("invalid selected file grants".to_owned());
+        }
+        let mut total = 0_u64;
+        let mut files = Vec::new();
+        for grant in &grants {
+            total = total
+                .checked_add(grant.size)
+                .ok_or("selected files are too large")?;
+            if total > MAX_CONTENT_BYTES || grant.token.len() != 36 {
+                return Err("selected files are too large or unavailable".to_owned());
+            }
+            let mut bytes = Vec::new();
+            loop {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let offset = bytes.len() as u64;
+                let selected = grant.clone();
+                connection.ask(
+                    move |id| Request::ReadContents {
+                        id,
+                        grant: selected,
+                        offset,
+                        max_bytes: CONTENT_CHUNK_BYTES,
+                    },
+                    Box::new(move |reply| {
+                        let _ = tx.send(reply);
+                    }),
+                );
+                match rx.recv_timeout(std::time::Duration::from_secs(60)) {
+                    Ok(Reply::ContentsChunk {
+                        bytes: chunk, eof, ..
+                    }) if chunk.len() <= CONTENT_CHUNK_BYTES as usize
+                        && offset.saturating_add(chunk.len() as u64) <= grant.size =>
+                    {
+                        bytes.extend(chunk);
+                        if eof {
+                            if bytes.len() as u64 != grant.size {
+                                return Err("selected file changed".to_owned());
+                            }
+                            break;
+                        }
+                        if bytes.len() as u64 == offset {
+                            return Err("selected file read made no progress".to_owned());
+                        }
+                    }
+                    Ok(Reply::Failed { reason, .. }) => return Err(reason),
+                    _ => return Err("selected file grant is unavailable".to_owned()),
+                }
+            }
+            files.push(PickedContents {
+                name: grant.name.clone(),
+                media_type: None,
+                bytes,
+                location: None,
+            });
+        }
+        Ok(files)
+    })();
+    for grant in grants {
+        connection.ask(
+            move |id| Request::ReleaseContents { id, grant },
+            Box::new(|_| {}),
+        );
+    }
+    result.map_or_else(ContentsOutcome::Failed, ContentsOutcome::Picked)
+}
+
 impl FilePicker for ShellChooser {
+    fn pick_contents(&self, request: PickRequest) -> ContentsChannel {
+        if !request.is_open() {
+            return answered(ContentsOutcome::Failed(
+                "only an Open chooser delivers contents".to_owned(),
+            ));
+        }
+        let (deliver, rx) = channel();
+        let connection = Arc::clone(&self.connection);
+        let fallback = self.unattended.clone();
+        let title = request.title.clone();
+        let accept_label = request.accept_label.clone();
+        let multiple = request.is_multiple();
+        let filters = request.filters.iter().map(Filter::from_portal).collect();
+        self.connection.ask(
+            move |id| Request::PickContents {
+                id,
+                multiple,
+                title,
+                accept_label,
+                filters,
+            },
+            Box::new(move |reply| {
+                let spawned = tilo_rt::background::Background::current().spawn(
+                    "tilo-portal-contents",
+                    move || {
+                        let outcome = match reply {
+                            Reply::ContentsGranted { grants, .. } => {
+                                read_contents(&connection, grants)
+                            }
+                            Reply::Cancelled { .. } => ContentsOutcome::Cancelled,
+                            Reply::Nobody { .. } => fallback.map_or_else(
+                                || ContentsOutcome::Failed(NOBODY.to_owned()),
+                                |picker| {
+                                    closed_recv(
+                                        &picker.pick_contents(request),
+                                        ContentsOutcome::Failed(CLOSED.to_owned()),
+                                    )
+                                },
+                            ),
+                            Reply::Failed { reason, .. } => ContentsOutcome::Failed(reason),
+                            _ => ContentsOutcome::Failed(
+                                "the session's file chooser answered out of turn".to_owned(),
+                            ),
+                        };
+                        deliver(outcome);
+                    },
+                );
+                if let Err(error) = spawned {
+                    tracing::warn!(%error, "cannot read selected file grant");
+                }
+            }),
+        );
+        rx
+    }
+
     fn pick(&self, request: PickRequest) -> PortalChannel {
         let (deliver, rx) = channel();
         self.pick_with(
@@ -494,6 +666,7 @@ impl FilePicker for ShellChooser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead as _, Read as _};
     use std::path::Path;
     use std::time::Duration;
 
@@ -519,7 +692,11 @@ mod tests {
 
     fn id_of(request: &Request) -> u64 {
         match request {
-            Request::Pick { id, .. } | Request::Open { id, .. } => *id,
+            Request::Pick { id, .. }
+            | Request::Open { id, .. }
+            | Request::PickContents { id, .. }
+            | Request::ReadContents { id, .. }
+            | Request::ReleaseContents { id, .. } => *id,
         }
     }
 

@@ -12,31 +12,20 @@
 //! own document. Exit status is zero only when the requested operation
 //! succeeds; failures identify the step that failed.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::process::ExitCode;
 use tilo_automerge::ApplyIncoming;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
-use collab_types::{DocumentMutation, Ed25519PublicKey, OpClass, Signature, SignedOp};
+use collab_types::{CommitNamed, DocumentMutation, Ed25519PublicKey, OpKind, Signature, SignedOp};
 
 /// Root key the probe reads and writes. One flat string is enough because the
 /// probe proves delivery, not a document model.
 const FIELD: &str = "text";
 const APP_ID: &str = "so.tilo.collab-probe";
 const RECORD_ID: &str = "";
+/// The record kind the probe's one field edit is named as.
+const RECORD_KIND: &str = "probe";
 
 fn usage() -> ExitCode {
     eprintln!(
@@ -181,7 +170,7 @@ fn signed_incremental(
         collab_types::document_artifact_id(APP_ID, workspace_id, RECORD_ID),
         Ed25519PublicKey::from_bytes(identity.signing_public_key()),
         collab_types::document_attestation_id(APP_ID, workspace_id, RECORD_ID),
-        OpClass::Splice,
+        OpKind::Change,
         now,
         seq,
     );
@@ -247,6 +236,8 @@ async fn write(workspace_id: &str, text: &str) -> ExitCode {
         eprintln!("probe: FAIL building the document: {e}");
         return ExitCode::from(6);
     }
+    // Every change names the action it ran: here, an edit of the text.
+    doc.commit_edit(RECORD_KIND, FIELD);
     let bytes = doc.save_incremental();
     let signed = match signed_incremental(&identity, workspace_id, bytes) {
         Ok(signed) => signed,
@@ -333,6 +324,7 @@ mod tests {
     fn signed_change(workspace_id: &str, text: &str) -> Vec<u8> {
         let mut doc = AutoCommit::new();
         doc.put(&ROOT, FIELD, text).unwrap();
+        doc.commit_edit(RECORD_KIND, FIELD);
         let payload = DocumentMutation::Incremental(doc.save_incremental())
             .encode()
             .unwrap();
@@ -342,7 +334,7 @@ mod tests {
             collab_types::document_artifact_id(APP_ID, workspace_id, RECORD_ID),
             author,
             collab_types::document_attestation_id(APP_ID, workspace_id, RECORD_ID),
-            OpClass::Splice,
+            OpKind::Change,
             std::time::SystemTime::now(),
             1,
         );

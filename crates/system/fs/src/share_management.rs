@@ -11,9 +11,10 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use collab_types::{
-    Ed25519PublicKey, FileInviteError, FileInviteSpec, FileInviteSubject, FileInviteV1,
-    FilePermission, FileRecordId, mint_bearer_file_invite, mint_file_invite,
+use collab_types::Ed25519PublicKey;
+use fs_protocol::{
+    FileInviteError, FileInviteSpec, FileInviteSubject, FileInviteV1, FilePermission, FileRecordId,
+    mint_bearer_file_invite, mint_file_invite,
 };
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use iroh_base::EndpointAddr;
@@ -231,7 +232,7 @@ pub enum ShareManagementError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::share_authority::{ShareGrantStatus, ShareSubjectProjection};
+    use fs_protocol::{ShareGrantStatus, ShareSubjectProjection};
     use iroh::SecretKey;
 
     const NOW: u64 = 10_000;

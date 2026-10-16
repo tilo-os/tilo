@@ -5,8 +5,8 @@
 //! Also exposes the `Relay` struct so integration tests can spin up
 //! two relays in the same process and let them merge.
 
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -14,7 +14,7 @@ use std::time::Duration;
 use iroh::endpoint::{Endpoint, RecvStream, SendStream, presets};
 use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler, Router};
 use iroh_base::{EndpointAddr, PublicKey};
-use tilo_clock::{unix_now, unix_now_ms, unix_now_ns};
+use tilo_clock::{Clock, unix_now, unix_now_ns};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 
@@ -22,12 +22,13 @@ use tilo_user_identity::{
     DeviceCert, RevocationList, verify_device_cert_at, verify_revocation_entry,
 };
 
-use crate::auth::{self, Hello, HelloAck2, PeerRole};
+use crate::auth::PeerRole;
 use crate::client::RelayClient;
 use crate::compute_session::ComputeProtocol;
 use crate::compute_transport::COMPUTE_ALPN;
 use crate::compute_worker::{ProductionComputeWorkerConfig, run_production_compute_worker};
-use crate::config::{PeerRelayConfig, RelayConfig};
+use crate::config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
+use crate::handshake::{EndpointTrust, HandshakeError, LiveIdentity};
 use crate::metrics::Metrics;
 use crate::peer::{
     PeerContext, WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace, run_peer_version,
@@ -38,6 +39,7 @@ use crate::transport::{
     HomePeerManagementRequest, HomePeerManagementResponse, MANAGEMENT_ALPN, MAX_FRAME_BYTES,
 };
 use crate::workspace::{Membership, SharedWorkspace, WorkspaceRuntime};
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 
 #[derive(serde::Deserialize)]
 struct FullReplicaStatusProof {
@@ -48,16 +50,32 @@ struct FullReplicaStatusProof {
     filesystem_endpoints: Vec<EndpointAddr>,
 }
 
-fn full_replica_proof(path: &std::path::Path) -> Option<FullReplicaStatusProof> {
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<FullReplicaStatusProof>(&bytes).ok())
-        .filter(|proof| {
-            proof.state == "ready"
-                && proof.full_content_replication
-                && !proof.filesystem_endpoints.is_empty()
-                && unix_now_ms().saturating_sub(proof.updated_at_ms) <= 5_000
-        })
+/// The headless replica's completeness proof: the status file it writes,
+/// honoured only while the replica that wrote it is alive. The running
+/// replica holds its liveness lock beside the file
+/// ([`fs::full_replica::replica_is_running`]), which the kernel releases
+/// when it exits however it exits; a stamp recent by `clock` also counts,
+/// for a replica that keeps no lock (#4224: the replica used to restamp
+/// the file every second to stay recent).
+#[derive(Clone)]
+struct ReplicaProof {
+    path: PathBuf,
+    clock: Arc<dyn Clock>,
+}
+
+impl ReplicaProof {
+    fn current(&self) -> Option<FullReplicaStatusProof> {
+        std::fs::read(&self.path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<FullReplicaStatusProof>(&bytes).ok())
+            .filter(|proof| {
+                proof.state == "ready"
+                    && proof.full_content_replication
+                    && !proof.filesystem_endpoints.is_empty()
+                    && (self.clock.now_ms().saturating_sub(proof.updated_at_ms) <= 5_000
+                        || fs::full_replica::replica_is_running(&self.path))
+            })
+    }
 }
 
 /// Failure modes for `Relay::start`.
@@ -86,6 +104,25 @@ pub enum RelayError {
     ProtocolRegistration(String),
 }
 
+/// What an embedder plugs into a relay it starts.
+struct Planes {
+    /// Answers remote-action frames addressed to this host, see
+    /// [`Relay::start_with_app_serving`].
+    app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+    /// Classifies co-edit bodies, see [`Relay::start_with_shell_payloads`].
+    shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
+}
+
+impl Planes {
+    /// The desktop's payload adapter, with `app_serving` if any.
+    fn desktop(app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>) -> Self {
+        Self {
+            app_serving,
+            shell_payloads: crate::payloads::neighbour(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RelayStartupMode {
     CertifiedHost,
@@ -100,11 +137,38 @@ pub(crate) struct GovernedAccessWriter {
     handshake_trust: HandshakeTrust,
     update: Arc<AsyncMutex<()>>,
     state_root: PathBuf,
+    shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
 }
 
 impl GovernedAccessWriter {
     pub(crate) fn state_root(&self) -> &std::path::Path {
         &self.state_root
+    }
+
+    /// The adapter the relay opens workspaces with.
+    pub(crate) const fn shell_payloads(&self) -> &Arc<dyn crate::payloads::ShellPayloads> {
+        &self.shell_payloads
+    }
+
+    /// Replace the standing of each member device of the room.
+    pub(crate) async fn replace_standings(
+        &self,
+        workspace_id: u64,
+        pinned: bool,
+        standings: crate::workspace::Standings,
+    ) -> Result<(), RelayError> {
+        let workspace = crate::workspace_io::get_or_initialize(
+            &self.workspaces,
+            self.state_root.clone(),
+            &self.shell_payloads,
+            workspace_id,
+            pinned,
+            crate::room_access::AdmissionMode::Explicit,
+            crate::peer::MAX_AUTOBOUND_WORKSPACES,
+        )
+        .await?;
+        workspace.lock().await.standings = Some(Arc::new(standings));
+        Ok(())
     }
 
     #[expect(
@@ -126,9 +190,10 @@ impl GovernedAccessWriter {
         let workspace = crate::workspace_io::get_or_initialize(
             &self.workspaces,
             self.state_root.clone(),
+            &self.shell_payloads,
             workspace_id,
             pinned,
-            false,
+            crate::room_access::AdmissionMode::Explicit,
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await?;
@@ -186,10 +251,7 @@ impl HandshakeTrust {
     }
 
     fn replace_authority_roots(&self, roots: HashSet<[u8; 32]>) {
-        *self
-            .authority_roots
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = roots;
+        *self.authority_roots.write_recover() = roots;
     }
 
     async fn refresh(&self, workspaces: &WorkspaceRegistry) {
@@ -197,13 +259,7 @@ impl HandshakeTrust {
             return;
         }
         let mut roots = self.base_roots.as_ref().clone();
-        roots.extend(
-            self.authority_roots
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .iter()
-                .copied(),
-        );
+        roots.extend(self.authority_roots.read_recover().iter().copied());
         let runtimes = workspaces
             .lock()
             .await
@@ -215,10 +271,24 @@ impl HandshakeTrust {
         }
         let mut users = roots.into_iter().map(hex::encode).collect::<Vec<_>>();
         users.sort_unstable();
-        *self
-            .live_policy
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = TrustPolicy::AllowList { users };
+        let next = TrustPolicy::AllowList { users };
+        let previous = std::mem::replace(&mut *self.live_policy.write_recover(), next.clone());
+        if narrows(&previous, &next) {
+            crate::authority_epoch::bump();
+        }
+    }
+}
+
+/// Whether `next` trusts less than `previous` did: a user root it no longer
+/// lists. One that only adds roots, as each person a public room admits
+/// does, ends nobody's session and announces nothing.
+fn narrows(previous: &TrustPolicy, next: &TrustPolicy) -> bool {
+    match (previous, next) {
+        (TrustPolicy::AllowList { users: before }, TrustPolicy::AllowList { users: after }) => {
+            let after: HashSet<&String> = after.iter().collect();
+            before.iter().any(|user| !after.contains(user))
+        }
+        _ => previous != next,
     }
 }
 
@@ -245,14 +315,13 @@ pub struct Relay {
     workspaces: WorkspaceRegistry,
     /// Metrics — cheap counters.
     metrics: Arc<Metrics>,
-    /// Own certified device. Dedicated hosts require `can_act_as_host`; the
-    /// typed interactive-owner path is instead bound to one shell authority.
-    own_cert: DeviceCert,
-    /// Own device signing key.
-    own_signing_key: ed25519_dalek::SigningKey,
-    /// Own user pubkey — the one this relay chains to.
-    own_user_public_key: [u8; 32],
-    live_revocations: Arc<std::sync::RwLock<RevocationList>>,
+    /// Own certified device, signing key, user root and live revocations.
+    /// Dedicated hosts require `can_act_as_host`; the typed interactive-owner
+    /// path is instead bound to one shell authority.
+    identity: LiveIdentity,
+    /// Only the browser listener publishes this public navigation origin.
+    #[cfg(feature = "web")]
+    pub(crate) browser_origin: Arc<std::sync::RwLock<Option<Arc<String>>>>,
     /// Federation dial tasks — one per known peer relay. Aborted
     /// (per-handle) when the `Relay` drops.
     peer_relay_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
@@ -261,12 +330,8 @@ pub struct Relay {
     /// with the verified certificate at startup.
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     /// Atomic filesystem completeness proof shared with the headless replica.
-    full_replica_status: PathBuf,
+    full_replica: ReplicaProof,
     /// What the browser carriers need to serve sessions of this relay.
-    #[cfg_attr(
-        not(feature = "web"),
-        allow(dead_code, reason = "read by the web listener")
-    )]
     web: Box<WebContext>,
     /// Live proof that the owned signed-package compute worker completed all
     /// health checks and still owns its authenticated session.
@@ -274,6 +339,8 @@ pub struct Relay {
     handshake_trust: HandshakeTrust,
     governed_access_update: Arc<AsyncMutex<()>>,
     state_root: PathBuf,
+    /// Classifies co-edit bodies for every workspace this relay opens.
+    shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
     /// The rooms this relay governs; absent when it hosts no room authority.
     rooms: Option<crate::rooms::Rooms>,
     /// Exact server-side room ceiling for native interactive startup. A
@@ -284,19 +351,25 @@ pub struct Relay {
 
 /// The relay state the browser carriers serve sessions with.
 #[derive(Clone)]
-#[cfg_attr(
-    not(feature = "web"),
-    allow(dead_code, reason = "read by the web listener")
-)]
 pub(crate) struct WebContext {
     pub(crate) relay: RelayProtocol,
+    #[cfg(feature = "web")]
     pub(crate) certification: crate::certification::CertificationProtocol,
+    /// The device of the session beside this node, once named.
+    pub(crate) node_session: Arc<std::sync::OnceLock<[u8; 32]>>,
 }
 
 impl Relay {
     #[cfg(feature = "web")]
     pub(crate) fn web_context(&self) -> &WebContext {
         &self.web
+    }
+
+    /// Name the device of the session beside this node (the shell that runs
+    /// the person's apps), which pages address to open apps there. Named
+    /// once; a later call keeps the first.
+    pub fn set_node_session(&self, device: [u8; 32]) {
+        let _ = self.web.node_session.set(device);
     }
 }
 
@@ -338,7 +411,7 @@ pub struct RelayHandle {
     pub metrics: Arc<Metrics>,
     /// Effective device-mesh policy for routing and replication consumers.
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
-    full_replica_status: PathBuf,
+    full_replica: ReplicaProof,
     compute_ready: Arc<AtomicBool>,
 }
 
@@ -378,38 +451,8 @@ impl Relay {
             None,
             Vec::new(),
             RelayStartupMode::CertifiedHost,
-            None,
-        ))
-        .await
-    }
-
-    /// Start the relay and register one host-owned protocol on the same pinned
-    /// Iroh endpoint. The router owns the handler lifecycle, including its
-    /// shutdown hook. Relay, discovery, management, and compute
-    /// ALPNs remain reserved.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RelayError::ProtocolRegistration`] for an empty or reserved
-    /// ALPN, otherwise the same startup errors as [`Self::start_with_relay_mode`].
-    pub async fn start_with_relay_mode_and_protocol<H>(
-        cfg: RelayConfig,
-        identity: RelayIdentity,
-        relay_mode: iroh::RelayMode,
-        alpn: &'static [u8],
-        handler: H,
-    ) -> Result<Self, RelayError>
-    where
-        H: ProtocolHandler,
-    {
-        Box::pin(Self::start_inner(
-            cfg,
-            identity,
-            Some(relay_mode),
-            None,
-            vec![(alpn.to_vec(), Box::<dyn DynProtocolHandler>::from(handler))],
-            RelayStartupMode::CertifiedHost,
-            None,
+            Planes::desktop(None),
+            Arc::new(tilo_clock::SystemClock),
         ))
         .await
     }
@@ -442,7 +485,8 @@ impl Relay {
             Some(endpoint),
             protocols,
             RelayStartupMode::CertifiedHost,
-            None,
+            Planes::desktop(None),
+            Arc::new(tilo_clock::SystemClock),
         ))
         .await
     }
@@ -470,7 +514,8 @@ impl Relay {
             Some(endpoint),
             protocols,
             RelayStartupMode::NativeInteractiveWorkspaceOwner,
-            None,
+            Planes::desktop(None),
+            Arc::new(tilo_clock::SystemClock),
         ))
         .await
     }
@@ -507,10 +552,6 @@ impl Relay {
     /// # Errors
     ///
     /// The same as [`Relay::start`].
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the ordered startup transaction keeps identity validation, endpoint binding, protocol wiring, and background-task ownership auditable in one place"
-    )]
     pub async fn start_with_app_serving(
         cfg: RelayConfig,
         identity: RelayIdentity,
@@ -523,7 +564,89 @@ impl Relay {
             None,
             Vec::new(),
             RelayStartupMode::CertifiedHost,
-            app_serving,
+            Planes::desktop(app_serving),
+            Arc::new(tilo_clock::SystemClock),
+        ))
+        .await
+    }
+
+    /// Start an app-serving host with an explicit transport relay policy.
+    ///
+    /// # Errors
+    /// The same as [`Relay::start`].
+    pub async fn start_with_app_serving_and_relay_mode(
+        cfg: RelayConfig,
+        identity: RelayIdentity,
+        app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+        relay_mode: iroh::RelayMode,
+    ) -> Result<Self, RelayError> {
+        Box::pin(Self::start_inner(
+            cfg,
+            identity,
+            Some(relay_mode),
+            None,
+            Vec::new(),
+            RelayStartupMode::CertifiedHost,
+            Planes::desktop(app_serving),
+            Arc::new(tilo_clock::SystemClock),
+        ))
+        .await
+    }
+
+    /// [`Relay::start`], asking `shell_payloads` what the host may know
+    /// about opaque co-edit bodies instead of the desktop's
+    /// [`NeighbourPayloads`](crate::payloads::NeighbourPayloads).
+    ///
+    /// The adapter decides document compaction, retained-checkpoint
+    /// replacement, continuity evidence, surface admission and the live
+    /// checkpoint gate for every workspace this relay opens. Data retained
+    /// under one adapter must be served by the same one: its verdicts are
+    /// reproduced from the stored bytes after a restart.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Relay::start`].
+    pub async fn start_with_shell_payloads(
+        cfg: RelayConfig,
+        identity: RelayIdentity,
+        shell_payloads: Arc<dyn crate::payloads::ShellPayloads>,
+    ) -> Result<Self, RelayError> {
+        Box::pin(Self::start_inner(
+            cfg,
+            identity,
+            None,
+            None,
+            Vec::new(),
+            RelayStartupMode::CertifiedHost,
+            Planes {
+                app_serving: None,
+                shell_payloads,
+            },
+            Arc::new(tilo_clock::SystemClock),
+        ))
+        .await
+    }
+
+    /// [`Relay::start`], judging how recent the full-replica status stamp
+    /// is by `replica_clock` instead of the wall clock.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Relay::start`].
+    pub async fn start_with_replica_clock(
+        cfg: RelayConfig,
+        identity: RelayIdentity,
+        replica_clock: Arc<dyn Clock>,
+    ) -> Result<Self, RelayError> {
+        Box::pin(Self::start_inner(
+            cfg,
+            identity,
+            None,
+            None,
+            Vec::new(),
+            RelayStartupMode::CertifiedHost,
+            Planes::desktop(None),
+            replica_clock,
         ))
         .await
     }
@@ -542,8 +665,13 @@ impl Relay {
         endpoint: Option<Endpoint>,
         additional_protocols: Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>,
         startup_mode: RelayStartupMode,
-        app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+        planes: Planes,
+        replica_clock: Arc<dyn Clock>,
     ) -> Result<Self, RelayError> {
+        let Planes {
+            app_serving,
+            shell_payloads,
+        } = planes;
         validate_additional_protocols(&additional_protocols)?;
         let operator_trust_policy = cfg.trust_policy.clone();
         match startup_mode {
@@ -576,6 +704,14 @@ impl Relay {
             .authorized_by(&identity.device_cert.capabilities)
             .limited_to(&available_services);
         let app_serving = app_serving.filter(|_| cfg.services.app_serving);
+        // Reject unavailable local backends before binding endpoints, publishing
+        // capabilities or starting background tasks.
+        let environments = crate::environment_host::worker_environments(
+            cfg.environments.as_ref().filter(|_| cfg.services.compute),
+            &cfg.state_root.join("environments"),
+            &identity.device_signing_key,
+            &tilo_user_identity::IdentityPaths::under(&cfg.identity_root).device_privkey,
+        )?;
         let compute_ready = Arc::new(AtomicBool::new(false));
         let mesh_profile = Arc::new(crate::mesh::DeviceMeshProfile {
             device: identity.device_cert.device_public_key,
@@ -589,6 +725,10 @@ impl Relay {
             filesystem_endpoints: Vec::new(),
         });
         std::fs::create_dir_all(&cfg.state_root)?;
+        let full_replica = ReplicaProof {
+            path: cfg.full_replica_status.clone(),
+            clock: replica_clock,
+        };
         let endpoint = match endpoint {
             Some(endpoint) => endpoint,
             None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
@@ -615,6 +755,7 @@ impl Relay {
             };
         let workspaces = build_workspace_registry(
             &cfg,
+            &shell_payloads,
             startup_mode == RelayStartupMode::NativeInteractiveWorkspaceOwner,
         )?;
         if startup_mode == RelayStartupMode::NativeInteractiveWorkspaceOwner {
@@ -628,12 +769,17 @@ impl Relay {
                 let mut runtime = runtime.lock().await;
                 runtime.membership_ceiling = Some(HashSet::new());
                 runtime.governed_user_roots.clear();
-                runtime.governed_access = true;
-                runtime.admit_authenticated = false;
+                runtime.admission = crate::room_access::AdmissionMode::Governed;
             }
         }
         let metrics = Arc::new(Metrics::default());
         let revocations = Arc::new(std::sync::RwLock::new(identity.revocations.clone()));
+        let live = LiveIdentity {
+            user_public_key: identity.user_public_key,
+            cert: identity.device_cert.clone(),
+            signing_key: identity.device_signing_key.clone(),
+            revocations: revocations.clone(),
+        };
 
         let handshake_trust = HandshakeTrust::new(
             &operator_trust_policy,
@@ -642,19 +788,51 @@ impl Relay {
         );
         handshake_trust.refresh(&workspaces).await;
         let live_trust_policy = handshake_trust.live_policy.clone();
+        // A certified host governs the rooms it creates, unless its embedder
+        // serves workspace joining itself. It answers their governance as
+        // actions itself, beside whatever apps its embedder serves.
+        let governs_rooms = startup_mode == RelayStartupMode::CertifiedHost
+            && !handshake_trust.allow_any
+            && !additional_protocols.iter().any(|(alpn, _)| {
+                alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
+                    || alpn.as_slice() == crate::rooms::ROOM_ADMIN_ALPN
+            });
+        let governance = governs_rooms.then(crate::rooms::HostRoomActions::new);
+        let app_serving = match &governance {
+            Some(governance) => Some(Arc::new(crate::rooms::GovernedPlane {
+                governance: governance.clone(),
+                apps: app_serving,
+            })
+                as Arc<dyn crate::app_serving::AppServingPlane>),
+            None => app_serving,
+        };
+        // A certified host routes its owner's compute jobs, so it answers
+        // which of the owner's devices a job should run on, beside whatever
+        // else it answers. It serves no apps by doing so: `app_serving`
+        // above is unchanged.
+        let app_serving = if startup_mode == RelayStartupMode::CertifiedHost {
+            Some(Arc::new(crate::compute_actions::ComputePlane {
+                compute: crate::compute_actions::ComputeActions::new(
+                    identity.user_public_key,
+                    workspaces.clone(),
+                ),
+                rest: app_serving,
+            })
+                as Arc<dyn crate::app_serving::AppServingPlane>)
+        } else {
+            app_serving
+        };
         let handler = RelayProtocol {
-            v2: false,
+            protocol: crate::peer::SessionProtocol::V1,
             workspaces: workspaces.clone(),
             trust_policy: live_trust_policy.clone(),
-            revocations: revocations.clone(),
-            own_user_pk: identity.user_public_key,
-            own_cert: identity.device_cert.clone(),
-            own_sk: identity.device_signing_key.clone(),
+            identity: live.clone(),
             metrics: metrics.clone(),
             autobind: (startup_mode == RelayStartupMode::CertifiedHost
                 && matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser))
             .then(|| WorkspaceAutobind {
                 state_root: cfg.state_root.clone(),
+                shell_payloads: shell_payloads.clone(),
             }),
             app_serving,
             live_bridge: Arc::default(),
@@ -662,62 +840,55 @@ impl Relay {
             compactor: crate::compaction::Compactor::new(
                 identity.device_signing_key.clone(),
                 identity.device_cert.clone(),
+                shell_payloads.clone(),
             ),
+            member_limits: cfg
+                .member_limits
+                .map(|limits| Arc::new(crate::member_limits::MemberLimits::new(limits))),
         };
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
-            own_user_pk: identity.user_public_key,
+            identity: live.clone(),
             trust_policy: live_trust_policy.clone(),
-            revocations: revocations.clone(),
-            own_cert: identity.device_cert.clone(),
-            own_sk: identity.device_signing_key.clone(),
             mesh_profile: mesh_profile.clone(),
-            full_replica_status: cfg.full_replica_status.clone(),
+            full_replica: full_replica.clone(),
             compute_ready: Arc::clone(&compute_ready),
             home_peer_bundle: cfg.home_peer_bundle.clone(),
             autobind: (startup_mode == RelayStartupMode::CertifiedHost
                 && matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser))
             .then(|| WorkspaceAutobind {
                 state_root: cfg.state_root.clone(),
+                shell_payloads: shell_payloads.clone(),
             }),
+            agents: handler.agents.clone(),
         };
         let management = ManagementProtocol {
             endpoint: endpoint.clone(),
-            own_user_pk: identity.user_public_key,
-            own_cert: identity.device_cert.clone(),
-            own_sk: identity.device_signing_key.clone(),
-            revocations: revocations.clone(),
+            identity: live.clone(),
             mesh_profile: mesh_profile.clone(),
-            full_replica_status: cfg.full_replica_status.clone(),
+            full_replica: full_replica.clone(),
             compute_ready: Arc::clone(&compute_ready),
             state_root: cfg.state_root.clone(),
+            workspaces: workspaces.clone(),
         };
         let compute = ComputeProtocol::new(
             workspaces.clone(),
-            identity.user_public_key,
-            identity.device_cert.clone(),
-            identity.device_signing_key.clone(),
-            revocations.clone(),
+            live.clone(),
+            crate::compute_session::ComputeTrust {
+                trust_policy: live_trust_policy.clone(),
+                agents: handler.agents.clone(),
+            },
+            Arc::new(crate::environment_host::TracingMetering),
         );
-        let certification = crate::certification::CertificationProtocol::new(
-            identity.user_public_key,
-            identity.device_cert.clone(),
-            identity.device_signing_key.clone(),
-            revocations.clone(),
-        );
+        let certification = crate::certification::CertificationProtocol::new(live.clone());
         let web = Box::new(WebContext {
             relay: handler.clone(),
+            #[cfg(feature = "web")]
             certification: certification.clone(),
+            node_session: Arc::default(),
         });
         let governed_access_update = Arc::new(AsyncMutex::new(()));
-        // A certified host governs the rooms it creates, unless its embedder
-        // serves workspace joining itself.
-        let rooms = if startup_mode == RelayStartupMode::CertifiedHost
-            && !handshake_trust.allow_any
-            && !additional_protocols.iter().any(|(alpn, _)| {
-                alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
-                    || alpn.as_slice() == crate::rooms::ROOM_ADMIN_ALPN
-            }) {
+        let rooms = if governs_rooms {
             Some(
                 crate::rooms::Rooms::open(
                     crate::rooms::RoomHost {
@@ -727,6 +898,7 @@ impl Relay {
                             handshake_trust: handshake_trust.clone(),
                             update: Arc::clone(&governed_access_update),
                             state_root: cfg.state_root.clone(),
+                            shell_payloads: shell_payloads.clone(),
                         },
                         records: crate::room_records::RoomRecords::new(
                             workspaces.clone(),
@@ -739,6 +911,12 @@ impl Relay {
                         cert: identity.device_cert.clone(),
                         key: identity.device_signing_key.clone(),
                         revocations: revocations.clone(),
+                        max_pre_admissions: cfg
+                            .max_room_grants
+                            .unwrap_or(crate::rooms::DEFAULT_MAX_PRE_ADMISSIONS),
+                        #[cfg(feature = "agents")]
+                        trust_policy: handler.trust_policy.clone(),
+                        agents: handler.agents.clone(),
                     },
                     cfg.state_root.join("rooms"),
                 )
@@ -748,11 +926,42 @@ impl Relay {
         } else {
             None
         };
+        if let (Some(governance), Some(rooms)) = (&governance, &rooms) {
+            governance.attach(rooms.clone());
+        }
         let mut router = Router::builder(endpoint.clone())
+            .accept(
+                tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
+                RelayProtocol {
+                    protocol: crate::peer::SessionProtocol::CODED_DELTA,
+                    ..handler.clone()
+                },
+            )
+            .accept(
+                tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
+                RelayProtocol {
+                    protocol: crate::peer::SessionProtocol::PRESENCE_BATCH,
+                    ..handler.clone()
+                },
+            )
+            .accept(
+                tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
+                RelayProtocol {
+                    protocol: crate::peer::SessionProtocol::COMPACT_STATE,
+                    ..handler.clone()
+                },
+            )
+            .accept(
+                tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
+                RelayProtocol {
+                    protocol: crate::peer::SessionProtocol::SIGNED_ACTIONS,
+                    ..handler.clone()
+                },
+            )
             .accept(
                 tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
                 RelayProtocol {
-                    v2: true,
+                    protocol: crate::peer::SessionProtocol::V2,
                     ..handler.clone()
                 },
             )
@@ -780,14 +989,8 @@ impl Relay {
         }
         let router = router.spawn();
 
-        let peer_relay_tasks = spawn_background_tasks(
-            &cfg,
-            &identity,
-            &endpoint,
-            &workspaces,
-            &metrics,
-            &revocations,
-        );
+        let peer_relay_tasks =
+            spawn_background_tasks(&cfg, &identity, &endpoint, &workspaces, &metrics, &live);
         if cfg.services.compute {
             for workspace in workspaces.lock().await.values() {
                 workspace
@@ -805,6 +1008,13 @@ impl Relay {
                 workspaces: cfg.workspaces.iter().map(|binding| binding.id).collect(),
                 state_root: cfg.state_root.join("compute-worker"),
                 readiness: Arc::clone(&compute_ready),
+                environments,
+                // Running jobs on the replica's copies only saves transfers;
+                // without them every input is fetched.
+                replicas: home_peer_replicas(&cfg.home_peer_bundle).unwrap_or_else(|error| {
+                    tracing::warn!(%error, "compute worker runs without the home-peer replica");
+                    BTreeMap::new()
+                }),
             };
             let worker_task = tokio::spawn(async move {
                 if let Err(error) = run_production_compute_worker(worker_config).await {
@@ -836,18 +1046,18 @@ impl Relay {
             router,
             workspaces,
             metrics,
-            own_cert: identity.device_cert,
-            own_signing_key: identity.device_signing_key,
-            own_user_public_key: identity.user_public_key,
-            live_revocations: revocations,
+            identity: live,
+            #[cfg(feature = "web")]
+            browser_origin: Arc::new(std::sync::RwLock::new(None)),
             peer_relay_tasks,
             mesh_profile,
-            full_replica_status: cfg.full_replica_status.clone(),
+            full_replica: full_replica.clone(),
             web,
             compute_ready,
             handshake_trust,
             governed_access_update,
             state_root: cfg.state_root,
+            shell_payloads,
             interactive_workspace_id,
             interactive_owner_trust,
             rooms,
@@ -937,10 +1147,7 @@ impl Relay {
     pub fn add_peer_relay_at(&self, addr: EndpointAddr, label: String, priority: i32) {
         let task = PeerRelayDialer {
             endpoint: self.endpoint.clone(),
-            own_user_pk: self.own_user_public_key,
-            own_cert: self.own_cert.clone(),
-            own_sk: self.own_signing_key.clone(),
-            revocations: self.live_revocations.clone(),
+            identity: self.identity.clone(),
             workspaces: self.workspaces.clone(),
             metrics: self.metrics.clone(),
         }
@@ -954,7 +1161,7 @@ impl Relay {
             node_addr: self.endpoint.addr(),
             metrics: self.metrics.clone(),
             mesh_profile: self.mesh_profile.clone(),
-            full_replica_status: self.full_replica_status.clone(),
+            full_replica: self.full_replica.clone(),
             compute_ready: Arc::clone(&self.compute_ready),
         }
     }
@@ -969,27 +1176,20 @@ impl Relay {
     /// Returns why the delegation is not usable now.
     pub fn register_agent(
         &self,
-        delegation: tilo_relay_protocol::agents::AgentDelegation,
-    ) -> Result<(), tilo_relay_protocol::agents::DelegationError> {
-        delegation.verify(&self.web.relay.own_user_pk, tilo_clock::unix_now_ns())?;
+        delegation: tilo_relay_protocol::delegation::Delegation,
+    ) -> Result<(), tilo_relay_protocol::delegation::DelegationError> {
+        delegation.verify(
+            &self.web.relay.identity.user_public_key,
+            tilo_clock::unix_now_ns(),
+        )?;
         self.web
             .relay
             .agents
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(delegation.agent_device_public_key, Some(delegation));
+            .write_recover()
+            .insert(delegation.device_public_key, Some(delegation));
+        // A replacement may narrow an earlier delegation's rooms.
+        crate::authority_epoch::bump();
         Ok(())
-    }
-
-    /// Withdraw an agent device: its sessions end within the access audit
-    /// interval and it is refused from then on.
-    pub fn withdraw_agent(&self, agent_device_public_key: [u8; 32]) {
-        self.web
-            .relay
-            .agents
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(agent_device_public_key, None);
     }
 
     /// The iroh endpoint address (node id + reachable addresses) —
@@ -1029,9 +1229,10 @@ impl Relay {
         let workspace = crate::workspace_io::get_or_initialize(
             &self.workspaces,
             state_root,
+            &self.shell_payloads,
             workspace_id,
             pinned,
-            false,
+            crate::room_access::AdmissionMode::Explicit,
             crate::peer::MAX_AUTOBOUND_WORKSPACES,
         )
         .await?;
@@ -1079,12 +1280,42 @@ impl Relay {
             .await
     }
 
+    /// Let visitors watch `workspace_id` read-only as `spectators`: every
+    /// device the spectator root certified reads the room's state and
+    /// writes nothing, up to `spectators.seats` subscribed at once (see
+    /// [`crate::room_access`]). The spectator person must be a member of the
+    /// room, which is also what lets its devices through the handshake.
+    ///
+    /// # Errors
+    ///
+    /// The room is not open on this relay.
+    pub async fn admit_spectators(
+        &self,
+        workspace_id: u64,
+        spectators: crate::room_access::Spectators,
+    ) -> Result<(), RelayError> {
+        let workspace = self
+            .workspaces
+            .lock()
+            .await
+            .get(&workspace_id)
+            .cloned()
+            .ok_or_else(|| {
+                RelayError::GovernedAccess(format!("room {workspace_id} is not open here"))
+            })?;
+        workspace.lock().await.spectators = Some(spectators);
+        // Live subscriptions are audited again: fewer seats end the extra.
+        crate::authority_epoch::bump();
+        Ok(())
+    }
+
     fn governed_access_writer(&self) -> GovernedAccessWriter {
         GovernedAccessWriter {
             workspaces: self.workspaces.clone(),
             handshake_trust: self.handshake_trust.clone(),
             update: Arc::clone(&self.governed_access_update),
             state_root: self.state_root.clone(),
+            shell_payloads: self.shell_payloads.clone(),
         }
     }
 
@@ -1092,6 +1323,12 @@ impl Relay {
     #[must_use]
     pub const fn rooms(&self) -> Option<&crate::rooms::Rooms> {
         self.rooms.as_ref()
+    }
+
+    /// Where this relay keeps its state.
+    #[cfg(feature = "web")]
+    pub(crate) fn state_root(&self) -> &std::path::Path {
+        &self.state_root
     }
 
     fn ensure_workspace_mutation_scope(&self, workspace_id: u64) -> Result<(), RelayError> {
@@ -1117,7 +1354,7 @@ impl Relay {
 
     /// Own user identity — for tests.
     pub fn own_user_public_key(&self) -> [u8; 32] {
-        self.own_user_public_key
+        self.identity.user_public_key
     }
 
     /// In-process access to the records of the workspaces this relay hosts,
@@ -1126,21 +1363,60 @@ impl Relay {
     pub fn room_records(&self) -> crate::room_records::RoomRecords {
         crate::room_records::RoomRecords::new(
             self.workspaces.clone(),
-            self.own_cert.device_public_key,
-            self.own_user_public_key,
-            self.own_signing_key.clone(),
+            self.identity.cert.device_public_key,
+            self.identity.user_public_key,
+            self.identity.signing_key.clone(),
             self.metrics.clone(),
         )
     }
 }
 
+/// A home-peer workspace's filesystem ticket and the relay workspaces it
+/// backs.
+fn home_peer_relay_workspaces(
+    workspace: &fs::full_replica::HomePeerBundle,
+) -> Result<(fs::Ticket, Vec<u64>), RelayError> {
+    let ticket = fs::Ticket::decode(&workspace.ticket)
+        .map_err(|error| RelayError::Identity(format!("invalid home-peer ticket: {error}")))?;
+    let relay_workspace_ids = if workspace.relay_workspace_ids.is_empty() {
+        // Bundles exported before room bindings existed have one stable
+        // fallback shard. New enrollment always writes explicit ids.
+        vec![
+            crate::room_workspace_id(&ticket.workspace_id().to_string())
+                .map_err(|error| RelayError::Identity(format!("invalid workspace id: {error}")))?,
+        ]
+    } else {
+        workspace.relay_workspace_ids.clone()
+    };
+    Ok((ticket, relay_workspace_ids))
+}
+
+/// The filesystem replica stores the home peer on this device keeps, by the
+/// relay workspace each backs: content this device's compute worker may run
+/// a job on once the job's requester proves it holds the same bytes.
+fn home_peer_replicas(bundle_path: &Path) -> Result<BTreeMap<u64, Vec<PathBuf>>, RelayError> {
+    let mut replicas = BTreeMap::<u64, Vec<PathBuf>>::new();
+    if !bundle_path.exists() {
+        return Ok(replicas);
+    }
+    let text = std::fs::read_to_string(bundle_path)?;
+    let bundle: fs::full_replica::HomePeerSet = toml::from_str(&text)
+        .map_err(|error| RelayError::Identity(format!("invalid home-peer bundle: {error}")))?;
+    for workspace in &bundle.workspaces {
+        let (_, relay_workspace_ids) = home_peer_relay_workspaces(workspace)?;
+        for id in relay_workspace_ids {
+            let dirs = replicas.entry(id).or_default();
+            if !dirs.contains(&workspace.cache_dir) {
+                dirs.push(workspace.cache_dir.clone());
+            }
+        }
+    }
+    Ok(replicas)
+}
+
 /// Import full-workspace residency from the same bundle the filesystem worker
 /// consumes. The operator cannot accidentally advertise a relay-only binding
 /// for a workspace whose NAS worker is configured to retain complete content.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-)]
 fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
     if !cfg.home_peer_bundle.exists() {
         return Ok(());
@@ -1158,25 +1434,13 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
     let mut collaborators = Vec::new();
     let now = unix_now();
     for workspace in bundle.workspaces {
-        let ticket = fs::Ticket::decode(&workspace.ticket)
-            .map_err(|error| RelayError::Identity(format!("invalid home-peer ticket: {error}")))?;
-        let relay_workspace_ids = if workspace.relay_workspace_ids.is_empty() {
-            // Bundles exported before room bindings existed have one stable
-            // fallback shard. New enrollment always writes explicit ids.
-            vec![
-                crate::room_workspace_id(&ticket.workspace_id().to_string()).map_err(|error| {
-                    RelayError::Identity(format!("invalid workspace id: {error}"))
-                })?,
-            ]
-        } else {
-            workspace.relay_workspace_ids.clone()
-        };
+        let (ticket, relay_workspace_ids) = home_peer_relay_workspaces(&workspace)?;
         // An FS authority is deliberately *not* a relay-room membership
         // list.  In particular, an FsPath grant lets a collaborator read a
         // path in the global Files namespace; it must never silently give
         // that person access to every shell room wired to the namespace.
-        // Only a governor-signed, explicit Scope::Room(<relay id>) grant
-        // admits a user to that particular relay topic.
+        // Only the governor-signed members of a room admit a user to that
+        // particular relay topic.
         // Do not seed a just-restarted relay from the enrollment copy when a
         // newer materialized authority has already been observed.  The
         // refresh task starts after the router, so this check closes the
@@ -1216,17 +1480,16 @@ fn import_home_peer_bindings(cfg: &mut RelayConfig) -> Result<(), RelayError> {
             if let Some(authority) = authority.as_ref()
                 && !crate::personal_continuity_workspace_id_matches(&authority.governor, id)
             {
-                let room = id.to_string();
-                for capability in &authority.capabilities {
-                    if capability.effect == collab_types::Effect::Grant
-                        && capability.is_live_at(Some(now))
-                        && matches!(&capability.scope, collab_types::Scope::Room(scope) if scope == &room)
-                        && let collab_types::Subject::User(user) = &capability.subject
-                    {
-                        let user = hex::encode(user.as_bytes());
-                        room_users.push(user.clone());
-                        collaborators.push(user);
-                    }
+                for member in authority
+                    .room_members
+                    .get(&id.to_string())
+                    .into_iter()
+                    .flatten()
+                    .filter(|member| member.is_live_at(now))
+                {
+                    let user = hex::encode(member.user.as_bytes());
+                    room_users.push(user.clone());
+                    collaborators.push(user);
                 }
             }
             room_users.sort_unstable();
@@ -1274,7 +1537,8 @@ impl RelayHandle {
     /// heartbeat. Consumers use these for blob and namespace protocols while
     /// retaining `node_addr` for relay traffic.
     pub fn filesystem_endpoints(&self) -> Vec<EndpointAddr> {
-        full_replica_proof(&self.full_replica_status)
+        self.full_replica
+            .current()
             .map(|proof| {
                 proof
                     .filesystem_endpoints
@@ -1330,6 +1594,10 @@ fn validate_additional_alpn(alpn: &[u8]) -> Result<(), RelayError> {
     let reserved: &[&[u8]] = &[
         ALPN,
         tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
+        tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
+        tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
+        tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
+        tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
         DISCOVERY_ALPN,
         MANAGEMENT_ALPN,
         COMPUTE_ALPN,
@@ -1375,49 +1643,73 @@ fn validate_additional_alpns<'a>(
 /// through.
 fn build_workspace_registry(
     cfg: &RelayConfig,
+    shell_payloads: &Arc<dyn crate::payloads::ShellPayloads>,
     require_durable_snapshot: bool,
 ) -> Result<WorkspaceRegistry, RelayError> {
     let mut wsmap: HashMap<u64, SharedWorkspace> = HashMap::new();
     for binding in &cfg.workspaces {
-        let mut rt = if require_durable_snapshot {
-            WorkspaceRuntime::open_with_required_snapshot(
-                &cfg.state_root,
-                binding.id,
-                binding.pin,
-                Membership::default(),
-            )
-            .map_err(|error| {
-                RelayError::Identity(format!(
-                    "interactive workspace owner requires a valid durable snapshot: {error}"
-                ))
-            })?
-        } else {
-            WorkspaceRuntime::open(
-                &cfg.state_root,
-                binding.id,
-                binding.pin,
-                Membership::default(),
-            )?
-        };
-        if let Some(authority) = &binding.shell_authority {
-            rt.store.bind_shell_authority(authority.clone())?;
-        }
-        rt.checkpoint_prefix_recovery = binding.checkpoint_prefix_recovery;
-        rt.admit_authenticated =
-            matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser) && !rt.governed_access;
-        rt.admitted_users = binding
-            .admitted_users
-            .iter()
-            .filter_map(|encoded| hex::decode(encoded).ok())
-            .filter_map(|bytes| bytes.try_into().ok())
-            .collect();
-        wsmap.insert(binding.id, Arc::new(AsyncMutex::new(rt)));
+        let runtime = open_bound_workspace(cfg, binding, shell_payloads, require_durable_snapshot)?;
+        wsmap.insert(binding.id, Arc::new(AsyncMutex::new(runtime)));
     }
     Ok(Arc::new(AsyncMutex::new(wsmap)))
 }
 
-/// Spawn the revocation-refresh loop, the metrics-persist loop, and
-/// one reconnect-with-backoff task per configured peer relay,
+/// Open the runtime of one configured workspace binding.
+fn open_bound_workspace(
+    cfg: &RelayConfig,
+    binding: &WorkspaceBinding,
+    shell_payloads: &Arc<dyn crate::payloads::ShellPayloads>,
+    require_durable_snapshot: bool,
+) -> Result<WorkspaceRuntime, RelayError> {
+    let mut rt = if require_durable_snapshot {
+        WorkspaceRuntime::open_with_required_snapshot(
+            &cfg.state_root,
+            binding.id,
+            binding.pin,
+            Membership::default(),
+            shell_payloads.clone(),
+        )
+        .map_err(|error| {
+            RelayError::Identity(format!(
+                "interactive workspace owner requires a valid durable snapshot: {error}"
+            ))
+        })?
+    } else {
+        WorkspaceRuntime::open_with_payloads(
+            &cfg.state_root,
+            binding.id,
+            binding.pin,
+            Membership::default(),
+            shell_payloads.clone(),
+        )?
+    };
+    if let Some(authority) = &binding.shell_authority {
+        // The configured authority is typed at the config edge; the store's
+        // shell adapter reads its serialised form.
+        let authority = serde_json::to_value(authority)
+            .map_err(|error| crate::store::StoreError::Json(error.to_string()))?;
+        rt.store.bind_shell(&authority)?;
+    }
+    rt.checkpoint_prefix_recovery = binding.checkpoint_prefix_recovery;
+    rt.admission = rt.admission.rebind(
+        if matches!(cfg.trust_policy, TrustPolicy::AllowMatchingUser) {
+            crate::room_access::AdmissionMode::SameOwner
+        } else {
+            crate::room_access::AdmissionMode::Explicit
+        },
+    );
+    rt.admitted_users = binding
+        .admitted_users
+        .iter()
+        .filter_map(|encoded| hex::decode(encoded).ok())
+        .filter_map(|bytes| bytes.try_into().ok())
+        .collect();
+    Ok(rt)
+}
+
+/// Spawn the revocation-refresh loop, the metrics-persist loop, the
+/// membership-file watch, and one reconnect-with-backoff task per configured
+/// peer relay,
 /// returning the abort-on-drop handle list `Relay` owns.
 ///
 /// Each peer-relay task dials via `RelayClient::connect` (same code
@@ -1430,7 +1722,7 @@ fn spawn_background_tasks(
     endpoint: &Endpoint,
     workspaces: &WorkspaceRegistry,
     metrics: &Arc<Metrics>,
-    revocations: &Arc<std::sync::RwLock<RevocationList>>,
+    live: &LiveIdentity,
 ) -> Arc<std::sync::Mutex<Vec<AbortOnDrop>>> {
     let peer_relay_tasks: Arc<std::sync::Mutex<Vec<AbortOnDrop>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1438,19 +1730,21 @@ fn spawn_background_tasks(
     let revocation_task = spawn_revocation_refresh_task(
         cfg.state_root.clone(),
         identity.revocations.clone(),
-        revocations.clone(),
+        live.revocations.clone(),
     );
     push_peer_relay_task(&peer_relay_tasks, revocation_task);
 
     let metrics_task = spawn_metrics_persist_task(cfg.state_root.clone(), metrics.clone());
     push_peer_relay_task(&peer_relay_tasks, metrics_task);
 
+    let membership_task = crate::membership_watch::spawn_membership_watch(&cfg.state_root);
+    push_peer_relay_task(&peer_relay_tasks, membership_task);
+
     for peer_cfg in cfg.peer_relays.iter().cloned() {
         let task = spawn_peer_relay_dial(
             peer_cfg,
             endpoint.clone(),
-            identity.clone(),
-            revocations.clone(),
+            live.clone(),
             workspaces.clone(),
             metrics.clone(),
         );
@@ -1521,7 +1815,7 @@ fn persist_authority_high_water(
     let bytes = postcard::to_allocvec(&high_water)
         .map_err(|error| format!("could not encode authority high-water mark: {error}"))?;
     let path = authority_high_water_path(cache_dir);
-    atomic_file::write_creating_parent(&path, &bytes)
+    tilo_files::native::atomic::write_creating_parent(&path, &bytes)
         .map_err(|error| format!("could not persist {}: {error}", path.display()))
 }
 
@@ -1620,8 +1914,14 @@ async fn apply_home_peer_projection(
     let runtimes = workspaces.lock().await;
     for room in affected_rooms {
         if let Some(runtime) = runtimes.get(&room) {
-            runtime.lock().await.admitted_users =
-                room_users.get(&room).cloned().unwrap_or_default();
+            let next = room_users.get(&room).cloned().unwrap_or_default();
+            let mut runtime = runtime.lock().await;
+            let changed = runtime.admitted_users != next;
+            runtime.admitted_users = next;
+            drop(runtime);
+            if changed {
+                crate::authority_epoch::bump();
+            }
         }
     }
     drop(runtimes);
@@ -1681,26 +1981,23 @@ async fn refresh_home_peer_authority_once(
                     .or_default()
                     .insert(authority.governor);
             }
-            for capability in &authority.capabilities {
-                let collab_types::Scope::Room(room) = &capability.scope else {
-                    continue;
-                };
+            for (room, members) in &authority.room_members {
                 let Ok(room) = room.parse::<u64>() else {
                     continue;
                 };
                 if (!global_namespace && !workspace.relay_workspace_ids.contains(&room))
                     || crate::personal_continuity_workspace_id_matches(&authority.governor, room)
-                    || capability.effect != collab_types::Effect::Grant
-                    || !capability.is_live_at(Some(now))
                 {
                     continue;
                 }
-                let collab_types::Subject::User(user) = &capability.subject else {
-                    continue;
-                };
-                users.push(hex::encode(user.as_bytes()));
-                governed_rooms.insert(room);
-                room_users.entry(room).or_default().insert(*user.as_bytes());
+                for member in members.iter().filter(|member| member.is_live_at(now)) {
+                    users.push(hex::encode(member.user.as_bytes()));
+                    governed_rooms.insert(room);
+                    room_users
+                        .entry(room)
+                        .or_default()
+                        .insert(*member.user.as_bytes());
+                }
             }
         }
         users.sort_unstable();
@@ -1767,37 +2064,92 @@ fn spawn_home_peer_authority_refresh(
     })
 }
 
-/// The revocation-refresh loop: every second, re-read the on-disk
-/// revocation log and, if every entry still applies cleanly against
-/// the identity's own base list, swap it in. A malformed entry
-/// leaves the previously-live list untouched rather than partially
-/// applying.
+/// How often the revocation log is re-read while its directory cannot be
+/// watched: the cadence `tilo-relay-admin` promises ("within one second").
+const REVOCATION_POLL: Duration = Duration::from_secs(1);
+
+/// The revocation-refresh task: re-read the on-disk revocation log whenever
+/// it changes and, if every entry still applies cleanly against the
+/// identity's own base list, swap it in and wake every admitted session to
+/// re-check. A malformed entry leaves the previously-live list untouched
+/// rather than partially applying.
+///
+/// The log is followed through a watch on the state root's own entries. When
+/// that watch cannot be installed the task says so and falls back to reading
+/// the log every [`REVOCATION_POLL`], as before the watch existed.
 fn spawn_revocation_refresh_task(
     state_root: PathBuf,
     base_revocations: RevocationList,
     live_revocations: Arc<std::sync::RwLock<RevocationList>>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            let Ok(entries) = crate::store::load_revocations(&state_root) else {
-                continue;
-            };
-            let mut next = base_revocations.clone();
-            let mut valid = true;
-            for entry in entries {
-                if next.insert(entry).is_err() {
-                    valid = false;
-                    break;
-                }
+        let mut refresh = RevocationRefresh {
+            state_root,
+            base: base_revocations,
+            live: live_revocations,
+            applied: None,
+        };
+        let watch = match tilo_files::native::watch_entries(&refresh.state_root) {
+            Ok(watch) => Some(watch),
+            Err(error) => {
+                tracing::warn!(
+                    path = %refresh.state_root.display(),
+                    %error,
+                    "the revocation log cannot be watched; reading it every second"
+                );
+                None
             }
-            if valid && let Ok(mut current) = live_revocations.write() {
-                *current = next;
+        };
+        // Read once the watch exists, so an edit made before it began is seen.
+        refresh.reload();
+        let Some(watch) = watch else {
+            let mut interval = tokio::time::interval(REVOCATION_POLL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                refresh.reload();
+            }
+        };
+        loop {
+            let change = watch.next().await;
+            if change.kind == tilo_files::ChangeKind::Rescan
+                || change.path.as_str() == crate::store::REVOCATIONS_FILE
+            {
+                refresh.reload();
             }
         }
     })
+}
+
+/// The live revocation list and the log entries last applied to it.
+struct RevocationRefresh {
+    state_root: PathBuf,
+    base: RevocationList,
+    live: Arc<std::sync::RwLock<RevocationList>>,
+    applied: Option<Vec<tilo_user_identity::RevocationEntry>>,
+}
+
+impl RevocationRefresh {
+    fn reload(&mut self) {
+        let Ok(entries) = crate::store::load_revocations(&self.state_root) else {
+            return;
+        };
+        if self.applied.as_ref() == Some(&entries) {
+            return;
+        }
+        let mut next = self.base.clone();
+        for entry in &entries {
+            if next.insert(entry.clone()).is_err() {
+                return;
+            }
+        }
+        if let Ok(mut current) = self.live.write() {
+            *current = next;
+            drop(current);
+            self.applied = Some(entries);
+            crate::authority_epoch::bump();
+        }
+    }
 }
 
 /// The metrics-persist loop: snapshot + save to disk every second.
@@ -1821,9 +2173,7 @@ fn spawn_metrics_persist_task(state_root: PathBuf, live_metrics: Arc<Metrics>) -
 fn lock_peer_relay_tasks(
     tasks: &Arc<std::sync::Mutex<Vec<AbortOnDrop>>>,
 ) -> std::sync::MutexGuard<'_, Vec<AbortOnDrop>> {
-    tasks
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    tasks.lock_recover()
 }
 
 /// Register a spawned task on the peer-relay task list (see
@@ -1925,13 +2275,11 @@ fn validate_native_interactive_workspace_identity(
 /// The `ProtocolHandler` iroh wires to the ALPN.
 #[derive(Clone)]
 pub(crate) struct RelayProtocol {
-    pub(crate) v2: bool,
+    /// What sessions on this ALPN negotiated.
+    pub(crate) protocol: crate::peer::SessionProtocol,
     pub(crate) workspaces: WorkspaceRegistry,
     pub(crate) trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
-    pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
-    pub(crate) own_user_pk: [u8; 32],
-    pub(crate) own_cert: DeviceCert,
-    pub(crate) own_sk: ed25519_dalek::SigningKey,
+    pub(crate) identity: LiveIdentity,
     pub(crate) metrics: Arc<Metrics>,
     pub(crate) autobind: Option<WorkspaceAutobind>,
     pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
@@ -1939,27 +2287,40 @@ pub(crate) struct RelayProtocol {
     pub(crate) live_bridge: Arc<std::sync::OnceLock<crate::peer::LiveBridge>>,
     pub(crate) agents: crate::peer::AgentRegistry,
     pub(crate) compactor: crate::compaction::Compactor,
+    pub(crate) member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
 }
 
 impl RelayProtocol {
+    /// This relay's certificate and agent trust.
+    #[cfg(feature = "web")]
+    pub(crate) fn trust(&self) -> crate::room_access::RelayTrust<'_> {
+        crate::room_access::RelayTrust {
+            revocations: &self.identity.revocations,
+            policy: &self.trust_policy,
+            own_user: &self.identity.user_public_key,
+            agents: &self.agents,
+        }
+    }
+
     /// The peer context a session of this relay runs with.
     pub(crate) fn peer_context(&self) -> PeerContext {
         PeerContext {
             workspaces: self.workspaces.clone(),
             autobind: self.autobind.clone(),
-            revocations: self.revocations.clone(),
+            revocations: self.identity.revocations.clone(),
             trust_policy: self.trust_policy.clone(),
-            own_user_public_key: self.own_user_pk,
-            own_device_cert: self.own_cert.clone(),
+            own_user_public_key: self.identity.user_public_key,
+            own_device_cert: self.identity.cert.clone(),
             metrics: self.metrics.clone(),
-            own_device_public_key: self.own_cert.device_public_key,
+            own_device_public_key: self.identity.cert.device_public_key,
             app_serving: self.app_serving.clone(),
             live_bridge: self.live_bridge.get().cloned(),
             agents: self.agents.clone(),
             positions: Some(crate::position::PositionIssuer::new(
-                &self.own_sk.to_bytes(),
+                &self.identity.signing_key.to_bytes(),
             )),
             compactor: Some(self.compactor.clone()),
+            member_limits: self.member_limits.clone(),
         }
     }
 }
@@ -1967,29 +2328,51 @@ impl RelayProtocol {
 #[derive(Clone)]
 struct DiscoveryProtocol {
     workspaces: WorkspaceRegistry,
-    own_user_pk: [u8; 32],
+    identity: LiveIdentity,
     trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
-    own_cert: DeviceCert,
-    own_sk: ed25519_dalek::SigningKey,
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
-    full_replica_status: PathBuf,
+    full_replica: ReplicaProof,
     compute_ready: Arc<AtomicBool>,
     home_peer_bundle: PathBuf,
     autobind: Option<WorkspaceAutobind>,
+    agents: crate::peer::AgentRegistry,
+}
+
+impl DiscoveryProtocol {
+    fn trust(&self) -> crate::room_access::RelayTrust<'_> {
+        crate::room_access::RelayTrust {
+            revocations: &self.identity.revocations,
+            policy: &self.trust_policy,
+            own_user: &self.identity.user_public_key,
+            agents: &self.agents,
+        }
+    }
+}
+
+/// What this relay's workers run for environments, across its workspaces.
+async fn environment_offer(
+    workspaces: &WorkspaceRegistry,
+) -> tilo_relay_protocol::RelayEnvironments {
+    let bound: Vec<SharedWorkspace> = workspaces.lock().await.values().cloned().collect();
+    let now_ms = tilo_clock::unix_now_ms();
+    let mut offer = tilo_relay_protocol::RelayEnvironments::default();
+    for workspace in bound {
+        let here = workspace.lock().await.compute.environment_offer(now_ms);
+        offer.sessions |= here.sessions;
+        offer.legacy_apps |= here.legacy_apps;
+    }
+    offer
 }
 
 #[derive(Clone)]
 struct ManagementProtocol {
     endpoint: Endpoint,
-    own_user_pk: [u8; 32],
-    own_cert: DeviceCert,
-    own_sk: ed25519_dalek::SigningKey,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
+    identity: LiveIdentity,
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
-    full_replica_status: PathBuf,
+    full_replica: ReplicaProof,
     compute_ready: Arc<AtomicBool>,
     state_root: PathBuf,
+    workspaces: WorkspaceRegistry,
 }
 
 impl std::fmt::Debug for ManagementProtocol {
@@ -2010,42 +2393,20 @@ impl ProtocolHandler for ManagementProtocol {
             )));
         }
         let (mut send, mut recv) = connection.accept_bi().await?;
-        let hello: Hello = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
+        // Only the owner's devices manage the home peer, whatever the live
+        // policy admits.
+        let peer = self
+            .identity
+            .authenticate(
+                EndpointTrust::Fixed(crate::auth::HandshakeTrust::OwnerDevicesOnly),
+                &mut recv,
+                &mut send,
+                MAX_FRAME_BYTES,
+            )
+            .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        let revocations = self
-            .revocations
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let peer = auth::accept_hello(
-            &hello,
-            &self.own_user_pk,
-            &TrustPolicy::AllowMatchingUser,
-            &revocations,
-            unix_now_ns(),
-        )
-        .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        let mut nonce = [0; 32];
-        rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
-        let ack = auth::build_hello_ack(
-            self.own_cert.clone(),
-            &self.own_sk,
-            nonce,
-            &hello.client_nonce,
-        );
         let mut services = self.mesh_profile.services.clone();
         services.compute &= self.compute_ready.load(Ordering::Acquire);
-        write_frame(
-            &mut send,
-            &postcard::to_allocvec(&ack)
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
-        )
-        .await
-        .map_err(AcceptError::from_err)?;
-        let ack2: HelloAck2 = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        auth::verify_hello_ack2(&ack2, &peer.device_public_key, &nonce)
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         let request: HomePeerManagementRequest =
             postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
                 .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
@@ -2064,7 +2425,7 @@ impl ProtocolHandler for ManagementProtocol {
                         "home-peer name must be 1 to 80 bytes",
                     )));
                 }
-                atomic_file::write_with_mode(
+                tilo_files::native::atomic::write_with_mode(
                     &self.state_root.join("home-peer-name"),
                     label.as_bytes(),
                     0o644,
@@ -2080,8 +2441,8 @@ impl ProtocolHandler for ManagementProtocol {
                 verify_revocation_entry(&revocation).map_err(|error| {
                     AcceptError::from_err(std::io::Error::other(error.to_string()))
                 })?;
-                if revocation.user_public_key != self.own_user_pk
-                    || revocation.revoked_device_public_key != self.own_cert.device_public_key
+                if revocation.user_public_key != self.identity.user_public_key
+                    || revocation.revoked_device_public_key != self.identity.cert.device_public_key
                 {
                     return Err(AcceptError::from_err(std::io::Error::other(
                         "revocation does not target this home peer",
@@ -2094,12 +2455,19 @@ impl ProtocolHandler for ManagementProtocol {
                 if !entries.iter().any(|entry| {
                     entry.revoked_device_public_key == revocation.revoked_device_public_key
                 }) {
-                    entries.push(revocation);
+                    entries.push(revocation.clone());
                     crate::store::save_revocations(&self.state_root, &entries).map_err(
                         |error| AcceptError::from_err(std::io::Error::other(error.to_string())),
                     )?;
                 }
-                atomic_file::write_with_mode(
+                // Apply it here too rather than wait for the log to be read
+                // back: this process stops serving its own revoked identity
+                // now. A conflicting entry is the log reader's to reject.
+                let applied = self.identity.revocations.write_recover().insert(revocation);
+                if matches!(applied, Ok(true)) {
+                    crate::authority_epoch::bump();
+                }
+                tilo_files::native::atomic::write_with_mode(
                     &self.state_root.join("decommissioned"),
                     b"decommissioned\n",
                     0o600,
@@ -2111,16 +2479,18 @@ impl ProtocolHandler for ManagementProtocol {
         let label = std::fs::read_to_string(self.state_root.join("home-peer-name"))
             .ok()
             .filter(|label| !label.trim().is_empty())
-            .unwrap_or_else(|| self.own_cert.device_label.clone());
-        let files_ready = full_replica_proof(&self.full_replica_status).is_some();
+            .unwrap_or_else(|| self.identity.cert.device_label.clone());
+        let files_ready = self.full_replica.current().is_some();
+        let environments = environment_offer(&self.workspaces).await;
         write_frame(
             &mut send,
             &postcard::to_allocvec(&HomePeerManagementResponse {
-                device_public_key: self.own_cert.device_public_key,
+                device_public_key: self.identity.cert.device_public_key,
                 relay_endpoint: self.endpoint.addr(),
                 label: label.trim().to_string(),
                 files_ready,
                 services,
+                environments,
                 decommissioned,
             })
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
@@ -2165,50 +2535,22 @@ impl ProtocolHandler for DiscoveryProtocol {
             )));
         }
         let (mut send, mut recv) = connection.accept_bi().await?;
-        let hello: Hello = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        let revocations = self
-            .revocations
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let peer = auth::accept_hello(
-            &hello,
-            &self.own_user_pk,
-            &self
-                .trust_policy
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            &revocations,
-            unix_now_ns(),
-        )
-        .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        let mut nonce = [0; 32];
-        {
-            use rand::Rng;
-            rand::rng().fill_bytes(&mut nonce);
-        }
-        let ack = auth::build_hello_ack(
-            self.own_cert.clone(),
-            &self.own_sk,
-            nonce,
-            &hello.client_nonce,
-        );
-        write_frame(
-            &mut send,
-            &postcard::to_allocvec(&ack)
-                .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?,
-        )
-        .await
-        .map_err(AcceptError::from_err)?;
-        let ack2: HelloAck2 = postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
-            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        auth::verify_hello_ack2(&ack2, &peer.device_public_key, &nonce)
+        // Any device the live policy admits may ask; the request is then
+        // scoped to a room it belongs to.
+        let peer = self
+            .identity
+            .authenticate(
+                EndpointTrust::Live(&self.trust_policy),
+                &mut recv,
+                &mut send,
+                MAX_FRAME_BYTES,
+            )
+            .await
             .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
         let request: ContentEndpointRequest =
             postcard::from_bytes(&read_frame(&mut recv, MAX_FRAME_BYTES).await?)
                 .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
-        if peer.user_public_key == self.own_user_pk {
+        if peer.user_public_key == self.identity.user_public_key {
             get_or_autobind_workspace(
                 &self.workspaces,
                 self.autobind.as_ref(),
@@ -2229,9 +2571,13 @@ impl ProtocolHandler for DiscoveryProtocol {
         let permitted = match workspace {
             Some(workspace) => {
                 let workspace = workspace.lock().await;
-                workspace.admit_authenticated
-                    || workspace.admitted_users.contains(&peer.user_public_key)
-                    || workspace.membership.contains(&peer.device_public_key)
+                crate::room_access::decide(
+                    &workspace,
+                    &self.trust(),
+                    &peer,
+                    crate::room_access::RoomOperation::ContentDiscovery,
+                )
+                .admitted()
             }
             None => false,
         };
@@ -2242,7 +2588,7 @@ impl ProtocolHandler for DiscoveryProtocol {
         }
         let mut profile = (*self.mesh_profile).clone();
         profile.services.compute &= self.compute_ready.load(Ordering::Acquire);
-        let proof = full_replica_proof(&self.full_replica_status);
+        let proof = self.full_replica.current();
         profile.filesystem_endpoints = proof
             .as_ref()
             .map(|proof| {
@@ -2255,7 +2601,7 @@ impl ProtocolHandler for DiscoveryProtocol {
             })
             .unwrap_or_default();
         profile.services.full_content_replication &= !profile.filesystem_endpoints.is_empty();
-        let same_owner = peer.user_public_key == self.own_user_pk;
+        let same_owner = peer.user_public_key == self.identity.user_public_key;
         let filesystem_ticket = std::fs::read_to_string(&self.home_peer_bundle)
             .ok()
             .and_then(|text| toml::from_str::<fs::full_replica::HomePeerSet>(&text).ok())
@@ -2327,70 +2673,37 @@ async fn handle_conn(
     mut recv: RecvStream,
 ) -> Result<(), RelayError> {
     ctx.metrics.inc_conns_accepted();
-    // 1. Read the client Hello.
-    let hello_bytes = read_frame(&mut recv, MAX_FRAME_BYTES)
+    // 1. The bounded shared handshake, under the live policy: the owner and
+    // every user the relay currently admits.
+    let client_peer = match ctx
+        .identity
+        .authenticate(
+            EndpointTrust::Live(&ctx.trust_policy),
+            &mut recv,
+            &mut send,
+            MAX_FRAME_BYTES,
+        )
         .await
-        .map_err(|e| RelayError::Iroh(format!("read hello: {e}")))?;
-    let hello: Hello = postcard::from_bytes(&hello_bytes)
-        .map_err(|e| RelayError::Iroh(format!("decode hello: {e}")))?;
-    let now_ns = unix_now_ns();
-    let revs = ctx
-        .revocations
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    let accepted_peer = {
-        let trust_policy = ctx
-            .trust_policy
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        auth::accept_hello(&hello, &ctx.own_user_pk, &trust_policy, &revs, now_ns)
-    };
-    let client_peer = match accepted_peer {
-        Ok(p) => p,
-        Err(e) => {
-            ctx.metrics.inc_auth_rejected();
-            return Err(RelayError::Iroh(format!("auth reject: {e}")));
+    {
+        Ok(peer) => peer,
+        Err(error) => {
+            if matches!(error, HandshakeError::Auth(_)) {
+                ctx.metrics.inc_auth_rejected();
+            }
+            return Err(RelayError::Iroh(error.to_string()));
         }
     };
-    // 2. Reply with HelloAck.
-    let mut server_nonce = [0u8; 32];
-    {
-        use rand::Rng;
-        rand::rng().fill_bytes(&mut server_nonce);
-    }
-    let ack = auth::build_hello_ack(
-        ctx.own_cert.clone(),
-        &ctx.own_sk,
-        server_nonce,
-        &hello.client_nonce,
-    );
-    let ack_bytes =
-        postcard::to_allocvec(&ack).map_err(|e| RelayError::Iroh(format!("encode ack: {e}")))?;
-    write_frame(&mut send, &ack_bytes)
-        .await
-        .map_err(|e| RelayError::Iroh(format!("write ack: {e}")))?;
-    // 3. Read HelloAck2.
-    let client_ack2_bytes = read_frame(&mut recv, MAX_FRAME_BYTES)
-        .await
-        .map_err(|e| RelayError::Iroh(format!("read ack2: {e}")))?;
-    let ack2: HelloAck2 = postcard::from_bytes(&client_ack2_bytes)
-        .map_err(|e| RelayError::Iroh(format!("decode ack2: {e}")))?;
-    if let Err(e) = auth::verify_hello_ack2(&ack2, &client_peer.device_public_key, &server_nonce) {
-        ctx.metrics.inc_auth_rejected();
-        return Err(RelayError::Iroh(format!("auth ack2 reject: {e}")));
-    }
 
     ctx.metrics.inc_conns_authed();
 
-    // 4. Hand off to the peer loop.
+    // 2. Hand off to the peer loop.
     let peer_result = Box::pin(run_peer_version(
         client_peer,
         connection.clone(),
         recv,
         send,
         ctx.peer_context(),
-        ctx.v2,
+        ctx.protocol,
     ))
     .await;
     if let Err(e) = peer_result {
@@ -2409,8 +2722,7 @@ pub use crate::frame::{read_frame, write_frame};
 fn spawn_peer_relay_dial(
     peer_cfg: PeerRelayConfig,
     endpoint: Endpoint,
-    identity: RelayIdentity,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
+    identity: LiveIdentity,
     workspaces: WorkspaceRegistry,
     metrics: Arc<Metrics>,
 ) -> JoinHandle<()> {
@@ -2425,10 +2737,7 @@ fn spawn_peer_relay_dial(
         let addr = EndpointAddr::new(node_id);
         PeerRelayDialer {
             endpoint,
-            own_user_pk: identity.user_public_key,
-            own_cert: identity.device_cert,
-            own_sk: identity.device_signing_key,
-            revocations,
+            identity,
             workspaces,
             metrics,
         }
@@ -2438,15 +2747,11 @@ fn spawn_peer_relay_dial(
 }
 
 /// What an outbound peer-relay dial carries: the local endpoint, this
-/// relay's own user key, device certificate and signing key, the live
-/// revocation list (read afresh for every dial and session), the hosted
-/// workspaces and metrics.
+/// relay's own identity (its revocation list read afresh for every dial and
+/// session), the hosted workspaces and metrics.
 struct PeerRelayDialer {
     endpoint: Endpoint,
-    own_user_pk: [u8; 32],
-    own_cert: DeviceCert,
-    own_sk: ed25519_dalek::SigningKey,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
+    identity: LiveIdentity,
     workspaces: WorkspaceRegistry,
     metrics: Arc<Metrics>,
 }
@@ -2465,26 +2770,20 @@ impl PeerRelayDialer {
     async fn dial_loop(self, addr: EndpointAddr, label: String, _priority: i32) {
         let PeerRelayDialer {
             endpoint,
-            own_user_pk,
-            own_cert,
-            own_sk,
-            revocations,
+            identity,
             workspaces,
             metrics,
         } = self;
         let mut backoff_ms: u64 = 1_000;
         loop {
             let ep = endpoint.clone();
-            let current_revocations = revocations
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
+            let current_revocations = identity.revocations.read_recover().clone();
             match RelayClient::connect(
                 ep,
                 addr.clone(),
-                own_user_pk,
-                own_cert.clone(),
-                own_sk.clone(),
+                identity.user_public_key,
+                identity.cert.clone(),
+                identity.signing_key.clone(),
                 current_revocations,
             )
             .await
@@ -2495,8 +2794,8 @@ impl PeerRelayDialer {
                     if let Err(e) = run_peer_relay_session(
                         &client,
                         &workspaces,
-                        revocations.clone(),
-                        own_user_pk,
+                        identity.revocations.clone(),
+                        identity.user_public_key,
                         metrics.clone(),
                     )
                     .await
@@ -2717,7 +3016,7 @@ async fn handle_peer_relay_envelope(
                 // to peer relays" filter.
                 ws.lock()
                     .await
-                    .fanout_presence(&[0u8; 32], PeerRole::PeerRelay, &env);
+                    .fanout_presence(&[0u8; 32], PeerRole::PeerRelay, &env, None);
             }
         }
         Envelope::SyncResponse {
@@ -2830,6 +3129,20 @@ mod tests {
     use super::*;
     use tilo_user_identity::{DeviceCapabilities, DeviceIdentity, UserIdentity, sign_device_cert};
 
+    /// Only a trust policy that drops a root, or changes kind, narrows who
+    /// may stay connected.
+    #[test]
+    fn only_a_policy_that_drops_a_root_narrows() {
+        let list = |users: &[&str]| TrustPolicy::AllowList {
+            users: users.iter().map(|user| (*user).to_owned()).collect(),
+        };
+        assert!(!narrows(&list(&["a"]), &list(&["a", "b"])));
+        assert!(!narrows(&list(&["a", "b"]), &list(&["b", "a"])));
+        assert!(narrows(&list(&["a", "b"]), &list(&["b", "c"])));
+        assert!(narrows(&TrustPolicy::AllowAny, &list(&["a"])));
+        assert!(!narrows(&TrustPolicy::AllowAny, &TrustPolicy::AllowAny));
+    }
+
     fn test_handshake_trust(
         live_policy: Arc<std::sync::RwLock<TrustPolicy>>,
         own_user: [u8; 32],
@@ -2907,6 +3220,17 @@ mod tests {
                 }],
             };
             std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
+            // The compute worker beside the replica holds its store for the
+            // shard's jobs, and only that shard's.
+            assert_eq!(
+                home_peer_replicas(&bundle_path).unwrap(),
+                BTreeMap::from([(42, vec![temp.path().join("cache")])])
+            );
+            assert!(
+                home_peer_replicas(&temp.path().join("absent.toml"))
+                    .unwrap()
+                    .is_empty()
+            );
             let mut config = RelayConfig {
                 home_peer_bundle: bundle_path,
                 full_replica_status: status,
@@ -2923,7 +3247,7 @@ mod tests {
         }
         // Phase `room_scoped_authority_admits_only_its_signed_room`.
         {
-            use collab_types::{CapOverride, Effect, Expiry, Scope, Subject, Verb};
+            use collab_types::{Access, CapOverride, Effect, Scope, Subject};
 
             let temp = tempfile::tempdir().unwrap();
             let status = temp.path().join("status.json");
@@ -2938,32 +3262,36 @@ mod tests {
             let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
                 ticket.workspace_id(),
                 1,
-                vec![
-                    // The only capability that maps to a relay topic.
-                    CapOverride::new(
-                        Subject::User(collab_types::Ed25519PublicKey(collaborator_a)),
-                        Scope::Room("42".into()),
-                        Effect::Grant,
-                        Verb::Read,
-                    ),
-                    // A Files grant is intentionally insufficient to subscribe
-                    // to any room, including unrelated room 43.
-                    CapOverride::new(
-                        Subject::User(collab_types::Ed25519PublicKey(path_only_collaborator)),
-                        Scope::FsPath("/".into()),
-                        Effect::Grant,
-                        Verb::Read,
-                    ),
-                    // Expired room grants must not resurrect a former member
-                    // merely because the NAS reloads the signed authority.
-                    CapOverride::new(
-                        Subject::User(collab_types::Ed25519PublicKey(collaborator_a)),
-                        Scope::Room("43".into()),
-                        Effect::Grant,
-                        Verb::Read,
-                    )
-                    .expiring(Expiry::AtUnix(0)),
-                ],
+                collab_types::FsAuthority {
+                    capabilities: vec![
+                        // A Files grant is intentionally insufficient to subscribe
+                        // to any room, including unrelated room 43.
+                        CapOverride::new(
+                            Subject::User(collab_types::Ed25519PublicKey(path_only_collaborator)),
+                            Scope::FsPath("/".into()),
+                            Effect::Grant,
+                            Access::Read,
+                        ),
+                    ],
+                    room_members: [
+                        (
+                            "42".to_owned(),
+                            vec![collab_types::RoomMember {
+                                user: collab_types::Ed25519PublicKey(collaborator_a),
+                                until: None,
+                            }],
+                        ),
+                        (
+                            "43".to_owned(),
+                            vec![collab_types::RoomMember {
+                                user: collab_types::Ed25519PublicKey(collaborator_a),
+                                until: Some(0),
+                            }],
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                },
                 false,
                 &governor,
             )
@@ -3019,50 +3347,79 @@ mod tests {
         }
     }
 
-    /// The full replica's status heartbeat: rewrites `status` every 250 ms
-    /// until dropped, as the live replica does, so a proof stays fresh however
-    /// long the relay takes to start or a discovery takes to answer.
-    struct StatusHeartbeat {
-        stop: Arc<std::sync::atomic::AtomicBool>,
-        beat: Option<std::thread::JoinHandle<()>>,
+    /// Write `status` as the full replica does, once, and return a clock
+    /// stopped at its stamp: the proof stays as recent as when it was written
+    /// however long starting the relay or answering a discovery takes.
+    fn publish_status(
+        path: &std::path::Path,
+        status: &fs::full_replica::FullReplicaStatus,
+    ) -> Arc<dyn Clock> {
+        fs::full_replica::save_status(path, status).unwrap();
+        let stamped = fs::full_replica::load_status(path)
+            .unwrap()
+            .unwrap()
+            .updated_at_ms;
+        Arc::new(tilo_clock::FixedClock(stamped))
     }
 
-    impl StatusHeartbeat {
-        fn start(path: &std::path::Path, status: &fs::full_replica::FullReplicaStatus) -> Self {
-            publish_status(path, status);
-            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let (path, status, stopped) = (path.to_path_buf(), status.clone(), Arc::clone(&stop));
-            let beat = std::thread::spawn(move || {
-                while !stopped.load(Ordering::Acquire) {
-                    std::thread::sleep(Duration::from_millis(250));
-                    publish_status(&path, &status);
-                }
-            });
-            Self {
-                stop,
-                beat: Some(beat),
+    #[test]
+    fn a_replica_proof_lapses_five_seconds_after_its_stamp() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("status.json");
+        let mut status = fs::full_replica::FullReplicaStatus::syncing();
+        status.state = "ready".into();
+        status.full_content_replication = true;
+        status.filesystem_endpoints.push(EndpointAddr::new(
+            iroh::SecretKey::from_bytes(&[7; 32]).public(),
+        ));
+        fs::full_replica::save_status(&path, &status).unwrap();
+        let stamped = fs::full_replica::load_status(&path)
+            .unwrap()
+            .unwrap()
+            .updated_at_ms;
+        let proof_at = |now_ms: u64| {
+            ReplicaProof {
+                path: path.clone(),
+                clock: Arc::new(tilo_clock::FixedClock(now_ms)),
             }
-        }
+            .current()
+        };
+        assert!(proof_at(stamped.saturating_add(5_000)).is_some());
+        assert!(proof_at(stamped.saturating_add(5_001)).is_none());
     }
 
-    /// Replace the status file with a freshly stamped record. Not fsynced: a
-    /// durable write stalled on a slow disk would age the record past the
-    /// relay's 5 s freshness bound, and these tests only read it.
-    fn publish_status(path: &std::path::Path, status: &fs::full_replica::FullReplicaStatus) {
-        let mut status = status.clone();
-        status.updated_at_ms = tilo_clock::unix_now_ms();
-        let staged = path.with_extension("staged");
-        std::fs::write(&staged, serde_json::to_vec(&status).unwrap()).unwrap();
-        std::fs::rename(&staged, path).unwrap();
-    }
-
-    impl Drop for StatusHeartbeat {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::Release);
-            if let Some(beat) = self.beat.take() {
-                let _ = beat.join();
-            }
-        }
+    /// #4224. A replica that holds its liveness lock keeps its ready
+    /// proof without restamping it; the proof lapses the moment the lock
+    /// is released (the replica exited), however old the stamp.
+    #[test]
+    fn a_running_replica_keeps_its_proof_without_restamping_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("status.json");
+        let mut status = fs::full_replica::FullReplicaStatus::syncing();
+        status.state = "ready".into();
+        status.full_content_replication = true;
+        status.filesystem_endpoints.push(EndpointAddr::new(
+            iroh::SecretKey::from_bytes(&[7; 32]).public(),
+        ));
+        let alive = fs::full_replica::ReplicaLiveness::hold(&path).unwrap();
+        fs::full_replica::save_status(&path, &status).unwrap();
+        let stamped = fs::full_replica::load_status(&path)
+            .unwrap()
+            .unwrap()
+            .updated_at_ms;
+        let an_hour_later = ReplicaProof {
+            path,
+            clock: Arc::new(tilo_clock::FixedClock(stamped.saturating_add(3_600_000))),
+        };
+        assert!(
+            an_hour_later.current().is_some(),
+            "a live replica's proof must not depend on how recently it was written"
+        );
+        drop(alive);
+        assert!(
+            an_hour_later.current().is_none(),
+            "the proof of a replica that exited must lapse"
+        );
     }
 
     #[tokio::test]
@@ -3113,8 +3470,8 @@ mod tests {
             status
                 .filesystem_endpoints
                 .push(filesystem_endpoint.clone());
-            let _heartbeat = StatusHeartbeat::start(&status_path, &status);
-            let relay = Relay::start(
+            let status_clock = publish_status(&status_path, &status);
+            let relay = Relay::start_with_replica_clock(
                 RelayConfig {
                     state_root: temp.path().join("relay-state"),
                     full_replica_status: status_path.clone(),
@@ -3123,6 +3480,7 @@ mod tests {
                     ..RelayConfig::default()
                 },
                 relay_identity,
+                status_clock,
             )
             .await
             .unwrap();
@@ -3179,7 +3537,7 @@ mod tests {
             status.state = "ready".into();
             status.full_content_replication = true;
             status.filesystem_endpoints.push(filesystem.clone());
-            let _heartbeat = StatusHeartbeat::start(&status_path, &status);
+            let status_clock = publish_status(&status_path, &status);
             let owner_endpoint = EndpointAddr::new(iroh::SecretKey::from_bytes(&[91; 32]).public());
             let workspace_topic = [29; 32];
             let bundle_path = temp.path().join("home-peer.toml");
@@ -3200,7 +3558,7 @@ mod tests {
                 }],
             };
             std::fs::write(&bundle_path, toml::to_string(&bundle).unwrap()).unwrap();
-            let relay = Relay::start(
+            let relay = Relay::start_with_replica_clock(
                 RelayConfig {
                     state_root: temp.path().join("relay"),
                     full_replica_status: status_path.clone(),
@@ -3224,6 +3582,7 @@ mod tests {
                     device_cert: host_cert,
                     revocations: RevocationList::new(),
                 },
+                status_clock,
             )
             .await
             .unwrap();
@@ -3406,8 +3765,6 @@ mod tests {
     async fn live_authority_refresh_revokes_expires_and_resists_rollback() {
         // Phase `live_authority_refresh_removes_the_last_room_collaborator`.
         {
-            use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
-
             let temp = tempfile::tempdir().unwrap();
             let cache = temp.path().join("cache");
             std::fs::create_dir_all(&cache).unwrap();
@@ -3421,12 +3778,18 @@ mod tests {
             let granted = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
                 ticket.workspace_id(),
                 1,
-                vec![CapOverride::new(
-                    Subject::User(collab_types::Ed25519PublicKey(collaborator)),
-                    Scope::Room("42".into()),
-                    Effect::Grant,
-                    Verb::Read,
-                )],
+                collab_types::FsAuthority {
+                    capabilities: vec![],
+                    room_members: [(
+                        "42".to_owned(),
+                        vec![collab_types::RoomMember {
+                            user: collab_types::Ed25519PublicKey(collaborator),
+                            until: None,
+                        }],
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
                 false,
                 &governor,
             )
@@ -3448,11 +3811,13 @@ mod tests {
                 workspaces: Vec::new(),
                 ..RelayConfig::default()
             };
-            let workspaces = build_workspace_registry(&config, false).unwrap();
+            let workspaces =
+                build_workspace_registry(&config, &crate::payloads::neighbour(), false).unwrap();
             get_or_autobind_workspace(
                 &workspaces,
                 Some(&WorkspaceAutobind {
                     state_root: config.state_root.clone(),
+                    shell_payloads: crate::payloads::neighbour(),
                 }),
                 42,
             )
@@ -3517,8 +3882,6 @@ mod tests {
         }
         // Phase `authority_refresh_rechecks_expiry_without_a_source_change`.
         {
-            use collab_types::{CapOverride, Effect, Expiry, Scope, Subject, Verb};
-
             let temp = tempfile::tempdir().unwrap();
             let cache = temp.path().join("cache");
             let bundle_path = temp.path().join("home-peer.toml");
@@ -3531,17 +3894,18 @@ mod tests {
             let authority = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
                 ticket.workspace_id(),
                 1,
-                vec![
-                    CapOverride::new(
-                        Subject::User(collab_types::Ed25519PublicKey(collaborator)),
-                        Scope::Room("42".into()),
-                        Effect::Grant,
-                        Verb::Read,
-                    )
-                    // It is initially a future deadline, then becomes expired while
-                    // both authority files remain byte-for-byte unchanged.
-                    .expiring(Expiry::AtUnix(20)),
-                ],
+                collab_types::FsAuthority {
+                    capabilities: vec![],
+                    room_members: [(
+                        "42".to_owned(),
+                        vec![collab_types::RoomMember {
+                            user: collab_types::Ed25519PublicKey(collaborator),
+                            until: Some(20),
+                        }],
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
                 false,
                 &governor,
             )
@@ -3563,11 +3927,13 @@ mod tests {
                 workspaces: Vec::new(),
                 ..RelayConfig::default()
             };
-            let workspaces = build_workspace_registry(&config, false).unwrap();
+            let workspaces =
+                build_workspace_registry(&config, &crate::payloads::neighbour(), false).unwrap();
             get_or_autobind_workspace(
                 &workspaces,
                 Some(&WorkspaceAutobind {
                     state_root: config.state_root.clone(),
+                    shell_payloads: crate::payloads::neighbour(),
                 }),
                 42,
             )
@@ -3627,8 +3993,6 @@ mod tests {
         }
         // Phase `authority_high_water_rejects_rollback_and_missing_cache_after_restart`.
         {
-            use collab_types::{CapOverride, Effect, Scope, Subject, Verb};
-
             let temp = tempfile::tempdir().unwrap();
             let cache = temp.path().join("cache");
             std::fs::create_dir_all(&cache).unwrap();
@@ -3643,12 +4007,18 @@ mod tests {
             let granted = fs::workspace_authority::WorkspaceAuthorityEnvelope::sign(
                 ticket.workspace_id(),
                 1,
-                vec![CapOverride::new(
-                    Subject::User(collab_types::Ed25519PublicKey(collaborator)),
-                    Scope::Room("42".into()),
-                    Effect::Grant,
-                    Verb::Read,
-                )],
+                collab_types::FsAuthority {
+                    capabilities: vec![],
+                    room_members: [(
+                        "42".to_owned(),
+                        vec![collab_types::RoomMember {
+                            user: collab_types::Ed25519PublicKey(collaborator),
+                            until: None,
+                        }],
+                    )]
+                    .into_iter()
+                    .collect(),
+                },
                 false,
                 &governor,
             )
@@ -3683,11 +4053,13 @@ mod tests {
                 workspaces: Vec::new(),
                 ..RelayConfig::default()
             };
-            let workspaces = build_workspace_registry(&config, false).unwrap();
+            let workspaces =
+                build_workspace_registry(&config, &crate::payloads::neighbour(), false).unwrap();
             get_or_autobind_workspace(
                 &workspaces,
                 Some(&WorkspaceAutobind {
                     state_root: config.state_root.clone(),
+                    shell_payloads: crate::payloads::neighbour(),
                 }),
                 42,
             )
@@ -3798,6 +4170,10 @@ mod tests {
         for alpn in [
             ALPN,
             tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
+            tilo_delivery_protocol::transport_v2::ALPN_SIGNED_ACTIONS_V1,
+            tilo_delivery_protocol::transport_v2::ALPN_COMPACT_STATE_V1,
+            tilo_delivery_protocol::transport_v2::ALPN_PRESENCE_BATCH_V1,
+            tilo_delivery_protocol::transport_v2::ALPN_CODED_DELTA_V1,
             DISCOVERY_ALPN,
             MANAGEMENT_ALPN,
             COMPUTE_ALPN,
@@ -3837,11 +4213,7 @@ mod tests {
         trust.refresh(&workspaces).await;
 
         assert_eq!(
-            trust
-                .live_policy
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone(),
+            trust.live_policy.read_recover().clone(),
             TrustPolicy::AllowList {
                 users: vec![hex::encode(own_user), hex::encode(operator_pin)]
             }

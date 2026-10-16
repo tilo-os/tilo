@@ -3,16 +3,6 @@
 //! `PresenceCtx::remote_cursors` — the source the shell's
 //! `RemoteCursorOverlay` actually renders from.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use tilo_ui::app::App;
 use tilo_ui::collaboration::{CollabEvent, Collaborator};
 use tilo_ui::permissions::UserId;
@@ -83,7 +73,7 @@ fn remote_cursor_moves_populate_and_update_presence() {
             collaborators: vec![Collaborator {
                 id: "agent@release".into(),
                 name: "Release assistant".into(),
-                color: [0.3, 0.4, 0.9],
+                colour: None,
                 is_agent: true,
                 is_self: false,
             }],

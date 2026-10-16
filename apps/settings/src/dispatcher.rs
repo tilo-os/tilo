@@ -30,6 +30,7 @@ pub mod testing {
     };
 
     use os_actions::{Dispatcher, PowerProfile};
+    use ui::lock::MutexRecover as _;
 
     /// Captures every dispatch call into a `Vec<String>` so tests can
     /// assert on what landed without spawning processes. The dispatcher
@@ -49,14 +50,7 @@ pub mod testing {
         /// yields whatever calls were recorded, rather than panicking here
         /// too and hiding the original failure.
         pub fn calls(&self) -> Vec<String> {
-            self.calls
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone()
-        }
-
-        pub fn set_fail_power_profile(&self, fail: bool) {
-            self.fail_power_profile.store(fail, Ordering::Relaxed);
+            self.calls.lock_recover().clone()
         }
 
         fn push(&self, s: String) {

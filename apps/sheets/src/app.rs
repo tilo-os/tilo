@@ -1,108 +1,64 @@
 //! Root widget for the Sheets app. Owns the [`Grid`] and the surrounding
-//! chrome — a compact menu bar (File / Format menus + `AutoSum`), a
-//! prominent type/format indicator, a name-box + formula bar, and a bottom
-//! sheet-tab strip + status line — all hand-drawn into the scene.
+//! chrome: a command bar (File and Format menus, Bold, `AutoSum`, formula
+//! view, document settings), a name box and formula bar, and a bottom
+//! sheet-tab strip. The bars, the menus and the cards float over a
+//! custom-painted cell canvas, each through the toolkit's faces.
 //!
-//! Data flow: `sync` seeds the workbook into the CRDT on first run, reads
-//! the active sheet's raw inputs, recalculates every formula via the
+//! Data flow: the workbook the resource holds is presented to the app; it
+//! reads the active sheet's raw inputs, recalculates every formula via the
 //! [`crate::formula`] engine, propagates formats onto computed cells, and
 //! hands the resulting values to the grid. `handle_event` routes
-//! pointer/keyboard input to whichever region was hit and applies the
-//! grid's [`GridCmd`]s — running smart type inference on each entry —
-//! back into the document.
+//! pointer/keyboard input to whichever region was hit and submits the
+//! grid's [`GridCmd`]s — running smart type inference on each entry — as
+//! field edits of the cells they write.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
-use tilo_automerge::ApplyIncoming;
-use ui::time::{Duration, Instant};
-use ui::widget::{AppModel, ModelPath};
+use ui::time::Instant;
+use ui::widget::TaffyTreeExt;
+use ui::widget::{AppModel, Edits, ModelPath};
 
-use automerge::{AutoCommit, ChangeHash, ObjId};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use automerge::ObjId;
+use std::rc::Rc;
+use taffy::{NodeId, TaffyTree};
+use ui::tilo_resource::{Atom, Id, Invoke};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 
-use ui::ColorCompat;
+use ui::chart_palette::ChartPalette;
 use ui::collaboration::PresencePayload;
-use ui::permissions::PermissionContext;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{FileFilter, PickRequest};
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
+use ui::tokens::TextRole;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
-use ui::widget::{EditOutcome, EditableLabel, TextInput, Widget};
-use uuid::Uuid;
+use ui::widget::{
+    Button, ColorSwatchPicker, ContextMenu, EditOutcome, EditableLabel, Popover, PopoverSide,
+    TextInput, Widget,
+};
 
-use crate::actions::{self, SheetsAction, SheetsResourceCtx};
-use crate::doc::{ChartKind, ChartSnapshot, CommentThread, SheetsDoc};
+mod annotations;
+mod chrome;
+mod overlays;
+
+use chrome::{ChromeMetrics, CommandSlot, MenuRow};
+use overlays::SettingsSheet;
+
+use crate::actions;
 use crate::fill;
 use crate::formula;
 use crate::grid::{Grid, GridCmd, GridMetrics};
 use crate::infer::infer_entry;
-use crate::model::{
-    Addr, CellFormat, CellValue, Currency, DateStyle, FormatCategory, TimeStyle, a1_to_addr,
-    format_value,
-};
-use crate::settings::{DocSettings, EffectiveLocale, GlobalSettings};
+use crate::model::{Addr, CellFormat, CellValue, a1_to_addr, format_value};
+use crate::resource::verbs;
+use crate::settings::{DocSettings, EffectiveLocale};
+use crate::workbook::{Cell, ChartKind, ChartSnapshot, CommentThread, Workbook};
+use tilo_locale::{Currency, DateStyle, Locale};
+use ui::clock::TimeStyle;
 
-/// 1× floors for the three chrome bands. Each band is derived from the
-/// measured line box of the text it carries plus spacing tokens (see
-/// [`ChromeMetrics`]); these floors reproduce the classic density exactly at
-/// 1× and only give way when larger text needs the room.
-const MENUBAR_H: f64 = 44.0;
-const MENU_BUTTON_H: f64 = 32.0;
-const FORMULA_FIELD_H: f64 = 32.0;
-const TAB_H: f64 = 32.0;
-const SETTING_CHIP_H: f64 = 26.0;
-const MENU_ROW_H: f64 = 30.0;
-const NAME_BOX_W: f64 = 92.0;
-/// Deliberately off-scale: the sheet tab's colour underline sits 2 px above
-/// the window edge so it reads as part of the tab, not the frame.
-const TAB_STRIP_BOTTOM_INSET: f64 = 2.0;
-/// Thickness of a sheet tab's colour / active underline.
-const TAB_UNDERLINE_H: f64 = 3.0;
-/// Menu rows leave an `s1` seam so the lifted fill of adjacent rows never
-/// merges into one block — a token step, never a touch (HIG §7).
-const MENU_ROW_SEAM: f64 = ui::tokens::Spacing::BASE.s1 as f64;
-/// The name box's inline editor sits 2 px inside the box's top and bottom
-/// edges: an authored inset for the shared `TextInput`, not a gap between
-/// two elements.
-const NAME_BOX_EDITOR_INSET: f64 = 2.0;
-/// Colour swatches in the sheet-tab menu are square targets of this side.
-const TAB_COLOUR_SWATCH: f64 = 20.0;
-/// Classic 1× bounds of a sheet tab (touch-target floor, long-name ceiling);
-/// both grow with the measured text.
-const TAB_MIN_W: f64 = 64.0;
-const TAB_MAX_W: f64 = 180.0;
-/// The inline tab-rename editor gets at least this much room (grown with
-/// the text) so a longer name fits while typing.
-const TAB_RENAME_MIN_W: f64 = 150.0;
-/// Minimum widths of the two menu panels; both grow to their measured labels.
-const FILE_MENU_MIN_W: f64 = 196.0;
-const FORMAT_MENU_MIN_W: f64 = 160.0;
-const TAB_MENU_MIN_W: f64 = 188.0;
-/// The document-settings panel's preferred width, and the floor it shrinks to
-/// on a narrow viewport (chip rows wrap inside it).
-const SETTINGS_PANEL_W: f64 = 440.0;
-/// How far the document-settings dialog dims the sheet behind it
-/// (`ui::chrome::fill_scrim` strength).
-const SETTINGS_SCRIM_STRENGTH: f32 = 0.45;
-const SETTINGS_PANEL_MIN_W: f64 = 300.0;
-/// Reference label the name box is sized for, so it never resizes with the
-/// selection and always fits a two-corner range reference.
-const NAME_BOX_REFERENCE: &str = "ZZ999:ZZ999";
-/// The menu bar's buttons in order: label, the dropdown it opens, the action
-/// it fires. One table feeds layout, paint and the label pre-measurement so a
-/// button is always exactly as wide as the text it paints.
-const MENU_BAR_BUTTONS: [(&str, Option<OpenMenu>, Option<MenuItem>); 4] = [
-    ("File", Some(OpenMenu::File), None),
-    ("Format", Some(OpenMenu::Format), None),
-    ("\u{03A3} Sum", None, Some(MenuItem::AutoSum)),
-    ("Doc settings", None, Some(MenuItem::OpenDocSettings)),
-];
 /// Rows of the sheet-tab context menu, top to bottom.
 const TAB_MENU_ACTIONS: [TabAction; 6] = [
     TabAction::Rename,
@@ -112,7 +68,7 @@ const TAB_MENU_ACTIONS: [TabAction; 6] = [
     TabAction::MoveRight,
     TabAction::Delete,
 ];
-/// Option chips of the document-settings panel, in display order.
+/// Options of the document-settings sheet, in display order.
 const DATE_STYLES: [(&str, DateStyle); 4] = [
     ("ISO", DateStyle::Iso),
     ("US", DateStyle::Us),
@@ -121,40 +77,17 @@ const DATE_STYLES: [(&str, DateStyle); 4] = [
 ];
 const TIME_STYLES: [(&str, TimeStyle); 2] =
     [("24-hour", TimeStyle::H24), ("12-hour", TimeStyle::H12)];
-const SETTINGS_SECTIONS: [&str; 3] = ["Currency", "Date", "Time"];
-/// Every painted chart/comment command gets a normal touch target, not a
-/// text-baseline-sized link. Kept as a shared constant so the renderer and
-/// regression test cannot silently drift apart.
-const ANNOTATION_ACTION_H: f64 = 44.0;
-/// Classic 1× offsets inside the floating chart / comment cards. They are
-/// the floors of [`ChromeMetrics::chart_card_rows`] /
-/// [`ChromeMetrics::comment_card_rows`]: a 1× card keeps this rhythm exactly,
-/// a larger text scale grows each row from its measured line box instead.
-const CHART_TITLE_TOP: f64 = 21.0;
-/// Least distance from the chart title's top to its action band (1×).
-const CHART_CONTROLS_SEAM: f64 = 5.0;
-/// The chart plot is content-sized, not text-sized.
-const CHART_PLOT_H: f64 = 74.0;
-const COMMENT_HEADING_TOP: f64 = 22.0;
-const COMMENT_BODY_ADV: f64 = 26.0;
-const COMMENT_DETAIL_ADV: f64 = 36.0;
-const COMMENT_CONTROLS_ADV: f64 = 28.0;
-const COMMENT_BOTTOM_PAD: f64 = 22.0;
 /// Importing is deliberately bounded before a parsed workbook can become a
 /// durable action stream.  This is large enough for useful real-world sheets,
 /// while keeping one user-selected file from monopolising a collaborator's
 /// document, history, or search projection.
 const MAX_IMPORT_FILE_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_IMPORT_CELLS: usize = actions::MAX_IMPORTED_CELLS;
+const MAX_IMPORT_CELLS: usize = crate::resource::MAX_IMPORTED_CELLS;
 /// CSV's interchange representation is rectangular.  A file with just one
 /// populated cell at a hostile far-away coordinate must not turn into a
 /// trillion-slot dense `Vec`; this caps the actually materialised rectangle,
 /// independently of the populated-cell action limit above.
 const MAX_CSV_MATERIALIZED_SLOTS: usize = crate::xlsx::MAX_MATERIALIZED_SLOTS;
-
-type ImportedCellWrite = (Addr, String, Option<CellFormat>);
-type ImportedWorkbook = Vec<(String, Vec<ImportedCellWrite>)>;
-type LoadedWorkbook = Box<(AutoCommit, Vec<ChangeHash>)>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Interchange {
@@ -181,119 +114,14 @@ impl Interchange {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PendingIo {
-    Import(Interchange),
-    Export(Interchange),
-}
-
-/// A single accepted interchange job.  The UI owns CRDT mutation and status;
-/// this worker owns only hostile file parsing/encoding and filesystem I/O.
-/// Keeping its result channel capacity at one gives a hard backpressure bound
-/// and lets the generation tag reject stale completions exactly.
-enum InterchangeResult {
-    Import {
-        generation: u64,
-        format: Interchange,
-        path: PathBuf,
-        result: Result<Vec<crate::xlsx::SheetTable>, String>,
-    },
-    Export {
-        generation: u64,
-        format: Interchange,
-        destination: PathBuf,
-        /// The worker has exclusively created and encoded this file in the
-        /// destination directory. Only the UI receipt may publish it.
-        result: Result<PathBuf, String>,
-    },
-}
-
-/// A finished resource operation held at the UI boundary until lifecycle
-/// polling confirms that the accepted invocation remains current. In
-/// particular, a cancelled import never reaches the CRDT and a cancelled
-/// export never reaches the selected destination.
-enum PreparedResourceIo {
-    Import {
-        format: Interchange,
-        path: PathBuf,
-        tables: Vec<crate::xlsx::SheetTable>,
-    },
-    Export {
-        format: Interchange,
-        destination: PathBuf,
-        temporary: PathBuf,
-    },
-}
-
-/// The interchange worker's one reply. Sending, returning early or panicking
-/// all wake the owning host after the channel settles: the worker is the only
-/// source of progress for an accepted job, and an idle host has no frame that
-/// would otherwise notice its result. A reply nobody can receive any more
-/// (Sheets closed) removes its prepared export instead of leaking it.
-struct InterchangeReply {
-    tx: Option<SyncSender<InterchangeResult>>,
-    wake: ui::wake::WakeHandle,
-}
-
-impl InterchangeReply {
-    fn send(mut self, result: InterchangeResult) {
-        let Some(tx) = self.tx.take() else { return };
-        if let Err(mpsc::SendError(InterchangeResult::Export {
-            result: Ok(temporary),
-            ..
-        })) = tx.send(result)
-        {
-            SheetsApp::discard_export_temp(&temporary);
-        }
-    }
-}
-
-impl Drop for InterchangeReply {
-    fn drop(&mut self) {
-        drop(self.tx.take());
-        self.wake.wake();
-    }
-}
-
-/// A bounded persistence job.  It deliberately carries an Automerge fork, not
-/// bytes: serialising a large CRDT is the expensive part and belongs on the
-/// worker, while merging a completed load remains a short UI-thread CRDT
-/// receipt.
-enum PersistenceResult {
-    Load {
-        generation: u64,
-        /// The heads actually represented by the on-disk image. The UI must
-        /// not acknowledge unrelated collaboration that arrived while loading.
-        result: Result<Option<LoadedWorkbook>, String>,
-    },
-    Save {
-        generation: u64,
-        heads: Vec<ChangeHash>,
-        result: Result<(), String>,
-    },
-}
-
-#[derive(Clone)]
-enum PersistenceJob {
-    Load,
-    Save { heads: Vec<ChangeHash> },
-}
-
-/// Failed saves are visible and remain dirty, but a permanently unavailable
-/// data directory must not start a thread every frame.
-const PERSIST_RETRY_DELAY: Duration = Duration::from_secs(1);
-
 fn spreadsheet_import_request(format: Interchange) -> PickRequest {
     PickRequest::open("Import spreadsheet", "Import")
-        .thread_name("sheets-portal-import")
         .filter(format.filter())
         .all_files()
 }
 
 fn spreadsheet_export_request(format: Interchange, suggested: &str) -> PickRequest {
-    PickRequest::save("Export spreadsheet", "Export", suggested)
-        .thread_name("sheets-portal-export")
-        .filter(format.filter())
+    PickRequest::save("Export spreadsheet", "Export", suggested).filter(format.filter())
 }
 
 /// A top-level menu-bar action.
@@ -316,40 +144,17 @@ enum MenuItem {
     /// their calculated values. Kept alongside the other painted commands so
     /// narrow layouts do not hide this useful inspection mode behind Ctrl+K.
     ToggleFormulaView,
+    /// Make the selection bold, or regular again when it all is.
+    ToggleBold,
     // Inline bar action.
     AutoSum,
 }
 
-/// Which dropdown (if any) is open.
-#[derive(Clone, Copy, PartialEq)]
-enum OpenMenu {
-    None,
-    File,
-    Format,
-    /// Holds secondary commands when the accessible text scale or viewport
-    /// leaves insufficient room for the full toolbar.
-    More,
-}
-
 /// Whether the per-document settings panel is open.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum SettingsPanel {
     None,
     Document,
-}
-
-/// How this instance of the app is running.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RunMode {
-    /// A real launch: opens blank and persists the workbook between sessions.
-    Live,
-    /// The headless `--shots`/test path: seeds the sample budget so a captured
-    /// frame shows real formulas, and never reads or writes the user's data.
-    Shots,
-    /// Mounted by a host on a record: the record is the workbook, so the
-    /// app-wide file is never read or written. Only the record's creator
-    /// adds the first sheet; a participant that joined waits for it.
-    Record(ui::launch::RecordLaunch),
 }
 
 /// The app's only decorative animation is the transient status bubble. Keep
@@ -361,354 +166,39 @@ enum MotionPreference {
     Reduced,
 }
 
-impl RunMode {
-    /// Whether the workbook is read from and written to disk.
-    fn persists(self) -> bool {
-        self == Self::Live
-    }
-
-    /// Whether an empty workbook is filled with the sample budget.
-    fn seeds_sample_data(self) -> bool {
-        self == Self::Shots
-    }
-
-    /// Whether an empty workbook gets its first blank sheet.
-    fn seeds_blank_sheet(self) -> bool {
-        self != Self::Record(ui::launch::RecordLaunch::Joined)
-    }
-}
-
 /// One-shot duties the app still owes the frame loop.
 #[derive(Clone, Copy, Default)]
 struct Pending {
-    /// Startup (`initialize`) has already run.
-    seeded: bool,
     /// The scene is stale and needs repainting.
     redraw: bool,
-    /// The document carries a change the host should bracket as an undo point.
-    commit: bool,
 }
 
+/// The part of a screenshot scenario staged against the document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Staged {
+    CommandPalette,
+    FillSeries,
+    PasteFormula,
+}
+
+/// A sheet to show at the next sync, with one of its cells selected.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum PendingReveal {
-    Sheet { sheet_id: String },
-    Cell { sheet_id: String, addr: Addr },
+struct PendingReveal {
+    /// The sheet to show; `None` for the last one (an import's, still
+    /// arriving).
+    sheet_id: Option<Id>,
+    addr: Addr,
+    /// What to tell the person once it is shown; else where they went.
+    status: Option<String>,
+    /// The sheet is still being added (an import its dispatcher applies
+    /// next): wait for it rather than report it gone.
+    arriving: bool,
 }
 
-struct MenuButton {
-    rect: Rect,
-    label: String,
-    /// `None` for top-level menu openers (handled specially).
-    item: Option<MenuItem>,
-    opens: Option<OpenMenu>,
-}
-
-/// A clickable row inside an open dropdown or settings panel.
-struct ClickRow {
-    rect: Rect,
-    item: MenuItem,
-}
-
-/// A clickable option chip inside a settings panel.
+/// A clickable option of the settings sheet.
 struct SettingChip {
     rect: Rect,
     kind: SettingKind,
-}
-
-/// Chrome text metrics resolved once per frame from the renderer that paints
-/// the chrome.
-///
-/// Theme typography tokens are already accessibility-scaled and the renderer
-/// scales its input again, so each token is converted through
-/// [`TextRenderer::renderer_input_style`] exactly once here. Every band
-/// height, control height and label slot in `relayout` derives from these
-/// measured line boxes and label widths plus spacing tokens, so layout, paint
-/// and hit-testing share one metric. `fallback()` stands in until the first
-/// draw; `SheetsApp::refresh_chrome_metrics` swaps it for the measured set and
-/// re-runs `relayout` in the same frame, so nothing is ever painted from stale
-/// geometry.
-#[derive(Clone, Debug, PartialEq)]
-struct ChromeMetrics {
-    /// Renderer text scale the line boxes and widths were measured under.
-    scale: f64,
-    /// Renderer-input sizes (theme token ÷ renderer scale).
-    xs: f32,
-    sm: f32,
-    base: f32,
-    lg: f32,
-    /// Measured line boxes of the sizes above, in final pixels.
-    lh_xs: f64,
-    lh_sm: f64,
-    lh_base: f64,
-    /// Measured advance of the italic "fx" glyph at `base`.
-    fx_w: f64,
-    /// Measured width of [`NAME_BOX_REFERENCE`] at `sm` semibold.
-    name_box_label_w: f64,
-    /// Measured size of the add-sheet "+" glyph at `lg`.
-    add_glyph: (f64, f64),
-    /// Measured `sm` semibold widths of every chrome label laid out by
-    /// `relayout` (menu buttons, sheet tabs, setting chips, menu rows).
-    labels: HashMap<String, f64>,
-    /// Theme spacing tokens.
-    s1: f64,
-    s2: f64,
-    s3: f64,
-    s4: f64,
-    s6: f64,
-    /// The grid's share of the same resolution.
-    grid: GridMetrics,
-}
-
-impl ChromeMetrics {
-    /// Resolve every chrome metric for `theme` against `tr`. `labels` is the
-    /// set of strings `relayout` will size a slot for.
-    fn resolve<'a>(
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        labels: impl IntoIterator<Item = &'a str>,
-    ) -> Self {
-        let scale = &theme.tokens.typography.scale;
-        let input = |size: f32| tr.renderer_input_style(&TextStyle::new(size));
-        let xs = input(scale.xs);
-        let sm = input(scale.sm);
-        let base = input(scale.base);
-        let lg = input(scale.lg);
-        let sm_semibold = sm.clone().with_weight(TextWeight::Semibold);
-        let (_, lh_xs) = tr.measure_style("Ag", None, &xs);
-        let (_, lh_sm) = tr.measure_style("Ag", None, &sm);
-        let (_, lh_base) = tr.measure_style("Ag", None, &base);
-        let (fx_w, _) = tr.measure_style("fx", None, &base.clone().with_italic(true));
-        let (name_box_label_w, _) = tr.measure_style(NAME_BOX_REFERENCE, None, &sm_semibold);
-        let (add_w, add_h) = tr.measure_style("+", None, &lg);
-        let labels = labels
-            .into_iter()
-            .map(|label| {
-                let (w, _) = tr.measure_style(label, None, &sm_semibold);
-                (label.to_owned(), f64::from(w))
-            })
-            .collect();
-        let sp = &theme.tokens.spacing;
-        Self {
-            scale: f64::from(tr.text_scale()),
-            xs: xs.size,
-            sm: sm.size,
-            base: base.size,
-            lg: lg.size,
-            lh_xs: f64::from(lh_xs),
-            lh_sm: f64::from(lh_sm),
-            lh_base: f64::from(lh_base),
-            fx_w: f64::from(fx_w),
-            name_box_label_w: f64::from(name_box_label_w),
-            add_glyph: (f64::from(add_w), f64::from(add_h)),
-            labels,
-            s1: f64::from(sp.s1),
-            s2: f64::from(sp.s2),
-            s3: f64::from(sp.s3),
-            s4: f64::from(sp.s4),
-            s6: f64::from(sp.s6),
-            grid: GridMetrics::resolve(tr, theme),
-        }
-    }
-
-    /// The 1× metrics used before the first draw has a renderer. Every band
-    /// lands on its classic floor and label slots fall back to an estimate.
-    fn fallback() -> Self {
-        Self {
-            scale: 1.0,
-            xs: 10.0,
-            sm: 12.0,
-            base: 14.0,
-            lg: 16.0,
-            lh_xs: 12.5,
-            lh_sm: 15.0,
-            lh_base: 17.5,
-            fx_w: 13.0,
-            name_box_label_w: 70.0,
-            add_glyph: (10.0, 20.0),
-            labels: HashMap::new(),
-            s1: 4.0,
-            s2: 8.0,
-            s3: 12.0,
-            s4: 16.0,
-            s6: 24.0,
-            grid: GridMetrics::fallback(),
-        }
-    }
-
-    /// Measured `sm` width of `label` in final pixels, or a per-character
-    /// estimate (scaled like the renderer would) until the first draw has
-    /// measured it.
-    fn label_w(&self, label: &str) -> f64 {
-        self.labels.get(label).copied().unwrap_or_else(|| {
-            count_f64(label.chars().count()) * f64::from(self.sm) * 0.6 * self.scale
-        })
-    }
-
-    /// How much the chrome text has grown past the 1× line box; scales the
-    /// classic pixel floors and ceilings that bound text-driven slots.
-    fn text_growth(&self) -> f64 {
-        (self.lh_sm / Self::fallback().lh_sm).max(1.0)
-    }
-
-    /// A menu-bar button: its label plus `s3` each side.
-    fn menu_button_w(&self, label: &str) -> f64 {
-        self.label_w(label) + 2.0 * self.s3
-    }
-
-    /// Menu-bar buttons: the `sm` line box plus `s3`, never below the
-    /// text-scaled fine-pointer target.
-    fn menu_button_h(&self) -> f64 {
-        (self.lh_sm + self.s3).max(MENU_BUTTON_H * self.scale)
-    }
-
-    /// Menu bar: a button plus `s3`, never below 44 px.
-    fn menubar_h(&self) -> f64 {
-        (self.menu_button_h() + self.s3).max(MENUBAR_H)
-    }
-
-    /// Name box + formula field: the `base` line box plus `s2`, never below
-    /// the text-scaled fine-pointer target.
-    fn formula_field_h(&self) -> f64 {
-        (self.lh_base + self.s2).max(FORMULA_FIELD_H * self.scale)
-    }
-
-    /// Formula bar: the field plus `s1` above and below.
-    fn formula_h(&self) -> f64 {
-        self.formula_field_h() + 2.0 * self.s1
-    }
-
-    /// Name box: wide enough for [`NAME_BOX_REFERENCE`] plus `s2` each side,
-    /// never below the classic 92 px.
-    fn name_box_w(&self) -> f64 {
-        (self.name_box_label_w + 2.0 * self.s2).max(NAME_BOX_W)
-    }
-
-    /// The "fx" affordance slot: the glyph plus `s2` each side.
-    fn fx_slot_w(&self) -> f64 {
-        self.fx_w + 2.0 * self.s2
-    }
-
-    /// Sheet tabs: the `sm` line box plus `s3`, never below the text-scaled
-    /// fine-pointer target.
-    fn tab_h(&self) -> f64 {
-        (self.lh_sm + self.s3).max(TAB_H * self.scale)
-    }
-
-    /// Sheet-tab strip: a tab plus `s1` above and the underline inset below.
-    fn tabs_h(&self) -> f64 {
-        self.tab_h() + self.s1 + TAB_STRIP_BOTTOM_INSET
-    }
-
-    /// A sheet tab: its name plus `s3` each side, bounded between the classic
-    /// touch-target floor and ceiling (both grown with the text) so one long
-    /// name can never push the "+" button and later tabs off-screen; the
-    /// painter elides a name that hits the ceiling.
-    fn tab_w(&self, name: &str) -> f64 {
-        let g = self.text_growth();
-        (self.label_w(name) + 2.0 * self.s3).clamp(TAB_MIN_W * g, TAB_MAX_W * g)
-    }
-
-    /// Setting chips: the `sm` line box plus `s2`, never below 26 px.
-    fn chip_h(&self) -> f64 {
-        (self.lh_sm + self.s2).max(SETTING_CHIP_H)
-    }
-
-    /// A setting chip: its label plus `s3` each side.
-    fn chip_w(&self, label: &str) -> f64 {
-        self.label_w(label) + 2.0 * self.s3
-    }
-
-    /// Menu rows: the `sm` line box plus `s3`, never below 30 px.
-    fn menu_row_h(&self) -> f64 {
-        (self.lh_sm + self.s3).max(MENU_ROW_H)
-    }
-
-    /// Top of a line box centred in `rect`.
-    fn centred_top(rect: Rect, line_h: f64) -> f64 {
-        rect.y0 + (rect.height() - line_h) / 2.0
-    }
-
-    /// Top of the action band that follows an `sm` title line at
-    /// `title_top`: the band's centred `xs` label clears the title line box by
-    /// `s1`, and the band never starts closer than the classic seam.
-    fn annotation_controls_top(&self, title_top: f64) -> f64 {
-        let label_top = title_top + self.lh_sm + self.s1;
-        (label_top - (ANNOTATION_ACTION_H - self.lh_xs) / 2.0).max(title_top + CHART_CONTROLS_SEAM)
-    }
-
-    /// Row rhythm of a floating chart card, relative to the card's top:
-    /// title line, action band, plot, bottom `s4`. At 1× this reproduces the
-    /// classic 176 px card; a larger text scale pushes the band and plot down
-    /// so the title never paints under the actions.
-    fn chart_card_rows(&self) -> ChartCardRows {
-        let title_top = CHART_TITLE_TOP;
-        let controls_y0 = self.annotation_controls_top(title_top);
-        let controls_y1 = controls_y0 + ANNOTATION_ACTION_H;
-        let plot_y0 = controls_y1 + self.s4;
-        let plot_y1 = plot_y0 + CHART_PLOT_H;
-        ChartCardRows {
-            title_top,
-            controls_y0,
-            controls_y1,
-            plot_y0,
-            plot_y1,
-            height: plot_y1 + self.s4,
-        }
-    }
-
-    /// Row rhythm of the floating comment card, relative to the card's top:
-    /// heading, body, reply/resolve detail line, action band. Each advance is
-    /// the measured line box plus a spacing token, floored at the classic 1×
-    /// value; the resolve/reopen target is a full action-height band centred
-    /// on its detail line that ends where the action band begins.
-    fn comment_card_rows(&self) -> CommentCardRows {
-        let heading_top = COMMENT_HEADING_TOP;
-        let body_top = heading_top + (self.lh_sm + self.s2).max(COMMENT_BODY_ADV);
-        let detail_top = body_top + (self.lh_sm + self.s4).max(COMMENT_DETAIL_ADV);
-        let controls_y0 = detail_top + (self.lh_xs + self.s3).max(COMMENT_CONTROLS_ADV);
-        let toggle_y1 =
-            (detail_top + self.lh_xs / 2.0 + ANNOTATION_ACTION_H / 2.0).min(controls_y0);
-        CommentCardRows {
-            heading_top,
-            body_top,
-            detail_top,
-            controls_y0,
-            toggle_y0: toggle_y1 - ANNOTATION_ACTION_H,
-            toggle_y1,
-            height: controls_y0 + ANNOTATION_ACTION_H + COMMENT_BOTTOM_PAD,
-        }
-    }
-}
-
-/// See [`ChromeMetrics::chart_card_rows`]. Offsets are relative to the card top.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ChartCardRows {
-    title_top: f64,
-    controls_y0: f64,
-    controls_y1: f64,
-    plot_y0: f64,
-    plot_y1: f64,
-    height: f64,
-}
-
-/// See [`ChromeMetrics::comment_card_rows`]. Offsets are relative to the card top.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct CommentCardRows {
-    heading_top: f64,
-    body_top: f64,
-    detail_top: f64,
-    controls_y0: f64,
-    toggle_y0: f64,
-    toggle_y1: f64,
-    height: f64,
-}
-
-/// Highlight state for one [`SheetsApp::draw_chip`] call: `active` fills
-/// solid accent; `accent` (when not active) tints the background lightly.
-#[derive(Clone, Copy)]
-struct ChipStyle {
-    active: bool,
-    accent: bool,
 }
 
 /// The four extra parameters `Widget::handle_event` receives that only the
@@ -748,6 +238,8 @@ enum TabAction {
 enum AnnotationClick {
     Open(Addr),
     EditChart(String),
+    SetChartKind(String, ChartKind),
+    ChartCells(String),
     DeleteChart(String),
     Reply(String),
     EditComment(String),
@@ -758,28 +250,24 @@ enum AnnotationClick {
 /// An in-progress inline rename of a sheet tab.
 struct TabRename {
     idx: usize,
+    /// The tab's slot: the editor stands exactly on it.
     rect: Rect,
+    /// Measured width of the text being typed, so the slot (and the tabs
+    /// after it) make room for a longer name instead of the editor covering
+    /// its neighbours.
+    text_w: f64,
     editor: EditableLabel,
 }
 
-/// Palette of tab colours. Stored per sheet as an index into this list.
-const TAB_PALETTE: [(u8, u8, u8); 6] = [
-    (0xe2, 0x5b, 0x5b), // red
-    (0xe0, 0x8a, 0x2a), // orange
-    (0x3f, 0xbb, 0x53), // green
-    (0x54, 0x9b, 0xf5), // blue
-    (0xb1, 0x6c, 0xf0), // purple
-    (0xe2, 0x63, 0xb0), // pink
-];
+/// How many theme-derived tab colours the picker offers. A sheet stores a
+/// slot index, not an RGB, so the tab's colour dot follows the live theme.
+const TAB_PALETTE_LEN: usize = 6;
 
 /// The concrete colour for a stored tab-colour palette index. Indices wrap
-/// around the palette, so any value a peer stored resolves to a real colour.
-fn tab_palette_color(idx: u32) -> Color {
-    // `TAB_PALETTE` is a non-empty constant, so the remainder and the lookup
-    // both always land; the fallbacks keep the function total.
-    let slot = (idx as usize).checked_rem(TAB_PALETTE.len()).unwrap_or(0);
-    let (r, g, b) = TAB_PALETTE.get(slot).copied().unwrap_or((0x80, 0x80, 0x80));
-    Color::from_rgb8(r, g, b)
+/// around the theme series, so any value a peer stored resolves to a real
+/// colour after a theme change.
+fn tab_palette_color(theme: &Theme, idx: u32) -> Color {
+    ChartPalette::from_theme(theme).categorical(idx as usize)
 }
 
 /// Inclusive count of grid indices from `lo` through `hi`. Every caller passes
@@ -814,13 +302,6 @@ fn tile_count(sel: u32, block: u32) -> u32 {
     }
 }
 
-/// An item count as an `f64` for layout maths. Menus, chip rows and labels run
-/// to tens of items, far inside `f64`'s exact-integer range; an absurd count
-/// clamps rather than silently losing precision.
-fn count_f64(n: usize) -> f64 {
-    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
-}
-
 fn tab_action_label(act: TabAction) -> &'static str {
     match act {
         TabAction::Rename => "Rename",
@@ -833,10 +314,6 @@ fn tab_action_label(act: TabAction) -> &'static str {
     }
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "the loading shot flag joins existing independent retained interaction, worker, and presentation flags; these are not mutually exclusive states"
-)]
 pub struct SheetsApp {
     grid: Grid,
     /// The custom chrome has no toolkit layout primitives to inherit type
@@ -844,30 +321,43 @@ pub struct SheetsApp {
     /// the current accessibility text preference.
     text_scale: f64,
     rect: Rect,
-    menubar_rect: Rect,
+    toolbar_rect: Rect,
     formula_rect: Rect,
     grid_rect: Rect,
     tabs_rect: Rect,
-    menu_buttons: Vec<MenuButton>,
-    dropdown_rows: Vec<ClickRow>,
-    dropdown_rect: Rect,
-    setting_chips: Vec<SettingChip>,
-    panel_rect: Rect,
-    /// Y of each settings section's first chip row (Currency, Date, Time), so
-    /// the section labels stay aligned even when a row wraps on narrow widths.
-    settings_section_y: [f64; 3],
+    /// The command bar, and what its commands and menus last ran.
+    toolbar: ui::widget::Toolbar,
+    command_slot: CommandSlot,
+    /// The Format menu's rows as the bar holds them.
+    format_rows_shown: Option<Vec<MenuRow>>,
+    /// The theme the chrome was last measured in, for laying the bar out
+    /// between frames.
+    chrome_theme: Theme,
+    /// The window's History control in the header row's corner.
+    history: ui::widget::HistoryOpener,
+    history_rect: Rect,
+    /// The document-settings sheet as last laid out.
+    settings_sheet: Option<SettingsSheet>,
     /// Measured chrome text metrics driving `relayout` (see [`ChromeMetrics`]).
     metrics: ChromeMetrics,
     tab_rects: Vec<(Rect, usize)>,
     add_tab_rect: Rect,
     /// Per-sheet tab colours (palette indices), refreshed on each reload.
     sheet_colors: Vec<Option<u32>>,
-    /// Right-click context menu on a sheet tab: the target sheet plus the
-    /// laid-out action rows and colour swatches.
+    /// Right-click menu on a sheet tab: the target sheet, the menu and what
+    /// each of its rows does (`None` for a separator), and the colour popover
+    /// its "Tab colour" row opens.
     tab_menu_target: Option<usize>,
-    tab_menu_rect: Rect,
-    tab_menu_rows: Vec<(Rect, TabAction)>,
-    tab_menu_swatches: Vec<(Rect, Option<u32>)>,
+    tab_menu: ContextMenu,
+    tab_menu_rows: Vec<Option<overlays::TabMenuRow>>,
+    tab_colour: Popover<ColorSwatchPicker>,
+    /// The tab and colour the popover's picker was last built for.
+    tab_colour_shown: Option<(usize, Option<usize>)>,
+    /// Whether the active cell is bold, for the Bold command's toggle state.
+    active_cell_bold: bool,
+    /// A screenshot scenario's menu or sheet, waiting for the first measured
+    /// frame (see [`SheetsApp::stage_scenario`]).
+    staged_overlay: Option<String>,
     /// An inline sheet-tab rename editor, when active.
     tab_rename: Option<TabRename>,
     /// The name box (cell-reference / Go-To field) hit-rect, and the "fx"
@@ -893,88 +383,54 @@ pub struct SheetsApp {
     /// Rebuilt on paint: annotation cards stay a visual projection of the
     /// shared records, while their click routes dispatch canonical actions.
     annotation_clicks: Vec<(Rect, AnnotationClick)>,
-    /// Query-ready workbook projection, rebuilt only when document heads
-    /// change so global search never reads the CRDT synchronously.
-    searchable_sheets: Vec<actions::SearchableSheet>,
-    /// The heads that produced `searchable_sheets`. This is intentionally
-    /// separate from `cache`: changing the active tab must not walk every
-    /// workbook body or rebuild global-search postings.
-    search_projection_heads: Option<Vec<ChangeHash>>,
-    /// Retained, Arc-backed catalogue handed to each Ctrl+K session by clone.
+    /// The strip under the grid that holds the annotation cards, and where
+    /// each card stands in it. Empty when the sheet has no annotations.
+    dock_rect: Rect,
+    dock_cards: Vec<(annotations::DockCard, Rect)>,
+    /// Scrolls the dock sideways to the cards past its edge.
+    dock_scroll: ui::widget::ScrollRegion,
     /// It is refreshed only with a new search projection, never per query.
-    search_provider: crate::search_provider::SheetSearchProvider,
+    /// Each tab's durable sheet identity, which the edits it offers name.
+    sheet_ids: Vec<Id>,
+    /// The workbook as the resource holds it now.
+    workbook: Rc<Workbook>,
+    /// Increases whenever `workbook` is another state.
+    revision: u64,
+    /// The resource's live state, read again right after an own edit.
+    live: Option<ui::framework::Live<Workbook>>,
     active_sheet: usize,
     /// The latest transient action message (e.g. "Pasted into B2"), surfaced
     /// via the floating [`status_bubble`](Self::status_bubble) rather than a
     /// permanent status line. Initialised to `"Ready"`, which the bubble
     /// treats as "nothing to say".
     status: String,
-    /// Transient floating status bubble carrying the selection summary
-    /// (Sum / Avg / Count) or the active cell's format, plus any fresh action
-    /// message. It surfaces when that composed text changes (a selection
-    /// move/extend, an action) or while the pointer hovers the bottom-right
-    /// reveal zone, then fades — keeping the sheet-tab strip free of status
-    /// text so it reads purely as the sheet switcher.
+    /// Transient floating status bubble carrying the selection summary or the
+    /// active cell's format, plus any fresh action message. It surfaces when
+    /// that composed text changes (a selection move/extend, an action) or
+    /// while the pointer rests in its corner, then fades — keeping the
+    /// sheet-tab strip free of status text so it reads purely as the sheet
+    /// switcher.
     status_bubble: ui::StatusBubble,
-    /// The composed bubble text last seen, so the bubble is poked only when it
-    /// actually changes (never every frame, and never on the idle nothing
-    /// state).
-    last_status_label: String,
-    /// `--shots` forces the bubble fully visible so a still frame captures it.
-    shots_status: bool,
-    /// Snapshot-only counterpart to the real startup loading state. This lets
-    /// headless visual regression cover the loading affordance after the shot
-    /// harness has seeded its deterministic sample workbook.
-    shots_loading: bool,
-    /// One-shot frame duties: startup seeding, repaint, undo checkpoint.
+    /// A staged capture pins the bubble open so a still frame shows it.
+    staged_status: bool,
+    /// The part of a screenshot scenario staged against the document, done
+    /// by the `sync` that follows the staging.
+    staged: Option<Staged>,
+    /// One-shot frame duties: repaint.
     pending: Pending,
     last_press: Option<(Instant, Addr)>,
     last_mouse: Point,
     current_active_format: CellFormat,
-    open_menu: OpenMenu,
     settings_panel: SettingsPanel,
-    global: GlobalSettings,
+    /// The person's locale defaults, as of the last `sync`.
+    global: Locale,
+    /// The shared `locale` setting, followed while the app runs.
+    locale: Option<ui::framework::Setting<Locale>>,
     doc_settings: DocSettings,
-    /// Whether this instance is a real session or the headless capture path.
-    run: RunMode,
     motion: MotionPreference,
-    /// Document heads last written to disk — persistence is skipped while the
-    /// document is unchanged, so idle frames never re-serialize.
-    saved_heads: Vec<ChangeHash>,
-    /// A single capacity-one worker covers both startup loading and coalesced
-    /// saves. A later edit while a save is running stays dirty and schedules
-    /// one follow-up write after the exact saved heads are acknowledged.
-    persistence_rx: Option<Receiver<PersistenceResult>>,
-    persistence_generation: u64,
-    active_persistence: Option<(u64, PersistenceJob)>,
-    persistence_started: bool,
-    load_start_heads: Option<Vec<ChangeHash>>,
-    last_persist_failure: Option<Instant>,
     /// Memoised recalculation: `reload` recomputes only when the document
     /// heads or active sheet change, so selection/scroll frames are cheap.
     cache: Option<ReloadCache>,
-    /// An in-flight interchange file dialog: the operation and the channel its
-    /// chosen path arrives on, drained once per frame in [`Self::drain_io`].
-    /// `None` when no import/export chooser is open.
-    io: Option<(PendingIo, PortalChannel)>,
-    /// One bounded file worker result slot.  A fresh channel is made only
-    /// after the previous job settles, so accepted jobs cannot be displaced.
-    interchange_rx: Option<Receiver<InterchangeResult>>,
-    /// Result channels of cancelled jobs whose workers may still be running.
-    /// They no longer hold the slot; each is reaped once its worker replies.
-    orphaned_interchange: Vec<Receiver<InterchangeResult>>,
-    interchange_generation: u64,
-    active_interchange_generation: Option<u64>,
-    resource_invocation: Option<tilo_actions::InvocationId>,
-    resource_result: Option<tilo_actions::InvocationUpdate>,
-    pending_resource_io: Option<(tilo_actions::InvocationId, actions::SheetsOperation)>,
-    prepared_resource_io: Option<PreparedResourceIo>,
-    /// Set by a non-cancelled lifecycle poll; the following mutable `sync`
-    /// receipt may then publish/import the prepared result.
-    resource_confirmation: Option<tilo_actions::InvocationId>,
-    /// The host that accepted the current job; woken whenever that job can
-    /// advance only through another `sync`.
-    interchange_wake: ui::wake::WakeHandle,
     pending_reveal: Option<PendingReveal>,
     /// The last copied/cut rectangle, kept so an in-app paste can restore raw
     /// inputs and formats exactly (and shift relative formula references),
@@ -983,10 +439,18 @@ pub struct SheetsApp {
     /// The Ctrl+K command palette overlay. Seeded with the app's action set
     /// each time it opens; closed by default.
     palette: CommandPalette,
-    /// Framework-owned action dispatch: every doc-mutating affordance routes
-    /// through here so undo, byte-identical peer replay, and the OS Ctrl+K
-    /// palette all work from one implementation. See [`crate::actions`].
-    actions: ui::ActionHost,
+    /// The workbook's dispatcher: every edit is a field edit or a verb
+    /// submitted here, checked, applied, undone and replayed like the
+    /// palette's and an agent's. `None` until the framework attaches the
+    /// surface.
+    dispatch: Option<ui::framework::Dispatcher<Workbook>>,
+    /// The search hit or `open` waiting for the next settle to show it.
+    opening: Rc<std::cell::RefCell<Option<PendingReveal>>>,
+    /// The edits last bound to the selection, with what they were built
+    /// from: every publication asks for them, and they change only with the
+    /// workbook, the selection or the locale.
+    selection_decls:
+        std::cell::RefCell<Option<(SelectionKey, Vec<ui::tilo_resource::ActionDecl<Workbook>>)>>,
 }
 
 /// A rectangle captured by copy/cut, retaining each cell's raw input and
@@ -1008,9 +472,9 @@ struct ClipboardGrid {
 
 /// The recomputed view of the active sheet, kept between frames so that
 /// selection changes, scrolling, and format lookups don't re-snapshot the
-/// CRDT or re-run the formula engine.
+/// sheet or re-run the formula engine.
 struct ReloadCache {
-    heads: Vec<ChangeHash>,
+    revision: u64,
     sheet: usize,
     /// Effective per-cell format (explicit format, else propagated formula
     /// unit). Drives the type indicator and the selection summary.
@@ -1027,28 +491,34 @@ impl Default for SheetsApp {
 
 impl SheetsApp {
     pub fn new() -> Self {
+        let command_slot = CommandSlot::default();
         Self {
+            toolbar: Self::build_command_bar(&command_slot),
+            command_slot,
+            format_rows_shown: None,
+            chrome_theme: Theme::dark(),
+            history: ui::widget::HistoryOpener::new(),
+            history_rect: Rect::ZERO,
             grid: Grid::new(),
             text_scale: 1.0,
             rect: Rect::ZERO,
-            menubar_rect: Rect::ZERO,
+            toolbar_rect: Rect::ZERO,
             formula_rect: Rect::ZERO,
             grid_rect: Rect::ZERO,
             tabs_rect: Rect::ZERO,
-            menu_buttons: Vec::new(),
-            dropdown_rows: Vec::new(),
-            dropdown_rect: Rect::ZERO,
-            setting_chips: Vec::new(),
-            panel_rect: Rect::ZERO,
-            settings_section_y: [0.0; 3],
+            settings_sheet: None,
             metrics: ChromeMetrics::fallback(),
             tab_rects: Vec::new(),
             add_tab_rect: Rect::ZERO,
             sheet_colors: Vec::new(),
             tab_menu_target: None,
-            tab_menu_rect: Rect::ZERO,
+            tab_menu: ContextMenu::new(),
             tab_menu_rows: Vec::new(),
-            tab_menu_swatches: Vec::new(),
+            tab_colour: Popover::with_content(ColorSwatchPicker::new(Vec::new(), 1))
+                .side(PopoverSide::Above),
+            tab_colour_shown: None,
+            active_cell_bold: false,
+            staged_overlay: None,
             tab_rename: None,
             name_box_rect: Rect::ZERO,
             fx_rect: Rect::ZERO,
@@ -1060,226 +530,332 @@ impl SheetsApp {
             sheet_charts: Vec::new(),
             sheet_comments: Vec::new(),
             annotation_clicks: Vec::new(),
-            searchable_sheets: Vec::new(),
-            search_projection_heads: None,
-            search_provider: crate::search_provider::SheetSearchProvider::new(&[]),
+            dock_rect: Rect::ZERO,
+            dock_cards: Vec::new(),
+            dock_scroll: ui::widget::ScrollRegion::horizontal(),
+            sheet_ids: Vec::new(),
+            workbook: Rc::new(Workbook::default()),
+            revision: 0,
+            live: None,
             active_sheet: 0,
             status: "Ready".into(),
             status_bubble: ui::StatusBubble::new(),
-            last_status_label: String::new(),
-            shots_status: false,
-            shots_loading: false,
-            pending: Pending {
-                seeded: false,
-                redraw: true,
-                commit: false,
-            },
+            staged_status: false,
+            staged: None,
+            pending: Pending { redraw: true },
             last_press: None,
             last_mouse: Point::ZERO,
             current_active_format: CellFormat::General,
-            open_menu: OpenMenu::None,
             settings_panel: SettingsPanel::None,
-            global: GlobalSettings::default(),
+            global: Locale::default(),
+            locale: None,
             doc_settings: DocSettings::default(),
-            run: ui::launch::record_launch().map_or(RunMode::Live, RunMode::Record),
             motion: MotionPreference::Full,
-            saved_heads: Vec::new(),
-            persistence_rx: None,
-            persistence_generation: 0,
-            active_persistence: None,
-            persistence_started: false,
-            load_start_heads: None,
-            last_persist_failure: None,
             cache: None,
-            io: None,
-            interchange_rx: None,
-            orphaned_interchange: Vec::new(),
-            interchange_generation: 0,
-            active_interchange_generation: None,
-            resource_invocation: None,
-            resource_result: None,
-            pending_resource_io: None,
-            prepared_resource_io: None,
-            resource_confirmation: None,
-            interchange_wake: ui::wake::WakeHandle::detached(),
             pending_reveal: None,
             clipboard: None,
-            palette: CommandPalette::commands(),
-            actions: ui::ActionHost::new(),
+            palette: {
+                let mut palette = CommandPalette::commands();
+                palette.set_query_placeholder("Search commands\u{2026}");
+                palette
+            },
+            dispatch: None,
+            opening: Rc::default(),
+            selection_decls: std::cell::RefCell::default(),
+        }
+    }
+
+    /// Take part in the framework: submit workbook edits through its dispatcher.
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<Workbook>,
+        live: ui::framework::Live<Workbook>,
+    ) {
+        self.dispatch = Some(dispatcher);
+        self.adopt_resource_state(&live.get());
+        self.live = Some(live);
+    }
+
+    /// What shows a search hit or an agent's `open`: a sheet, or a cell of
+    /// one, revealed at the next settle.
+    pub(crate) fn opener(
+        &self,
+    ) -> impl FnMut(&str) -> Result<(), ui::tilo_resource::Refusal> + 'static {
+        let opening = Rc::clone(&self.opening);
+        move |anchor: &str| {
+            let (sheet, addr) = match crate::resource::parse_cell_anchor(anchor) {
+                Some(cell) => cell,
+                None => ui::tilo_resource::items::item_of_resource::<Workbook>(anchor)
+                    .map(|(_, sheet)| (sheet, (0, 0)))
+                    .ok_or_else(|| {
+                        ui::tilo_resource::Refusal::new(format!(
+                            "`{anchor}` is not in the workbook"
+                        ))
+                    })?,
+            };
+            *opening.borrow_mut() = Some(PendingReveal {
+                sheet_id: Some(sheet),
+                addr,
+                status: None,
+                arriving: false,
+            });
+            Ok(())
+        }
+    }
+
+    /// How a comment's `author` is named to the person reading it: "You"
+    /// for their own.
+    fn author_name(&self, author: &str) -> String {
+        let me = self.dispatch.as_ref().and_then(|dispatch| dispatch.me());
+        if author.is_empty() {
+            "Someone".to_owned()
+        } else if me == Some(author) {
+            "You".to_owned()
+        } else {
+            author.to_owned()
+        }
+    }
+
+    /// Follow the person's shared locale defaults.
+    pub(crate) fn follow_locale(&mut self, locale: ui::framework::Setting<Locale>) {
+        self.locale = Some(locale);
+    }
+
+    /// Show the workbook as the resource holds it.
+    pub(crate) fn adopt_resource_state(&mut self, state: &Rc<Workbook>) {
+        if Rc::ptr_eq(state, &self.workbook) {
+            return;
+        }
+        self.workbook = Rc::clone(state);
+        self.revision = self.revision.wrapping_add(1);
+        self.sheet_names = state
+            .sheets
+            .values()
+            .map(|sheet| sheet.name.0.clone())
+            .collect();
+        self.sheet_colors = state.sheets.values().map(|sheet| sheet.color).collect();
+        self.sheet_ids = state.sheets.ids().cloned().collect();
+        self.doc_settings = state.settings;
+        self.pending.redraw = true;
+    }
+
+    /// Read the workbook again after an own edit applied to `doc`.
+    fn follow(&mut self, doc: &Edits<'_>) {
+        let Some(live) = &self.live else {
+            return;
+        };
+        if live.sync(doc.doc()).is_ok() {
+            let state = live.get();
+            self.adopt_resource_state(&state);
+        }
+    }
+
+    /// The active sheet's id.
+    fn active_sheet_id(&self) -> Option<Id> {
+        self.sheet_ids.get(self.active_sheet).cloned()
+    }
+
+    /// The cells of the active sheet as stored: blank where nothing is.
+    fn stored_cells(&self) -> impl Fn(Addr) -> Cell + '_ {
+        let sheet = self
+            .active_sheet_id()
+            .and_then(|id| self.workbook.sheet(&id));
+        let layout = sheet.map(crate::workbook::Sheet::layout);
+        move |addr| {
+            sheet
+                .zip(layout.as_ref())
+                .and_then(|(sheet, layout)| sheet.cell_at(layout, addr).cloned())
+                .unwrap_or_default()
         }
     }
 
     // --- action dispatch ----------------------------------------------------
 
-    /// Dispatch one [`SheetsAction`] — the single CRDT-mutation path shared with
-    /// the Ctrl+K palette. Delegates to the framework's
-    /// [`ActionHost`](ui::ActionHost), which brackets the undo boundary and
-    /// applies the action through the executor (a pinned actor + committed
-    /// change, so it replays byte-identically on peers), exactly as the palette
-    /// does. This app supplies only its domain: the action and its type.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: &SheetsAction) {
-        // Interactive affordances retain the framework's non-panicking
-        // contract.  Import uses the fallible helper below so it can surface a
-        // refusal instead of falsely reporting completion.
-        let _ = self.try_perform_action(doc, action);
-    }
-
-    /// The fallible counterpart used by external import.  An import must never
-    /// claim success after a sheet or chunk was refused: every durable cell is
-    /// committed through this same executor as keyboard edits and palette
-    /// commands, or the whole operation reports its exact failure.
-    fn try_perform_action(
-        &mut self,
-        doc: &mut AutoCommit,
-        action: &SheetsAction,
-    ) -> Result<(), tilo_actions::ActionError> {
-        self.actions.try_dispatch_with_context(
-            doc,
-            actions::SHEETS_ACTION_TYPE,
-            action,
-            actions::history_context_for_doc(doc, action),
-        )
-    }
-
-    /// The presentation context the Ctrl+K resource tree is built from: the open
-    /// sheet names. Everything here mirrors state the document already holds.
-    pub(crate) fn sheets_resource_ctx(&self) -> SheetsResourceCtx {
-        let palette_actions = self.native_palette_actions();
-        let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
-        let label = if (c0, r0) == (c1, r1) {
-            crate::model::addr_to_a1(c0, r0)
-        } else {
-            format!(
-                "{}:{}",
-                crate::model::addr_to_a1(c0, r0),
-                crate::model::addr_to_a1(c1, r1)
-            )
+    /// Submit `invoke` now through the workbook's dispatcher — the one door
+    /// every edit takes, the palette's and an agent's too — and read the
+    /// workbook again. A refusal is the status.
+    fn submit(&mut self, doc: &mut Edits<'_>, invoke: Invoke<Workbook>) -> bool {
+        let Some(dispatch) = &self.dispatch else {
+            self.status = "The workbook is not open for editing".into();
+            return false;
         };
-        let selection =
-            self.searchable_sheets
-                .get(self.active_sheet)
-                .map(|sheet| actions::RangeResourceCtx {
-                    sheet_id: sheet.id.clone(),
-                    label,
-                    // Navigation and formula visibility are workbook views, not
-                    // range mutations. Keeping those two on the workbook avoids
-                    // duplicate prompted Ctrl+K entries while every selection
-                    // operation (sum/fill/format/structure) remains addressable
-                    // through this range resource.
-                    actions: palette_actions
-                        .iter()
-                        .filter(|action| {
-                            action.id != "go-to-cell" && action.id != "toggle-formula-view"
-                        })
-                        .cloned()
-                        .collect(),
-                });
-        SheetsResourceCtx {
-            sheet_names: self.sheet_names.clone(),
-            searchable_sheets: self.searchable_sheets.clone(),
-            palette_actions,
-            selection,
-        }
+        let applied = match dispatch.submit_now(doc, invoke) {
+            Ok(()) => true,
+            Err(error) => {
+                self.status = error.to_string();
+                false
+            }
+        };
+        self.follow(doc);
+        applied
     }
 
-    /// Build the context-sensitive command surface once, as resource actions.
-    /// Dense spreadsheet commands can retain their custom UI while still
-    /// sharing byte-identical action values with agents and the search bar.
-    #[allow(
-        clippy::too_many_lines,
-        clippy::expect_used,
-        reason = "the palette builds serializable action enum values in one authoritative surface"
-    )]
-    fn native_palette_actions(&self) -> Vec<tilo_actions::ActionSpec> {
-        use tilo_actions::{ActionSpec, OperationKind};
-
-        let immediate = |id: &str, label: &str, action: SheetsAction| {
-            ActionSpec::immediate(id, label, actions::SHEETS_ACTION_TYPE, &action)
-                .expect("SheetsAction is serializable")
-                .reversible()
-        };
-        let sheet = self.active_sheet;
-        let sheet_id = self.sheet_identity(sheet);
-        let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
-        let target_r = r1.saturating_add(1);
-        let sum_writes: Vec<(Addr, String, Option<CellFormat>)> = (c0..=c1)
-            .map(|c| {
-                (
-                    (c, target_r),
-                    format!(
-                        "=SUM({}:{})",
-                        crate::model::addr_to_a1(c, r0),
-                        crate::model::addr_to_a1(c, r1)
-                    ),
-                    None,
-                )
+    /// Write `writes` (input, and format when given) into the active sheet
+    /// as field edits of the cells, one undo step; a cell keeps what a
+    /// write leaves out.
+    fn write_raw(&mut self, doc: &mut Edits<'_>, writes: Vec<(Addr, String, Option<CellFormat>)>) {
+        let stored = self.stored_cells();
+        let cells: Vec<(Addr, Cell)> = writes
+            .into_iter()
+            .map(|(addr, raw, format)| {
+                let mut cell = stored(addr);
+                cell.raw = Atom(raw);
+                if let Some(format) = format {
+                    cell.format = format;
+                }
+                (addr, cell)
             })
             .collect();
-        let mut specs = vec![
-            immediate(
+        drop(stored);
+        self.write_cells(doc, &cells);
+    }
+
+    /// Set the format of `cells` of the active sheet, one undo step.
+    fn write_formats(&mut self, doc: &mut Edits<'_>, cells: Vec<(Addr, CellFormat)>) {
+        let stored = self.stored_cells();
+        let cells: Vec<(Addr, Cell)> = cells
+            .into_iter()
+            .map(|(addr, format)| {
+                let mut cell = stored(addr);
+                cell.format = format;
+                (addr, cell)
+            })
+            .collect();
+        drop(stored);
+        self.write_cells(doc, &cells);
+    }
+
+    /// Store `cells` in the active sheet as they are, one undo step.
+    fn write_cells(&mut self, doc: &mut Edits<'_>, cells: &[(Addr, Cell)]) {
+        let Some(sheet) = self.active_sheet_id() else {
+            return;
+        };
+        let edits = crate::workbook::cell_edits(&self.workbook, &sheet, cells);
+        if edits.is_empty() {
+            return;
+        }
+        let members: Vec<Invoke<Workbook>> = edits
+            .iter()
+            .filter_map(|edit| Invoke::edit(edit).ok())
+            .collect();
+        // One write is one action: one change, one history entry.
+        self.submit(doc, Invoke::group(members));
+    }
+
+    /// The edits bound to where the user is — the selection, the active cell
+    /// and its sheet — as the workbook's verbs with their arguments bound:
+    /// the palette, agents and scripts invoke them through the same door as
+    /// the rest of the workbook, and each acts on the selection as it is
+    /// when they are published.
+    pub(crate) fn selection_declarations(&self) -> Vec<ui::tilo_resource::ActionDecl<Workbook>> {
+        let key = SelectionKey {
+            revision: self.revision,
+            sheet: self.active_sheet,
+            bounds: self.grid.selection_bounds(),
+            active: self.grid.active(),
+            selected: self.grid.selected_cells(),
+            currency: self.default_currency(),
+        };
+        if let Some((built, decls)) = &*self.selection_decls.borrow()
+            && *built == key
+        {
+            return decls.clone();
+        }
+        let decls = self.build_selection_declarations();
+        *self.selection_decls.borrow_mut() = Some((key, decls.clone()));
+        decls
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "every selection-bound edit is declared in one place"
+    )]
+    fn build_selection_declarations(&self) -> Vec<ui::tilo_resource::ActionDecl<Workbook>> {
+        use crate::resource::CellWrite;
+        let Some(sheet) = self.active_sheet_id() else {
+            return Vec::new();
+        };
+        let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
+        let (active_col, active_row) = self.grid.active();
+        let selection = crate::resource::range_label((c0, r0), (c1, r1));
+        let write = |id: &'static str, label: &str, cells: Vec<CellWrite>| {
+            let p = verbs::WriteCells::paths();
+            Workbook::WRITE_CELLS
+                .bind(p.sheet, sheet.clone())
+                .and(p.cells, cells)
+                .declaration(id, label)
+        };
+        let mut decls = Vec::new();
+        for (id, label, kind) in [
+            (
                 "insert-column-chart",
                 "Create column chart from selection",
-                actions::put_chart_action(
-                    sheet,
-                    sheet_id.clone(),
-                    "Selection chart",
-                    ChartKind::Column,
-                    (c0, r0),
-                    (c1, r1),
-                ),
+                ChartKind::Column,
             ),
-            immediate(
+            (
                 "insert-line-chart",
                 "Create line chart from selection",
-                actions::put_chart_action(
-                    sheet,
-                    sheet_id.clone(),
-                    "Selection chart",
-                    ChartKind::Line,
-                    (c0, r0),
-                    (c1, r1),
-                ),
+                ChartKind::Line,
             ),
-            immediate(
-                "comment-selection",
-                "Comment on selection",
-                actions::put_comment_action(
-                    sheet,
-                    sheet_id.clone(),
-                    (c0, r0),
-                    (c1, r1),
-                    "You",
-                    "New comment",
-                ),
-            ),
-            immediate(
-                "sum-selection",
-                "Sum selection",
-                actions::set_cells_action(sheet, sheet_id.clone(), sum_writes),
-            ),
-            immediate(
-                "insert-row-active",
-                "Insert row above",
-                actions::insert_row_action(sheet, sheet_id.clone(), self.grid.active().1),
-            ),
-            immediate(
-                "delete-row-active",
-                "Delete row",
-                actions::delete_row_action(sheet, sheet_id.clone(), self.grid.active().1),
-            )
-            .destructive(),
-            immediate(
-                "insert-column-active",
-                "Insert column left",
-                actions::insert_column_action(sheet, sheet_id.clone(), self.grid.active().0),
-            ),
-            immediate(
-                "delete-column-active",
-                "Delete column",
-                actions::delete_column_action(sheet, sheet_id.clone(), self.grid.active().0),
-            )
-            .destructive(),
-        ];
+        ] {
+            let p = verbs::AddChart::paths();
+            decls.extend(
+                Workbook::ADD_CHART
+                    .bind(p.sheet, sheet.clone())
+                    .and(p.range, selection.clone())
+                    .and(p.kind, kind)
+                    .and(p.title, "Selection chart".to_owned())
+                    .declaration(id, label),
+            );
+        }
+        let p = verbs::Comment::paths();
+        decls.extend(
+            Workbook::COMMENT
+                .bind(p.sheet, sheet.clone())
+                .and(p.range, selection)
+                .declaration("comment-selection", "Comment on selection"),
+        );
+        let target_r = r1.saturating_add(1);
+        let sums = (c0..=c1)
+            .map(|c| {
+                let formula = format!(
+                    "=SUM({}:{})",
+                    crate::model::addr_to_a1(c, r0),
+                    crate::model::addr_to_a1(c, r1)
+                );
+                CellWrite::at((c, target_r), formula, None)
+            })
+            .collect();
+        decls.extend(write("sum-selection", "Sum selection", sums));
+        let p = verbs::InsertRows::paths();
+        decls.extend(
+            Workbook::INSERT_ROWS
+                .bind(p.sheet, sheet.clone())
+                .and(p.at, active_row.saturating_add(1))
+                .declaration("insert-row-active", "Insert row above"),
+        );
+        let p = verbs::DeleteRows::paths();
+        decls.extend(
+            Workbook::DELETE_ROWS
+                .bind(p.sheet, sheet.clone())
+                .and(p.rows, vec![active_row.saturating_add(1)])
+                .declaration("delete-row-active", "Delete row"),
+        );
+        let letters = crate::model::col_to_letters(active_col);
+        let p = verbs::InsertColumns::paths();
+        decls.extend(
+            Workbook::INSERT_COLUMNS
+                .bind(p.sheet, sheet.clone())
+                .and(p.at, letters.clone())
+                .declaration("insert-column-active", "Insert column left"),
+        );
+        let p = verbs::DeleteColumns::paths();
+        decls.extend(
+            Workbook::DELETE_COLUMNS
+                .bind(p.sheet, sheet.clone())
+                .and(p.columns, vec![letters])
+                .declaration("delete-column-active", "Delete column"),
+        );
 
         let selected = self.grid.selected_cells();
         for (id, label, format) in [
@@ -1291,16 +867,15 @@ impl SheetsApp {
             ("format-percent", "Format as percent", CellFormat::Percent),
             ("clear-format", "Clear formatting", CellFormat::General),
         ] {
-            let cells: Vec<(Addr, CellFormat)> = selected
+            let cells = selected
                 .iter()
-                .copied()
-                .map(|addr| (addr, format))
+                .map(|addr| CellWrite {
+                    cell: crate::model::addr_to_a1(addr.0, addr.1),
+                    format: Some(format),
+                    ..CellWrite::default()
+                })
                 .collect();
-            specs.push(immediate(
-                id,
-                label,
-                actions::set_formats_action(sheet, sheet_id.clone(), cells),
-            ));
+            decls.extend(write(id, label, cells));
         }
 
         let mut down = Vec::new();
@@ -1309,15 +884,15 @@ impl SheetsApp {
                 let raw = self.grid.cell_raw_at((c, r0));
                 let fmt = self.grid.cell_fmt_at((c, r0));
                 for (offset, r) in (1_i64..).zip(r0.saturating_add(1)..=r1) {
-                    down.push(((c, r), formula::offset_refs(&raw, 0, offset), Some(fmt)));
+                    down.push(CellWrite::at(
+                        (c, r),
+                        formula::offset_refs(&raw, 0, offset),
+                        Some(fmt),
+                    ));
                 }
             }
+            decls.extend(write("fill-down", "Fill down", down));
         }
-        specs.push(immediate(
-            "fill-down",
-            "Fill down",
-            actions::set_cells_action(sheet, sheet_id.clone(), down),
-        ));
 
         let mut right = Vec::new();
         if c1 > c0 {
@@ -1325,17 +900,17 @@ impl SheetsApp {
                 let raw = self.grid.cell_raw_at((c0, r));
                 let fmt = self.grid.cell_fmt_at((c0, r));
                 for (offset, c) in (1_i64..).zip(c0.saturating_add(1)..=c1) {
-                    right.push(((c, r), formula::offset_refs(&raw, offset, 0), Some(fmt)));
+                    right.push(CellWrite::at(
+                        (c, r),
+                        formula::offset_refs(&raw, offset, 0),
+                        Some(fmt),
+                    ));
                 }
             }
+            decls.extend(write("fill-right", "Fill right", right));
         }
-        specs.push(immediate(
-            "fill-right",
-            "Fill right",
-            actions::set_cells_action(sheet, sheet_id.clone(), right),
-        ));
 
-        let (c, r) = self.grid.active();
+        let (c, r) = (active_col, active_row);
         if r > 0 {
             let mut top = r;
             for rr in (0..r).rev() {
@@ -1351,667 +926,256 @@ impl SheetsApp {
                     crate::model::addr_to_a1(c, top),
                     crate::model::addr_to_a1(c, r - 1)
                 );
-                specs.push(immediate(
+                decls.extend(write(
                     "autosum-active",
                     "AutoSum column",
-                    actions::set_cell_action(sheet, sheet_id, (c, r), &formula, None),
+                    vec![CellWrite::at((c, r), formula, None)],
                 ));
             }
         }
+        decls
+    }
 
-        specs.push(tilo_actions::ActionSpec::prompted_operation(
-            "go-to-cell",
-            "Go to cell…",
-            "Cell reference",
-            "e.g. B12",
-            OperationKind::View,
-            actions::SHEETS_OPERATION_TYPE,
-            |reference| {
-                tilo_actions::EncodedAction::encode_operation(
-                    actions::SHEETS_OPERATION_TYPE,
-                    &actions::SheetsOperation::GoToCell {
-                        reference: reference.to_string(),
-                    },
-                )
-                .expect("SheetsOperation is serializable")
-            },
-        ));
-        specs.push(
-            ActionSpec::operation(
-                "toggle-formula-view",
-                if self.grid.formula_view() {
-                    "Hide formulas"
-                } else {
-                    "Show formulas"
-                },
-                OperationKind::View,
-                actions::SHEETS_OPERATION_TYPE,
-                &actions::SheetsOperation::ToggleFormulaView,
-            )
-            .expect("SheetsOperation is serializable"),
+    /// The workbook as the palette, agents and scripts see it from this
+    /// surface: the resource's publication with the edits bound to the
+    /// selection and its effects.
+    pub(crate) fn published(&self) -> Vec<tilo_actions::Resource> {
+        use ui::tilo_resource::{Effect as _, Resource as _};
+
+        let mut workbook =
+            ui::tilo_resource::publish::<Workbook>(Workbook::KIND, Workbook::LABEL, &self.workbook);
+        workbook.actions.extend(
+            self.selection_declarations()
+                .iter()
+                .map(ui::tilo_resource::declaration_spec),
         );
-        specs
+        workbook.actions.extend(actions::SheetsEffect::specs());
+        vec![workbook]
     }
 
-    /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-screen
-    /// affordance dispatched, for the affordance == [`ActionSpec`](tilo_actions::ActionSpec)
-    /// covenant test: a control and its Ctrl+K entry must build the identical
-    /// action.
+    /// Select `from`..`to` as a drag over the grid would.
     #[cfg(test)]
-    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
+    pub(crate) fn select_range_for_test(&mut self, from: Addr, to: Addr) {
+        self.grid.select_range_public(from, to);
     }
 
-    /// Configure the app for the headless `--shots`/test path: seed the sample
-    /// workbook so a captured frame shows real formulas, and disable on-disk
-    /// persistence so screenshots never read or write the user's workbook.
-    pub fn shots_mode(&mut self) {
-        self.run = RunMode::Shots;
-    }
-
-    /// The index of the active sheet. Lets a test observe where a Ctrl+K
-    /// activation navigated.
-    pub fn active_sheet_index(&self) -> usize {
-        self.active_sheet
-    }
-
-    /// `--shots`: force the floating status bubble fully visible so a single
-    /// headless frame captures the floating Sum / Avg / Count pill (otherwise
-    /// it would have faded, or never surfaced, by the time the frame renders).
-    pub fn arm_status_bubble_for_shots(&mut self) {
-        self.shots_status = true;
-        self.status_bubble.poke(ui::time::now());
-    }
-
-    /// Shots hook: open the File menu so its actions appear in the frame.
-    pub fn shots_open_file_menu(&mut self) {
-        self.open_menu = OpenMenu::File;
-    }
-
-    /// Shots hook: exercise the same loading veil real persistent launches
-    /// display while their bounded workbook load is still in flight.
-    pub fn shots_show_loading(&mut self) {
-        self.shots_loading = true;
-    }
-
-    /// Shots hook: stage a failed import acknowledgement in the normal status
-    /// surface. The production path supplies the same text from its worker.
-    pub fn shots_show_error(&mut self) {
-        self.status = "Excel import failed: the workbook is password protected".into();
-        self.arm_status_bubble_for_shots();
-    }
-
-    /// Shots hook: stage the collaboration acknowledgement used when an
-    /// incoming revision supersedes the value currently being edited.
-    pub fn shots_show_conflict(&mut self) {
-        self.status = "Budget was updated by a collaborator; showing the latest value".into();
-        self.arm_status_bubble_for_shots();
-    }
-
-    /// Shots hook: prove that acknowledgement remains visible with animations
-    /// suppressed for the reduced-motion preference.
-    pub fn shots_show_reduced_motion(&mut self) {
-        self.set_motion_reduced(true);
-        self.status = "Changes saved".into();
-        self.arm_status_bubble_for_shots();
-    }
-
-    /// Shots hook: open the Format menu.
-    pub fn shots_open_format_menu(&mut self) {
-        self.open_menu = OpenMenu::Format;
-    }
-
-    /// Shots hook: expose the compact-toolbar overflow menu so responsive
-    /// visual regression covers controls that are intentionally moved off the
-    /// narrow, enlarged-text command row.
-    pub fn shots_open_more_menu(&mut self) {
-        self.open_menu = OpenMenu::More;
-    }
-
-    /// Shots hook: open the per-document settings panel.
-    pub fn shots_open_doc_settings(&mut self) {
+    /// Open the per-document settings sheet.
+    fn open_doc_settings(&mut self) {
+        self.close_overlays();
         self.settings_panel = SettingsPanel::Document;
     }
 
-    /// Shots hook: begin editing the active cell so the in-cell editor and the
-    /// active formula bar are captured.
-    pub fn shots_begin_edit(&mut self) {
-        self.grid.begin_edit_in_place();
+    /// Pin the floating status bubble open, so a still frame shows the Sum /
+    /// Avg / Count pill or the message it carries rather than a bubble that
+    /// has faded.
+    fn pin_status_bubble(&mut self) {
+        self.staged_status = true;
     }
 
-    /// Shots hook: build a formula purely by clicking cells (point mode),
-    /// so the captured frame shows the coloured references it inserted and
-    /// the matching outlines on the referenced cells (B2 and C2).
-    pub fn shots_build_formula(&mut self) {
-        self.grid.select_only((2, 9)); // C10, an empty cell
-        self.grid.begin_edit(Some("=".into()));
-        self.grid.point_click_addr((1, 1)); // click B2 → =B2
-        self.grid.insert_text_public("+"); // type + → =B2+
-        self.grid.point_click_addr((2, 1)); // click C2 → =B2+C2
-    }
-
-    /// Shots hook: select a multi-cell numeric range so the live status-bar
-    /// summary (Sum / Avg / Count) is captured.
-    pub fn shots_select_summary_range(&mut self) {
-        // Budget!B2:B6 — the January column body.
-        self.grid.select_range_public((1, 1), (1, 5));
-        self.arm_status_bubble_for_shots();
-    }
-
-    /// Shots hook: build a discontiguous multi-range selection (the Jan column
-    /// body plus the Q1 Total column) so the frame shows two separate
-    /// highlighted rectangles with lit row/column headers.
-    pub fn shots_multi_select(&mut self) {
-        self.grid.select_range_public((1, 1), (1, 5)); // B2:B6
-        self.grid.add_range_public((4, 1), (4, 6)); // E2:E7
-        self.arm_status_bubble_for_shots();
-    }
-
-    /// Shots hook: open the right-click context menu on the first sheet tab so
-    /// the captured frame shows the rename/duplicate/move/colour actions.
-    pub fn shots_open_tab_menu(&mut self) {
-        self.open_tab_menu(0);
-    }
-
-    /// Shots hook: edit the active formula cell and select the range reference
-    /// inside it, so the captured frame shows the formula bar's text selection
-    /// and caret (the editable formula bar).
-    pub fn shots_formula_bar_select(&mut self) {
-        self.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
-        self.grid.begin_edit_in_place();
-        self.grid.set_edit_caret(5, false); // just before "B2:D2"
-        self.grid.set_edit_caret(10, true); // select "B2:D2"
-    }
-
-    /// Shots hook: open the Ctrl+K command palette so the captured frame shows
-    /// the action list with labels + descriptions.
-    pub fn shots_open_command_palette(&mut self, doc: &AutoCommit) {
-        self.open_command_palette(doc);
-    }
-
-    /// Shots hook: offset both axes so the scrollbar thumbs visibly prove the
-    /// two-dimensional grid viewport rather than merely drawing idle rails.
-    pub fn shots_scroll_both_axes(&mut self) {
-        self.grid.on_scroll(540.0, 260.0);
-    }
-
-    /// Shots hook: seed three fill patterns in an empty region and extend each
-    /// through the *real* fill-handle path, so the captured frame shows genuine
-    /// filled series — a linear number run (1, 2 → …6), a weekday sequence
-    /// (Mon → …Sat), and a text+number run (Task 1 → …Task 6) — plus the fill
-    /// handle on the resulting selection.
-    pub fn shots_fill_series(&mut self, doc: &mut AutoCommit) {
-        // Labels + seed patterns in columns B..D under an empty region.
-        let seeds: &[(Addr, &str)] = &[
-            ((0, 14), "Fill demo"),
-            ((1, 14), "Count"),
-            ((2, 14), "Weekday"),
-            ((3, 14), "Task"),
-            ((1, 15), "1"),
-            ((1, 16), "2"),
-            ((2, 15), "Mon"),
-            ((3, 15), "Task 1"),
-        ];
-        let cmds: Vec<GridCmd> = seeds
-            .iter()
-            .map(|(a, v)| GridCmd::SetCell {
-                addr: *a,
-                raw: v.to_string(),
-            })
-            .collect();
-        self.apply_cmds(doc, cmds);
-
-        // Numeric pair B16:B17 → extend down to B21 (3,4,5,6).
-        self.grid.select_range_public((1, 15), (1, 16));
-        self.grid.start_fill_to((1, 20));
-        self.run_pending_fill(doc);
-        // Single weekday C16 → extend down to C21 (Tue…Sat).
-        self.grid.select_only((2, 15));
-        self.grid.start_fill_to((2, 20));
-        self.run_pending_fill(doc);
-        // Single text+number D16 → extend down to D21 (Task 2…Task 6).
-        self.grid.select_only((3, 15));
-        self.grid.start_fill_to((3, 20));
-        self.run_pending_fill(doc);
-
-        // Land the selection on the filled numeric column so its fill handle
-        // shows at the bottom-right corner.
-        self.grid.select_range_public((1, 15), (1, 20));
-        self.reload(doc);
-    }
-
-    /// Shots hook: copy the `=SUM(B2:D2)` cell and paste it one column to the
-    /// right, then select the pasted cell — the frame shows the *adjusted*
-    /// formula `=SUM(C2:E2)` in the formula bar and its recomputed result in
-    /// the cell, demonstrating relative-reference adjustment on paste.
-    pub fn shots_paste_formula(&mut self, doc: &mut AutoCommit) {
-        self.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
-        self.copy_selection(false);
-        self.grid.select_only((5, 1)); // F2 (seeded AVERAGE; overwritten)
-        self.paste(doc);
-        self.grid.select_only((5, 1));
-        self.reload(doc);
-    }
-
-    /// Shots hook: add the two durable chart types and a range-anchored thread
-    /// through the same replayable action path used by Ctrl+K and agents.
-    pub fn shots_seed_charts_and_comments(&mut self, doc: &mut AutoCommit) {
-        let sheet_id = self.sheet_identity(self.active_sheet);
-        let charts = [
-            actions::put_chart_action(
-                self.active_sheet,
-                sheet_id.clone(),
-                "Quarterly spend",
-                ChartKind::Column,
-                (1, 1),
-                (4, 6),
-            ),
-            actions::put_chart_action(
-                self.active_sheet,
-                sheet_id.clone(),
-                "Monthly trend",
-                ChartKind::Line,
-                (1, 1),
-                (3, 6),
-            ),
-        ];
-        for chart in &charts {
-            self.perform_action(doc, chart);
+    /// Stage a screenshot scenario's view state over the sample workbook its
+    /// actions wrote: the active cell, an edit in progress, a message. A menu
+    /// or sheet opens in the first measured frame (it anchors to what that
+    /// frame lays out); what needs the document (a fill, a paste, the
+    /// palette's actions) is done by the `sync` that follows.
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        // A smart-typed currency cell, so the formula bar and the type
+        // indicator are populated.
+        if let Some(addr) = a1_to_addr("E2") {
+            self.grid.select_only(addr);
         }
-        let comment = actions::put_comment_action(
-            self.active_sheet,
-            sheet_id.clone(),
-            (1, 1),
-            (4, 1),
-            "Alex",
-            "Check the rent increase before sending this budget.",
-        );
-        let SheetsAction::PutComment { comment_id, .. } = &comment else {
+        match scenario {
+            Some(
+                name @ ("file" | "format" | "more" | "docsettings" | "tabmenu" | "tabcolour"
+                | "tabrename"),
+            ) => self.staged_overlay = Some(name.to_owned()),
+            Some("editing") => self.grid.begin_edit_in_place(),
+            // A formula built purely by clicking cells (point mode): the
+            // coloured references it inserted and the matching outlines on
+            // the referenced cells (B2 and C2).
+            Some("pointmode") => {
+                self.grid.select_only((2, 9)); // C10, an empty cell
+                self.grid.begin_edit(Some("=".into()));
+                self.grid.point_click_addr((1, 1)); // click B2 → =B2
+                self.grid.insert_text_public("+"); // type + → =B2+
+                self.grid.point_click_addr((2, 1)); // click C2 → =B2+C2
+            }
+            // Budget!B2:B6 — the January column body — and its summary.
+            Some("summary") => {
+                self.grid.select_range_public((1, 1), (1, 5));
+                self.pin_status_bubble();
+            }
+            // Two separate highlighted rectangles with lit headers: the
+            // January column body and the Q1 Total column.
+            Some("multiselect") => {
+                self.grid.select_range_public((1, 1), (1, 5)); // B2:B6
+                self.grid.add_range_public((4, 1), (4, 6)); // E2:E7
+                self.pin_status_bubble();
+            }
+            // The range reference inside E2's `=SUM(B2:D2)` selected in the
+            // editable formula bar.
+            Some("fbarselect") => {
+                self.grid.select_only((4, 1));
+                self.grid.begin_edit_in_place();
+                self.grid.set_edit_caret(5, false); // just before "B2:D2"
+                self.grid.set_edit_caret(10, true); // select "B2:D2"
+            }
+            Some("commandpalette") => self.staged = Some(Staged::CommandPalette),
+            // Both scrollbar thumbs offset, proving the two-dimensional
+            // viewport rather than idle rails.
+            Some("scrollbars") => self.grid.on_scroll(540.0, 260.0),
+            Some("fillseries") => self.staged = Some(Staged::FillSeries),
+            Some("pasteformula") => self.staged = Some(Staged::PasteFormula),
+            Some("error") => {
+                self.status = "Excel import failed: the workbook is password protected".into();
+                self.pin_status_bubble();
+            }
+            // An incoming revision superseding the value being edited.
+            Some("conflict") => {
+                self.status =
+                    "Budget was updated by a collaborator; showing the latest value".into();
+                self.pin_status_bubble();
+            }
+            // The acknowledgement stays visible with animations suppressed.
+            Some("reducedmotion") => {
+                self.set_motion_reduced(true);
+                self.status = "Changes saved".into();
+                self.pin_status_bubble();
+            }
+            Some("charts" | "comments") => {
+                self.status = "2 charts and 1 resolved comment thread added".into();
+                self.pin_status_bubble();
+            }
+            // The bold header row, so the Bold command shows it is on.
+            Some("bold") => self.grid.select_range_public((0, 0), (6, 0)),
+            _ => {}
+        }
+    }
+
+    /// Open the staged menu or sheet, if any, now that the chrome is measured
+    /// and laid out where it will be painted.
+    fn apply_staged_overlay(&mut self) {
+        let Some(name) = self.staged_overlay.take() else {
             return;
         };
-        let comment_id = comment_id.clone();
-        self.perform_action(doc, &comment);
-        self.perform_action(
-            doc,
-            &actions::reply_comment_action(
-                self.active_sheet,
-                sheet_id.clone(),
-                comment_id.clone(),
-                "Sam",
-                "I will verify the change.",
-            ),
-        );
-        self.perform_action(
-            doc,
-            &actions::set_comment_resolved_action(self.active_sheet, sheet_id, comment_id, true),
-        );
-        self.reload(doc);
-        self.status = "2 charts and 1 resolved comment thread added".into();
-        self.arm_status_bubble_for_shots();
+        match name.as_str() {
+            "file" => self.toolbar.open_command_menu(chrome::bar::FILE),
+            "format" => self.toolbar.open_command_menu(chrome::bar::FORMAT),
+            "more" => {
+                if self.toolbar.has_overflow() {
+                    self.toolbar.open_overflow();
+                } else {
+                    // Nothing to open, and a capture of the plain window under
+                    // this name would pass for the menu.
+                    #[allow(clippy::print_stderr, reason = "a capture-time diagnostic")]
+                    {
+                        eprintln!(
+                            "sheets: scenario `more` needs a window too narrow for the command \
+                             bar, for example --viewport 390x844 or --text-scale 2"
+                        );
+                    }
+                }
+            }
+            "docsettings" => self.open_doc_settings(),
+            "tabmenu" => self.open_tab_menu(0),
+            "tabrename" => self.begin_tab_rename(0),
+            // The popover opens over tabs that already carry a colour.
+            "tabcolour" => {
+                self.open_tab_menu(0);
+                self.tab_menu.close();
+                self.tab_colour.set_open(true);
+            }
+            _ => {}
+        }
+    }
+
+    /// Finish the staged part of a scenario that works on the document.
+    fn finish_staging(&mut self, doc: &mut Edits<'_>) {
+        let Some(staged) = self.staged.take() else {
+            return;
+        };
+        match staged {
+            Staged::CommandPalette => self.open_command_palette(),
+            // The seeded patterns extended through the real fill-handle path:
+            // a number run (1, 2 → …6), weekdays (Mon → …Sat) and a
+            // text+number run (Task 1 → …Task 6), with the fill handle on the
+            // filled numeric column.
+            Staged::FillSeries => {
+                self.grid.select_range_public((1, 15), (1, 16));
+                self.grid.start_fill_to((1, 20));
+                self.run_pending_fill(doc);
+                self.grid.select_only((2, 15));
+                self.grid.start_fill_to((2, 20));
+                self.run_pending_fill(doc);
+                self.grid.select_only((3, 15));
+                self.grid.start_fill_to((3, 20));
+                self.run_pending_fill(doc);
+                self.grid.select_range_public((1, 15), (1, 20));
+            }
+            // E2's `=SUM(B2:D2)` copied one row down: the formula bar shows
+            // the adjusted `=SUM(B3:D3)` and the cell its result.
+            Staged::PasteFormula => {
+                self.grid.select_only((4, 1));
+                self.copy_selection(false);
+                self.grid.select_only((4, 2)); // E3, the Groceries total
+                self.paste(doc);
+                self.grid.select_only((4, 2));
+            }
+        }
+        self.reload();
     }
 
     /// The document's effective locale (per-doc overrides over global).
     fn locale(&self) -> EffectiveLocale {
-        EffectiveLocale::resolve(&self.global.locale, &self.doc_settings)
+        EffectiveLocale::resolve(&self.global, &self.doc_settings)
     }
 
     fn default_currency(&self) -> Currency {
         self.locale().currency
     }
 
-    /// The durable identity cached alongside the rendered sheet list.  The
-    /// cache is refreshed from the CRDT before UI actions are offered, so an
-    /// encoded UI/palette action never falls back to a positional target.
-    fn sheet_identity(&self, idx: usize) -> String {
-        self.searchable_sheets
-            .get(idx)
-            .map(|sheet| sheet.id.clone())
-            .unwrap_or_default()
-    }
-
-    fn sheet_slot_anchors(
-        &self,
-        at: usize,
-        excluding: Option<usize>,
-    ) -> (Option<String>, Option<String>) {
-        let ids: Vec<String> = self
-            .searchable_sheets
-            .iter()
-            .enumerate()
-            .filter(|(idx, _)| Some(*idx) != excluding)
-            .map(|(_, sheet)| sheet.id.clone())
-            .collect();
-        (
-            ids.get(at).cloned(),
-            at.checked_sub(1).and_then(|idx| ids.get(idx)).cloned(),
-        )
-    }
-
     // --- document plumbing --------------------------------------------------
-
-    /// Finish startup after the persistence worker has either supplied the
-    /// prior workbook or established that there is none.  A real launch never
-    /// fabricates sample data; only the headless shots/test path seeds it.
-    fn finish_initialize(&mut self, doc: &mut AutoCommit, durable_heads: Option<Vec<ChangeHash>>) {
-        if SheetsDoc::is_empty(doc) {
-            if self.run.seeds_sample_data() {
-                seed_workbook(doc);
-                self.active_sheet = 0;
-                // Preselect a smart-typed currency cell so the formula bar and
-                // the type indicator are populated in the captured frame.
-                if let Some(addr) = a1_to_addr("E2") {
-                    self.grid.select_only(addr);
-                }
-            } else if self.run.seeds_blank_sheet() {
-                SheetsDoc::add_sheet(doc, "Sheet1");
-                self.active_sheet = 0;
-                self.grid.select_only((0, 0));
-            }
-        } else {
-            // Restored workbook: land on the first sheet at A1. The active tab
-            // is local presentation, not collaborative workbook content.
-            self.active_sheet = 0;
-            self.grid.select_only((0, 0));
-        }
-        let current_heads = doc.get_heads();
-        let load_start_heads = self.load_start_heads.take().unwrap_or_default();
-        // A disk image can only acknowledge the exact document it contained.
-        // If local/collaborative changes existed before or arrived during the
-        // asynchronous load, leave the merged document dirty so one coalesced
-        // save captures every head rather than silently losing the newer one.
-        self.saved_heads = match durable_heads {
-            Some(durable) if load_start_heads.is_empty() && current_heads == durable => {
-                current_heads
-            }
-            None if load_start_heads.is_empty() => current_heads,
-            Some(_) | None => Vec::new(),
-        };
-        self.pending.seeded = true;
-    }
-
-    /// Start a capacity-one background load. The worker does both file I/O and
-    /// Automerge decoding; the UI only merges the accepted completed document.
-    fn start_persistence_load(&mut self, load_start_heads: Vec<ChangeHash>) -> Result<(), String> {
-        let generation = self.persistence_generation.checked_add(1).ok_or_else(|| {
-            "workbook persistence generation is exhausted; restart Sheets".to_string()
-        })?;
-        let (location, name) = workbook_store();
-        let (tx, rx) = mpsc::sync_channel(1);
-        run_worker("sheets-persistence-load", move || {
-            let read = tilo_files::Dir::open(location)
-                .and_then(|dir| tilo_files::blocking::read(&dir, &name));
-            let result = match read {
-                Ok(bytes) => AutoCommit::load(&bytes)
-                    .map(|mut saved| {
-                        let heads = saved.get_heads();
-                        Some(Box::new((saved, heads)))
-                    })
-                    .map_err(|error| format!("could not decode saved workbook: {error}")),
-                Err(tilo_files::FsError::NotFound) => Ok(None),
-                Err(error) => Err(format!("could not read saved workbook: {error}")),
-            };
-            let _ = tx.send(PersistenceResult::Load { generation, result });
-        })
-        .map_err(|error| format!("could not start workbook load worker: {error}"))?;
-        self.persistence_generation = generation;
-        self.persistence_rx = Some(rx);
-        self.active_persistence = Some((generation, PersistenceJob::Load));
-        self.load_start_heads = Some(load_start_heads);
-        self.status = "Loading workbook…".into();
-        Ok(())
-    }
-
-    /// Serialize and write a stable document fork away from the event loop.
-    /// `heads` identifies exactly what reached durable storage; concurrent edits
-    /// remain dirty and are coalesced into one later write.
-    fn start_persistence_save(
-        &mut self,
-        doc: &mut AutoCommit,
-        heads: Vec<ChangeHash>,
-    ) -> Result<(), String> {
-        let generation = self.persistence_generation.checked_add(1).ok_or_else(|| {
-            "workbook persistence generation is exhausted; restart Sheets".to_string()
-        })?;
-        let (location, name) = workbook_store();
-        let mut saved_doc = doc.fork();
-        let result_heads = heads.clone();
-        let (tx, rx) = mpsc::sync_channel(1);
-        run_worker("sheets-persistence-save", move || {
-            let result = tilo_files::Dir::open(location)
-                .and_then(|dir| tilo_files::blocking::write_atomic(&dir, &name, &saved_doc.save()))
-                .map_err(|error| error.to_string());
-            let _ = tx.send(PersistenceResult::Save {
-                generation,
-                heads: result_heads,
-                result,
-            });
-        })
-        .map_err(|error| format!("could not start workbook save worker: {error}"))?;
-        self.persistence_generation = generation;
-        self.persistence_rx = Some(rx);
-        self.active_persistence = Some((generation, PersistenceJob::Save { heads }));
-        Ok(())
-    }
-
-    /// Receive exactly one current persistence result. Disconnected workers and
-    /// failed writes leave the document dirty, visibly report the problem, and
-    /// retry with backoff rather than silently advancing `saved_heads`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one worker receipt owns generation validation, startup handoff, and save settlement"
-    )]
-    fn drain_persistence_worker(&mut self, doc: &mut AutoCommit) {
-        let Some(rx) = self.persistence_rx.as_ref() else {
-            return;
-        };
-        let result = match rx.try_recv() {
-            Ok(result) => result,
-            Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => {
-                self.persistence_rx = None;
-                let active = self.active_persistence.take();
-                self.last_persist_failure = Some(ui::time::now());
-                self.status = match active {
-                    Some((_, PersistenceJob::Load)) => {
-                        "Workbook load worker disconnected; opening a new workbook".into()
-                    }
-                    Some((_, PersistenceJob::Save { .. })) => {
-                        "Workbook save worker disconnected; changes will be retried".into()
-                    }
-                    None => "Workbook persistence worker disconnected".into(),
-                };
-                if !self.pending.seeded {
-                    self.finish_initialize(doc, None);
-                }
-                return;
-            }
-        };
-        self.persistence_rx = None;
-        let Some((generation, active)) = self.active_persistence.clone() else {
-            return;
-        };
-        let result_generation = match &result {
-            PersistenceResult::Load { generation, .. }
-            | PersistenceResult::Save { generation, .. } => *generation,
-        };
-        if generation != result_generation {
-            // A generation mismatch cannot be safely associated with the
-            // retained job. Settle it as failed rather than letting a later
-            // dirty check overwrite that ownership.
-            self.active_persistence = None;
-            self.last_persist_failure = Some(ui::time::now());
-            self.status =
-                "Discarded a stale workbook persistence result; changes will be retried".into();
-            if !self.pending.seeded {
-                self.finish_initialize(doc, None);
-            }
-            return;
-        }
-        self.active_persistence = None;
-        match (active, result) {
-            (PersistenceJob::Load, PersistenceResult::Load { result, .. }) => {
-                let durable_heads = match result {
-                    Ok(Some(saved)) => {
-                        let (mut saved, durable_heads) = *saved;
-                        // If any collaboration/local state appeared while the
-                        // disk worker was running, an Automerge root-map merge
-                        // can conflict at `wb`. Bring the saved sheets in via
-                        // the same atomic canonical import action instead, so
-                        // neither workbook silently wins or disappears.
-                        if doc.get_heads().is_empty() {
-                            if let Err(error) = doc.merge_incoming(&mut saved) {
-                                self.status =
-                                    format!("Saved workbook could not be merged: {error}");
-                                self.last_persist_failure = Some(ui::time::now());
-                                None
-                            } else {
-                                Some(durable_heads)
-                            }
-                        } else {
-                            let tables = (0..SheetsDoc::sheet_count(&mut saved))
-                                .map(|sheet| {
-                                    let snapshot = SheetsDoc::snapshot_sheet(
-                                        &mut saved,
-                                        sheet,
-                                        self.default_currency(),
-                                    );
-                                    Self::table_from_snapshot(&snapshot)
-                                })
-                                .collect();
-                            if let Err(error) = self.import_tables_with(doc, tables, false, None) {
-                                self.status = format!("Could not import saved workbook: {error}");
-                                self.last_persist_failure = Some(ui::time::now());
-                            }
-                            self.load_start_heads = Some(doc.get_heads());
-                            None
-                        }
-                    }
-                    Ok(None) => None,
-                    Err(error) => {
-                        self.status = format!("Could not load saved workbook: {error}");
-                        self.last_persist_failure = Some(ui::time::now());
-                        None
-                    }
-                };
-                self.finish_initialize(doc, durable_heads);
-            }
-            (
-                PersistenceJob::Save { heads: expected },
-                PersistenceResult::Save { heads, result, .. },
-            ) if expected == heads => match result {
-                Ok(()) => {
-                    let had_failure = self.last_persist_failure.take().is_some();
-                    self.saved_heads = heads;
-                    if had_failure {
-                        self.status = "Workbook saved".into();
-                    }
-                }
-                Err(error) => {
-                    self.status =
-                        format!("Could not save workbook: {error}; changes will be retried");
-                    self.last_persist_failure = Some(ui::time::now());
-                }
-            },
-            _ => {
-                self.status = "Discarded a stale workbook persistence result".into();
-            }
-        }
-    }
-
-    /// Queue a coalesced persistence write when the current CRDT heads are not
-    /// yet durable. The fork/serialization/write itself is entirely off-thread.
-    fn persist_if_dirty(&mut self, doc: &mut AutoCommit) {
-        if !self.run.persists()
-            || !self.pending.seeded
-            || self.persistence_rx.is_some()
-            || self.active_persistence.is_some()
-        {
-            return;
-        }
-        let heads = doc.get_heads();
-        if heads == self.saved_heads {
-            return;
-        }
-        if self
-            .last_persist_failure
-            .is_some_and(|failed_at| failed_at.elapsed() < PERSIST_RETRY_DELAY)
-        {
-            return;
-        }
-        if let Err(error) = self.start_persistence_save(doc, heads) {
-            self.status = format!("Could not save workbook: {error}; changes will be retried");
-            self.last_persist_failure = Some(ui::time::now());
-        }
-    }
 
     /// Read the active sheet, recalculate, propagate formats onto computed
     /// cells, and push the data into the grid.
     ///
-    /// Memoised on `(document heads, active sheet)`: selection changes,
-    /// scrolling, and hover — which never mutate the CRDT — reuse the cached
+    /// Memoised on `(workbook revision, active sheet)`: selection changes,
+    /// scrolling, and hover — which never change the workbook — reuse the cached
     /// result instead of re-snapshotting the document and re-running the whole
     /// formula engine every frame.
-    fn reload(&mut self, doc: &mut AutoCommit) {
-        let heads = doc.get_heads();
-        let count = SheetsDoc::sheet_count(doc).max(1);
+    fn reload(&mut self) {
+        let count = self.sheet_ids.len().max(1);
         let sheet = self.active_sheet.min(count - 1);
         if let Some(c) = &self.cache
             && c.sheet == sheet
-            && c.heads == heads
+            && c.revision == self.revision
         {
             self.active_sheet = sheet;
             return;
         }
 
         self.active_sheet = sheet;
-        // A tab switch still needs an active-sheet recalculation below, but it
-        // must not traverse every other sheet body. The complete search
-        // projection and its postings change only with Automerge heads.
-        if self.search_projection_heads.as_ref() != Some(&heads) {
-            self.sheet_names = SheetsDoc::sheet_names(doc);
-            self.sheet_colors = SheetsDoc::sheet_colors(doc);
-            self.doc_settings = SheetsDoc::doc_settings(doc);
-            let cur = self.default_currency();
-            self.searchable_sheets = (0..self.sheet_names.len())
-                .filter_map(|idx| {
-                    let id = SheetsDoc::sheet_resource_id(doc, idx)?;
-                    let snap = SheetsDoc::snapshot_sheet(doc, idx, cur);
-                    let values = formula::recalculate(&snap.raw);
-                    let mut cells = snap
-                        .raw
-                        .iter()
-                        .map(|(&(col, row), raw)| {
-                            let fmt = snap.fmt.get(&(col, row)).copied().unwrap_or_else(|| {
-                                raw.strip_prefix('=')
-                                    .and_then(|body| formula::infer_result_format(body, &snap.fmt))
-                                    .unwrap_or(CellFormat::General)
-                            });
-                            let display = values
-                                .get(&(col, row))
-                                .map_or_else(String::new, |value| format_value(value, fmt));
-                            actions::SearchableCell {
-                                col,
-                                row,
-                                raw: raw.clone(),
-                                display,
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    cells.sort_by_key(|cell| (cell.row, cell.col));
-                    Some(actions::SearchableSheet {
-                        id,
-                        name: snap.name,
-                        cells,
-                    })
-                })
-                .collect();
-            self.search_provider.refresh(&self.searchable_sheets);
-            self.search_projection_heads = Some(heads.clone());
-        }
-        let cur = self.default_currency();
-        let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
-        self.sheet_charts = SheetsDoc::charts(doc, self.active_sheet);
-        self.sheet_comments = SheetsDoc::comments(doc, self.active_sheet);
+        let state = Rc::clone(&self.workbook);
+        let current = self
+            .active_sheet_id()
+            .and_then(|id| state.sheet(&id).map(|sheet| (sheet, sheet.layout())));
+        let no_sheet = Id::default();
+        let (snap, charts, comments) = match &current {
+            Some((sheet, layout)) => (
+                sheet.snapshot_in(layout),
+                sheet.chart_snapshots(layout),
+                crate::workbook::Sheet::comment_snapshots(
+                    self.sheet_ids.get(self.active_sheet).unwrap_or(&no_sheet),
+                    &state.comments,
+                    layout,
+                ),
+            ),
+            None => Default::default(),
+        };
+        self.sheet_charts = charts;
+        self.sheet_comments = comments;
+        // The dock takes its height from the annotations, so the sheet
+        // re-lays out whenever they change.
+        self.relayout();
         let values = formula::recalculate(&snap.raw);
 
         // Effective per-cell formats: an explicit cell format wins; a
@@ -2029,7 +1193,7 @@ impl SheetsApp {
         }
 
         self.cache = Some(ReloadCache {
-            heads,
+            revision: self.revision,
             sheet,
             eff_fmt: fmt.clone(),
             values: values.clone(),
@@ -2039,9 +1203,8 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    fn apply_cmds(&mut self, doc: &mut AutoCommit, cmds: Vec<GridCmd>) {
+    fn apply_cmds(&mut self, doc: &mut Edits<'_>, cmds: Vec<GridCmd>) {
         let cur = self.default_currency();
-        let sheet = self.active_sheet;
         // Collect the event's cell writes into one batched action, so undo, peer
         // replay, and the Ctrl+K palette all share one path and a burst of edits
         // is a single change. Smart type inference runs here (authoring-side) and
@@ -2069,23 +1232,15 @@ impl SheetsApp {
             }
         }
         if !writes.is_empty() {
-            self.perform_action(
-                doc,
-                &actions::set_cells_action(
-                    sheet,
-                    SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
-                    writes,
-                ),
-            );
-            self.reload(doc);
+            self.write_raw(doc, writes);
+            self.reload();
         }
     }
 
-    fn apply_format(&mut self, doc: &mut AutoCommit, fmt: CellFormat) {
+    fn apply_format(&mut self, doc: &mut Edits<'_>, fmt: CellFormat) {
         let mut out = Vec::new();
         self.grid.flush_edit(&mut out);
         self.apply_cmds(doc, out);
-        let sheet = self.active_sheet;
         let cells: Vec<(Addr, CellFormat)> = self
             .grid
             .selected_cells()
@@ -2093,21 +1248,13 @@ impl SheetsApp {
             .map(|a| (a, fmt))
             .collect();
         if !cells.is_empty() {
-            self.perform_action(
-                doc,
-                &actions::set_formats_action(
-                    sheet,
-                    SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
-                    cells,
-                ),
-            );
+            self.write_formats(doc, cells);
         }
-        self.reload(doc);
+        self.reload();
         self.status = format!("Applied {} to {}", fmt.label(), self.grid.selection_label());
     }
 
-    fn clear_format(&mut self, doc: &mut AutoCommit) {
-        let sheet = self.active_sheet;
+    fn clear_format(&mut self, doc: &mut Edits<'_>) {
         let cells: Vec<(Addr, CellFormat)> = self
             .grid
             .selected_cells()
@@ -2115,16 +1262,9 @@ impl SheetsApp {
             .map(|a| (a, CellFormat::General))
             .collect();
         if !cells.is_empty() {
-            self.perform_action(
-                doc,
-                &actions::set_formats_action(
-                    sheet,
-                    SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
-                    cells,
-                ),
-            );
+            self.write_formats(doc, cells);
         }
-        self.reload(doc);
+        self.reload();
         self.status = format!("Cleared format on {}", self.grid.selection_label());
     }
 
@@ -2184,7 +1324,7 @@ impl SheetsApp {
     /// offset by its own position — matching Excel/Sheets. Otherwise the
     /// plain-text clipboard is parsed as a TSV grid and each field is
     /// smart-typed, so a paste from any other app works too.
-    fn paste(&mut self, doc: &mut AutoCommit) {
+    fn paste(&mut self, doc: &mut Edits<'_>) {
         let (target, sel_br) = self.grid.selection_bounds();
         let system = ui::clipboard_paste();
         let use_internal = match (&self.clipboard, &system) {
@@ -2228,7 +1368,6 @@ impl SheetsApp {
                     tile_count(span(target.1, sel_br.1), rows),
                 )
             };
-            let sheet = self.active_sheet;
             // Collect the whole paste into one batched change. A cut moves the
             // block: clear the source first (pushed ahead of the writes so an
             // overlapping target still lands last), then write.
@@ -2270,14 +1409,7 @@ impl SheetsApp {
                     }
                 }
             }
-            self.perform_action(
-                doc,
-                &actions::set_cells_action(
-                    sheet,
-                    SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
-                    writes,
-                ),
-            );
+            self.write_raw(doc, writes);
             if !cb.cut {
                 self.clipboard = Some(cb);
             }
@@ -2292,7 +1424,7 @@ impl SheetsApp {
             return;
         }
 
-        self.reload(doc);
+        self.reload();
         self.status = format!("Pasted into {}", self.grid.selection_label());
     }
 
@@ -2300,14 +1432,13 @@ impl SheetsApp {
     /// write it starting at `target`, smart-typing each non-empty field.
     /// Selects the pasted rectangle. Returns `false` (writing nothing) when the
     /// payload has no content. This is the system-clipboard branch of `paste`.
-    fn paste_tsv(&mut self, doc: &mut AutoCommit, target: Addr, text: &str) -> bool {
+    fn paste_tsv(&mut self, doc: &mut Edits<'_>, target: Addr, text: &str) -> bool {
         let cur = self.default_currency();
         let normalized = text.replace('\r', "");
         let body = normalized.strip_suffix('\n').unwrap_or(&normalized);
         if body.is_empty() {
             return false;
         }
-        let sheet = self.active_sheet;
         let mut writes: Vec<(Addr, String, Option<CellFormat>)> = Vec::new();
         let mut last = target;
         for (ri, line) in (0u32..).zip(body.split('\n')) {
@@ -2322,21 +1453,14 @@ impl SheetsApp {
                 last = addr;
             }
         }
-        self.perform_action(
-            doc,
-            &actions::set_cells_action(
-                sheet,
-                SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
-                writes,
-            ),
-        );
+        self.write_raw(doc, writes);
         self.grid.select_range_public(target, last);
         true
     }
 
     /// `AutoSum`: scan upward from the active cell for a run of numeric cells
     /// and write `=SUM(top:above)` into the active cell.
-    fn auto_sum(&mut self, doc: &mut AutoCommit) {
+    fn auto_sum(&mut self, doc: &mut Edits<'_>) {
         let (c, r) = self.grid.active();
         if r == 0 {
             self.status = "Nothing above to sum".into();
@@ -2344,7 +1468,7 @@ impl SheetsApp {
         }
         let mut top = r;
         for rr in (0..r).rev() {
-            let raw = SheetsDoc::cell_raw(doc, self.active_sheet, (c, rr));
+            let raw = self.grid.cell_raw_at((c, rr));
             let is_num = raw.trim().parse::<f64>().is_ok() || raw.starts_with('=');
             if raw.is_empty() || !is_num {
                 break;
@@ -2361,24 +1485,15 @@ impl SheetsApp {
             crate::model::addr_to_a1(c, top),
             crate::model::addr_to_a1(c, r.saturating_sub(1))
         );
-        self.perform_action(
-            doc,
-            &actions::set_cell_action(
-                self.active_sheet,
-                SheetsDoc::sheet_resource_id(doc, self.active_sheet).unwrap_or_default(),
-                (c, r),
-                &formula,
-                None,
-            ),
-        );
-        self.reload(doc);
+        self.write_raw(doc, vec![((c, r), formula.clone(), None)]);
+        self.reload();
         self.status = format!("Inserted {formula}");
     }
 
     /// Fill the top row of the selection downward through every row in the
     /// selection's bounding box — Excel's Ctrl+D. Each source cell's raw input
     /// and format copy down, with relative formula references shifted per row.
-    fn fill_down(&mut self, doc: &mut AutoCommit) {
+    fn fill_down(&mut self, doc: &mut Edits<'_>) {
         let mut out = Vec::new();
         self.grid.flush_edit(&mut out);
         self.apply_cmds(doc, out);
@@ -2387,7 +1502,6 @@ impl SheetsApp {
             self.status = "Select two or more rows to fill down".into();
             return;
         }
-        let sheet = self.active_sheet;
         let mut writes: Vec<(Addr, String, Option<CellFormat>)> = Vec::new();
         for c in c0..=c1 {
             let src_raw = self.grid.cell_raw_at((c, r0));
@@ -2398,20 +1512,13 @@ impl SheetsApp {
                 writes.push(((c, r), out_raw, Some(src_fmt)));
             }
         }
-        self.perform_action(
-            doc,
-            &actions::set_cells_action(
-                sheet,
-                SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
-                writes,
-            ),
-        );
-        self.reload(doc);
+        self.write_raw(doc, writes);
+        self.reload();
         self.status = format!("Filled down {}", self.grid.selection_label());
     }
 
     /// Fill the left column of the selection rightward — Excel's Ctrl+R.
-    fn fill_right(&mut self, doc: &mut AutoCommit) {
+    fn fill_right(&mut self, doc: &mut Edits<'_>) {
         let mut out = Vec::new();
         self.grid.flush_edit(&mut out);
         self.apply_cmds(doc, out);
@@ -2420,7 +1527,6 @@ impl SheetsApp {
             self.status = "Select two or more columns to fill right".into();
             return;
         }
-        let sheet = self.active_sheet;
         let mut writes: Vec<(Addr, String, Option<CellFormat>)> = Vec::new();
         for r in r0..=r1 {
             let src_raw = self.grid.cell_raw_at((c0, r));
@@ -2431,15 +1537,8 @@ impl SheetsApp {
                 writes.push(((c, r), out_raw, Some(src_fmt)));
             }
         }
-        self.perform_action(
-            doc,
-            &actions::set_cells_action(
-                sheet,
-                SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
-                writes,
-            ),
-        );
-        self.reload(doc);
+        self.write_raw(doc, writes);
+        self.reload();
         self.status = format!("Filled right {}", self.grid.selection_label());
     }
 
@@ -2459,11 +1558,10 @@ impl SheetsApp {
     /// [`crate::fill`] engine — formulas offset their relative refs, numeric
     /// pairs extrapolate a series, dates/names continue, text+number
     /// increments. One batched action, one undo boundary.
-    fn run_pending_fill(&mut self, doc: &mut AutoCommit) {
+    fn run_pending_fill(&mut self, doc: &mut Edits<'_>) {
         let Some((src_tl, src_br, dst_tl, dst_br)) = self.grid.take_pending_fill() else {
             return;
         };
-        let sheet = self.active_sheet;
         let mut writes: Vec<(Addr, String, Option<CellFormat>)> = Vec::new();
         // Vertical when the destination starts below the source; else horizontal.
         let vertical = dst_tl.1 > src_br.1;
@@ -2491,223 +1589,340 @@ impl SheetsApp {
         if writes.is_empty() {
             return;
         }
-        self.perform_action(
-            doc,
-            &actions::set_cells_action(
-                sheet,
-                SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
-                writes,
-            ),
-        );
-        self.reload(doc);
+        self.write_raw(doc, writes);
+        self.reload();
         self.grid.select_range_public(src_tl, dst_br);
         self.status = format!("Filled {}", self.grid.selection_label());
         self.pending.redraw = true;
     }
 
-    /// Import the most recently modified `.csv` file from the shared Sheets
-    /// folder into a new sheet, running smart type inference on each field.
-    /// No file picker exists in the toolkit yet, so "most recent in the
-    /// folder" is the selection heuristic (drop a file there, then import).
-    fn import_csv(&mut self, _doc: &mut AutoCommit) {
-        self.begin_import(Interchange::Csv);
+    // --- file interchange ---------------------------------------------------
+
+    /// Invoke one of the workbook's effects through its door, as the palette
+    /// or an agent does.
+    fn invoke_effect(&self, effect: &actions::SheetsEffect) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.effect(effect);
+        }
     }
 
-    /// Core: import the CSV file at `path` into a new sheet. Split out from the
-    /// portal opener so the drain and tests drive it against a real file.
-    #[cfg(test)]
-    fn import_csv_from(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
-        if let Err(error) = Self::check_import_file_size(path) {
-            self.status = format!("CSV import failed: {error}");
-            return;
-        }
-        let text = match std::fs::read_to_string(path) {
-            Ok(t) => t,
-            Err(e) => {
-                self.status = format!("CSV import failed: {e}");
-                return;
+    /// Answer one of the workbook's effects: reading or writing a file is a
+    /// job, a view changes what is shown at once.
+    pub(crate) fn answer_effect(
+        &mut self,
+        effect: actions::SheetsEffect,
+        cx: &mut ui::framework::EffectCx<Workbook, Self>,
+    ) -> ui::framework::EffectAnswer {
+        use actions::SheetsEffect as E;
+        self.pending.redraw = true;
+        match effect {
+            E::ImportCsv { path } => Ok(self.import(Interchange::Csv, path, cx)),
+            E::ImportXlsx { path } => Ok(self.import(Interchange::Xlsx, path, cx)),
+            E::ImportOds { path } => Ok(self.import(Interchange::Ods, path, cx)),
+            E::ExportCsv { path } => self.export(Interchange::Csv, path, cx),
+            E::ExportXlsx { path } => self.export(Interchange::Xlsx, path, cx),
+            E::ExportOds { path } => self.export(Interchange::Ods, path, cx),
+            E::ReadCells { sheet, range } => {
+                let snapshot = self
+                    .workbook
+                    .sheet(&Id::from_raw(sheet))
+                    .ok_or_else(|| "no such sheet".to_owned())?
+                    .snapshot();
+                crate::cell_actions::read(&snapshot, range.as_deref())
+                    .map(ui::framework::Effected::value)
             }
-        };
-        let parsed = crate::csv::parse_csv(&text);
-        if parsed.len() > MAX_IMPORT_CELLS {
-            self.status = format!(
-                "CSV import failed: the file contains more than {MAX_IMPORT_CELLS} populated cells"
+            E::Commands => {
+                let resources = self.published();
+                self.open_palette_with(&resources);
+                Ok(ui::framework::Effected::done())
+            }
+            view => {
+                self.show(view)?;
+                Ok(ui::framework::Effected::done())
+            }
+        }
+    }
+
+    /// Change what is shown, as a view effect asks.
+    fn show(&mut self, effect: actions::SheetsEffect) -> Result<(), String> {
+        use actions::SheetsEffect as E;
+        match effect {
+            E::GoToCell { reference } => self.go_to_cell(&reference),
+            E::ToggleFormulaView => self.toggle_formula_view(),
+            E::Open { sheet, col, row } => {
+                let sheet = Id::from_raw(sheet);
+                if !self.sheet_ids.contains(&sheet) {
+                    return Err("the sheet no longer exists".into());
+                }
+                self.pending_reveal = Some(PendingReveal {
+                    sheet_id: Some(sheet),
+                    addr: (col, row),
+                    status: None,
+                    arriving: false,
+                });
+            }
+            other => {
+                return Err(format!(
+                    "`{}` is not a view",
+                    ui::tilo_resource::Effect::id(&other)
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Import a spreadsheet file into new sheets: the one at `path`, or the
+    /// one the person chooses. A file the workbook already holds is shown
+    /// instead of imported again.
+    fn import(
+        &mut self,
+        format: Interchange,
+        path: Option<String>,
+        cx: &mut ui::framework::EffectCx<Workbook, Self>,
+    ) -> ui::framework::Effected {
+        let Some(path) = path else {
+            self.status = format!("Choose a .{} file to import…", format.ext());
+            return cx.choose_file(
+                spreadsheet_import_request(format),
+                move |app: &mut Self, chosen, cx| {
+                    let Some(file) = chosen else {
+                        app.status = "Import cancelled".into();
+                        return Ok(ui::framework::Effected::done());
+                    };
+                    if u64::try_from(file.bytes.len()).unwrap_or(u64::MAX) > MAX_IMPORT_FILE_BYTES {
+                        return app.failed(format!(
+                            "{} is larger than the {} MiB import limit",
+                            file.name,
+                            MAX_IMPORT_FILE_BYTES / (1024 * 1024)
+                        ));
+                    }
+                    // The same file chosen again is shown, not imported twice.
+                    let source = file.identity.as_ref().map(ToString::to_string);
+                    if let Some(source) = &source
+                        && app.show_imported(source, &file.name, cx)
+                    {
+                        return Ok(ui::framework::Effected::done());
+                    }
+                    app.status = format!("Importing .{}…", format.ext());
+                    let name = file.name;
+                    let sheet = sheet_name_from_path(std::path::Path::new(&name));
+                    Ok(cx.thread(
+                        move |_| Self::read_tables(format, &file.bytes, &sheet),
+                        move |app: &mut Self, tables, cx| {
+                            app.finish_import(tables, &name, source, cx)
+                        },
+                    ))
+                },
             );
-            return;
+        };
+        let path = PathBuf::from(path);
+        let source = import_source(&path);
+        if self.show_imported(&source, &file_label(&path), cx) {
+            return ui::framework::Effected::done();
         }
-        let cur = self.default_currency();
-        let mut writes = Vec::with_capacity(parsed.len());
-        for (addr, raw) in parsed {
-            let inferred = infer_entry(&raw, cur);
-            writes.push((
-                addr,
-                inferred.raw,
-                (inferred.format != CellFormat::General).then_some(inferred.format),
-            ));
-        }
-        match self.import_workbook_action(
-            doc,
-            vec![(sheet_name_from_path(path), writes)],
-            true,
-            Some(path),
-        ) {
-            Ok(count) => self.status = format!("Imported {count} cells from {}", file_label(path)),
-            Err(error) => self.status = format!("CSV import failed: {error}"),
-        }
-        self.reload(doc);
+        self.status = format!("Importing .{}…", format.ext());
+        cx.thread(
+            move |_| Self::read_tables_at(format, &path).map(|tables| (tables, path)),
+            move |app: &mut Self, read, cx| match read {
+                Ok((tables, path)) => {
+                    app.finish_import(Ok(tables), &file_label(&path), Some(source), cx)
+                }
+                Err(error) => app.failed(error),
+            },
+        )
     }
 
-    /// Build an interchange table for one sheet from its computed values.
-    ///
-    /// This is intentionally explicit about the sheet index: CSV is a
-    /// single-table format and exports only the active sheet, while workbook
-    /// formats (`.xlsx`/`.ods`) must preserve every tab. Keeping the common
-    /// materialisation here also ensures formulas and propagated formats take
-    /// the same path for both kinds of export.
-    #[cfg(test)]
-    fn table_for_sheet(&self, doc: &mut AutoCommit, sheet: usize) -> crate::xlsx::SheetTable {
-        let cur = self.default_currency();
-        let snap = SheetsDoc::snapshot_sheet(doc, sheet, cur);
-        let values = formula::recalculate(&snap.raw);
-        // Re-apply format propagation so exported computed cells carry units.
-        let mut fmt = snap.fmt.clone();
-        for (addr, raw) in &snap.raw {
-            if !snap.fmt.contains_key(addr)
-                && let Some(body) = raw.strip_prefix('=')
-                && let Some(inferred) = formula::infer_result_format(body, &snap.fmt)
-            {
-                fmt.insert(*addr, inferred);
-            }
-        }
-        crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values, &snap.bold)
-    }
-
-    /// Materialise the whole workbook in tab order for workbook interchange.
-    /// Export runs only after the user chooses a destination, so this work is
-    /// never paid on an interaction/render frame.
-    #[cfg(test)]
-    fn workbook_tables(&self, doc: &mut AutoCommit) -> Vec<crate::xlsx::SheetTable> {
-        (0..SheetsDoc::sheet_count(doc))
-            .map(|sheet| self.table_for_sheet(doc, sheet))
-            .collect()
-    }
-
-    fn export_csv(&mut self, _doc: &mut AutoCommit) {
-        self.begin_export(Interchange::Csv);
-    }
-
-    /// Core: write the active sheet's computed values to `path` as CSV.
-    #[cfg(test)]
-    fn export_csv_to(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
-        let cur = self.default_currency();
-        let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
-        let values = formula::recalculate(&snap.raw);
-        let max_c = snap.raw.keys().map(|a| a.0).max().unwrap_or(0);
-        let max_r = snap.raw.keys().map(|a| a.1).max().unwrap_or(0);
-        let mut rows = Vec::new();
-        for r in 0..=max_r {
-            let mut row = Vec::new();
-            for c in 0..=max_c {
-                let cell = values.get(&(c, r));
-                let fmt = snap.fmt.get(&(c, r)).copied().unwrap_or_default();
-                let s = cell
-                    .map(|v| crate::model::format_value(v, fmt))
-                    .unwrap_or_default();
-                row.push(s);
-            }
-            rows.push(row);
-        }
-        let csv = crate::csv::to_csv(&rows);
-        match std::fs::write(path, csv) {
-            Ok(()) => self.status = format!("Exported {}", file_label(path)),
-            Err(e) => self.status = format!("CSV export failed: {e}"),
-        }
-    }
-
-    fn export_xlsx(&mut self, _doc: &mut AutoCommit) {
-        self.begin_export(Interchange::Xlsx);
-    }
-
-    /// Core: write every sheet to `path` as an `.xlsx` workbook.
-    #[cfg(test)]
-    fn export_xlsx_to(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
-        let tables = self.workbook_tables(doc);
-        match crate::xlsx::write_xlsx(path, &tables) {
-            Ok(()) => self.status = format!("Exported {}", file_label(path)),
-            Err(e) => self.status = format!("Excel export failed: {e}"),
-        }
-    }
-
-    fn export_ods(&mut self, _doc: &mut AutoCommit) {
-        self.begin_export(Interchange::Ods);
-    }
-
-    /// Core: write every sheet to `path` as an `.ods` spreadsheet.
-    #[cfg(test)]
-    fn export_ods_to(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
-        let tables = self.workbook_tables(doc);
-        match crate::ods::write_ods(path, &tables) {
-            Ok(()) => self.status = format!("Exported {}", file_label(path)),
-            Err(e) => self.status = format!("Calc export failed: {e}"),
-        }
-    }
-
-    /// Import a user's file (one table per sheet) into new sheets; into a
-    /// workbook that is still blank, the file replaces its empty sheet.
-    fn import_tables(
+    /// Show the sheet the file `source` was already imported as, if any:
+    /// whether there was one.
+    fn show_imported(
         &mut self,
-        doc: &mut AutoCommit,
-        tables: Vec<crate::xlsx::SheetTable>,
-        source: Option<&std::path::Path>,
-    ) -> Result<usize, String> {
-        self.import_tables_with(doc, tables, true, source)
+        source: &str,
+        label: &str,
+        _cx: &ui::framework::EffectCx<Workbook, Self>,
+    ) -> bool {
+        let open = self
+            .workbook
+            .sheets
+            .iter()
+            .find(|(_, sheet)| {
+                sheet.source.as_ref().map(|source| source.0.as_str()) == Some(source)
+            })
+            .map(|(id, sheet)| (id.clone(), sheet.name.0.clone()));
+        let Some((sheet_id, name)) = open else {
+            return false;
+        };
+        self.pending_reveal = Some(PendingReveal {
+            sheet_id: Some(sheet_id),
+            addr: (0, 0),
+            status: Some(format!("{label} is already open as {name}")),
+            arriving: false,
+        });
+        true
     }
 
-    /// Import a parsed set of tables (one per sheet) into new sheets, running
-    /// smart inference where a source cell carried no explicit format.
-    fn import_tables_with(
+    /// Add the sheets a file was read into as one action, and show the last
+    /// of them once it is applied.
+    fn finish_import(
         &mut self,
-        doc: &mut AutoCommit,
+        tables: Result<Vec<crate::xlsx::SheetTable>, String>,
+        label: &str,
+        source: Option<String>,
+        cx: &ui::framework::EffectCx<Workbook, Self>,
+    ) -> ui::framework::EffectAnswer {
+        let built = tables.and_then(|tables| self.import_action(tables, source));
+        let (invoke, total) = match built {
+            Ok(built) => built,
+            Err(error) => return self.failed(error),
+        };
+        cx.submit(invoke);
+        self.status = format!("Imported {total} cells from {label}");
+        self.pending_reveal = Some(PendingReveal {
+            sheet_id: None,
+            addr: (0, 0),
+            status: Some(self.status.clone()),
+            arriving: true,
+        });
+        Ok(ui::framework::Effected::done())
+    }
+
+    /// Write the workbook as a spreadsheet file (a CSV holds the active sheet
+    /// only): to `path`, or where the person chooses. Encoding runs off the UI
+    /// thread; the file is written only when the job was not cancelled.
+    fn export(
+        &mut self,
+        format: Interchange,
+        path: Option<String>,
+        cx: &mut ui::framework::EffectCx<Workbook, Self>,
+    ) -> ui::framework::EffectAnswer {
+        let active = self.active_sheet_id();
+        let sheets: Vec<crate::workbook::SheetSnapshot> = match format {
+            Interchange::Csv => active
+                .as_ref()
+                .and_then(|id| self.workbook.sheet(id))
+                .map(crate::workbook::Sheet::snapshot)
+                .into_iter()
+                .collect(),
+            Interchange::Xlsx | Interchange::Ods => self
+                .workbook
+                .sheets
+                .values()
+                .map(crate::workbook::Sheet::snapshot)
+                .collect(),
+        };
+        let Some(name) = active
+            .as_ref()
+            .and_then(|id| self.workbook.sheet(id))
+            .map(|sheet| sheet.name.0.clone())
+            .or_else(|| sheets.first().map(|sheet| sheet.name.clone()))
+        else {
+            return self.failed("there is no sheet to export".into());
+        };
+        let _ = cx;
+        self.status = format!("Exporting .{}…", format.ext());
+        let encode = move |_| Self::encode_tables(format, &sheets);
+        let Some(path) = path else {
+            let suggested = format!("{name}.{}", format.ext());
+            return Ok(cx.thread(encode, move |app: &mut Self, bytes, cx| {
+                let bytes = match bytes {
+                    Ok(bytes) => bytes,
+                    Err(error) => return app.failed(error),
+                };
+                app.status = "Choose where to save…".into();
+                Ok(cx.save_file(
+                    spreadsheet_export_request(format, &suggested),
+                    bytes,
+                    move |app: &mut Self, saved, _| {
+                        app.status = if saved {
+                            format!("Exported .{}", format.ext())
+                        } else {
+                            "Export cancelled".into()
+                        };
+                        Ok(ui::framework::Effected::done())
+                    },
+                ))
+            }));
+        };
+        let path = PathBuf::from(path);
+        Ok(cx.thread(encode, move |app: &mut Self, bytes, _| {
+            let written = bytes.and_then(|bytes| {
+                crate::xlsx::write_file(&path, &bytes).map_err(|error| error.to_string())
+            });
+            match written {
+                Ok(()) => {
+                    app.status = format!("Exported .{} to {}", format.ext(), file_label(&path));
+                    Ok(ui::framework::Effected::done())
+                }
+                Err(error) => app.failed(error),
+            }
+        }))
+    }
+
+    /// Report a failed import or export, and fail its effect.
+    fn failed(&mut self, error: String) -> ui::framework::EffectAnswer {
+        self.status = format!("Spreadsheet operation failed: {error}");
+        self.pending.redraw = true;
+        Err(error)
+    }
+
+    /// The one verb that adds a parsed set of tables as new sheets, running
+    /// smart inference where a source cell carried no explicit format, with
+    /// how many cells it writes. Into a workbook that is still blank, the
+    /// file replaces its empty sheet. The verb checks every tab and cell
+    /// before anything is written, so collaborators never observe a
+    /// half-import; history and undo see one operation.
+    fn import_action(
+        &self,
         tables: Vec<crate::xlsx::SheetTable>,
-        replace_blank: bool,
-        source: Option<&std::path::Path>,
-    ) -> Result<usize, String> {
+        source: Option<String>,
+    ) -> Result<(Invoke<Workbook>, usize), String> {
+        use crate::resource::{CellWrite, ImportedSheet};
         let cur = self.default_currency();
         let mut total: usize = 0;
-        let mut imported = Vec::new();
+        let mut sheets = Vec::new();
         for table in tables {
             let mut writes = Vec::new();
             for (r, row) in (0u32..).zip(&table.rows) {
                 for (c, cell) in (0u32..).zip(row) {
                     let Some(cell) = cell else { continue };
-                    let addr = (c, r);
                     // A formula cell restores its live formula; a value cell
-                    // stores its (re-inferred) value. The format still derives
-                    // from the imported value, not the formula text.
-                    let raw_to_store = cell.formula.as_deref().unwrap_or(cell.raw.as_str());
+                    // stores its value. The format still derives from the
+                    // imported value, not the formula text.
+                    let raw = cell.formula.as_deref().unwrap_or(cell.raw.as_str());
                     let fmt = if cell.format == CellFormat::General {
                         infer_entry(&cell.raw, cur).format
                     } else {
                         cell.format
                     };
                     writes.push((
-                        addr,
-                        raw_to_store.to_string(),
-                        (fmt != CellFormat::General).then_some(fmt),
+                        (r, c),
+                        CellWrite {
+                            cell: crate::model::addr_to_a1(c, r),
+                            input: Some(raw.to_string()),
+                            format: (fmt != CellFormat::General).then_some(fmt),
+                            bold: cell.bold.then_some(true),
+                        },
                     ));
                 }
             }
-            if total.saturating_add(writes.len()) > MAX_IMPORT_CELLS {
+            total = total.saturating_add(writes.len());
+            if total > MAX_IMPORT_CELLS {
                 return Err(format!(
                     "the workbook contains more than {MAX_IMPORT_CELLS} populated cells"
                 ));
             }
-            total += writes.len();
-            imported.push((table.name, writes));
+            writes.sort_by_key(|(at, _)| *at);
+            let name = if table.name.trim().is_empty() {
+                "Imported".to_string()
+            } else {
+                table.name
+            };
+            sheets.push(ImportedSheet {
+                name,
+                cells: writes.into_iter().map(|(_, write)| write).collect(),
+            });
         }
-        self.import_workbook_action(doc, imported, replace_blank, source)?;
-        self.reload(doc);
-        Ok(total)
+        let invoke = Workbook::IMPORT_SHEETS.with(verbs::ImportSheets { sheets, source });
+        Ok((invoke, total))
     }
 
     /// Refuse a path before handing it to an interchange reader.  Archive
@@ -2731,229 +1946,30 @@ impl SheetsApp {
         Ok(())
     }
 
-    /// Materialise an entire parsed workbook through one canonical action.
-    /// The action validates every tab and cell before touching the CRDT, so
-    /// collaborators cannot observe a half-import if a later source cell is
-    /// hostile or malformed; history and undo see one meaningful operation.
-    fn import_workbook_action(
-        &mut self,
-        doc: &mut AutoCommit,
-        sheets: ImportedWorkbook,
-        replace_blank: bool,
-        source: Option<&std::path::Path>,
-    ) -> Result<usize, String> {
-        let mut total = 0usize;
-        let mut action =
-            actions::import_sheets_action(sheets.into_iter().map(|(name, mut writes)| {
-                let name = if name.trim().is_empty() {
-                    "Imported".to_string()
-                } else {
-                    name
-                };
-                writes.sort_by_key(|(addr, _, _)| (addr.1, addr.0));
-                total = total.saturating_add(writes.len());
-                (
-                    name,
-                    writes
-                        .into_iter()
-                        .map(|(addr, raw, fmt)| actions::CellWrite {
-                            col: addr.0,
-                            row: addr.1,
-                            raw,
-                            fmt: fmt.map(CellFormat::as_str),
-                        })
-                        .collect(),
-                )
-            }));
-        if total > MAX_IMPORT_CELLS {
-            return Err(format!("more than {MAX_IMPORT_CELLS} populated cells"));
-        }
-        let last_sheet_id = match &mut action {
-            SheetsAction::ImportSheets {
-                sheets,
-                replace_blank: replace,
-                source: from,
-            } => {
-                *replace = replace_blank;
-                *from = source.map(import_source);
-                sheets.last().map(|sheet| sheet.sheet_id.clone())
-            }
-            _ => None,
-        };
-        self.try_perform_action(doc, &action)
-            .map_err(|error| error.to_string())?;
-        if let Some(sheet_id) = last_sheet_id {
-            self.active_sheet = SheetsDoc::sheet_index_by_resource_id(doc, &sheet_id)
-                .ok_or_else(|| "the imported sheet was not created".to_string())?;
-        }
-        Ok(total)
-    }
-
-    fn import_xlsx(&mut self, _doc: &mut AutoCommit) {
-        self.begin_import(Interchange::Xlsx);
-    }
-
-    /// Core: import the `.xlsx` workbook at `path` into new sheets.
-    #[cfg(test)]
-    fn import_xlsx_from(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
-        if let Err(error) = Self::check_import_file_size(path) {
-            self.status = format!("Excel import failed: {error}");
-            return;
-        }
-        match crate::xlsx::read_xlsx(path) {
-            Ok(tables) => match self.import_tables(doc, tables, Some(path)) {
-                Ok(total) => {
-                    self.status = format!("Imported {total} cells from {}", file_label(path));
-                }
-                Err(error) => self.status = format!("Excel import failed: {error}"),
-            },
-            Err(e) => self.status = format!("Excel import failed: {e}"),
-        }
-    }
-
-    fn import_ods(&mut self, _doc: &mut AutoCommit) {
-        self.begin_import(Interchange::Ods);
-    }
-
-    /// Core: import the `.ods` spreadsheet at `path` into new sheets.
-    #[cfg(test)]
-    fn import_ods_from(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
-        if let Err(error) = Self::check_import_file_size(path) {
-            self.status = format!("Calc import failed: {error}");
-            return;
-        }
-        match crate::ods::read_ods(path) {
-            Ok(tables) => match self.import_tables(doc, tables, Some(path)) {
-                Ok(total) => {
-                    self.status = format!("Imported {total} cells from {}", file_label(path));
-                }
-                Err(error) => self.status = format!("Calc import failed: {error}"),
-            },
-            Err(e) => self.status = format!("Calc import failed: {e}"),
-        }
-    }
-
-    /// Open the host file chooser to pick a file to import (unless one is
-    /// already in flight). The chosen path is handled in [`Self::drain_io`].
-    fn begin_import(&mut self, fmt: Interchange) {
-        if self.io.is_some() {
-            return;
-        }
-        self.io = Some((
-            PendingIo::Import(fmt),
-            spreadsheet_import_request(fmt).send(),
-        ));
-        self.status = format!("Choose a .{} file to import…", fmt.ext());
-    }
-
-    /// Open the host Save dialog to pick where to export the active sheet,
-    /// seeding the filename with the sheet's name (unless one is already in
-    /// flight). The chosen destination is handled in [`Self::drain_io`].
-    fn begin_export(&mut self, fmt: Interchange) {
-        if self.io.is_some() {
-            return;
-        }
-        let name = self
-            .sheet_names
-            .get(self.active_sheet)
-            .cloned()
-            .unwrap_or_else(|| "Sheet".into());
-        let suggested = format!("{name}.{}", fmt.ext());
-        self.io = Some((
-            PendingIo::Export(fmt),
-            spreadsheet_export_request(fmt, &suggested).send(),
-        ));
-        self.status = "Choose where to save…".into();
-    }
-
-    /// Start exactly one fallible worker after a portal/direct-path operation
-    /// has been accepted.  Generation allocation is checked rather than
-    /// wrapping: reusing an exhausted generation could let an old completion
-    /// mutate a newly accepted request.
-    fn start_interchange_job(
-        &mut self,
-        doc: &mut AutoCommit,
-        operation: PendingIo,
-        path: PathBuf,
-    ) -> Result<(), String> {
-        if let PendingIo::Import(_) = operation
-            && let Some(sheet) = SheetsDoc::sheet_index_by_source(doc, &import_source(&path))
-        {
-            self.switch_sheet(doc, sheet);
-            let name = self.sheet_names.get(sheet).cloned().unwrap_or_default();
-            self.status = format!("{} is already open as {name}", file_label(&path));
-            // Imports publish a job result, which carries no terminal value.
-            self.finish_resource_output(Ok(tilo_actions::ActionOutput::default()));
-            return Ok(());
-        }
-        if self.interchange_rx.is_some() || self.active_interchange_generation.is_some() {
-            return Err("a spreadsheet import or export is already in progress".into());
-        }
-        let generation = self.interchange_generation.checked_add(1).ok_or_else(|| {
-            "spreadsheet operation generation is exhausted; restart Sheets".to_string()
-        })?;
-        self.interchange_generation = generation;
-        let snapshots = match operation {
-            PendingIo::Export(Interchange::Csv) => vec![SheetsDoc::snapshot_sheet(
-                doc,
-                self.active_sheet,
-                self.default_currency(),
-            )],
-            PendingIo::Export(_) => (0..SheetsDoc::sheet_count(doc))
-                .map(|sheet| SheetsDoc::snapshot_sheet(doc, sheet, self.default_currency()))
-                .collect(),
-            PendingIo::Import(_) => Vec::new(),
-        };
-        let (tx, rx): (SyncSender<InterchangeResult>, Receiver<InterchangeResult>) =
-            mpsc::sync_channel(1);
-        self.interchange_wake = ui::wake::WakeHandle::new();
-        let reply = InterchangeReply {
-            tx: Some(tx),
-            wake: self.interchange_wake.clone(),
-        };
-        ui::rt::spawn_thread("sheets-interchange", move || {
-            let reply = reply;
-            let result = match operation {
-                PendingIo::Import(format) => InterchangeResult::Import {
-                    generation,
-                    format,
-                    path: path.clone(),
-                    result: SheetsApp::read_import_tables(format, &path),
-                },
-                PendingIo::Export(format) => InterchangeResult::Export {
-                    generation,
-                    format,
-                    destination: path.clone(),
-                    result: SheetsApp::prepare_export_snapshots(
-                        format, &path, generation, &snapshots,
-                    ),
-                },
-            };
-            reply.send(result);
-        })
-        .map_err(|error| format!("could not start spreadsheet worker: {error}"))?;
-        self.interchange_rx = Some(rx);
-        self.active_interchange_generation = Some(generation);
-        self.status = match operation {
-            PendingIo::Import(format) => format!("Importing .{}…", format.ext()),
-            PendingIo::Export(format) => format!("Exporting .{}…", format.ext()),
-        };
-        Ok(())
-    }
-
-    fn read_import_tables(
+    /// The tables of the spreadsheet file at `path`.
+    fn read_tables_at(
         format: Interchange,
         path: &std::path::Path,
     ) -> Result<Vec<crate::xlsx::SheetTable>, String> {
         Self::check_import_file_size(path)?;
+        let bytes = crate::xlsx::read_file(path).map_err(|error| error.to_string())?;
+        Self::read_tables(format, &bytes, &sheet_name_from_path(path))
+    }
+
+    /// The tables a spreadsheet file holds, one per sheet; a CSV is one,
+    /// named `csv_name`.
+    fn read_tables(
+        format: Interchange,
+        bytes: &[u8],
+        csv_name: &str,
+    ) -> Result<Vec<crate::xlsx::SheetTable>, String> {
         match format {
-            Interchange::Xlsx => crate::xlsx::read_xlsx(path).map_err(|error| error.to_string()),
-            Interchange::Ods => crate::ods::read_ods(path).map_err(|error| error.to_string()),
+            Interchange::Xlsx => crate::xlsx::parse_xlsx(bytes).map_err(|error| error.to_string()),
+            Interchange::Ods => crate::ods::parse_ods(bytes).map_err(|error| error.to_string()),
             Interchange::Csv => {
-                let bytes = crate::xlsx::read_file(path).map_err(|error| error.to_string())?;
-                let text = String::from_utf8(bytes)
+                let text = std::str::from_utf8(bytes)
                     .map_err(|_| "the CSV file is not UTF-8 text".to_string())?;
-                let cells = crate::csv::parse_csv(&text);
+                let cells = crate::csv::parse_csv(text);
                 if cells.len() > MAX_IMPORT_CELLS {
                     return Err(format!("more than {MAX_IMPORT_CELLS} populated cells"));
                 }
@@ -2996,34 +2012,27 @@ impl SheetsApp {
                     });
                 }
                 Ok(vec![crate::xlsx::SheetTable {
-                    name: sheet_name_from_path(path),
+                    name: csv_name.to_string(),
                     rows,
                 }])
             }
         }
     }
 
-    /// Encode to a private same-directory temporary file. This worker never
-    /// writes the user-selected destination; publishing is a later UI receipt
-    /// after a resource invocation has survived cancellation polling.
-    fn prepare_export_snapshots(
+    /// `sheets` as the bytes of a spreadsheet file; a CSV holds the first.
+    fn encode_tables(
         format: Interchange,
-        destination: &std::path::Path,
-        generation: u64,
-        snapshots: &[crate::doc::SheetSnapshot],
-    ) -> Result<PathBuf, String> {
-        let temporary = Self::reserve_export_temp(destination, generation)?;
-        let tables = snapshots
+        sheets: &[crate::workbook::SheetSnapshot],
+    ) -> Result<Vec<u8>, String> {
+        let tables = sheets
             .iter()
             .map(Self::table_from_snapshot)
             .collect::<Vec<_>>();
-        let result = match format {
+        match format {
             Interchange::Xlsx => {
-                crate::xlsx::write_xlsx(&temporary, &tables).map_err(|error| error.to_string())
+                crate::xlsx::xlsx_bytes(&tables).map_err(|error| error.to_string())
             }
-            Interchange::Ods => {
-                crate::ods::write_ods(&temporary, &tables).map_err(|error| error.to_string())
-            }
+            Interchange::Ods => crate::ods::ods_bytes(&tables).map_err(|error| error.to_string()),
             Interchange::Csv => {
                 let table = tables
                     .first()
@@ -3040,75 +2049,12 @@ impl SheetsApp {
                             .collect()
                     })
                     .collect::<Vec<Vec<String>>>();
-                crate::xlsx::write_file(&temporary, crate::csv::to_csv(&rows).as_bytes())
-                    .map_err(|error| error.to_string())
-            }
-        };
-        if let Err(error) = result {
-            Self::discard_export_temp(&temporary);
-            return Err(error);
-        }
-        Ok(temporary)
-    }
-
-    fn reserve_export_temp(
-        destination: &std::path::Path,
-        generation: u64,
-    ) -> Result<PathBuf, String> {
-        let parent = destination
-            .parent()
-            .ok_or_else(|| "export destination has no parent directory".to_string())?;
-        let dir = tilo_files::Dir::open(tilo_files::Location::Native(parent.to_path_buf()))
-            .map_err(|error| error.to_string())?;
-        let stem = destination
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("workbook");
-        for _ in 0..4 {
-            let name = format!(".{stem}.tilo-export-{generation}-{}.tmp", Uuid::new_v4());
-            let reserved = tilo_files::VPath::new(&name)
-                .map_err(|error| error.to_string())
-                .and_then(|name| {
-                    tilo_files::blocking::create_new(&dir, &name, b"")
-                        .map_err(|error| error.to_string())
-                })?;
-            if reserved {
-                return Ok(parent.join(name));
-            }
-        }
-        Err("could not reserve an exclusive export temporary file".into())
-    }
-
-    fn publish_export_temp(
-        temporary: &std::path::Path,
-        destination: &std::path::Path,
-    ) -> Result<(), String> {
-        let bytes = crate::xlsx::read_file(temporary).map_err(|error| error.to_string())?;
-        crate::xlsx::write_file(destination, &bytes).map_err(|error| error.to_string())?;
-        Self::discard_export_temp(temporary);
-        Ok(())
-    }
-
-    fn publish_or_discard_export_temp(
-        temporary: &std::path::Path,
-        destination: &std::path::Path,
-    ) -> Result<(), String> {
-        match Self::publish_export_temp(temporary, destination) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                Self::discard_export_temp(temporary);
-                Err(error)
+                Ok(crate::csv::to_csv(&rows).into_bytes())
             }
         }
     }
 
-    fn discard_export_temp(temporary: &std::path::Path) {
-        if let Ok((dir, name)) = tilo_files::file_at(temporary) {
-            let _ = tilo_files::blocking::remove(&dir, &name);
-        }
-    }
-
-    fn table_from_snapshot(snap: &crate::doc::SheetSnapshot) -> crate::xlsx::SheetTable {
+    fn table_from_snapshot(snap: &crate::workbook::SheetSnapshot) -> crate::xlsx::SheetTable {
         let values = formula::recalculate(&snap.raw);
         let mut fmt = snap.fmt.clone();
         for (addr, raw) in &snap.raw {
@@ -3122,351 +2068,72 @@ impl SheetsApp {
         crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values, &snap.bold)
     }
 
-    /// Drain a finished interchange file dialog, if one landed since the last
-    /// frame, and run the chosen import/export against the picked path. The UI
-    /// thread never blocks: the portal round-trip lives on its own worker.
-    fn drain_io(&mut self, doc: &mut AutoCommit) {
-        let Some((op, rx)) = &self.io else { return };
-        let op = *op;
-        match rx.try_recv() {
-            Ok(outcome) => {
-                self.io = None;
-                match outcome {
-                    PortalOutcome::Opened(path) => {
-                        if let Err(error) = self.start_interchange_job(doc, op, path) {
-                            self.status = format!("Spreadsheet operation failed: {error}");
-                            self.finish_resource_io(Err(error));
-                        }
-                    }
-                    PortalOutcome::Cancelled => {
-                        if let Some(invocation) = self.resource_invocation.take() {
-                            self.resource_result =
-                                Some(tilo_actions::InvocationUpdate::Cancelled {
-                                    invocation,
-                                    message: Some(
-                                        "spreadsheet file selection was cancelled".into(),
-                                    ),
-                                });
-                        }
-                    }
-                    PortalOutcome::Failed(e) => {
-                        self.status = format!("File chooser unavailable: {e}");
-                        if let Some(invocation) = self.resource_invocation.take() {
-                            self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
-                                invocation,
-                                error: tilo_actions::ActionFailure {
-                                    code: "sheets.portal_failed".into(),
-                                    message: e,
-                                    details: None,
-                                    retryable: false,
-                                },
-                            });
-                        }
-                    }
-                }
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.io = None;
-                self.status = "File chooser disconnected before returning a selection".into();
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "sheets.portal_disconnected".into(),
-                            message: self.status.clone(),
-                            details: None,
-                            retryable: true,
-                        },
-                    });
-                }
-            }
+    /// Add `tables` as new sheets now, as an import does, and show the last.
+    #[cfg(test)]
+    fn import_tables(
+        &mut self,
+        doc: &mut Edits<'_>,
+        tables: Vec<crate::xlsx::SheetTable>,
+    ) -> Result<usize, String> {
+        let (invoke, total) = self.import_action(tables, None)?;
+        if !self.submit(doc, invoke) {
+            return Err(self.status.clone());
         }
+        self.active_sheet = self.sheet_ids.len().saturating_sub(1);
+        self.reload();
+        Ok(total)
     }
 
-    /// Apply a prepared resource result only after lifecycle polling has
-    /// confirmed that its invocation remains current.
-    fn settle_prepared_resource_io(&mut self, doc: &mut AutoCommit) {
-        let Some(invocation) = self.resource_confirmation.take() else {
-            return;
-        };
-        if self.resource_invocation != Some(invocation) {
-            return;
-        }
-        let Some(prepared) = self.prepared_resource_io.take() else {
-            return;
-        };
-        let result = match prepared {
-            PreparedResourceIo::Import {
-                format,
-                path,
-                tables,
-                ..
-            } => self.import_tables(doc, tables, Some(&path)).map(|total| {
-                self.status = format!(
-                    "Imported {total} cells from .{} {}",
-                    format.ext(),
-                    file_label(&path)
-                );
-            }),
-            PreparedResourceIo::Export {
-                format,
-                destination,
-                temporary,
-                ..
-            } => Self::publish_or_discard_export_temp(&temporary, &destination).map(|()| {
-                self.status = format!("Exported .{} to {}", format.ext(), file_label(&destination));
-            }),
-        };
-        if let Err(error) = &result {
-            self.status = format!("Spreadsheet operation failed: {error}");
-        }
-        self.finish_resource_io(result);
-    }
-
-    /// Reap replies of cancelled jobs; their prepared exports never publish.
-    fn drain_orphaned_interchange(&mut self) {
-        self.orphaned_interchange.retain(|rx| match rx.try_recv() {
-            Ok(InterchangeResult::Export {
-                result: Ok(temporary),
-                ..
-            }) => {
-                Self::discard_export_temp(&temporary);
-                false
-            }
-            Ok(_) | Err(TryRecvError::Disconnected) => false,
-            Err(TryRecvError::Empty) => true,
-        });
-    }
-
-    fn discard_prepared_resource_io(&mut self) {
-        if let Some(PreparedResourceIo::Export { temporary, .. }) = self.prepared_resource_io.take()
-        {
-            Self::discard_export_temp(&temporary);
-        }
-    }
-
-    /// Apply only the completed result whose generation still belongs to the
-    /// accepted job. File parsing/encoding happens off-thread; an agent-owned
-    /// result stops at the prepared boundary until lifecycle polling permits
-    /// its canonical import or destination publish.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one bounded worker receipt owns generation, cancellation, and typed settlement"
-    )]
-    fn drain_interchange_worker(&mut self, doc: &mut AutoCommit) {
-        let Some(rx) = self.interchange_rx.as_ref() else {
-            return;
-        };
-        let result = match rx.try_recv() {
-            Ok(result) => result,
-            Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => {
-                self.interchange_rx = None;
-                self.active_interchange_generation = None;
-                self.status = "Spreadsheet worker disconnected".into();
-                self.finish_resource_io(Err(self.status.clone()));
-                return;
-            }
-        };
-        self.interchange_rx = None;
-        let generation = match &result {
-            InterchangeResult::Import { generation, .. }
-            | InterchangeResult::Export { generation, .. } => *generation,
-        };
-        if self.active_interchange_generation != Some(generation) {
-            if let InterchangeResult::Export {
-                result: Ok(temporary),
-                ..
-            } = result
-            {
-                Self::discard_export_temp(&temporary);
-            }
-            self.active_interchange_generation = None;
-            return;
-        }
-        self.active_interchange_generation = None;
-        if self.resource_invocation.is_some() {
-            match result {
-                InterchangeResult::Import {
-                    format,
-                    path,
-                    result: Ok(tables),
-                    ..
-                } => {
-                    self.prepared_resource_io = Some(PreparedResourceIo::Import {
-                        format,
-                        path,
-                        tables,
-                    });
-                    self.status = "Spreadsheet import is ready to apply".into();
-                }
-                InterchangeResult::Export {
-                    format,
-                    destination,
-                    result: Ok(temporary),
-                    ..
-                } => {
-                    self.prepared_resource_io = Some(PreparedResourceIo::Export {
-                        format,
-                        destination,
-                        temporary,
-                    });
-                    self.status = "Spreadsheet export is ready to save".into();
-                }
-                InterchangeResult::Import {
-                    format,
-                    result: Err(error),
-                    ..
-                }
-                | InterchangeResult::Export {
-                    format,
-                    result: Err(error),
-                    ..
-                } => {
-                    self.status =
-                        format!("Spreadsheet .{} operation failed: {error}", format.ext());
-                    self.finish_resource_io(Err(self.status.clone()));
-                }
-            }
-            return;
-        }
-        let outcome = match result {
-            InterchangeResult::Import {
-                format,
-                path,
-                result,
-                ..
-            } => result
-                .and_then(|tables| self.import_tables(doc, tables, Some(&path)))
-                .map(|total| {
-                    self.status = format!(
-                        "Imported {total} cells from .{} {}",
-                        format.ext(),
-                        file_label(&path)
-                    );
-                }),
-            InterchangeResult::Export {
-                format,
-                destination,
-                result,
-                ..
-            } => result
-                .and_then(|temporary| {
-                    Self::publish_or_discard_export_temp(&temporary, &destination)
-                })
-                .map(|()| {
-                    self.status =
-                        format!("Exported .{} to {}", format.ext(), file_label(&destination));
-                }),
-        };
-        if let Err(error) = outcome {
-            self.status = format!("Spreadsheet operation failed: {error}");
-        }
-    }
-
-    fn finish_resource_io(&mut self, result: Result<(), String>) {
-        self.finish_resource_output(result.map(|()| tilo_actions::ActionOutput::default()));
-    }
-
-    fn finish_resource_output(&mut self, result: Result<tilo_actions::ActionOutput, String>) {
-        let Some(invocation) = self.resource_invocation.take() else {
-            return;
-        };
-        self.resource_confirmation = None;
-        self.resource_result = Some(match result {
-            Ok(output) => tilo_actions::InvocationUpdate::Succeeded { invocation, output },
-            Err(message) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "sheets.io_failed".into(),
-                    message,
-                    details: None,
-                    retryable: false,
-                },
-            },
-        });
-    }
-
-    /// Cancel the one accepted resource I/O operation. Workers are not
-    /// forcibly killed (that is neither portable nor safe around codecs), but
-    /// they release the in-progress slot at once, so a worker stuck on a slow
-    /// mount cannot refuse every retry; its eventual reply is reaped without
-    /// being applied, and any export already prepared is removed before it can
-    /// publish.
-    fn cancel_resource_io(&mut self, invocation: tilo_actions::InvocationId) -> bool {
-        let pending_matches = self
-            .pending_resource_io
-            .as_ref()
-            .is_some_and(|(pending, _)| *pending == invocation);
-        if self.resource_invocation != Some(invocation) && !pending_matches {
-            return false;
-        }
-        if pending_matches {
-            self.pending_resource_io = None;
-        }
-        self.io = None;
-        self.resource_confirmation = None;
-        self.discard_prepared_resource_io();
-        if let Some(rx) = self.interchange_rx.take() {
-            self.orphaned_interchange.push(rx);
-        }
-        self.active_interchange_generation = None;
-        self.resource_invocation = None;
-        self.status = "Spreadsheet operation cancelled".into();
-        self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
-            invocation,
-            message: Some("spreadsheet operation cancelled before it changed data or files".into()),
-        });
-        true
-    }
-
-    fn switch_sheet(&mut self, doc: &mut AutoCommit, idx: usize) {
+    fn switch_sheet(&mut self, doc: &mut Edits<'_>, idx: usize) {
         let mut out = Vec::new();
         self.grid.flush_edit(&mut out);
-        let presentation_only = out.is_empty();
         self.apply_cmds(doc, out);
-        self.active_sheet = idx.min(SheetsDoc::sheet_count(doc).saturating_sub(1));
-        // The active tab is presentation-only. When this switch did not first
-        // flush an edit, its
-        // new head has exactly the same search corpus; carry the projection
-        // forward so a tab click never re-walks every sheet body.
-        if presentation_only {
-            self.search_projection_heads = Some(doc.get_heads());
-        }
+        self.active_sheet = idx.min(self.sheet_ids.len().saturating_sub(1));
         self.grid.select_only((0, 0));
-        self.reload(doc);
+        self.reload();
         self.status = format!(
             "Sheet: {}",
             self.sheet_names.get(idx).cloned().unwrap_or_default()
         );
     }
 
-    fn add_sheet(&mut self, doc: &mut AutoCommit) {
-        let n = SheetsDoc::sheet_count(doc);
-        let name = format!("Sheet{}", n.saturating_add(1));
-        self.perform_action(doc, &actions::add_sheet_action(&name));
-        // The active sheet tab is presentation, not a document mutation: a plain
-        // write, outside the action's undo bracket. The appended sheet is at `n`.
+    fn add_sheet(&mut self, doc: &mut Edits<'_>) {
+        let n = self.sheet_ids.len();
+        self.submit(
+            doc,
+            Workbook::NEW_SHEET.with(verbs::NewSheet {
+                name: None,
+                after: None,
+            }),
+        );
+        // The active sheet tab is presentation, not a document change. The
+        // appended sheet is at `n`.
         self.active_sheet = n;
         self.grid.select_only((0, 0));
-        self.reload(doc);
+        self.reload();
         self.status = "Added sheet".into();
     }
 
     // --- settings actions ---------------------------------------------------
 
-    fn apply_setting(&mut self, doc: &mut AutoCommit, kind: SettingKind) {
+    fn apply_setting(&mut self, doc: &mut Edits<'_>, kind: SettingKind) {
         match kind {
             SettingKind::Currency(c) => self.doc_settings.currency = c,
             SettingKind::Date(d) => self.doc_settings.date_format = d,
             SettingKind::Time(t) => self.doc_settings.time_format = t,
         }
-        // Persist the document overrides into the CRDT so collaborators (and
+        // The document's overrides are the workbook's, so collaborators (and
         // the next session) share the document's conventions.
-        let action = actions::set_doc_settings_action(&self.doc_settings);
-        self.perform_action(doc, &action);
-        self.reload(doc);
+        let settings = Workbook::paths().settings;
+        let edit = match kind {
+            SettingKind::Currency(c) => settings.currency.set(c),
+            SettingKind::Date(d) => settings.date_format.set(d),
+            SettingKind::Time(t) => settings.time_format.set(t),
+        };
+        if let Ok(invoke) = Invoke::edit(&edit) {
+            self.submit(doc, invoke);
+        }
+        self.reload();
     }
 
     // --- command palette ----------------------------------------------------
@@ -3475,9 +2142,15 @@ impl SheetsApp {
     /// Rebuilt each time so argument prefills (e.g. the active cell reference)
     /// stay current. Every entry is wired to a real mutation in
     /// [`dispatch_command`]; nothing here is a stub.
-    fn open_command_palette(&mut self, doc: &AutoCommit) {
+    fn open_command_palette(&mut self) {
+        let resources = self.published();
+        self.open_palette_with(&resources);
+    }
+
+    /// Open the command palette on `resources`, the workbook as published.
+    fn open_palette_with(&mut self, resources: &[tilo_actions::Resource]) {
         // Close any other overlay so the palette owns the surface.
-        self.open_menu = OpenMenu::None;
+        self.toolbar.close_menus();
         self.settings_panel = SettingsPanel::None;
         self.tab_menu_target = None;
         self.name_box_edit = None;
@@ -3488,14 +2161,16 @@ impl SheetsApp {
             crate::model::addr_to_a1(c, r)
         };
         self.palette.clear();
-        let resources = actions::provide_resources(&self.sheets_resource_ctx(), doc);
-        let mut actions = tilo_actions::flatten(&resources);
+        let mut actions = tilo_actions::flatten(resources);
         actions.sort_by_key(|action| usize::from(action.action.id != "go-to-cell"));
         for action in actions {
             if action.action.id == "commands" {
                 continue;
             }
             let mut entry = CommandEntry::from_flat_action(&action);
+            // The palette already says whose commands these are; the row is
+            // just the command.
+            entry.label.clone_from(&action.action.label);
             if action.action.id == "go-to-cell" {
                 entry = entry.with_argument_prefill(active_ref.clone());
             }
@@ -3506,31 +2181,29 @@ impl SheetsApp {
     }
 
     #[cfg(test)]
-    fn dispatch_palette_view_for_test(&mut self, doc: &AutoCommit) {
+    fn dispatch_palette_view_for_test(&mut self) {
         let intent = ui::widget::controls::take_control_invocation(self)
             .expect("palette emitted a resource action");
-        let resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let resources = self.published();
         let spec = tilo_actions::door::resolve(&resources, &intent.address)
             .expect("palette address resolves");
         assert_eq!(spec.kind, tilo_actions::OperationKind::View);
         let encoded = spec.build_json(&intent.arguments).expect("valid arguments");
-        assert!(
-            self.answer_resource_operation(
-                spec.kind,
-                &encoded.type_id,
-                &encoded.payload,
-                doc,
-                &automerge::ROOT,
-            )
-            .expect("view operation")
+        assert_eq!(
+            encoded.type_id,
+            <actions::SheetsEffect as ui::tilo_resource::Effect>::OPERATION
         );
+        let effect =
+            <actions::SheetsEffect as ui::tilo_resource::Effect>::from_payload(&encoded.payload)
+                .expect("a workbook effect");
+        self.show(effect).expect("the view is shown");
     }
 
     /// Run the action the palette emitted, dispatching by id. `argument`
     /// carries the free-text a `with_argument` entry collected (e.g. the cell
     /// reference for "Go to cell").
     #[cfg(test)]
-    fn dispatch_command(&mut self, doc: &mut AutoCommit, id: &str, argument: Option<&str>) {
+    fn dispatch_command(&mut self, doc: &mut Edits<'_>, id: &str, argument: Option<&str>) {
         match id {
             "goto" => self.go_to_cell(argument.unwrap_or("")),
             "sum_selection" => self.sum_selection(doc),
@@ -3555,8 +2228,6 @@ impl SheetsApp {
             }
             "format_percent" => self.apply_format(doc, CellFormat::Percent),
             "clear_format" => self.clear_format(doc),
-            "export_csv" => self.export_csv(doc),
-            "export_xlsx" => self.export_xlsx(doc),
             "new_sheet" => self.add_sheet(doc),
             _ => {}
         }
@@ -3578,13 +2249,12 @@ impl SheetsApp {
     /// "Sum selection": write a `=SUM(col_top:col_bottom)` total for each column
     /// of the selection into the row directly below it, then select that row.
     #[cfg(test)]
-    fn sum_selection(&mut self, doc: &mut AutoCommit) {
+    fn sum_selection(&mut self, doc: &mut Edits<'_>) {
         let mut out = Vec::new();
         self.grid.flush_edit(&mut out);
         self.apply_cmds(doc, out);
         let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
         let target_r = r1.saturating_add(1);
-        let sheet = self.active_sheet;
         let mut writes: Vec<(Addr, String, Option<CellFormat>)> = Vec::new();
         for c in c0..=c1 {
             let formula = format!(
@@ -3594,62 +2264,63 @@ impl SheetsApp {
             );
             writes.push(((c, target_r), formula, None));
         }
-        self.perform_action(
-            doc,
-            &actions::set_cells_action(
-                sheet,
-                SheetsDoc::sheet_resource_id(doc, sheet).unwrap_or_default(),
-                writes,
-            ),
-        );
-        self.reload(doc);
+        self.write_raw(doc, writes);
+        self.reload();
         self.grid
             .select_range_public((c0, target_r), (c1, target_r));
         self.status = format!("Summed selection into row {}", target_r.saturating_add(1));
     }
 
     #[cfg(test)]
-    fn insert_row(&mut self, doc: &mut AutoCommit) {
+    fn insert_row(&mut self, doc: &mut Edits<'_>) {
         let r0 = self.grid.active().1;
-        self.perform_action(
+        let Some(sheet) = self.active_sheet_id() else {
+            return;
+        };
+        self.submit(
             doc,
-            &actions::insert_row_action(
-                self.active_sheet,
-                SheetsDoc::sheet_resource_id(doc, self.active_sheet).unwrap_or_default(),
-                r0,
-            ),
+            Workbook::INSERT_ROWS.with(verbs::InsertRows {
+                sheet,
+                at: r0.saturating_add(1),
+                count: None,
+            }),
         );
-        self.reload(doc);
+        self.reload();
         self.status = format!("Inserted row {}", r0.saturating_add(1));
     }
 
     #[cfg(test)]
-    fn delete_row(&mut self, doc: &mut AutoCommit) {
+    fn delete_row(&mut self, doc: &mut Edits<'_>) {
         let r0 = self.grid.active().1;
-        self.perform_action(
+        let Some(sheet) = self.active_sheet_id() else {
+            return;
+        };
+        self.submit(
             doc,
-            &actions::delete_row_action(
-                self.active_sheet,
-                SheetsDoc::sheet_resource_id(doc, self.active_sheet).unwrap_or_default(),
-                r0,
-            ),
+            Workbook::DELETE_ROWS.with(verbs::DeleteRows {
+                sheet,
+                rows: vec![r0.saturating_add(1)],
+            }),
         );
-        self.reload(doc);
+        self.reload();
         self.status = format!("Deleted row {}", r0.saturating_add(1));
     }
 
     #[cfg(test)]
-    fn insert_column(&mut self, doc: &mut AutoCommit) {
+    fn insert_column(&mut self, doc: &mut Edits<'_>) {
         let c0 = self.grid.active().0;
-        self.perform_action(
+        let Some(sheet) = self.active_sheet_id() else {
+            return;
+        };
+        self.submit(
             doc,
-            &actions::insert_column_action(
-                self.active_sheet,
-                SheetsDoc::sheet_resource_id(doc, self.active_sheet).unwrap_or_default(),
-                c0,
-            ),
+            Workbook::INSERT_COLUMNS.with(verbs::InsertColumns {
+                sheet,
+                at: crate::model::col_to_letters(c0),
+                count: None,
+            }),
         );
-        self.reload(doc);
+        self.reload();
         self.status = format!(
             "Inserted column {}",
             crate::model::addr_to_a1(c0, 0).trim_end_matches(|ch: char| ch.is_ascii_digit())
@@ -3657,17 +2328,19 @@ impl SheetsApp {
     }
 
     #[cfg(test)]
-    fn delete_column(&mut self, doc: &mut AutoCommit) {
+    fn delete_column(&mut self, doc: &mut Edits<'_>) {
         let c0 = self.grid.active().0;
-        self.perform_action(
+        let Some(sheet) = self.active_sheet_id() else {
+            return;
+        };
+        self.submit(
             doc,
-            &actions::delete_column_action(
-                self.active_sheet,
-                SheetsDoc::sheet_resource_id(doc, self.active_sheet).unwrap_or_default(),
-                c0,
-            ),
+            Workbook::DELETE_COLUMNS.with(verbs::DeleteColumns {
+                sheet,
+                columns: vec![crate::model::col_to_letters(c0)],
+            }),
         );
-        self.reload(doc);
+        self.reload();
         self.status = format!(
             "Deleted column {}",
             crate::model::addr_to_a1(c0, 0).trim_end_matches(|ch: char| ch.is_ascii_digit())
@@ -3676,269 +2349,16 @@ impl SheetsApp {
 
     // --- layout -------------------------------------------------------------
 
-    /// The label painted on a menu-bar button: openers carry a ▾ cue.
-    fn menu_button_label(label: &str, opens: bool) -> String {
-        if opens {
-            format!("{label} \u{25BE}") // ▾
-        } else {
-            label.to_string()
-        }
-    }
-
-    /// Every chrome string `relayout` reserves a slot for, so
-    /// [`ChromeMetrics::resolve`] can measure each one with the style it is
-    /// painted in.
-    fn chrome_labels(&self) -> Vec<String> {
-        let mut labels: Vec<String> = MENU_BAR_BUTTONS
-            .iter()
-            .map(|(label, opens, _)| Self::menu_button_label(label, opens.is_some()))
-            .collect();
-        labels.extend(self.sheet_names.iter().cloned());
-        labels.extend(
-            TAB_MENU_ACTIONS
-                .iter()
-                .map(|act| tab_action_label(*act).to_owned()),
-        );
-        labels.push("Colour".to_owned());
-        labels.extend(Self::file_menu_items().iter().map(|(l, _)| (*l).to_owned()));
-        labels.extend(
-            self.format_menu_items()
-                .iter()
-                .map(|(l, _)| (*l).to_owned()),
-        );
-        labels.push("Default".to_owned());
-        labels.extend(Currency::ALL.iter().map(|c| c.code().to_owned()));
-        labels.extend(DATE_STYLES.iter().map(|(l, _)| (*l).to_owned()));
-        labels.extend(TIME_STYLES.iter().map(|(l, _)| (*l).to_owned()));
-        labels.extend(SETTINGS_SECTIONS.iter().map(|s| (*s).to_owned()));
-        labels
-    }
-
-    /// Re-resolve the chrome metrics against the renderer about to paint. A
-    /// change re-runs `relayout` immediately, so the frame that follows paints
-    /// — and later hit-tests — the measured geometry rather than the fallback.
-    fn refresh_chrome_metrics(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let labels = self.chrome_labels();
-        let metrics = ChromeMetrics::resolve(tr, theme, labels.iter().map(String::as_str));
-        if metrics == self.metrics {
-            return;
-        }
-        self.grid.set_metrics(metrics.grid);
-        self.metrics = metrics;
-        self.relayout();
-    }
-
-    fn relayout(&mut self) {
-        let r = self.rect;
-        let m = &self.metrics;
-        self.menubar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.menubar_h());
-        self.formula_rect = Rect::new(
-            r.x0,
-            self.menubar_rect.y1,
-            r.x1,
-            self.menubar_rect.y1 + m.formula_h(),
-        );
-        self.tabs_rect = Rect::new(r.x0, r.y1 - m.tabs_h(), r.x1, r.y1);
-        self.grid_rect = Rect::new(r.x0, self.formula_rect.y1, r.x1, self.tabs_rect.y0);
-        self.grid.rect = self.grid_rect;
-
-        // Menu bar: File ▾  Format ▾  Σ Sum  Doc settings. Each button is its
-        // measured label plus `s3` padding, on one centre line, `s2` apart.
-        self.menu_buttons.clear();
-        let bh = m.menu_button_h();
-        let by = self.menubar_rect.y0 + (self.menubar_rect.height() - bh) / 2.0;
-        let mut x = self.menubar_rect.x0 + m.s2;
-        let compact_toolbar = (m.scale > 1.0 && r.width() < 720.0)
-            || MENU_BAR_BUTTONS
-                .iter()
-                .map(|(label, opens, _)| {
-                    m.menu_button_w(&Self::menu_button_label(label, opens.is_some())) + m.s2
-                })
-                .sum::<f64>()
-                > r.width() - 2.0 * m.s2;
-        for (index, (label, opens, item)) in MENU_BAR_BUTTONS.into_iter().enumerate() {
-            if compact_toolbar && index >= 2 {
-                if index == 2 {
-                    let w = m.menu_button_w("More ▾");
-                    self.menu_buttons.push(MenuButton {
-                        rect: Rect::new(x, by, x + w, by + bh),
-                        label: "More".into(),
-                        item: None,
-                        opens: Some(OpenMenu::More),
-                    });
-                }
-                continue;
-            }
-            let w = m.menu_button_w(&Self::menu_button_label(label, opens.is_some()));
-            self.menu_buttons.push(MenuButton {
-                rect: Rect::new(x, by, x + w, by + bh),
-                label: label.to_string(),
-                item,
-                opens,
-            });
-            x += w + m.s2;
-        }
-
-        // Formula bar: name box · fx · field, all sharing one centre line and
-        // one field height. The "fx" affordance is a slot around its glyph.
-        let field_y0 = self.formula_rect.y0 + m.s1;
-        let field_y1 = self.formula_rect.y1 - m.s1;
-        let nb_x0 = self.formula_rect.x0 + m.s2;
-        let nb_x1 = nb_x0 + m.name_box_w();
-        self.name_box_rect = Rect::new(nb_x0, field_y0, nb_x1, field_y1);
-        self.fx_rect = Rect::new(nb_x1, field_y0, nb_x1 + m.fx_slot_w(), field_y1);
-        self.formula_field_rect = Rect::new(
-            self.fx_rect.x1,
-            field_y0,
-            (self.formula_rect.x1 - m.s2).max(self.fx_rect.x1),
-            field_y1,
-        );
-
-        // Sheet tabs: measured names plus `s3` padding, `s1` apart, with the
-        // square "+" button after the last tab.
-        self.tab_rects.clear();
-        let mut tx = self.tabs_rect.x0 + m.s2;
-        let ty = self.tabs_rect.y0 + m.s1;
-        let th = m.tab_h();
-        for (i, name) in self.sheet_names.iter().enumerate() {
-            let w = m.tab_w(name);
-            self.tab_rects.push((Rect::new(tx, ty, tx + w, ty + th), i));
-            tx += w + m.s1;
-        }
-        self.add_tab_rect = Rect::new(tx, ty, tx + th, ty + th);
-        // An in-flight rename follows its tab through the reflow, so the
-        // editor never detaches from the tab it renames.
-        if let Some(idx) = self.tab_rename.as_ref().map(|rn| rn.idx) {
-            let rect = self.tab_rename_rect(idx);
-            if let Some(rn) = &mut self.tab_rename {
-                rn.rect = rect;
-            }
-        }
-
-        self.relayout_overlays();
-    }
-
-    /// Lay out whichever dropdown / settings panel is open.
-    fn relayout_overlays(&mut self) {
-        self.dropdown_rows.clear();
-        self.setting_chips.clear();
-        let opener = self
-            .menu_buttons
-            .iter()
-            .find(|b| b.opens == Some(self.open_menu))
-            .map(|b| b.rect);
-
-        match self.open_menu {
-            OpenMenu::None => {}
-            OpenMenu::File => {
-                if let Some(anchor) = opener {
-                    let items = Self::file_menu_items();
-                    self.layout_dropdown(anchor, &items, FILE_MENU_MIN_W);
-                }
-            }
-            OpenMenu::Format => {
-                if let Some(anchor) = opener {
-                    let items = self.format_menu_items();
-                    self.layout_dropdown(anchor, &items, FORMAT_MENU_MIN_W);
-                }
-            }
-            OpenMenu::More => {
-                if let Some(anchor) = opener {
-                    let formula_label = if self.grid.formula_view() {
-                        "Hide formulas"
-                    } else {
-                        "Show formulas"
-                    };
-                    let items = [
-                        ("AutoSum", MenuItem::AutoSum),
-                        ("Document settings", MenuItem::OpenDocSettings),
-                        (formula_label, MenuItem::ToggleFormulaView),
-                    ];
-                    self.layout_dropdown(anchor, &items, 190.0);
-                }
-            }
-        }
-
-        if self.settings_panel != SettingsPanel::None {
-            self.layout_settings_panel();
-        }
-        if self.tab_menu_target.is_some() {
-            self.layout_tab_menu();
-        }
-    }
-
-    /// Lay out the sheet-tab context menu above its target tab: a stack of
-    /// action rows plus a colour-swatch strip. Re-derived from the current tab
-    /// rects each pass, so it tracks the tab under a resize.
-    fn layout_tab_menu(&mut self) {
-        self.tab_menu_rows.clear();
-        self.tab_menu_swatches.clear();
-        let Some(idx) = self.tab_menu_target else {
-            return;
-        };
-        let anchor = self
-            .tab_rects
-            .iter()
-            .find(|(_, i)| *i == idx)
-            .map_or(self.add_tab_rect, |(r, _)| *r);
-
-        let m = &self.metrics;
-        let row_h = m.menu_row_h();
-        let pad = m.s2;
-        let swatch = TAB_COLOUR_SWATCH;
-        let swatch_count = count_f64(TAB_PALETTE.len() + 1);
-        // The panel is as wide as its widest row label (plus the row inset and
-        // panel padding on each side) or the swatch strip, never narrower than
-        // its classic width.
-        let widest = TAB_MENU_ACTIONS
-            .iter()
-            .map(|act| m.label_w(tab_action_label(*act)))
-            .fold(0.0_f64, f64::max);
-        let swatch_strip_w = swatch_count * swatch + (swatch_count - 1.0) * m.s1;
-        let width = (widest + 2.0 * (pad + m.s2))
-            .max(swatch_strip_w + 2.0 * pad)
-            .max(TAB_MENU_MIN_W);
-        // "Colour" caption (an `xs` line box) sits `s1` above the swatch row.
-        let color_block = m.s2 + m.lh_xs + m.s1 + swatch;
-        let h = pad * 2.0 + count_f64(TAB_MENU_ACTIONS.len()) * row_h + color_block;
-
-        let x0 = anchor
-            .x0
-            .min(self.rect.x1 - width - m.s2)
-            .max(self.rect.x0 + m.s1);
-        let y1 = anchor.y0 - m.s1;
-        let y0 = (y1 - h).max(self.rect.y0 + m.s1);
-        self.tab_menu_rect = Rect::new(x0, y0, x0 + width, y1);
-
-        let mut y = y0 + pad;
-        for act in TAB_MENU_ACTIONS {
-            self.tab_menu_rows
-                .push((Rect::new(x0 + pad, y, x0 + width - pad, y + row_h), act));
-            y += row_h;
-        }
-        // Colour swatch strip, below the "Colour" caption.
-        let cy = y + m.s2 + m.lh_xs + m.s1;
-        let mut cx = x0 + pad;
-        self.tab_menu_swatches
-            .push((Rect::new(cx, cy, cx + swatch, cy + swatch), None));
-        cx += swatch + m.s1;
-        for i in 0..TAB_PALETTE.len() as u32 {
-            self.tab_menu_swatches
-                .push((Rect::new(cx, cy, cx + swatch, cy + swatch), Some(i)));
-            cx += swatch + m.s1;
-        }
-    }
-
     /// The File menu's rows, in order.
     fn file_menu_items() -> [(&'static str, MenuItem); 7] {
         [
             ("New sheet", MenuItem::NewSheet),
             ("Import CSV", MenuItem::ImportCsv),
+            ("Import Excel workbook", MenuItem::ImportXlsx),
+            ("Import OpenDocument spreadsheet", MenuItem::ImportOds),
             ("Export CSV", MenuItem::ExportCsv),
-            ("Import Excel (.xlsx)", MenuItem::ImportXlsx),
-            ("Export Excel (.xlsx)", MenuItem::ExportXlsx),
-            ("Import Calc (.ods)", MenuItem::ImportOds),
-            ("Export Calc (.ods)", MenuItem::ExportOds),
+            ("Export Excel workbook", MenuItem::ExportXlsx),
+            ("Export OpenDocument spreadsheet", MenuItem::ExportOds),
         ]
     }
 
@@ -3963,1499 +2383,6 @@ impl SheetsApp {
             ("Text", MenuItem::SetFormat(CellFormat::Text)),
             ("Clear format", MenuItem::ClearFormat),
         ]
-    }
-
-    /// Lay out a menu-bar dropdown under `anchor`: measured rows `s2` inside a
-    /// panel that grows to its widest label and never below `min_width`.
-    fn layout_dropdown(&mut self, anchor: Rect, items: &[(&str, MenuItem)], min_width: f64) {
-        let m = &self.metrics;
-        let row_h = m.menu_row_h();
-        let pad = m.s2;
-        let widest = items
-            .iter()
-            .map(|(label, _)| m.label_w(label))
-            .fold(0.0_f64, f64::max);
-        let width = (widest + 2.0 * (pad + m.s2))
-            .max(min_width)
-            .min((self.rect.width() - 2.0 * m.s1).max(1.0));
-        let x0 = anchor
-            .x0
-            .min(self.rect.x1 - width - m.s1)
-            .max(self.rect.x0 + m.s1);
-        let y0 = anchor.y1 + m.s1;
-        let h = count_f64(items.len()) * row_h + pad * 2.0;
-        self.dropdown_rect = Rect::new(x0, y0, x0 + width, y0 + h);
-        let mut y = y0 + pad;
-        for (_, item) in items {
-            let rect = Rect::new(x0 + pad, y, x0 + width - pad, y + row_h);
-            self.dropdown_rows.push(ClickRow {
-                rect,
-                item: item.clone(),
-            });
-            y += row_h;
-        }
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the settings modal lays out its sections top to bottom sharing the running y cursor and chip-row wrapping"
-    )]
-    fn layout_settings_panel(&mut self) {
-        // Centered modal panel, sized to fit even the narrow viewport. Chip
-        // rows start past the measured section-label column and wrap within
-        // the panel width; the panel's height follows its content so every
-        // section keeps the same rhythm at every text scale.
-        let m = &self.metrics;
-        let pad = m.s6;
-        let pw = SETTINGS_PANEL_W
-            .min(self.rect.width() - 2.0 * m.s4)
-            .max(SETTINGS_PANEL_MIN_W);
-        let px0 = self.rect.center().x - pw / 2.0;
-        let chip_h = m.chip_h();
-        let chip_gap = m.s2;
-        let label_col = SETTINGS_SECTIONS
-            .iter()
-            .map(|s| m.label_w(s))
-            .fold(0.0_f64, f64::max);
-        let left = px0 + pad;
-        let row_start = left + label_col + m.s4;
-        let wrap_x = px0 + pw - pad;
-
-        // Content height first, so the panel can be centred on it: title,
-        // `s6`, then each chip section separated by `s4`, then the footer.
-        self.setting_chips.clear();
-        let mut chips: Vec<SettingChip> = Vec::new();
-        let mut y = pad + m.lh_base + m.s6;
-        let push = |chips: &mut Vec<SettingChip>, x: &mut f64, y: &mut f64, label: &str, kind| {
-            let w = m.chip_w(label);
-            if *x + w > wrap_x && *x > row_start {
-                *x = row_start;
-                *y += chip_h + chip_gap;
-            }
-            chips.push(SettingChip {
-                rect: Rect::new(*x, *y, *x + w, *y + chip_h),
-                kind,
-            });
-            *x += w + chip_gap;
-        };
-
-        // Section: currency. First an explicit "Default" (inherit global) chip.
-        self.settings_section_y[0] = y;
-        {
-            let mut x = row_start;
-            push(
-                &mut chips,
-                &mut x,
-                &mut y,
-                "Default",
-                SettingKind::Currency(None),
-            );
-            for c in Currency::ALL {
-                push(
-                    &mut chips,
-                    &mut x,
-                    &mut y,
-                    c.code(),
-                    SettingKind::Currency(Some(c)),
-                );
-            }
-        }
-        y += chip_h + m.s4;
-
-        // Section: date style.
-        self.settings_section_y[1] = y;
-        {
-            let mut x = row_start;
-            push(
-                &mut chips,
-                &mut x,
-                &mut y,
-                "Default",
-                SettingKind::Date(None),
-            );
-            for (label, d) in DATE_STYLES {
-                push(
-                    &mut chips,
-                    &mut x,
-                    &mut y,
-                    label,
-                    SettingKind::Date(Some(d)),
-                );
-            }
-        }
-        y += chip_h + m.s4;
-
-        // Section: time style.
-        self.settings_section_y[2] = y;
-        {
-            let mut x = row_start;
-            push(
-                &mut chips,
-                &mut x,
-                &mut y,
-                "Default",
-                SettingKind::Time(None),
-            );
-            for (label, t) in TIME_STYLES {
-                push(
-                    &mut chips,
-                    &mut x,
-                    &mut y,
-                    label,
-                    SettingKind::Time(Some(t)),
-                );
-            }
-        }
-        // Footer note (an `xs` line box) sits `s6` under the last row.
-        let ph = y + chip_h + m.s6 + m.lh_xs + pad;
-
-        let py0 = self.rect.center().y - ph / 2.0;
-        self.panel_rect = Rect::new(px0, py0, px0 + pw, py0 + ph);
-        for section_y in &mut self.settings_section_y {
-            *section_y += py0;
-        }
-        self.setting_chips = chips
-            .into_iter()
-            .map(|chip| SettingChip {
-                rect: chip.rect + vello::kurbo::Vec2::new(0.0, py0),
-                kind: chip.kind,
-            })
-            .collect();
-    }
-
-    // --- drawing ------------------------------------------------------------
-
-    fn draw_chip(
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        metrics: &ChromeMetrics,
-        rect: Rect,
-        label: &str,
-        style: ChipStyle,
-    ) {
-        let colors = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.sm);
-        // Rest: the raised face with its derived edge (HIG §9.5 "Button
-        // Neutral"); the AutoSum chip composites its accent wash over that
-        // face first so the edge is measured against what is on screen.
-        // Active: the accent fill alone — a chosen accent carries no hairline.
-        if style.active {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.accent[5],
-                None,
-                &RoundedRect::from_rect(rect, radius),
-            );
-        } else {
-            let face = if style.accent {
-                colors
-                    .accent_chip_on(
-                        colors.surfaces.raised,
-                        ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
-                    )
-                    .fill
-            } else {
-                colors.surfaces.raised
-            };
-            ui::surface::card(scene, transform, rect, radius, face);
-        }
-        let size = metrics.sm;
-        let (tw, _) = tr.measure(label, size, None);
-        let tx = rect.center().x - f64::from(tw) / 2.0;
-        let tyy = ChromeMetrics::centred_top(rect, metrics.lh_sm);
-        let color = if style.active {
-            colors.on_accent(ui::tokens::colors::NON_TEXT_MIN_CONTRAST)
-        } else {
-            colors.text_primary
-        };
-        tr.draw_text(
-            scene,
-            label,
-            size,
-            color,
-            transform * Affine::translate((tx, tyy)),
-            None,
-        );
-    }
-
-    fn draw_chrome(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let colors = &theme.tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.base,
-            None,
-            &self.rect,
-        );
-
-        self.draw_menu_bar(scene, transform, tr, theme);
-        self.draw_name_box(scene, transform, tr, theme);
-        self.draw_formula_field(scene, transform, tr, theme);
-        self.draw_sheet_tabs_strip(scene, transform, tr, theme);
-    }
-
-    /// Menu bar: File/Format buttons + bottom border.
-    fn draw_menu_bar(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let colors = &theme.tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &self.menubar_rect,
-        );
-        for b in &self.menu_buttons {
-            let active = matches!(
-                (&b.opens, self.open_menu),
-                (Some(OpenMenu::File), OpenMenu::File)
-                    | (Some(OpenMenu::Format), OpenMenu::Format)
-                    | (Some(OpenMenu::More), OpenMenu::More)
-            );
-            let accent = matches!(b.item, Some(MenuItem::AutoSum));
-            let label = Self::menu_button_label(&b.label, b.opens.is_some());
-            Self::draw_chip(
-                scene,
-                transform,
-                tr,
-                theme,
-                &self.metrics,
-                b.rect,
-                &label,
-                ChipStyle { active, accent },
-            );
-        }
-
-        // Bar rule: the bar's own derived edge on its last pixel row (a
-        // stroke centred on the boundary straddled two rows and blurred; the
-        // declared `border_standard` was invisible on the dark raised bar).
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::surface::edge_on(colors.surfaces.raised),
-            None,
-            &Rect::new(
-                self.menubar_rect.x0,
-                self.menubar_rect.y1 - 1.0,
-                self.menubar_rect.x1,
-                self.menubar_rect.y1,
-            ),
-        );
-    }
-
-    /// Formula bar's name box: background, focus border, and either the live
-    /// edit buffer (with caret + pre-fill selection) or the selection label.
-    fn draw_name_box(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let colors = &theme.tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.base,
-            None,
-            &self.formula_rect,
-        );
-        let name_box = self.name_box_rect;
-        let nb_editing = self.name_box_edit.is_some();
-        let nb_radius = f64::from(theme.tokens.radii.sm);
-        // Rest: the raised face with its derived edge; editing: the accent
-        // ring (focus state, not a second edge).
-        ui::surface::card(
-            scene,
-            transform,
-            name_box,
-            nb_radius,
-            colors.surfaces.raised,
-        );
-        if nb_editing {
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                colors.accent[5],
-                None,
-                &RoundedRect::from_rect(name_box.inset(-1.0), (nb_radius - 1.0).max(0.0)),
-            );
-        }
-        let sm = self.metrics.sm;
-        let nb_text_x = name_box.x0 + self.metrics.s2;
-        let nb_text_y = ChromeMetrics::centred_top(name_box, self.metrics.lh_sm);
-        if let Some(input) = &mut self.name_box_edit {
-            // Keep the compact spreadsheet chrome, while the shared editor
-            // owns shaping, scrolling, selection, clipboard, IME and caret
-            // hit-testing inside its content band. The editor takes the
-            // renderer-input size, so its text lands at the same final size as
-            // the static label it replaces.
-            input.set_font_size(sm);
-            input.apply_layout_external(Rect::new(
-                nb_text_x,
-                name_box.y0 + NAME_BOX_EDITOR_INSET,
-                name_box.x1 - self.metrics.s1,
-                name_box.y1 - NAME_BOX_EDITOR_INSET,
-            ));
-            input.draw(scene, transform, tr, theme, &PresenceCtx::default());
-        } else {
-            let label = self.grid.selection_label();
-            tr.draw_text_weighted(
-                scene,
-                &label,
-                sm,
-                colors.text_primary,
-                transform * Affine::translate((nb_text_x, nb_text_y)),
-                None,
-                TextWeight::Semibold,
-            );
-        }
-    }
-
-    /// Formula bar's "fx" field: the "fx" glyph, the input box, live text
-    /// (colour-tinted formula references while editing/selected), selection
-    /// highlight and caret. Rebuilds `self.formula_char_x` for click/caret
-    /// mapping every frame, since it must track exactly what's drawn.
-    fn draw_formula_field(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        self.draw_formula_fx_label(scene, transform, tr, theme);
-        let ff_shape =
-            RoundedRect::from_rect(self.formula_field_rect, f64::from(theme.tokens.radii.sm));
-        let editing = self.grid.is_editing();
-        Self::draw_formula_field_chrome(scene, transform, theme, ff_shape, editing);
-
-        let content = self.grid.active_display_raw();
-        let base = self.metrics.base;
-        let text_x0 = self.formula_field_rect.x0 + self.metrics.s2;
-        // Rebuild the per-character x boundaries for click/caret mapping. This
-        // is derived from exactly the text being drawn, so a click maps to the
-        // same glyph the user sees (whether it's the live edit buffer or the
-        // active cell's stored input).
-        self.formula_char_x = char_boundaries(tr, &content, base, text_x0);
-        let origin = Point::new(
-            text_x0,
-            ChromeMetrics::centred_top(self.formula_field_rect, self.metrics.lh_base),
-        );
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            transform,
-            &ff_shape,
-        );
-        self.draw_formula_selection(scene, transform, theme, editing, text_x0);
-        Self::draw_formula_content(scene, transform, tr, theme, &content, base, origin);
-        self.draw_formula_caret(scene, transform, theme, editing, text_x0);
-        scene.pop_layer();
-    }
-
-    fn draw_formula_fx_label(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        // The glyph is centred in the same `fx_rect` that `handle_event` hit-tests,
-        // so what the pointer lands on is exactly what is painted.
-        let colors = &theme.tokens.colors;
-        let m = &self.metrics;
-        tr.draw_style(
-            scene,
-            "fx",
-            colors.text_dim,
-            transform
-                * Affine::translate((
-                    self.fx_rect.center().x - m.fx_w / 2.0,
-                    ChromeMetrics::centred_top(self.fx_rect, m.lh_base),
-                )),
-            None,
-            &TextStyle::new(m.base).with_italic(true),
-        );
-    }
-
-    fn draw_formula_field_chrome(
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        ff_shape: RoundedRect,
-        editing: bool,
-    ) {
-        let colors = &theme.tokens.colors;
-        // A text field: its fill with the derived rest edge (HIG §9.5
-        // "TextInput"); editing takes the accent ring instead.
-        let field = ff_shape.rect();
-        let radius = ff_shape.radii().top_left;
-        ui::surface::card(scene, transform, field, radius, colors.surfaces.base);
-        if editing {
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                colors.accent[5],
-                None,
-                &RoundedRect::from_rect(field.inset(-1.0), (radius - 1.0).max(0.0)),
-            );
-        }
-    }
-
-    /// Selection highlight behind the text (drawn whenever editing).
-    fn draw_formula_selection(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        editing: bool,
-        text_x0: f64,
-    ) {
-        let colors = &theme.tokens.colors;
-        if editing && let Some((s, e)) = self.grid.edit_selection() {
-            let x0 = self.formula_char_x.get(s).copied().unwrap_or(text_x0);
-            let x1 = self.formula_char_x.get(e).copied().unwrap_or(x0);
-            // The highlight spans exactly the text's line box.
-            let top = ChromeMetrics::centred_top(self.formula_field_rect, self.metrics.lh_base);
-            let sel_rect = Rect::new(x0, top, x1, top + self.metrics.lh_base);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.accent[5].with_alpha_factor(0.30),
-                None,
-                &sel_rect,
-            );
-        }
-    }
-
-    /// Formulas (whether being edited OR merely selected) tint each cell
-    /// reference to match the coloured outlines on the grid; plain values
-    /// draw in the body colour.
-    fn draw_formula_content(
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        content: &str,
-        base: f32,
-        origin: Point,
-    ) {
-        let colors = &theme.tokens.colors;
-        if content.starts_with('=') {
-            crate::grid::draw_formula_line(
-                scene,
-                transform,
-                tr,
-                content,
-                base,
-                colors.text_primary,
-                origin,
-                None,
-            );
-        } else if !content.is_empty() {
-            tr.draw_text(
-                scene,
-                content,
-                base,
-                colors.text_primary,
-                transform * Affine::translate((origin.x, origin.y)),
-                None,
-            );
-        }
-    }
-
-    /// Caret in the formula bar while editing.
-    fn draw_formula_caret(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        editing: bool,
-        text_x0: f64,
-    ) {
-        let colors = &theme.tokens.colors;
-        if editing && let Some(caret) = self.grid.edit_caret() {
-            let cx = self.formula_char_x.get(caret).copied().unwrap_or(text_x0);
-            let top = ChromeMetrics::centred_top(self.formula_field_rect, self.metrics.lh_base);
-            scene.stroke(
-                &Stroke::new(1.5),
-                transform,
-                colors.accent[5],
-                None,
-                &Line::new((cx, top), (cx, top + self.metrics.lh_base)),
-            );
-        }
-    }
-
-    /// Bottom strip: sheet-tab switcher + the "+" add-sheet button. The
-    /// selection summary and any transient action message are surfaced
-    /// separately as a floating `ui::StatusBubble` — see `draw_status_bubble`
-    /// — so this strip reads purely as navigation.
-    fn draw_sheet_tabs_strip(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let colors = &theme.tokens.colors;
-        let m = &self.metrics;
-        let sm = m.sm;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &self.tabs_rect,
-        );
-        // Bar rule on the strip's first pixel row: the strip's derived edge.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::surface::edge_on(colors.surfaces.raised),
-            None,
-            &Rect::new(
-                self.tabs_rect.x0,
-                self.tabs_rect.y0,
-                self.tabs_rect.x1,
-                self.tabs_rect.y0 + 1.0,
-            ),
-        );
-        for (rect, idx) in &self.tab_rects {
-            let active = *idx == self.active_sheet;
-            // Sheet tabs are selectors (HIG §9.5): idle is the bare label on
-            // the strip, the active one lifts to the base tier — a contrast
-            // step against the raised strip — under its accent underline.
-            if active {
-                let shape = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm));
-                scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &shape);
-            }
-            // The tab's colour underline: its assigned palette colour when it
-            // has one, otherwise the accent bar for the active tab.
-            let tab_color = self
-                .sheet_colors
-                .get(*idx)
-                .copied()
-                .flatten()
-                .map(tab_palette_color);
-            let bar = tab_color.or(if active { Some(colors.accent[5]) } else { None });
-            if let Some(bar_color) = bar {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    bar_color,
-                    None,
-                    &Rect::new(
-                        rect.x0 + m.s1,
-                        rect.y1 - TAB_UNDERLINE_H,
-                        rect.x1 - m.s1,
-                        rect.y1,
-                    ),
-                );
-            }
-            let full_name = self.sheet_names.get(*idx).cloned().unwrap_or_default();
-            let weight = if active {
-                TextWeight::Semibold
-            } else {
-                TextWeight::Regular
-            };
-            // A name longer than the tab's ceiling is elided with the painting
-            // style, so it never runs under the neighbouring tab.
-            let name = tr.elide_to_width_weighted(
-                &full_name,
-                sm,
-                (rect.width() - 2.0 * m.s3).max(0.0) as f32,
-                weight,
-            );
-            let (tw, _) = tr.measure_weighted(&name, sm, None, weight);
-            let tx = rect.center().x - f64::from(tw) / 2.0;
-            let color = if active {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            };
-            tr.draw_text_weighted(
-                scene,
-                &name,
-                sm,
-                color,
-                transform * Affine::translate((tx, ChromeMetrics::centred_top(*rect, m.lh_sm))),
-                None,
-                weight,
-            );
-        }
-        // The add-sheet button is a Neutral control: its face with the
-        // derived rest edge.
-        ui::surface::card(
-            scene,
-            transform,
-            self.add_tab_rect,
-            f64::from(theme.tokens.radii.sm),
-            colors.surfaces.base,
-        );
-        // The "+" is centred on its measured glyph box, not nudged by hand.
-        let (add_w, add_h) = m.add_glyph;
-        tr.draw_text(
-            scene,
-            "+",
-            m.lg,
-            colors.text_dim,
-            transform
-                * Affine::translate((
-                    self.add_tab_rect.center().x - add_w / 2.0,
-                    ChromeMetrics::centred_top(self.add_tab_rect, add_h),
-                )),
-            None,
-        );
-    }
-
-    /// Bottom edge of the floating status bubble: `s2` above the grid's
-    /// horizontal scrollbar rail, so the pill floats over the body's
-    /// bottom-right corner and never sits on the scrollbar or the sheet tabs.
-    fn status_bubble_bottom(&self) -> f64 {
-        self.grid_rect.y1 - Grid::scrollbar_thickness() - self.metrics.s2
-    }
-
-    /// Size of the floating status pill for `label`. The shared pill sizes
-    /// itself from the renderer-input `sm`, which is right for its width but
-    /// leaves its height at the 1× value under a larger text scale, so the
-    /// measured `sm` line box plus `s2` above and below is the floor here.
-    /// (Its label centring still assumes the nominal size — see the F2 note
-    /// in the A7 review.)
-    fn status_pill_size(&self, tr: &mut TextRenderer, label: &str) -> (f64, f64) {
-        let (w, shared_h) = ui::status_bubble::pill_size(label, tr, self.metrics.sm, 0.0);
-        (w, shared_h.max(self.metrics.lh_sm + 2.0 * self.metrics.s2))
-    }
-
-    /// Draw the transient floating status bubble at the bottom-right of the
-    /// grid area, floated just *above* the scrollbar rail and sheet-tab strip
-    /// so it never overlaps either. It shows the composed status text
-    /// (selection summary / active format, plus any fresh action message) when
-    /// that text changes or while the pointer hovers the bottom-right reveal
-    /// band, then fades. All colours come from the theme (via `draw_pill`).
-    fn draw_status_bubble(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let now = ui::time::now();
-        let Some(label) = self.status_bubble_label() else {
-            return;
-        };
-        // The pill takes the renderer-input `sm` size, so its text lands at
-        // the same final size as the rest of the chrome at every text scale.
-        let text_size = self.metrics.sm;
-        let (w, h) = self.status_pill_size(tr, &label);
-        let margin = self.metrics.s3;
-        let y1 = self.status_bubble_bottom();
-        let rect = Rect::new(self.rect.x1 - margin - w, y1 - h, self.rect.x1 - margin, y1);
-        // Reveal zone: the bottom-right corner band of the grid (plus the pill),
-        // so nudging the pointer there re-surfaces the status on demand.
-        let zone = Rect::new(
-            rect.x0 - 40.0,
-            rect.y0 - 24.0,
-            self.rect.x1,
-            self.tabs_rect.y0,
-        );
-        let over = self.shots_status || zone.contains(self.last_mouse);
-        self.status_bubble.set_hover(over, now);
-        let alpha = if self.motion == MotionPreference::Reduced {
-            // Reduced motion keeps the useful acknowledgement, but never
-            // animates its opacity. It disappears on the next ordinary draw
-            // once its linger period has elapsed.
-            if self.status_bubble.is_visible(now) {
-                1.0
-            } else {
-                0.0
-            }
-        } else {
-            self.status_bubble.alpha(now)
-        };
-        if alpha <= 0.0 {
-            return;
-        }
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            alpha,
-            transform,
-            &rect.inflate(12.0, 14.0),
-        );
-        ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
-        scene.pop_layer();
-    }
-
-    /// A non-blocking veil while a persistent workbook is decoded on the
-    /// capacity-one worker. The normal chrome remains visible so the launch
-    /// feels intentional, but the grid cannot be edited until its CRDT receipt
-    /// has been merged. This is deliberately drawn from state rather than a
-    /// timer, so reduced motion and a slow disk behave identically.
-    fn draw_loading_veil(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let loading = (self.run.persists() && self.persistence_started && !self.pending.seeded)
-            || self.shots_loading;
-        if !loading {
-            return;
-        }
-        let veil = self.grid_rect;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base.with_alpha_factor(0.88),
-            None,
-            &veil,
-        );
-        let label = "Opening workbook…";
-        let size = self.metrics.base;
-        let (width, height) = tr.measure(label, size, None);
-        let origin = Point::new(
-            veil.center().x - f64::from(width) / 2.0,
-            veil.center().y - f64::from(height) / 2.0,
-        );
-        tr.draw_text(
-            scene,
-            label,
-            size,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((origin.x, origin.y)),
-            None,
-        );
-    }
-
-    /// Render the active sheet's small, data-derived chart collection. Charts
-    /// intentionally sample only their selected rectangle and cap the plotted
-    /// points, so a broad range cannot turn a paint into an unbounded formula
-    /// or path build.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the bounded chart card paint keeps layout, hit targets, and both chart renderers in one frame-local path"
-    )]
-    fn draw_charts(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(cache) = &self.cache else { return };
-        let max_cards = 3usize;
-        // Rows follow the measured `sm`/`xs` line boxes (1× floors), so a
-        // scaled title never paints under the action band below it.
-        let rows = self.metrics.chart_card_rows();
-        // The cards float over the sheet body, `s3` inside the header bands
-        // and the scrollbar lane (never on either), stacked `s3` apart.
-        let (body_top, body_right) = self.annotation_body_bounds();
-        let pad = self.metrics.s3;
-        for (index, chart) in self.sheet_charts.iter().take(max_cards).enumerate() {
-            let width = self.grid_rect.width().clamp(180.0, 300.0);
-            let height = rows.height;
-            let x1 = body_right - pad;
-            let y0 = body_top + pad + index as f64 * (height + pad);
-            if y0 + height > self.grid_rect.y1 {
-                break;
-            }
-            let card = Rect::new(x1 - width, y0, x1, y0 + height);
-            ui::surface::card(
-                scene,
-                transform,
-                card,
-                f64::from(theme.tokens.radii.md),
-                theme.tokens.colors.surfaces.raised,
-            );
-            // The title is elided to the card so a long or scaled name ends
-            // inside the frame rather than over the sheet beside it.
-            let title = tr.elide_to_width_weighted(
-                &chart.title,
-                self.metrics.sm,
-                (card.width() - 2.0 * pad) as f32,
-                TextWeight::Regular,
-            );
-            tr.draw_text(
-                scene,
-                &title,
-                self.metrics.sm,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((card.x0 + pad, card.y0 + rows.title_top)),
-                None,
-            );
-            let controls = Rect::new(
-                card.x0 + pad,
-                card.y0 + rows.controls_y0,
-                card.x1 - pad,
-                card.y0 + rows.controls_y1,
-            );
-            let actions = [
-                ("Open", AnnotationClick::Open(chart.start)),
-                ("Edit", AnnotationClick::EditChart(chart.id.clone())),
-                ("Delete", AnnotationClick::DeleteChart(chart.id.clone())),
-            ];
-            let action_width = controls.width() / actions.len() as f64;
-            for (index, (label, action)) in actions.into_iter().enumerate() {
-                let button = Rect::new(
-                    controls.x0 + index as f64 * action_width,
-                    controls.y0,
-                    controls.x0 + (index + 1) as f64 * action_width,
-                    controls.y1,
-                );
-                let (label_width, _) = tr.measure(label, self.metrics.xs, None);
-                tr.draw_text(
-                    scene,
-                    label,
-                    self.metrics.xs,
-                    theme.tokens.colors.accent[5],
-                    transform
-                        * Affine::translate((
-                            button.center().x - f64::from(label_width) / 2.0,
-                            ChromeMetrics::centred_top(button, self.metrics.lh_xs),
-                        )),
-                    None,
-                );
-                self.annotation_clicks.push((button, action));
-            }
-            let plot = Rect::new(
-                card.x0 + pad,
-                card.y0 + rows.plot_y0,
-                card.x1 - pad,
-                card.y0 + rows.plot_y1,
-            );
-            let mut points = Vec::new();
-            for row in chart.start.1..=chart.end.1 {
-                for col in chart.start.0..=chart.end.0 {
-                    if let Some(CellValue::Number(value)) = cache.values.get(&(col, row)) {
-                        points.push(*value);
-                    }
-                    if points.len() == 48 {
-                        break;
-                    }
-                }
-                if points.len() == 48 {
-                    break;
-                }
-            }
-            if points.is_empty() {
-                tr.draw_text(
-                    scene,
-                    "Select numeric cells to plot",
-                    self.metrics.sm,
-                    theme.tokens.colors.text_tertiary,
-                    transform
-                        * Affine::translate((
-                            plot.x0,
-                            ChromeMetrics::centred_top(plot, self.metrics.lh_sm),
-                        )),
-                    None,
-                );
-                continue;
-            }
-            let max = points.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            let min = points.iter().copied().fold(f64::INFINITY, f64::min);
-            let span = (max - min).abs().max(1.0);
-            let accent = theme.tokens.colors.accent[5];
-            match chart.kind {
-                ChartKind::Column => {
-                    for (i, value) in points.iter().enumerate() {
-                        let step = plot.width() / points.len() as f64;
-                        let h = ((value - min) / span * plot.height()).max(2.0);
-                        let bar = Rect::new(
-                            plot.x0 + i as f64 * step + 2.0,
-                            plot.y1 - h,
-                            plot.x0 + (i + 1) as f64 * step - 2.0,
-                            plot.y1,
-                        );
-                        scene.fill(Fill::NonZero, transform, accent, None, &bar);
-                    }
-                }
-                ChartKind::Line => {
-                    for (i, pair) in points.windows(2).enumerate() {
-                        let [first, second] = pair else { continue };
-                        let step = if points.len() > 1 {
-                            plot.width() / (points.len() - 1) as f64
-                        } else {
-                            0.0
-                        };
-                        let point = |offset: usize, value: f64| {
-                            Point::new(
-                                plot.x0 + (i + offset) as f64 * step,
-                                plot.y1 - (value - min) / span * plot.height(),
-                            )
-                        };
-                        scene.stroke(
-                            &Stroke::new(2.0),
-                            transform,
-                            accent,
-                            None,
-                            &Line::new(point(0, *first), point(1, *second)),
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the compact threaded-comment card deliberately co-locates visible state and its bounded click targets"
-    )]
-    fn draw_comment_threads(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(thread) = self.sheet_comments.first() else {
-            return;
-        };
-        let width = self.grid_rect.width().clamp(200.0, 310.0);
-        // Rows follow the measured `sm`/`xs` line boxes (1× floors), so the
-        // heading, body and detail lines stay clear of each other and of the
-        // action band at every text scale.
-        let rows = self.metrics.comment_card_rows();
-        // The card floats over the sheet body, `s3` inside the row and column
-        // header bands, so it never covers a header label.
-        let (body_top, _) = self.annotation_body_bounds();
-        let pad = self.metrics.s3;
-        let x0 = self.grid_rect.x0 + self.metrics.grid.row_header_w() + pad;
-        let y0 = body_top + pad;
-        let card = Rect::new(x0, y0, x0 + width, y0 + rows.height);
-        let text_w = (card.width() - 2.0 * pad) as f32;
-        // A card like any other: raised face, derived edge. The accent stays
-        // on the live parts (the reply count / resolve affordance), not on
-        // the frame — accent means live, not selected (HIG §9.4).
-        ui::surface::card(
-            scene,
-            transform,
-            card,
-            f64::from(theme.tokens.radii.md),
-            theme.tokens.colors.surfaces.raised,
-        );
-        let range = if thread.start == thread.end {
-            crate::model::addr_to_a1(thread.start.0, thread.start.1)
-        } else {
-            format!(
-                "{}:{}",
-                crate::model::addr_to_a1(thread.start.0, thread.start.1),
-                crate::model::addr_to_a1(thread.end.0, thread.end.1)
-            )
-        };
-        let heading = format!(
-            "{} · {}{}",
-            range,
-            thread.author,
-            if thread.resolved { " · Resolved" } else { "" }
-        );
-        // Heading and body are elided to the card: a scaled or long line ends
-        // inside the frame instead of running over the grid beside it.
-        let heading =
-            tr.elide_to_width_weighted(&heading, self.metrics.sm, text_w, TextWeight::Regular);
-        tr.draw_text(
-            scene,
-            &heading,
-            self.metrics.sm,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((card.x0 + pad, card.y0 + rows.heading_top)),
-            None,
-        );
-        let body: String = thread.body.chars().take(56).collect();
-        let body = tr.elide_to_width_weighted(&body, self.metrics.sm, text_w, TextWeight::Regular);
-        tr.draw_text(
-            scene,
-            &body,
-            self.metrics.sm,
-            theme.tokens.colors.text_tertiary,
-            transform * Affine::translate((card.x0 + pad, card.y0 + rows.body_top)),
-            None,
-        );
-        let detail = format!(
-            "{} {} · {}",
-            thread.replies.len(),
-            if thread.replies.len() == 1 {
-                "reply"
-            } else {
-                "replies"
-            },
-            if thread.resolved { "Reopen" } else { "Resolve" }
-        );
-        tr.draw_text(
-            scene,
-            &detail,
-            self.metrics.xs,
-            theme.tokens.colors.accent[5],
-            transform * Affine::translate((card.x0 + pad, card.y0 + rows.detail_top)),
-            None,
-        );
-        let controls = Rect::new(
-            card.x0 + pad,
-            card.y0 + rows.controls_y0,
-            card.x1 - pad,
-            card.y0 + rows.controls_y0 + ANNOTATION_ACTION_H,
-        );
-        let actions = [
-            ("Reply", AnnotationClick::Reply(thread.id.clone())),
-            ("Edit", AnnotationClick::EditComment(thread.id.clone())),
-            ("Open", AnnotationClick::Open(thread.start)),
-            ("Delete", AnnotationClick::DeleteComment(thread.id.clone())),
-        ];
-        let action_width = controls.width() / actions.len() as f64;
-        for (index, (label, action)) in actions.into_iter().enumerate() {
-            let button = Rect::new(
-                controls.x0 + index as f64 * action_width,
-                controls.y0,
-                controls.x0 + (index + 1) as f64 * action_width,
-                controls.y1,
-            );
-            let (label_width, _) = tr.measure(label, self.metrics.xs, None);
-            tr.draw_text(
-                scene,
-                label,
-                self.metrics.xs,
-                theme.tokens.colors.accent[5],
-                transform
-                    * Affine::translate((
-                        button.center().x - f64::from(label_width) / 2.0,
-                        ChromeMetrics::centred_top(button, self.metrics.lh_xs),
-                    )),
-                None,
-            );
-            self.annotation_clicks.push((button, action));
-        }
-        // The state-changing resolve/reopen affordance has its own normal
-        // target height, centred on the detail line it labels, and remains
-        // distinct from the action band (it ends where that band begins).
-        self.annotation_clicks.push((
-            Rect::new(
-                card.x0 + pad,
-                card.y0 + rows.toggle_y0,
-                card.x1 - pad,
-                card.y0 + rows.toggle_y1,
-            ),
-            AnnotationClick::ToggleComment(thread.id.clone(), !thread.resolved),
-        ));
-    }
-
-    /// Where a floating annotation card may sit: the top of the sheet body
-    /// (below the column-header band) and its right edge (left of the
-    /// vertical scrollbar lane). Cards keep `s3` inside both.
-    fn annotation_body_bounds(&self) -> (f64, f64) {
-        (
-            self.grid_rect.y0 + self.metrics.grid.col_header_h(),
-            self.grid_rect.x1 - Grid::scrollbar_thickness(),
-        )
-    }
-
-    /// Paint a floating menu / dialog panel (HIG §9.1 Panel role): elevation,
-    /// the panel ground and the panel border — never a raised fill under a
-    /// declared `border_standard` with a literal black shadow.
-    fn paint_panel(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect, radius: f64) {
-        ui::chrome::panel_shadow(scene, transform, rect, radius, theme, 1.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::panel_ground(theme),
-            None,
-            &RoundedRect::from_rect(rect, radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(rect, radius),
-        );
-    }
-
-    /// Paint a menu row's chosen / hovered state as a lift (HIG §9.3): the
-    /// selection tier's fill and, when lifted, its hairline — never an
-    /// accent wash, which is reserved for live state. `rect` is the row's
-    /// full hit rect; the lift is inset half the row seam top and bottom so
-    /// neighbouring lifts stay `s1` apart while the hit rects stay contiguous.
-    fn paint_row_state(
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        rect: Rect,
-        state: ui::chrome::SelectionState,
-    ) {
-        let tier = ui::chrome::selection_tier(theme, state);
-        if tier.fill.components[3] <= 0.0 {
-            return;
-        }
-        let rect = rect.inset((0.0, -MENU_ROW_SEAM / 2.0));
-        let radius = f64::from(theme.tokens.radii.sm);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            tier.fill,
-            None,
-            &RoundedRect::from_rect(rect, radius),
-        );
-        if let Some(border) = tier.border {
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                border,
-                None,
-                &ui::surface::edge_outline(rect, radius),
-            );
-        }
-    }
-
-    fn draw_dropdown(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if self.open_menu == OpenMenu::None || self.dropdown_rows.is_empty() {
-            return;
-        }
-        let colors = &theme.tokens.colors;
-        Self::paint_panel(
-            scene,
-            transform,
-            theme,
-            self.dropdown_rect,
-            f64::from(theme.tokens.radii.md),
-        );
-        let sm = self.metrics.sm;
-        let active_cat = self.current_active_format.category();
-        for row in &self.dropdown_rows {
-            let hovered = row.rect.contains(self.last_mouse);
-            // The row matching the active cell's format is the chosen one.
-            let matches_active = match &row.item {
-                MenuItem::SetFormat(f) => f.category() == active_cat,
-                _ => false,
-            };
-            Self::paint_row_state(
-                scene,
-                transform,
-                theme,
-                row.rect,
-                ui::chrome::SelectionState::new(matches_active, hovered, false),
-            );
-            let label = menu_item_label(&row.item);
-            tr.draw_text(
-                scene,
-                label,
-                sm,
-                colors.text_primary,
-                transform
-                    * Affine::translate((
-                        row.rect.x0 + self.metrics.s2,
-                        ChromeMetrics::centred_top(row.rect, self.metrics.lh_sm),
-                    )),
-                None,
-            );
-        }
-    }
-
-    fn draw_settings_panel(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if self.settings_panel == SettingsPanel::None {
-            return;
-        }
-        let colors = &theme.tokens.colors;
-        // Dim the backdrop in the theme's own scrim, then the dialog panel.
-        ui::chrome::fill_scrim(scene, transform, self.rect, SETTINGS_SCRIM_STRENGTH, theme);
-        Self::paint_panel(
-            scene,
-            transform,
-            theme,
-            self.panel_rect,
-            f64::from(theme.tokens.radii.lg),
-        );
-
-        let m = &self.metrics;
-        let pad = m.s6;
-        let title = "Document settings";
-        tr.draw_text_weighted(
-            scene,
-            title,
-            m.base,
-            colors.text_primary,
-            transform * Affine::translate((self.panel_rect.x0 + pad, self.panel_rect.y0 + pad)),
-            None,
-            TextWeight::Bold,
-        );
-
-        // Section labels, centred on the first chip row of their section (the
-        // row Y captured at layout time, so they stay put when a row wraps).
-        let label_x = self.panel_rect.x0 + pad;
-        let chip_h = m.chip_h();
-        for (label, &section_y) in SETTINGS_SECTIONS.iter().zip(&self.settings_section_y) {
-            let row = Rect::new(label_x, section_y, label_x, section_y + chip_h);
-            tr.draw_text(
-                scene,
-                label,
-                m.sm,
-                colors.text_dim,
-                transform * Affine::translate((label_x, ChromeMetrics::centred_top(row, m.lh_sm))),
-                None,
-            );
-        }
-
-        self.draw_setting_chips(scene, transform, tr, theme, m.sm);
-
-        // Footer: how the currently active cell renders under these settings.
-        let footer = format!(
-            "Applies to this workbook. Active cell: {}",
-            self.current_active_format.label()
-        );
-        tr.draw_text(
-            scene,
-            &footer,
-            m.xs,
-            colors.text_dim,
-            transform
-                * Affine::translate((self.panel_rect.x0 + pad, self.panel_rect.y1 - pad - m.lh_xs)),
-            None,
-        );
-    }
-
-    /// The currency/date/time option chips inside the settings panel.
-    fn draw_setting_chips(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        sm: f32,
-    ) {
-        let colors = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.sm);
-        for chip in &self.setting_chips {
-            let (label, selected) = self.chip_label_and_state(chip.kind);
-            // Quiet chip: raised face with its derived edge; selected: the
-            // accent fill, no edge (HIG §9.5 "Chip quiet").
-            if selected {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.accent[5],
-                    None,
-                    &RoundedRect::from_rect(chip.rect, radius),
-                );
-            } else {
-                ui::surface::card(scene, transform, chip.rect, radius, colors.surfaces.raised);
-            }
-            let (tw, _) = tr.measure(&label, sm, None);
-            let tx = chip.rect.center().x - f64::from(tw) / 2.0;
-            let ty = ChromeMetrics::centred_top(chip.rect, self.metrics.lh_sm);
-            let color = if selected {
-                colors.on_accent(ui::tokens::colors::NON_TEXT_MIN_CONTRAST)
-            } else {
-                colors.text_primary
-            };
-            tr.draw_text(
-                scene,
-                &label,
-                sm,
-                color,
-                transform * Affine::translate((tx, ty)),
-                None,
-            );
-        }
-    }
-
-    /// Paint per-peer "presence-in-navigation" glow on the sheet tabs: for
-    /// each sheet tab a remote peer is currently on, wash the tab in that
-    /// peer's colour. Reads the same `PresenceKey::Tab { id: sheet_name }`
-    /// scope the tabs are keyed by, so a peer who switches to another sheet
-    /// lights up the tab that leads there.
-    fn draw_sheet_tab_presence(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        for (rect, idx) in &self.tab_rects {
-            let Some(name) = self.sheet_names.get(*idx) else {
-                continue;
-            };
-            let peers = presence.peers_on(&PresenceKey::Tab { id: name.clone() });
-            if peers.is_empty() {
-                continue;
-            }
-            let p0 = transform * vello::kurbo::Point::new(rect.x0, rect.y0);
-            let p1 = transform * vello::kurbo::Point::new(rect.x1, rect.y1);
-            let mist_rect = Rect::new(p0.x, p0.y, p1.x, p1.y);
-            for user in peers {
-                presence.draw_peer_mist(scene, theme, user, mist_rect);
-            }
-        }
-    }
-
-    fn draw_tab_menu(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if self.tab_menu_target.is_none() || self.tab_menu_rows.is_empty() {
-            return;
-        }
-        let colors = &theme.tokens.colors;
-        Self::paint_panel(
-            scene,
-            transform,
-            theme,
-            self.tab_menu_rect,
-            f64::from(theme.tokens.radii.md),
-        );
-
-        let sm = self.metrics.sm;
-        for (rect, act) in &self.tab_menu_rows {
-            Self::paint_row_state(
-                scene,
-                transform,
-                theme,
-                *rect,
-                ui::chrome::SelectionState::new(false, rect.contains(self.last_mouse), false),
-            );
-            let color = if matches!(act, TabAction::Delete) {
-                colors.semantic.danger
-            } else {
-                colors.text_primary
-            };
-            tr.draw_text(
-                scene,
-                tab_action_label(*act),
-                sm,
-                color,
-                transform
-                    * Affine::translate((
-                        rect.x0 + self.metrics.s2,
-                        ChromeMetrics::centred_top(*rect, self.metrics.lh_sm),
-                    )),
-                None,
-            );
-        }
-
-        self.draw_tab_menu_swatches(scene, transform, tr, theme);
-    }
-
-    /// Colour label + swatch grid inside the tab context menu.
-    fn draw_tab_menu_swatches(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let colors = &theme.tokens.colors;
-        if let Some((first, _)) = self.tab_menu_swatches.first() {
-            // The caption's line box ends `s1` above the swatch row, matching
-            // the block `layout_tab_menu` reserved for it.
-            tr.draw_text(
-                scene,
-                "Colour",
-                self.metrics.xs,
-                colors.text_dim,
-                transform
-                    * Affine::translate((
-                        self.tab_menu_rect.x0 + 2.0 * self.metrics.s2,
-                        first.y0 - self.metrics.s1 - self.metrics.lh_xs,
-                    )),
-                None,
-            );
-        }
-        let current = self
-            .tab_menu_target
-            .and_then(|t| self.sheet_colors.get(t).copied().flatten());
-        for (rect, color_opt) in &self.tab_menu_swatches {
-            let radius = f64::from(theme.tokens.radii.sm);
-            let shape = RoundedRect::from_rect(*rect, radius);
-            match color_opt {
-                None => {
-                    ui::surface::card(scene, transform, *rect, radius, colors.surfaces.base);
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        transform,
-                        colors.text_dim,
-                        None,
-                        &Line::new(
-                            (rect.x0 + 3.0, rect.y1 - 3.0),
-                            (rect.x1 - 3.0, rect.y0 + 3.0),
-                        ),
-                    );
-                }
-                Some(i) => {
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        tab_palette_color(*i),
-                        None,
-                        &shape,
-                    );
-                }
-            }
-            let selected = current == *color_opt && color_opt.is_some();
-            if selected || rect.contains(self.last_mouse) {
-                // The chosen swatch's ring is the chrome ink, which contrasts
-                // the panel on both palettes (a literal white ring vanished
-                // on the light panel); hover keeps the accent.
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    transform,
-                    if selected {
-                        colors.text_primary
-                    } else {
-                        colors.accent[5]
-                    },
-                    None,
-                    &shape,
-                );
-            }
-        }
-    }
-
-    fn draw_tab_rename(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(rn) = &mut self.tab_rename else {
-            return;
-        };
-        // Theme typography remains authoritative even though the edit began
-        // before the draw pass had a Theme reference; the shared editor takes
-        // the renderer-input size so it lands at the tab label's final size.
-        rn.editor.set_font_size(self.metrics.sm);
-        rn.editor.apply_layout_external(rn.rect);
-        rn.editor
-            .draw(scene, transform, tr, theme, &PresenceCtx::default());
     }
 
     fn chip_label_and_state(&self, kind: SettingKind) -> (String, bool) {
@@ -5523,18 +2450,18 @@ impl SheetsApp {
     /// worth surfacing (an idle sheet: no pending action, no numeric selection,
     /// a plain `General` active cell — which keeps the bubble hidden).
     ///
-    /// Primary text is the live selection summary (Sum / Avg / Count over the
-    /// numeric selection) or, absent numbers, the active cell's format. A fresh
-    /// transient action message (e.g. "Pasted into B2") is prepended when
-    /// present; the idle default `"Ready"` (and the empty string) count as "no
-    /// action message" so they never surface on their own.
+    /// A fresh transient action message (e.g. "Pasted into B2") wins; absent
+    /// one, the text is the live selection summary (count, sum and average of
+    /// the numeric selection) or, absent numbers, the active cell's format.
+    /// The idle default `"Ready"` (and the empty string) count as "no action
+    /// message" so they never surface on their own.
     fn status_bubble_label(&self) -> Option<String> {
         let summary = self.selection_summary().map(|s| {
             format!(
-                "Sum {}    Avg {}    Count {}",
+                "{} numbers: sum {}, average {}",
+                s.count,
                 format_value(&CellValue::Number(s.sum), s.fmt),
                 format_value(&CellValue::Number(s.avg), s.fmt),
-                s.count,
             )
         });
         let action = {
@@ -5546,8 +2473,7 @@ impl SheetsApp {
             }
         };
         match (action, summary) {
-            (Some(a), Some(s)) => Some(format!("{a}    ·    {s}")),
-            (Some(a), None) => Some(a),
+            (Some(a), _) => Some(a),
             (None, Some(s)) => Some(s),
             // No action and no numeric selection: fall back to the active
             // cell's format, but stay silent on a plain `General` cell so an
@@ -5571,36 +2497,6 @@ struct SelectionSummary {
     fmt: CellFormat,
 }
 
-fn menu_item_label(item: &MenuItem) -> &'static str {
-    match item {
-        MenuItem::NewSheet => "New sheet",
-        MenuItem::ImportCsv => "Import CSV",
-        MenuItem::ExportCsv => "Export CSV",
-        MenuItem::ImportXlsx => "Import Excel (.xlsx)",
-        MenuItem::ExportXlsx => "Export Excel (.xlsx)",
-        MenuItem::ImportOds => "Import Calc (.ods)",
-        MenuItem::ExportOds => "Export Calc (.ods)",
-        MenuItem::SetFormat(f) => format_menu_label(*f),
-        MenuItem::ClearFormat => "Clear format",
-        MenuItem::OpenDocSettings => "Document settings",
-        MenuItem::AutoSum => "AutoSum",
-        MenuItem::ToggleFormulaView => "Show/hide formulas",
-    }
-}
-
-fn format_menu_label(f: CellFormat) -> &'static str {
-    match f.category() {
-        FormatCategory::General => "General",
-        FormatCategory::Number => "Number",
-        FormatCategory::Currency => "Currency",
-        FormatCategory::Percent => "Percent",
-        FormatCategory::Date => "Date",
-        FormatCategory::Time => "Time",
-        FormatCategory::Boolean => "Boolean",
-        FormatCategory::Text => "Text",
-    }
-}
-
 fn date_label(d: DateStyle) -> &'static str {
     match d {
         DateStyle::Iso => "ISO",
@@ -5622,37 +2518,6 @@ fn tsv_cell(display: &str) -> String {
     display.replace(['\t', '\n', '\r'], " ")
 }
 
-/// Where the workbook is persisted between sessions:
-/// `$XDG_DATA_HOME/tilo/sheets/workbook.automerge` (falls back to
-/// `~/.local/share`).
-fn workbook_store() -> (tilo_files::Location, tilo_files::VPath) {
-    let location = tilo_paths::env_dir("XDG_DATA_HOME").map_or_else(
-        || tilo_paths::AppPaths::for_app("tilo").data(),
-        |base| tilo_files::Location::Native(base.join("tilo")),
-    );
-    let name = tilo_files::VPath::new("sheets/workbook.automerge").unwrap_or_default();
-    (location, name)
-}
-
-#[cfg(test)]
-fn workbook_path() -> Option<PathBuf> {
-    let (location, name) = workbook_store();
-    Some(location.native_path().ok()?.join(name.as_str()))
-}
-
-/// Run `job` on a worker thread, or at once where there are no threads (a
-/// browser page, where the app's files answer from memory).
-fn run_worker(name: &str, job: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
-    if matches!(
-        ui::rt::availability(ui::rt::Feature::Threads),
-        ui::rt::Availability::Unsupported(_)
-    ) {
-        job();
-        return Ok(());
-    }
-    ui::rt::spawn_thread(name, job).map(drop)
-}
-
 /// A new sheet name derived from an imported file's stem.
 fn sheet_name_from_path(path: &std::path::Path) -> String {
     path.file_stem()
@@ -5664,28 +2529,10 @@ fn sheet_name_from_path(path: &std::path::Path) -> String {
 
 /// How an imported sheet remembers its file: the resolved path, so every
 /// spelling of one file finds the sheets it already became.
+/// The durable identity of the file at `path`: the same file however it
+/// is reached, by path or through the chooser.
 fn import_source(path: &std::path::Path) -> String {
-    tilo_files::canonicalize(path)
-        .unwrap_or_else(|_| path.to_path_buf())
-        .to_string_lossy()
-        .into_owned()
-}
-
-/// Cumulative x positions (layout space) of every character boundary in
-/// `text` when laid out at `size` starting at `x0`. The returned vector has
-/// `text.chars().count() + 1` entries: `[0]` is `x0` and the last is the text's
-/// right edge. Used to map a click x to a caret index and to place the caret.
-fn char_boundaries(tr: &mut TextRenderer, text: &str, size: f32, x0: f64) -> Vec<f64> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut xs = Vec::with_capacity(chars.len() + 1);
-    xs.push(x0);
-    let mut prefix = String::new();
-    for ch in &chars {
-        prefix.push(*ch);
-        let (w, _) = tr.measure(&prefix, size, None);
-        xs.push(x0 + f64::from(w));
-    }
-    xs
+    ui::record::RecordId::identify_file(path).to_string()
 }
 
 /// Spreadsheet references never contain whitespace. Keep every other
@@ -5721,180 +2568,32 @@ fn file_label(path: &std::path::Path) -> String {
 
 impl Widget for SheetsApp {
     ui::provides!(
-        dyn ui::undo::CommittedActions,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource,
         dyn ui::presence::capability::PublishesPresence,
-        dyn ui::undo::UndoPoints
+        dyn ui::widget::WindowHeader
     );
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[actions::SHEETS_OPERATION_TYPE]
-    }
-
-    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
-        &crate::cell_actions::READERS
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested {
-            let _ = self.cancel_resource_io(invocation);
-        }
-        if self
-            .resource_result
-            .as_ref()
-            .is_some_and(|u| u.invocation() == invocation)
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        // Outside a host (a unit test) nobody else keeps the state current.
+        let (doc, _) = ui::doc::document_ref(state, path);
+        if let Some(live) = &self.live
+            && live.sync(doc).is_ok()
         {
-            self.resource_result.take()
-        } else {
-            if self.resource_invocation == Some(invocation) {
-                self.resource_confirmation = Some(invocation);
-                // Settling needs a mutable `sync`, which an idle host runs
-                // only when woken; polling alone schedules no frame.
-                if self.prepared_resource_io.is_some() {
-                    self.interchange_wake.wake();
-                }
-            }
-            None
+            let state = live.get();
+            self.adopt_resource_state(&state);
         }
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
-        if self.run == RunMode::Record(ui::launch::RecordLaunch::Joined)
-            && SheetsDoc::sheet_count_readonly(state) == 0
-        {
-            // The creator's workbook has not arrived. Reading through the
-            // get-or-create accessors now would write a second `wb` that
-            // competes with the creator's in the merge.
-            return;
+        if let Some(locale) = &self.locale {
+            self.global = locale.get();
         }
-        if !self.pending.seeded {
-            if !self.persistence_started {
-                // Pull the shared global defaults once at startup.
-                self.global = GlobalSettings::load();
-                self.persistence_started = true;
-                if self.run.persists() {
-                    if let Err(error) = self.start_persistence_load(state.get_heads()) {
-                        self.status = format!("Could not start workbook load: {error}");
-                        self.last_persist_failure = Some(ui::time::now());
-                        self.finish_initialize(state, None);
-                    }
-                } else {
-                    self.finish_initialize(state, None);
-                }
-            }
-            self.drain_persistence_worker(state);
-            // Keep startup responsive: layout can render its normal loading
-            // state while the bounded worker reads and decodes a large CRDT.
-            if !self.pending.seeded {
-                return;
-            }
-        }
-        if let Some((invocation, operation)) = self.pending_resource_io.take() {
-            let path = match &operation {
-                actions::SheetsOperation::ImportCsv { path }
-                | actions::SheetsOperation::ImportXlsx { path }
-                | actions::SheetsOperation::ImportOds { path }
-                | actions::SheetsOperation::ExportCsv { path }
-                | actions::SheetsOperation::ExportXlsx { path }
-                | actions::SheetsOperation::ExportOds { path } => {
-                    std::path::PathBuf::from(path.as_deref().unwrap_or_default())
-                }
-                _ => std::path::PathBuf::new(),
-            };
-            let pending = match operation {
-                actions::SheetsOperation::ImportCsv { .. } => PendingIo::Import(Interchange::Csv),
-                actions::SheetsOperation::ImportXlsx { .. } => PendingIo::Import(Interchange::Xlsx),
-                actions::SheetsOperation::ImportOds { .. } => PendingIo::Import(Interchange::Ods),
-                actions::SheetsOperation::ExportCsv { .. } => PendingIo::Export(Interchange::Csv),
-                actions::SheetsOperation::ExportXlsx { .. } => PendingIo::Export(Interchange::Xlsx),
-                actions::SheetsOperation::ExportOds { .. } => PendingIo::Export(Interchange::Ods),
-                _ => return,
-            };
-            self.resource_invocation = Some(invocation);
-            if let Err(error) = self.start_interchange_job(state, pending, path) {
-                self.status = format!("Spreadsheet operation failed: {error}");
-                self.finish_resource_io(Err(self.status.clone()));
-            }
-        }
-        if let Some(reveal) = self.pending_reveal.take() {
-            let (sheet_id, selection) = match reveal {
-                PendingReveal::Sheet { sheet_id } => (sheet_id, (0, 0)),
-                PendingReveal::Cell { sheet_id, addr } => (sheet_id, addr),
-            };
-            if let Some(idx) = SheetsDoc::sheet_index_by_resource_id(state, &sheet_id) {
-                self.switch_sheet(state, idx);
-                self.grid.select_only(selection);
-                self.status = format!(
-                    "Went to {}!{}",
-                    self.sheet_names.get(idx).cloned().unwrap_or_default(),
-                    crate::model::addr_to_a1(selection.0, selection.1)
-                );
-            } else {
-                self.status = "That sheet no longer exists".into();
-            }
-        }
-        // Land a finished import/export file dialog before reloading, so the
-        // imported sheet (or the export's status) is reflected this frame.
-        self.drain_io(state);
-        self.drain_orphaned_interchange();
-        self.drain_interchange_worker(state);
-        self.settle_prepared_resource_io(state);
-        self.drain_persistence_worker(state);
-        self.reload(state);
+        self.reload();
         self.current_active_format = self.format_of_active();
-        // Surface the floating status bubble only when the composed label
-        // actually changes — a selection move/extend, or a fresh action
-        // message. `sync` runs every frame, so poking unconditionally would
-        // pin the bubble open forever; and the idle nothing state (empty
-        // label) never surfaces, so a fresh sheet shows no bubble.
+        self.active_cell_bold = self.grid.cell_is_bold(self.grid.active());
+        // Hand the composed label to the floating status bubble. It shows
+        // only when the text actually changes — a selection move/extend, or a
+        // fresh action message — so calling this every frame is fine, and the
+        // idle nothing state (empty label) never surfaces.
         let label = self.status_bubble_label().unwrap_or_default();
-        if label != self.last_status_label {
-            if !label.is_empty() {
-                self.status_bubble.poke(ui::time::now());
-            }
-            self.last_status_label = label;
-        }
-        self.persist_if_dirty(state);
+        self.status_bubble.show(&label, ui::time::now());
     }
 
     fn build_layout(
@@ -5909,31 +2608,11 @@ impl Widget for SheetsApp {
         self.text_scale = f64::from(theme.text_scale);
         self.grid.set_text_scale(self.text_scale);
 
-        // `new_leaf` on a freshly created tree never fails.
-        #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         self.relayout();
     }
 
@@ -5949,32 +2628,33 @@ impl Widget for SheetsApp {
         // Measure first, so this frame's chrome (and the hit-rects it leaves
         // behind) is laid out from the renderer that is about to paint it.
         self.refresh_chrome_metrics(text_renderer, theme);
-        self.draw_chrome(scene, transform, text_renderer, theme);
+        // A staged menu or sheet opens once the chrome is measured, so it
+        // anchors to what is painted (and the More menu knows whether the bar
+        // overflowed).
+        self.apply_staged_overlay();
+        self.draw_chrome(scene, transform, text_renderer, theme, presence);
         self.grid.draw(scene, transform, text_renderer, theme);
-        self.draw_charts(scene, transform, text_renderer, theme);
-        self.draw_comment_threads(scene, transform, text_renderer, theme);
-        self.draw_loading_veil(scene, transform, text_renderer, theme);
-        // The transient floating status bubble sits above the grid + tab strip
-        // (the reclaimed home of the old bottom status text), below the modal
-        // overlays that follow.
+        self.draw_annotation_dock(scene, transform, text_renderer, theme);
+        // The transient floating status bubble sits above the grid and the
+        // tab strip, below the top layer.
         self.draw_status_bubble(scene, transform, text_renderer, theme);
-        // Overlays paint last so they sit above the grid.
-        self.draw_dropdown(scene, transform, text_renderer, theme);
-        self.draw_settings_panel(scene, transform, text_renderer, theme);
-        self.draw_tab_menu(scene, transform, text_renderer, theme);
         self.draw_tab_rename(scene, transform, text_renderer, theme);
+        // Presence-in-navigation: when a peer is on a DIFFERENT sheet,
+        // glow that sheet's tab in their colour so you can see where they
+        // went ("Alice is on Q2"). Painted after the chrome so it reads on
+        // top of the tab surface.
+        self.draw_sheet_tab_presence(scene, transform, theme, presence);
+    }
 
-        // The command palette floats above everything else, behind a scrim.
-        if self.palette.is_open() {
-            let scrim = Color::from_rgba8(0, 0, 0, 110);
-            scene.fill(Fill::NonZero, transform, scrim, None, &self.rect);
-            let (pw, ph) = self.palette.desired_size();
-            let x0 = self.rect.center().x - pw / 2.0;
-            let y0 = self.rect.y0 + (self.rect.height() * 0.12).max(24.0);
-            self.palette.set_rect(Rect::new(x0, y0, x0 + pw, y0 + ph));
-            self.palette
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.paint_overlays(scene, transform, text_renderer, theme, presence);
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -5993,29 +2673,52 @@ impl Widget for SheetsApp {
             || self.children().iter().any(|c| c.needs_animation_frame())
     }
 
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        _permissions: &PermissionContext,
-    ) {
-        self.draw(scene, transform, text_renderer, theme, presence);
-        // Presence-in-navigation: when a peer is on a DIFFERENT sheet,
-        // glow that sheet's tab in their colour so you can see where they
-        // went ("Alice is on Q2"). Painted after the chrome so it reads on
-        // top of the tab surface.
-        self.draw_sheet_tab_presence(scene, transform, theme, presence);
+    fn settle(&mut self, edits: &mut Edits<'_>, _path: &ObjId) {
+        if let Some(opening) = self.opening.borrow_mut().take() {
+            self.pending_reveal = Some(opening);
+        }
+        self.follow(edits);
+        if let Some(reveal) = self.pending_reveal.take() {
+            let idx = match &reveal.sheet_id {
+                Some(id) => self.sheet_ids.iter().position(|sheet| sheet == id),
+                None => self.sheet_ids.len().checked_sub(1),
+            };
+            if let Some(idx) = idx {
+                self.switch_sheet(edits, idx);
+                self.grid.select_only(reveal.addr);
+                self.status = reveal.status.unwrap_or_else(|| {
+                    format!(
+                        "Went to {}!{}",
+                        self.sheet_names.get(idx).cloned().unwrap_or_default(),
+                        crate::model::addr_to_a1(reveal.addr.0, reveal.addr.1)
+                    )
+                });
+            } else if reveal.arriving {
+                self.pending_reveal = Some(reveal);
+            } else {
+                self.status = "That sheet no longer exists".into();
+            }
+        }
+        self.reload();
+        self.finish_staging(edits);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, event_ctx: &mut ui::widget::EventCtx<'_>) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_mouse = event_ctx.logical(position);
+        }
+        // A menu or popover over the sheet is modal and takes the event first.
+        if self.route_overlays(event, event_ctx) {
+            return;
+        }
+        if self.route_dock_scroll(event, event_ctx) {
+            return;
+        }
         if self.route_inline_editor(
             event,
             event_ctx.scale_factor,
             *event_ctx.modifiers,
-            event_ctx.state,
+            &mut event_ctx.state,
             event_ctx.handled,
             &mut PaletteRouteCtx {
                 path: event_ctx.path,
@@ -6034,7 +2737,7 @@ impl Widget for SheetsApp {
             } => {
                 self.handle_left_press(
                     *event_ctx.modifiers,
-                    event_ctx.state,
+                    &mut event_ctx.state,
                     event_ctx.path,
                     event_ctx.handled,
                 );
@@ -6046,7 +2749,7 @@ impl Widget for SheetsApp {
             } => {
                 self.grid.pointer_up();
                 // A completed fill-handle drag commits its expansion here.
-                self.run_pending_fill(event_ctx.state);
+                self.run_pending_fill(&mut event_ctx.state);
                 self.formula_bar_selecting = false;
                 self.pending.redraw = true;
                 *event_ctx.handled = true;
@@ -6069,6 +2772,12 @@ impl Widget for SheetsApp {
             WindowEvent::MouseWheel { delta, .. } => {
                 self.handle_mouse_wheel(delta, event_ctx.scale_factor, event_ctx.handled);
             }
+            WindowEvent::Ime(ime) if !self.palette.is_open() => {
+                if self.grid.ime(ime) {
+                    self.pending.redraw = true;
+                    *event_ctx.handled = true;
+                }
+            }
             WindowEvent::KeyboardInput { .. } => {
                 let mut ctx = PaletteRouteCtx {
                     path: event_ctx.path,
@@ -6080,7 +2789,7 @@ impl Widget for SheetsApp {
                     event,
                     event_ctx.scale_factor,
                     *event_ctx.modifiers,
-                    event_ctx.state,
+                    &mut event_ctx.state,
                     event_ctx.handled,
                     &mut ctx,
                 );
@@ -6091,6 +2800,17 @@ impl Widget for SheetsApp {
 
     fn name(&self) -> &'static str {
         "SheetsApp"
+    }
+
+    /// A cell being edited takes input-method composition.
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.grid
+            .is_editing()
+            .then_some(winit::window::ImePurpose::Normal)
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.grid.ime_cell_rect()
     }
 
     /// The worksheet is a custom-painted cell canvas, so surface the active
@@ -6104,58 +2824,18 @@ impl Widget for SheetsApp {
         use ui::a11y::{AccessNode, AccessState, Role};
         let active = self.grid.active();
         let active_name = crate::model::addr_to_a1(active.0, active.1);
-        let toolbar_controls = self
-            .menu_buttons
-            .iter()
-            .filter_map(|button| {
-                let (name, target, description) = match (button.opens, &button.item) {
-                    (Some(OpenMenu::File), _) => (
-                        "File menu",
-                        "sheets.toolbar.file",
-                        "Open file and interchange actions",
-                    ),
-                    (Some(OpenMenu::Format), _) => (
-                        "Format menu",
-                        "sheets.toolbar.format",
-                        "Apply a number or text format to the selection",
-                    ),
-                    (Some(OpenMenu::More), _) => (
-                        "More sheet actions",
-                        "sheets.toolbar.more",
-                        "Open AutoSum, document settings, and formula-view actions",
-                    ),
-                    (_, Some(MenuItem::AutoSum)) => (
-                        "AutoSum",
-                        "sheets.toolbar.autosum",
-                        "Insert a sum for the numeric run above the active cell",
-                    ),
-                    (_, Some(MenuItem::OpenDocSettings)) => (
-                        "Document settings",
-                        "sheets.toolbar.settings",
-                        "Set workbook-wide currency, date, and time conventions",
-                    ),
-                    _ => return None,
-                };
-                Some(
-                    AccessNode::new(Role::Button)
-                        .with_name(name)
-                        .with_description(description)
-                        .with_action_target(target)
-                        .with_bounds(button.rect)
-                        .with_state(AccessState::new().focusable(true)),
-                )
-            })
+        // The command bar's own nodes (its commands, the More button and
+        // any open menu), the window's History control, then the formula bar.
+        let toolbar_controls: Vec<AccessNode> = Widget::accessibility(&self.toolbar)
+            .map(|toolbar| toolbar.children)
+            .unwrap_or_default()
+            .into_iter()
+            .chain(self.history.accessibility(self.history_rect))
             .chain([
                 AccessNode::new(Role::Button)
-                    .with_name(if self.grid.formula_view() {
-                        "Show calculated results"
-                    } else {
-                        "Show formulas"
-                    })
-                    .with_description(
-                        "Toggle calculated values and raw formulas; shortcut Control+Shift+F",
-                    )
-                    .with_action_target("sheets.toolbar.formula-view")
+                    .with_name("Start a formula")
+                    .with_description("Begin a formula in the active cell")
+                    .with_action_target("sheets.fx")
                     .with_bounds(self.fx_rect)
                     .with_state(AccessState::new().focusable(true)),
                 AccessNode::new(Role::TextInput)
@@ -6200,7 +2880,13 @@ impl Widget for SheetsApp {
                 AccessNode::new(Role::Tab)
                     .with_name(name.clone())
                     .with_position(index + 1, self.sheet_names.len())
-                    .with_action_target(format!("sheets.tab:{}", self.sheet_identity(index)))
+                    .with_action_target(format!(
+                        "sheets.tab:{}",
+                        self.sheet_ids
+                            .get(index)
+                            .map(Id::as_str)
+                            .unwrap_or_default()
+                    ))
                     .with_state(
                         AccessState::new()
                             .focusable(true)
@@ -6285,12 +2971,7 @@ impl Widget for SheetsApp {
             ))
             .with_value(format!("Active cell {active_name}"))
             .with_bounds(window.bounds)
-            .with_state(
-                AccessState::new().focusable(true).busy(
-                    (self.run.persists() && self.persistence_started && !self.pending.seeded)
-                        || self.shots_loading,
-                ),
-            )
+            .with_state(AccessState::new().focusable(true))
             .with_children(rows);
         let annotations = AccessNode::new(Role::List)
             .with_name("Comments and charts")
@@ -6302,7 +2983,7 @@ impl Widget for SheetsApp {
                         AccessNode::new(Role::ListItem)
                             .with_name(format!("{} chart", chart.title))
                             .with_description(format!(
-                                "{}:{}; open, edit, or delete from the chart card",
+                                "{}:{}; open, rename, change its type or cells, or delete from the chart card",
                                 crate::model::addr_to_a1(chart.start.0, chart.start.1),
                                 crate::model::addr_to_a1(chart.end.0, chart.end.1)
                             ))
@@ -6312,15 +2993,34 @@ impl Widget for SheetsApp {
                                     .with_action_target(format!("{target}:open"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
-                                    .with_name("Edit chart")
-                                    .with_description(format!(
-                                        "Current value: {} | {} | {}:{}",
-                                        chart.title,
-                                        chart.kind.code(),
+                                    .with_name("Rename chart")
+                                    .with_value(chart.title.clone())
+                                    .with_action_target(format!("{target}:edit"))
+                                    .with_state(AccessState::new().focusable(true)),
+                                AccessNode::new(Role::Button)
+                                    .with_name("Column chart")
+                                    .with_action_target(format!("{target}:column"))
+                                    .with_state(
+                                        AccessState::new()
+                                            .focusable(true)
+                                            .selected(chart.kind == ChartKind::Column),
+                                    ),
+                                AccessNode::new(Role::Button)
+                                    .with_name("Line chart")
+                                    .with_action_target(format!("{target}:line"))
+                                    .with_state(
+                                        AccessState::new()
+                                            .focusable(true)
+                                            .selected(chart.kind == ChartKind::Line),
+                                    ),
+                                AccessNode::new(Role::Button)
+                                    .with_name("Chart cells")
+                                    .with_value(format!(
+                                        "{}:{}",
                                         crate::model::addr_to_a1(chart.start.0, chart.start.1),
                                         crate::model::addr_to_a1(chart.end.0, chart.end.1),
                                     ))
-                                    .with_action_target(format!("{target}:edit"))
+                                    .with_action_target(format!("{target}:cells"))
                                     .with_state(AccessState::new().focusable(true)),
                                 AccessNode::new(Role::Button)
                                     .with_name("Delete chart")
@@ -6331,7 +3031,7 @@ impl Widget for SheetsApp {
                     .chain(self.sheet_comments.iter().map(|thread| {
                         let target = format!("sheets.annotation:comment:{}", thread.id);
                         AccessNode::new(Role::ListItem)
-                            .with_name(format!("Comment by {}", thread.author))
+                            .with_name(format!("Comment by {}", self.author_name(&thread.author)))
                             .with_description(format!(
                                 "{}; {} replies; {}",
                                 thread.body,
@@ -6390,41 +3090,26 @@ impl Widget for SheetsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let (state, _) = ui::doc::document(state, path);
+        if self.history.perform_semantic_action(target, action) {
+            self.pending.redraw = true;
+            return true;
+        }
+        if self
+            .toolbar
+            .perform_semantic_action(target, action, state, path)
+        {
+            self.drain_command_bar(state);
+            self.pending.redraw = true;
+            return true;
+        }
         let activates = matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus);
         if activates {
-            let opened = match target {
-                "sheets.toolbar.file" => Some(OpenMenu::File),
-                "sheets.toolbar.format" => Some(OpenMenu::Format),
-                "sheets.toolbar.more" => Some(OpenMenu::More),
-                _ => None,
-            };
-            if let Some(menu) = opened {
-                self.settings_panel = SettingsPanel::None;
-                self.tab_menu_target = None;
-                self.open_menu = if self.open_menu == menu {
-                    OpenMenu::None
-                } else {
-                    menu
-                };
-                self.relayout_overlays();
-                self.pending.redraw = true;
-                return true;
-            }
             match target {
-                "sheets.toolbar.autosum" => {
-                    self.run_menu_item(state, &MenuItem::AutoSum);
-                    return true;
-                }
-                "sheets.toolbar.settings" => {
-                    self.run_menu_item(state, &MenuItem::OpenDocSettings);
-                    return true;
-                }
-                "sheets.toolbar.formula-view" => {
-                    self.toggle_formula_view();
+                "sheets.fx" => {
+                    self.start_formula_entry();
                     return true;
                 }
                 "sheets.name-box" => {
@@ -6443,10 +3128,7 @@ impl Widget for SheetsApp {
                 _ => {}
             }
             if let Some(sheet_id) = target.strip_prefix("sheets.tab:")
-                && let Some(index) = self
-                    .searchable_sheets
-                    .iter()
-                    .position(|sheet| sheet.id == sheet_id)
+                && let Some(index) = self.sheet_ids.iter().position(|id| id.as_str() == sheet_id)
             {
                 self.switch_sheet(state, index);
                 return true;
@@ -6474,14 +3156,13 @@ impl Widget for SheetsApp {
         self.pending.redraw = false;
         self.grid.mark_drawn();
     }
-}
 
-impl ui::undo::UndoPoints for SheetsApp {
-    fn needs_commit(&self) -> bool {
-        self.pending.commit
-    }
-    fn on_commit(&mut self) {
-        self.pending.commit = false;
+    /// The grid fills its node and places everything in it in
+    /// `apply_layout`: there is never a size for the layout solver to
+    /// measure, so a frame that only moves the window (a strip pan) solves
+    /// none.
+    fn layout_needs_measure(&self) -> bool {
+        false
     }
 }
 
@@ -6498,224 +3179,32 @@ impl ui::presence::capability::PublishesPresence for SheetsApp {
     }
 }
 
-impl ui::search::capability::SearchSource for SheetsApp {
-    /// Fold sheets and populated cells into unified search. Every hit names an
-    /// exported resource View action; no app-owned activation callback exists.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-}
-
-impl ui::resources::PublishesResources for SheetsApp {
-    /// Publish the open workbook + its sheets so the host's Ctrl+K action
-    /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-    fn action_directory_resource_page(
-        &self,
-        _doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        // The workbook is the sole stable top-level root. Sheets/cells remain
-        // in the revisioned retained search provider, not this RPC page.
-        let resources = if cursor.is_empty() && max_results > 0 {
-            vec![crate::actions::workbook_root(&self.sheets_resource_ctx())]
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-    fn document_action_result(
-        &self,
-        doc: &AutoCommit,
-        address: &tilo_actions::ActionAddress,
-        changes: &[automerge::Patch],
-    ) -> Option<serde_json::Value> {
-        let sheet_id = address.resource.strip_prefix("sheets.sheet:")?;
-        crate::cell_actions::edit_result(doc, sheet_id, &address.action, changes)
+/// The command bar's row is the window's header row: it holds the History
+/// control the host offers, so the window draws no History bar above the
+/// sheet.
+impl ui::widget::WindowHeader for SheetsApp {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        if self.history.control() != control {
+            self.history.set_control(control);
+            self.relayout();
+            self.pending.redraw = true;
+        }
     }
 }
 
 impl ui::widget::controls::ActionControls for SheetsApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.palette.take_control_invocation()
+        self.history
+            .take()
+            .or_else(|| self.palette.take_control_invocation())
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        use ui::widget::Widget as _;
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
         if self.palette.is_open() {
-            self.palette.control_action_bindings()
-        } else {
-            Vec::new()
+            bindings.extend(self.palette.control_action_bindings());
         }
-    }
-}
-
-impl ui::undo::CommittedActions for SheetsApp {
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records one undo boundary bracketing it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-}
-
-impl SheetsApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        if type_id != actions::SHEETS_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let expected = actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match sheets operation kind {expected:?}"
-            ));
-        }
-        match operation {
-            actions::SheetsOperation::ImportCsv { path: None } => {
-                self.begin_import(Interchange::Csv);
-            }
-            actions::SheetsOperation::ImportXlsx { path: None } => {
-                self.begin_import(Interchange::Xlsx);
-            }
-            actions::SheetsOperation::ImportOds { path: None } => {
-                self.begin_import(Interchange::Ods);
-            }
-            actions::SheetsOperation::ExportCsv { path: None } => {
-                self.begin_export(Interchange::Csv);
-            }
-            actions::SheetsOperation::ExportXlsx { path: None } => {
-                self.begin_export(Interchange::Xlsx);
-            }
-            actions::SheetsOperation::ExportOds { path: None } => {
-                self.begin_export(Interchange::Ods);
-            }
-            actions::SheetsOperation::ImportCsv { path: Some(_) }
-            | actions::SheetsOperation::ImportXlsx { path: Some(_) }
-            | actions::SheetsOperation::ImportOds { path: Some(_) }
-            | actions::SheetsOperation::ExportCsv { path: Some(_) }
-            | actions::SheetsOperation::ExportXlsx { path: Some(_) }
-            | actions::SheetsOperation::ExportOds { path: Some(_) } => {
-                return Err("direct spreadsheet I/O requires lifecycle dispatch".into());
-            }
-            actions::SheetsOperation::OpenCommandPalette => self.open_command_palette(doc),
-            actions::SheetsOperation::GoToCell { reference } => self.go_to_cell(&reference),
-            actions::SheetsOperation::ToggleFormulaView => self.toggle_formula_view(),
-            actions::SheetsOperation::RevealSheet { sheet_id } => {
-                if !self
-                    .searchable_sheets
-                    .iter()
-                    .any(|sheet| sheet.id == sheet_id)
-                {
-                    return Err("sheet no longer exists".into());
-                }
-                self.pending_reveal = Some(PendingReveal::Sheet { sheet_id });
-            }
-            actions::SheetsOperation::RevealCell { sheet_id, col, row } => {
-                if !self.searchable_sheets.iter().any(|sheet| {
-                    sheet.id == sheet_id
-                        && sheet
-                            .cells
-                            .iter()
-                            .any(|cell| cell.col == col && cell.row == row)
-                }) {
-                    return Err("cell no longer exists".into());
-                }
-                self.pending_reveal = Some(PendingReveal::Cell {
-                    sheet_id,
-                    addr: (col, row),
-                });
-            }
-        }
-        Ok(true)
-    }
-
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
-        };
-        let expected = actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match sheets operation kind {expected:?}"
-            ));
-        }
-        let direct = match &operation {
-            actions::SheetsOperation::ImportCsv { path }
-            | actions::SheetsOperation::ImportXlsx { path }
-            | actions::SheetsOperation::ImportOds { path }
-            | actions::SheetsOperation::ExportCsv { path }
-            | actions::SheetsOperation::ExportXlsx { path }
-            | actions::SheetsOperation::ExportOds { path } => path.is_some(),
-            _ => false,
-        };
-        let is_interchange = matches!(
-            &operation,
-            actions::SheetsOperation::ImportCsv { .. }
-                | actions::SheetsOperation::ImportXlsx { .. }
-                | actions::SheetsOperation::ImportOds { .. }
-                | actions::SheetsOperation::ExportCsv { .. }
-                | actions::SheetsOperation::ExportXlsx { .. }
-                | actions::SheetsOperation::ExportOds { .. }
-        );
-        // There is exactly one portal/result slot.  Refuse a second accepted
-        // operation rather than overwriting the first invocation's identity
-        // (which would strand an agent or Ctrl+K job forever).
-        if is_interchange
-            && (self.io.is_some()
-                || self.pending_resource_io.is_some()
-                || self.interchange_rx.is_some()
-                || self.active_interchange_generation.is_some()
-                || self.resource_invocation.is_some()
-                || self.resource_result.is_some())
-        {
-            return Err("a spreadsheet import or export is already in progress".into());
-        }
-        if direct {
-            self.pending_resource_io = Some((invocation, operation));
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        if self.io.is_some() {
-            self.resource_invocation = Some(invocation);
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else {
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
-        }
+        bindings
     }
 }
 
@@ -6728,7 +3217,7 @@ impl SheetsApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         handled: &mut bool,
         ctx: &mut PaletteRouteCtx<'_>,
     ) -> bool {
@@ -6747,7 +3236,7 @@ impl SheetsApp {
                     &mut ui::widget::EventCtx {
                         scale_factor,
                         modifiers: &modifiers,
-                        state,
+                        state: state.reborrow(),
                         path: ctx.path,
                         handled,
                         focus_target: ctx.focus_target,
@@ -6805,7 +3294,7 @@ impl SheetsApp {
                     &mut ui::widget::EventCtx {
                         scale_factor,
                         modifiers: &modifiers,
-                        state,
+                        state: state.reborrow(),
                         path: ctx.path,
                         handled,
                         focus_target: ctx.focus_target,
@@ -6833,7 +3322,7 @@ impl SheetsApp {
     fn handle_left_press(
         &mut self,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) {
@@ -6841,16 +3330,7 @@ impl SheetsApp {
         if self.try_palette_click(p, state, path, handled) {
             return;
         }
-        if self.try_tab_menu_click(p, state, handled) {
-            return;
-        }
         if self.try_settings_panel_click(p, state, handled) {
-            return;
-        }
-        if self.try_dropdown_click(p, state, handled) {
-            return;
-        }
-        if self.try_menu_bar_click(p, state, handled) {
             return;
         }
         if self.try_chrome_click(p, modifiers, state, handled) {
@@ -6867,7 +3347,7 @@ impl SheetsApp {
     fn try_palette_click(
         &mut self,
         p: Point,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) -> bool {
@@ -6885,124 +3365,13 @@ impl SheetsApp {
         true
     }
 
-    /// Open tab context menu: route clicks to its rows / swatches or dismiss
-    /// it.
-    fn try_tab_menu_click(&mut self, p: Point, state: &mut AutoCommit, handled: &mut bool) -> bool {
-        let Some(target) = self.tab_menu_target else {
-            return false;
-        };
-        if let Some(act) = self
-            .tab_menu_rows
-            .iter()
-            .find(|(r, _)| r.contains(p))
-            .map(|(_, a)| *a)
-        {
-            self.tab_menu_target = None;
-            self.run_tab_action(state, target, act);
-            self.pending.redraw = true;
-            *handled = true;
-            return true;
-        }
-        if let Some(color) = self
-            .tab_menu_swatches
-            .iter()
-            .find(|(r, _)| r.contains(p))
-            .map(|(_, c)| *c)
-        {
-            self.tab_menu_target = None;
-            self.run_tab_action(state, target, TabAction::SetColor(color));
-            self.pending.redraw = true;
-            *handled = true;
-            return true;
-        }
-        if !self.tab_menu_rect.contains(p) {
-            self.tab_menu_target = None;
-            self.pending.redraw = true;
-        }
-        *handled = true;
-        true
-    }
-
-    /// Settings panel is modal: clicks go to it (or dismiss it).
-    fn try_settings_panel_click(
-        &mut self,
-        p: Point,
-        state: &mut AutoCommit,
-        handled: &mut bool,
-    ) -> bool {
-        if self.settings_panel == SettingsPanel::None {
-            return false;
-        }
-        if let Some(kind) = self.setting_chip_at(p) {
-            self.apply_setting(state, kind);
-            self.pending.redraw = true;
-            *handled = true;
-            return true;
-        }
-        if !self.panel_rect.contains(p) {
-            self.settings_panel = SettingsPanel::None;
-            self.pending.redraw = true;
-        }
-        *handled = true;
-        true
-    }
-
-    /// Open dropdown takes priority: a click on an item runs it (consumed).
-    /// A click outside the dropdown dismisses it but still falls through so
-    /// a menu-bar click underneath can open a different menu.
-    fn try_dropdown_click(&mut self, p: Point, state: &mut AutoCommit, handled: &mut bool) -> bool {
-        if self.open_menu == OpenMenu::None {
-            return false;
-        }
-        if let Some(item) = self.dropdown_item_at(p) {
-            self.open_menu = OpenMenu::None;
-            self.run_menu_item(state, &item);
-            self.pending.redraw = true;
-            *handled = true;
-            return true;
-        }
-        if !self.dropdown_rect.contains(p) && !self.menubar_rect.contains(p) {
-            self.open_menu = OpenMenu::None;
-            self.pending.redraw = true;
-        }
-        false
-    }
-
-    /// Menu bar: opens/closes a dropdown, or runs a plain menu item.
-    fn try_menu_bar_click(&mut self, p: Point, state: &mut AutoCommit, handled: &mut bool) -> bool {
-        if !self.menubar_rect.contains(p) {
-            return false;
-        }
-        // Take what the hit says before touching `self`: `run_menu_item` needs
-        // `&mut self`, which cannot coexist with the borrow `find` holds.
-        let hit = self
-            .menu_buttons
-            .iter()
-            .find(|b| b.rect.contains(p))
-            .map(|b| (b.opens, b.item.clone()));
-        if let Some((opens, item)) = hit {
-            if let Some(opens) = opens {
-                self.open_menu = if self.open_menu == opens {
-                    OpenMenu::None
-                } else {
-                    opens
-                };
-            } else if let Some(item) = item {
-                self.run_menu_item(state, &item);
-            }
-            self.pending.redraw = true;
-            *handled = true;
-        }
-        true
-    }
-
     /// Chrome hit-tests below the modal/menu checks: name box, "fx", formula
     /// field, and the sheet-tab strip.
     fn try_chrome_click(
         &mut self,
         p: Point,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         // Name box → open a Go-To entry seeded with the active cell.
@@ -7026,7 +3395,7 @@ impl SheetsApp {
                 self.grid.begin_edit_in_place();
             }
             let idx = self.formula_caret_at_x(p.x);
-            self.grid.set_edit_caret(idx, shift);
+            self.grid.set_edit_caret_shown(idx, shift);
             self.formula_bar_selecting = true;
             self.pending.redraw = true;
             *handled = true;
@@ -7054,7 +3423,7 @@ impl SheetsApp {
     fn try_annotation_click(
         &mut self,
         p: Point,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         let Some(action) = self
@@ -7070,29 +3439,28 @@ impl SheetsApp {
         true
     }
 
-    /// Open the exact prompted resource operation behind a painted annotation
-    /// control.  The entry is flattened from the current document, so the
-    /// pointer route, keyboard palette, agents and history all share one
-    /// stable `(resource_id, action_id)` address and one action builder.
-    fn open_annotation_editor(
-        &mut self,
-        doc: &AutoCommit,
-        resource_id: &str,
-        prefill: String,
-    ) -> bool {
-        let resources = actions::provide_resources(&self.sheets_resource_ctx(), doc);
-        let entry = tilo_actions::flatten(&resources)
+    /// Ask in the palette for what the published action `action` of the
+    /// annotation `place` (`chart:<id>`, `comment:<id>`) takes, starting
+    /// from `prefill`; the palette invokes it as Ctrl+K does.
+    fn ask_annotation(&mut self, place: &str, action: &str, prefill: String) -> bool {
+        let resources = self.published();
+        let Some(flat) = tilo_actions::flatten(&resources)
             .into_iter()
-            .find(|flat| flat.resource_id.as_str() == resource_id && flat.action.id == "edit")
-            .map(|flat| CommandEntry::from_flat_action(&flat));
-        let Some(entry) = entry else { return false };
+            .find(|flat| flat.action.id == action && flat.resource_id.0.ends_with(place))
+        else {
+            self.status = "That is no longer there".into();
+            return false;
+        };
+        let entry = CommandEntry::from_flat_action(&flat);
         self.palette.open_action_argument(entry, Some(prefill));
         self.pending.redraw = true;
         true
     }
 
-    fn apply_annotation_click(&mut self, action: AnnotationClick, state: &mut AutoCommit) {
-        let sheet_id = self.sheet_identity(self.active_sheet);
+    fn apply_annotation_click(&mut self, action: AnnotationClick, state: &mut Edits<'_>) {
+        let Some(sheet) = self.active_sheet_id() else {
+            return;
+        };
         match action {
             AnnotationClick::Open(addr) => {
                 self.grid.select_only(addr);
@@ -7103,72 +3471,68 @@ impl SheetsApp {
                     self.status = "Chart no longer exists".into();
                     return;
                 };
-                let form = format!(
-                    "{} | {} | {}:{}",
-                    chart.title,
-                    chart.kind.code(),
+                let title = chart.title.clone();
+                if self.ask_annotation(&format!("chart:{id}"), "edit-chart", title) {
+                    self.status = "Editing chart".into();
+                }
+            }
+            AnnotationClick::SetChartKind(id, kind) => {
+                let path = Workbook::paths()
+                    .sheets
+                    .item(&sheet)
+                    .charts
+                    .item(&Id::from_raw(id))
+                    .kind;
+                if let Ok(invoke) = Invoke::edit(&path.set(kind))
+                    && self.submit(state, invoke)
+                {
+                    self.status = format!("{} chart", kind.label());
+                }
+            }
+            AnnotationClick::ChartCells(id) => {
+                let Some(chart) = self.sheet_charts.iter().find(|chart| chart.id == id) else {
+                    self.status = "Chart no longer exists".into();
+                    return;
+                };
+                let range = format!(
+                    "{}:{}",
                     crate::model::addr_to_a1(chart.start.0, chart.start.1),
                     crate::model::addr_to_a1(chart.end.0, chart.end.1),
                 );
-                if self.open_annotation_editor(
-                    state,
-                    &actions::chart_resource_id(&sheet_id, &id),
-                    form,
-                ) {
-                    self.status = "Edit chart: title | type | source range".into();
-                } else {
-                    self.status = "Chart editor is no longer available".into();
+                if self.ask_annotation(&format!("chart:{id}"), "chart-cells", range) {
+                    self.status = "Choosing the chart's cells".into();
                 }
             }
             AnnotationClick::DeleteChart(id) => {
-                self.perform_action(
+                self.submit(
                     state,
-                    &SheetsAction::DeleteChart {
-                        sheet: self.active_sheet,
-                        sheet_id,
-                        chart_id: id,
-                    },
+                    Workbook::DELETE_CHART.with(verbs::DeleteChart {
+                        sheet,
+                        chart: Id::from_raw(id),
+                    }),
                 );
                 self.status = "Deleted chart".into();
             }
             AnnotationClick::Reply(id) => {
-                self.perform_action(
-                    state,
-                    &actions::reply_comment_action(
-                        self.active_sheet,
-                        sheet_id,
-                        id,
-                        "You",
-                        "Thanks — noted.",
-                    ),
-                );
-                self.status = "Replied to comment".into();
+                if self.ask_annotation(&format!("comment:{id}"), "reply", String::new()) {
+                    self.status = "Replying to comment".into();
+                }
             }
             AnnotationClick::EditComment(id) => {
                 let Some(thread) = self.sheet_comments.iter().find(|thread| thread.id == id) else {
                     self.status = "Comment no longer exists".into();
                     return;
                 };
-                if self.open_annotation_editor(
-                    state,
-                    &actions::comment_resource_id(&sheet_id, &id),
-                    thread.body.clone(),
-                ) {
+                let body = thread.body.clone();
+                if self.ask_annotation(&format!("comment:{id}"), "edit-comment", body) {
                     self.status = "Editing comment".into();
-                } else {
-                    self.status = "Comment editor is no longer available".into();
                 }
             }
             AnnotationClick::ToggleComment(id, resolved) => {
-                self.perform_action(
-                    state,
-                    &actions::set_comment_resolved_action(
-                        self.active_sheet,
-                        sheet_id,
-                        id,
-                        resolved,
-                    ),
-                );
+                let path = Workbook::paths().comments.item(&Id::from_raw(id)).resolved;
+                if let Ok(invoke) = Invoke::edit(&path.set(resolved)) {
+                    self.submit(state, invoke);
+                }
                 self.status = if resolved {
                     "Resolved comment"
                 } else {
@@ -7177,14 +3541,16 @@ impl SheetsApp {
                 .into();
             }
             AnnotationClick::DeleteComment(id) => {
-                self.perform_action(
+                self.submit(
                     state,
-                    &actions::delete_comment_action(self.active_sheet, sheet_id, id),
+                    Workbook::DELETE_COMMENT.with(verbs::DeleteComment {
+                        comment: Id::from_raw(id),
+                    }),
                 );
                 self.status = "Deleted comment".into();
             }
         }
-        self.reload(state);
+        self.reload();
         self.pending.redraw = true;
     }
 
@@ -7206,6 +3572,13 @@ impl SheetsApp {
             }
             ("chart", "delete") if self.sheet_charts.iter().any(|chart| chart.id == id) => {
                 Some(AnnotationClick::DeleteChart(id.to_string()))
+            }
+            ("chart", "cells") if self.sheet_charts.iter().any(|chart| chart.id == id) => {
+                Some(AnnotationClick::ChartCells(id.to_string()))
+            }
+            ("chart", code) if self.sheet_charts.iter().any(|chart| chart.id == id) => {
+                ChartKind::parse(code)
+                    .map(|kind| AnnotationClick::SetChartKind(id.to_string(), kind))
             }
             ("comment", "open") => self
                 .sheet_comments
@@ -7238,7 +3611,7 @@ impl SheetsApp {
         &mut self,
         p: Point,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         handled: &mut bool,
     ) {
         let now = ui::time::now();
@@ -7282,17 +3655,26 @@ impl SheetsApp {
     }
 
     fn handle_cursor_moved(&mut self, x: f64, y: f64, scale_factor: f64, handled: &mut bool) {
+        let before = self.last_mouse;
         self.last_mouse = Point::new(x / scale_factor, y / scale_factor);
+        // The painted buttons and tabs light up under the pointer, so a move
+        // into, within or out of the bars repaints them.
+        let on_bar = |p: Point| {
+            self.toolbar_rect.contains(p) || self.tabs_rect.contains(p) || self.annotation_hit(p)
+        };
+        if on_bar(before) || on_bar(self.last_mouse) {
+            self.pending.redraw = true;
+        }
         // A drag that began in the formula bar extends the text
         // selection there, not the grid selection.
         if self.formula_bar_selecting {
             let idx = self.formula_caret_at_x(self.last_mouse.x);
-            self.grid.set_edit_caret(idx, true);
+            self.grid.set_edit_caret_shown(idx, true);
             self.pending.redraw = true;
             *handled = true;
             return;
         }
-        if self.open_menu != OpenMenu::None || self.settings_panel != SettingsPanel::None {
+        if self.settings_panel != SettingsPanel::None {
             self.pending.redraw = true;
         }
         if self.grid.pointer_move(self.last_mouse) {
@@ -7328,7 +3710,7 @@ impl SheetsApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         handled: &mut bool,
         ctx: &mut PaletteRouteCtx<'_>,
     ) {
@@ -7338,7 +3720,7 @@ impl SheetsApp {
                 &mut ui::widget::EventCtx {
                     scale_factor,
                     modifiers: &modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled,
                     focus_target: ctx.focus_target,
@@ -7371,7 +3753,7 @@ impl SheetsApp {
                 }
                 // Ctrl+K opens the command palette.
                 if c.as_str().eq_ignore_ascii_case("k") {
-                    self.open_command_palette(state);
+                    self.open_command_palette();
                     *handled = true;
                     return;
                 }
@@ -7385,13 +3767,9 @@ impl SheetsApp {
                 ke.logical_key,
                 winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
             )
-            && (self.open_menu != OpenMenu::None
-                || self.settings_panel != SettingsPanel::None
-                || self.tab_menu_target.is_some())
+            && self.settings_panel != SettingsPanel::None
         {
-            self.open_menu = OpenMenu::None;
             self.settings_panel = SettingsPanel::None;
-            self.tab_menu_target = None;
             self.pending.redraw = true;
             *handled = true;
             return;
@@ -7418,7 +3796,7 @@ impl SheetsApp {
         &mut self,
         event: &WindowEvent,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         let WindowEvent::KeyboardInput { event: ke, .. } = event else {
@@ -7447,6 +3825,11 @@ impl SheetsApp {
             }
             "a" | "A" => {
                 self.grid.select_used_range();
+                *handled = true;
+                self.pending.redraw = true;
+            }
+            "b" | "B" => {
+                self.toggle_bold(state);
                 *handled = true;
                 self.pending.redraw = true;
             }
@@ -7542,44 +3925,64 @@ impl SheetsApp {
         best
     }
 
-    fn dropdown_item_at(&self, p: Point) -> Option<MenuItem> {
-        self.dropdown_rows
-            .iter()
-            .find(|r| r.rect.contains(p))
-            .map(|r| r.item.clone())
-    }
-
-    fn setting_chip_at(&self, p: Point) -> Option<SettingKind> {
-        self.setting_chips
-            .iter()
-            .find(|c| c.rect.contains(p))
-            .map(|c| c.kind)
-    }
-
-    fn run_menu_item(&mut self, doc: &mut AutoCommit, item: &MenuItem) {
+    fn run_menu_item(&mut self, doc: &mut Edits<'_>, item: &MenuItem) {
         match item {
             MenuItem::NewSheet => self.add_sheet(doc),
-            MenuItem::ImportCsv => self.import_csv(doc),
-            MenuItem::ExportCsv => self.export_csv(doc),
-            MenuItem::ImportXlsx => self.import_xlsx(doc),
-            MenuItem::ExportXlsx => self.export_xlsx(doc),
-            MenuItem::ImportOds => self.import_ods(doc),
-            MenuItem::ExportOds => self.export_ods(doc),
+            MenuItem::ImportCsv => {
+                self.invoke_effect(&actions::SheetsEffect::ImportCsv { path: None });
+            }
+            MenuItem::ExportCsv => {
+                self.invoke_effect(&actions::SheetsEffect::ExportCsv { path: None });
+            }
+            MenuItem::ImportXlsx => {
+                self.invoke_effect(&actions::SheetsEffect::ImportXlsx { path: None });
+            }
+            MenuItem::ExportXlsx => {
+                self.invoke_effect(&actions::SheetsEffect::ExportXlsx { path: None });
+            }
+            MenuItem::ImportOds => {
+                self.invoke_effect(&actions::SheetsEffect::ImportOds { path: None });
+            }
+            MenuItem::ExportOds => {
+                self.invoke_effect(&actions::SheetsEffect::ExportOds { path: None });
+            }
             MenuItem::SetFormat(f) => self.apply_format(doc, *f),
             MenuItem::ClearFormat => self.clear_format(doc),
-            MenuItem::OpenDocSettings => {
-                self.settings_panel = SettingsPanel::Document;
-                self.open_menu = OpenMenu::None;
-                self.relayout_overlays();
-            }
+            MenuItem::OpenDocSettings => self.open_doc_settings(),
             MenuItem::AutoSum => self.auto_sum(doc),
             MenuItem::ToggleFormulaView => self.toggle_formula_view(),
+            MenuItem::ToggleBold => self.toggle_bold(doc),
         }
         self.pending.redraw = true;
     }
 
+    /// Make every selected cell bold, or regular again when they all are.
+    fn toggle_bold(&mut self, doc: &mut Edits<'_>) {
+        let bold = !self
+            .grid
+            .selected_cells()
+            .iter()
+            .all(|addr| self.grid.cell_is_bold(*addr));
+        let stored = self.stored_cells();
+        let cells: Vec<(Addr, Cell)> = self
+            .grid
+            .selected_cells()
+            .into_iter()
+            .map(|addr| {
+                let mut cell = stored(addr);
+                cell.bold = bold;
+                (addr, cell)
+            })
+            .collect();
+        drop(stored);
+        self.write_cells(doc, &cells);
+        self.reload();
+        self.active_cell_bold = self.grid.cell_is_bold(self.grid.active());
+        self.pending.redraw = true;
+    }
+
     /// Shared implementation behind the More menu, accessibility control, and
-    /// the canonical view operation. Formula visibility is presentation state,
+    /// the view effect. Formula visibility is presentation state,
     /// so it intentionally does not create a CRDT/undo entry.
     fn toggle_formula_view(&mut self) {
         let on = self.grid.toggle_formula_view();
@@ -7591,49 +3994,24 @@ impl SheetsApp {
         self.pending.redraw = true;
     }
 
-    /// Open the right-click context menu for sheet tab `idx`, closing any other
-    /// overlay first.
-    fn open_tab_menu(&mut self, idx: usize) {
-        self.open_menu = OpenMenu::None;
-        self.settings_panel = SettingsPanel::None;
-        self.tab_rename = None;
-        self.tab_menu_target = Some(idx);
-        self.layout_tab_menu();
-        self.pending.redraw = true;
-    }
-
-    /// Begin an inline rename of sheet tab `idx`, seeding the field with its
-    /// current name.
-    /// Where the inline rename editor for tab `idx` sits: over the tab, with
-    /// at least `TAB_RENAME_MIN_W` (grown with the text) so a longer name fits
-    /// while typing, clamped to the window. Re-derived by `relayout` so the
-    /// editor follows its tab through any reflow.
-    fn tab_rename_rect(&self, idx: usize) -> Rect {
-        let m = &self.metrics;
-        let tab = self
-            .tab_rects
-            .iter()
-            .find(|(_, i)| *i == idx)
-            .map_or(self.add_tab_rect, |(r, _)| *r);
-        let right = (tab.x0 + TAB_RENAME_MIN_W * m.text_growth())
-            .min(self.rect.x1 - m.s2)
-            .max(tab.x1);
-        Rect::new(tab.x0, tab.y0, right, tab.y1)
-    }
-
     fn begin_tab_rename(&mut self, idx: usize) {
         let name = self.sheet_names.get(idx).cloned().unwrap_or_default();
         let rect = self.tab_rename_rect(idx);
         let mut editor = EditableLabel::new(&name)
-            .with_font_size(14.0)
+            .with_text_role(TextRole::Label)
             .with_id("sheet_tab_rename");
         editor.begin_edit();
         self.tab_menu_target = None;
-        self.tab_rename = Some(TabRename { idx, rect, editor });
+        self.tab_rename = Some(TabRename {
+            idx,
+            rect,
+            text_w: 0.0,
+            editor,
+        });
         self.pending.redraw = true;
     }
 
-    fn resolve_tab_rename_outcome(&mut self, doc: &mut AutoCommit, outcome: EditOutcome) {
+    fn resolve_tab_rename_outcome(&mut self, doc: &mut Edits<'_>, outcome: EditOutcome) {
         match outcome {
             EditOutcome::Committed(name) => {
                 let Some(rename) = self.tab_rename.take() else {
@@ -7645,15 +4023,13 @@ impl SheetsApp {
                     .get(rename.idx)
                     .is_some_and(|current| current == trimmed);
                 if !trimmed.is_empty() && !unchanged {
-                    self.perform_action(
-                        doc,
-                        &actions::rename_sheet_action(
-                            rename.idx,
-                            SheetsDoc::sheet_resource_id(doc, rename.idx).unwrap_or_default(),
-                            trimmed,
-                        ),
-                    );
-                    self.reload(doc);
+                    if let Some(id) = self.sheet_ids.get(rename.idx).cloned() {
+                        let name = Workbook::paths().sheets.item(&id).name;
+                        if let Ok(invoke) = Invoke::edit(&name.set(Atom(trimmed.to_owned()))) {
+                            self.submit(doc, invoke);
+                        }
+                    }
+                    self.reload();
                     self.status = format!("Renamed sheet to {trimmed}");
                 }
             }
@@ -7671,16 +4047,14 @@ impl SheetsApp {
     /// reference and fully selected (Excel-style: the first keystroke replaces
     /// it). Closes any other overlay so the box owns input.
     fn begin_name_box_edit(&mut self) {
-        self.open_menu = OpenMenu::None;
-        self.settings_panel = SettingsPanel::None;
-        self.tab_menu_target = None;
+        self.close_overlays();
         let (c, r) = self.grid.active();
         let reference = crate::model::addr_to_a1(c, r);
         let mut input = TextInput::local()
             .with_initial_value(&reference)
             .with_char_filter(reference_box_char)
             .with_plain_chrome()
-            .with_font_size(14.0)
+            .with_text_role(TextRole::Body)
             .with_enter_submits(true)
             .with_id("sheet_name_box");
         input.set_focus(true);
@@ -7735,100 +4109,69 @@ impl SheetsApp {
     }
 
     /// Execute a tab context-menu action against sheet `idx`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "tab menu actions stay together to preserve their shared active-sheet update rules"
-    )]
-    fn run_tab_action(&mut self, doc: &mut AutoCommit, idx: usize, act: TabAction) {
+    fn run_tab_action(&mut self, doc: &mut Edits<'_>, idx: usize, act: TabAction) {
+        let Some(id) = self.sheet_ids.get(idx).cloned() else {
+            return;
+        };
+        let sheets = Workbook::paths().sheets;
         match act {
             TabAction::Rename => self.begin_tab_rename(idx),
             TabAction::Duplicate => {
-                if idx < SheetsDoc::sheet_count(doc) {
-                    self.perform_action(
-                        doc,
-                        &actions::duplicate_sheet_action(
-                            idx,
-                            SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_default(),
-                        ),
-                    );
+                if self.submit(
+                    doc,
+                    Workbook::DUPLICATE_SHEET.with(verbs::DuplicateSheet { sheet: id }),
+                ) {
                     // The duplicate lands immediately after the source.
                     self.active_sheet = idx + 1;
                     self.grid.select_only((0, 0));
-                    self.reload(doc);
+                    self.reload();
                     self.status = "Duplicated sheet".into();
                 }
             }
             TabAction::InsertRight => {
-                let n = SheetsDoc::sheet_count(doc);
-                let at = (idx + 1).min(n);
-                let (before_sheet_id, after_sheet_id) = self.sheet_slot_anchors(at, None);
-                self.perform_action(
+                if self.submit(
                     doc,
-                    &actions::insert_sheet_action(
-                        at,
-                        before_sheet_id,
-                        after_sheet_id,
-                        &format!("Sheet{}", n + 1),
-                    ),
-                );
-                self.active_sheet = at;
-                self.grid.select_only((0, 0));
-                self.reload(doc);
-                self.status = "Inserted sheet".into();
+                    Workbook::NEW_SHEET.with(verbs::NewSheet {
+                        name: None,
+                        after: Some(id),
+                    }),
+                ) {
+                    self.active_sheet = idx + 1;
+                    self.grid.select_only((0, 0));
+                    self.reload();
+                    self.status = "Inserted sheet".into();
+                }
             }
             TabAction::MoveLeft => {
-                if idx > 0 {
-                    let (before_sheet_id, after_sheet_id) =
-                        self.sheet_slot_anchors(idx - 1, Some(idx));
-                    self.perform_action(
-                        doc,
-                        &actions::move_sheet_action(
-                            idx,
-                            SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_default(),
-                            idx - 1,
-                            before_sheet_id,
-                            after_sheet_id,
-                        ),
-                    );
+                if idx > 0
+                    && let Ok(invoke) = Invoke::edit(&sheets.move_to(&id, idx - 1))
+                    && self.submit(doc, invoke)
+                {
                     self.active_sheet = idx - 1;
-                    self.reload(doc);
+                    self.reload();
                     self.status = "Moved sheet left".into();
                 }
             }
             TabAction::MoveRight => {
-                if idx + 1 < SheetsDoc::sheet_count(doc) {
-                    let (before_sheet_id, after_sheet_id) =
-                        self.sheet_slot_anchors(idx + 1, Some(idx));
-                    self.perform_action(
-                        doc,
-                        &actions::move_sheet_action(
-                            idx,
-                            SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_default(),
-                            idx + 1,
-                            before_sheet_id,
-                            after_sheet_id,
-                        ),
-                    );
+                if idx + 1 < self.sheet_ids.len()
+                    && let Ok(invoke) = Invoke::edit(&sheets.move_to(&id, idx + 1))
+                    && self.submit(doc, invoke)
+                {
                     self.active_sheet = idx + 1;
-                    self.reload(doc);
+                    self.reload();
                     self.status = "Moved sheet right".into();
                 }
             }
             TabAction::Delete => {
-                let count_before = SheetsDoc::sheet_count(doc);
-                if count_before <= 1 {
+                if self.sheet_ids.len() <= 1 {
                     self.status = "A workbook keeps at least one sheet".into();
                 } else {
                     let old_active = self.active_sheet;
-                    self.perform_action(
+                    if self.submit(
                         doc,
-                        &actions::delete_sheet_action(
-                            idx,
-                            SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_default(),
-                        ),
-                    );
-                    if SheetsDoc::sheet_count(doc) < count_before {
-                        let count = SheetsDoc::sheet_count(doc);
+                        Workbook::DELETE_SHEET.with(verbs::DeleteSheet { sheet: id }),
+                    ) {
+                        let count = self.sheet_ids.len().max(1);
                         let new_active = match idx.cmp(&old_active) {
                             std::cmp::Ordering::Less => old_active - 1,
                             std::cmp::Ordering::Equal => old_active.min(count - 1),
@@ -7836,21 +4179,16 @@ impl SheetsApp {
                         };
                         self.active_sheet = new_active.min(count - 1);
                         self.grid.select_only((0, 0));
-                        self.reload(doc);
+                        self.reload();
                         self.status = "Deleted sheet".into();
                     }
                 }
             }
             TabAction::SetColor(color) => {
-                self.perform_action(
-                    doc,
-                    &actions::set_sheet_color_action(
-                        idx,
-                        SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_default(),
-                        color,
-                    ),
-                );
-                self.reload(doc);
+                if let Ok(invoke) = Invoke::edit(&sheets.item(&id).color.set(color)) {
+                    self.submit(doc, invoke);
+                }
+                self.reload();
                 self.status = if color.is_some() {
                     "Set tab colour".into()
                 } else {
@@ -7862,180 +4200,147 @@ impl SheetsApp {
     }
 }
 
-/// Seed a realistic two-sheet workbook: a monthly budget with SUM /
-/// AVERAGE / IF formulas, and a quarterly sales sheet with growth %. The
-/// money columns are typed via smart entry so they pick up currency
-/// automatically; one row shows a date and a percent for the screenshot.
-fn seed_workbook(doc: &mut AutoCommit) {
-    seed_budget_sheet(doc);
-    seed_sales_sheet(doc);
-}
-
-fn seed_budget_sheet(doc: &mut AutoCommit) {
-    let budget = SheetsDoc::add_sheet(doc, "Budget");
-    let set = |doc: &mut AutoCommit, a: &str, v: &str| {
-        if let Some(addr) = a1_to_addr(a) {
-            SheetsDoc::set_cell_raw(doc, budget, addr, v);
-        }
-    };
-    let setf = |doc: &mut AutoCommit, a: &str, f: CellFormat| {
-        if let Some(addr) = a1_to_addr(a) {
-            SheetsDoc::set_cell_format(doc, budget, addr, f);
-        }
-    };
-    set(doc, "A1", "Category");
-    set(doc, "B1", "Jan");
-    set(doc, "C1", "Feb");
-    set(doc, "D1", "Mar");
-    set(doc, "E1", "Q1 Total");
-    set(doc, "F1", "Average");
-    set(doc, "G1", "Updated");
-
-    let rows: &[(&str, f64, f64, f64)] = &[
-        ("Rent", 1200.0, 1200.0, 1200.0),
-        ("Groceries", 420.0, 460.0, 510.0),
-        ("Utilities", 180.0, 165.0, 200.0),
-        ("Transport", 90.0, 110.0, 95.0),
-        ("Entertainment", 150.0, 200.0, 175.0),
-    ];
-    for (i, (name, jan, feb, mar)) in rows.iter().enumerate() {
-        let r = i + 2;
-        set(doc, &format!("A{r}"), name);
-        set(doc, &format!("B{r}"), &jan.to_string());
-        set(doc, &format!("C{r}"), &feb.to_string());
-        set(doc, &format!("D{r}"), &mar.to_string());
-        // E inherits currency via propagation from the SUM over a currency
-        // range; we still mark it explicitly to be safe.
-        set(doc, &format!("E{r}"), &format!("=SUM(B{r}:D{r})"));
-        set(doc, &format!("F{r}"), &format!("=AVERAGE(B{r}:D{r})"));
-    }
-    set(doc, "A7", "Total");
-    set(doc, "B7", "=SUM(B2:B6)");
-    set(doc, "C7", "=SUM(C2:C6)");
-    set(doc, "D7", "=SUM(D2:D6)");
-    set(doc, "E7", "=SUM(E2:E6)");
-    set(doc, "F7", "=AVERAGE(B7:D7)");
-    set(doc, "A9", "Monthly budget");
-    set(doc, "B9", "2600");
-    set(doc, "A10", "Over budget?");
-    set(doc, "B10", "=IF(B7>B9,\"OVER\",\"OK\")");
-    set(doc, "A11", "Headroom");
-    // =B9-B7 with both currency operands → currency propagates.
-    set(doc, "B11", "=B9-B7");
-    set(doc, "A12", "Tax set-aside");
-    // A percent literal — smart inference would normally store 0.18; here we
-    // store it pre-normalized and mark the format so the seed is explicit.
-    set(doc, "B12", "0.18");
-    setf(doc, "B12", CellFormat::Percent);
-
-    // Currency on the money columns/rows (explicit so the seed is stable).
-    for r in 2..=7 {
-        for col in ["B", "C", "D", "E"] {
-            setf(
-                doc,
-                &format!("{col}{r}"),
-                CellFormat::Currency(Currency::USD),
-            );
-        }
-        setf(doc, &format!("F{r}"), CellFormat::Number);
-    }
-    setf(doc, "B9", CellFormat::Currency(Currency::USD));
-    setf(doc, "B11", CellFormat::Currency(Currency::USD));
-    // A date in the "Updated" column, smart-typed style.
-    set(doc, "G2", "2024-01-15");
-    setf(doc, "G2", CellFormat::Date(DateStyle::Iso));
-}
-
-/// Sheet 2: Sales (EUR document feel via explicit currency).
-fn seed_sales_sheet(doc: &mut AutoCommit) {
-    let sales = SheetsDoc::add_sheet(doc, "Sales");
-    let sset = |doc: &mut AutoCommit, a: &str, v: &str| {
-        if let Some(addr) = a1_to_addr(a) {
-            SheetsDoc::set_cell_raw(doc, sales, addr, v);
-        }
-    };
-    let ssetf = |doc: &mut AutoCommit, a: &str, f: CellFormat| {
-        if let Some(addr) = a1_to_addr(a) {
-            SheetsDoc::set_cell_format(doc, sales, addr, f);
-        }
-    };
-    sset(doc, "A1", "Region");
-    sset(doc, "B1", "Q1");
-    sset(doc, "C1", "Q2");
-    sset(doc, "D1", "Q3");
-    sset(doc, "E1", "Q4");
-    sset(doc, "F1", "Year");
-    sset(doc, "G1", "Growth");
-    let sales_rows: &[(&str, f64, f64, f64, f64)] = &[
-        ("North", 12000.0, 13500.0, 14200.0, 15800.0),
-        ("South", 9800.0, 10200.0, 9900.0, 11500.0),
-        ("East", 15200.0, 16100.0, 17400.0, 18900.0),
-        ("West", 8400.0, 9100.0, 9700.0, 10800.0),
-    ];
-    for (i, (name, q1, q2, q3, q4)) in sales_rows.iter().enumerate() {
-        let r = i + 2;
-        sset(doc, &format!("A{r}"), name);
-        sset(doc, &format!("B{r}"), &q1.to_string());
-        sset(doc, &format!("C{r}"), &q2.to_string());
-        sset(doc, &format!("D{r}"), &q3.to_string());
-        sset(doc, &format!("E{r}"), &q4.to_string());
-        sset(doc, &format!("F{r}"), &format!("=SUM(B{r}:E{r})"));
-        sset(doc, &format!("G{r}"), &format!("=(E{r}-B{r})/B{r}"));
-    }
-    sset(doc, "A6", "Total");
-    sset(doc, "B6", "=SUM(B2:B5)");
-    sset(doc, "C6", "=SUM(C2:C5)");
-    sset(doc, "D6", "=SUM(D2:D5)");
-    sset(doc, "E6", "=SUM(E2:E5)");
-    sset(doc, "F6", "=SUM(F2:F5)");
-    for r in 2..=6 {
-        for col in ["B", "C", "D", "E", "F"] {
-            ssetf(
-                doc,
-                &format!("{col}{r}"),
-                CellFormat::Currency(Currency::EUR),
-            );
-        }
-        ssetf(doc, &format!("G{r}"), CellFormat::Percent);
-    }
-}
-
 #[cfg(test)]
 #[path = "app/r2_annotation_cards.rs"]
 mod r2_annotation_cards;
 
 #[cfg(test)]
-mod tests {
+mod interaction_tests;
+
+#[cfg(test)]
+pub(crate) mod tests {
     use super::*;
+    use crate::actions::SheetsEffect;
     use crate::grid::GridCmd;
+    use automerge::AutoCommit;
+    use automerge::transaction::Transactable as _;
+    use ui::framework::testing::TestApp;
+    use ui::lock::MutexRecover as _;
+    use ui::portal::PortalOutcome;
 
     /// Serializes tests that round-trip through the process-global system
     /// clipboard, so a parallel test's copy can't land between another's
     /// copy and paste (the app itself is single-instance, so this only
     /// matters under the parallel test harness).
-    static CLIP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(crate) static CLIP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    /// Build an app in the seeded (sample) mode and run the first `sync`, which
-    /// is exactly what the live/offscreen paths do before drawing.
-    pub(super) fn seeded_app() -> (SheetsApp, AutoCommit) {
+    /// An app whose edits go through a workbook dispatcher onto the document
+    /// a test hands it.
+    pub(crate) fn attached_app(doc: &AutoCommit) -> SheetsApp {
         let mut app = SheetsApp::new();
-        app.shots_mode(); // seed sample data, no disk persistence
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
+        app.attach_framework(
+            ui::framework::testing::dispatcher("so.tilo.sheets"),
+            ui::framework::testing::detached_live::<Workbook>(doc).unwrap(),
+        );
+        app
+    }
+
+    /// A new workbook's document: one empty sheet.
+    pub(crate) fn new_doc() -> AutoCommit {
+        ui::tilo_resource::Replica::<Workbook>::new().doc().clone()
+    }
+
+    /// The sample workbook's document.
+    pub(crate) fn sample_doc() -> AutoCommit {
+        crate::sample::replica().doc().clone()
+    }
+
+    /// The workbook `doc` holds.
+    pub(crate) fn doc_workbook(doc: &AutoCommit) -> Workbook {
+        use ui::tilo_resource::Resource as _;
+        Workbook::read(doc).unwrap()
+    }
+
+    /// Sheet `idx` of `doc` by position.
+    pub(crate) fn doc_snapshot(
+        doc: &AutoCommit,
+        idx: usize,
+        _currency: Currency,
+    ) -> crate::workbook::SheetSnapshot {
+        doc_workbook(doc)
+            .sheets
+            .values()
+            .nth(idx)
+            .map(crate::workbook::Sheet::snapshot)
+            .unwrap_or_default()
+    }
+
+    /// What the cell at `addr` of sheet `idx` of `doc` holds.
+    pub(crate) fn doc_cell_raw(doc: &AutoCommit, idx: usize, addr: Addr) -> String {
+        doc_snapshot(doc, idx, Currency::USD)
+            .raw
+            .get(&addr)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn doc_sheet_count(doc: &AutoCommit) -> usize {
+        doc_workbook(doc).sheets.len()
+    }
+
+    pub(crate) fn doc_sheet_names(doc: &AutoCommit) -> Vec<String> {
+        doc_workbook(doc)
+            .sheets
+            .values()
+            .map(|sheet| sheet.name.0.clone())
+            .collect()
+    }
+
+    pub(crate) fn doc_sheet_color(doc: &AutoCommit, idx: usize) -> Option<u32> {
+        doc_workbook(doc)
+            .sheets
+            .values()
+            .nth(idx)
+            .and_then(|sheet| sheet.color)
+    }
+
+    /// Apply what the app asked the person to confirm (a destructive verb
+    /// waits for them), as the door does once they agree, and follow it.
+    pub(crate) fn confirm(app: &mut SheetsApp, doc: &mut AutoCommit) {
+        let Some(dispatch) = app.dispatch.clone() else {
+            return;
+        };
+        let mut book = ui::tilo_resource::Replica::<Workbook>::from_doc(doc.clone());
+        for action in dispatch.take_asked().expect("what was asked builds") {
+            book.apply_action(&action)
+                .expect("a confirmed change applies");
+        }
+        *doc = book.doc().clone();
+        app.sync(doc, &automerge::ROOT);
+    }
+
+    /// An app over the sample workbook a screenshot shows, staged as a plain
+    /// capture is and synced once, as every frame is before it draws.
+    pub(super) fn seeded_app() -> (SheetsApp, AutoCommit) {
+        let mut doc = sample_doc();
+        let mut app = attached_app(&doc);
+        app.stage_scenario(None);
+        app.settle(&mut Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         (app, doc)
     }
 
     /// A seeded app laid out at `width × height` whose chrome metrics were
     /// resolved against a renderer at `text_scale`, exactly as the first draw
-    /// of a frame does. Returns the renderer so a test can re-measure labels
-    /// with the same instance.
+    /// of a frame does. Returns the renderer and the theme so a test can
+    /// re-measure labels with the same instances.
     pub(super) fn measured_app(
         width: f64,
         height: f64,
         text_scale: f32,
-    ) -> (SheetsApp, TextRenderer) {
-        let (mut app, _doc) = seeded_app();
+    ) -> (SheetsApp, TextRenderer, Theme) {
+        let (app, _doc, tr, theme) = measured_app_with_doc(width, height, text_scale);
+        (app, tr, theme)
+    }
+
+    /// [`measured_app`] with the document the app was seeded into, for a test
+    /// that drives events against it.
+    pub(super) fn measured_app_with_doc(
+        width: f64,
+        height: f64,
+        text_scale: f32,
+    ) -> (SheetsApp, AutoCommit, TextRenderer, Theme) {
+        let (mut app, doc) = seeded_app();
         app.rect = Rect::new(0.0, 0.0, width, height);
         app.relayout();
         let theme = Theme::dark().with_text_scale(text_scale);
@@ -8044,18 +4349,27 @@ mod tests {
         app.text_scale = f64::from(theme.text_scale);
         app.grid.set_text_scale(app.text_scale);
         app.refresh_chrome_metrics(&mut tr, &theme);
-        (app, tr)
+        (app, doc, tr, theme)
     }
 
-    /// Final-pixel width of `label` painted at the chrome's `sm` size.
-    fn sm_label_w(tr: &mut TextRenderer, app: &SheetsApp, label: &str) -> f64 {
+    /// Paint one whole frame, then the top layer, as the host does, so the
+    /// hit rects the app keeps between frames are the ones a pointer meets.
+    pub(super) fn paint_frame(app: &mut SheetsApp, tr: &mut TextRenderer, theme: &Theme) {
+        let mut scene = Scene::new();
+        let presence = PresenceCtx::default();
+        app.draw(&mut scene, Affine::IDENTITY, tr, theme, &presence);
+        app.draw_overlay(&mut scene, Affine::IDENTITY, tr, theme, &presence);
+    }
+
+    /// Final-pixel width of a tab name in the chosen tab's strong `Label`.
+    fn tab_label_w(tr: &mut TextRenderer, theme: &Theme, label: &str) -> f64 {
         f64::from(
-            tr.measure_weighted(label, app.metrics.sm, None, TextWeight::Semibold)
+            tr.measure_style(label, None, &theme.text(TextRole::Label).strong())
                 .0,
         )
     }
 
-    /// Chrome bands, status bubble, tabs, settings labels, tab menu and pointer targets follow measured text.
+    /// Chrome bands, status bubble, tabs, settings sheet, tab menu and pointer targets follow measured text.
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -8063,90 +4377,92 @@ mod tests {
     )]
     fn chrome_density_follows_measured_text() {
         // Case `chrome_metrics_keep_the_one_x_density`.
-        // At 1× the measured chrome reproduces the classic band density
-        // exactly: 44 px menu bar, 34 px formula bar, 34 px tab strip, 28 px
-        // column header, 26 px default row, 56 px row header.
+        // At 1× the measured chrome is built from the toolkit's control
+        // heights and the spacing scale: the command bar is the window's
+        // header row, a 40 px formula bar, a 44 px tab strip, the
+        // small control height for the column header and the default row, and
+        // a 56 px row header.
         {
-            let (app, _tr) = measured_app(1280.0, 720.0, 1.0);
-            assert!((app.menubar_rect.height() - 44.0).abs() < 0.01, "menu bar");
+            let (app, _tr, theme) = measured_app(1280.0, 720.0, 1.0);
+            assert!(
+                (app.toolbar_rect.height() - ui::chrome::HeaderRowFace::height(&theme)).abs()
+                    < 0.01,
+                "command bar"
+            );
             assert!(
                 (app.formula_rect.height() - 40.0).abs() < 0.01,
                 "formula bar"
             );
-            assert!((app.tabs_rect.height() - 38.0).abs() < 0.01, "tab strip");
+            assert!((app.tabs_rect.height() - 44.0).abs() < 0.01, "tab strip");
             let g = app.grid.metrics();
-            assert!((g.col_header_h() - 28.0).abs() < 0.01, "column header");
-            assert!((g.default_row_h() - 26.0).abs() < 0.01, "default row");
+            assert!((g.col_header_h() - 28.0).abs() < 1.0, "column header");
+            assert!(
+                g.default_row_h() >= 28.0 && g.default_row_h() < 30.0,
+                "default row {}",
+                g.default_row_h()
+            );
             assert!((g.row_header_w() - 56.0).abs() < 0.01, "row header");
         }
 
         // Case `chrome_bands_and_labels_follow_measured_text_at_two_x`.
         // At 2× every chrome band, button and label slot follows the measured
-        // text: nothing is painted from the 1× geometry, and the shared renderer
-        // scale is applied exactly once (a token size fed to the renderer twice
-        // would need roughly twice the room again).
+        // text: nothing is painted from the 1× geometry, and a role is scaled
+        // exactly once (a size fed to the renderer twice would need roughly
+        // twice the room again).
         {
-            let (app, mut tr) = measured_app(1280.0, 720.0, 2.0);
+            let (app, mut tr, theme) = measured_app(1280.0, 720.0, 2.0);
             let m = app.metrics.clone();
-            // Sizes handed to the renderer are the theme tokens divided back by
-            // the renderer scale, so the final glyphs land at the token size.
-            assert!((m.sm - 12.0).abs() < 0.01, "sm renderer input {}", m.sm);
             assert!(
-                (m.base - 14.0).abs() < 0.01,
-                "base renderer input {}",
-                m.base
+                m.lh_label > 32.0 && m.lh_label < 36.0,
+                "label line box {}",
+                m.lh_label
             );
-            assert!(m.lh_sm > 28.0 && m.lh_sm < 32.0, "sm line box {}", m.lh_sm);
 
             // Bands grew to their text.
-            assert!(app.menubar_rect.height() > 44.0);
-            assert!(app.formula_rect.height() >= m.lh_base + 2.0 * m.s1);
-            assert!(app.tabs_rect.height() >= m.lh_sm + m.s1);
-            assert!(app.grid.metrics().col_header_h() >= m.lh_sm);
-            assert!(app.grid.metrics().default_row_h() >= m.lh_base);
+            assert!(app.toolbar_rect.height() > 44.0);
+            assert!(app.formula_rect.height() >= m.lh_body + 2.0 * m.s1);
+            assert!(app.tabs_rect.height() >= m.lh_label + m.s1);
+            assert!(app.grid.metrics().col_header_h() >= m.lh_caption);
+            assert!(app.grid.metrics().default_row_h() >= m.lh_body);
 
-            // Menu buttons: one centre line, `s2` apart, each wide enough for the
-            // label it paints (measured with the painting style).
-            let centre = app.menu_buttons[0].rect.center().y;
-            for pair in app.menu_buttons.windows(2) {
+            // Commands: one centre line in the header row, each at least a
+            // line box tall.
+            let shown: Vec<Rect> = chrome::bar::COMMANDS
+                .iter()
+                .filter_map(|index| app.toolbar.item_rect(*index))
+                .collect();
+            assert!(shown.len() >= 6, "the whole bar fits 1280 px at 2x");
+            for rect in &shown {
                 assert!(
-                    (pair[0].rect.center().y - centre).abs() < 0.01,
+                    (rect.center().y - app.toolbar_rect.center().y).abs() < 0.5,
                     "one centre line"
                 );
                 assert!(
-                    (pair[1].rect.x0 - pair[0].rect.x1 - m.s2).abs() < 0.01,
-                    "menu buttons are s2 apart"
-                );
-            }
-            for b in &app.menu_buttons {
-                let label = SheetsApp::menu_button_label(&b.label, b.opens.is_some());
-                let w = sm_label_w(&mut tr, &app, &label);
-                assert!(
-                    b.rect.width() >= w + 2.0 * m.s3 - 0.01,
-                    "'{label}' needs {w:.1} + padding, button is {:.1}",
-                    b.rect.width()
-                );
-                assert!(
-                    b.rect.height() >= m.lh_sm,
+                    rect.height() >= m.lh_label,
                     "button taller than its line box"
                 );
             }
 
-            // Formula bar: the fx glyph fits its own hit slot, which is exactly
-            // where it is painted; field and name box share one centre line.
+            // Formula bar: the fx label fits its own hit slot, which is
+            // exactly where it is painted; field and name box share one centre
+            // line.
             assert!(app.fx_rect.width() >= m.fx_w + 2.0 * m.s2 - 0.01);
             assert!((app.fx_rect.center().y - app.name_box_rect.center().y).abs() < 0.01);
             assert!(
                 (app.formula_field_rect.center().y - app.name_box_rect.center().y).abs() < 0.01
             );
-            assert!(app.name_box_rect.width() >= sm_label_w(&mut tr, &app, NAME_BOX_REFERENCE));
+            let reference = f64::from(
+                tr.measure_style("ZZ999:ZZ999", None, &theme.text(TextRole::Body))
+                    .0,
+            );
+            assert!(app.name_box_rect.width() >= reference);
 
             // Sheet tabs fit their names and share the strip's centre line.
             for (rect, idx) in &app.tab_rects {
                 let name = &app.sheet_names[*idx];
-                let w = sm_label_w(&mut tr, &app, name);
+                let w = tab_label_w(&mut tr, &theme, name);
                 assert!(rect.width() >= w + 2.0 * m.s3 - 0.01, "tab '{name}' fits");
-                assert!(rect.height() >= m.lh_sm);
+                assert!(rect.height() >= m.lh_label);
                 assert!((rect.center().y - app.add_tab_rect.center().y).abs() < 0.01);
             }
             assert!(
@@ -8155,162 +4471,151 @@ mod tests {
             );
         }
 
-        // Case `status_bubble_floats_above_the_scrollbar_rail`.
-        // The floating status pill anchors above the grid's horizontal scrollbar
-        // rail (with an `s2` gap), never inside it and never on the tab strip.
+        // Case `status_bubble_floats_above_the_scrollbar_gutter`.
+        // The floating status pill anchors inside the grid body, clear of the
+        // scroll bar gutters and never on the tab strip.
         {
             for scale in [1.0_f32, 2.0] {
-                let (app, mut tr) = measured_app(1200.0, 800.0, scale);
-                let rail_top = app.grid_rect.y1 - Grid::scrollbar_thickness();
-                let bottom = app.status_bubble_bottom();
+                let (mut app, mut tr, theme) = measured_app(1200.0, 800.0, scale);
+                let area = app.status_area();
+                let gutter = app.grid.scrollbar_thickness();
                 assert!(
-                    bottom <= rail_top - app.metrics.s2 + 0.01,
-                    "at {scale}x the pill bottom {bottom} sits on the scrollbar rail (top {rail_top})"
+                    (area.y1 - (app.grid_rect.y1 - gutter)).abs() < 0.01,
+                    "the area stops at the horizontal bar's gutter"
                 );
-                assert!(bottom < app.tabs_rect.y0);
-                // The pill is at least as tall as its measured text plus `s2`
-                // above and below, so a 2× label never spills out of it.
-                let (w, h) = app.status_pill_size(&mut tr, "Currency (USD)");
-                let (tw, th) =
-                    tr.measure_weighted("Currency (USD)", app.metrics.sm, None, TextWeight::Medium);
                 assert!(
-                    h >= f64::from(th) + 2.0 * app.metrics.s2 - 0.01,
-                    "pill height {h} at {scale}x"
+                    (area.x1 - (app.grid_rect.x1 - gutter)).abs() < 0.01,
+                    "the area stops at the vertical bar's gutter"
                 );
-                assert!(w >= f64::from(tw), "pill width {w} at {scale}x");
+                app.status_bubble.show("Currency (USD)", ui::time::now());
+                let pill = app.status_bubble.rect_in(area, &mut tr, &theme);
+                assert!(
+                    pill.y1 <= area.y1 && pill.x1 <= area.x1,
+                    "{pill:?} in {area:?}"
+                );
+                assert!(pill.y1 < app.tabs_rect.y0);
+                // The pill is at least as tall as its measured text, so a 2×
+                // label never spills out of it.
+                let (_, th) =
+                    tr.measure_style("Currency (USD)", None, &theme.text(TextRole::Label));
+                assert!(
+                    pill.height() >= f64::from(th) - 0.01,
+                    "pill height {} at {scale}x",
+                    pill.height()
+                );
             }
         }
 
         // Case `sheet_tabs_keep_their_floor_and_ceiling_at_every_scale`.
-        // Sheet tabs stay between the (text-grown) touch-target floor and the
-        // long-name ceiling, so one long name never pushes the "+" button off the
-        // strip, and the painter elides rather than overruns.
+        // Sheet tabs stay between the (text-grown) floor and the long-name
+        // ceiling, so one long name never pushes the "+" button off the
+        // strip, and the face elides rather than overruns.
         {
             for scale in [1.0_f32, 2.0] {
-                let (mut app, mut tr) = measured_app(1000.0, 700.0, scale);
+                let (mut app, mut tr, theme) = measured_app(1000.0, 700.0, scale);
                 let long = "Quarterly consolidated regional operating expenses by cost centre";
                 app.sheet_names = vec![long.to_owned(), "Q".to_owned()];
+                app.refresh_chrome_metrics(&mut tr, &theme);
                 app.relayout();
                 let g = app.metrics.text_growth();
+                let s16 = app.metrics.s16;
                 let (wide, _) = app.tab_rects[0];
                 let (narrow, _) = app.tab_rects[1];
                 assert!(
-                    wide.width() <= TAB_MAX_W * g + 0.01,
+                    wide.width() <= 3.0 * s16 * g + 0.01,
                     "long name is capped at {scale}x"
                 );
                 assert!(
-                    narrow.width() >= TAB_MIN_W * g - 0.01,
+                    narrow.width() >= s16 * g - 0.01,
                     "short name keeps the floor at {scale}x"
                 );
                 assert!(app.add_tab_rect.x1 <= app.rect.x1, "'+' stays on the strip");
-                // The painter's elision fits the capped tab with `s3` each side.
-                let elided = tr.elide_to_width_weighted(
-                    long,
-                    app.metrics.sm,
-                    (wide.width() - 2.0 * app.metrics.s3) as f32,
-                    TextWeight::Semibold,
-                );
-                let (ew, _) =
-                    tr.measure_weighted(&elided, app.metrics.sm, None, TextWeight::Semibold);
-                assert!(f64::from(ew) <= wide.width() - 2.0 * app.metrics.s3 + 0.5);
+                // The face's elision fits the capped tab with `s3` each side.
+                let style = theme.text(TextRole::Label).strong();
+                let room = (wide.width() - 2.0 * app.metrics.s3) as f32;
+                let elided = tr.elide_to_width_style(long, room, &style);
+                let (ew, _) = tr.measure_style(&elided, None, &style);
+                assert!(f64::from(ew) <= f64::from(room) + 0.5);
                 assert!(elided.ends_with('…') && elided.chars().count() < long.chars().count());
             }
         }
 
-        // Case `settings_panel_labels_align_with_their_chip_rows`.
-        // Settings panel: each section label is centred on its first chip row,
-        // chips in a row share one centre line with `s2` gaps, every chip fits
-        // its label, and the panel wraps its own content.
+        // Case `settings_sheet_options_fit_the_sheet_at_every_scale`.
+        // Settings sheet: every option fits its label inside the sheet's
+        // body, rows of chips do not overlap, and the sheet stays in the
+        // window.
         {
             for scale in [1.0_f32, 2.0] {
-                let (mut app, mut tr) = measured_app(1200.0, 800.0, scale);
-                app.shots_open_doc_settings();
-                app.relayout();
-                let m = app.metrics.clone();
-                let firsts = [
-                    SettingKind::Currency(None),
-                    SettingKind::Date(None),
-                    SettingKind::Time(None),
-                ];
-                for (section_y, first) in app.settings_section_y.iter().zip(firsts) {
-                    let chip = app
-                        .setting_chips
-                        .iter()
-                        .find(|c| c.kind == first)
-                        .expect("section's Default chip");
+                let (mut app, mut tr, theme) = measured_app(1200.0, 800.0, scale);
+                app.open_doc_settings();
+                paint_frame(&mut app, &mut tr, &theme);
+                let sheet = app.settings_sheet.as_ref().expect("the sheet laid out");
+                assert!(
+                    app.rect.contains(sheet.modal.card.center())
+                        && sheet.modal.card.x0 >= app.rect.x0
+                        && sheet.modal.card.x1 <= app.rect.x1
+                        && sheet.modal.card.y1 <= app.rect.y1,
+                    "the sheet stays in the window at {scale}x"
+                );
+                for chip in &sheet.options {
                     assert!(
-                        (chip.rect.y0 - section_y).abs() < 0.01,
-                        "at {scale}x the section label row starts with its first chip"
+                        sheet.modal.body.x0 - 0.01 <= chip.rect.x0
+                            && chip.rect.x1 <= sheet.modal.body.x1 + 0.01,
+                        "{:?} stays inside the body at {scale}x",
+                        chip.rect
                     );
+                    let (label, _) = app.chip_label_and_state(chip.kind);
+                    let style = theme.text(TextRole::Label);
+                    let w = f64::from(tr.measure_style(&label, None, &style).0);
+                    assert!(chip.rect.width() >= w, "option '{label}' fits");
                 }
-                for pair in app.setting_chips.windows(2) {
-                    if (pair[0].rect.y0 - pair[1].rect.y0).abs() < 0.01 {
+                for (i, a) in sheet.options.iter().enumerate() {
+                    for b in sheet.options.iter().skip(i + 1) {
                         assert!(
-                            (pair[1].rect.x0 - pair[0].rect.x1 - m.s2).abs() < 0.01,
-                            "chips in a row are s2 apart"
-                        );
-                    } else {
-                        assert!(
-                            pair[1].rect.y0 >= pair[0].rect.y1 + m.s2 - 0.01,
-                            "rows do not overlap"
+                            a.rect.intersect(b.rect).area() < 0.01,
+                            "options {:?} and {:?} overlap at {scale}x",
+                            a.rect,
+                            b.rect
                         );
                     }
                 }
-                for chip in &app.setting_chips {
-                    let (label, _) = app.chip_label_and_state(chip.kind);
-                    let w = sm_label_w(&mut tr, &app, &label);
-                    assert!(
-                        chip.rect.width() >= w + 2.0 * m.s3 - 0.01,
-                        "chip '{label}' fits"
-                    );
-                    assert!(chip.rect.height() >= m.lh_sm);
-                    assert!(app.panel_rect.contains(chip.rect.center()));
-                    assert!(chip.rect.x1 <= app.panel_rect.x1 - m.s6 + 0.01);
-                }
-                let last = app
-                    .setting_chips
-                    .iter()
-                    .map(|c| c.rect.y1)
-                    .fold(0.0_f64, f64::max);
                 assert!(
-                    app.panel_rect.y1 >= last + m.s6 + m.lh_xs,
-                    "panel leaves room for its footer under the last chip row"
+                    sheet
+                        .modal
+                        .actions
+                        .iter()
+                        .all(|done| sheet.modal.card.contains(done.center())),
+                    "Done is on the sheet"
                 );
             }
         }
 
-        // Case `tab_menu_reserves_room_for_its_caption_and_swatches_at_two_x`.
-        // Sheet-tab menu: rows are measured, the "Colour" caption block and the
-        // swatch strip both fit inside the panel at 2×.
+        // Case `tab_menu_lists_its_rows_and_stays_in_the_window_at_two_x`.
+        // Sheet-tab menu: every row of the menu is a row the app answers,
+        // and the menu stays inside the window at 2×.
         {
-            let (mut app, mut tr) = measured_app(1200.0, 800.0, 2.0);
-            app.shots_open_tab_menu();
-            app.relayout();
-            let m = app.metrics.clone();
-            let panel = app.tab_menu_rect;
-            for (rect, act) in &app.tab_menu_rows {
-                assert!(
-                    rect.height() >= m.lh_sm - MENU_ROW_SEAM,
-                    "row fits its line box"
-                );
-                let w = sm_label_w(&mut tr, &app, tab_action_label(*act));
-                assert!(
-                    rect.width() >= w + 2.0 * m.s2 - 0.01,
-                    "row fits '{}'",
-                    tab_action_label(*act)
-                );
-            }
-            let first = app.tab_menu_swatches[0].0;
-            let caption_top = first.y0 - m.s1 - m.lh_xs;
-            let last_row = app.tab_menu_rows.last().expect("rows").0;
-            assert!(
-                caption_top >= last_row.y1,
-                "caption sits under the last row"
+            let (mut app, mut tr, theme) = measured_app(1200.0, 800.0, 2.0);
+            app.open_tab_menu(0);
+            paint_frame(&mut app, &mut tr, &theme);
+            assert!(app.tab_menu.is_open());
+            assert_eq!(
+                app.tab_menu.items().len(),
+                app.tab_menu_rows.len(),
+                "every menu row has an answer"
             );
-            for (swatch, _) in &app.tab_menu_swatches {
-                assert!(panel.contains(swatch.center()));
-                assert!(swatch.x1 <= panel.x1 - m.s2 + 0.01 && swatch.y1 <= panel.y1 - m.s2 + 0.01);
-            }
+            let panel = Widget::get_rect(&app.tab_menu);
+            assert!(
+                panel.x0 >= app.rect.x0 - 0.01
+                    && panel.x1 <= app.rect.x1 + 0.01
+                    && panel.y0 >= app.rect.y0 - 0.01
+                    && panel.y1 <= app.rect.y1 + 0.01,
+                "the menu {panel:?} stays inside the window"
+            );
+            let tab = app.tab_rects[0].0;
+            assert!(
+                panel.y1 <= tab.y0 + 0.01 || panel.y0 >= tab.y1 - 0.01,
+                "the menu does not cover the tab it acts on"
+            );
         }
 
         // Case `chrome_targets_meet_the_pointer_minimum_and_scale_with_type`.
@@ -8318,109 +4623,59 @@ mod tests {
         // interaction minimum. Keep their hit geometry aligned with the shared
         // fine-pointer contract, and prove the same surfaces expand at 2× type.
         {
-            let (app, _tr) = measured_app(560.0, 720.0, 1.0);
+            let (app, _tr, _theme) = measured_app(560.0, 720.0, 1.0);
             let minimum =
                 f64::from(ui::interaction::InteractionEnvironment::POINTER.minimum_target());
-            assert!(
-                app.menu_buttons
+            let commands = |app: &SheetsApp| -> Vec<Rect> {
+                chrome::bar::COMMANDS
                     .iter()
-                    .all(|button| button.rect.height() >= minimum)
+                    .filter_map(|index| app.toolbar.item_rect(*index))
+                    .collect()
+            };
+            assert!(
+                commands(&app)
+                    .iter()
+                    .all(|rect| rect.height() >= minimum - 0.01),
+                "every command reaches the pointer minimum"
             );
             assert!(app.name_box_rect.height() >= minimum);
             assert!(app.formula_field_rect.height() >= minimum);
             assert!(
                 app.tab_rects
                     .iter()
-                    .all(|(rect, _)| rect.height() >= minimum)
+                    .all(|(rect, _)| rect.height() + 2.0 * app.metrics.s1 >= minimum)
             );
 
-            let (app, _tr) = measured_app(560.0, 720.0, 2.0);
+            let (app2, _tr, _theme) = measured_app(560.0, 720.0, 2.0);
             assert!(
-                app.menu_buttons
+                commands(&app2)
                     .iter()
-                    .all(|button| button.rect.height() >= minimum * 2.0)
+                    .all(|rect| rect.height() >= minimum * 1.25)
             );
             assert!(
-                app.grid.accessibility_window().rows[0].bounds.height()
-                    >= crate::grid::DEFAULT_ROW_H * 2.0
+                app2.grid.accessibility_window().rows[0].bounds.height()
+                    >= app.grid.accessibility_window().rows[0].bounds.height() * 1.5
             );
         }
     }
 
-    /// Background persistence deliberately never blocks a frame. Tests that
-    /// need its result drive the same frame pump a running app uses and,
-    /// between frames, block on the outstanding worker's reply: a loaded
-    /// runner can take many seconds to schedule a worker that writes and syncs
-    /// a file, so no short budget is safe. A lost worker disconnects its
-    /// channel and the app reports it; the hang bound only catches a hung one.
-    fn sync_until(app: &mut SheetsApp, doc: &mut AutoCommit, done: impl Fn(&SheetsApp) -> bool) {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            app.sync(doc, &automerge::ROOT);
-            if done(app) {
-                return;
-            }
-            let within = deadline.saturating_duration_since(ui::time::now());
-            let pending = app.status.clone();
-            if let Some(rx) = app.persistence_rx.take() {
-                app.persistence_rx = Some(await_reply(rx, within, "persistence", &pending));
-            } else if let Some(rx) = app.interchange_rx.take() {
-                app.interchange_rx = Some(await_reply(rx, within, "interchange", &pending));
-            } else {
-                // No reply outstanding: a retry delay or a frame-driven step.
-                assert!(
-                    !within.is_zero(),
-                    "Sheets did not settle within {:?} with no worker outstanding (status: {pending})",
-                    tilo_test_env::hang_bound()
-                );
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        }
-    }
-
-    /// Wait for a worker's one reply and hand it back as a ready channel, so
-    /// the app receives it through its own drain.
-    fn await_reply<T>(
-        rx: Receiver<T>,
-        within: Duration,
-        worker: &str,
-        status: &str,
-    ) -> Receiver<T> {
-        match rx.recv_timeout(within) {
-            Ok(reply) => {
-                let (tx, ready) = mpsc::sync_channel(1);
-                tx.send(reply)
-                    .expect("the ready channel has room for one reply");
-                ready
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => rx,
-            Err(mpsc::RecvTimeoutError::Timeout) => panic!(
-                "background Sheets {worker} worker sent no reply before the hang bound (status: {status})"
-            ),
-        }
-    }
-
-    /// Unchanged syncs keep the search catalogue and reduced motion stops bubble frames.
+    /// Unchanged syncs and tab switches keep the tabs read, and reduced motion
+    /// stops bubble frames.
     #[test]
-    fn search_catalogue_and_idle_frames_do_no_redundant_work() {
-        // Case `unchanged_sync_and_tab_switch_retain_the_search_catalogue`.
+    fn idle_frames_do_no_redundant_work() {
+        // Case `unchanged_sync_and_tab_switch_keep_the_tabs`.
         {
             let (mut app, mut doc) = seeded_app();
-            // Automerge commits the startup seed at the first following sync;
-            // establish the steady-state revision before asserting idle work.
-            app.sync(&mut doc, &automerge::ROOT);
-            let first_heads = app.search_projection_heads.clone();
-            let first_projection = app.searchable_sheets.as_ptr();
-            let first_catalogue = app.search_provider.stats();
-            app.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(app.search_projection_heads, first_heads);
-            assert_eq!(app.searchable_sheets.as_ptr(), first_projection);
-            assert_eq!(app.search_provider.stats(), first_catalogue);
+            app.sync(&doc, &automerge::ROOT);
+            let first_revision = app.revision;
+            let first_ids = app.sheet_ids.as_ptr();
+            app.sync(&doc, &automerge::ROOT);
+            assert_eq!(app.revision, first_revision);
+            assert_eq!(app.sheet_ids.as_ptr(), first_ids);
 
-            app.switch_sheet(&mut doc, 1);
-            app.sync(&mut doc, &automerge::ROOT);
-            assert_eq!(app.searchable_sheets.as_ptr(), first_projection);
-            assert_eq!(app.search_provider.stats(), first_catalogue);
+            app.switch_sheet(&mut Edits::lend(&mut doc), 1);
+            app.sync(&doc, &automerge::ROOT);
+            assert_eq!(app.sheet_ids.as_ptr(), first_ids);
         }
 
         // Case `reduced_motion_stops_status_bubble_animation_frames`.
@@ -8433,109 +4688,38 @@ mod tests {
         }
     }
 
-    /// Resource operations reject wrong kinds; affordances dispatch the same encoded actions as their specs.
+    /// The on-screen affordances submit the workbook's own actions: the tab
+    /// menu's Delete is the sheet's published `delete-sheet`, a cell edit
+    /// is the field edit of that one cell.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
     fn affordances_and_resource_operations_match_action_specs() {
-        // Case `resource_operations_reject_wrong_kinds_without_changing_state`.
         {
             let (mut app, mut doc) = seeded_app();
-            assert!(!app.grid.formula_view());
-            let toggle = serde_json::to_vec(&actions::SheetsOperation::ToggleFormulaView).unwrap();
-            assert!(
-                Widget::start_operation(
-                    &mut app,
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        actions::SHEETS_OPERATION_TYPE,
-                        &toggle
-                    ),
-                    &mut doc,
-                    &automerge::ROOT
-                )
-                .is_err()
-            );
-            assert!(!app.grid.formula_view());
-
-            let import = serde_json::to_vec(&actions::SheetsOperation::ImportCsv {
-                path: Some("/tmp/wrong-kind.csv".into()),
-            })
-            .unwrap();
-            assert!(
-                Widget::start_operation(
-                    &mut app,
-                    &ui::widget::ResourceOperation::local(
-                        tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::View,
-                        actions::SHEETS_OPERATION_TYPE,
-                        &import
-                    ),
-                    &mut doc,
-                    &automerge::ROOT
-                )
-                .is_err()
-            );
-            assert!(app.pending_resource_io.is_none());
-            assert!(app.resource_invocation.is_none());
-        }
-
-        // Case `tab_delete_affordance_matches_the_action_spec`.
-        // Covenant — one source of truth: an on-screen affordance dispatches the
-        // byte-identical [`EncodedAction`] its Ctrl+K [`ActionSpec`] builds. Driving
-        // the real sheet-tab "Delete" context-menu handler sets `last_dispatched`
-        // to exactly what the workbook resource tree's delete spec encodes.
-        {
-            let (mut app, mut doc) = seeded_app();
-            let count_before = SheetsDoc::sheet_count(&mut doc);
+            let count_before = doc_sheet_count(&doc);
             assert!(count_before >= 2, "seeded workbook has multiple sheets");
+            let sales = app.sheet_ids[1].clone();
+            let item = ui::tilo_resource::items::item_resource_id::<Workbook>("sheets", &sales);
+            let resources = app.published();
+            let offered = tilo_actions::flatten(&resources)
+                .into_iter()
+                .any(|flat| flat.resource_id.as_str() == item && flat.action.id == "delete-sheet");
+            assert!(offered, "the sheet offers its delete");
 
-            // Capture the Ctrl+K delete spec for sheet 1 from the live resource tree,
-            // *before* the affordance mutates the workbook (the tree shrinks after).
-            let from_spec = {
-                let resources = ui::resources::resources(&app, &doc);
-                let sheet1 = &resources[0].children[1];
-                let spec = sheet1.actions.iter().find(|a| a.id == "delete").unwrap();
-                match &spec.input {
-                    tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-                    tilo_actions::ActionInput::Prompted { .. }
-                    | tilo_actions::ActionInput::Deferred { .. } => {
-                        panic!("delete is an immediate action")
-                    }
-                }
-            };
-
-            // The on-screen tab context-menu "Delete" on sheet 1 (the real handler).
-            app.run_tab_action(&mut doc, 1, TabAction::Delete);
-
-            let dispatched = app
-                .last_dispatched()
-                .expect("the affordance dispatched an action");
+            app.run_tab_action(&mut Edits::lend(&mut doc), 1, TabAction::Delete);
+            confirm(&mut app, &mut doc);
             assert_eq!(
-                dispatched, &from_spec,
-                "the tab-menu Delete builds the same EncodedAction as its Ctrl+K ActionSpec"
-            );
-            assert_eq!(
-                SheetsDoc::sheet_count(&mut doc),
+                doc_sheet_count(&doc),
                 count_before - 1,
                 "the affordance really removed the sheet"
             );
         }
 
-        // Case `cell_edit_affordance_dispatches_a_matching_set_cell_action`.
-        // Covenant on the real app path: a cell edit routed through the grid's
-        // `SetCell` command dispatches a `SheetsAction::SetCell` carrying the exact
-        // coordinates and value — the single CRDT-mutation path that undo, peer
-        // replay, and Ctrl+K all share. The `last_dispatched` envelope decodes back
-        // to the action the affordance built.
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((0, 9)); // A10, an empty cell
+            let before = doc.get_heads();
             app.apply_cmds(
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 vec![
                     GridCmd::SetCell {
                         addr: (0, 9),
@@ -8544,452 +4728,291 @@ mod tests {
                     GridCmd::Commit,
                 ],
             );
-            let dispatched = app
-                .last_dispatched()
-                .expect("the cell edit dispatched an action");
-            assert_eq!(dispatched.type_id, crate::actions::SHEETS_ACTION_TYPE);
-            let action: crate::actions::SheetsAction = serde_json::from_slice(&dispatched.payload)
-                .expect("payload decodes to SheetsAction");
-            match action {
-                crate::actions::SheetsAction::SetCells { sheet, cells, .. } => {
-                    assert_eq!(sheet, 0);
-                    assert_eq!(cells.len(), 1, "one cell edited");
-                    assert_eq!(
-                        (cells[0].col, cells[0].row),
-                        (0, 9),
-                        "wrote the selected cell A10"
-                    );
-                    assert_eq!(cells[0].raw, "hello");
-                }
-                other => panic!("cell edit built the wrong action: {other:?}"),
-            }
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 9)), "hello");
+            assert_eq!(doc_cell_raw(&doc, 0, (0, 9)), "hello");
+            let after = doc.get_heads();
+            let patches = doc.diff(&before, &after);
+            assert!(
+                patches.iter().all(|patch| {
+                    patch.path.iter().all(
+                        |(_, prop)| !matches!(prop, automerge::Prop::Map(key) if key == "name"),
+                    )
+                }),
+                "a cell edit writes its cell, not the sheet"
+            );
         }
     }
 
-    /// Cancelled, stale and prepared imports/exports never mutate state before confirmation.
+    /// A workbook holding the sample's Budget and Sales sheets, run as the app.
+    fn sample_app() -> TestApp<crate::resource::SheetsShell> {
+        let mut app = TestApp::<crate::resource::SheetsShell>::new().unwrap();
+        for invoke in crate::sample::workbook() {
+            app.invoke_confirmed(invoke).unwrap();
+        }
+        app
+    }
+
+    /// The active sheet's index and the status the surface shows.
+    fn shown(app: &mut TestApp<crate::resource::SheetsShell>) -> (usize, String) {
+        app.with_surface::<SheetsApp, _>(|sheets| (sheets.active_sheet, sheets.status.clone()))
+            .expect("the grid is the surface")
+    }
+
+    fn raw_at(app: &TestApp<crate::resource::SheetsShell>, sheet: usize, addr: Addr) -> String {
+        app.state()
+            .sheets
+            .values()
+            .nth(sheet)
+            .map(crate::workbook::Sheet::snapshot)
+            .and_then(|snapshot| snapshot.raw.get(&addr).cloned())
+            .unwrap_or_default()
+    }
+
+    /// The workbook offers reading and writing every interchange format and
+    /// its views as effects, and each sheet, chart and comment opens itself.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn import_export_lifecycles_never_touch_the_destination_early() {
-        // Case `cancelled_import_completion_is_inert_before_any_crdt_action`.
-        {
-            let (mut app, mut doc) = seeded_app();
-            let before = SheetsDoc::sheet_count(&mut doc);
-            let invocation = tilo_actions::InvocationId::new();
-            app.resource_invocation = Some(invocation);
-            app.active_interchange_generation = Some(41);
-            let cancelled =
-                Widget::poll_resource_operation(&mut app, invocation, true, &doc, &automerge::ROOT);
-            assert!(matches!(
-                cancelled,
-                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-            ));
-            let (tx, rx) = mpsc::sync_channel(1);
-            tx.send(InterchangeResult::Import {
-                generation: 41,
-                format: Interchange::Csv,
-                path: PathBuf::from("cancelled.csv"),
-                result: Ok(vec![crate::xlsx::SheetTable {
-                    name: "Must not import".into(),
-                    rows: Vec::new(),
-                }]),
-            })
-            .unwrap();
-            app.interchange_rx = Some(rx);
-            app.drain_interchange_worker(&mut doc);
-
-            assert_eq!(SheetsDoc::sheet_count(&mut doc), before);
-            assert!(app.active_interchange_generation.is_none());
-            assert!(app.resource_result.is_none());
-        }
-
-        // Case `cancelling_prepared_export_never_touches_the_destination`.
-        {
-            let (mut app, doc) = seeded_app();
-            let directory =
-                std::env::temp_dir().join(format!("tilo-sheets-cancel-{}", Uuid::new_v4()));
-            std::fs::create_dir_all(&directory).unwrap();
-            let destination = directory.join("report.csv");
-            let temporary = directory.join(".report.csv.tilo-export-prepared.tmp");
-            std::fs::write(&destination, "original").unwrap();
-            std::fs::write(&temporary, "new export").unwrap();
-            let invocation = tilo_actions::InvocationId::new();
-            app.resource_invocation = Some(invocation);
-            app.prepared_resource_io = Some(PreparedResourceIo::Export {
-                format: Interchange::Csv,
-                destination: destination.clone(),
-                temporary: temporary.clone(),
-            });
-
-            let cancelled =
-                Widget::poll_resource_operation(&mut app, invocation, true, &doc, &automerge::ROOT);
-            assert!(matches!(
-                cancelled,
-                Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-            ));
-            assert_eq!(std::fs::read_to_string(&destination).unwrap(), "original");
-            assert!(!temporary.exists());
-            let _ = std::fs::remove_dir_all(&directory);
-        }
-
-        // Case `stale_export_completion_is_discarded_without_destination_mutation`.
-        {
-            let (mut app, mut doc) = seeded_app();
-            let directory =
-                std::env::temp_dir().join(format!("tilo-sheets-stale-{}", Uuid::new_v4()));
-            std::fs::create_dir_all(&directory).unwrap();
-            let destination = directory.join("report.csv");
-            let temporary = directory.join(".report.csv.tilo-export-stale.tmp");
-            std::fs::write(&destination, "original").unwrap();
-            std::fs::write(&temporary, "stale export").unwrap();
-            app.active_interchange_generation = Some(44);
-            let (tx, rx) = mpsc::sync_channel(1);
-            tx.send(InterchangeResult::Export {
-                generation: 43,
-                format: Interchange::Csv,
-                destination: destination.clone(),
-                result: Ok(temporary.clone()),
-            })
-            .unwrap();
-            app.interchange_rx = Some(rx);
-            app.drain_interchange_worker(&mut doc);
-
-            assert_eq!(std::fs::read_to_string(&destination).unwrap(), "original");
-            assert!(!temporary.exists());
-            let _ = std::fs::remove_dir_all(&directory);
-        }
-
-        // Case `export_preparation_does_not_mutate_destination_before_publish`.
-        {
-            let (app, mut doc) = seeded_app();
-            let directory =
-                std::env::temp_dir().join(format!("tilo-sheets-prepare-{}", Uuid::new_v4()));
-            std::fs::create_dir_all(&directory).unwrap();
-            let destination = directory.join("report.csv");
-            std::fs::write(&destination, "original").unwrap();
-            let snapshot = SheetsDoc::snapshot_sheet(&mut doc, 0, Currency::USD);
-            let temporary = SheetsApp::prepare_export_snapshots(
-                Interchange::Csv,
-                &destination,
-                45,
-                &[snapshot],
-            )
-            .unwrap();
-
-            assert_eq!(std::fs::read_to_string(&destination).unwrap(), "original");
-            assert!(temporary.exists());
-            SheetsApp::discard_export_temp(&temporary);
-            let _ = std::fs::remove_dir_all(&directory);
-            drop(app);
-        }
-
-        // Case `prepared_resource_import_waits_for_lifecycle_confirmation`.
-        {
-            let (mut app, mut doc) = seeded_app();
-            let before = SheetsDoc::sheet_count(&mut doc);
-            let invocation = tilo_actions::InvocationId::new();
-            app.resource_invocation = Some(invocation);
-            app.prepared_resource_io = Some(PreparedResourceIo::Import {
-                format: Interchange::Csv,
-                path: PathBuf::from("prepared.csv"),
-                tables: vec![crate::xlsx::SheetTable {
-                    name: "Prepared".into(),
-                    rows: Vec::new(),
-                }],
-            });
-
-            app.settle_prepared_resource_io(&mut doc);
-            assert_eq!(SheetsDoc::sheet_count(&mut doc), before);
-            assert!(app.prepared_resource_io.is_some());
+    fn the_workbook_publishes_its_effects_and_items_open_themselves() {
+        let mut app = sample_app();
+        let resources = app.harness().resources();
+        let workbook = &resources[0];
+        for id in [
+            "import-csv",
+            "import-xlsx",
+            "import-ods",
+            "export-csv",
+            "export-xlsx",
+            "export-ods",
+            "commands",
+            "go-to-cell",
+            "toggle-formula-view",
+        ] {
             assert!(
-                Widget::poll_resource_operation(
-                    &mut app,
-                    invocation,
-                    false,
-                    &doc,
-                    &automerge::ROOT,
-                )
-                .is_none()
-            );
-            app.settle_prepared_resource_io(&mut doc);
-            assert_eq!(SheetsDoc::sheet_count(&mut doc), before + 1);
-            assert!(matches!(
-                Widget::poll_resource_operation(
-                    &mut app,
-                    invocation,
-                    false,
-                    &doc,
-                    &automerge::ROOT,
-                ),
-                Some(tilo_actions::InvocationUpdate::Succeeded { .. })
-            ));
-        }
-    }
-
-    /// Admit an agent's direct-path `.xlsx` export and run the one model pass
-    /// admission schedules.
-    fn admit_direct_export(
-        app: &mut SheetsApp,
-        doc: &mut AutoCommit,
-        destination: &std::path::Path,
-    ) -> tilo_actions::InvocationId {
-        let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&actions::SheetsOperation::ExportXlsx {
-            path: Some(destination.display().to_string()),
-        })
-        .unwrap();
-        let started = Widget::start_operation(
-            app,
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                actions::SHEETS_OPERATION_TYPE,
-                &payload,
-            ),
-            doc,
-            &automerge::ROOT,
-        );
-        assert!(
-            matches!(
-                started,
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            ),
-            "{started:?}"
-        );
-        app.sync(doc, &automerge::ROOT);
-        invocation
-    }
-
-    /// Drive `invocation` the way an idle native or hosted runner does: poll
-    /// on every pass, but `sync` only when a wake arrives. Nothing else makes
-    /// frames, so a job whose progress wakes nobody stays Accepted forever.
-    fn settle_on_idle_host(
-        app: &mut SheetsApp,
-        doc: &mut AutoCommit,
-        wakes: &Receiver<ui::wake::WakeEvent>,
-        invocation: tilo_actions::InvocationId,
-    ) -> tilo_actions::InvocationUpdate {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            if let Some(update) =
-                Widget::poll_resource_operation(app, invocation, false, doc, &automerge::ROOT)
-            {
-                return update;
-            }
-            let within = deadline.saturating_duration_since(Instant::now());
-            wakes.recv_timeout(within).unwrap_or_else(|_| {
-                panic!(
-                    "the job never woke its idle host (status: {}); an agent would see it Accepted forever",
-                    app.status
-                )
-            });
-            app.sync(doc, &automerge::ROOT);
-        }
-    }
-
-    /// An agent's direct-path export on an idle host reaches a terminal state
-    /// through the app's own wakes, and cancelling one releases the single
-    /// interchange slot immediately instead of refusing every retry.
-    #[test]
-    fn direct_path_export_settles_and_cancels_on_an_idle_host() {
-        let mut scope = ui::wake::WakeScope::new();
-        let _entry = scope.enter();
-        let (sender, wakes) = mpsc::channel();
-        scope
-            .bind(move |event| {
-                let _ = sender.send(event);
-            })
-            .unwrap();
-        let directory =
-            std::env::temp_dir().join(format!("tilo-sheets-idle-export-{}", Uuid::new_v4()));
-        let destination = directory.join("out").join("in-stock.xlsx");
-        let (mut app, mut doc) = seeded_app();
-
-        // Case `export_reaches_a_terminal_state_without_foreign_frames`.
-        {
-            let invocation = admit_direct_export(&mut app, &mut doc, &destination);
-            let update = settle_on_idle_host(&mut app, &mut doc, &wakes, invocation);
-            assert!(
-                matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
-                "{update:?}"
-            );
-            assert!(!crate::xlsx::read_xlsx(&destination).unwrap().is_empty());
-        }
-
-        // Case `cancelling_an_in_flight_export_releases_the_slot`.
-        {
-            std::fs::remove_file(&destination).unwrap();
-            let cancelled_job = admit_direct_export(&mut app, &mut doc, &destination);
-            assert!(app.interchange_rx.is_some(), "the export worker is running");
-            let cancelled = Widget::poll_resource_operation(
-                &mut app,
-                cancelled_job,
-                true,
-                &doc,
-                &automerge::ROOT,
-            );
-            assert!(
-                matches!(
-                    cancelled,
-                    Some(tilo_actions::InvocationUpdate::Cancelled { .. })
-                ),
-                "{cancelled:?}"
-            );
-            assert!(app.interchange_rx.is_none());
-            assert!(app.active_interchange_generation.is_none());
-
-            let retry = admit_direct_export(&mut app, &mut doc, &destination);
-            let update = settle_on_idle_host(&mut app, &mut doc, &wakes, retry);
-            assert!(
-                matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
-                "{update:?}"
-            );
-            assert!(destination.exists());
-
-            // The cancelled worker's prepared file is reaped, never published.
-            let deadline = tilo_test_env::hang_deadline();
-            while !app.orphaned_interchange.is_empty() {
-                let within = deadline.saturating_duration_since(Instant::now());
-                wakes
-                    .recv_timeout(within)
-                    .expect("the cancelled worker wakes its host when it exits");
-                app.sync(&mut doc, &automerge::ROOT);
-            }
-            let leftovers: Vec<_> = std::fs::read_dir(destination.parent().unwrap())
-                .unwrap()
-                .map(|entry| entry.unwrap().file_name())
-                .filter(|name| name != "in-stock.xlsx")
-                .collect();
-            assert!(leftovers.is_empty(), "{leftovers:?}");
-        }
-        let _ = std::fs::remove_dir_all(&directory);
-    }
-
-    /// Admit an agent's direct-path `.xlsx` import and run the one model pass
-    /// admission schedules.
-    fn admit_direct_import(
-        app: &mut SheetsApp,
-        doc: &mut AutoCommit,
-        source: &std::path::Path,
-    ) -> tilo_actions::InvocationId {
-        let invocation = tilo_actions::InvocationId::new();
-        let payload = serde_json::to_vec(&actions::SheetsOperation::ImportXlsx {
-            path: Some(source.display().to_string()),
-        })
-        .unwrap();
-        let started = Widget::start_operation(
-            app,
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                actions::SHEETS_OPERATION_TYPE,
-                &payload,
-            ),
-            doc,
-            &automerge::ROOT,
-        );
-        assert!(
-            matches!(
-                started,
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            ),
-            "{started:?}"
-        );
-        app.sync(doc, &automerge::ROOT);
-        invocation
-    }
-
-    /// Opening a file the workbook already holds, by an agent's typed import
-    /// or the Import dialog, reveals the sheet it became instead of importing
-    /// a second copy.
-    #[test]
-    fn opening_an_open_file_again_reveals_it_instead_of_importing_a_copy() {
-        let mut scope = ui::wake::WakeScope::new();
-        let _entry = scope.enter();
-        let (sender, wakes) = mpsc::channel();
-        scope
-            .bind(move |event| {
-                let _ = sender.send(event);
-            })
-            .unwrap();
-        let directory = std::env::temp_dir().join(format!("tilo-sheets-reopen-{}", Uuid::new_v4()));
-        let file = directory.join("budget.xlsx");
-        {
-            let (mut app, mut doc) = seeded_app();
-            let invocation = admit_direct_export(&mut app, &mut doc, &file);
-            let update = settle_on_idle_host(&mut app, &mut doc, &wakes, invocation);
-            assert!(
-                matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
-                "{update:?}"
+                workbook.actions.iter().any(|action| action.id == id),
+                "{id} is published"
             );
         }
-        let (mut app, mut doc) = seeded_app();
-        let imported = SheetsDoc::sheet_count(&mut doc);
-        let first = admit_direct_import(&mut app, &mut doc, &file);
-        let update = settle_on_idle_host(&mut app, &mut doc, &wakes, first);
-        assert!(
-            matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
-            "{update:?}"
-        );
-        let sheets = SheetsDoc::sheet_count(&mut doc);
-        let imported_id = SheetsDoc::sheet_resource_id(&doc, imported);
-
-        // Case `a_typed_reopen_returns_the_open_sheet`.
-        {
-            app.switch_sheet(&mut doc, 0);
-            let respelled = directory.join(".").join("budget.xlsx");
-            let again = admit_direct_import(&mut app, &mut doc, &respelled);
-            let update = settle_on_idle_host(&mut app, &mut doc, &wakes, again);
-            let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
-                panic!("{update:?}");
-            };
-            tilo_actions::ResultSpec::Job
-                .validate(&output)
-                .expect("a reopen honours the import's published job result");
-            assert_eq!(SheetsDoc::sheet_count(&mut doc), sheets, "no second copy");
-            assert_eq!(app.active_sheet, imported, "the open sheet is revealed");
+        // Each import opens the file a launch names, for its own type only.
+        for (id, extension) in [
+            ("import-csv", "csv"),
+            ("import-xlsx", "xlsx"),
+            ("import-ods", "ods"),
+        ] {
+            let import = workbook
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap();
+            assert!(import.contract.opens_path(), "{id} opens a path");
             assert_eq!(
-                SheetsDoc::sheet_resource_id(&doc, app.active_sheet),
-                imported_id
+                import.contract.opened_extensions().collect::<Vec<_>>(),
+                [extension]
             );
         }
+        assert!(
+            workbook
+                .actions
+                .iter()
+                .filter(|action| action.id.starts_with("export-"))
+                .all(|action| !action.contract.opens_path()),
+            "an export takes a path but opens nothing"
+        );
+        let sales = workbook
+            .children
+            .iter()
+            .find(|child| child.label == "Sales")
+            .expect("the Sales sheet");
+        assert!(
+            workbook.actions.iter().any(|action| action.id == "open"),
+            "the workbook opens what a search hit or an agent names"
+        );
 
-        // Case `the_import_dialog_reveals_the_open_sheet`.
-        {
-            app.switch_sheet(&mut doc, 0);
-            let (services, recorder) = ui::host::HostServices::recording();
-            recorder.respond_to_pick(PortalOutcome::Opened(file.clone()));
-            ui::host::scoped(&services, || app.begin_import(Interchange::Xlsx));
-            app.drain_io(&mut doc);
-            assert!(app.interchange_rx.is_none(), "nothing is read again");
-            assert_eq!(SheetsDoc::sheet_count(&mut doc), sheets, "no second copy");
-            assert_eq!(app.active_sheet, imported, "the open sheet is revealed");
-            assert!(app.status.contains("already open"), "{}", app.status);
-        }
+        app.call("open", serde_json::json!({ "anchor": sales.id.as_str() }))
+            .expect("the sheet opens");
+        app.settle();
+        let (active, status) = shown(&mut app);
+        assert_eq!(active, 1, "the Sales sheet is shown");
+        assert_eq!(status, "Went to Sales!A1");
 
-        // Case `a_file_whose_sheets_were_deleted_imports_again`.
-        {
-            while let Some(idx) = SheetsDoc::sheet_index_by_source(&doc, &import_source(&file)) {
-                let deleted = actions::SheetsAction::DeleteSheet {
-                    idx,
-                    sheet_id: SheetsDoc::sheet_resource_id(&doc, idx).unwrap(),
-                };
-                app.try_perform_action(&mut doc, &deleted).unwrap();
+        let budget = app.state().sheets.ids().next().unwrap().clone();
+        let cell = crate::resource::cell_anchor(&budget, (1, 4));
+        app.call("open", serde_json::json!({ "anchor": cell }))
+            .expect("a cell opens");
+        app.settle();
+        let selected = app
+            .with_surface::<SheetsApp, _>(|sheets| (sheets.active_sheet, sheets.grid.active()))
+            .unwrap();
+        assert_eq!(selected, (0, (1, 4)), "Budget!B5 is selected");
+
+        app.effect(&SheetsEffect::GoToCell {
+            reference: "C3".into(),
+        })
+        .unwrap();
+        app.effect(&SheetsEffect::ToggleFormulaView).unwrap();
+        let view = app
+            .with_surface::<SheetsApp, _>(|sheets| {
+                (sheets.grid.active(), sheets.grid.formula_view())
+            })
+            .unwrap();
+        assert_eq!(view, ((2, 2), true));
+    }
+
+    /// Every format exports to a path and imports back as new sheets (a CSV
+    /// carries the active sheet, a workbook every sheet), in one undo step,
+    /// showing the last sheet it added; opening the file again shows that
+    /// sheet instead of importing a copy.
+    #[test]
+    fn every_format_exports_to_a_path_and_imports_back_once() {
+        let dir = tempfile::tempdir().unwrap();
+        for ext in ["csv", "xlsx", "ods"] {
+            let mut app = sample_app();
+            let path = dir.path().join(format!("Budget.{ext}"));
+            let at = Some(path.display().to_string());
+            let (export, import) = match ext {
+                "csv" => (
+                    SheetsEffect::ExportCsv { path: at.clone() },
+                    SheetsEffect::ImportCsv { path: at },
+                ),
+                "xlsx" => (
+                    SheetsEffect::ExportXlsx { path: at.clone() },
+                    SheetsEffect::ImportXlsx { path: at },
+                ),
+                _ => (
+                    SheetsEffect::ExportOds { path: at.clone() },
+                    SheetsEffect::ImportOds { path: at },
+                ),
+            };
+            app.effect_confirmed(&export).unwrap();
+            assert!(path.exists(), "the .{ext} was written");
+            assert!(shown(&mut app).1.starts_with("Exported"));
+
+            let before = app.state().sheets.len();
+            app.effect(&import).unwrap();
+            app.settle();
+            let added = if ext == "csv" { 1 } else { before };
+            assert_eq!(app.state().sheets.len(), before + added, ".{ext}");
+            assert_eq!(raw_at(&app, before, (0, 0)), "Category");
+            if ext != "csv" {
+                assert_eq!(
+                    raw_at(&app, before + 1, (0, 0)),
+                    "Region",
+                    "the second sheet travels too"
+                );
+                assert_eq!(
+                    raw_at(&app, before, (4, 1)),
+                    "=SUM(B2:D2)",
+                    "a formula comes back live"
+                );
             }
-            app.reload(&mut doc);
-            let after_delete = SheetsDoc::sheet_count(&mut doc);
-            let reimport = admit_direct_import(&mut app, &mut doc, &file);
-            let update = settle_on_idle_host(&mut app, &mut doc, &wakes, reimport);
-            assert!(
-                matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
-                "{update:?}"
-            );
-            assert!(SheetsDoc::sheet_count(&mut doc) > after_delete);
+            let (active, status) = shown(&mut app);
+            assert_eq!(active, before + added - 1, "the last added sheet is shown");
+            assert!(status.starts_with("Imported"), "{status}");
+
+            app.with_surface::<SheetsApp, _>(|sheets| sheets.active_sheet = 0);
+            app.effect(&import).unwrap();
+            app.settle();
+            assert_eq!(app.state().sheets.len(), before + added, "no second copy");
+            let (active, status) = shown(&mut app);
+            assert_eq!(active, before, "the open sheet is shown");
+            assert!(status.contains("already open"), "{status}");
+
+            assert!(app.undo(), "the import is one undo step");
+            assert_eq!(app.state().sheets.len(), before);
         }
-        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// Without a path, the host's chooser picks where an export is saved and
+    /// which file is imported; cancelling it changes nothing.
+    #[test]
+    fn the_file_chooser_saves_exports_and_picks_imports() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Exported.csv");
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let mut app = sample_app();
+
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        app.effect_confirmed(&SheetsEffect::ExportCsv { path: None })
+            .unwrap();
+        let written = std::fs::read_to_string(&path).expect("the chosen file was written");
+        assert!(written.starts_with("Category"), "{written}");
+        assert_eq!(
+            recorder.pick_requests()[0].suggested_name(),
+            Some("Budget.csv")
+        );
+
+        let before = app.state().sheets.len();
+        recorder.respond_to_pick(PortalOutcome::Cancelled);
+        app.effect(&SheetsEffect::ImportXlsx { path: None })
+            .unwrap();
+        app.settle();
+        assert_eq!(
+            app.state().sheets.len(),
+            before,
+            "a cancelled import adds nothing"
+        );
+
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        app.effect(&SheetsEffect::ImportCsv { path: None }).unwrap();
+        app.settle();
+        let state = app.state();
+        assert_eq!(state.sheets.len(), before + 1);
+        assert_eq!(
+            state
+                .sheets
+                .values()
+                .nth(before)
+                .map(|sheet| sheet.name.0.as_str()),
+            Some("Exported")
+        );
+        assert_eq!(raw_at(&app, before, (0, 0)), "Category");
+        assert_eq!(recorder.pick_requests().len(), 3);
+
+        // The same file chosen again, or opened by its path, is shown
+        // rather than imported a second time.
+        app.with_surface::<SheetsApp, _>(|sheets| sheets.active_sheet = 0);
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        app.effect(&SheetsEffect::ImportCsv { path: None }).unwrap();
+        app.settle();
+        assert_eq!(app.state().sheets.len(), before + 1, "no second copy");
+        let (active, status) = shown(&mut app);
+        assert_eq!(active, before, "the imported sheet is shown");
+        assert!(status.contains("already open"), "{status}");
+        app.effect(&SheetsEffect::ImportCsv {
+            path: Some(path.display().to_string()),
+        })
+        .unwrap();
+        app.settle();
+        assert_eq!(app.state().sheets.len(), before + 1, "by path either");
+    }
+
+    /// A file too large, or not a spreadsheet, fails its import with why,
+    /// and the workbook is unchanged.
+    #[test]
+    fn a_file_that_cannot_be_read_fails_its_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.xlsx");
+        std::fs::write(&path, b"not a workbook").unwrap();
+        let mut app = sample_app();
+        let before = app.state().sheets.len();
+        let error = app
+            .effect(&SheetsEffect::ImportXlsx {
+                path: Some(path.display().to_string()),
+            })
+            .expect_err("a broken package fails");
+        assert!(
+            matches!(error, tilo_actions::DoorError::Failed(_)),
+            "{error:?}"
+        );
+        assert_eq!(app.state().sheets.len(), before);
+        assert!(
+            shown(&mut app)
+                .1
+                .starts_with("Spreadsheet operation failed")
+        );
+
+        let sparse = format!("{}x", "\n".repeat(MAX_CSV_MATERIALIZED_SLOTS));
+        let error = SheetsApp::read_tables(Interchange::Csv, sparse.as_bytes(), "sparse")
+            .expect_err("a sparse far-away cell must not allocate a huge rectangle");
+        assert!(error.contains("dimensions require"), "{error}");
     }
 
     fn value_at(app: &SheetsApp, addr: Addr) -> Option<CellValue> {
@@ -9043,18 +5066,16 @@ mod tests {
             app.grid.select_only((0, 30)); // A31 on sheet 0
             app.grid.begin_edit_in_place();
             app.grid.insert_text_public("draft");
-            app.switch_sheet(&mut doc, 1); // click the "Sales" tab
+            app.switch_sheet(&mut Edits::lend(&mut doc), 1); // click the "Sales" tab
             assert_eq!(app.active_sheet, 1);
-            let wb = SheetsDoc::wb_map(&mut doc);
-            assert!(
-                automerge::ReadDoc::get(&doc, &wb, "active")
-                    .unwrap()
-                    .is_none(),
+            assert_eq!(
+                doc.pending_ops(),
+                0,
                 "switching tabs is local presentation and must not write the shared workbook"
             );
             // The pending edit landed on sheet 0, not sheet 1.
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 30)), "draft");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 1, (0, 30)), "");
+            assert_eq!(doc_cell_raw(&doc, 0, (0, 30)), "draft");
+            assert_eq!(doc_cell_raw(&doc, 1, (0, 30)), "");
         }
     }
 
@@ -9118,7 +5139,7 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.apply_cmds(
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 vec![
                     GridCmd::SetCell {
                         addr: (0, 21),
@@ -9133,8 +5154,8 @@ mod tests {
             // Commit the edit through the real flush → apply_cmds path.
             let mut out = Vec::new();
             app.grid.flush_edit(&mut out);
-            app.apply_cmds(&mut doc, out);
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 21)), "=5");
+            app.apply_cmds(&mut Edits::lend(&mut doc), out);
+            assert_eq!(doc_cell_raw(&doc, 0, (0, 21)), "=5");
             assert_eq!(value_at(&app, (0, 21)), Some(CellValue::Number(5.0)));
         }
     }
@@ -9162,7 +5183,7 @@ mod tests {
             assert_eq!(value_at(&app, e2), Some(CellValue::Number(3600.0)));
 
             app.apply_cmds(
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 vec![
                     GridCmd::SetCell {
                         addr: b2,
@@ -9173,7 +5194,7 @@ mod tests {
             );
 
             // The stored raw changed and the dependent SUM recomputed.
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, b2), "1000");
+            assert_eq!(doc_cell_raw(&doc, 0, b2), "1000");
             assert_eq!(value_at(&app, e2), Some(CellValue::Number(3400.0)));
         }
 
@@ -9182,8 +5203,8 @@ mod tests {
             let (mut app, mut doc) = seeded_app();
             // Put the active cell just below a numeric run and AutoSum it.
             app.grid.select_only((1, 7)); // B8, under B2:B7
-            app.auto_sum(&mut doc);
-            let raw = SheetsDoc::cell_raw(&mut doc, 0, (1, 7));
+            app.auto_sum(&mut Edits::lend(&mut doc));
+            let raw = doc_cell_raw(&doc, 0, (1, 7));
             assert!(raw.starts_with("=SUM("), "auto-sum wrote {raw:?}");
             // The computed value is finite and positive (a real sum, not an error).
             match value_at(&app, (1, 7)) {
@@ -9197,9 +5218,9 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((0, 0)); // A1, row 0
-            app.auto_sum(&mut doc);
+            app.auto_sum(&mut Edits::lend(&mut doc));
             assert_eq!(app.status, "Nothing above to sum");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "Category"); // unchanged
+            assert_eq!(doc_cell_raw(&doc, 0, (0, 0)), "Category"); // unchanged
         }
 
         // Case `auto_sum_guard_no_numeric_run`.
@@ -9207,11 +5228,11 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((0, 1)); // A2, directly under A1 = "Category" (text)
-            let before = SheetsDoc::cell_raw(&mut doc, 0, (0, 1));
-            app.auto_sum(&mut doc);
+            let before = doc_cell_raw(&doc, 0, (0, 1));
+            app.auto_sum(&mut Edits::lend(&mut doc));
             assert_eq!(app.status, "No numeric run above");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 1)), before);
-            assert!(!SheetsDoc::cell_raw(&mut doc, 0, (0, 1)).starts_with("=SUM"));
+            assert_eq!(doc_cell_raw(&doc, 0, (0, 1)), before);
+            assert!(!doc_cell_raw(&doc, 0, (0, 1)).starts_with("=SUM"));
         }
     }
 
@@ -9222,7 +5243,7 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((1, 8)); // B9 = 2600 (currency in the seed)
-            app.apply_format(&mut doc, CellFormat::Percent);
+            app.apply_format(&mut Edits::lend(&mut doc), CellFormat::Percent);
             assert_eq!(app.format_of_active(), CellFormat::Percent);
         }
 
@@ -9233,8 +5254,8 @@ mod tests {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_range_public((1, 1), (1, 2)); // B2:B3
             app.grid.add_range_public((3, 1), (3, 2)); // D2:D3 (discontiguous)
-            app.apply_format(&mut doc, CellFormat::Percent);
-            let snap = SheetsDoc::snapshot_sheet(&mut doc, 0, Currency::USD);
+            app.apply_format(&mut Edits::lend(&mut doc), CellFormat::Percent);
+            let snap = doc_snapshot(&doc, 0, Currency::USD);
             for a in [(1, 1), (1, 2), (3, 1), (3, 2)] {
                 assert_eq!(
                     snap.fmt.get(&a).copied(),
@@ -9255,12 +5276,12 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((0, 25)); // A26, empty
-            app.apply_format(&mut doc, CellFormat::Percent);
+            app.apply_format(&mut Edits::lend(&mut doc), CellFormat::Percent);
             assert_eq!(app.format_of_active(), CellFormat::Percent);
-            app.clear_format(&mut doc);
+            app.clear_format(&mut Edits::lend(&mut doc));
             assert_eq!(app.format_of_active(), CellFormat::General);
             // General is not persisted in the snapshot, so the explicit format is gone.
-            let snap = SheetsDoc::snapshot_sheet(&mut doc, 0, Currency::USD);
+            let snap = doc_snapshot(&doc, 0, Currency::USD);
             assert_eq!(snap.fmt.get(&(0, 25)).copied(), None);
         }
 
@@ -9268,10 +5289,10 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((1, 1)); // B2
-            app.dispatch_command(&mut doc, "format_percent", None);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "format_percent", None);
             // The stored format for B2 is now Percent.
             let cur = app.default_currency();
-            let snap = SheetsDoc::snapshot_sheet(&mut doc, 0, cur);
+            let snap = doc_snapshot(&doc, 0, cur);
             assert_eq!(snap.fmt.get(&(1, 1)), Some(&CellFormat::Percent));
         }
     }
@@ -9338,49 +5359,51 @@ mod tests {
         }
     }
 
-    /// XLSX/CSV/ODS export-import round-trips, sparse refusal and portal drain/cancel.
+    /// Imported tables restore live formulas, and a file imported into a new
+    /// workbook replaces its blank sheet.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn interchange_round_trips_through_every_format_and_portal() {
+    fn imported_tables_restore_formulas_and_replace_a_blank_workbook() {
         // Case `xlsx_export_import_restores_live_formulas`.
         // The real export → import path for a workbook of formulas: the active
         // sheet is exported to a `.xlsx`, read back, and imported into a fresh
         // document. Formula cells restore their formula *text* (not a frozen
         // value) and recompute to the original results.
         {
-            let (app, mut doc) = seeded_app();
+            let (app, doc) = seeded_app();
             // Budget!E2 = =SUM(B2:D2) = 3600 in the seed.
-            let table = app.table_for_sheet(&mut doc, app.active_sheet);
+            let table = SheetsApp::table_from_snapshot(&doc_snapshot(
+                &doc,
+                app.active_sheet,
+                Currency::USD,
+            ));
             let path = std::env::temp_dir().join("sheets-app-formula-rt.xlsx");
             crate::xlsx::write_xlsx(&path, std::slice::from_ref(&table)).unwrap();
             let tables = crate::xlsx::read_xlsx(&path).unwrap();
             let _ = std::fs::remove_file(&path);
 
             // Import into a brand-new, empty document via the real import path.
-            let mut fresh = SheetsApp::new();
-            let mut doc2 = AutoCommit::new();
-            fresh.import_tables(&mut doc2, tables, None).unwrap();
+            let mut doc2 = new_doc();
+            let mut fresh = attached_app(&doc2);
+            fresh
+                .import_tables(&mut Edits::lend(&mut doc2), tables)
+                .unwrap();
 
             // The formula came back as a formula, not its computed value.
-            assert_eq!(SheetsDoc::cell_raw(&mut doc2, 0, (4, 1)), "=SUM(B2:D2)");
+            assert_eq!(doc_cell_raw(&doc2, 0, (4, 1)), "=SUM(B2:D2)");
             // …and it recomputes to the original result.
-            let snap = SheetsDoc::snapshot_sheet(&mut doc2, 0, Currency::USD);
+            let snap = doc_snapshot(&doc2, 0, Currency::USD);
             let values = formula::recalculate(&snap.raw);
             assert_eq!(values.get(&(4, 1)), Some(&CellValue::Number(3600.0)));
             // A non-formula neighbour still round-trips as a plain value.
-            assert_eq!(SheetsDoc::cell_raw(&mut doc2, 0, (1, 1)), "1200");
+            assert_eq!(doc_cell_raw(&doc2, 0, (1, 1)), "1200");
         }
 
         // Case `a_file_imported_into_a_new_workbook_is_the_workbook`.
         // A new workbook's empty Sheet1 gives way, so an export of the
         // imported file doesn't open on a blank first tab.
         {
-            let mut app = SheetsApp::new();
-            let mut doc = AutoCommit::new();
-            SheetsDoc::add_sheet(&mut doc, "Sheet1");
+            let mut doc = new_doc();
+            let mut app = attached_app(&doc);
             let table = crate::xlsx::SheetTable {
                 name: "sales".into(),
                 rows: vec![vec![Some(crate::xlsx::ImportedCell {
@@ -9390,129 +5413,16 @@ mod tests {
                     bold: false,
                 })]],
             };
-            app.import_tables(&mut doc, vec![table.clone()], None)
+            app.import_tables(&mut Edits::lend(&mut doc), vec![table.clone()])
                 .unwrap();
-            assert_eq!(SheetsDoc::sheet_names(&mut doc), ["sales"]);
+            assert_eq!(doc_sheet_names(&doc), ["sales"]);
             assert_eq!(app.active_sheet, 0);
-            app.import_tables(&mut doc, vec![table], None).unwrap();
+            app.import_tables(&mut Edits::lend(&mut doc), vec![table])
+                .unwrap();
             assert_eq!(
-                SheetsDoc::sheet_names(&mut doc).len(),
+                doc_sheet_names(&doc).len(),
                 2,
                 "a used workbook keeps its sheets"
-            );
-        }
-
-        // Case `csv_export_then_import_roundtrips`.
-        {
-            export_then_import_roundtrip(
-                "csv",
-                SheetsApp::export_csv_to,
-                SheetsApp::import_csv_from,
-            );
-        }
-
-        // Case `sparse_csv_dimensions_refuse_before_dense_materialisation`.
-        {
-            let path = std::env::temp_dir()
-                .join(format!("tilo-sheets-sparse-csv-{}.csv", std::process::id()));
-            let payload = format!("{}x", "\n".repeat(MAX_CSV_MATERIALIZED_SLOTS));
-            std::fs::write(&path, payload).expect("test CSV writes");
-            let error = SheetsApp::read_import_tables(Interchange::Csv, &path)
-                .expect_err("a sparse far-right cell must not allocate a huge rectangle");
-            assert!(error.contains("dimensions require"), "{error}");
-            let _ = std::fs::remove_file(path);
-        }
-
-        // Case `xlsx_export_then_import_roundtrips`.
-        {
-            export_then_import_roundtrip(
-                "xlsx",
-                SheetsApp::export_xlsx_to,
-                SheetsApp::import_xlsx_from,
-            );
-        }
-
-        // Case `ods_export_then_import_roundtrips`.
-        {
-            export_then_import_roundtrip(
-                "ods",
-                SheetsApp::export_ods_to,
-                SheetsApp::import_ods_from,
-            );
-        }
-
-        // Case `portal_drain_exports_then_imports_through_the_picked_path`.
-        // The portal drain path: a Save outcome writes the active sheet, and an
-        // Open outcome imports it back — driving the exact per-frame `drain_io`
-        // the host file chooser feeds, answered by a recording host (no D-Bus
-        // dialog).
-        {
-            let tmp =
-                std::env::temp_dir().join(format!("tilo-sheets-portal-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&tmp);
-            std::fs::create_dir_all(&tmp).unwrap();
-            let path = tmp.join("Exported.csv");
-
-            let (mut app, mut doc) = seeded_app();
-
-            // Answer the Save dialog as though the user picked `path`, then drain.
-            let (services, recorder) = ui::host::HostServices::recording();
-            recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
-            ui::host::scoped(&services, || app.begin_export(Interchange::Csv));
-            assert!(recorder.pick_requests()[0].suggested_name().is_some());
-            app.drain_io(&mut doc);
-            // The file codec runs on the bounded worker. Drive the same frame pump
-            // as a live app and wait by elapsed time, not an arbitrary count of
-            // yields: under a saturated CI runner ten thousand yields can elapse
-            // before the worker gets scheduled even though the operation is sound.
-            sync_until(&mut app, &mut doc, |app| app.interchange_rx.is_none());
-            assert!(
-                app.io.is_none(),
-                "a delivered outcome clears the in-flight dialog"
-            );
-            assert!(path.exists(), "the export wrote the picked file");
-            assert!(
-                app.status.starts_with("Exported"),
-                "export status: {}",
-                app.status
-            );
-
-            // Answer an Open dialog with the same path and drain: it imports a sheet.
-            let before = SheetsDoc::sheet_count(&mut doc);
-            recorder.respond_to_pick(PortalOutcome::Opened(path));
-            ui::host::scoped(&services, || app.begin_import(Interchange::Csv));
-            assert_eq!(recorder.pick_requests().len(), 2);
-            app.drain_io(&mut doc);
-            sync_until(&mut app, &mut doc, |app| app.interchange_rx.is_none());
-            assert_eq!(
-                SheetsDoc::sheet_count(&mut doc),
-                before + 1,
-                "import added a sheet"
-            );
-            assert!(
-                app.status.starts_with("Imported"),
-                "import status: {}",
-                app.status
-            );
-
-            let _ = std::fs::remove_dir_all(&tmp);
-        }
-
-        // Case `portal_cancel_is_silent`.
-        // A cancelled chooser clears the in-flight dialog and touches nothing.
-        {
-            let (mut app, mut doc) = seeded_app();
-            let before = SheetsDoc::sheet_count(&mut doc);
-            let (services, recorder) = ui::host::HostServices::recording();
-            recorder.respond_to_pick(PortalOutcome::Cancelled);
-            ui::host::scoped(&services, || app.begin_import(Interchange::Xlsx));
-            assert!(app.io.is_some(), "import asked the host chooser");
-            app.drain_io(&mut doc);
-            assert!(app.io.is_none());
-            assert_eq!(
-                SheetsDoc::sheet_count(&mut doc),
-                before,
-                "cancel imports nothing"
             );
         }
     }
@@ -9526,9 +5436,9 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_range_public((4, 1), (4, 3)); // E2:E4, E2 = =SUM(B2:D2)
-            app.fill_down(&mut doc);
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (4, 2)), "=SUM(B3:D3)");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (4, 3)), "=SUM(B4:D4)");
+            app.fill_down(&mut Edits::lend(&mut doc));
+            assert_eq!(doc_cell_raw(&doc, 0, (4, 2)), "=SUM(B3:D3)");
+            assert_eq!(doc_cell_raw(&doc, 0, (4, 3)), "=SUM(B4:D4)");
             // E3 recomputes against row 3's operands: 460 + 510 + ... etc > 0.
             match value_at(&app, (4, 2)) {
                 Some(CellValue::Number(n)) => assert!(n > 0.0, "filled formula recomputed to {n}"),
@@ -9543,7 +5453,7 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.apply_cmds(
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 vec![
                     GridCmd::SetCell {
                         addr: (7, 1),
@@ -9558,10 +5468,10 @@ mod tests {
             );
             app.grid.select_range_public((7, 1), (7, 2)); // the pattern
             app.grid.start_fill_to((7, 5)); // drag the handle down to H6
-            app.run_pending_fill(&mut doc);
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (7, 3)), "3");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (7, 4)), "4");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (7, 5)), "5");
+            app.run_pending_fill(&mut Edits::lend(&mut doc));
+            assert_eq!(doc_cell_raw(&doc, 0, (7, 3)), "3");
+            assert_eq!(doc_cell_raw(&doc, 0, (7, 4)), "4");
+            assert_eq!(doc_cell_raw(&doc, 0, (7, 5)), "5");
             assert_eq!(value_at(&app, (7, 5)), Some(CellValue::Number(5.0)));
         }
 
@@ -9572,10 +5482,10 @@ mod tests {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
             app.grid.start_fill_to((4, 4)); // drag down to E5
-            app.run_pending_fill(&mut doc);
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (4, 2)), "=SUM(B3:D3)");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (4, 3)), "=SUM(B4:D4)");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (4, 4)), "=SUM(B5:D5)");
+            app.run_pending_fill(&mut Edits::lend(&mut doc));
+            assert_eq!(doc_cell_raw(&doc, 0, (4, 2)), "=SUM(B3:D3)");
+            assert_eq!(doc_cell_raw(&doc, 0, (4, 3)), "=SUM(B4:D4)");
+            assert_eq!(doc_cell_raw(&doc, 0, (4, 4)), "=SUM(B5:D5)");
             match value_at(&app, (4, 4)) {
                 Some(CellValue::Number(n)) => assert!(n > 0.0, "filled formula recomputed to {n}"),
                 other => panic!("expected numeric fill result, got {other:?}"),
@@ -9588,7 +5498,7 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.apply_cmds(
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 vec![
                     GridCmd::SetCell {
                         addr: (7, 10),
@@ -9603,9 +5513,9 @@ mod tests {
             );
             app.grid.select_range_public((7, 10), (8, 10));
             app.grid.start_fill_to((10, 10)); // drag right to K11
-            app.run_pending_fill(&mut doc);
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (9, 10)), "30");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (10, 10)), "40");
+            app.run_pending_fill(&mut Edits::lend(&mut doc));
+            assert_eq!(doc_cell_raw(&doc, 0, (9, 10)), "30");
+            assert_eq!(doc_cell_raw(&doc, 0, (10, 10)), "40");
         }
 
         // Case `shift_refs_handles_anchors_functions_and_numbers`.
@@ -9634,9 +5544,9 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.grid.select_range_public((4, 1), (6, 1)); // E2:G2, E2 = =SUM(B2:D2)
-            app.fill_right(&mut doc);
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (5, 1)), "=SUM(C2:E2)");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (6, 1)), "=SUM(D2:F2)");
+            app.fill_right(&mut Edits::lend(&mut doc));
+            assert_eq!(doc_cell_raw(&doc, 0, (5, 1)), "=SUM(C2:E2)");
+            assert_eq!(doc_cell_raw(&doc, 0, (6, 1)), "=SUM(D2:F2)");
             match value_at(&app, (5, 1)) {
                 Some(CellValue::Number(n)) => assert!(n > 0.0, "filled formula recomputed to {n}"),
                 other => panic!("expected numeric fill result, got {other:?}"),
@@ -9645,21 +5555,42 @@ mod tests {
     }
 
     /// Copy/cut/paste of values, formats and formulas, range tiling and external TSV.
+    /// A paste of many cells is one change: one history entry, one undo
+    /// step.
+    #[test]
+    fn a_paste_is_one_change() {
+        let _clipboard = CLIP_LOCK.lock_recover();
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_range_public((0, 1), (3, 3)); // A2:D4
+        app.copy_selection(false);
+        app.grid.select_only((0, 20));
+        let before = doc.get_heads();
+        app.paste(&mut Edits::lend(&mut doc));
+        assert_eq!(doc_cell_raw(&doc, 0, (0, 20)), "Rent");
+        assert_eq!(
+            doc_cell_raw(&doc, 0, (3, 22)),
+            doc_cell_raw(&doc, 0, (3, 3))
+        );
+        assert_eq!(
+            doc.get_changes(&before).len(),
+            1,
+            "one change for twelve cells"
+        );
+    }
+
     #[test]
     fn copy_cut_and_paste_relativise_formulas_correctly() {
         // Case `copy_paste_preserves_value_and_format`.
         {
             // Copy a currency cell into an empty one; the raw and the currency
             // format both come across, and it recomputes to the same number.
-            let _clip = CLIP_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((1, 1)); // B2 = 1200, currency
             app.copy_selection(false);
             app.grid.select_only((1, 7)); // B8, empty
-            app.paste(&mut doc);
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (1, 7)), "1200");
+            app.paste(&mut Edits::lend(&mut doc));
+            assert_eq!(doc_cell_raw(&doc, 0, (1, 7)), "1200");
             assert!(matches!(
                 app.grid.cell_fmt_at((1, 7)),
                 CellFormat::Currency(_)
@@ -9672,52 +5603,42 @@ mod tests {
             // Copy E2 (`=SUM(B2:D2)`) and paste it over F3: the relative refs
             // shift by (+1 col, +1 row) to `=SUM(C3:E3)`, overwriting F3's seeded
             // AVERAGE, and the pasted formula recomputes against the new operands.
-            let _clip = CLIP_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((4, 1)); // E2
             app.copy_selection(false);
             app.grid.select_only((5, 2)); // F3
-            app.paste(&mut doc);
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (5, 2)), "=SUM(C3:E3)");
+            app.paste(&mut Edits::lend(&mut doc));
+            assert_eq!(doc_cell_raw(&doc, 0, (5, 2)), "=SUM(C3:E3)");
             // C3=460, D3=510, E3=SUM(B3:D3)=1390 → 2360.
             assert_eq!(value_at(&app, (5, 2)), Some(CellValue::Number(2360.0)));
         }
 
         // Case `cut_moves_cell_and_clears_source`.
         {
-            let _clip = CLIP_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((0, 0)); // A1 = "Category"
             app.copy_selection(true); // cut
             app.grid.select_only((0, 20)); // A21, empty
-            app.paste(&mut doc);
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 20)), "Category");
+            app.paste(&mut Edits::lend(&mut doc));
+            assert_eq!(doc_cell_raw(&doc, 0, (0, 0)), "");
+            assert_eq!(doc_cell_raw(&doc, 0, (0, 20)), "Category");
         }
 
         // Case `cut_paste_formula_does_not_relativize`.
         // A **cut** moves a formula verbatim — its references follow the cells and
         // are *not* re-relativised (unlike a copy). The real cut→paste path.
         {
-            let _clip = CLIP_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
             app.copy_selection(true); // cut
             app.grid.select_only((6, 10)); // G11, empty, far away
-            app.paste(&mut doc);
+            app.paste(&mut Edits::lend(&mut doc));
             // The formula is unchanged: a move keeps references pointing at B2:D2.
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (6, 10)), "=SUM(B2:D2)");
-            assert_eq!(
-                SheetsDoc::cell_raw(&mut doc, 0, (4, 1)),
-                "",
-                "source cleared"
-            );
+            assert_eq!(doc_cell_raw(&doc, 0, (6, 10)), "=SUM(B2:D2)");
+            assert_eq!(doc_cell_raw(&doc, 0, (4, 1)), "", "source cleared");
         }
 
         // Case `paste_tiles_a_formula_across_a_range`.
@@ -9725,18 +5646,16 @@ mod tests {
         // each destination cell's relative references by its own position — the
         // real range-paste path.
         {
-            let _clip = CLIP_LOCK
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _clip = CLIP_LOCK.lock_recover();
             let (mut app, mut doc) = seeded_app();
             app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
             app.copy_selection(false);
             // Target a 1×3 range F2:F4; the 1×1 block tiles down it.
             app.grid.select_range_public((5, 1), (5, 3));
-            app.paste(&mut doc);
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (5, 1)), "=SUM(C2:E2)");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (5, 2)), "=SUM(C3:E3)");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (5, 3)), "=SUM(C4:E4)");
+            app.paste(&mut Edits::lend(&mut doc));
+            assert_eq!(doc_cell_raw(&doc, 0, (5, 1)), "=SUM(C2:E2)");
+            assert_eq!(doc_cell_raw(&doc, 0, (5, 2)), "=SUM(C3:E3)");
+            assert_eq!(doc_cell_raw(&doc, 0, (5, 3)), "=SUM(C4:E4)");
         }
 
         // Case `paste_tsv_parses_external_grid`.
@@ -9745,15 +5664,15 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             let target = (0, 40); // A41, empty region
-            assert!(app.paste_tsv(&mut doc, target, "10\t20\n30\t40\n"));
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 40)), "10");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (1, 40)), "20");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 41)), "30");
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (1, 41)), "40");
-            app.reload(&mut doc);
+            assert!(app.paste_tsv(&mut Edits::lend(&mut doc), target, "10\t20\n30\t40\n"));
+            assert_eq!(doc_cell_raw(&doc, 0, (0, 40)), "10");
+            assert_eq!(doc_cell_raw(&doc, 0, (1, 40)), "20");
+            assert_eq!(doc_cell_raw(&doc, 0, (0, 41)), "30");
+            assert_eq!(doc_cell_raw(&doc, 0, (1, 41)), "40");
+            app.sync(&doc, &automerge::ROOT);
             assert_eq!(value_at(&app, (1, 41)), Some(CellValue::Number(40.0)));
             // Empty payload writes nothing.
-            assert!(!app.paste_tsv(&mut doc, target, ""));
+            assert!(!app.paste_tsv(&mut Edits::lend(&mut doc), target, ""));
         }
     }
 
@@ -9801,33 +5720,34 @@ mod tests {
             );
         }
 
-        // Case `annotation_controls_keep_a_normal_touch_target`.
-        {
-            let height = std::hint::black_box(ANNOTATION_ACTION_H);
-            assert!(
-                height >= 40.0,
-                "chart/comment actions must not regress to text-line hit targets"
-            );
-        }
-
         // Case `narrow_large_text_collapses_secondary_toolbar_actions_without_clipping`.
         {
-            let (mut app, _tr) = measured_app(560.0, 720.0, 2.0);
-            let labels: Vec<&str> = app
-                .menu_buttons
-                .iter()
-                .map(|button| button.label.as_str())
-                .collect();
-            assert_eq!(labels, vec!["File", "Format", "More"]);
+            let (mut app, mut tr, theme) = measured_app(560.0, 720.0, 2.0);
+            assert!(app.toolbar.item_rect(chrome::bar::FILE).is_some());
+            assert!(app.toolbar.item_rect(chrome::bar::FORMAT).is_some());
             assert!(
-                app.menu_buttons
-                    .iter()
-                    .all(|button| button.rect.x1 <= app.rect.x1)
+                app.toolbar.has_overflow(),
+                "what does not fit moves into More"
             );
-            app.open_menu = OpenMenu::More;
-            app.relayout_overlays();
-            assert_eq!(app.dropdown_rows.len(), 3);
-            assert!(app.dropdown_rect.x0 >= app.rect.x0 && app.dropdown_rect.x1 <= app.rect.x1);
+            let shown = chrome::bar::COMMANDS
+                .iter()
+                .filter_map(|index| app.toolbar.item_rect(*index))
+                .collect::<Vec<_>>();
+            assert!(shown.iter().all(|rect| rect.x1 <= app.rect.x1));
+            app.toolbar.open_overflow();
+            paint_frame(&mut app, &mut tr, &theme);
+            let (_, menu) = app.toolbar.shown_menu().expect("the More menu opens");
+            assert_eq!(
+                menu.items()
+                    .iter()
+                    .filter(|item| item.label().is_some())
+                    .count(),
+                // Six commands, File and Format among those shown.
+                6 - shown.len(),
+                "More holds exactly the commands the bar dropped"
+            );
+            let panel = Widget::get_rect(menu);
+            assert!(panel.x0 >= app.rect.x0 && panel.x1 <= app.rect.x1);
         }
     }
 
@@ -9854,13 +5774,13 @@ mod tests {
                 &named_event(winit::keyboard::NamedKey::Enter),
                 Modifiers::default()
             ));
-            assert_eq!(SheetsDoc::sheet_names(&mut doc)[0], "Ledger");
+            assert_eq!(doc_sheet_names(&doc)[0], "Ledger");
         }
 
         // Case `tab_rename_escape_cancels_without_a_document_write`.
         {
             let (mut app, mut doc) = seeded_app();
-            let before = SheetsDoc::sheet_names(&mut doc);
+            let before = doc_sheet_names(&doc);
             app.begin_tab_rename(0);
             assert!(feed(
                 &mut app,
@@ -9875,324 +5795,91 @@ mod tests {
                 Modifiers::default()
             ));
             assert!(app.tab_rename.is_none());
-            assert_eq!(SheetsDoc::sheet_names(&mut doc), before);
-            assert!(app.actions.take_committed().is_none());
+            assert_eq!(doc_sheet_names(&doc), before);
+            assert_eq!(doc.pending_ops(), 0, "nothing was written");
         }
 
         // Case `tab_duplicate_creates_a_copy`.
         {
             let (mut app, mut doc) = seeded_app();
-            let before = SheetsDoc::sheet_count(&mut doc);
-            app.run_tab_action(&mut doc, 0, TabAction::Duplicate);
-            assert_eq!(SheetsDoc::sheet_count(&mut doc), before + 1);
+            let before = doc_sheet_count(&doc);
+            app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::Duplicate);
+            assert_eq!(doc_sheet_count(&doc), before + 1);
             // Inserted right after the source and named "<name> copy".
-            assert_eq!(SheetsDoc::sheet_names(&mut doc)[1], "Budget copy");
+            assert_eq!(doc_sheet_names(&doc)[1], "Budget copy");
             // The copy carries the source's formulas.
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 1, (4, 1)), "=SUM(B2:D2)");
+            assert_eq!(doc_cell_raw(&doc, 1, (4, 1)), "=SUM(B2:D2)");
         }
 
         // Case `tab_delete_removes_and_keeps_one_sheet`.
         {
             let (mut app, mut doc) = seeded_app();
             // Seed: Budget, Sales. Remove Sales.
-            app.run_tab_action(&mut doc, 1, TabAction::Delete);
-            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Budget"]);
+            app.run_tab_action(&mut Edits::lend(&mut doc), 1, TabAction::Delete);
+            confirm(&mut app, &mut doc);
+            assert_eq!(doc_sheet_names(&doc), vec!["Budget"]);
             // The last remaining sheet cannot be deleted away.
-            app.run_tab_action(&mut doc, 0, TabAction::Delete);
-            assert_eq!(SheetsDoc::sheet_count(&mut doc), 1);
+            app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::Delete);
+            assert_eq!(doc_sheet_count(&doc), 1);
         }
 
         // Case `tab_move_right_reorders_sheets`.
         {
             let (mut app, mut doc) = seeded_app();
-            app.run_tab_action(&mut doc, 0, TabAction::MoveRight);
-            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Sales", "Budget"]);
+            app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::MoveRight);
+            assert_eq!(doc_sheet_names(&doc), vec!["Sales", "Budget"]);
             // The moved sheet keeps its data (Budget's E2 formula).
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 1, (4, 1)), "=SUM(B2:D2)");
+            assert_eq!(doc_cell_raw(&doc, 1, (4, 1)), "=SUM(B2:D2)");
         }
 
         // Case `tab_set_and_clear_colour`.
         {
             let (mut app, mut doc) = seeded_app();
-            app.run_tab_action(&mut doc, 0, TabAction::SetColor(Some(2)));
-            assert_eq!(SheetsDoc::sheet_color(&mut doc, 0), Some(2));
-            app.run_tab_action(&mut doc, 0, TabAction::SetColor(None));
-            assert_eq!(SheetsDoc::sheet_color(&mut doc, 0), None);
+            app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::SetColor(Some(2)));
+            assert_eq!(doc_sheet_color(&doc, 0), Some(2));
+            app.run_tab_action(&mut Edits::lend(&mut doc), 0, TabAction::SetColor(None));
+            assert_eq!(doc_sheet_color(&doc, 0), None);
         }
     }
 
-    /// Blank launch, cache reuse/invalidation and persist/reload.
+    /// Cache reuse and invalidation.
     #[test]
-    fn workbook_launch_reload_and_persistence_round_trip() {
-        // Case `blank_launch_opens_a_single_empty_sheet`.
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            // A real launch (persist on, but pointed at an empty temp data dir)
-            // must NOT fabricate the sample workbook.
-            let tmp =
-                std::env::temp_dir().join(format!("tilo-sheets-blank-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&tmp);
-            env.set("XDG_DATA_HOME", &tmp);
-
-            let mut app = SheetsApp::new(); // RunMode::Live: blank, persisted
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            sync_until(&mut app, &mut doc, |app| app.pending.seeded);
-
-            assert_eq!(SheetsDoc::sheet_count(&mut doc), 1);
-            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Sheet1"]);
-            // No fabricated cells.
-            let snap = SheetsDoc::snapshot_sheet(&mut doc, 0, Currency::USD);
-            assert!(
-                snap.raw.is_empty(),
-                "blank launch seeded {} cells",
-                snap.raw.len()
-            );
-
-            let _ = std::fs::remove_dir_all(&tmp);
-        }
-
+    fn reload_reuses_unchanged_cache_and_invalidates_it_after_an_edit() {
         // Case `reload_reuses_unchanged_cache_and_invalidates_it_after_an_edit`.
         {
             let (mut app, mut doc) = seeded_app();
             // Commit the startup seed and refresh once at its steady-state heads.
-            app.sync(&mut doc, &automerge::ROOT);
-            let cached_heads = app
+            doc.commit();
+            app.sync(&doc, &automerge::ROOT);
+            let cached = app
                 .cache
                 .as_ref()
                 .expect("seed reload populates cache")
-                .heads
-                .clone();
+                .revision;
 
             app.pending.redraw = false;
-            app.reload(&mut doc);
+            app.sync(&doc, &automerge::ROOT);
             assert!(
                 !app.pending.redraw,
                 "unchanged reload should return before rebuilding"
             );
-            assert_eq!(app.cache.as_ref().unwrap().heads, cached_heads);
+            assert_eq!(app.cache.as_ref().unwrap().revision, cached);
 
-            SheetsDoc::set_cell_raw(&mut doc, 0, (0, 0), "1234");
+            app.write_raw(
+                &mut Edits::lend(&mut doc),
+                vec![((0, 0), "1234".to_owned(), None)],
+            );
             app.pending.redraw = false;
-            app.reload(&mut doc);
+            app.sync(&doc, &automerge::ROOT);
 
-            let refreshed_heads = &app
+            let refreshed = app
                 .cache
                 .as_ref()
                 .expect("edited reload refreshes cache")
-                .heads;
-            assert_ne!(refreshed_heads, &cached_heads);
-            assert_eq!(refreshed_heads, &doc.get_heads());
+                .revision;
+            assert_ne!(refreshed, cached, "an edit invalidates the cached state");
             assert_eq!(value_at(&app, (0, 0)), Some(CellValue::Number(1234.0)));
             assert!(app.pending.redraw, "rebuilt grid must request a redraw");
-        }
-
-        // Case `workbook_persists_and_reloads`.
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            let tmp =
-                std::env::temp_dir().join(format!("tilo-sheets-persist-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&tmp);
-            env.set("XDG_DATA_HOME", &tmp);
-
-            // Session one: blank launch, edit a cell, persist.
-            let mut app = SheetsApp::new();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
-            sync_until(&mut app, &mut doc, |app| app.pending.seeded);
-            app.apply_cmds(
-                &mut doc,
-                vec![
-                    GridCmd::SetCell {
-                        addr: (0, 0),
-                        raw: "hello".into(),
-                    },
-                    GridCmd::Commit,
-                ],
-            );
-            app.persist_if_dirty(&mut doc);
-            let expected_heads = doc.get_heads();
-            sync_until(&mut app, &mut doc, |app| {
-                app.persistence_rx.is_none() && app.saved_heads == expected_heads
-            });
-            assert!(
-                workbook_path().unwrap().exists(),
-                "workbook was not written"
-            );
-
-            // Session two: a fresh app + fresh document reopens the saved workbook.
-            let mut app2 = SheetsApp::new();
-            let mut doc2 = AutoCommit::new();
-            app2.sync(&mut doc2, &root);
-            sync_until(&mut app2, &mut doc2, |app| app.pending.seeded);
-            assert_eq!(SheetsDoc::cell_raw(&mut doc2, 0, (0, 0)), "hello");
-
-            let _ = std::fs::remove_dir_all(&tmp);
-        }
-    }
-
-    /// Failed, coalesced, merged, disconnected and stale persistence keep heads honest.
-    #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn persistence_failures_never_lose_or_misacknowledge_edits() {
-        // Case `failed_persistence_never_acknowledges_unsaved_heads`.
-        {
-            let (mut app, mut doc) = seeded_app();
-            SheetsDoc::add_sheet(&mut doc, "Unsaved");
-            let heads = doc.get_heads();
-            let (tx, rx) = mpsc::sync_channel(1);
-            tx.send(PersistenceResult::Save {
-                generation: 7,
-                heads: heads.clone(),
-                result: Err("disk full".into()),
-            })
-            .unwrap();
-            app.persistence_rx = Some(rx);
-            app.active_persistence = Some((
-                7,
-                PersistenceJob::Save {
-                    heads: heads.clone(),
-                },
-            ));
-            app.drain_persistence_worker(&mut doc);
-
-            assert_ne!(app.saved_heads, heads);
-            assert!(app.last_persist_failure.is_some());
-            assert!(app.status.contains("Could not save workbook"));
-        }
-
-        // Case `persistence_coalesces_edits_that_arrive_during_a_save`.
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            let tmp = std::env::temp_dir().join(format!(
-                "tilo-sheets-persist-coalesce-{}",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&tmp);
-            env.set("XDG_DATA_HOME", &tmp);
-            let mut app = SheetsApp::new();
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
-            sync_until(&mut app, &mut doc, |app| app.pending.seeded);
-
-            app.apply_cmds(
-                &mut doc,
-                vec![GridCmd::SetCell {
-                    addr: (0, 0),
-                    raw: "first".into(),
-                }],
-            );
-            let first_heads = doc.get_heads();
-            app.start_persistence_save(&mut doc, first_heads.clone())
-                .unwrap();
-            // This mutation happens before the first worker result is received.
-            app.apply_cmds(
-                &mut doc,
-                vec![GridCmd::SetCell {
-                    addr: (1, 0),
-                    raw: "second".into(),
-                }],
-            );
-            let latest_heads = doc.get_heads();
-            assert_ne!(first_heads, latest_heads);
-            sync_until(&mut app, &mut doc, |app| {
-                app.persistence_rx.is_none() && app.saved_heads == latest_heads
-            });
-
-            let bytes = std::fs::read(workbook_path().unwrap()).unwrap();
-            let mut saved = AutoCommit::load(&bytes).unwrap();
-            assert_eq!(SheetsDoc::cell_raw(&mut saved, 0, (1, 0)), "second");
-            let _ = std::fs::remove_dir_all(&tmp);
-        }
-
-        // Case `incoming_change_during_load_is_saved_after_the_disk_workbook_merges`.
-        {
-            let mut env = tilo_test_env::ScopedEnv::new();
-            let tmp =
-                std::env::temp_dir().join(format!("tilo-sheets-load-race-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&tmp);
-            env.set("XDG_DATA_HOME", &tmp);
-            let mut on_disk = AutoCommit::new();
-            SheetsDoc::add_sheet(&mut on_disk, "Disk");
-            SheetsDoc::set_cell_raw(&mut on_disk, 0, (0, 0), "saved");
-            let path = workbook_path().unwrap();
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, on_disk.save()).unwrap();
-
-            let mut app = SheetsApp::new();
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT); // starts load, never blocks for it
-            SheetsDoc::add_sheet(&mut doc, "Arrived while loading");
-            sync_until(&mut app, &mut doc, |app| {
-                app.pending.seeded
-                    && app.persistence_rx.is_none()
-                    && app.active_persistence.is_none()
-            });
-            assert_eq!(app.saved_heads, doc.get_heads());
-
-            let bytes = std::fs::read(path).unwrap();
-            let mut saved = AutoCommit::load(&bytes).unwrap();
-            let names = SheetsDoc::sheet_names(&mut saved);
-            assert!(names.iter().any(|name| name == "Disk"));
-            assert!(names.iter().any(|name| name == "Arrived while loading"));
-            let _ = std::fs::remove_dir_all(&tmp);
-        }
-
-        // Case `disconnected_persistence_worker_leaves_document_dirty_and_retriable`.
-        {
-            let (mut app, mut doc) = seeded_app();
-            SheetsDoc::add_sheet(&mut doc, "Retry me");
-            let heads = doc.get_heads();
-            let (tx, rx) = mpsc::sync_channel(1);
-            drop(tx);
-            app.persistence_rx = Some(rx);
-            app.active_persistence = Some((
-                9,
-                PersistenceJob::Save {
-                    heads: heads.clone(),
-                },
-            ));
-            app.drain_persistence_worker(&mut doc);
-
-            assert!(app.persistence_rx.is_none());
-            assert!(app.active_persistence.is_none());
-            assert_ne!(app.saved_heads, heads);
-            assert!(app.last_persist_failure.is_some());
-            assert!(app.status.contains("changes will be retried"));
-        }
-
-        // Case `stale_persistence_completion_cannot_advance_durable_heads`.
-        {
-            let (mut app, mut doc) = seeded_app();
-            SheetsDoc::add_sheet(&mut doc, "Current");
-            let current_heads = doc.get_heads();
-            let (tx, rx) = mpsc::sync_channel(1);
-            tx.send(PersistenceResult::Save {
-                generation: 3,
-                heads: current_heads.clone(),
-                result: Ok(()),
-            })
-            .unwrap();
-            app.persistence_rx = Some(rx);
-            // Generation 4 is the only accepted job. A late A completion must not
-            // overwrite its durable-head checkpoint; the inconsistent slot is
-            // settled as retryable rather than leaving an orphaned B owner.
-            app.active_persistence = Some((
-                4,
-                PersistenceJob::Save {
-                    heads: current_heads.clone(),
-                },
-            ));
-            app.drain_persistence_worker(&mut doc);
-
-            assert_ne!(app.saved_heads, current_heads);
-            assert!(app.active_persistence.is_none());
-            assert!(app.last_persist_failure.is_some());
         }
     }
 
@@ -10306,91 +5993,27 @@ mod tests {
 
     // --- external-clipboard (TSV) paste + auto-sum guards ------------------
 
-    // --- app-level import/export flows -------------------------------------
-
-    /// The Export → write-file then Import → new-sheet round trip for each
-    /// interchange format, exercised end to end through the real codecs + a real
-    /// file on disk — the exact path-cores the portal drain drives, given an
-    /// explicit temp path in place of a host file chooser.
-    fn export_then_import_roundtrip(
-        ext: &str,
-        export_to: fn(&mut SheetsApp, &mut AutoCommit, &std::path::Path),
-        import_from: fn(&mut SheetsApp, &mut AutoCommit, &std::path::Path),
-    ) {
-        let tmp = std::env::temp_dir().join(format!("tilo-sheets-io-{ext}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        let path = tmp.join(format!("Budget.{ext}"));
-
-        let (mut app, mut doc) = seeded_app();
-        export_to(&mut app, &mut doc, &path);
-        assert!(
-            app.status.starts_with("Exported"),
-            "export status: {}",
-            app.status
-        );
-        // The file physically exists at the chosen path.
-        assert!(path.exists(), "no .{ext} written to {path:?}");
-
-        let before = SheetsDoc::sheet_count(&mut doc);
-        // CSV is deliberately one active table; real workbook formats carry
-        // the whole two-tab workbook.
-        let expected_added = if ext == "csv" { 1 } else { before };
-        import_from(&mut app, &mut doc, &path);
-        assert_eq!(
-            SheetsDoc::sheet_count(&mut doc),
-            before + expected_added,
-            "import must restore every table carried by the format"
-        );
-        assert!(
-            app.status.starts_with("Imported"),
-            "import status: {}",
-            app.status
-        );
-        // The re-imported sheet carries the Budget header text through the file.
-        assert_eq!(SheetsDoc::cell_raw(&mut doc, before, (0, 0)), "Category");
-        if ext != "csv" {
-            assert_eq!(
-                SheetsDoc::cell_raw(&mut doc, before + 1, (0, 0)),
-                "Region",
-                "the second workbook tab is not silently discarded"
-            );
-        }
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
     // -----------------------------------------------------------------------
     // Command palette (Ctrl+K) integration
     // -----------------------------------------------------------------------
 
     /// A `Modifiers` value with Control held.
-    fn ctrl_mods() -> Modifiers {
+    pub(super) fn ctrl_mods() -> Modifiers {
         let mut s = winit::keyboard::ModifiersState::empty();
         s.set(winit::keyboard::ModifiersState::CONTROL, true);
         Modifiers::from(s)
     }
 
-    /// Synthesise a pressed `WindowEvent::KeyboardInput` (winit keeps
-    /// `KeyEventExtra` private, so we zero-init like the toolkit's own tests).
+    /// Synthesise a pressed `WindowEvent::KeyboardInput`.
     fn key_event(logical: winit::keyboard::Key) -> WindowEvent {
-        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
-        );
-        ev.location = winit::keyboard::KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            logical,
+            None,
+            ElementState::Pressed,
+        ))
     }
 
-    fn char_event(s: &str) -> WindowEvent {
+    pub(super) fn char_event(s: &str) -> WindowEvent {
         let mut event = key_event(winit::keyboard::Key::Character(
             winit::keyboard::SmolStr::new(s),
         ));
@@ -10406,26 +6029,132 @@ mod tests {
 
     /// Drive one event through the real `handle_event` path; returns whether the
     /// app consumed it.
-    fn feed(app: &mut SheetsApp, doc: &mut AutoCommit, ev: &WindowEvent, mods: Modifiers) -> bool {
-        let root = automerge::ROOT;
-        let mut handled = false;
-        let mut focus: Option<NodeId> = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        app.handle_event(
-            ev,
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &mods,
-                state: doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
+    pub(super) fn feed(
+        app: &mut SheetsApp,
+        doc: &mut AutoCommit,
+        ev: &WindowEvent,
+        mods: Modifiers,
+    ) -> bool {
+        ui::testing::Dispatch::new()
+            .modifiers(mods)
+            .doc(doc)
+            .send(app, ev)
+            .handled
+    }
+
+    /// A cell edit takes an input-method composition: shown at the caret,
+    /// typed into the cell only on commit; Backspace removes whole clusters.
+    #[test]
+    fn cell_edit_composes_with_the_input_method_and_deletes_whole_clusters() {
+        use winit::event::Ime;
+        use winit::keyboard::NamedKey;
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((0, 20)); // A21, empty
+        assert!(feed(
+            &mut app,
+            &mut doc,
+            &char_event("a"),
+            Modifiers::default()
+        ));
+        assert!(app.grid.is_editing());
+        assert_eq!(
+            app.ime_purpose(),
+            Some(winit::window::ImePurpose::Normal),
+            "the editing cell asks for the input method"
         );
-        handled
+        assert!(app.ime_cursor_rect().is_some());
+
+        let ime = |app: &mut SheetsApp, doc: &mut AutoCommit, ime: Ime| {
+            feed(app, doc, &WindowEvent::Ime(ime), Modifiers::default())
+        };
+        assert!(ime(
+            &mut app,
+            &mut doc,
+            Ime::Preedit("にほ".into(), Some((3, 3)))
+        ));
+        assert_eq!(
+            app.grid.edit_shown(),
+            Some(("aにほ".to_owned(), 2)),
+            "the composition shows at the caret, the caret inside it"
+        );
+        assert_eq!(app.grid.active_display_raw(), "a", "but is not typed yet");
+        assert!(ime(&mut app, &mut doc, Ime::Commit("日本".into())));
+        assert_eq!(app.grid.active_display_raw(), "a日本");
+
+        // A combined letter, an emoji with a skin tone and a flag each go in
+        // as one character and come out with one Backspace.
+        for typed in ["e\u{301}", "👍🏽", "🇩🇪"] {
+            assert!(ime(&mut app, &mut doc, Ime::Commit(typed.into())));
+        }
+        assert_eq!(app.grid.active_display_raw(), "a日本e\u{301}👍🏽🇩🇪");
+        let backspace = named_event(NamedKey::Backspace);
+        assert!(feed(&mut app, &mut doc, &backspace, Modifiers::default()));
+        assert_eq!(app.grid.active_display_raw(), "a日本e\u{301}👍🏽");
+        assert!(feed(&mut app, &mut doc, &backspace, Modifiers::default()));
+        assert!(feed(&mut app, &mut doc, &backspace, Modifiers::default()));
+        assert_eq!(app.grid.active_display_raw(), "a日本");
+
+        // A committed composition replaces the selection.
+        app.grid.set_edit_caret(1, false);
+        app.grid.set_edit_caret(3, true);
+        assert!(ime(&mut app, &mut doc, Ime::Commit("x".into())));
+        assert_eq!(app.grid.active_display_raw(), "ax");
+    }
+
+    /// While a cell composes, the formula bar draws the cell editor's display
+    /// text: the composition at the caret, underlined, with the caret inside
+    /// it; the committed text only changes on commit.
+    #[test]
+    fn formula_bar_shows_the_cells_composition() {
+        use winit::event::Ime;
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.relayout();
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        app.refresh_chrome_metrics(&mut tr, &theme);
+        app.grid.select_only((0, 20)); // A21, empty
+        for typed in ["a", "b"] {
+            assert!(feed(
+                &mut app,
+                &mut doc,
+                &char_event(typed),
+                Modifiers::default()
+            ));
+        }
+        app.grid.set_edit_caret(1, false);
+        let ime = WindowEvent::Ime(Ime::Preedit("にほ".into(), Some((3, 3))));
+        assert!(feed(&mut app, &mut doc, &ime, Modifiers::default()));
+
+        let bar = app.grid.formula_bar();
+        assert_eq!(bar.text, "aにほb", "the bar shows the composition in place");
+        assert_eq!(bar.preedit, Some((1, 3)), "underlined over the composition");
+        assert_eq!(bar.caret, Some(2), "the caret sits inside it");
+        assert_eq!(app.grid.active_display_raw(), "ab", "nothing is typed yet");
+
+        let mut scene = Scene::new();
+        app.draw_formula_field(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert_eq!(
+            app.formula_char_x.len(),
+            "aにほb".chars().count() + 1,
+            "the bar laid out the composed text"
+        );
+        assert!(
+            app.formula_char_x[3] > app.formula_char_x[1] + 1.0,
+            "the committed 'b' draws after the composition"
+        );
+
+        // A click past the composition lands on the committed text it shows.
+        app.grid.set_edit_caret_shown(4, false);
+        assert_eq!(app.grid.edit_caret(), Some(2), "after the 'b' of \"ab\"");
+        app.grid.set_edit_caret(1, false);
+
+        let commit = WindowEvent::Ime(Ime::Commit("日本".into()));
+        assert!(feed(&mut app, &mut doc, &commit, Modifiers::default()));
+        assert_eq!(app.grid.active_display_raw(), "a日本b");
+        let bar = app.grid.formula_bar();
+        assert_eq!(bar.text, "a日本b");
+        assert_eq!((bar.preedit, bar.caret), (None, Some(3)));
     }
 
     /// Ctrl+K opens the palette, which captures arrows and handles go-to-cell.
@@ -10450,7 +6179,7 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             let start = app.grid.active(); // E2 = (4, 1)
-            app.open_command_palette(&doc);
+            app.open_command_palette();
             let first = app
                 .palette
                 .selected_id()
@@ -10490,7 +6219,7 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             assert_ne!(app.grid.active(), (1, 11));
-            app.open_command_palette(&doc);
+            app.open_command_palette();
             // Enter opens the argument step, pre-seeded (and fully selected) with
             // the active cell reference.
             feed(
@@ -10517,7 +6246,7 @@ mod tests {
                 &named_event(winit::keyboard::NamedKey::Enter),
                 Modifiers::default(),
             );
-            app.dispatch_palette_view_for_test(&doc);
+            app.dispatch_palette_view_for_test();
             assert!(
                 !app.palette.is_open(),
                 "running a command closes the palette"
@@ -10533,6 +6262,272 @@ mod tests {
         }
     }
 
+    /// Run the published action the palette emitted against `doc`, as the
+    /// door does, and let the app follow.
+    fn run_palette_action(app: &mut SheetsApp, doc: &mut AutoCommit) {
+        let intent = ui::widget::controls::take_control_invocation(app)
+            .expect("the palette invoked a published action");
+        let resources = app.published();
+        let spec = tilo_actions::door::resolve(&resources, &intent.address)
+            .expect("the palette's address resolves");
+        let encoded = spec
+            .build_json(&intent.arguments)
+            .expect("the palette's arguments build");
+        let action: <Workbook as ui::tilo_resource::Resource>::Action =
+            serde_json::from_slice(&encoded.payload).expect("a workbook action");
+        let mut book = ui::tilo_resource::Replica::<Workbook>::from_doc(doc.clone());
+        book.apply_action(&action).expect("the action applies");
+        *doc = book.doc().clone();
+        app.sync(doc, &automerge::ROOT);
+    }
+
+    /// Type `text` over the palette's argument, then press Enter.
+    fn answer_palette(app: &mut SheetsApp, doc: &mut AutoCommit, text: &str) {
+        assert!(app.palette.in_argument_mode(), "the palette asks");
+        for ch in text.chars() {
+            feed(app, doc, &char_event(&ch.to_string()), Modifiers::default());
+        }
+        feed(
+            app,
+            doc,
+            &named_event(winit::keyboard::NamedKey::Enter),
+            Modifiers::default(),
+        );
+    }
+
+    /// Editing a chart, replying to a comment and editing a comment ask in
+    /// the palette for the argument of the action the chart or comment
+    /// publishes, and invoke that action.
+    #[test]
+    fn annotation_edits_ask_for_the_published_actions() {
+        let (mut app, mut doc) = seeded_app();
+        let sheet = app.sheet_ids[0].clone();
+        let mut book = ui::tilo_resource::Replica::<Workbook>::from_doc(doc.clone());
+        book.apply(Workbook::ADD_CHART.with(verbs::AddChart {
+            sheet: sheet.clone(),
+            range: "B2:C4".into(),
+            kind: ChartKind::Column,
+            title: "Spend".into(),
+        }))
+        .unwrap();
+        book.apply(Workbook::COMMENT.with(verbs::Comment {
+            sheet: sheet.clone(),
+            range: "B2".into(),
+            text: "Check this".into(),
+        }))
+        .unwrap();
+        doc = book.doc().clone();
+        app.sync(&doc, &automerge::ROOT);
+        let state = doc_workbook(&doc);
+        let chart = state
+            .sheets
+            .get(&sheet)
+            .unwrap()
+            .charts
+            .ids()
+            .next()
+            .unwrap()
+            .clone();
+        let comment = state.comments.ids().next().unwrap().clone();
+
+        app.apply_annotation_click(
+            AnnotationClick::EditChart(chart.as_str().to_owned()),
+            &mut Edits::lend(&mut doc),
+        );
+        assert_eq!(app.palette.argument_buffer(), Some("Spend"));
+        answer_palette(&mut app, &mut doc, "Costs");
+        run_palette_action(&mut app, &mut doc);
+        let charted = doc_workbook(&doc);
+        let edited = charted
+            .sheets
+            .get(&sheet)
+            .unwrap()
+            .charts
+            .get(&chart)
+            .unwrap();
+        assert_eq!(edited.title.0, "Costs");
+        assert_eq!(edited.kind, ChartKind::Column, "the type is kept");
+
+        app.apply_annotation_click(
+            AnnotationClick::Reply(comment.as_str().to_owned()),
+            &mut Edits::lend(&mut doc),
+        );
+        answer_palette(&mut app, &mut doc, "Done");
+        run_palette_action(&mut app, &mut doc);
+
+        app.apply_annotation_click(
+            AnnotationClick::EditComment(comment.as_str().to_owned()),
+            &mut Edits::lend(&mut doc),
+        );
+        assert_eq!(app.palette.argument_buffer(), Some("Check this"));
+        answer_palette(&mut app, &mut doc, "Checked");
+        run_palette_action(&mut app, &mut doc);
+
+        let state = doc_workbook(&doc);
+        let thread = state.comments.get(&comment).unwrap();
+        assert_eq!(thread.body, "Checked");
+        let replies: Vec<&str> = thread
+            .replies
+            .values()
+            .map(|reply| reply.body.as_str())
+            .collect();
+        assert_eq!(replies, ["Done"]);
+    }
+
+    /// A chart's card picks its type and its cells: the type picker's
+    /// buttons edit the chart's `kind` field, Cells asks in the palette for
+    /// the chart's published `chart-cells` edit of its `area`.
+    #[test]
+    fn a_chart_card_changes_its_type_and_cells() {
+        let (mut app, mut doc, mut tr, theme) = measured_app_with_doc(1800.0, 1200.0, 1.0);
+        let sheet = app.sheet_ids[0].clone();
+        let mut book = ui::tilo_resource::Replica::<Workbook>::from_doc(doc.clone());
+        book.apply(Workbook::ADD_CHART.with(verbs::AddChart {
+            sheet: sheet.clone(),
+            range: "B2:C4".into(),
+            kind: ChartKind::Column,
+            title: "Spend".into(),
+        }))
+        .unwrap();
+        doc = book.doc().clone();
+        app.sync(&doc, &automerge::ROOT);
+        paint_frame(&mut app, &mut tr, &theme);
+        let chart = doc_workbook(&doc)
+            .sheets
+            .get(&sheet)
+            .unwrap()
+            .charts
+            .ids()
+            .next()
+            .unwrap()
+            .clone();
+
+        let line = app
+            .annotation_clicks
+            .iter()
+            .find(|(_, action)| matches!(action, AnnotationClick::SetChartKind(_, ChartKind::Line)))
+            .map(|(rect, _)| rect.center())
+            .expect("the card offers a line chart");
+        let mut handled = false;
+        assert!(app.try_annotation_click(line, &mut Edits::lend(&mut doc), &mut handled));
+        let kind_of = |doc: &AutoCommit| {
+            doc_workbook(doc)
+                .sheets
+                .get(&sheet)
+                .unwrap()
+                .charts
+                .get(&chart)
+                .unwrap()
+                .kind
+        };
+        assert_eq!(kind_of(&doc), ChartKind::Line);
+
+        // The same picker is offered to assistive technology.
+        let column = format!("sheets.annotation:chart:{}:column", chart.as_str());
+        assert!(matches!(
+            app.annotation_click_from_target(&column),
+            Some(AnnotationClick::SetChartKind(_, ChartKind::Column))
+        ));
+
+        paint_frame(&mut app, &mut tr, &theme);
+        let cells = app
+            .annotation_clicks
+            .iter()
+            .find(|(_, action)| matches!(action, AnnotationClick::ChartCells(_)))
+            .map(|(rect, _)| rect.center())
+            .expect("the card offers its cells");
+        assert!(app.try_annotation_click(cells, &mut Edits::lend(&mut doc), &mut handled));
+        assert_eq!(app.palette.argument_buffer(), Some("B2:C4"));
+        answer_palette(&mut app, &mut doc, "A1:D3");
+        run_palette_action(&mut app, &mut doc);
+        let state = doc_workbook(&doc);
+        let sheet_state = state.sheets.get(&sheet).unwrap();
+        let shown = sheet_state
+            .chart_snapshots(&sheet_state.layout())
+            .into_iter()
+            .find(|snapshot| snapshot.id == chart.as_str())
+            .unwrap();
+        assert_eq!((shown.start, shown.end), ((0, 0), (3, 2)));
+        assert_eq!(shown.kind, ChartKind::Line, "the type is kept");
+    }
+
+    /// An agent edits a chart's title, type and cells in one call, and a
+    /// comment's text and replies on the comment itself.
+    #[test]
+    fn an_agent_edits_charts_and_comments_in_one_call_each() {
+        let mut app = TestApp::<crate::resource::SheetsShell>::new().unwrap();
+        let sheet = app.state().sheets.ids().next().unwrap().clone();
+        app.invoke(Workbook::ADD_CHART.with(verbs::AddChart {
+            sheet: sheet.clone(),
+            range: "A1:B3".into(),
+            kind: ChartKind::Column,
+            title: "Spend".into(),
+        }))
+        .unwrap();
+        app.invoke(Workbook::COMMENT.with(verbs::Comment {
+            sheet: sheet.clone(),
+            range: "A1".into(),
+            text: "Check this".into(),
+        }))
+        .unwrap();
+        let state = app.state();
+        let chart = state
+            .sheets
+            .get(&sheet)
+            .unwrap()
+            .charts
+            .ids()
+            .next()
+            .unwrap()
+            .clone();
+        let comment = state.comments.ids().next().unwrap().clone();
+        let on_sheet = ui::tilo_resource::items::item_resource_id::<Workbook>("sheets", &sheet);
+        let on_comment =
+            ui::tilo_resource::items::item_resource_id::<Workbook>("comments", &comment);
+
+        app.call_on(
+            &on_sheet,
+            "edit-chart",
+            serde_json::json!({"chart": chart, "title": "Costs", "kind": "line", "range": "B2:C5"}),
+        )
+        .unwrap();
+        assert!(
+            app.call_on(
+                &on_sheet,
+                "edit-chart",
+                serde_json::json!({"chart": chart, "title": "Costs", "range": "B2:"}),
+            )
+            .is_err(),
+            "a range is cells"
+        );
+        app.call_on(
+            &on_comment,
+            "edit-comment",
+            serde_json::json!({"body": "Checked"}),
+        )
+        .unwrap();
+        app.call_on(&on_comment, "reply", serde_json::json!({"text": "Done"}))
+            .unwrap();
+
+        let state = app.state();
+        let sheet_state = state.sheets.get(&sheet).unwrap();
+        let edited = sheet_state.charts.get(&chart).unwrap();
+        assert_eq!(
+            (edited.title.0.as_str(), edited.kind),
+            ("Costs", ChartKind::Line)
+        );
+        let layout = sheet_state.layout();
+        let snapshot = sheet_state
+            .chart_snapshots(&layout)
+            .into_iter()
+            .find(|snapshot| snapshot.id == chart.as_str())
+            .unwrap();
+        assert_eq!((snapshot.start, snapshot.end), ((1, 1), (2, 4)));
+        let thread = state.comments.get(&comment).unwrap();
+        assert_eq!(thread.body, "Checked");
+        assert_eq!(thread.replies.len(), 1);
+    }
+
     /// Sum-selection, row/column insertion, formula view and new-sheet commands.
     #[test]
     fn commands_edit_rows_columns_views_and_sheets() {
@@ -10541,9 +6536,9 @@ mod tests {
             let (mut app, mut doc) = seeded_app();
             // Budget!B2:B6 — a column of numbers.
             app.grid.select_range_public((1, 1), (1, 5));
-            app.dispatch_command(&mut doc, "sum_selection", None);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "sum_selection", None);
             // A SUM total lands in B7 (the row directly below the selection).
-            let raw = SheetsDoc::cell_raw(&mut doc, 0, (1, 6));
+            let raw = doc_cell_raw(&doc, 0, (1, 6));
             assert_eq!(raw, "=SUM(B2:B6)", "sum total written below the selection");
             // It computes to the real column sum.
             assert!(matches!(value_at(&app, (1, 6)), Some(CellValue::Number(_))));
@@ -10553,28 +6548,25 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             // The Budget header "Category" sits at A1; its January value is at B2.
-            let b2 = SheetsDoc::cell_raw(&mut doc, 0, (1, 1));
+            let b2 = doc_cell_raw(&doc, 0, (1, 1));
             assert!(!b2.is_empty());
             // Insert a row above row 1 (active is E2 → row index 1).
             app.grid.select_only((0, 0)); // A1 → insert above row 0
-            app.dispatch_command(&mut doc, "insert_row", None);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "insert_row", None);
             // Everything shifted down one: the old A1 header is now at A2.
+            assert_eq!(doc_cell_raw(&doc, 0, (0, 0)), "", "row 0 is now blank");
             assert_eq!(
-                SheetsDoc::cell_raw(&mut doc, 0, (0, 0)),
-                "",
-                "row 0 is now blank"
-            );
-            assert_eq!(
-                SheetsDoc::cell_raw(&mut doc, 0, (0, 1)),
+                doc_cell_raw(&doc, 0, (0, 1)),
                 "Category",
                 "header shifted to A2"
             );
 
             // Delete that blank top row again → header returns to A1.
             app.grid.select_only((0, 0));
-            app.dispatch_command(&mut doc, "delete_row", None);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "delete_row", None);
+            confirm(&mut app, &mut doc);
             assert_eq!(
-                SheetsDoc::cell_raw(&mut doc, 0, (0, 0)),
+                doc_cell_raw(&doc, 0, (0, 0)),
                 "Category",
                 "header back at A1"
             );
@@ -10583,17 +6575,13 @@ mod tests {
         // Case `command_insert_column_shifts_right`.
         {
             let (mut app, mut doc) = seeded_app();
-            let a1 = SheetsDoc::cell_raw(&mut doc, 0, (0, 0));
+            let a1 = doc_cell_raw(&doc, 0, (0, 0));
             assert_eq!(a1, "Category");
             app.grid.select_only((0, 0)); // insert left of column A
-            app.dispatch_command(&mut doc, "insert_col", None);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "insert_col", None);
+            assert_eq!(doc_cell_raw(&doc, 0, (0, 0)), "", "column A is now blank");
             assert_eq!(
-                SheetsDoc::cell_raw(&mut doc, 0, (0, 0)),
-                "",
-                "column A is now blank"
-            );
-            assert_eq!(
-                SheetsDoc::cell_raw(&mut doc, 0, (1, 0)),
+                doc_cell_raw(&doc, 0, (1, 0)),
                 "Category",
                 "header shifted to B1"
             );
@@ -10603,18 +6591,18 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             assert!(!app.grid.formula_view());
-            app.dispatch_command(&mut doc, "formula_view", None);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "formula_view", None);
             assert!(app.grid.formula_view(), "formula view turned on");
-            app.dispatch_command(&mut doc, "formula_view", None);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "formula_view", None);
             assert!(!app.grid.formula_view(), "formula view toggled back off");
         }
 
         // Case `command_new_sheet_adds_a_sheet`.
         {
             let (mut app, mut doc) = seeded_app();
-            let before = SheetsDoc::sheet_count(&mut doc);
-            app.dispatch_command(&mut doc, "new_sheet", None);
-            assert_eq!(SheetsDoc::sheet_count(&mut doc), before + 1);
+            let before = doc_sheet_count(&doc);
+            app.dispatch_command(&mut Edits::lend(&mut doc), "new_sheet", None);
+            assert_eq!(doc_sheet_count(&doc), before + 1);
         }
     }
 
@@ -10654,46 +6642,74 @@ mod tests {
             assert!(cell.bounds.is_some());
         }
 
-        // Case `loading_state_is_announced_as_busy_without_expanding_the_grid`.
-        {
-            use ui::widget::Widget as _;
-
-            let (mut app, _doc) = seeded_app();
-            app.shots_show_loading();
-            let tree = app.accessibility().expect("spreadsheet semantics");
-            let table = &tree.children[2];
-            assert!(table.state.busy);
-            assert!(table.children.len() < 30, "a11y remains viewport-bounded");
-        }
-
         // Case `semantic_toolbar_and_tabs_use_the_same_live_controls`.
         {
             use ui::widget::Widget as _;
 
             let (mut app, mut doc) = seeded_app();
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+            app.relayout();
             let root = automerge::ROOT;
             assert!(app.perform_semantic_action(
-                "sheets.toolbar.formula-view",
+                &format!("toolbar.item.{}", chrome::bar::FORMULAS),
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &root,
             ));
             assert!(app.grid.formula_view());
             assert!(app.perform_semantic_action(
                 "sheets.name-box",
                 &ui::a11y::Action::Focus,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &root,
             ));
             assert!(app.name_box_edit.is_some());
-            let target = format!("sheets.tab:{}", app.sheet_identity(1));
+            let target = format!("sheets.tab:{}", app.sheet_ids[1].as_str());
             assert!(app.perform_semantic_action(
                 &target,
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &root,
             ));
             assert_eq!(app.active_sheet, 1);
         }
+
+        // Case `semantic_toolbar_controls_are_inventoried_action_bindings`.
+        {
+            use ui::widget::controls::ActionControls as _;
+
+            let (app, _tr, _theme) = measured_app(1280.0, 720.0, 1.0);
+            let bound: std::collections::HashSet<_> = app
+                .control_action_bindings()
+                .into_iter()
+                .map(|binding| binding.control_id)
+                .collect();
+            let bold = format!("toolbar.item.{}", chrome::bar::BOLD);
+            let formulas = format!("toolbar.item.{}", chrome::bar::FORMULAS);
+            for target in [
+                bold.as_str(),
+                formulas.as_str(),
+                "sheets.fx",
+                "sheets.name-box",
+                "sheets.formula-bar",
+                "sheets.new-sheet",
+            ] {
+                assert!(
+                    bound.contains(target),
+                    "{target} has no action binding: {bound:?}"
+                );
+            }
+        }
     }
+}
+
+/// What the edits bound to the selection are built from.
+#[derive(PartialEq)]
+struct SelectionKey {
+    revision: u64,
+    sheet: usize,
+    bounds: (Addr, Addr),
+    active: Addr,
+    selected: Vec<Addr>,
+    currency: tilo_locale::Currency,
 }

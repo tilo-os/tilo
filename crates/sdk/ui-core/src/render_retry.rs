@@ -3,21 +3,18 @@
 use super::FrameOutcome;
 #[cfg(feature = "native")]
 use crate::time::Duration;
+#[cfg(feature = "native")]
 use crate::time::Instant;
 
 #[cfg(feature = "native")]
 pub(crate) const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 #[derive(Default)]
-#[cfg_attr(
-    not(feature = "native"),
-    allow(
-        dead_code,
-        reason = "some fields are read only by the native event-loop runner"
-    )
-)]
 pub(crate) struct RenderRetryState {
+    #[cfg(feature = "native")]
     deadline: Option<Instant>,
+    #[cfg(feature = "native")]
     occlusions: u8,
+    #[cfg(feature = "native")]
     probe: bool,
 }
 impl RenderRetryState {
@@ -94,6 +91,14 @@ impl RenderRetryState {
         self.occlusions > 0 && !self.allows(now)
     }
 }
+/// An idle redraw whose tree, layout, and damage did not change must not
+/// present. Presenting it asks the compositor for another frame callback,
+/// and answering that callback is what kept apps-open idle painting.
+#[cfg(feature = "native")]
+pub(crate) fn submit_redraw_frame(full_redraw: bool, has_damage: bool) -> bool {
+    full_redraw || has_damage
+}
+
 /// Whether paint-only work warrants the fast pump for this surface.
 #[cfg(feature = "native")]
 pub(crate) fn presentation_demand(blocked: bool, demand: bool) -> bool {
@@ -156,13 +161,27 @@ pub(crate) fn next_wake(
             .map_or(fallback, |deadline| deadline.min(fallback));
         Some(animation.map_or(wake, |deadline| wake.min(deadline.max(now))))
     } else {
-        scheduled
+        // A deadline that is already due was the poll this callback just
+        // ran. Parking on it would return immediately and keep the process
+        // scheduled after the tree, layout, and animations stayed put.
+        scheduled.filter(|deadline| *deadline > now)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unchanged_redraw_does_not_present() {
+        assert!(
+            !submit_redraw_frame(false, false),
+            "no tree, layout, or damage change must not present"
+        );
+        assert!(submit_redraw_frame(true, false));
+        assert!(submit_redraw_frame(false, true));
+    }
+
     #[test]
     fn occlusion_backoff_caps_probes_and_survives_unrelated_outcomes() {
         // Case `occlusion_backoff_caps_and_eventually_probes_without_exposure`.
@@ -382,6 +401,24 @@ mod tests {
             );
             assert_eq!(widget_deadline(Some(now), None), Some(now));
         }
+    }
+
+    #[test]
+    fn an_overdue_poll_does_not_schedule_another_wake() {
+        let now = crate::time::now();
+        assert_eq!(
+            next_wake(
+                now,
+                None,
+                true,
+                WakeDemand::default(),
+                Some(now - Duration::from_millis(1)),
+                None,
+                None,
+            ),
+            None,
+            "a poll that already ran must not wake again when nothing changed"
+        );
     }
 
     #[test]

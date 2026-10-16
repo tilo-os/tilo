@@ -1,0 +1,17 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "example.activity-feed"
+label = "Activity"
+version = 1
+fields = [
+  { path = "opened", type = "Vec<u64>" },
+]
+
+[[resources.verbs]]
+id = "open-activity"
+kind = "undoable"
+params = [
+  { name = "id", required = true, schema = { type = "integer", minimum = 0 } },
+]
+

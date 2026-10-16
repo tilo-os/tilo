@@ -27,8 +27,8 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
         let mut harness = FrameHarness::new(
             crate::State::new(),
             Box::new(fixed(Box::new(
-                Button::new("action", "A very long action title", Some("clicked"))
-                    .fit_content(40.0),
+                Button::new("action", "A very long action title")
+                    .on_click(crate::testing::record_click("clicked")),
             ))),
             (400, 300),
         );
@@ -48,15 +48,7 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
             accesskit::Rect::new(10.25, 20.75, 130.75, 61.0)
         );
         harness.click_at(70.0, 40.0);
-        use automerge::ReadDoc;
-        assert!(
-            harness
-                .state_mut()
-                .doc
-                .get(automerge::ROOT, "clicked")
-                .unwrap()
-                .is_some()
-        );
+        assert_eq!(crate::testing::clicks("clicked"), 1);
     }
 
     fn measures_real_wrapping_container_and_form_subtrees() {
@@ -89,12 +81,20 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
 
     fn row_and_column_keep_authored_allocation_separate_from_overflow() {
         for child in [
-            Box::new(Column::new().with_no_padding().push(Box::new(
-                Button::new("large", "Large", None).with_size(250.0, 90.0),
-            ))) as Element,
-            Box::new(Row::new().no_wrap().push(Box::new(
-                Button::new("large", "Large", None).with_size(250.0, 90.0),
-            ))) as Element,
+            Box::new(
+                Column::new().with_no_padding().push(Box::new(
+                    crate::widget::Container::new()
+                        .with_no_padding()
+                        .with_size(250.0, 90.0),
+                )),
+            ) as Element,
+            Box::new(
+                Row::new().no_wrap().push(Box::new(
+                    crate::widget::Container::new()
+                        .with_no_padding()
+                        .with_size(250.0, 90.0),
+                )),
+            ) as Element,
         ] {
             let harness =
                 FrameHarness::new(crate::State::new(), Box::new(fixed(child)), (400, 300));
@@ -161,7 +161,7 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
                 height: 100.25,
             })
         })
-        .child(Box::new(Button::new("float", "Float", None)));
+        .child(Box::new(Button::new("float", "Float")));
         let harness = FrameHarness::new(crate::State::new(), Box::new(region), (500, 300));
         let snapshot = harness.inspection();
         assert_eq!(snapshot.root.rect[2], 200.5);
@@ -333,9 +333,7 @@ fn manual_layout_errors_reject_invalid_geometry_admission_and_duplicates() {
 #[test]
 fn nested_manual_measurement_settles_bounded_and_side_effect_free() {
     fn nested_manual_regions_settle_and_preserve_auto_sibling_allocation() {
-        let manual = fixed(Box::new(fixed(Box::new(Button::new(
-            "nested", "Nested", None,
-        )))));
+        let manual = fixed(Box::new(fixed(Box::new(Button::new("nested", "Nested")))));
         let form = Form::new().section(
             FormSection::new("Mixed")
                 .content(Box::new(manual))
@@ -423,7 +421,9 @@ fn nested_manual_measurement_settles_bounded_and_side_effect_free() {
             })
         })
         .child(Box::new(
-            Button::new("fixed", "OK", None).with_size(96.5, 44.25),
+            crate::widget::Container::new()
+                .with_no_padding()
+                .with_size(96.5, 44.25),
         ));
         let _ = FrameHarness::new(crate::State::new(), Box::new(region), (300, 200));
     }
@@ -589,7 +589,7 @@ fn manual_overflow_is_painted_inspected_and_clipped_per_axis() {
                     height: 20.0,
                 })
             })
-            .child(Box::new(Button::new("overflow", "Visible overflow", None)));
+            .child(Box::new(Button::new("overflow", "Visible overflow")));
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
             let root = widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
@@ -616,13 +616,12 @@ fn manual_overflow_is_painted_inspected_and_clipped_per_axis() {
             let presence = PresenceCtx::empty();
             presence.viewport.set(Some(viewport));
             let mut scene = Scene::new();
-            widget.draw_with_presence(
+            widget.draw(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
                 &Theme::dark(),
                 &presence,
-                &crate::permissions::PermissionContext::permissive(),
             );
             assert!(
                 !scene.encoding().draw_tags.is_empty(),
@@ -647,7 +646,7 @@ fn manual_overflow_is_painted_inspected_and_clipped_per_axis() {
                 height: 20.0,
             })
         })
-        .child(Box::new(Button::new("clipped", "Clipped grandchild", None)));
+        .child(Box::new(Button::new("clipped", "Clipped grandchild")));
         let region = Manual::new(|ctx| {
             ctx.place(0, Rect::new(0.0, 0.0, 100.0, 20.0))?;
             Ok(Size {
@@ -676,10 +675,7 @@ fn manual_overflow_is_painted_inspected_and_clipped_per_axis() {
                     top: taffy::LengthPercentageAuto::length(y),
                     ..taffy::Rect::auto()
                 },
-                size: Size {
-                    width: Dimension::length(width),
-                    height: Dimension::length(height),
-                },
+                size: Size::from_lengths(width, height),
                 ..Style::default()
             }
         }
@@ -729,7 +725,7 @@ fn nested_negative_overflow(horizontal: bool) {
             height: 20.0,
         })
     })
-    .child(Box::new(Button::new("grandchild", "Visible", None)));
+    .child(Box::new(Button::new("grandchild", "Visible")));
     let mut outer = Manual::new(|ctx| {
         ctx.place(0, Rect::new(0.0, 0.0, 100.0, 20.0))?;
         Ok(Size {
@@ -777,13 +773,12 @@ fn nested_negative_overflow(horizontal: bool) {
     let presence = PresenceCtx::empty();
     presence.viewport.set(Some(viewport));
     let mut scene = Scene::new();
-    outer.draw_with_presence(
+    outer.draw(
         &mut scene,
         Affine::IDENTITY,
         &mut text,
         &Theme::dark(),
         &presence,
-        &crate::permissions::PermissionContext::permissive(),
     );
     assert!(
         !scene.encoding().draw_tags.is_empty(),
@@ -799,4 +794,38 @@ fn nested_negative_overflow(horizontal: bool) {
         outer.children()[0].get_rect().size(),
         vello::kurbo::Size::new(100.0, 20.0)
     );
+}
+
+/// A retained resize re-solves the region against what its parent allocates
+/// now, so a region filling the window grows with it as well as shrinking.
+/// Its node holds the size the policy answered last time; that must not
+/// become the next solve's allocation.
+#[test]
+fn retained_resize_reallocates_a_filling_region_both_ways() {
+    let seen = Rc::new(Cell::new(0.0_f32));
+    let observed = seen.clone();
+    let region = Manual::new(move |ctx| {
+        let available = ctx.available();
+        observed.set(available.width);
+        ctx.place(0, Rect::new(0.0, 0.0, f64::from(available.width), 40.0))?;
+        Ok(Size {
+            width: available.width,
+            height: 40.0,
+        })
+    })
+    .child(Box::new(crate::widget::Container::new().with_no_padding()));
+    let mut harness = FrameHarness::new(crate::State::new(), Box::new(region), (400, 200));
+    for width in [600_u32, 300, 800] {
+        harness.resize((width, 200)).unwrap();
+        assert!(
+            !harness.last_relayout().rebuilt,
+            "a resize re-solves the retained tree"
+        );
+        let snapshot = harness.inspection();
+        #[allow(clippy::cast_precision_loss, reason = "small window widths")]
+        let expected = width as f32;
+        assert_eq!(seen.get(), expected, "the policy sees the new allocation");
+        assert_eq!(snapshot.root.rect[2], f64::from(expected));
+        assert_eq!(snapshot.root.children[0].rect[2], f64::from(expected));
+    }
 }

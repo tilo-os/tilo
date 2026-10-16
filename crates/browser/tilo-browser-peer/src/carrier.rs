@@ -91,6 +91,18 @@ fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, LinkError> {
     postcard::to_allocvec(value).map_err(|error| LinkError::Malformed(error.to_string()))
 }
 
+/// What the host publishes before any session: its certificate, the
+/// WebTransport port and a development certificate's hash.
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached or answers badly.
+pub async fn host_info(
+    client: &dyn HttpClient,
+) -> Result<tilo_relay_protocol::web::HostInfo, LinkError> {
+    call(client, "/host", None, Vec::new()).await
+}
+
 /// Ask the host to queue `request` for its root holder. Returns the pairing
 /// code, or the final answer when the host refused at once.
 ///
@@ -102,6 +114,19 @@ pub async fn certify_request(
     request: &CertificationRequest,
 ) -> Result<CertifyReply, LinkError> {
     call(client, "/certify", None, encode(request)?).await
+}
+
+/// Send a member's root-signed approver command (their pending device
+/// requests, or a decision on one).
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached or refuses a non-member.
+pub async fn certify_approve(
+    client: &dyn HttpClient,
+    approval: &tilo_relay_protocol::certify::MemberApproval,
+) -> Result<tilo_relay_protocol::certify::ApproverReply, LinkError> {
+    call(client, "/certify/approve", None, encode(approval)?).await
 }
 
 /// Long-poll the answer to a queued request. `Pending` means poll again.
@@ -155,6 +180,156 @@ pub async fn agent_live_grant(
     .await
 }
 
+/// Post this person's own recent semantic actions in `request.workspace_id`
+/// and get everyone's "who is here and what are they doing" line back.
+///
+/// # Errors
+///
+/// Returns [`LinkError::Refused`] when this device is not admitted there.
+pub async fn here(
+    client: &dyn HttpClient,
+    session: &str,
+    request: &tilo_relay_protocol::web::HereRequest,
+) -> Result<tilo_relay_protocol::web::HereReply, LinkError> {
+    call(
+        client,
+        tilo_relay_protocol::web::HERE_PATH,
+        Some(session),
+        encode(request)?,
+    )
+    .await
+}
+
+/// Take a record's channel content keys from the room's steward, as a
+/// public room's spectator, which is no channel member and asks nothing
+/// over the channel.
+///
+/// # Errors
+///
+/// Returns [`LinkError::Refused`] when the room keeps them from this device:
+/// it is no seated spectator, the room is not public, the record is kept
+/// from some of the room, or its channel does not exist yet.
+pub async fn channel_keys(
+    client: &dyn HttpClient,
+    session: &str,
+    request: &tilo_relay_protocol::web::ChannelKeysRequest,
+) -> Result<channel_crypto::ChannelContentKeys, LinkError> {
+    let reply: tilo_relay_protocol::web::ChannelKeys = call(
+        client,
+        tilo_relay_protocol::web::CHANNEL_KEYS_PATH,
+        Some(session),
+        encode(request)?,
+    )
+    .await?;
+    channel_crypto::ChannelContentKeys::from_bytes(&reply.keys)
+        .map_err(|error| LinkError::Malformed(error.to_string()))
+}
+
+/// Send a member's input for a legacy window
+/// ([`tilo_relay_protocol::legacy_window`]); with no events, ask whether
+/// this device may drive it. `Ok(false)`: it may not.
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached, the window is gone
+/// or its session is not reachable.
+pub async fn legacy_input(
+    client: &dyn HttpClient,
+    session: &str,
+    request: &tilo_relay_protocol::legacy_window::InputRequest,
+) -> Result<bool, LinkError> {
+    let (status, bytes) = client
+        .post(
+            &path(tilo_relay_protocol::legacy_window::INPUT_ROUTE),
+            Some(session),
+            encode(request)?,
+        )
+        .await
+        .map_err(LinkError::Unavailable)?;
+    match status {
+        204 => Ok(true),
+        403 => Ok(false),
+        401 => Err(LinkError::Refused(
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )),
+        _ => Err(LinkError::Unavailable(format!(
+            "status {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        ))),
+    }
+}
+
+/// Tell the host which video codecs this page decodes
+/// ([`tilo_relay_protocol::legacy_window::CodecsRequest`]), so sessions
+/// stream legacy windows in one of them. `Ok(false)`: the host predates
+/// codec adverts, and this page counts as decoding H.264 only.
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached or refuses the advert.
+pub async fn legacy_codecs(
+    client: &dyn HttpClient,
+    session: &str,
+    request: &tilo_relay_protocol::legacy_window::CodecsRequest,
+) -> Result<bool, LinkError> {
+    let (status, bytes) = client
+        .post(
+            &path(tilo_relay_protocol::legacy_window::CODECS_ROUTE),
+            Some(session),
+            encode(request)?,
+        )
+        .await
+        .map_err(LinkError::Unavailable)?;
+    match status {
+        204 => Ok(true),
+        404 => Ok(false),
+        401 => Err(LinkError::Refused(
+            String::from_utf8_lossy(&bytes).into_owned(),
+        )),
+        _ => Err(LinkError::Unavailable(format!(
+            "status {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        ))),
+    }
+}
+
+/// Administer the host's rooms as this session's device (`/rooms`).
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached or governs no rooms.
+pub async fn rooms(
+    client: &dyn HttpClient,
+    session: &str,
+    request: &tilo_relay_protocol::rooms::RoomsRequest,
+) -> Result<tilo_relay_protocol::rooms::RoomsReply, LinkError> {
+    call(client, "/rooms", Some(session), encode(request)?).await
+}
+
+/// What the node runs beside the host (`/node`).
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached or is no node.
+pub async fn node(
+    client: &dyn HttpClient,
+    session: &str,
+) -> Result<tilo_relay_protocol::web::NodeInfo, LinkError> {
+    call(client, "/node", Some(session), Vec::new()).await
+}
+
+/// One step of joining a room with no session (`/join`).
+///
+/// # Errors
+///
+/// Returns [`LinkError`] when the host is not reached or governs no rooms.
+pub async fn join(
+    client: &dyn HttpClient,
+    step: &tilo_relay_protocol::rooms::JoinStep,
+) -> Result<tilo_relay_protocol::rooms::JoinReply, LinkError> {
+    call(client, "/join", None, encode(step)?).await
+}
+
 /// An authenticated HTTPS session with the host.
 pub struct HttpsLink {
     outbound: mpsc::UnboundedSender<Envelope>,
@@ -197,7 +372,7 @@ impl HttpsLink {
         auth::verify_pinned_host_ack(
             &challenge.ack,
             revocations,
-            crate::clock::now_ns(),
+            tilo_clock::unix_now_ns(),
             &client_nonce,
         )
         .map_err(|error: AuthError| LinkError::Refused(error.to_string()))?;
@@ -205,7 +380,7 @@ impl HttpsLink {
             return Err(LinkError::Refused("host is not the pinned device".into()));
         }
         let sig_over_server_nonce = signer
-            .sign(auth::challenge_digest(&challenge.ack.server_nonce).to_vec())
+            .sign(auth::client_challenge_digest(&challenge.ack.server_nonce).to_vec())
             .await
             .map_err(|error| LinkError::Sign(error.0))?;
         let (grant, features) = decode_grant(
@@ -266,6 +441,12 @@ impl HttpsLink {
     /// (`Envelope::VoiceJoin`, see [`tilo_relay_protocol::voice`]).
     pub fn voice(&self) -> bool {
         self.features & tilo_relay_protocol::web::FEATURE_VOICE != 0
+    }
+
+    /// Whether the host administers rooms and redeems invitations for pages
+    /// (`/rooms`, `/join`).
+    pub fn rooms(&self) -> bool {
+        self.features & tilo_relay_protocol::web::FEATURE_ROOMS != 0
     }
 
     /// Queue one envelope for the host, in order.

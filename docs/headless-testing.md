@@ -8,6 +8,26 @@ Three layers, each useful on its own:
 2. **`TILO_TEST_CONTROL` socket — JSON RPC over a unix socket** (drive a running binary programmatically: click, drag, type, snapshot)
 3. **`--backend headless` — live compositor without a window** (the same binary that boots on a real display, running through the same code paths, but rendering into an off-screen wgpu texture)
 
+Native application publication also has compositor-free integration fixtures:
+
+```bash
+cargo test --locked -p shell --lib shell::in_process::tests::authorized_
+cargo test --locked -p tilo-action-broker --lib collab_broker_capnp::tests::certified_join_rejects_other_workspace_revoked_and_unenrolled_device -- --exact
+```
+
+The Browser and Store fixtures provision a disposable identity and run the actual
+identity service, collaboration broker, original application factory and directory
+RPC. Browser retains its primary document, browsing history and address book. All
+three use the certified person's own room, so publication must wait for their
+initial joins to become ready. Store must publish `inspect-catalogue` through the
+same authorized context. No application action is invoked.
+
+This qualifies matching-room publication. It does not qualify an application
+spanning a foreground workspace and a separate person room: a certification for
+one room cannot authorize the other. The broker's cross-workspace rejection stays
+covered independently. Installed control-socket timeouts require separate runtime
+evidence; an empty query alone does not establish absent publication.
+
 ## Layer 1: `shots` — pre-written scenarios
 
 Best for: regression captures, golden-image diffs, video walkthroughs of known UX flows.
@@ -34,6 +54,26 @@ cargo run --bin shots --quiet -- --mode window --scenario palette_typing
 Scenarios are defined in `crates/session/shell/src/bin/shots/scenario.rs`. Each is a `Vec<Action>` of `ClickNamed("add_workspace")`, `Drag {...}`, `Key(...)`, `Type(...)` steps. The engine resolves names against the live widget tree (see Layer 2's widget registry).
 
 **No display server required.** `shots --mode offscreen` and `--mode recording` use `quick_ui::offscreen::OffscreenRenderer` — wgpu only, no window.
+
+## Owner control with an existing identity
+
+For semantic actions on an existing owner's headless session, launch
+`shell --host-desktop-session --backend headless --headless-owner-control`.
+The normal first-login, device-owner, administrator-group, lock and caller
+checks apply. No development control variable is needed. The endpoint is
+`$XDG_RUNTIME_DIR/tilo-session/headless-owner-control.sock`, separate from the
+real seat's `admin-control.sock`; an existing live listener is never replaced.
+Headless sessions without the explicit flag retain their existing behavior.
+
+Use the normal action interface against that endpoint:
+
+```bash
+tilo-control --socket "$XDG_RUNTIME_DIR/tilo-session/headless-owner-control.sock" actions list
+```
+
+This endpoint accepts semantic owner commands, not the development input and
+capture protocol described below. A locked session still requires its normal
+unlock action. Physical cursor and display acceptance remains a real-seat test.
 
 ## Layer 2: `TILO_TEST_CONTROL` — drive the live binary via a unix socket
 
@@ -96,8 +136,8 @@ control socket past it.
 A wrapper binary ships in the same workspace. Subcommands take human-friendly arguments instead of raw JSON:
 
 ```bash
-cargo build -p shell --bin tilo-control      # lands in target/debug, NOT on PATH
-alias qc='cargo run -q --bin tilo-control --' # or: cargo install --locked --path crates/session/shell --bin tilo-control
+cargo build -p tilo-control                 # lands in target/debug; images ship /usr/bin/tilo-control
+alias qc='cargo run -q --bin tilo-control --' # or: cargo install --locked --path crates/session/control-cli
 
 qc actions list Calculator --json           # inspect search results without opening the palette
 qc actions invoke applications dev.tilo.calculator # invoke the exact discovered identity
@@ -110,7 +150,9 @@ qc key Enter                                # named key OR single char
 qc type "hello"                             # one press+release per character
 qc modifiers ctrl,shift                     # comma-separated set; empty clears all
 qc snapshot /tmp/state.png                  # PNG to disk
-qc state-dump --pretty                      # live WorkspaceTree + Chrome as JSON
+qc windows                                  # open windows: workspace/strip, group, tab, app
+qc state-dump --pretty                      # live WorkspaceTree + Chrome as JSON, without history
+qc state-dump --history                     # ... with effect receipts and audit trails
 qc raw '{"op":"list_targets"}'              # escape hatch for unwrapped commands
 ```
 
@@ -138,16 +180,41 @@ not establish application identity.
 
 After launch, enumerate again and inspect the app actions' `application`,
 `resource`, `operation`, `params`, and `contract` fields. Invoke the returned
-provider/ID with its declared arguments. Inspect the invocation receipt and,
-when pending, use `actions status INVOCATION_ID` until it reaches a terminal
-state. Then read back the affected resource or desktop state to verify the
+provider/ID with its declared arguments, adding `--wait` so the answer is the
+result and not the admission. To follow a pending receipt, use
+`actions status INVOCATION_ID --wait`, never a sleep-and-retry loop (see
+`docs/agent-action-api.md`). Then read back the affected resource or desktop state to verify the
 effect. A descriptor alone does not prove execution; a visible tile alone does
 not prove the app has rendered. `raw '{"op":"foreign_frames"}'` exposes the
-presented app identity, surface, frame count, and rendering errors.
+presented app identity, surface, frame count, and rendering errors for foreign
+Wayland clients. It does not observe apps mounted inside the compositor:
+`actions:window.new.terminal` mounts Terminal in-process, with `AppPlaceholder`
+as its persisted tile kind. Neither that kind nor an empty `foreign_frames`
+reply proves the hosted app failed to render. Verify its exported
+`inspect-session` operation to completion, its laid-out `terminal` target and
+a private headless snapshot. Process startup additionally requires an open
+session with input available; rendering a missing-runtime explanation is not
+a working PTY. The separately discovered `applications:so.tilo.terminal`
+launches the packaged app and should be checked with foreign-frame counters.
 
 `scripts/headless-examples/action-api-demo.py` exercises discovery and semantic
 invocation against an isolated compositor. `app-launch-proof.py` selects native
 applications by provider/ID and checks that a new surface actually paints.
+
+### Native mounted host-service regression tests
+
+Use `ui::framework::testing::drive_live_window` to exercise a resource app's
+actual mounted native root without starting its window event loop. With
+`test-support`, attach a socket pair through
+`App::test_floating_service_connection` and
+`FloatingSurfaceServiceClient::from_test_stream`, then send host messages and
+call `App::test_pump_floating_service`. This runs production dispatch and
+response serialization rather than invoking the app's handler directly.
+For device-shell operations, assert the request ID and successful outcome on
+the original connection, repeat on that same connection, and verify that an
+idle pump does not replay the operation. Terminal's
+`native_resource_terminal_inspector_is_acknowledged_through_the_mounted_root`
+test covers forwarding through the mounted component's `AppWidget` capability.
 
 ### Wire protocol (when you can't use the CLI)
 
@@ -177,8 +244,13 @@ echo '{"op":"type","text":"hello"}' | nc -U $TILO_TEST_CONTROL
 # Capture a PNG of the current state:
 echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U $TILO_TEST_CONTROL
 
-# Get the live workspace tree + chrome state as JSON:
+# Get the live workspace tree + chrome state as JSON. A workspace's
+# append-only history (effect receipts, task audit trails, ownership-transfer
+# records) is left out; add "include_history":true to get it:
 echo '{"op":"state_dump"}' | nc -U $TILO_TEST_CONTROL
+
+# Just the open windows, one row per tab:
+echo '{"op":"windows"}' | nc -U $TILO_TEST_CONTROL
 
 # Copy and paste as the compositor's own in-process widgets do. Both call
 # straight into `ui::text_selection`, the same functions the terminal, the
@@ -259,6 +331,20 @@ echo '{"op":"snapshot","path":"/tmp/after-add-workspace.png"}' | nc -U $XDG_RUNT
 kill %1
 ```
 
+To time what an agent waits for on this socket, run
+`scripts/perf/agent_rtt.py`. It measures actions list, state dump, a no-op
+invoke (accepted, and completed through `wait_ms`), throughput under
+concurrent clients and the same no-op through the MCP server. Give it
+`--socket PATH` for a running desktop, or `--spawn SHELL` to start a
+compositor through `spawn-headless.sh`. A spawned compositor is removed on
+exit. `spawn-headless.sh` runs `$TILO_HEADLESS_BINARY` when that is set. A
+release build serves the socket only with `--features dev-overrides`.
+`scripts/perf/agent_task.py` times a whole task the same way: a scripted,
+streamed fake model creates a note in Notes, writes its body and finds it by
+search, and the record splits the time between Tilo, the model and the
+agent loop. Its `--spawn` desktop is seeded by the `agent_task_desktop`
+example of `shell`.
+
 Configure the headless viewport via env var (defaults to 1600×900):
 ```bash
 TILO_HEADLESS_SIZE=1920x1080 cargo run --bin shell -- --backend headless
@@ -281,6 +367,15 @@ and answers clients' frame callbacks but does not rasterize them; `snapshot`
 renders on demand. A viewer that streams frames attaches with
 `{"op":"watch","watching":true}` (`tilo-control watch on`), or starts the
 session with `TILO_HEADLESS_WATCH=1`.
+
+While watched, headless requests the producer's retained-damage proof. A matching
+empty damage list first validates the previous image with the existing bounded
+screenshot renderer; later unchanged frames reuse that completed RGBA buffer
+without a render or readback. First and changed frames keep the dense path.
+Missing predecessors, unversioned scene edits, viewer detach/reattach and material
+or HDR frames redraw. A replacement backend starts uncached at its new size.
+Presentation remains synchronous; snapshots cannot race queued renderer work.
+This reduces watched headless work, not physical display input-to-photon latency.
 
 ## End-to-end recipe — "click, snapshot, look"
 
@@ -379,15 +474,174 @@ scripts/perf/frame-loop-bench.py --resummarize target/frame-bench/run.csv
 | Env var | Effect |
 |---|---|
 | `TILO_FRAME_TRACE=/path.csv` | one row per loop tick |
+| `TILO_FRAME_CPU_TRACE=/private/path.csv` | numeric companion for painted ticks: phase CPU and bracketed clock anchors |
 | `TILO_FRAME_SUMMARY=/path.json` | percentile summary on clean exit |
 | `TILO_FRAME_WARMUP_MS` | samples excluded from the summary (default 1500) |
 | `TILO_RUN_SECONDS` | exit cleanly after N seconds, flushing both |
 | `TILO_REFRESH_HZ` | force the presentation rate (diagnostic) |
 | `TILO_PAINT_STATS=1` | 2-second painted-vs-idled counter on stderr |
+| `TILO_PAINT_STATS=ticks` | the same, plus a `paint-tick: painted=… woke=…` line per loop iteration |
 | `TILO_LOOP_TIMING=1` | log any tick over 100 ms with a phase breakdown |
 
 `TILO_RUN_SECONDS` matters for a scripted run: the trace and summary are
 written by the normal exit path, so a `SIGKILL`ed compositor loses them.
+
+For a source-matched performance fixture, opt into `TILO_FRAME_CPU_TRACE` through
+its supported launch configuration. Use a new, separate file in the fixture
+owner's private directory; an existing file is refused instead of overwritten.
+This leaves the original frame CSV and its parsers unchanged;
+join the companion's `seq` and `start_us` to the original rows. It records no
+application payload, titles, paths or identities. No extra clock reads or writes
+occur when this option is absent.
+
+The companion measures calling-thread and aggregate process CPU separately for
+layout, scene construction, submission and the layout-start-to-submit-return
+interval. The layout label includes the existing focus/output/accessibility
+reconciliation. Process
+CPU includes parallel renderer **and other background threads**. A low thread CPU
+value alone cannot identify GPU waiting, host scheduling or TCG overhead. Compare
+the paired guest/host CPU and scheduling counters as well. `present_async=1`
+means submit timings cover enqueueing, rather than the render worker's completion.
+Subtract the labelled wall phases from `paint_wall_us` to retain visibility of
+capture and control work between them; never call that residual GPU time.
+
+`anchor_unix_us` is bracketed by guest `CLOCK_MONOTONIC` readings;
+`anchor_offset_us` measures tick-start-to-`Instant` sampled inside that bracket.
+Subtract that offset from both monotonic endpoints to bound the tick start; retain
+rounding uncertainty as well as the bracket width.
+Correlate UTC with the collector's paired host/guest clock samples and retain
+their uncertainty. Guest and host monotonic epochs differ, and UTC can step.
+Unavailable CPU or monotonic clocks are blank, not zero. The companion flushes
+its first painted row and then once per second, retains no sample history, and
+stops after 200,000 painted rows with a diagnostic. Its row formatting allocates
+no heap memory; only explicitly enabled tracing incurs CPU clock and I/O costs.
+
+## Idle wakeups
+
+Pull requests count app work through the production `NativeAppTick` scheduling
+seam in `compositor/native_idle_work_tests.rs`. Two adversarial widgets retain
+answered deadlines until draw, while the real `FrameBuilder` runs their pump,
+layout and paint passes. A due poll must update each app once with zero layout
+or draw calls; a future poll must schedule exactly one additional update. A
+later app change must still lay out and draw. Instants are explicit scheduler
+inputs, not elapsed-time gates or synchronization deadlines. This covers the
+app scheduling seam with an available presenter, not every native-loop service.
+
+```bash
+cargo test -p shell --lib idle_work_tests
+```
+
+An idle desktop should leave the CPU asleep. The shell's explicit
+`examples/idle-wakeups.rs` executable holds it to a budget: it starts the production binary headless with
+a signed-in desktop, restores a Notes tab, opens a Terminal through
+`window.new.terminal`, waits out startup work and 5 s more, then samples every thread of the
+compositor's process tree from `/proc` for 10 s and fails above
+`IDLE_WAKEUP_BUDGET` wakeups per second (voluntary context switches: how often
+a thread blocked again), above `IDLE_CPU_BUDGET` percent of a core, or if the
+compositor painted while nobody touched it. It also holds the in-process apps'
+collaboration shovel and the identity service's client thread to
+`KEY_ROUND_BUDGET` per shovel, so a route asking for its channel keys on a 1 s
+timer again fails by name.
+
+```bash
+cargo build --locked -p shell --example idle-wakeups --features scheduled-idle-benchmark
+cargo build --locked -p shell --bin shell
+TILO_IDLE_SHELL_BIN="$PWD/target/debug/shell" \
+  bash tools/test-env.sh target/debug/examples/idle-wakeups
+```
+
+It prints a table, busiest first:
+
+```text
+idle wakeups over 10.0 s: 60.27/s and 2.1 % of a core across 1 processes
+  wakeups/s  preempt/s   cpu %  threads  process / thread
+      20.79       1.20     0.6        2  shell / tilo-collab-bro
+      19.89       0.00     0.4        1  shell / tilo-audio-outp
+       ...
+compositor frame loop: 0.0 ticks/s (0 ticks, woken by: ), 0 frames painted (after: ), 0 clock minute(s) turned; its paint-stats in the window:
+```
+
+`wakeups/s` counts every context switch (voluntary: the thread blocked again;
+involuntary: it was preempted), `preempt/s` the involuntary share, `cpu %` its
+CPU time, `threads` how many threads of that name were seen (names are the
+kernel's 15-byte truncation). A loop that spins without blocking shows in
+`cpu %` and in the frame loop's tick rate rather than in wakeups, so the gate
+also holds the loop to `LOOP_TICK_BUDGET` and to no painted frames but the top
+bar's clock repaint when a minute turns in the window. It counts the
+compositor's `paint-tick` lines (`TILO_PAINT_STATS=ticks`), one per loop
+iteration with what woke it, read inside the window: a 2-second `paint-stats`
+summary counts every tick since the previous one, so the first one printed in
+the window can carry startup's ticks. This wall-clock measurement is not a
+pull-request test: the example has `test = false` and a non-default
+`scheduled-idle-benchmark` feature. The shared fixture remains in
+`tests/idle_wakeups.rs` for integration tests. The scheduled lane
+(`kpis=wakeups`) runs the executable three times with a 60 s window
+(`TILO_IDLE_WAKEUP_WINDOW_SECS`), preserves every budget assertion and records
+`wakeups.*`. `TILO_IDLE_SHELL_BIN` explicitly selects the built production
+binary because Cargo's integration-test-only `CARGO_BIN_EXE_shell` is not
+available to examples. When a change
+removes a waker, lower `IDLE_WAKEUP_BUDGET` in the same pull request to the new
+measurement plus the same margin.
+
+Headless covers what headless runs. DRM-only services (power, hotplug, the
+rotation sensor) and out-of-process apps are held by per-thread probes in
+their own crates: `tilo_test_env::idle::{spawned_thread, assert_stays_asleep}`
+for one service thread of a unit test, `idle_wakeups(pid, settle, window)` for
+a process tree, and `sample_process` with `Wakeups::between` for a stretch the
+test drives itself (`shell::network::idle_quiet_tests` uses it for the
+collaboration plane of two converged desktops).
+
+A gate that runs inside the pull-request test shard shares the runner with
+other tests, and preemptions grow with that load. `Wakeups::blocking_per_second`
+counts only voluntary switches, one per wakeup. Both gates in
+`idle_quiet_tests`, the lone desktop and the converged pair, use it, each
+together with a CPU bound that catches a thread spinning without blocking
+.
+
+## Idle memory
+
+An idle desktop should hold little memory. `idle_memory::` in the shell's `it`
+target starts the production binary headless with a signed-in, empty desktop,
+watched so frames rasterise, waits past the trim that returns startup's freed
+heap (`heap_trim::STARTUP_SETTLED`), and fails when the compositor's anonymous
+RSS is above `IDLE_ANON_BUDGET_MIB`.
+
+```bash
+cargo test --locked -p shell --test it idle_memory:: -- --nocapture
+```
+
+It prints two breakdowns. The compositor's own, `raw '{"op":"process_memory"}'`
+on the control socket, sums `mincore` over `/proc/self/maps` per kind of
+mapping (`heap_main`, `heap_arenas`, `thread_stacks`, `anon_other`,
+`gpu_memfd` for lavapipe's device memory, `fonts`, `binary`, `libraries`, …),
+with glibc's in-use and free bytes and the threads by name. It is the one that
+works on Tilo's kernel, which has no smaps (`CONFIG_PROC_PAGE_MONITOR=n`), so
+vm-acceptance R01 records the same report (`memory.shell_parts_mib.*`). The
+test then reads `/proc/<pid>/smaps` beside it for RSS, PSS and private dirty
+pages per mapping, which CI's kernel has.
+
+### Correlating app startup attempts
+
+The compositor's `tilo::launch_latency` events carry `launch_id` and
+`launch_generation`. The generation is a diagnostic timestamp fixed at that
+process's first launch observation; it changes on a compositor restart and is
+not a VM layer generation or an authority token. Group events by both fields,
+not by app name: several windows can launch the same app concurrently.
+
+With `tilo::launch_latency=info` enabled in the session's existing `RUST_LOG`
+filter, each attempt reports request, spawn, map, first presented frame, or
+retirement with its elapsed time and whether it spawned or mapped. Retirement
+can be placement cleanup and does not establish a process failure. The always
+recorded `app-spawn:` and `app-exit:` lines carry the same pair plus the launcher
+PID; `launch_id=None` explicitly means there was no staged window timing record.
+Existing `[app ... stderr] APP-STARTUP` and GPU lines retain their format.
+
+Use the launcher PID and generation to relate these events to kernel-attested
+process-binding diagnostics, then confirm the exit status and direct process
+output. Flight-recorder replay time and a saved timeout card do not establish
+the timestamp or cause of a fresh failed launch. This telemetry records no
+document, workspace, credential or grant contents and changes no startup or
+authentication deadlines.
 
 ## Where to look in source
 
@@ -420,7 +674,8 @@ For example:
 They flow through `quick_ui::offscreen::OffscreenRenderer` and run a single
 `sync → build_layout → compute_layout → apply_layout → draw` cycle — no event
 loop. Browser also offers focused deterministic chrome states and, with the
-`wpe` feature, `--shots-live` for the real engine-to-frame path.
+Chromium engine runtime installed, `--shots-live` for the real engine-to-frame
+path.
 
 ## Per-app interaction: `--headless-drive`
 
@@ -463,6 +718,32 @@ contract and `confirmation_phrase` a `Phrase` one. `expect_error` makes the
 step pass only when the door refuses with that code (`unknown_action`,
 `invalid_arguments`, `action_unavailable`, `action_confirmation_required`,
 `action_failed`), so a scenario can prove a refusal as well as a success.
+An optional `"results":"target/drive-results.json"` retains the actual return
+from each explicit `invoke`, in order. The version 1 JSON envelope contains
+`author` and `entries`; each entry carries its resource/action `address` and
+one `status`: `completed` with the original typed `output` (`value` and
+`resources`), `accepted`, or `refused` with the door's `code` and `message`.
+`accepted` records admission, not background completion. An expected refusal
+still appears as `refused` when its scenario step passes. Arguments and
+confirmation phrases are not copied into this envelope; returned data and
+error messages may themselves be sensitive, so retention is opt-in.
+
+Retention admits at most 4,096 entries and 16 MiB of JSON. Exceeding a limit
+fails the scenario and records `retention_error` with the retained prefix;
+the last operation may already have run, and its omitted result must not be
+interpreted as a refusal. The journal stays failed for subsequent invocations.
+The file records invocations, not overall scenario success; check the exit status
+and audit report as well. Without `results`, the existing behavior is unchanged.
+
+For a framework resource's existing `render` action, the returned content
+address identifies the actual offscreen PNG in the ordinary ContentStore.
+Run with an explicit owned `--data-dir target/drive-profile` to keep those
+bytes after exit (`target/drive-profile/content/<first-two-hash-characters>/<hash>`).
+The default temporary profile is removed on exit. This is a render of the
+imported state, distinct from a seeded `--shots` fixture. The normal desktop's
+`tilo-control` already preserves returned action payloads; this option brings
+the standalone scenario driver to the same semantic result contract.
+
 From Rust, `Driver::invoke_action` is the same call, and
 `Driver::deliver_external` delivers a `UserEvent::External` payload the way
 the live host does. `crates/session/installer/tests/headless_wizard.rs` runs
@@ -516,7 +797,7 @@ passes while proving nothing.
 
 ## Opening an app the machine does not have
 
-`scripts/demo/install-on-open.py` drives the one flow that cannot be
+`scripts/headless-examples/install-on-open.py` drives the one flow that cannot be
 exercised from an installed package, because its subject is a package
 that is not installed: typing the name of an app the configured
 registries offer, pressing Enter, and getting a tab.
@@ -525,8 +806,8 @@ registries offer, pressing Enter, and getting a tab.
 cargo build -p shell -p sheets -p install -p launcher
 cargo build -p app-cli --bins --examples
 
-scripts/demo/install-on-open.py --out target/install-on-open
-scripts/demo/install-on-open.py --backend winit --stage-only   # drive it yourself
+scripts/headless-examples/install-on-open.py --out target/install-on-open
+scripts/headless-examples/install-on-open.py --backend winit --stage-only   # drive it yourself
 ```
 
 It packs the real Sheets binary into a signed `.tapp`, serves it from a
@@ -541,7 +822,7 @@ Two things it pins that are easy to get wrong by hand:
 
 - The socket takes **winit** key names. `Enter` works; `Return` is an
   xkb name and comes back as a `parse_error`.
-- **`Super+K`**, not `Ctrl+K`. `Ctrl+K` scopes to the focused app, and
+- **`Super+Space`**, not `Ctrl+K`. `Ctrl+K` scopes to the focused app, and
   only widens to global when nothing is focused — so it appears to work
   on an empty workspace and stops working once there is a tab in front
   of you. The script measures both scopes after the app is up, where
@@ -574,6 +855,69 @@ The test spawns the binary itself. It is intentionally separate from the
 offscreen lanes until the native compositor can run without a host display.
 `control_socket_test` is a module inside the shared `it` test binary, not a
 separate Cargo target. Keep the module filter when opting into ignored tests.
+
+## Desktop smoke gate
+
+`desktop_smoke::` in the shell `it` target (`crates/session/shell/tests/desktop_smoke.rs`)
+is the required end-to-end gate: a real headless compositor restored over a
+session of several windows (in-process Tilo apps and Wayland clients), driven
+through the control socket the way a person drives it: the pointer over every
+window, edge, corner and the top bar and in and out of each client, typing into
+each window, resize, a new window, the palette and a search, workspace
+switches, lock and unlock. A second test runs the same scenario under CPU and
+memory pressure. Both take seconds once the shell tests are built.
+
+```bash
+cargo nextest run --locked -p shell --test it -E 'test(desktop_smoke::)' --no-capture
+```
+
+It is part of the shell test target, so it runs in the required
+`CI / affected packages` check. `tools/ci/affected_packages.py`
+(`DESKTOP_GATE`) also runs it, as just that filter, when a change reaches the
+shell without scheduling the shell's tests.
+
+**Liveness is an assertion.** With `TILO_TEST_CONTROL` set, a dev-build
+compositor also binds `<control socket>.live`
+(`crates/session/shell/src/compositor/liveness.rs`), answered on its own
+threads, so it still answers when the main loop is deadlocked, which the
+control socket itself cannot:
+
+```bash
+printf '{"op":"heartbeat","budget_ms":500}\n' | socat - UNIX-CONNECT:"$TILO_TEST_CONTROL.live"
+# {"alive":{"ticks":812,"latency_ms":0.2}}  or  {"stalled":{"budget_ms":500,"threads":[...]}}
+printf '{"op":"threads"}\n' | socat - UNIX-CONNECT:"$TILO_TEST_CONTROL.live"
+```
+
+A heartbeat asks the loop, through a calloop ping source, to acknowledge a
+wake. One it does not acknowledge within the budget is a stall, and the answer
+carries every thread's state and kernel wait channel. When the main thread is
+blocked it also carries the backtraces of the threads blocked in a system
+call; a main thread still working (slow, not stuck) is not interrupted, and
+neither is any thread that is running, faulting in a page or inside the
+allocator's memory calls, because a backtrace is captured by a signal handler
+that allocates, and a thread interrupted inside the allocator never comes back
+out. The harness (`tests/support/desktop.rs`) polls it every 50 ms from a
+monitor thread; a heartbeat overdue past the budget holds whichever call or
+wait the test is in until the report arrives (symbolizing the stacks can take
+many seconds under the pressure variant), then fails it with that report.
+Every control call has a hard deadline of its own, and a call that outlives it
+on a loop that kept acknowledging wakes is reported as slow. The same report
+is written to the compositor's stderr.
+
+Each heartbeat is also a whole main-loop turn, which costs the loop the same
+whether or not anything changed. Twenty a second read 16-31% of a core on CI
+from a desktop that used none, so the scenario's closing idle check holds the
+monitor's pings (`Desktop::without_heartbeats`) while it measures, then asks for
+a heartbeat at once, so a loop that froze meanwhile still fails. Every run
+prints its idle reading by thread, with what woke the loop and what it painted
+(`TILO_PAINT_STATS`) in the window.
+
+Seat state is a second line of defence in a debug build. Smithay holds the
+seat's pointer and keyboard lock while it delivers an event, and calls
+`SeatHandler::focus_changed` and `cursor_image` under it, so a handler that
+asks the seat for the pointer location waits on itself. Handlers open a
+`compositor::seat_lock::Callback` scope, and the seat reads in
+`compositor::seat_lock` panic inside one, naming the read, instead of hanging.
 
 ## Desktop UX journeys
 

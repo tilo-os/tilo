@@ -11,6 +11,7 @@ use std::collections::{HashSet, VecDeque};
 use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
+use automerge::transaction::Transactable;
 
 use crate::{
     Action, ActionEnvelope, ActionError, ActionId, ActionRegistry, EncodedAction, apply_local_by,
@@ -154,6 +155,10 @@ impl OptimisticQueue {
             .take_while(|pending| pending.status == PendingStatus::Accepted)
             .map(|pending| pending.envelope.clone())
             .collect();
+        if accepted_prefix.is_empty() {
+            // An earlier action is still awaited: nothing confirms yet.
+            return Ok(Acknowledgement::Accepted);
+        }
         let mut confirmed = self.confirmed.clone();
         for envelope in &accepted_prefix {
             if let Err(error) = ensure_base(&mut confirmed, envelope) {
@@ -194,7 +199,7 @@ impl OptimisticQueue {
         let Some(removed) = self.pending.remove(position) else {
             return Ok(RebaseBatch::default());
         };
-        match self.rebase_from(live, registry, Some(id), self.confirmed.clone()) {
+        match self.rebase_from(live, registry, Some(id), None) {
             Ok(batch) => Ok(batch),
             Err(error) => {
                 self.pending.insert(position, removed);
@@ -220,26 +225,7 @@ impl OptimisticQueue {
     ) -> Result<RebaseBatch, OptimisticError> {
         let mut confirmed = self.confirmed.clone();
         confirmed.merge_incoming(authoritative)?;
-        self.rebase_from(live, registry, None, confirmed)
-    }
-
-    /// Apply transport bytes produced by `AutoCommit::save_incremental` to
-    /// the confirmed baseline, then rebase pending work as above.
-    ///
-    /// # Errors
-    ///
-    /// Returns an Automerge load error or a pending-action replay error. The
-    /// queue and live document remain unchanged on failure.
-    pub fn load_authoritative_incremental(
-        &mut self,
-        live: &mut AutoCommit,
-        bytes: &[u8],
-        registry: &ActionRegistry,
-    ) -> Result<(usize, RebaseBatch), OptimisticError> {
-        let mut confirmed = self.confirmed.clone();
-        let applied = confirmed.load_incoming(bytes)?;
-        let rebase = self.rebase_from(live, registry, None, confirmed)?;
-        Ok((applied, rebase))
+        self.rebase_from(live, registry, None, Some(confirmed))
     }
 
     /// Envelopes to resend after reconnect. No local replay occurs: their
@@ -271,8 +257,9 @@ impl OptimisticQueue {
     /// The causal heads of the host-confirmed baseline.
     #[must_use]
     pub fn confirmed_heads(&self) -> Vec<automerge::ChangeHash> {
-        let mut confirmed = self.confirmed.clone();
-        confirmed.get_heads()
+        // The confirmed replica only ever takes whole changes, so its heads
+        // are its committed ones: no copy to close a transaction.
+        self.confirmed.base_heads()
     }
 
     #[must_use]
@@ -304,7 +291,8 @@ impl OptimisticQueue {
         live: &mut AutoCommit,
         registry: &ActionRegistry,
         rejected: Option<ActionId>,
-        confirmed: AutoCommit,
+        // The new confirmed baseline; `None` keeps the current one.
+        confirmed: Option<AutoCommit>,
     ) -> Result<RebaseBatch, OptimisticError> {
         let old = self.pending.clone();
         let mut superseded: Vec<_> = old.iter().map(|pending| pending.envelope.id).collect();
@@ -312,7 +300,7 @@ impl OptimisticQueue {
             superseded.push(rejected);
         }
 
-        let mut rebuilt = confirmed.clone();
+        let mut rebuilt = confirmed.as_ref().unwrap_or(&self.confirmed).clone();
         let mut outbound = Vec::with_capacity(old.len());
         let mut replacement = VecDeque::with_capacity(old.len());
         for pending in old {
@@ -329,7 +317,9 @@ impl OptimisticQueue {
                 status: PendingStatus::Awaiting,
             });
         }
-        self.confirmed = confirmed;
+        if let Some(confirmed) = confirmed {
+            self.confirmed = confirmed;
+        }
         self.pending = replacement;
         self.superseded.extend(superseded.iter().copied());
         *live = rebuilt;

@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::TaffyTreeExt;
 use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Widget};
 use automerge::transaction::Transactable;
@@ -76,20 +77,17 @@ impl Widget for ConsumingKeyboardRoot {
         nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if matches!(
             event,
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
         ) {
-            ctx.state.put(&ROOT, "escaped_keyboard", true).unwrap();
+            ctx.state
+                .document_mut()
+                .put(&ROOT, "escaped_keyboard", true)
+                .unwrap();
             *ctx.handled = true;
         }
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn name(&self) -> &'static str {
         "consuming-keyboard-root"
@@ -107,25 +105,10 @@ impl Widget for Publisher {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn name(&self) -> &'static str {
         "publisher"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 
@@ -133,9 +116,15 @@ impl crate::search::capability::SearchSource for Publisher {
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         vec![Box::new(PeopleProvider), Box::new(LazyProvider)]
     }
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, p: &ModelPath) {
+    fn activate_search_result(
+        &mut self,
+        action_id: &str,
+        doc: &mut crate::widget::Edits<'_>,
+        p: &ModelPath,
+    ) {
         let (doc, _) = crate::doc::document(doc, p);
-        doc.put(&ROOT, "navigated", ScalarValue::Str(action_id.into()))
+        doc.document_mut()
+            .put(&ROOT, "navigated", ScalarValue::Str(action_id.into()))
             .unwrap();
     }
 }
@@ -167,8 +156,7 @@ impl crate::resources::PublishesResources for Publisher {
                         key: "lazy-flipped".into(),
                     },
                 )
-                .unwrap()
-                .requiring(tilo_actions::PermissionRequirement::Write),
+                .unwrap(),
             )
         })
     }
@@ -185,25 +173,10 @@ impl Widget for CountingPublisher {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
-    fn draw(
-        &mut self,
-        _s: &mut Scene,
-        _t: Affine,
-        _tr: &mut TextRenderer,
-        _th: &Theme,
-        _p: &PresenceCtx,
-    ) {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn name(&self) -> &'static str {
         "counting-publisher"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
 }
 
@@ -303,9 +276,8 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
         assert_eq!(app.collect_local_resources().len(), 1);
         app.actions.permission_generation.set(u64::MAX);
 
-        app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"),
-            Vec::new(),
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            "restricted",
         ));
 
         assert_eq!(app.actions.permission_generation.get(), u64::MAX);
@@ -365,7 +337,8 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
             assert_eq!(button.test_id(), Some("standalone-search-open"));
             assert!(button.perform_action(
                 &crate::a11y::Action::Activate,
-                &mut app.state.doc,
+                &[],
+                &mut crate::widget::Edits::lend(&mut app.state.doc),
                 &app.state.root
             ));
             assert_eq!(app.dispatch_history_controls(), 1);
@@ -386,9 +359,8 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
                     .any(|label| label.contains("Flip it"))
             );
             if revoke {
-                app.set_permission_ctx(PermissionContext::from_capabilities(
-                    collab_types::caps::Actor::person(None, "restricted"),
-                    Vec::new(),
+                app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+                    "restricted",
                 ));
             }
             assert!(app.action_palette_handle_key(&synth_enter()));
@@ -400,14 +372,11 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
             assert!(
                 !app.collect_resources()
                     .iter()
-                    .any(|resource| resource.id.as_str()
-                        == crate::standalone_history_host::SEARCH_RESOURCE),
+                    .any(|resource| resource.id.as_str() == crate::search::request::SEARCH_RESOURCE),
                 "host Search never becomes an application/broker resource"
             );
-            let address = tilo_actions::ActionAddress::new(
-                crate::standalone_history_host::SEARCH_RESOURCE,
-                "open",
-            );
+            let address =
+                tilo_actions::ActionAddress::new(crate::search::request::SEARCH_RESOURCE, "open");
             assert!(
                 app.invoke_resource_action(
                     ResourceInvocation::new(&address, "same-local-name").broker_admitted(true)
@@ -422,9 +391,8 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
     {
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
         app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-        app.set_permission_ctx(PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(None, "restricted"),
-            Vec::new(),
+        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+            "restricted",
         ));
         app.open_action_palette();
         app.actions
@@ -483,11 +451,83 @@ pub(super) fn synth_enter() -> WindowEvent {
         None,
         Key::Named(NamedKey::Enter),
     );
-    WindowEvent::KeyboardInput {
-        device_id: winit::event::DeviceId::dummy(),
-        event,
-        is_synthetic: false,
+    crate::synthetic_input::keyboard_input(event)
+}
+
+#[test]
+fn unconsumed_tab_chords_are_the_desktops_tab_requests() {
+    use crate::shell_tabs::TabRequest;
+    use winit::keyboard::ModifiersState;
+    let chord = |text: &str| {
+        let mut event = synth_enter();
+        if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+            event.logical_key = Key::Character(text.into());
+        }
+        event
+    };
+    let _ = crate::shell_tabs::take_requests();
+    let mut app =
+        App::new_with_controlled_inputs(State::new(), Box::new(Button::new("done", "Done")));
+    app.init_layout();
+    let command = if app
+        .input
+        .platform
+        .command_modifier_down(ModifiersState::SUPER)
+    {
+        ModifiersState::SUPER
+    } else {
+        ModifiersState::CONTROL
+    };
+    for (text, modifiers) in [
+        ("t", command),
+        ("T", command | ModifiersState::SHIFT),
+        ("w", command),
+    ] {
+        app.input.modifiers = winit::event::Modifiers::from(modifiers);
+        let mut handled = false;
+        app.handle_unconsumed_tab_chord(&chord(text), &mut handled);
+        assert!(handled, "{text} is the desktop's tab chord");
     }
+    // A widget that consumed the press keeps it: no request.
+    let mut handled = true;
+    app.handle_unconsumed_tab_chord(&chord("w"), &mut handled);
+    // Plain letters type.
+    app.input.modifiers = winit::event::Modifiers::from(ModifiersState::empty());
+    let mut handled = false;
+    app.handle_unconsumed_tab_chord(&chord("t"), &mut handled);
+    assert!(!handled);
+    let requests = crate::shell_tabs::take_requests();
+    assert_eq!(
+        requests,
+        vec![
+            TabRequest::OpenBeside {
+                target: None,
+                background: false
+            },
+            TabRequest::ReopenClosed,
+            TabRequest::CloseThis,
+        ]
+    );
+
+    // On the wire the shell learns which launch asked.
+    assert_eq!(
+        tab_request_message(
+            TabRequest::OpenBeside {
+                target: Some("https://example.test/".into()),
+                background: true
+            },
+            Some(7)
+        ),
+        crate::floating_surface::FloatingSurfaceClientMessage::OpenTabBeside {
+            target: Some("https://example.test/".into()),
+            background: true,
+            instance: Some(7),
+        }
+    );
+    // Outside a Tilo session, closing the tab closes this window.
+    app.apply_unhosted_tab_request(TabRequest::CloseThis);
+    assert!(app.take_close_window_request());
+    assert!(!app.take_close_window_request(), "consumed once");
 }
 
 #[test]
@@ -502,7 +542,7 @@ fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
                 .push(Box::new(
                     TextInput::local().with_id("editor").with_initial_value("x"),
                 ))
-                .push(Box::new(Button::new("done", "Done", None))),
+                .push(Box::new(Button::new("done", "Done"))),
         ),
     );
     app.init_layout();
@@ -714,22 +754,16 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
     {
         let mut app = App::new(
             State::new(),
-            Box::new(Button::new("complete", "Complete", Some("completed"))),
+            Box::new(Button::new("complete", "Complete").on_view(|| {})),
         );
         app.init_layout();
         let resource = app
             .collect_resources()
             .into_iter()
-            .find(|resource| {
-                resource.kind == "tilo.ui.control"
-                    && resource.label == "Complete"
-                    && resource
-                        .actions
-                        .iter()
-                        .any(|action| action.id == "activate")
-            })
-            .expect("collaborative button publishes a semantic action");
-        let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "activate");
+            .find(|resource| resource.label == "Complete" && !resource.actions.is_empty())
+            .expect("the button publishes its action");
+        let address =
+            tilo_actions::ActionAddress::new(resource.id.as_str(), resource.actions[0].id.as_str());
         let route = app
             .preferred_action_ui_route(&address)
             .expect("semantic action resolves to visible UI");
@@ -812,7 +846,7 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
     {
         let mut app = App::new_with_controlled_inputs(
             State::new(),
-            Box::new(Button::new("focus-me", "Focus me", None)),
+            Box::new(Button::new("focus-me", "Focus me")),
         );
         app.init_layout();
         app.set_focused_node(None);
@@ -833,12 +867,7 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
         assert!(app.state.peek_last_undo().is_none());
 
         app.state.doc.put(ROOT, "draft", "finished").unwrap();
-        let context = tilo_actions::ActionContext::for_resource(
-            "Finish draft",
-            "test.draft",
-            "note",
-            "Draft",
-        );
+        let context = tilo_actions::ActionContext::for_resource("test.draft", "note", "Draft");
         assert!(app.state.commit_action_authored_with_context(
             None,
             None,
@@ -851,12 +880,18 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
             .message()
             .and_then(|message| tilo_actions::ActionContext::from_change_message(message))
             .unwrap();
-        assert_eq!(context.action_label, "Finish draft");
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.label.as_str()),
+            Some("Draft")
+        );
     }
 
     // Case `ctrl_k_invokes_a_projected_semantic_view_control`.
     {
-        let button = Button::new("drive-me", "Drive me", None);
+        let button = Button::new("drive-me", "Drive me");
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(button));
         app.init_layout();
         app.set_focused_node(None);
@@ -981,4 +1016,176 @@ fn host_commands_present_host_services_and_enter_the_palette_door() {
     // command steps aside.
     app.open_action_palette();
     assert!(!find(&app.host_commands(false), CommandGroup::Search, "open").enabled);
+}
+
+#[test]
+fn native_history_discovery_tracks_the_same_focused_local_undo_door() {
+    use crate::undo::{LocalUndo, LocalUndoStatus, UndoRequest, UndoStatus};
+    struct Native {
+        history: std::rc::Rc<std::cell::RefCell<Option<LocalUndoStatus>>>,
+        calls: std::rc::Rc<std::cell::RefCell<Vec<UndoRequest>>>,
+    }
+    impl LocalUndo for Native {
+        fn local_undo_is_deferred(&self) -> bool {
+            true
+        }
+        fn local_undo_status(&self) -> Option<LocalUndoStatus> {
+            self.history.borrow().clone()
+        }
+        fn handle_local_undo_request(&mut self, request: UndoRequest) -> bool {
+            self.calls.borrow_mut().push(request);
+            true
+        }
+    }
+    impl Widget for Native {
+        crate::provides!(dyn LocalUndo);
+        fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
+        fn start_operation(
+            &mut self,
+            operation: &crate::widget::ResourceOperation<'_>,
+            _: &mut crate::widget::Edits<'_>,
+            _: &automerge::ObjId,
+        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+            let Some(request) = operation.unscoped() else {
+                return Ok(None);
+            };
+            if request.type_id != crate::host_chrome::edit::EDIT_OPERATION {
+                return Ok(None);
+            }
+            self.calls
+                .borrow_mut()
+                .push(serde_json::from_slice(request.payload).unwrap());
+            Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+        }
+        fn name(&self) -> &str {
+            "Native history fixture"
+        }
+        fn build_layout(
+            &mut self,
+            tree: &mut TaffyTree<()>,
+            _: &Theme,
+            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = tree.new_leaf(taffy::Style::default()).unwrap();
+            nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+    }
+    let history = std::rc::Rc::new(std::cell::RefCell::new(Some(LocalUndoStatus::Ready(
+        UndoStatus {
+            can_undo: true,
+            ..Default::default()
+        },
+    ))));
+    let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(Native {
+            history: history.clone(),
+            calls: calls.clone(),
+        }),
+    );
+    app.init_layout();
+    let command = |app: &mut App, verb: &str| {
+        app.host_commands(false)
+            .into_iter()
+            .find(|c| {
+                c.binding.address().resource == "tilo.host:edit"
+                    && c.binding.address().action == verb
+            })
+            .expect("native Edit command")
+    };
+    let published = app.publication_resources();
+    let edit = published
+        .iter()
+        .find(|r| r.id.0 == "tilo.host:edit")
+        .expect("native Edit is published through the existing resource door");
+    assert!(edit.actions.iter().any(|a| a.id == "undo"
+        && matches!(
+            a.contract.availability,
+            tilo_actions::Availability::Available
+        )));
+    let undo = command(&mut app, "undo");
+    assert!(
+        undo.enabled,
+        "native entries must be discoverable with an empty CRDT history"
+    );
+    assert!(!command(&mut app, "redo").enabled);
+    assert!(app.invoke_host_command(&undo.invocation().unwrap()));
+    assert_eq!(*calls.borrow(), [UndoRequest::Undo]);
+    *history.borrow_mut() = Some(LocalUndoStatus::Ready(UndoStatus {
+        can_redo: true,
+        ..Default::default()
+    }));
+    app.service_idle_model();
+    assert!(!command(&mut app, "undo").enabled);
+    let redo = command(&mut app, "redo");
+    assert!(redo.enabled);
+    assert!(app.invoke_host_command(&redo.invocation().unwrap()));
+    assert_eq!(*calls.borrow(), [UndoRequest::Undo, UndoRequest::Redo]);
+    *history.borrow_mut() = Some(LocalUndoStatus::Pending);
+    app.service_idle_model();
+    assert!(!command(&mut app, "undo").enabled);
+    assert!(!command(&mut app, "redo").enabled);
+    assert!(!app.invoke_host_command(&redo.invocation().unwrap()));
+    assert_eq!(
+        calls.borrow().len(),
+        2,
+        "stale action must not cross the local door"
+    );
+    *history.borrow_mut() = Some(LocalUndoStatus::Ready(UndoStatus {
+        can_undo: true,
+        ..Default::default()
+    }));
+    app.service_idle_model();
+    let actor = app.collaboration.local_author.0.clone();
+    let address = tilo_actions::ActionAddress::new("tilo.host:edit", "undo");
+    let invocation = tilo_actions::InvocationId::new();
+    assert_eq!(
+        app.invoke_resource_action(
+            ResourceInvocation::new(&address, &actor)
+                .broker_admitted(true)
+                .invocation(Some(invocation))
+        )
+        .unwrap(),
+        crate::widget::ResourceOperationStart::Accepted,
+        "published Edit must enter the actual native operation lifecycle"
+    );
+    assert_eq!(
+        *calls.borrow(),
+        [UndoRequest::Undo, UndoRequest::Redo, UndoRequest::Undo]
+    );
+    assert!(
+        app.invoke_resource_action(
+            ResourceInvocation::new(&address, "remote-editor")
+                .broker_admitted(true)
+                .invocation(Some(tilo_actions::InvocationId::new()))
+        )
+        .is_err()
+    );
+    assert_eq!(
+        calls.borrow().len(),
+        3,
+        "private native page history cannot be invoked for another participant"
+    );
+    *history.borrow_mut() = None;
+    app.service_idle_model();
+    assert!(
+        app.publication_resources()
+            .iter()
+            .all(|r| r.id.0 != "tilo.host:edit")
+    );
+    assert!(
+        app.invoke_resource_action(
+            ResourceInvocation::new(&address, &actor)
+                .broker_admitted(true)
+                .invocation(Some(tilo_actions::InvocationId::new()))
+        )
+        .is_err()
+    );
+    assert_eq!(
+        calls.borrow().len(),
+        3,
+        "an unmounted native history must not gain a broker route"
+    );
 }

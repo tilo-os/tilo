@@ -11,8 +11,7 @@
           "source": "static",
           "value": "graph-title"
         },
-        "role": "title",
-        "size": null
+        "role": "title"
       },
       {
         "type": "text",
@@ -21,8 +20,7 @@
           "source": "static",
           "value": "graph-introduction"
         },
-        "role": "body",
-        "size": null
+        "role": "body"
       },
       {
         "type": "button",
@@ -37,7 +35,7 @@
           "route": "about"
         },
         "enabled": true,
-        "style": "neutral"
+        "role": "secondary"
       },
       {
         "type": "component",

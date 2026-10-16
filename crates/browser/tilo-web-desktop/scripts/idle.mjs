@@ -8,8 +8,8 @@
 // usage: node idle.mjs BUNDLE_DIR [--webkit] [--stall-network] [--seconds N] [--max-fps F] [--apps ID,...]
 //   BUNDLE_DIR       build.sh --bundle desktop output
 //   --apps           the windows to open (default: Chat, API Tester, Word
-//                    Processor, Sheets, Notes, Maps, Image Editor, Calendar,
-//                    Photos, Clocks, Slides)
+//                    Processor, Sheets, Notes, Maps, Calendar, Photos, Clocks,
+//                    Slides)
 //   --webkit         Playwright's WebKit instead of headless Chrome; resolves
 //                    playwright-core from $PLAYWRIGHT_CORE, else from this tree.
 //                    Also reports the GPU process's memory while idle.
@@ -37,7 +37,7 @@ const stall = args.includes('--stall-network');
 const seconds = Number(option('--seconds', 3));
 const maxFps = Number(option('--max-fps', 2));
 const APPS = option('--apps', ['so.tilo.chat', 'so.tilo.api-tester', 'so.tilo.word-processor', 'so.tilo.sheets', 'so.tilo.notes',
-  'so.tilo.maps', 'so.tilo.image-editor', 'so.tilo.calendar', 'so.tilo.photos', 'so.tilo.clocks', 'so.tilo.slides'].join(',')).split(',');
+  'so.tilo.maps', 'so.tilo.calendar', 'so.tilo.photos', 'so.tilo.clocks', 'so.tilo.slides'].join(',')).split(',');
 const server = await serve(resolve(bundle));
 const local = new URL(server.url).origin;
 
@@ -47,7 +47,7 @@ async function chrome() {
   // Paused and never continued: every request to another origin (the bundle
   // is served over plain HTTP, the apps' services over HTTPS) pends.
   if (stall) await tab.send('Fetch.enable', {patterns: [{urlPattern: 'https://*'}]});
-  await tab.navigate(`${server.url}/index.html`);
+  await tab.navigate(`${server.url}/`);
   return {evaluate: tab.evaluate, errors: () => tab.log.filter(line => line.startsWith('EXC')), close: () => browser.close(),
     memory: () => null};
 }
@@ -60,7 +60,7 @@ async function playwrightWebkit() {
   if (stall) await page.route(url => url.origin !== local, () => {});
   const errors = [];
   page.on('pageerror', error => errors.push(`EXC ${error.message}`));
-  await page.goto(`${server.url}/index.html`);
+  await page.goto(`${server.url}/`);
   return {evaluate: expression => page.evaluate(expression), errors: () => errors,
     close: async () => { await context.close(); rmSync(profile, {recursive: true, force: true}); },
     memory: webkitMemory};

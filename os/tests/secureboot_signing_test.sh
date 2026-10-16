@@ -9,10 +9,27 @@ grep -Fq 'tilo-crypto durable-rename "$signed_output" "$a"' "$secureboot"
 grep -Fq 'esp_install_signed "$signed_output" "${a#"$ESP"/}"' "$secureboot"
 grep -Fq 'tilo-crypto durable-rename "$temporary" "$output"' "$secureboot"
 grep -Fq 'exec 8<"$ESP"' "$secureboot"
+# A staged UKI must be signed before the reboot that boots it. `bootc upgrade`
+# stages it in EFI/Linux/bootc, which the signer scans, and a path watch is not
+# recursive, so the path unit must name that directory itself.
+sign_path="$repo/os/usr/lib/systemd/system/tilo-secureboot-sign.path"
+grep -Fq 'find "$ESP/EFI/Linux/bootc" -maxdepth 1' "$secureboot"
+grep -Fxq 'PathChanged=/boot/EFI/Linux/bootc' "$sign_path"
+grep -Fxq 'PathModified=/boot/EFI/Linux/bootc' "$sign_path"
+# An installed system's ESP is at /boot/efi, beside its separate /boot.
+grep -Fxq 'PathChanged=/boot/efi/EFI/Linux/bootc' "$sign_path"
+grep -Fxq 'PathModified=/boot/efi/EFI/Linux/bootc' "$sign_path"
 if grep -Eq '^[[:space:]]*sync([[:space:]]|$)' "$secureboot"; then
   printf 'Secure Boot signing still performs a system-wide sync\n' >&2
   exit 1
 fi
+# The signer's writer is the image's tilo-esp-write, built from its crate.
+esp_write="${TILO_ESP_WRITE_BIN:-}"
+if [ -z "$esp_write" ]; then
+  cargo build --quiet --locked --manifest-path "$repo/Cargo.toml" -p tilo-esp-write
+  esp_write="${CARGO_TARGET_DIR:-$repo/target}/debug/tilo-esp-write"
+fi
+[ -x "$esp_write" ] || { printf 'no tilo-esp-write at %s\n' "$esp_write" >&2; exit 1; }
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 export TILO_SB_BOOT_ID_FILE="$work/boot-id"
@@ -120,7 +137,7 @@ cat >"$work/bin/esp-write" <<EOF
 set -euo pipefail
 dst="\$(sed -n 's/.*"dst": "\([^"]*\)".*/\1/p' "$work/plans/secureboot-sign/plan.json")"
 TILO_ESP="\$TILO_SB_ESP" TILO_ESP_PLAN_ROOT="$work/plans" TILO_ESP_PLAN_OWNER="\$(id -u)" \\
-  TILO_ESP_WRITE_NO_REMOUNT=1 "$repo/os/usr/libexec/tilo-esp-write" secureboot-sign
+  TILO_ESP_WRITE_NO_REMOUNT=1 "$esp_write" secureboot-sign
 if [[ \${TILO_TEST_CORRUPT_DURABLE_RENAME:-0} == 1 ]]; then
   printf 'corrupt published artifact\n' >"\$TILO_SB_ESP/\$dst"
 fi

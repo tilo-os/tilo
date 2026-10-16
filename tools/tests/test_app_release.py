@@ -90,7 +90,7 @@ class AppReleaseTests(unittest.TestCase):
                 app_release.resolve_collection(
                     "default", catalog, app_release.config(ROOT / "dist/apps/app-collections.toml")
                 ),
-                sorted(set(catalog).difference(app_release.OS_INTEGRATED_APPS)),
+                sorted(catalog),
             )
         with self.subTest(phase='main push selects affected apps and publishes default collection'):
             workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(
@@ -113,12 +113,13 @@ class AppReleaseTests(unittest.TestCase):
                 "              args+=(--collection default)",
                 selection,
             )
-            self.assertIn('update_variable TILO_APP_COLLECTION_SOURCE "$GITHUB_SHA"', workflow)
+            self.assertIn('update_variable TILO_APP_COLLECTION_SOURCE "$GITHUB_SHA"',
+                          (ROOT / "tools/apps/publish-collections.sh").read_text(encoding="utf-8"))
             self.assertIn("if [[ $GITHUB_REF == refs/heads/main ]]; then", workflow)
             self.assertIn("collection=default", workflow)
 
             catalog = app_release.app_catalog(ROOT)
-            expected = sorted(set(catalog).difference(app_release.OS_INTEGRATED_APPS))
+            expected = sorted(catalog)
             for path in (
                 "tools/canonical_verifier_bundle.py",
                 "tools/assemble_verified_apps.py",
@@ -128,6 +129,20 @@ class AppReleaseTests(unittest.TestCase):
             ):
                 with self.subTest(path=path):
                     self.assertEqual(app_release.apps_from_changes([path], catalog), expected)
+
+    def test_app_manifest_changes_rebuild_the_shared_runtime_collection(self):
+        catalog = app_release.app_catalog(ROOT)
+        # Mail's new Contacts dependency changed the collection runtime while
+        # ordinary reverse-dependency selection chose only four apps. Reusing
+        # the old tapps then failed the production runtime-root check.
+        self.assertEqual(
+            app_release.apps_from_changes(["apps/mail/Cargo.toml"], catalog),
+            sorted(catalog),
+        )
+        self.assertEqual(
+            app_release.apps_from_changes(["apps/mail/src/app.rs"], catalog),
+            ["mail"],
+        )
 
     def test_direct_changes_select_exactly_their_packaging_closure(self):
         with self.subTest(phase='direct app change does not select fleet'):
@@ -140,7 +155,10 @@ class AppReleaseTests(unittest.TestCase):
         with self.subTest(phase='actual packaging closure inputs never silently select zero'):
             inputs = {
                 "tools/ci/rustc-thin-app-wrapper.sh": "binary",
+                "tools/ci/runtime-dylib-lazy-link.py": "binary",
                 "os/scripts/bake-runtime-bundle.sh": "packaging",
+                "os/scripts/collect-runtime-dependencies.py": "packaging",
+                "os/scripts/verify-runtime-bundle-closure.sh": "verification",
                 "os/scripts/verify-elf-hardening.sh": "verification",
                 "os/Containerfile.builder": "binary",
                 "os/external-assets/github-assets.tsv": "binary",
@@ -246,17 +264,28 @@ class AppReleaseTests(unittest.TestCase):
                     self.assertEqual([path], app_release.input_classification([path], metadata, root)[kind])
                 self.assertEqual(sorted(catalog), app_release.apps_from_changes(
                     ['crates/deleted-owner/src/lib.rs'], catalog, metadata, root))
+                # A runtime engine is signed into the runtime bundle:
+                # changing it changes the runtime every app names, not only
+                # the one app that loads it.
+                engine = root / 'crates/runtime/engines/typst/Cargo.toml'
+                engine.parent.mkdir(parents=True)
+                engine.write_text('[package]\nname = "tilo-typst-engine"\n')
+                metadata['packages'].append(package('tilo-typst-engine', 'crates/runtime/engines/typst'))
+                self.assertEqual({'tilo-typst-engine'}, app_release.runtime_engines(root))
+                self.assertEqual(sorted(catalog), app_release.apps_from_changes(
+                    ['crates/runtime/engines/typst/src/lib.rs'], catalog, metadata, root))
+                metadata['packages'].pop()
                 # A shared dependency can invalidate packaging tools AND app code;
                 # do not label that as packaging-only for a future reuse worker.
                 metadata['packages'][-2]['dependencies'] = [{'path': str(root / 'crates/format')}]
                 classified = app_release.input_classification(['crates/format/src/lib.rs'], metadata, root)
                 self.assertEqual(['crates/format/src/lib.rs'], classified['binary'])
                 self.assertEqual(['crates/format/src/lib.rs'], classified['packaging'])
-        with self.subTest(phase='global change excludes os integrated apps'):
+        with self.subTest(phase='global change selects every app, the browser included'):
             catalog = {**CATALOG, "browser": {}}
             self.assertEqual(
                 app_release.apps_from_changes(["Cargo.lock"], catalog),
-                sorted(CATALOG),
+                sorted(catalog),
             )
         with self.subTest(phase='shared runtime change selects reverse dependent apps'):
             with tempfile.TemporaryDirectory() as directory:
@@ -297,7 +326,7 @@ class AppReleaseTests(unittest.TestCase):
                 app_release.apps_from_changes(
                     ["crates/sdk/ui-core/src/lib.rs"], catalog, metadata, ROOT
                 ),
-                sorted(set(catalog).difference(app_release.OS_INTEGRATED_APPS)),
+                sorted(catalog),
             )
         with self.subTest(phase='every global release input triggers main packaging'):
             workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(
@@ -316,16 +345,16 @@ class AppReleaseTests(unittest.TestCase):
                         any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns),
                         f"{path} does not trigger Release / apps",
                     )
-        with self.subTest(phase='os integrated browser change does not use generic builder'):
+        with self.subTest(phase='a browser change releases the browser tapp'):
             catalog = {**CATALOG, "browser": {}}
             self.assertEqual(
-                app_release.apps_from_changes(["apps/browser/src/main.rs"], catalog), []
+                app_release.apps_from_changes(["apps/browser/src/main.rs"], catalog), ["browser"]
             )
         with self.subTest(phase='release graph keeps image codecs explicit'):
             # One app must not enable unused image codecs in every thin tapp.
             expected = {
                 ROOT / "apps/slides/Cargo.toml": ["jpeg", "png", "gif", "webp"],
-                ROOT / "crates/doc/qdoc-pdf/Cargo.toml": ["jpeg", "png"],
+                ROOT / "crates/doc/tilo-doc-pdf/Cargo.toml": ["jpeg", "png"],
             }
             for manifest, formats in expected.items():
                 dependency = tomllib.loads(manifest.read_text())["dependencies"]["image"]
@@ -513,8 +542,10 @@ dependencies = ["markdown-parser 1.1.0"]
             publish = workflow.split("- name: Publish reusable tapps and assemble immutable collections", 1)[1]
             self.assertIn("PRIOR_X86_URL: ${{ needs.plan.outputs.prior_x86_url }}", publish)
             self.assertIn("PRIOR_ARM64_SHA256: ${{ needs.plan.outputs.prior_arm64_sha256 }}", publish)
-            self.assertNotIn("vars.TILO_APP_COLLECTION_URL", publish.split("run: |", 1)[0])
-            self.assertIn('update_variable TILO_APP_COLLECTION_BUILDER "$BUILDER_IMAGE"', publish)
+            self.assertNotIn("vars.TILO_APP_COLLECTION_URL", publish.split("run: ", 1)[0])
+            self.assertIn("run: tools/apps/publish-collections.sh", publish)
+            script = (ROOT / "tools/apps/publish-collections.sh").read_text(encoding="utf-8")
+            self.assertIn('update_variable TILO_APP_COLLECTION_BUILDER "$BUILDER_IMAGE"', script)
 
 
 if __name__ == "__main__":

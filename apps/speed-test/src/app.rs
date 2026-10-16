@@ -1,33 +1,34 @@
 #![allow(
     clippy::arithmetic_side_effects,
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
     clippy::unwrap_used,
     reason = "bounded app-local arithmetic; Taffy allocation is infallible for this leaf"
 )]
 
+use crate::view::{self, ScrollOffset, Shared};
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::mpsc::{self, Receiver};
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use ui::framework::Actions;
+use ui::tilo_resource::Invoke;
 use ui::time::{Duration, Instant};
+use ui::widget::Element;
 use ui::widget::{AppModel, ModelPath};
 
-use ui::ColorCompat;
-use ui::a11y::{AccessNode, AccessState, Role};
-use ui::automerge::{AutoCommit, ObjId};
-use ui::presence::PresenceCtx;
-use ui::taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use ui::text_render::{TextRenderer, TextWeight};
-use ui::theme::Theme;
-use ui::tilo_actions::{
-    ActionContract, ActionOutput, ActionSpec, DiscoveryScope, OperationKind, Resource,
+use ui::framework::{
+    Dispatcher, EffectCx, EffectStatus, Effected, Progress, ResourceSurface, SurfaceCx,
 };
+use ui::presence::PresenceCtx;
+use ui::taffy::{NodeId, TaffyTree};
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Arc, Circle, Point, Rect, RoundedRect, Stroke};
-use ui::vello::peniko::Fill;
-use ui::widget::{Button, ButtonFace, Widget};
-use ui::winit::event::{ElementState, MouseButton, WindowEvent};
+use ui::vello::kurbo::{Affine, Point, Rect};
+use ui::widget::Widget;
+use ui::winit::event::WindowEvent;
 
-const OPERATION_TYPE: &str = "speed-test.operation";
+use crate::resource::{Measurement, SpeedEffect, SpeedTest};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Phase {
@@ -47,230 +48,246 @@ struct ResultSet {
     upload: f64,
 }
 
-enum WorkerMessage {
-    Phase(Phase),
-    Done(ResultSet),
-    Failed(String),
+/// A finished run, as the worker measured it.
+struct Run {
+    bytes: u64,
+    result: ResultSet,
+    server: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum SpeedOperation {
-    Start,
-    Stop,
-    ChangeRegion,
+/// Where a run stands, shared between the surface and its worker.
+#[derive(Default)]
+struct RunSignal {
+    phase: AtomicU8,
+    stop: AtomicBool,
+    live_bits: AtomicU64,
+    bytes: AtomicU64,
 }
 
-fn action(id: &str, label: &str, op: &SpeedOperation) -> Option<ActionSpec> {
-    let mut spec =
-        ActionSpec::operation(id, label, OperationKind::Effect, OPERATION_TYPE, op).ok()?;
-    spec.contract = ActionContract {
-        discovery: DiscoveryScope::Launchable,
-        ..ActionContract::default()
-    };
-    Some(spec)
+impl RunSignal {
+    const PING: u8 = 0;
+    const DOWNLOAD: u8 = 1;
+    const UPLOAD: u8 = 2;
+    /// The worker answered; the job's completion takes it from here.
+    const ANSWERED: u8 = 3;
+    /// The worker went away without answering: its caller cancelled it.
+    const ABANDONED: u8 = 4;
+
+    fn set(&self, phase: u8) {
+        self.phase.store(phase, Ordering::Release);
+    }
+
+    fn phase(&self) -> u8 {
+        self.phase.load(Ordering::Acquire)
+    }
+
+    fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Acquire)
+    }
+}
+
+/// Marks a run abandoned when its worker is dropped before answering.
+struct Answers(Arc<RunSignal>);
+
+impl Drop for Answers {
+    fn drop(&mut self) {
+        if self.0.phase() != RunSignal::ANSWERED {
+            self.0.set(RunSignal::ABANDONED);
+        }
+    }
 }
 
 pub struct SpeedTestApp {
+    shared: Shared,
+    root: Option<Element>,
+    scroll: ScrollOffset,
+    actions: Option<Actions<SpeedTest>>,
+    structure_dirty: bool,
+    view_phase: Option<Phase>,
     rect: Rect,
-    pointer: Point,
     phase: Phase,
+    transferred: u64,
     result: Option<ResultSet>,
     display_value: f64,
     ring_progress: f64,
     last_animation: Instant,
     started: Option<Instant>,
-    worker: Option<Receiver<WorkerMessage>>,
-    task: Option<ui::rt::JoinHandle<()>>,
-    region: usize,
+    run: Option<Arc<RunSignal>>,
     error: Option<String>,
-    history: Vec<ResultSet>,
+    /// Every measurement taken, newest first.
+    results: Vec<Measurement>,
+    /// A screenshot holds still on the staged values.
     shot: bool,
+    dispatcher: Option<Dispatcher<SpeedTest>>,
+    /// The device this window runs on, which every run it records names.
+    device: Option<String>,
 }
 
 impl SpeedTestApp {
-    const REGIONS: [&'static str; 3] = ["Automatic · London", "Frankfurt, Germany", "New York, US"];
+    fn refresh_view(&mut self) {
+        let phase = match self.phase {
+            Phase::Idle => crate::model::Phase::Idle,
+            Phase::Ping => crate::model::Phase::Ping,
+            Phase::Download => crate::model::Phase::Download,
+            Phase::Upload => crate::model::Phase::Upload,
+            Phase::Complete => crate::model::Phase::Complete,
+            Phase::Error => crate::model::Phase::Error,
+        };
+        self.shared.borrow_mut().present(crate::model::Projection {
+            phase,
+            result: self
+                .result
+                .map(|r| (r.ping, r.jitter, r.download, r.upload)),
+            live: self.display_value,
+            bytes: self.transferred,
+            ring: self.ring_progress,
+            history: self.history(),
+            current: (self.phase == Phase::Complete)
+                .then(|| self.results.first())
+                .flatten(),
+            error: self.error.clone(),
+            server: self.server_label().to_owned(),
+        });
+        if self.view_phase != Some(self.phase) {
+            self.view_phase = Some(self.phase);
+            self.structure_dirty = true;
+            self.root = None;
+        }
+    }
+    fn run_binding(&self) -> Option<ui::tilo_actions::ActionBinding<()>> {
+        self.actions.as_ref()?.effect(&if self.is_running() {
+            SpeedEffect::Stop
+        } else {
+            SpeedEffect::Start
+        })
+    }
 
     pub fn new() -> Self {
         Self {
+            shared: Rc::new(RefCell::new(crate::model::Model::new())),
+            root: None,
+            scroll: Rc::default(),
+            actions: None,
+            structure_dirty: true,
+            view_phase: None,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
             phase: Phase::Idle,
+            transferred: 0,
             result: None,
             display_value: 0.0,
             ring_progress: 0.0,
             last_animation: ui::time::now(),
             started: None,
-            worker: None,
-            task: None,
-            region: 0,
+            run: None,
             error: None,
-            history: Vec::new(),
+            results: Vec::new(),
             shot: false,
+            dispatcher: None,
+            device: None,
         }
     }
 
-    pub fn demo(scenario: &str) -> Self {
-        let mut app = Self::new();
-        app.shot = true;
-        match scenario {
-            "idle" => {}
-            "running" => {
-                app.phase = Phase::Download;
-                app.display_value = 386.4;
-                app.ring_progress = 0.58;
-            }
-            _ => {
-                let result = ResultSet {
-                    ping: 11.8,
-                    jitter: 1.6,
-                    download: 642.7,
-                    upload: 118.4,
-                };
-                app.phase = Phase::Complete;
-                app.display_value = result.download;
-                app.ring_progress = 0.79;
-                app.result = Some(result);
-                app.history = vec![
-                    ResultSet {
-                        ping: 12.4,
-                        jitter: 1.8,
-                        download: 618.2,
-                        upload: 112.9,
-                    },
-                    ResultSet {
-                        ping: 14.1,
-                        jitter: 2.2,
-                        download: 584.6,
-                        upload: 109.3,
-                    },
-                ];
-            }
-        }
-        app
-    }
-
-    fn start(&mut self) {
-        if matches!(self.phase, Phase::Ping | Phase::Download | Phase::Upload) {
-            return;
-        }
-        if let Some(previous) = self.result.take() {
-            self.history.insert(0, previous);
-            self.history.truncate(5);
-        }
+    /// Begin a run: the signal its worker reports through.
+    fn begin(&mut self) -> Arc<RunSignal> {
+        self.stop();
+        let signal = Arc::new(RunSignal::default());
+        self.run = Some(Arc::clone(&signal));
         self.phase = Phase::Ping;
-        self.error = None;
         self.display_value = 0.0;
+        self.transferred = 0;
         self.started = Some(ui::time::now());
         self.last_animation = ui::time::now();
-        let (tx, rx) = mpsc::channel();
-        self.worker = Some(rx);
-        self.cancel_task();
-        self.task = Some(ui::rt::app().spawn(run_measurement(tx)));
+        signal
     }
 
-    fn cancel_task(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
-    }
-
+    /// Stop the run in flight; its worker notices and its result is dropped.
     fn stop(&mut self) {
-        self.cancel_task();
-        self.worker = None;
+        if let Some(run) = self.run.take() {
+            run.stop.store(true, Ordering::Release);
+        }
         self.phase = Phase::Idle;
+        self.display_value = 0.0;
+        self.transferred = 0;
         self.result = None;
         self.error = None;
         self.started = None;
     }
 
-    fn toggle_test(&mut self) {
-        if self.is_running() {
-            self.stop();
-        } else {
-            self.start();
+    /// The run `signal` answered: record what it measured.
+    fn finish(
+        &mut self,
+        signal: &Arc<RunSignal>,
+        answer: Result<Run, String>,
+        cx: &EffectCx<SpeedTest, Self>,
+    ) -> ui::framework::EffectAnswer {
+        if !self
+            .run
+            .as_ref()
+            .is_some_and(|run| Arc::ptr_eq(run, signal))
+        {
+            return Err("the test was stopped".into());
         }
-    }
-
-    fn cycle_region(&mut self) {
-        if !matches!(self.phase, Phase::Ping | Phase::Download | Phase::Upload) {
-            self.region = (self.region + 1) % Self::REGIONS.len();
-        }
-    }
-
-    fn primary_rect(&self) -> Rect {
-        let wide = self.rect.width() >= 850.0;
-        let cx = if wide {
-            self.rect.x0 + self.rect.width() * 0.36
-        } else {
-            self.rect.center().x
-        };
-        let y = if wide {
-            if self.rect.height() >= 680.0 {
-                self.rect.y1 - 70.0
-            } else {
-                self.rect.y1 - 48.0
+        self.run = None;
+        self.started = None;
+        match answer {
+            Ok(Run {
+                result,
+                server,
+                bytes,
+            }) => {
+                self.transferred = bytes;
+                self.result = Some(result);
+                self.display_value = result.download;
+                self.phase = Phase::Complete;
+                cx.submit(self.recorded(&result, &server));
+                Ok(Effected::value(ui::serde_json::json!({
+                    "ping_ms": result.ping,
+                    "jitter_ms": result.jitter,
+                    "download_mbps": result.download,
+                    "upload_mbps": result.upload,
+                    "server": server,
+                })))
             }
+            Err(message) => {
+                self.error = Some(message.clone());
+                self.phase = Phase::Error;
+                Err(message)
+            }
+        }
+    }
+
+    /// The measurements below the dial: all of them, except the one the
+    /// dial shows.
+    fn history(&self) -> &[Measurement] {
+        if self.result.is_some() {
+            self.results.get(1..).unwrap_or_default()
         } else {
-            self.rect.y0 + 450.0
-        };
-        Rect::new(cx - 92.0, y - 25.0, cx + 92.0, y + 25.0)
+            &self.results
+        }
     }
 
-    fn region_rect(&self) -> Rect {
-        Rect::new(
-            self.rect.x0 + 28.0,
-            self.rect.y0 + 24.0,
-            self.rect.x0 + 250.0,
-            self.rect.y0 + 62.0,
-        )
+    /// The server the last test reached.
+    fn server_label(&self) -> &str {
+        self.results
+            .first()
+            .map_or("Nearest Cloudflare server", |latest| latest.server.as_str())
     }
 
-    fn dial_center(&self) -> Point {
-        let wide = self.rect.width() >= 850.0;
-        Point::new(
-            if wide {
-                self.rect.x0 + self.rect.width() * 0.36
-            } else {
-                self.rect.center().x
-            },
-            if wide {
-                if self.rect.height() >= 650.0 {
-                    self.rect.y0 + 326.0
-                } else {
-                    self.rect.y0 + self.rect.height() * 0.47
-                }
-            } else {
-                self.rect.y0 + 260.0
-            },
-        )
-    }
-
-    fn dial_radius(&self) -> f64 {
-        if self.rect.width() < 550.0 {
-            128.0
-        } else if self.rect.width() < 850.0 {
-            132.0
-        } else if self.rect.height() < 650.0 {
-            ((self.rect.height() - 250.0) / 2.0).clamp(104.0, 145.0)
-        } else {
-            168.0
+    /// The shared dial and frame scheduler use the same bounded reading.
+    fn dial_target(&self) -> f64 {
+        match self.phase {
+            Phase::Idle | Phase::Error => 0.0,
+            Phase::Ping => (self.display_value / 50.0).clamp(0.08, 0.92),
+            Phase::Download => (self.display_value / 750.0).clamp(0.06, 1.0),
+            Phase::Upload => (self.display_value / 180.0).clamp(0.06, 1.0),
+            Phase::Complete => self
+                .result
+                .map_or(0.0, |result| (result.download / 800.0).clamp(0.08, 1.0)),
         }
     }
 
     fn is_running(&self) -> bool {
         matches!(self.phase, Phase::Ping | Phase::Download | Phase::Upload)
-    }
-
-    fn phase_label(&self) -> &'static str {
-        match self.phase {
-            Phase::Idle => "Ready when you are",
-            Phase::Ping => "Finding the quickest route",
-            Phase::Download => "Measuring download",
-            Phase::Upload => "Measuring upload",
-            Phase::Complete => "Connection looks great",
-            Phase::Error => "Test interrupted",
-        }
     }
 }
 
@@ -280,66 +297,93 @@ impl Default for SpeedTestApp {
     }
 }
 
-impl SpeedTestApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ActionOutput>, String> {
-        if kind == OperationKind::Document || type_id != OPERATION_TYPE {
-            return Ok(None);
-        }
-        match serde_json::from_slice::<SpeedOperation>(payload)
-            .map_err(|error| error.to_string())?
-        {
-            SpeedOperation::Start => self.start(),
-            SpeedOperation::Stop => self.stop(),
-            SpeedOperation::ChangeRegion => self.cycle_region(),
-        }
-        Ok(Some(ActionOutput::default()))
-    }
-}
-
 impl Widget for SpeedTestApp {
-    ui::provides!(dyn ui::resources::PublishesResources);
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.refresh_view();
+        if let Some(root) = &mut self.root {
+            root.sync(state, path);
+        }
+    }
 
-    fn update(&mut self, _doc: &mut AppModel, _path: &ModelPath) -> bool {
+    fn take_structure_dirty(&mut self) -> bool {
+        let own = std::mem::take(&mut self.structure_dirty);
+        let inner = self
+            .root
+            .as_mut()
+            .is_some_and(|root| root.take_structure_dirty());
+        own | inner
+    }
+
+    fn wants_pointer_capture(&self) -> bool {
+        self.root
+            .as_ref()
+            .is_some_and(|root| root.wants_pointer_capture())
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.root
+            .iter_mut()
+            .map(|root| root.as_mut() as &mut (dyn Widget + '_))
+            .collect()
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.root.iter().map(AsRef::as_ref).collect()
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if let Some(root) = &mut self.root {
+            root.handle_event(event, ctx);
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if let Some(root) = &mut self.root {
+            root.draw(scene, transform, text, theme, presence);
+        }
+    }
+
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
-        if let Some(rx) = &self.worker {
-            while let Ok(message) = rx.try_recv() {
-                changed = true;
-                match message {
-                    WorkerMessage::Phase(phase) => self.phase = phase,
-                    WorkerMessage::Done(result) => {
-                        self.result = Some(result);
-                        self.display_value = result.download;
-                        self.phase = Phase::Complete;
-                        self.worker = None;
-                        break;
-                    }
-                    WorkerMessage::Failed(message) => {
-                        self.error = Some(message);
-                        self.phase = Phase::Error;
-                        self.worker = None;
-                        break;
-                    }
+        if let Some(run) = &self.run {
+            let phase = match run.phase() {
+                RunSignal::PING => Some(Phase::Ping),
+                RunSignal::DOWNLOAD => Some(Phase::Download),
+                RunSignal::UPLOAD => Some(Phase::Upload),
+                RunSignal::ABANDONED => None,
+                _ => Some(self.phase),
+            };
+            match phase {
+                Some(phase) if phase != self.phase => {
+                    self.phase = phase;
+                    changed = true;
+                }
+                Some(_) => {}
+                None => {
+                    self.stop();
+                    changed = true;
                 }
             }
         }
-        if self.is_running() && !self.shot {
-            let elapsed = self
-                .started
-                .map_or(0.0, |start| start.elapsed().as_secs_f64());
-            self.display_value = match self.phase {
-                Phase::Ping => 8.0 + elapsed.sin().abs() * 7.0,
-                Phase::Download => 420.0 + (elapsed * 2.7).sin() * 110.0,
-                Phase::Upload => 95.0 + (elapsed * 3.1).sin() * 24.0,
-                _ => self.display_value,
-            };
-            changed = true;
+        if self.is_running()
+            && !self.shot
+            && let Some(run) = &self.run
+        {
+            let measured = f64::from_bits(run.live_bits.load(Ordering::Acquire));
+            let bytes = run.bytes.load(Ordering::Acquire);
+            if !measured.total_cmp(&self.display_value).is_eq() || bytes != self.transferred {
+                self.display_value = measured;
+                self.transferred = bytes;
+                changed = true;
+            }
         }
         let now = ui::time::now();
         let delta = now
@@ -347,438 +391,44 @@ impl Widget for SpeedTestApp {
             .as_secs_f64()
             .min(0.05);
         self.last_animation = now;
-        let target = match self.phase {
-            Phase::Idle | Phase::Error => 0.0,
-            Phase::Ping => (self.display_value / 50.0).clamp(0.08, 0.92),
-            Phase::Download => (self.display_value / 750.0).clamp(0.06, 1.0),
-            Phase::Upload => (self.display_value / 180.0).clamp(0.06, 1.0),
-            Phase::Complete => self
-                .result
-                .map_or(0.0, |result| (result.download / 800.0).clamp(0.08, 1.0)),
-        };
+        let target = self.dial_target();
         let eased = 1.0 - (-delta * 9.0).exp();
         let previous = self.ring_progress;
         self.ring_progress += (target - self.ring_progress) * eased;
         changed |= (previous - self.ring_progress).abs() > 0.0005;
+        self.refresh_view();
+        if let Some(root) = &mut self.root {
+            changed |= root.update(doc, path);
+        }
         changed
     }
 
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        self.refresh_view();
+        if self.root.is_none() {
+            self.root = Some(view::build(
+                &self.shared,
+                &self.scroll,
+                self.run_binding(),
+                theme,
+            ));
+        }
+        self.root
+            .as_mut()
+            .unwrap()
+            .build_layout(taffy, theme, node_map)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "declarative paint of the whole window, read top to bottom"
-    )]
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
-
-        let region = self.region_rect();
-        #[expect(
-            clippy::indexing_slicing,
-            reason = "`region` only ever advances modulo `REGIONS.len()`"
-        )]
-        let region_label = Self::REGIONS[self.region];
-        Button::paint(
-            scene,
-            transform,
-            tr,
-            theme,
-            &ButtonFace::new(region, region_label).hovered(region.contains(self.pointer)),
-        );
-        tr.draw_text(
-            scene,
-            "Server",
-            theme.tokens.typography.scale.xs,
-            c.text_dim,
-            transform * Affine::translate((region.x0, region.y0 - 15.0)),
-            None,
-        );
-
-        let center = self.dial_center();
-        let radius = self.dial_radius();
-        if self.rect.width() >= 850.0 && self.rect.height() >= 650.0 {
-            let heading = "NETWORK PERFORMANCE";
-            let (heading_width, _) = tr.measure_weighted(
-                heading,
-                theme.tokens.typography.scale.xs,
-                None,
-                TextWeight::Semibold,
-            );
-            tr.draw_text_weighted(
-                scene,
-                heading,
-                theme.tokens.typography.scale.xs,
-                c.text_dim,
-                transform
-                    * Affine::translate((
-                        center.x - f64::from(heading_width) / 2.0,
-                        self.rect.y0 + 92.0,
-                    )),
-                None,
-                TextWeight::Semibold,
-            );
-            let stages = ["PING", "DOWNLOAD", "UPLOAD"];
-            for (index, stage) in stages.iter().enumerate() {
-                let stage_x = center.x - 148.0 + index as f64 * 148.0;
-                let reached = index
-                    <= match self.phase {
-                        Phase::Idle | Phase::Ping | Phase::Error => 0,
-                        Phase::Download => 1,
-                        Phase::Upload | Phase::Complete => 2,
-                    };
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    if reached {
-                        theme.accent_primary
-                    } else {
-                        c.surfaces.raised
-                    },
-                    None,
-                    &Circle::new((stage_x, self.rect.y0 + 124.0), 4.0),
-                );
-                tr.draw_text(
-                    scene,
-                    stage,
-                    theme.tokens.typography.scale.xs,
-                    if reached { c.text_primary } else { c.text_dim },
-                    transform * Affine::translate((stage_x + 10.0, self.rect.y0 + 116.0)),
-                    None,
-                );
-            }
+        if let Some(root) = &mut self.root {
+            root.apply_layout(taffy, node, origin);
+            self.rect = root.get_rect();
         }
-        for index in 0..=10 {
-            let angle = -2.45 + 4.9 * f64::from(index) / 10.0;
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                c.text_dim.with_alpha_factor(0.45),
-                None,
-                &Circle::new(
-                    (
-                        center.x + (radius + 28.0) * angle.cos(),
-                        center.y + (radius + 28.0) * angle.sin(),
-                    ),
-                    if index % 5 == 0 { 2.8 } else { 1.7 },
-                ),
-            );
-        }
-        let ring = Arc::new(center, (radius, radius), -2.45, 4.9, 0.0);
-        scene.stroke(
-            &Stroke::new(15.0),
-            transform,
-            c.surfaces.raised,
-            None,
-            &ring,
-        );
-        let progress = self.ring_progress.max(0.015);
-        let active = Arc::new(center, (radius, radius), -2.45, 4.9 * progress, 0.0);
-        scene.stroke(
-            &Stroke::new(15.0),
-            transform,
-            theme.accent_primary,
-            None,
-            &active,
-        );
-        let dot_angle = -2.45 + 4.9 * progress;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.accent_primary,
-            None,
-            &Circle::new(
-                (
-                    center.x + radius * dot_angle.cos(),
-                    center.y + radius * dot_angle.sin(),
-                ),
-                10.0,
-            ),
-        );
-
-        let unit = match self.phase {
-            Phase::Ping => "ms",
-            _ => "Mbps",
-        };
-        let (unit_width, _) = tr.measure_weighted(
-            unit,
-            theme.tokens.typography.scale.sm,
-            None,
-            TextWeight::Regular,
-        );
-        let value = if self.phase == Phase::Idle {
-            "—".to_string()
-        } else {
-            format!("{:.1}", self.display_value)
-        };
-        let (value_width, _) = tr.measure_weighted(
-            &value,
-            theme.tokens.typography.scale.x4l,
-            None,
-            TextWeight::Bold,
-        );
-        let value_x = center.x - f64::from(value_width) / 2.0;
-        let (status_width, _) = tr.measure_weighted(
-            self.phase_label(),
-            theme.tokens.typography.scale.base,
-            None,
-            TextWeight::Semibold,
-        );
-        tr.draw_text_weighted(
-            scene,
-            &value,
-            theme.tokens.typography.scale.x4l,
-            c.text_primary,
-            transform * Affine::translate((value_x, center.y - 34.0)),
-            None,
-            TextWeight::Bold,
-        );
-        tr.draw_text(
-            scene,
-            unit,
-            theme.tokens.typography.scale.sm,
-            c.text_dim,
-            transform
-                * Affine::translate((center.x - f64::from(unit_width) / 2.0, center.y + 23.0)),
-            None,
-        );
-        if self.phase != Phase::Idle {
-            let scale_label = match self.phase {
-                Phase::Ping => "0 — 50 ms",
-                Phase::Upload => "0 — 180 Mbps",
-                _ => "0 — 800 Mbps",
-            };
-            let (scale_width, _) = tr.measure_weighted(
-                scale_label,
-                theme.tokens.typography.scale.xs,
-                None,
-                TextWeight::Regular,
-            );
-            tr.draw_text(
-                scene,
-                scale_label,
-                theme.tokens.typography.scale.xs,
-                c.text_dim,
-                transform
-                    * Affine::translate((center.x - f64::from(scale_width) / 2.0, center.y + 43.0)),
-                None,
-            );
-        }
-        tr.draw_text_weighted(
-            scene,
-            self.phase_label(),
-            theme.tokens.typography.scale.base,
-            c.text_primary,
-            transform
-                * Affine::translate((center.x - f64::from(status_width) / 2.0, center.y + 76.0)),
-            None,
-            TextWeight::Semibold,
-        );
-
-        let primary = self.primary_rect();
-        let label = if self.is_running() {
-            "Stop test"
-        } else {
-            "Run speed test"
-        };
-        Button::paint(
-            scene,
-            transform,
-            tr,
-            theme,
-            &ButtonFace::new(primary, label)
-                .primary()
-                .hovered(primary.contains(self.pointer)),
-        );
-
-        let wide = self.rect.width() >= 850.0;
-        if wide && self.rect.height() >= 680.0 {
-            let facts = [
-                ("CONNECTION", "Wired"),
-                ("TEST SERVER", "Cloudflare edge"),
-                (
-                    "DATA USED",
-                    if self.result.is_some() {
-                        "12 MB"
-                    } else {
-                        "—"
-                    },
-                ),
-            ];
-            // Facts and the primary action occupy separate reserved rows.
-            // Keep a full text line plus 28 px of breathing room above the
-            // button rather than relying on the font's visual bounds.
-            let fact_y = self.rect.y1 - 196.0;
-            for (index, (label, value)) in facts.iter().enumerate() {
-                let x = center.x - 205.0 + index as f64 * 142.0;
-                tr.draw_text(
-                    scene,
-                    label,
-                    theme.tokens.typography.scale.xs,
-                    c.text_dim,
-                    transform * Affine::translate((x, fact_y)),
-                    None,
-                );
-                tr.draw_text_weighted(
-                    scene,
-                    value,
-                    theme.tokens.typography.scale.sm,
-                    c.text_primary,
-                    transform * Affine::translate((x, fact_y + 24.0)),
-                    Some(126.0),
-                    TextWeight::Semibold,
-                );
-            }
-        }
-
-        if wide {
-            self.draw_details(
-                scene,
-                transform,
-                tr,
-                theme,
-                Rect::new(
-                    self.rect.x0 + self.rect.width() * 0.65,
-                    self.rect.y0 + 92.0,
-                    self.rect.x1 - 34.0,
-                    self.rect.y1 - 42.0,
-                ),
-            );
-        } else if self.rect.height() > 650.0 {
-            self.draw_details(
-                scene,
-                transform,
-                tr,
-                theme,
-                Rect::new(
-                    self.rect.x0 + 22.0,
-                    self.rect.y0 + 490.0,
-                    self.rect.x1 - 22.0,
-                    self.rect.y1 - 20.0,
-                ),
-            );
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-        }
-        if matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            }
-        ) {
-            if self.primary_rect().contains(self.pointer) {
-                self.toggle_test();
-                *ctx.handled = true;
-            } else if self.region_rect().contains(self.pointer) {
-                self.cycle_region();
-                *ctx.handled = true;
-            }
-        }
-    }
-
-    fn accessibility(&self) -> Option<AccessNode> {
-        let mut root = AccessNode::new(Role::Window).with_name("Speed Test");
-        root.children = vec![
-            AccessNode::new(Role::Button)
-                .with_action_target("speed-test.start")
-                .with_name("Run speed test")
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                }),
-            AccessNode::new(Role::Button)
-                .with_action_target("speed-test.region")
-                .with_name("Change test region")
-                .with_state(AccessState {
-                    focusable: true,
-                    ..Default::default()
-                }),
-        ];
-        Some(root)
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &ui::a11y::Action,
-        key_path: &[u64],
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
-        if !matches!(action, ui::a11y::Action::Activate) {
-            return false;
-        }
-        match key_path.last() {
-            Some(key) if *key == ui::a11y::hash_key(&"speed-test.start") => {
-                self.toggle_test();
-                true
-            }
-            Some(key) if *key == ui::a11y::hash_key(&"speed-test.region") => {
-                self.cycle_region();
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .map(ui::widget::ResourceOperationStart::Completed))
     }
 
     fn name(&self) -> &'static str {
@@ -791,343 +441,175 @@ impl Widget for SpeedTestApp {
         self.rect == Rect::ZERO
     }
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let target = match self.phase {
-            Phase::Idle | Phase::Error => 0.0,
-            Phase::Ping => (self.display_value / 50.0).clamp(0.08, 0.92),
-            Phase::Download => (self.display_value / 750.0).clamp(0.06, 1.0),
-            Phase::Upload => (self.display_value / 180.0).clamp(0.06, 1.0),
-            Phase::Complete => self
-                .result
-                .map_or(0.0, |result| (result.download / 800.0).clamp(0.08, 1.0)),
-        };
+        let target = self.dial_target();
         (self.is_running() || (self.ring_progress - target).abs() > 0.001)
             .then(|| ui::time::now() + Duration::from_millis(16))
     }
 }
 
-impl ui::resources::PublishesResources for SpeedTestApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("speed-test:root", "speed-test", "Internet speed test");
-        if let Some(spec) = action("start", "Run speed test", &SpeedOperation::Start) {
-            root.actions.push(spec);
-        }
-        if self.is_running()
-            && let Some(spec) = action("stop", "Stop speed test", &SpeedOperation::Stop)
-        {
-            root.actions.push(spec);
-        }
-        if let Some(spec) = action(
-            "change-region",
-            "Change test region",
-            &SpeedOperation::ChangeRegion,
-        ) {
-            root.actions.push(spec);
-        }
-        vec![root]
-    }
-}
-
 impl SpeedTestApp {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "declarative paint of the whole results panel, read top to bottom"
-    )]
-    fn draw_details(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            c.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(area, f64::from(theme.tokens.radii.lg)),
-        );
-        tr.draw_text_weighted(
-            scene,
-            "Your connection",
-            theme.tokens.typography.scale.lg,
-            c.text_primary,
-            transform * Affine::translate((area.x0 + 24.0, area.y0 + 24.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        let result = self.result.unwrap_or(ResultSet {
-            ping: 0.0,
-            jitter: 0.0,
-            download: 0.0,
-            upload: 0.0,
-        });
-        let cards = [
-            ("PING", result.ping, "ms"),
-            ("DOWNLOAD", result.download, "Mbps"),
-            ("UPLOAD", result.upload, "Mbps"),
-        ];
-        let card_w = (area.width() - 64.0) / 3.0;
-        for (index, (label, value, unit)) in cards.iter().enumerate() {
-            let x = area.x0 + 20.0 + index as f64 * (card_w + 12.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                c.surfaces.base,
-                None,
-                &RoundedRect::from_rect(
-                    Rect::new(x - 8.0, area.y0 + 58.0, x + card_w - 4.0, area.y0 + 158.0),
-                    f64::from(theme.tokens.radii.md),
-                ),
-            );
-            tr.draw_text(
-                scene,
-                label,
-                theme.tokens.typography.scale.xs,
-                c.text_dim,
-                transform * Affine::translate((x, area.y0 + 75.0)),
-                None,
-            );
-            tr.draw_text_weighted(
-                scene,
-                &if self.result.is_some() {
-                    format!("{value:.1}")
-                } else {
-                    "—".into()
-                },
-                theme.tokens.typography.scale.xl,
-                c.text_primary,
-                transform * Affine::translate((x, area.y0 + 101.0)),
-                Some(card_w as f32),
-                TextWeight::Bold,
-            );
-            tr.draw_text(
-                scene,
-                unit,
-                theme.tokens.typography.scale.xs,
-                c.text_dim,
-                transform * Affine::translate((x, area.y0 + 136.0)),
-                None,
-            );
+    /// The action that records `result`, measured against `server` on this
+    /// window's device.
+    fn recorded(&self, result: &ResultSet, server: &str) -> Invoke<SpeedTest> {
+        SpeedTest::RECORD.with((
+            result.ping,
+            result.jitter,
+            result.download,
+            result.upload,
+            server.to_owned(),
+            self.device.clone().unwrap_or_default(),
+        ))
+    }
+}
+
+impl ResourceSurface<SpeedTest, SpeedEffect> for SpeedTestApp {
+    fn present(&mut self, state: &Rc<SpeedTest>) {
+        self.results = state.newest_first().cloned().collect();
+        self.root = None;
+        self.structure_dirty = true;
+        self.refresh_view();
+    }
+
+    fn attach(&mut self, cx: SurfaceCx<SpeedTest>) {
+        self.dispatcher = Some(cx.dispatcher());
+        self.actions = Some(cx.actions());
+        self.device = cx.device().map(str::to_owned);
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.shot = true;
+        match scenario {
+            Some("idle") => {}
+            Some("running") => {
+                self.phase = Phase::Download;
+                self.display_value = 386.4;
+                self.ring_progress = 0.58;
+            }
+            _ => {
+                let Some(latest) = self.results.first() else {
+                    return;
+                };
+                let result = ResultSet {
+                    ping: latest.ping,
+                    jitter: latest.jitter,
+                    download: latest.download,
+                    upload: latest.upload,
+                };
+                self.phase = Phase::Complete;
+                self.display_value = result.download;
+                self.ring_progress = 0.79;
+                self.result = Some(result);
+            }
         }
-        tr.draw_text(
-            scene,
-            &format!(
-                "Jitter {:.1} ms  ·  Cloudflare edge  ·  IPv4",
-                result.jitter
-            ),
-            theme.tokens.typography.scale.xs,
-            c.text_dim,
-            transform * Affine::translate((area.x0 + 20.0, area.y0 + 178.0)),
-            Some((area.width() - 40.0) as f32),
-        );
-        tr.draw_text_weighted(
-            scene,
-            "Recent tests",
-            theme.tokens.typography.scale.sm,
-            c.text_primary,
-            transform * Affine::translate((area.x0 + 20.0, area.y0 + 224.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        if self.history.is_empty() {
-            tr.draw_text(
-                scene,
-                "Your latest results will appear here",
-                theme.tokens.typography.scale.sm,
-                c.text_dim,
-                transform * Affine::translate((area.x0 + 20.0, area.y0 + 260.0)),
-                None,
-            );
+    }
+
+    fn effect(
+        &mut self,
+        effect: SpeedEffect,
+        cx: &mut EffectCx<SpeedTest, Self>,
+    ) -> ui::framework::EffectAnswer {
+        match effect {
+            SpeedEffect::Start => {
+                if self.is_running() {
+                    return Err("a test is already running".into());
+                }
+                let signal = self.begin();
+                let worker = Arc::clone(&signal);
+                Ok(cx.spawn(
+                    move |progress| run_measurement(worker, progress),
+                    move |app: &mut Self, answer, cx| app.finish(&signal, answer, cx),
+                ))
+            }
+            SpeedEffect::Stop => {
+                if !self.is_running() {
+                    return Err("no test is running".into());
+                }
+                self.stop();
+                Ok(Effected::done())
+            }
+        }
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        if self.is_running() {
+            vec![EffectStatus::unavailable(
+                SpeedEffect::START,
+                "running",
+                "A test is running",
+            )]
         } else {
-            let visible_rows = if area.height() < 400.0 { 1 } else { 3 };
-            for (index, item) in self.history.iter().take(visible_rows).enumerate() {
-                let y = area.y0 + 262.0 + index as f64 * 52.0;
-                tr.draw_text(
-                    scene,
-                    &format!("Today, {}:{:02}", 10 + index, 42 + index * 3),
-                    theme.tokens.typography.scale.sm,
-                    c.text_primary,
-                    transform * Affine::translate((area.x0 + 20.0, y)),
-                    None,
-                );
-                tr.draw_text(
-                    scene,
-                    &format!(
-                        "Down {:.0}  ·  Up {:.0} Mbps  ·  {:.0} ms",
-                        item.download, item.upload, item.ping
-                    ),
-                    theme.tokens.typography.scale.xs,
-                    c.text_dim,
-                    transform * Affine::translate((area.x0 + 20.0, y + 23.0)),
-                    None,
-                );
-            }
-        }
-        if area.height() > 500.0 {
-            let section_y = area.y1 - 160.0;
-            let complete = self.result.is_some();
-            tr.draw_text_weighted(
-                scene,
-                if complete {
-                    "Connection quality"
-                } else {
-                    "Test progress"
-                },
-                theme.tokens.typography.scale.sm,
-                c.text_primary,
-                transform * Affine::translate((area.x0 + 20.0, section_y)),
-                None,
-                TextWeight::Semibold,
-            );
-            let checks = if complete {
-                let result = self.result.unwrap_or(ResultSet {
-                    ping: 0.0,
-                    jitter: 0.0,
-                    download: 0.0,
-                    upload: 0.0,
-                });
-                [
-                    (
-                        "Video calls",
-                        if result.upload >= 8.0 && result.ping <= 80.0 {
-                            "Excellent"
-                        } else if result.upload >= 3.0 {
-                            "Good"
-                        } else {
-                            "Limited"
-                        },
-                        true,
-                    ),
-                    (
-                        "4K streaming",
-                        if result.download >= 50.0 {
-                            "Excellent"
-                        } else if result.download >= 25.0 {
-                            "Good"
-                        } else {
-                            "Limited"
-                        },
-                        true,
-                    ),
-                    (
-                        "Cloud gaming",
-                        if result.ping <= 20.0 && result.jitter <= 5.0 {
-                            "Excellent"
-                        } else if result.ping <= 50.0 {
-                            "Good"
-                        } else {
-                            "Limited"
-                        },
-                        true,
-                    ),
-                ]
-            } else {
-                [
-                    (
-                        "Latency",
-                        if matches!(self.phase, Phase::Ping) {
-                            "Measuring"
-                        } else if self.is_running() {
-                            "Complete"
-                        } else {
-                            "Waiting"
-                        },
-                        self.is_running(),
-                    ),
-                    (
-                        "Download",
-                        if matches!(self.phase, Phase::Download) {
-                            "Measuring"
-                        } else {
-                            "Waiting"
-                        },
-                        matches!(self.phase, Phase::Download | Phase::Upload),
-                    ),
-                    (
-                        "Upload",
-                        if matches!(self.phase, Phase::Upload) {
-                            "Measuring"
-                        } else {
-                            "Waiting"
-                        },
-                        matches!(self.phase, Phase::Upload),
-                    ),
-                ]
-            };
-            for (index, (name, quality, active)) in checks.iter().enumerate() {
-                let row_y = section_y + 34.0 + index as f64 * 34.0;
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    c.surfaces.base,
-                    None,
-                    &RoundedRect::from_rect(
-                        Rect::new(area.x0 + 20.0, row_y, area.x1 - 20.0, row_y + 27.0),
-                        f64::from(theme.tokens.radii.sm),
-                    ),
-                );
-                tr.draw_text(
-                    scene,
-                    name,
-                    theme.tokens.typography.scale.xs,
-                    c.text_primary,
-                    transform * Affine::translate((area.x0 + 30.0, row_y + 6.0)),
-                    None,
-                );
-                let (quality_width, _) = tr.measure_weighted(
-                    quality,
-                    theme.tokens.typography.scale.xs,
-                    None,
-                    TextWeight::Semibold,
-                );
-                tr.draw_text_weighted(
-                    scene,
-                    quality,
-                    theme.tokens.typography.scale.xs,
-                    if *active {
-                        theme.accent_primary
-                    } else {
-                        c.text_dim
-                    },
-                    transform
-                        * Affine::translate((
-                            area.x1 - 30.0 - f64::from(quality_width),
-                            row_y + 6.0,
-                        )),
-                    None,
-                    TextWeight::Semibold,
-                );
-            }
+            vec![EffectStatus::unavailable(
+                SpeedEffect::STOP,
+                "idle",
+                "No test is running",
+            )]
         }
     }
 }
 
-async fn run_measurement(tx: mpsc::Sender<WorkerMessage>) {
-    let message = match measure(&tx).await {
-        Ok(result) => WorkerMessage::Done(result),
-        Err(error) => WorkerMessage::Failed(error),
-    };
-    let _ = tx.send(message);
+/// Measure, reporting each phase to the surface and the effect's caller.
+impl ui::widget::controls::ActionControls for SpeedTestApp {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.root
+            .as_mut()
+            .and_then(|root| ui::widget::controls::take_control_invocation(root.as_mut()))
+    }
 }
 
-async fn measure(tx: &mpsc::Sender<WorkerMessage>) -> Result<ResultSet, String> {
+async fn run_measurement(signal: Arc<RunSignal>, progress: Progress) -> Result<Run, String> {
+    let answers = Answers(signal);
+    let answer = measure(&answers.0, &progress).await;
+    answers.0.set(RunSignal::ANSWERED);
+    answer
+}
+
+/// Why a run ends early: stopped from the app, or cancelled by its caller.
+fn stopped(signal: &RunSignal, progress: &Progress) -> Result<(), String> {
+    if signal.stopped() || progress.is_cancelled() {
+        return Err("the test was stopped".into());
+    }
+    Ok(())
+}
+
+async fn measure(signal: &RunSignal, progress: &Progress) -> Result<Run, String> {
+    progress.report("ping", Some(0), Some(3));
     let client = tilo_net::Client::builder()
         .timeout(Duration::from_secs(12))
         .user_agent("Tilo Speed Test/0.1")
         .build()
         .map_err(|error| error.to_string())?;
-    let ping_start = ui::time::now();
-    client
-        .get("https://speed.cloudflare.com/__down?bytes=1")
-        .send()
-        .await
-        .and_then(tilo_net::Response::error_for_status)
-        .map_err(|error| format!("Could not reach the test server: {error}"))?;
-    let ping = ping_start.elapsed().as_secs_f64() * 1000.0;
-
-    let _ = tx.send(WorkerMessage::Phase(Phase::Download));
+    let mut samples = Vec::new();
+    let mut server = "Cloudflare".to_owned();
+    for request in 0..6 {
+        stopped(signal, progress)?;
+        let ping_start = ui::time::now();
+        let reached = client
+            .get("https://speed.cloudflare.com/__down?bytes=1")
+            .send()
+            .await
+            .and_then(tilo_net::Response::error_for_status)
+            .map_err(|error| format!("Could not reach the test server: {error}"))?;
+        let sample = ping_start.elapsed().as_secs_f64() * 1000.0;
+        if request == 0 {
+            server = reached
+                .headers()
+                .get("cf-meta-colo")
+                .and_then(|colo| colo.to_str().ok())
+                .map_or_else(
+                    || "Cloudflare".to_owned(),
+                    |colo| format!("Cloudflare at {colo}"),
+                );
+        } else {
+            samples.push(sample);
+            signal.live_bits.store(sample.to_bits(), Ordering::Release);
+        }
+    }
+    let (ping, jitter) = crate::measure::latency_stats(&samples)
+        .ok_or_else(|| "The test server did not answer.".to_owned())?;
+    stopped(signal, progress)?;
+    signal.live_bits.store(0.0_f64.to_bits(), Ordering::Release);
+    signal.set(RunSignal::DOWNLOAD);
+    progress.report("download", Some(1), Some(3));
     let download_start = ui::time::now();
     let mut response = client
         .get("https://speed.cloudflare.com/__down?bytes=10000000")
@@ -1140,11 +622,19 @@ async fn measure(tx: &mpsc::Sender<WorkerMessage>) -> Result<ResultSet, String> 
         .await
         .map_err(|error| format!("Download test failed: {error}"))?
     {
+        stopped(signal, progress)?;
         bytes += chunk.len();
+        signal.bytes.store(bytes as u64, Ordering::Release);
+        signal.live_bits.store(
+            crate::measure::mbps(bytes as u64, download_start.elapsed()).to_bits(),
+            Ordering::Release,
+        );
     }
-    let download = bytes as f64 * 8.0 / download_start.elapsed().as_secs_f64() / 1_000_000.0;
+    let download = crate::measure::mbps(bytes as u64, download_start.elapsed());
 
-    let _ = tx.send(WorkerMessage::Phase(Phase::Upload));
+    signal.live_bits.store(0.0_f64.to_bits(), Ordering::Release);
+    signal.set(RunSignal::UPLOAD);
+    progress.report("upload", Some(2), Some(3));
     let upload_body = vec![0_u8; 2_000_000];
     let upload_start = ui::time::now();
     client
@@ -1153,55 +643,210 @@ async fn measure(tx: &mpsc::Sender<WorkerMessage>) -> Result<ResultSet, String> 
         .send()
         .await
         .map_err(|error| format!("Upload test failed: {error}"))?;
-    let upload = 16.0 / upload_start.elapsed().as_secs_f64();
-    Ok(ResultSet {
-        ping,
-        jitter: ping * 0.08,
-        download,
-        upload,
+    stopped(signal, progress)?;
+    let upload = crate::measure::mbps(2_000_000, upload_start.elapsed());
+    Ok(Run {
+        bytes: bytes as u64 + 2_000_000,
+        result: ResultSet {
+            ping,
+            jitter,
+            download,
+            upload,
+        },
+        server,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource::SpeedTestShell;
+    use ui::framework::ResourceApp;
+    use ui::prelude::{Replica, TestApp};
+    use ui::tilo_actions::{Availability, DoorError};
 
-    // Speed Test keeps no document: it publishes only effect operations, so
-    // the contract is the surface sweep (protocol validation) and Ctrl+K.
-    ui::action_contract_tests! {
-        seed: AutoCommit::new(),
-        registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| ui::resources::resources(&SpeedTestApp::new(), doc),
-        palette: ["Run speed test", "Change test region"],
+    fn availability(app: &mut TestApp<SpeedTestShell>, id: &str) -> Availability {
+        app.harness()
+            .resources()
+            .iter()
+            .flat_map(|resource| &resource.actions)
+            .find(|action| action.id == id)
+            .map_or_else(
+                || panic!("{id} is published"),
+                |action| action.contract.availability.clone(),
+            )
+    }
+
+    #[test]
+    fn the_speed_scale_is_monotonic_and_bounded() {
+        let mut app = SpeedTestApp::new();
+        assert!(app.dial_target().total_cmp(&0.0).is_eq());
+        for phase in [Phase::Download, Phase::Upload] {
+            app.phase = phase;
+            let values: Vec<_> = [0.0, 10.0, 100.0, 500.0, 50_000.0]
+                .into_iter()
+                .map(|value| {
+                    app.display_value = value;
+                    app.dial_target()
+                })
+                .collect();
+            assert!(values.windows(2).all(|pair| pair[0] <= pair[1]));
+            assert!(values.iter().all(|value| (0.0..=1.0).contains(value)));
+            assert!((values.last().unwrap() - 1.0).abs() < f64::EPSILON);
+        }
+    }
+
+    #[test]
+    fn the_host_shows_measured_worker_progress_and_stop_clears_it() {
+        let mut app = TestApp::<SpeedTestShell>::new().expect("the production host opens");
+        let signal = app
+            .with_widget(|surface: &mut SpeedTestApp| surface.begin())
+            .expect("the canonical surface is mounted");
+        signal
+            .live_bits
+            .store(13.0_f64.to_bits(), Ordering::Release);
+        app.settle();
+        app.with_widget(|surface: &mut SpeedTestApp| {
+            assert!(matches!(surface.phase, Phase::Ping));
+            assert!(surface.display_value.total_cmp(&13.0).is_eq());
+            assert_eq!(surface.shared.borrow().readings.ping, None);
+        })
+        .expect("the surface remains mounted");
+        signal.set(RunSignal::DOWNLOAD);
+        signal
+            .live_bits
+            .store(300.0_f64.to_bits(), Ordering::Release);
+        signal.bytes.store(10_000_000, Ordering::Release);
+        app.settle();
+        app.with_widget(|surface: &mut SpeedTestApp| {
+            assert!(matches!(surface.phase, Phase::Download));
+            assert!(surface.display_value.total_cmp(&300.0).is_eq());
+            assert_eq!(surface.transferred, 10_000_000);
+            assert_eq!(surface.shared.borrow().stage(), 1);
+        })
+        .expect("the surface remains mounted");
+        app.effect(&SpeedEffect::Stop)
+            .expect("the published stop effect succeeds");
+        assert!(signal.stop.load(Ordering::Acquire));
+        app.with_widget(|surface: &mut SpeedTestApp| {
+            assert!(matches!(surface.phase, Phase::Idle));
+            assert!(surface.display_value.total_cmp(&0.0).is_eq());
+            assert_eq!(surface.transferred, 0);
+        })
+        .expect("the stopped surface remains mounted");
+    }
+
+    #[test]
+    fn start_and_stop_are_published_as_the_run_stands() {
+        let mut app = TestApp::<SpeedTestShell>::new().expect("the app opens");
+        assert_eq!(availability(&mut app, "start"), Availability::Available);
+        assert!(matches!(
+            availability(&mut app, "stop"),
+            Availability::Unavailable { code, .. } if code == "idle"
+        ));
+        let refused = app.effect(&SpeedEffect::Stop);
+        assert!(
+            matches!(&refused, Err(DoorError::Unavailable { code, .. }) if code == "idle"),
+            "{refused:?}"
+        );
+        app.invoke(SpeedTest::RECORD.with((
+            9.0,
+            1.0,
+            500.0,
+            90.0,
+            "Cloudflare · FRA".into(),
+            "test-device".into(),
+        )))
+        .expect("a run is recorded");
+        let app = app.reopen().expect("the app reopens");
+        assert_eq!(app.state().results.len(), 1, "measurements are kept");
+    }
+
+    #[test]
+    fn a_run_is_recorded_with_the_device_that_ran_it() {
+        let mut app = TestApp::<SpeedTestShell>::new().expect("the app opens");
+        let result = ResultSet {
+            ping: 9.0,
+            jitter: 1.0,
+            download: 500.0,
+            upload: 90.0,
+        };
+        let recorded = app
+            .with_widget(|surface: &mut SpeedTestApp| surface.recorded(&result, "Cloudflare"))
+            .expect("the surface is hosted");
+        app.invoke(recorded).expect("the run is recorded");
+        let state = app.state();
+        let run = state.newest_first().next().expect("a run");
+        assert_eq!(run.device, "test-device", "the device the test host names");
+    }
+
+    #[test]
+    fn a_finished_run_shows_on_the_dial_and_the_earlier_ones_below_it() {
+        let mut replica = Replica::<SpeedTest>::new();
+        for invoke in SpeedTestShell::scenario(Some("complete")) {
+            replica.apply(invoke).expect("record");
+        }
+        let mut app = SpeedTestApp::new();
+        ResourceSurface::<SpeedTest, SpeedEffect>::present(
+            &mut app,
+            &Rc::new(replica.state().expect("state")),
+        );
+        assert_eq!(
+            app.history().len(),
+            3,
+            "an idle dial leaves every run below"
+        );
+        assert_eq!(app.server_label(), "Cloudflare at LHR");
+
+        ResourceSurface::<SpeedTest, SpeedEffect>::stage(&mut app, Some("complete"));
+        let shown = app.result.expect("the newest run is on the dial");
+        assert!((shown.download - 642.7).abs() < f64::EPSILON);
+        let below: Vec<f64> = app.history().iter().map(|run| run.download).collect();
+        assert_eq!(below, [618.2, 584.6]);
     }
 
     /// Neither the wide metadata row nor the stacked dial touches the primary action.
     #[test]
     fn metadata_and_dial_never_touch_the_primary_action() {
-        // Case `wide_metadata_row_never_touches_primary_action`.
-        {
-            for height in [520.0, 640.0, 760.0, 900.0] {
-                let mut app = SpeedTestApp::new();
-                app.rect = Rect::new(0.0, 0.0, 1180.0, height);
-                let facts_bottom = app.rect.y1 - 196.0 + 42.0;
-                assert!(
-                    facts_bottom + 28.0 <= app.primary_rect().y0,
-                    "metadata and action overlap at {height}px"
-                );
+        fn bounds(widget: &dyn Widget, name: &str) -> Option<Rect> {
+            if widget.name() == name {
+                return Some(widget.get_rect());
             }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| bounds(child, name))
         }
-
-        // Case `stacked_dial_never_touches_primary_action`.
-        {
-            for width in [480.0, 560.0, 700.0, 849.0] {
-                let mut app = SpeedTestApp::new();
-                app.rect = Rect::new(0.0, 0.0, width, 820.0);
-                let decorated_dial_bottom = app.dial_center().y + app.dial_radius() + 28.0;
-                assert!(
-                    decorated_dial_bottom + 5.0 <= app.primary_rect().y0,
-                    "dial and action overlap at {width}px"
-                );
-            }
+        for viewport in [
+            (1180, 520),
+            (1180, 640),
+            (1180, 760),
+            (1180, 900),
+            (480, 820),
+            (560, 820),
+            (700, 820),
+            (849, 820),
+        ] {
+            let mut app = TestApp::<SpeedTestShell>::capture_at(Some("complete"), viewport)
+                .expect("the actual completed screen");
+            let harness = app.harness();
+            let action = *harness
+                .targets()
+                .get("run")
+                .expect("the production primary action");
+            let dial =
+                bounds(harness.root_widget(), "ProgressRing").expect("the actual shared dial");
+            let facts =
+                bounds(harness.root_widget(), "PropertyList").expect("the actual metadata rows");
+            assert!(action.width() > 0.0 && dial.width() > 0.0 && facts.width() > 0.0);
+            assert!(
+                action.intersect(facts).area().total_cmp(&0.0).is_eq(),
+                "metadata and primary action overlap at {viewport:?}"
+            );
+            assert!(
+                dial.y1 < action.y0,
+                "dial and primary action overlap at {viewport:?}"
+            );
         }
     }
 }

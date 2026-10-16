@@ -76,12 +76,44 @@ pub fn load_revocation_list(
     Ok(list)
 }
 
+/// The systemd credential a per-user unit receives the device key as.
+pub const DEVICE_KEY_CREDENTIAL: &str = "device-key";
+
 /// Where the device key lives — [`IdentityPaths::default_system`] unless [`IDENTITY_ROOT_ENV`] overrides it.
+///
+/// A sandboxed per-user unit runs in a user namespace that maps only its own
+/// account, so the root-owned system key reads as owned by nobody and is
+/// refused. Its service manager reads the key for it instead and hands it
+/// over as the [`DEVICE_KEY_CREDENTIAL`] credential, owned by the unit's user.
 pub fn identity_paths() -> IdentityPaths {
-    match std::env::var(IDENTITY_ROOT_ENV) {
+    let paths = match std::env::var(IDENTITY_ROOT_ENV) {
         Ok(v) if !v.is_empty() => IdentityPaths::under(PathBuf::from(v)),
         _ => IdentityPaths::default_system(),
+    };
+    // The unit's device-key credential comes from the machine identity root.
+    // A caller-selected root is a complete identity: keep its key with its
+    // certificate rather than combining it with that unrelated credential.
+    if paths.device_privkey != IdentityPaths::default_system().device_privkey {
+        return paths;
     }
+    with_device_key_credential(paths, std::env::var_os("CREDENTIALS_DIRECTORY"))
+}
+
+/// `paths` with the device key read from `credentials`, when the service
+/// manager passed one. A unit without an enrolled device gets a placeholder
+/// that is no key, and keeps the system path, which reports what is missing.
+fn with_device_key_credential(
+    mut paths: IdentityPaths,
+    credentials: Option<std::ffi::OsString>,
+) -> IdentityPaths {
+    let Some(directory) = credentials.filter(|directory| !directory.is_empty()) else {
+        return paths;
+    };
+    let key = PathBuf::from(directory).join(DEVICE_KEY_CREDENTIAL);
+    if std::fs::metadata(&key).is_ok_and(|metadata| metadata.is_file() && metadata.len() == 32) {
+        paths.device_privkey = key;
+    }
+    paths
 }
 
 /// The device identity this mount runs as.
@@ -271,6 +303,36 @@ pub fn load_certified_mount_identity(
         signing: mount.signing.clone(),
     };
     Ok(CertifiedMountIdentity { mount, credentials })
+}
+
+/// Read an already-certified device for recovery without first-boot key creation.
+///
+/// # Errors
+///
+/// Returns an error for missing, insecure or inconsistent existing credentials,
+/// or a certificate that is not valid at `now_ns`. No directory or key is made.
+pub fn load_existing_certified_mount_identity(
+    paths: &IdentityPaths,
+    now_ns: u64,
+) -> std::result::Result<CertifiedMountIdentity, CertifiedIdentityError> {
+    let signing = tilo_user_identity::persist::load_device_key(paths)
+        .map_err(|error| CertifiedIdentityError::DeviceKey(error.into()))?;
+    let cert = tilo_user_identity::persist::read_device_cert(&paths.device_cert)?;
+    tilo_user_identity::verify_device_cert_at(&cert, now_ns)?;
+    let public = signing.verifying_key().to_bytes();
+    if cert.device_public_key != public {
+        return Err(CertifiedIdentityError::DeviceKeyMismatch);
+    }
+    let mount = MountIdentity {
+        secret: iroh::SecretKey::from_bytes(&signing.to_bytes()),
+        public,
+        created: false,
+        signing: signing.clone(),
+    };
+    Ok(CertifiedMountIdentity {
+        mount,
+        credentials: PeerCredentials { cert, signing },
+    })
 }
 
 #[cfg(test)]
@@ -550,5 +612,126 @@ mod tests {
                     .is_none()
             );
         }
+    }
+
+    fn credential_fixture(root: &std::path::Path) -> PathBuf {
+        let directory = root.join("credentials");
+        std::fs::create_dir(&directory).unwrap();
+        tilo_user_identity::persist::write_device_key(
+            &directory.join(DEVICE_KEY_CREDENTIAL),
+            &ed25519_dalek::SigningKey::from_bytes(&[53; 32]),
+        )
+        .unwrap();
+        directory
+    }
+
+    #[test]
+    fn explicit_identity_root_keeps_its_certified_device_with_machine_credential() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("isolated");
+        let paths = IdentityPaths::under(&root);
+        let device = install_fixed_device(&paths);
+        let cert = signed_cert(device.verifying_key().to_bytes(), NOW_NS - 1, None);
+        write_device_cert(&paths.device_cert, &cert).unwrap();
+        let credential = credential_fixture(tmp.path());
+        let before_key = std::fs::read(&paths.device_privkey).unwrap();
+        let before_cert = std::fs::read(&paths.device_cert).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(IDENTITY_ROOT_ENV, &root);
+        env.set("CREDENTIALS_DIRECTORY", &credential);
+
+        let selected = identity_paths();
+        let certified = load_certified_mount_identity(&selected, NOW_NS).unwrap();
+        assert_eq!(selected.device_privkey, paths.device_privkey);
+        assert_eq!(
+            certified.credentials.device_public_key(),
+            cert.device_public_key
+        );
+        assert!(!certified.mount.created);
+        assert_eq!(std::fs::read(paths.device_privkey).unwrap(), before_key);
+        assert_eq!(std::fs::read(paths.device_cert).unwrap(), before_cert);
+    }
+
+    #[test]
+    fn explicit_identity_root_never_repairs_a_wrong_certificate_with_machine_credential() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("isolated");
+        let paths = IdentityPaths::under(&root);
+        install_fixed_device(&paths);
+        let credential = credential_fixture(tmp.path());
+        let machine = ed25519_dalek::SigningKey::from_bytes(&[53; 32]);
+        let cert = signed_cert(machine.verifying_key().to_bytes(), NOW_NS - 1, None);
+        write_device_cert(&paths.device_cert, &cert).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(IDENTITY_ROOT_ENV, &root);
+        env.set("CREDENTIALS_DIRECTORY", &credential);
+
+        assert!(matches!(
+            load_certified_mount_identity(&identity_paths(), NOW_NS),
+            Err(CertifiedIdentityError::DeviceKeyMismatch)
+        ));
+    }
+
+    #[test]
+    fn default_identity_root_retains_the_service_manager_credential() {
+        let tmp = tempfile::tempdir().unwrap();
+        let credential = credential_fixture(tmp.path());
+        let default = IdentityPaths::default_system();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("CREDENTIALS_DIRECTORY", &credential);
+        for value in [None, Some(""), Some("/var/lib/tilo")] {
+            if let Some(value) = value {
+                env.set(IDENTITY_ROOT_ENV, value);
+            } else {
+                env.remove(IDENTITY_ROOT_ENV);
+            }
+            let selected = identity_paths();
+            assert_eq!(selected.device_cert, default.device_cert);
+            assert_eq!(
+                selected.device_privkey,
+                credential.join(DEVICE_KEY_CREDENTIAL)
+            );
+            let loaded = load_mount_identity(&selected).unwrap();
+            assert!(!loaded.created);
+            assert_eq!(
+                loaded.public,
+                ed25519_dalek::SigningKey::from_bytes(&[53; 32])
+                    .verifying_key()
+                    .to_bytes()
+            );
+        }
+    }
+
+    #[test]
+    fn a_unit_reads_the_device_key_its_service_manager_passed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        let system_key = paths.device_privkey.clone();
+        let credentials = tmp.path().join("credentials");
+        std::fs::create_dir(&credentials).unwrap();
+
+        // Not enrolled: the placeholder is no key, so the system path stays.
+        std::fs::write(credentials.join(DEVICE_KEY_CREDENTIAL), b"absent").unwrap();
+        let unenrolled =
+            with_device_key_credential(paths.clone(), Some(credentials.clone().into_os_string()));
+        assert_eq!(unenrolled.device_privkey, system_key);
+
+        let passed = credentials.join(DEVICE_KEY_CREDENTIAL);
+        std::fs::remove_file(&passed).unwrap();
+        tilo_user_identity::persist::write_device_key(
+            &passed,
+            &ed25519_dalek::SigningKey::from_bytes(&DEVICE_SEED),
+        )
+        .unwrap();
+        let enrolled = with_device_key_credential(paths, Some(credentials.into_os_string()));
+        assert_eq!(enrolled.device_privkey, passed);
+        let identity = load_mount_identity(&enrolled).unwrap();
+        assert!(!identity.created);
+        assert_eq!(
+            identity.public,
+            ed25519_dalek::SigningKey::from_bytes(&DEVICE_SEED)
+                .verifying_key()
+                .to_bytes()
+        );
     }
 }

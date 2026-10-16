@@ -25,18 +25,81 @@ There are **two distinct kinds of panel**. Do not conflate them. A single
 generic "overlay drawer with a scrim, everywhere" is wrong — it turns *content*
 into a menu and clutters small screens.
 
+**One shell does both.** Every window with navigation is a
+`ui::widget::NavShell`: `.sidebar(..)` for §1a, `.overview(..)` and
+`.content(..)` for §1b, `.inspector(..)` for the properties of the
+selection at the trailing edge. Its sidebar lists destinations with a
+`ui::widget::NavList`. The shell owns the header row, the sidebar toggle,
+the widths, the breakpoints, the drawer, the push stack, the regions and the
+motion; the app passes none of them. A painted app that cannot host widgets
+uses the headless `ui::widget::SidebarDrawer` with the same metrics and
+paints its rows with `ui::chrome::paint_nav_row`. No other sidebar, split or
+row painter exists.
+
+**The header row.** Windows have no title bar. The shell draws one header
+row (`metrics.header_height`, 56) across the window and each column's header
+sits in it — `.sidebar_header(title, actions)`, `.overview_header(..)`,
+`.content_header(..)`, `.inspector_header(..)` — so the row reads as one
+unified toolbar: a `Heading` title in sentence case after the shell's
+leading button, the column's actions at its trailing end, and one hairline
+under the content columns. An app never draws a band of its own above a
+column. The title starts at the content gutter (`rhythm.group`) or after
+the shell's leading button; an optional count follows it as a quiet
+`Caption.numeric` pill; the actions start after the title's measured
+width. Where they do not fit, labelled buttons show their icons alone,
+then the rest move into a trailing More menu. A path bar or a mode
+switcher with no title is the header's leading fill
+(`content_header_leading`). An app's own page stack (browse history, a
+drill-down) gets the shell's Back chip (`with_back`), the same chip a
+narrow window's push stack uses. A painted app lays the same row out with
+`chrome::HeaderRowFace` and takes the window's History control through
+`widget::WindowHeader`; there is one header-row geometry.
+
+**History is the window's, at the trailing edge of the header row.** Where
+the app has History, the host gives the shell its History control: one Plain
+icon button with `Icon::History`, named and tooltipped "History" with its
+shortcut (`HostShortcut::History`), in the window's top-trailing corner after
+the column's actions and the inspector toggle. While History shows it reads
+as on (the selection lift) and closes History; the History pane or bar shows
+the mode itself. It is the same door as the shortcut, the palette and agents.
+An app never adds a History button, text or glyph, of its own. A host whose
+root has no header slot keeps the shortcut, palette and resource action;
+it never inserts a second toolbar above the app. Where the
+host's chrome presents History (the Tilo shell, a native menu bar) the row
+shows none.
+
 ### 1a. Genuine sidebar / menu  (pure navigation)
 
 Chrome that lists destinations. Examples: a calendar's list of *calendars*; an
 email client's accounts + folders.
 
-- **Desktop / wide:** solid, **docked** beside the content. Collapsible via a
-  proper **collapse / hamburger button** — **never an `X`**. It reads as part of
-  the window frame, not a floating overlay. Smooth collapse/expand animation.
-- **Mobile / narrow:** it **stays a genuine sidebar** — a web-style **overlay
-  drawer** over the content (scrim behind), summoned and dismissed by the *same*
-  proper collapse/hamburger button (**not** an `X`). It remains a menu; it does
-  **not** turn into a full-screen page.
+- **Desktop / wide:** solid, **docked** beside the content on the
+  `Region::Sidebar` tier, at `metrics.sidebar_width` (280). Shown and hidden
+  by the **sidebar toggle** — a Plain icon button with the `Icon::PanelLeft`
+  glyph that the shell draws at the sidebar's top-leading corner, and at the
+  leading edge of the next column's header while the sidebar is hidden —
+  **never an `X`**, never a hamburger. One system shortcut toggles it in
+  every app (`HostShortcut::Sidebar`, Ctrl+Shift+L / ⌘⇧L), and the toggle
+  publishes "Show sidebar" / "Hide sidebar" to the palette and to agents.
+  Dragging the sidebar's trailing edge resizes it between
+  `sidebar_min_width` and `sidebar_max_width`; dragging it below the minimum
+  hides it. The person's choice is remembered per window size class.
+- **Mobile / narrow:** below the width where the content beside it would be
+  squeezed (`sidebar_width` + the content's minimum), it **stays a genuine
+  sidebar** as a **floating drawer** over the content — the floating
+  material, `radii.panel`, the floating shadow, `surfaces.scrim` behind —
+  summoned and dismissed by the same toggle, a scrim press or Esc. It opens
+  under the header row, which stays live (the toggle does not move, History
+  stays reachable); the columns behind it stay in place under the scrim
+  and take no input. Choosing
+  a destination in it closes it. It remains a menu; it does **not** turn
+  into a full-screen page. (`NavMode::Push` is the exception for a list of
+  *categories* such as Settings: there the sidebar is the first screen of
+  the push stack and choosing pushes the content. `NavMode::Docked` is for a
+  compact icon rail, `NavList::rail`, which fits beside content at every
+  width.)
+- A docked sidebar is never kept beside columns that no longer fit: at 800 px
+  a window with a sidebar, an overview and a detail shows the drawer.
 
 ### 1b. Content panels  (overview + detail)
 
@@ -46,11 +109,17 @@ list (overview) + the message (detail).
 
 - **Desktop / wide:** shown **side by side** (alongside the genuine sidebar, if
   any). Only the sidebar collapses; the content panels stay abreast.
-- **Mobile / narrow:** show **only one of {overview, detail} at a time**. The
-  overview is the default **full-screen** view; selecting an entry **slides the
-  detail in from the right**, over the overview, with a **back button top-left**.
-  Back returns to the overview. This is **push navigation** — never a
-  scrim-overlay of content over content.
+- **Mobile / narrow:** when the overview and the detail no longer fit side by
+  side (`overview_width` + `detail_min_width`), show **only one of
+  {overview, detail} at a time**. The overview is the default
+  **full-screen** view; selecting an entry **slides the detail in from the
+  right**, over the overview, with a **Back button top-left** in the header
+  row. Back (or Esc) returns to the overview. This is **push navigation** —
+  never a scrim-overlay of content over content. A `NavList` in the overview
+  pushes by itself; any other overview pushes with `shell.show(NavPane::Content)`
+  or a `LocalState<NavPane>` bound with `with_pane_state`.
+- The sidebar collapses first, then the split: at 800 px a mail window shows
+  the drawer and keeps the list beside the message; at 560 px it pushes.
 
 ### 1c. How to decide which a panel is
 
@@ -58,7 +127,15 @@ list (overview) + the message (detail).
   **genuine sidebar** (§1a).
 - Is it *content the user reads or acts on* — a list of messages, events, or
   cities-with-info? → **content panel** (§1b), **even if it sits on the left and
-  looks sidebar-ish**.
+  looks sidebar-ish**. Where the content panel has an icon form (places as
+  a rail), give it `overview_rail`: the window narrows to rail and detail
+  before it pushes.
+- Is it *a stack of pages inside the content* — a dashboard drilling into a
+  queue, browse history? → the content's own page stack, with the shell's
+  Back (`with_back`), never a hand-placed Back button.
+- Is it *properties of the selection*? → the **inspector**; it docks while
+  the content keeps its room, floats as a drawer otherwise, and keeps the
+  person's docked or closed choice per window size class.
 
 ### 1d. Concrete app mappings
 
@@ -88,11 +165,12 @@ or the desktop overview/detail split (§1b).
   edge. Do **not** dock a rail, sidebar, or app-title header beside it, and do
   **not** draw the app's own logo/brand mark — the OS owns window chrome
   (see "OS owns window chrome").
-- **Controls float over the surface.** Capture/playback controls are translucent
-  glass overlays anchored to the edges (top strip for capture settings,
-  bottom-centre for the primary action + mode switch, corners for
-  secondary actions), kept legible with a soft scrim rather than an opaque panel.
-  When idle they may fade; they never box the surface in.
+- **Controls float over the surface.** Capture/playback controls sit on the
+  floating material (`Material::Floating`, §9.2) over the media itself,
+  anchored to the edges (top strip for capture settings, bottom-centre for
+  the primary action + mode switch, corners for secondary actions). Never
+  unblurred translucency. When idle they may fade; they never box the
+  surface in.
 - **Secondary screens are pushes or sheets, not rail destinations.** A library /
   gallery is **pushed** over the surface with a **back button top-left**
   (§1b push navigation); settings and pickers are **overlay sheets** with a
@@ -150,6 +228,44 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
   chips.
 - Never present fabricated content as live data (no synthesized "video feed"
   gradients, no invented data on an empty state).
+
+### 4a. Search, filter and find
+
+Search belongs to the platform. An app never draws a search field, a result
+list or its own palette. There are three different jobs, and each has one
+answer:
+
+| The person wants to… | The app provides | The person sees |
+|---|---|---|
+| **find something the app holds** (a message, a video, a note) | a `SearchProvider` per findable kind, rows that say what a hit is (`SearchRow`), scopes (`ScopeDecl`), facets (`Facet`) | the one platform palette, opened by Ctrl+K, `/`, or the app's magnifier button (`search::search_button`) |
+| **narrow the list already on screen** | `Filterable` on the list | `SearchField::filter()` in the navigation shell's filter slot (or `Filtered`), with a "3 of 120" count; Enter or "Search everywhere" escalates to the platform search |
+| **find in the document on screen** | `Findable` on the document view | the `FindBar` band at the top of the content region (`FindScope`), opened by Ctrl+F |
+
+- **The launcher is a button, not a field.** The toolbar's magnifier is
+  `search::search_button(SearchRequest::this_app())`; a part of the app gets
+  its own (`SearchRequest::within(ScopeDecl::new(anchor, "Inbox"))`, the scope
+  pill reading "Only Inbox"). A pill that looks like a field but opens the
+  palette is gone.
+- **Opening search is an action.** Every opener — the button, `/`, Ctrl+K,
+  Enter in a filter, an agent — invokes the host's `tilo.host:search` `open`
+  action. A standalone window opens its palette; inside the shell the shell
+  opens the system palette scoped to the app's tab. The app does the same
+  thing either way.
+- **A hit opens the app at that item.** A framework app shows the item in
+  `ViewCx::on_open`; the same handler answers the resource's `open` action,
+  so an agent opens the app where a person's search hit would.
+- **Slow sources do not block.** A provider answering from a server returns
+  what it has with `SearchPage::pending` and the rest from `poll_page`; the
+  palette appends it under a "Searching…" row.
+- **A filter field is a control.** Regular control height, `radii.control`,
+  the raised field fill, the person's own colour as the focus ring, the
+  placeholder visible while the field is focused and empty and elided when it
+  does not fit, and a reserved slot for the count so text never runs under it.
+  Narrow, it is the magnifier icon button until it is used.
+- **Find marks spans, not blocks.** Every match is painted with
+  `paint_find_match` over the matched glyphs; the current one is stronger and
+  outlined. The bar shows "n of m", Match case and Whole word, previous/next,
+  and replace or a text/hex mode when the view supports them.
 
 ---
 
@@ -226,14 +342,46 @@ completeness does not exempt a screen from these requirements.
   and disabled are all distinct; a control that does nothing yet is a defect
   (§ functionality), and a control that *looks* dead is a craft defect.
 - **Theme-driven, pixel-clean.** Every color and metric comes from the `Theme`
-  (§ toolkit) so light/dark and OS accent both look intentional; no hard-coded
+  (§ toolkit) so light/dark and every temperature look intentional; no hard-coded
   colors, no 1px seams from mismatched fills, no clipped glyphs or overlapping
   text.
 
 Validate these requirements with `--shots` for the primary screens (populated,
-empty, and a mid-interaction state), then inspect the output. When a pattern
+empty, and a mid-interaction state), then inspect the output. The toolkit's
+own review grid is `cargo run -p ui-examples --example ui-shots --
+widget_states OUT_DIR`: every control, input, row, navigation and content
+composite in rest, hover, pressed, focused, disabled, selected and error, at
+each `ControlSize`, and every overlay over a busy page with and without the
+blurred material, dark and light. A change to a widget's look is checked
+there first. When a pattern
 recurs (a media/participant grid, a stat tile, a huddle overlay, a segmented
 control), promote it to a `ui` primitive so the shared version is the default.
+
+Promoted so far, each as a retained widget and a `*Face` painter with the
+same geometry (`docs/ui-migration.md`, "Content widgets", maps the app code
+each replaces):
+
+| Pattern | Primitive |
+|---|---|
+| A row of a content list (message, contact, request, setting) | `ListRow` / `ListRowFace`, listed in a `Section` |
+| Labelled values (details, metadata, fields) | `PropertyList` / `PropertyListFace` |
+| A titled group with a count and one action | `Section` + `SectionHeader` |
+| Settings rows | `FormSection::grouped()` |
+| An object (app, document, comment, connection) | `Card` / `CardFace` in a `CardGrid` |
+| A number and what it measures | `StatTile` / `StatTileFace` in a `StatGroup` |
+| Covers, thumbnails, album art, photos | `MediaCard` / `MediaCardFace` in a `MediaGrid` (`justified_rows` for photos) |
+| A file drop target | `DropZone` / `DropZoneFace` |
+| Content still loading | `Skeleton` / `SkeletonFace` |
+| A countdown, progress or level ring | `ProgressRing` / `ProgressRingFace` |
+| Wizard steps | `Stepper` / `StepperFace` |
+| Nothing here yet, or something failed | `EmptyState` (`EmptyState::error`) |
+| A person's picture or initials | `Avatar` / `AvatarFace` |
+| A whole tile that opens something | `Container::interactive` |
+| Tabular data | `DataTable` |
+| A mark that means a status or a person | `Tone` |
+
+A card is only for an object: settings groups, form sections and stats sit on
+the ground in a `Section`, separated by space.
 
 ### 7a. Let content determine ordinary layout
 
@@ -241,10 +389,15 @@ Choose a shared composition by what the region contains:
 
 | Region | Starting point | Decisions supplied by the framework |
 |---|---|---|
-| Account or settings form | `FormPage`, `Form`, `Section`, `Field` | One page gutter, readable width, related-field spacing, measured label placement, wrapping and scrolling |
-| Card with a title, content and actions | `Card::composed` with a header and footer | Content height, consistent card gutter, footer containment and alignment |
+| Account or settings form | `FormPage`, `Form`, `FormSection`, `Field` | One page gutter, readable width on the leading edge, one label column for the whole form, related-field spacing, measured label placement, help under the label, wrapping, scrolling and pinned actions |
+| A page of sections (facts, lists, settings) | `Page` with `head(..)` items and `section(..)`s | The readable column on the leading edge, sections a group apart, scrolling with a persisted offset, actions pinned under it; the shell's header titles it |
+| A readable column inside a custom layout | `Container::readable()` | `metrics.readable_width` on the leading edge; `.centered()` only for a page that stands alone (a wizard) |
+| A titled group of content | `Section` with a `SectionHeader` | Heading role, count, one trailing action, `related` gap to the items and `sibling` between them |
+| A list of things | `ListRow`s in a `Section` | Measured row heights, leading column alignment, inset separators hidden beside the selection, hover actions |
+| An object with a title, content and actions | `Card::new(body).with_title(..).with_footer(Actions)` in a `CardGrid` | Content height, consistent card gutter, footer containment and alignment, rows as tall as their tallest card |
+| Statistics | `StatTile`s in a `StatGroup` | Label, value and unit roles, value elision, 4 → 2 → 1 reflow |
 | Small primary/secondary action group | `Actions` | Measured unspecified button sizes, wrapping and trailing alignment |
-| Long command strip | `Toolbar` | Measured command sizes, bounded overflow menu, keyboard navigation and accessible command bounds |
+| Long command strip | `Toolbar` | Measured plain commands, toggles as lifts, separators only between shown commands, a More menu that keeps every command reachable, keyboard navigation and accessible command bounds |
 | Main writing surface | `Scrollable::with_content_min_viewport_height()` | Short auto-height content fills the viewport; long content retains its intrinsic scroll extent |
 | Empty list or first-use pane | `EmptyState` | Wrapped title/message, measured action height, centering and decorative shedding |
 | Authored canvas or custom arrangement | `Manual` or existing layout primitives | Shared child measurement and ordinary control behavior; the author chooses geometry |
@@ -263,11 +416,14 @@ When commands or panes no longer fit, use wrapping, a labelled disclosure, or
 the existing overview/detail navigation. Preserve selected state and the return
 route through the transition.
 
-For custom text painting, measure and draw with the same style and width.
-Theme typography tokens are already resolved logical sizes; pass those styles
-through `TextRenderer::renderer_input_style` once before calling the legacy
-renderer-relative APIs. Base font sizes supplied to editor controls remain base
-sizes. Do not compensate for a scale mismatch with smaller fonts or offsets.
+For custom text painting, measure and draw with the same style and width:
+`theme.text(role)` (or the `PaintCtx` helpers `text_role`, `measure_role`,
+`line_box`, `text_role_in_band`). A role style is already scaled by the UI
+and text scale and the renderer paints it as given. Never build a
+`TextStyle::new(px)` for UI text and never multiply or divide a size by the
+text scale; do not compensate for a scale mismatch with smaller fonts or
+offsets. Text that is sized by its content (a canvas, a slide) uses
+`with_content_size` instead. See `docs/typography.md`.
 
 An empty state's title and action can exceed a physically small pane even after
 decoration is removed. Retained callers can use `EmptyState::into_scrollable()`;
@@ -321,15 +477,17 @@ its minimum from `spacing.s8` shrinks with a dense gutter preference.
 `Spacing::BASE` and `Metrics::BASE` are the unscaled reference values for the
 few chrome constants that must be compile-time.
 
-Rhythm inside a group versus between groups:
+Rhythm inside a group versus between groups. Each relationship is a named
+token, `theme.tokens.spacing.rhythm.*`, scaled with the spacing scale; a
+painted layout reads the rhythm by relationship instead of picking a step:
 
-| Relationship | Step | Typical use |
+| Relationship | Token (step) | Typical use |
 |---|---|---|
-| Label ↔ its control, icon ↔ its label | `s1` / `metrics.icon_label_gap` | stacked field label, button icon |
-| Related rows that read as one group | `s2` | title + explanation, help copy under a field |
-| Siblings of equal weight | `s3` (`gap_standard`, the `Row`/`Column` default) | toolbar buttons, list rows |
-| Section padding, gap between Panel sections | `s4` | panel body, card gutter |
-| Before the next group; page gutter | `s6` (the `Column` default inset) | form sections, page edge |
+| Label ↔ its control, icon ↔ its label; a control's face inset | `rhythm.tight` (`s1`) / `metrics.icon_label_gap` | stacked field label, button icon |
+| Controls inside one cluster; related rows that read as one group | `rhythm.related` (`s2`) | a bar's tool buttons, help copy under a field |
+| Siblings of equal weight | `rhythm.sibling` (`s3`, `gap_standard`, the `Row`/`Column` default) | clusters on a bar, list rows, cards |
+| Section padding, gap between Panel sections | `rhythm.section` (`s4`) | panel body, card gutter |
+| Before the next group; the content gutter | `rhythm.group` (`s6`, the `Column` default inset) | form sections, page edge |
 | Between major regions | `s8`+ | header block ↔ content |
 
 One rhythm per panel or screen: the same relationship always gets the same
@@ -339,10 +497,18 @@ a defect even when both are "authored".
 The framework supplies the values so callers state the relationship, not the
 number:
 
-- `Row::with_gap(px)` / `Column::with_gap(px)` change the gap between children;
-  `Row::with_justify(..)` and `Row::with_align_items(..)` place them along and
-  across the row. Defaults (gap `s3`, children centred, start-packed) are
-  unchanged.
+- `Column::with_rhythm(Rhythm::Section)` / `Row::with_rhythm(..)` space the
+  children by relationship (`Tight`, `Related`, `Sibling`, `Section`,
+  `Group`), resolved from the theme at layout time;
+  `with_padding_rhythm(horizontal, vertical)` insets them the same way.
+  `Row::with_gap(px)` / `Column::with_gap(px)` remain for a gap that is not a
+  relationship; `Row::with_justify(..)` and `Row::with_align_items(..)` place
+  children along and across the row. Defaults (gap `s3`, children centred,
+  start-packed) are unchanged.
+- A child that is absent takes no gap: `optional(None)`, a `When` whose
+  condition is false, bound text (`Text::from_state`) that renders nothing, a
+  `ModelView` that builds nothing, a zero spacer, a `ModalDialog` or a
+  `Popover`. Never add a spacer to make up or cancel a gap.
 - `Spacer::token(SpacingStep::S4)` is a fixed gap that resolves from the Theme
   at layout time and therefore follows `ui_scale`; `Spacer::fixed(px)` is the
   authored-pixel form. Neither grows. `Spacer::new()` still grows to push
@@ -351,18 +517,70 @@ number:
   `insets(top, right, bottom, left)` build a taffy padding `Rect` from token
   values in one expression instead of four `length(..)` fields.
 
-`tests/spacing_token_audit.rs` ratchets module-level pixel constants and
-literal `length(N)` values in widget, chrome, shell and app production code:
-a file may never carry more than its baseline records, and one that sheds a
-literal lowers its line in the same commit. It shares its file walk,
-`#[cfg(test)]` span finder and baseline plumbing with the colour ratchet in
-`tests/design_token_audit.rs` (`tests/support/ratchet.rs`), so both audits
-see exactly the same production lines.
+`tests/spacing_token_audit.rs` ratchets module-level pixel constants,
+literal `length(N)` values, literal container gaps and padding, and
+`Spacer::fixed(N)` in widget, chrome, shell and app production code: a file
+may never carry more than its shard under `tests/baselines/spacing/` records.
+Every ratchet runs on one engine (`tests/support/ratchet.rs`), so all audits
+see exactly the same production lines; §9.13 lists them.
 
-A custom theme's `spacing_px` is built inside `CustomThemeSpec::SPACING_PX_MIN
-..= SPACING_PX_MAX` (6–22, the Themes app's range) even though the schema
-admits 2–64: the whole scale is proportional to it, and 2 px would put `s1`
-under a pixel.
+A theme's density (`ThemeDocument::density.spacing`) is built inside
+`ThemeDensity::USABLE` (0.75–1.5) even though the schema admits 0.5–2: the
+whole scale is proportional to it, and half the scale would put `s1` at two
+pixels.
+
+### 7c. Overlays, status and captures
+
+**One modal, one popover, one top layer.** A modal is a `ModalDialog`; an
+anchored transient (an option menu, a small form next to its control) is a
+`Popover`. Both are floating Panels (§9.1) and both paint only in the window's
+top layer (`Widget::draw_overlay`), which the host runs after the app *and*
+after the window's own chrome. A modal's `surfaces.scrim` dims the background
+throughout the window, including sidebars, while excluding its foreground.
+Its floating material must not sample its own scrim or shadow. A popover is
+never clipped by the pane it was opened from. On compact viewports (either
+axis below `panel_width_sheet`) a modal fills the window as an opaque page,
+without rounded floating edges, shadow or scrim; its body scrolls while its
+footer stays reachable. On larger viewports a sheet follows its content
+height. Its title is a `Title`, and its actions are Regular buttons anchored
+to its footer in the platform's order.
+Immediate-mode hosts use the same chrome through `modal_dialog::layout`,
+`paint_backdrop` and `paint_actions`.
+
+**Status has two homes.** What a person reads while working and expects to
+stay put (Ln/Col, a word count, unresolved conflicts) is persistent status in
+`chrome::status_bar`, which reserves its band (`status_bar::split`) so it
+never covers content. A change worth noticing once (a page turn, a finished sync) is
+the transient `StatusBubble`: it shows on change, hides by itself and floats
+in its area's bottom-trailing corner. An error the person must act on is a
+`Banner` (persistent, in the flow) or a `Toast` (transient, with an icon close
+button). A document's save state is `SaveStatusSurface`: autosave is the
+system's job, so "Saving…" and "Saved" never show (they stay in the
+accessibility status); a failed save is an error card with Try again that
+stays until the save succeeds, and that success is a one-time "Saved" in the
+transient bubble. An app never pokes or pins a save bubble or paints its own
+save pill.
+
+**Chrome over media uses the material on the media.** Video controls are a
+floating Panel over the picture; text drawn straight onto media sits on
+`overlay::scrim::vertical_fade` in `colors.media.ink`; a letterbox is
+`colors.media.letterbox` in every theme. No stepped bands, no theme surface
+behind a frame.
+
+**The History bar is the window's, only where the app has no header row.**
+An app with a `NavShell` header row gets the History control in that row
+(§1) and no bar. Any other app gets a bar on the content region with one
+hairline under it, holding the same one History glyph at its trailing edge,
+on while History shows. A framework History that is open keeps its bar,
+with the control on, because the live app beside it is inert.
+
+**Captures are the live window, exactly.** `--shots` writes the frame on
+`surfaces.content` after it has settled (`FrameHarness::settle_for_capture`:
+animations finished, image loads drained, within a bound), with the wall
+clock pinned to 30 June 2026, 10:42 local (`ui::clock::local_now`). Stage a
+state through the framework scenario hooks (`ResourceApp::scenario`,
+`scenario_viewport`, `ResourceSurface::stage`), never through a separate
+capture root.
 
 ---
 
@@ -391,21 +609,33 @@ widget already gets right:
   painted rect has no role, name, or state, so it does not exist to a screen
   reader.
 - **Theming** — shared widgets read every color and metric from the `Theme`
-  (hover/press/focus/disabled included), so light/dark, high-contrast, and OS
-  accent all track automatically. A hand-rolled control with `Color::rgb(...)`
+  (hover/press/focus/disabled included), so light/dark, high-contrast, the
+  workspace temperature and the person's own colour all track automatically. A hand-rolled control with `Color::rgb(...)`
   literals breaks all three (see §7's "Theme-driven" clause).
 
 This generalises §3 (text editing) to **all** interactive primitives. Concretely:
 
-- Editable field → `TextInput` (or `SearchField` / `NumberInput` /
-  `EditableLabel`). Never keep a per-app cursor index and splice characters into
-  a `String` on `Key::Character` / `Backspace`.
-- Clickable → `Button`. Never `draw_*_button` + a `contains()` hit-test.
+- Editable field → `TextInput` (or `NumberInput` / `EditableLabel`). Never keep
+  a per-app cursor index and splice characters into a `String` on
+  `Key::Character` / `Backspace`.
+- Narrowing a list → `SearchField::filter()` bound to `Filterable`; find in a
+  document → `FindBar` over `Findable`; searching the app → the platform
+  palette (§4a). Never a hand-drawn search box.
+- Clickable → `Button` (a canvas host paints `ButtonFace` and hit-tests
+  `ButtonFace::contains`). Never `draw_*_button` + a `contains()` hit-test.
+  A glyph that does something is `Button::icon_only(id, icon, name)`, never a
+  text glyph.
 - Confirm / prompt / sheet → `ModalDialog` (scrim, focus capture, Esc, a11y are
-  built in). Never paint your own overlay + scrim rect.
+  built in; it is presented in the window's top layer, §7c). Never paint your
+  own overlay + scrim rect.
 - Select / choice → `Dropdown`; on/off → `Toggle` / `Checkbox`; range →
   `Slider` / `NumberInput`; peer views → `TabBar` / `ToggleGroup`; right-click →
   `ContextMenu`; hover help → `tooltip`; anchored transient → `Popover`.
+- Sidebar, master/detail, drawer, push screens, column headers → `NavShell`;
+  a list of destinations → `NavList` (a painted app: `SidebarDrawer` +
+  `chrome::paint_nav_row` / `paint_nav_section`); a selected or hovered row →
+  `chrome::paint_row_selection`. Never a private sidebar row painter,
+  selection fill or collapse chip.
 
 **If the shared widget is missing a capability you need, extend the widget — do
 not fork it.** Add the feature to the one `ui` primitive so every app gets it and
@@ -413,8 +643,8 @@ the accessible / themed / clipboard-correct version stays the default. Forking a
 private copy re-earns every bug above and guarantees drift. The only sanctioned
 "hand-rolled" text surfaces are genuine document engines whose buffer *is* the
 app (the terminal grid, a code/rich-text/cell editor) — and even those must route
-their **side** fields (find bar, rename box, cell entry, command line) through the
-shared widgets, and are themselves candidates for a shared editor primitive
+their **side** fields (find bar → `FindBar`, rename box, cell entry, command
+line) through the shared widgets, and are themselves candidates for a shared editor primitive
 (§ toolkit gaps) rather than N private forks.
 
 > Enforcement: a new painted control is a toolkit gap, not an app feature. Grep
@@ -431,22 +661,15 @@ does not call it. The one automated check that implemented the rule
 string that appears nowhere. Two more spellings were invisible for the same
 reason:
 
-- **`Color::WHITE` / `Color::BLACK`** — most are a defensible ink on an accent
-  fill or a scrim; the defect is that nothing was looking, so nobody ever had to
-  say which.
-- **`surface_white_*` / `border_white_*`** — the values are no longer literally
-  white: `Colors::themed` washes them toward the contrasting extreme, so they
-  flip to black on a light palette (the fix landed after every unselected filter
-  chip lost its pill at 1.01:1 on light). What survives is the reason §9.5
-  deprecates them anyway — the *name* still says white, which is how a reader
-  picks one while reasoning about the wrong colour, and the tier is a
-  **declared** alpha that never measures itself against the ground it lands on.
-  `Colors::lift()` and `Colors::hairline_on()` do measure.
+- **`Color::WHITE` / `Color::BLACK`** — a label on an inverted fill is
+  `intent.on_inverted`, and the inverted fill is near-white on a dark
+  material, so a hard-coded white label there is invisible.
 
-`design_token_audit.rs` now covers all three, ratcheted against
-`crates/sdk/ui-core/tests/design_token_baseline.txt`: a file may never gain one, and a file that
-sheds one lowers its record in the same commit. The count only goes down. That
-file, not this document, is the authority on how many are left.
+`design_token_audit.rs` now covers all three in the toolkit, the shell and
+every app, ratcheted against the shards under
+`crates/sdk/ui-core/tests/baselines/theme/`: a file may never gain one. The
+count only goes down. Those shards, not this document, are the authority on
+how many are left (§9.13).
 
 ---
 
@@ -476,64 +699,162 @@ The rule that prevents the drift returning is the same one §8 applies to apps:
 
 Every chrome surface is exactly one of six **roles**. Pick the role first; the
 role fixes radius, surface, border, elevation and motion together, so two
-surfaces of the same role are automatically consistent.
+surfaces of the same role are automatically consistent. The values come from
+`docs/design-language.md` ("Shape", "Colour", "Material").
 
 | Role | What it is | Radius | Surface | Border | Elevation |
 |---|---|---|---|---|---|
 | **Ground** | the desktop behind everything | — | `surfaces.base` | — | none |
-| **Bar** | docked chrome fixed to a screen edge (top bar) | — (edge to edge) | `chrome::shell::panel_ground` (opaque) | bottom hairline only | `e1`, downward only |
-| **Panel** | a floating surface that opens over content (quick settings, palette, popovers, sheets) | `radii.xl` (24) | `chrome::shell::panel_ground` (opaque) | full hairline | `e4` |
-| **Control** | something inside a Bar or Panel that you press (action tile, list row, slider, field) | `radii.lg` (12) | selection tiers (§9.3) | per tier | none |
-| **Selector** | one of a set you choose between (tab pill, tray pill, workspace chip, strip segment, scope chip) | `radii.full` | selection tiers (§9.3) | per tier | none |
-| **Object** | a thing that holds app content (window card, tile) | `radii.xl` (24) | `surfaces.window_card` | `Colors::window_edge()` | `e3`; `e4` while dragged |
+| **Bar** | docked chrome fixed to a screen edge (top bar) | — (edge to edge) | `chrome::shell::panel_ground` (opaque) | bottom hairline only | none |
+| **Panel** | a floating surface that opens over content (quick settings, palette, menus, popovers, sheets) | `radii.panel` (18) | the floating material, `Material::Floating` (§9.2) | full hairline, plus `elevation.floating_edge` inside it on a dark material | `elevation.floating` |
+| **Control** | something inside a Bar or Panel that you press (action tile, list row, slider, field) | `radii.control` (8) | selection tiers (§9.3) | per tier | none |
+| **Selector** | one of a set you choose between (a tab, a segment, a tray or scope chip, a workspace chip, a strip segment) | `radii.control` for tabs and segments (not pills); `radii.full` for chips, pill-shaped by meaning | selection tiers (§9.3) | per tier | none |
+| **Object** | a window tile | `radii.tile` (14) | `surfaces.content` | `Colors::window_edge()` | none; `elevation.floating` only while dragged |
 
-Two consequences worth stating outright, because both were being violated:
+Inside an Object, the window's regions (§9.2) are the only grounds, and the
+framework paints them.
 
-- **`radii.sm` (4) and `radii.md` (8) are not for interactive bodies.** They are
-  for details drawn *inside* a control — a progress track, a badge, a sparkline
-  clip. A pressable thing is `radii.lg` if it is a Control and `radii.full` if
-  it is a Selector, never a 4 px rectangle.
-- **16 px is not on the scale.** The radius scale is 4 / 8 / 12 / 24 / full and
-  deliberately omits 16 (see `tokens::radii`). A literal `16.0` in a chrome
-  draw path is off-scale by construction.
+The radius scale is semantic (`tokens::Radii`):
+
+| Field | Value | For |
+|---|---|---|
+| `tile` | 14 | a window tile |
+| `panel` | 18 | a floating panel (menu, popover, palette, sheet, quick settings) |
+| `control` | 8 | a button, field, segmented track, a tile inside a panel |
+| `item` | 6 | an item inside a control or list: a selected row, a segment thumb |
+| `detail` | 4 | a detail inside a control: progress track, badge, sparkline clip; also the floor |
+| `full` | pill | chips, presence pills, tags, avatars — pill-shaped by meaning |
+
+**Radii are concentric.** Something inset inside a rounded container takes
+`radii.concentric(outer, inset)` — the container's radius minus the inset,
+never below `radii.detail` — rather than a token of its own, so its corners
+run parallel to the container's. The palette's query field and its selected
+row are concentric with the palette card; the panel's inner light edge is
+concentric with the panel. Buttons and tabs are not pills, and a radius
+literal in a chrome draw path is a defect.
 
 ### 9.2 Surfaces come from the semantic tier, never from a ramp slot
 
-Chrome reads `colors.surfaces.*`, which every theme defines for itself. It does
-**not** reach into `colors.neutral[n]`. A ramp slot is a colour; a surface token
-is a *promise about contrast* that each theme keeps in its own way, and only the
-latter survives a theme the author never saw.
+Chrome reads `colors.surfaces.*`. It does **not** reach into
+`colors.neutral[n]`. A ramp slot is a colour; a surface token is a *promise
+about contrast* that every material keeps, at every temperature.
 
-- Bar and Panel: `surfaces.overlay`.
-- Ground: `surfaces.base`. Object: `surfaces.window_card`.
-- Scrim behind a modal Panel: `surfaces.scrim`, faded in with the panel.
+The neutral material is defined in OKLCH and shares one hue
+(`colors.palette.hue`, chroma at most 0.010), so a theme or a workspace can
+shift its temperature without moving contrast (`Theme::with_neutral_hue`;
+each workspace takes the hue of its wallpaper, `ui::workspace_hue`). A
+palette without a hue (`Palette::hue == None`, the light preset) is pure
+grey until the window's workspace gives it one; nothing falls back to a
+default hue.
 
-One shared constant, `CHROME_SURFACE_ALPHA`, sets the opacity of every Bar and
-Panel, so the whole chrome is one material. Per-surface alpha literals are what
-made quick settings read as a different substance from the bar it hangs off.
+| Surface | Dark L | Light L | Use |
+|---|---|---|---|
+| `surfaces.base` | 0.16 | 0.90 | Ground: the desktop behind tiles |
+| `surfaces.content` | 0.215 | 0.995 | Object: every app's window ground, owned by the framework |
+| `surfaces.sidebar` | 0.195 | 0.965 | the navigation region of a window |
+| `surfaces.inspector` | 0.235 | 0.975 | the detail / inspector region of a window |
+| `surfaces.raised` | 0.265 | 1.0 | fields, wells and objects inside content |
+| `surfaces.overlay` | 0.285 | 1.0 | Bar and Panel |
+| `surfaces.scrim` | — | — | behind a modal Panel, faded in with it |
 
-**That material is opaque.** Translucency is
-only worth its cost when the backdrop is blurred, and this renderer cannot blur
-a backdrop — vello can blur a *shape*, which is what a drop shadow is made of,
-but there is no backdrop filter short of rendering the scene to a texture and
-convolving it. Unblurred, a translucent panel simply adds a fraction of whatever
-is behind it to itself: not glass, but a loss of contrast that changes with what
-the user happens to have open. Measured at the old 0.80, one quick-settings
-panel's own body ran `#ffffff` over a document and `#f7f7f7` over the desktop —
-one flat surface reading as two, with a seam across the middle of it.
+The ink tiers `text_primary` / `text_dim` / `text_tertiary` are defined on
+`surfaces.content` (dark L 0.96 / 0.76 / 0.62, light 0.18 / 0.43 / 0.56).
+`tokens::contrast::FLOORS` holds every pairing to WCAG AA for its role (AAA on
+the high-contrast material) and is swept at every hue in tests.
+
+#### One ground per region, painted by the framework
+
+An app never picks or paints a ground. A window is made of regions,
+`ui::surface::Region::{Content, Sidebar, Inspector}`, and each has exactly
+one ground:
+
+- **Content** is `surfaces.content`, the Object's surface. The framework
+  paints it in every path an app can be seen through: the native runner
+  clears to it, `ResourceRoot` fills it under the view, `TileHost` fills it
+  under a hosted tile, and `--shots` captures land on it
+  (`FrameHarness::render_png`). An app that paints nothing (a clock, a
+  print queue) stands on it; floating surfaces stay transparent around their
+  material.
+- **Sidebar** (navigation, leading edge) and **Inspector** (detail,
+  trailing edge) are their own tiers. `NavShell` paints its sidebar slot;
+  a painted app calls
+  `ui::surface::region(scene, transform, rect, Region::Sidebar, theme)`,
+  which paints the tier and returns the ground. `Theme::region(region)`
+  reads it without painting.
+- A region is told from content by **tone**, not by a line: the tiers sit at
+  least `tokens::colors::REGION_MIN_STEP` (OKLCH ΔL 0.015) from content in
+  every material and at every temperature. Where a material gives them the
+  same ground (high contrast) `surface::region` draws the hairline on the
+  edge the region shares with content, and nowhere else.
+- What sits in a region is drawn with that region's theme:
+  `theme.in_region(region)` (or `theme.on_ground(ground)` for any other
+  ground) re-points `surfaces.content` to the ground, re-measures the ink
+  tiers against it and steps `intent.selection` / `selection_hover` from it,
+  so the same widget is right on content, sidebar and inspector. `NavShell`
+  hands its sidebar child that theme.
+- An app's header or toolbar band sits on its region with an `edge_on`
+  hairline of that region's ground under it; it is never a raised band.
+- `surfaces.raised` is for fields, wells, cards and controls *on* a region;
+  `surfaces.base` is the desktop only; `neutral[n]` is never a ground.
+- A control's hover and pressed fills are lifts of what it stands on: of its
+  own rest face for a filled control (`colors.lift_on(face, 0.5)` /
+  `lift_on(face, 1.0)`), of the region ground for a transparent one
+  (`intent.selection_hover` / `intent.selection`).
+
+A Bar is opaque: it is docked and nothing meaningful is behind it.
+
+**A Panel is the floating material.** Floating chrome — the palette, menus,
+popovers, quick settings, sheets, notifications, and chrome over media — is
+drawn over a blur of what is behind it, tinted with the panel ground at 72 %
+(`docs/design-language.md`, "Material and transparency"). A surface asks for
+it by name and never for a radius or an opacity:
+
+```rust
+ui::floating_surface::paint_material(scene, transform, &shape, Material::Floating, theme);
+// or, for the whole Panel row (fill + edge):
+ui::surface::panel(scene, transform, rect, radius, theme);
+```
+
+Vello cannot sample what it has already drawn, so the compositor blurs in a
+pass before the frame (`ui::backdrop`): while it paints, each floating surface
+draws a placeholder image under the tint and records what is below it; the
+renderer renders that backdrop at half resolution, halves it until the blur
+fits a short kernel (`surfaces.material_blur_px` is the standard deviation),
+blurs it separably and substitutes it for the placeholder. The live DRM,
+headless and nested compositors, an app's own window (`ui::App`'s render
+thread), the headless `FrameHarness` and `ShotFrame` behind every app's
+`--shots`, and the offscreen `shots` path all run the same pass, so a menu
+over content blurs it identically live and in a capture. A floating surface
+painted in the main pass inside a `Column` or `Row` blurs too: their subtree
+caches carry it (`backdrop::nest_scene`, `backdrop::append_nested`) and are
+redrawn while they hold one.
+
+The material falls back to opaque `panel_ground` whenever the blur is not
+there: under the reduced-transparency setting
+(`appearance.accessibility.reduce_transparency`), with forced colours or a
+theme without blur (the high-contrast track), in a renderer without the pass
+(a raw scene rendered without its recorded backdrop), for a surface drawn
+into a scratch scene no host composes, and for surfaces past the per-frame
+budget (`MAX_BACKDROP_REGIONS`). The placeholder's own pixels are that ground,
+so a missed substitution is the opaque material, never a hole. Never paint
+unblurred translucency: a translucent fill without the blur is not glass but
+a loss of contrast that changes with what the user happens to have open.
+`Material::Opaque` is the explicit opaque choice for a surface whose backdrop
+must not show through.
 
 **A Panel separates itself by value and by edge.** `panel_ground` walks the
-declared overlay tier away from *both* the desktop and the window card until it
-clears each of them, because a Panel floats over app content and a Bar does not,
-and the two are one material. `panel_border` supplies the edge. Get those right
-and elevation is a finishing touch; get them wrong and the shadow is asked to do
-their job, which is how it ends up too big to look like a shadow.
+overlay tier away from *both* the desktop and the window ground until it
+clears each of them, because a Panel floats over app content and a Bar does
+not, and the two are one material. `panel_border` supplies the edge.
 
 ### 9.3 Selection is a lift, and only a lift
 
-Every "which one is chosen" state in the shell — active tab, active workspace,
-active strip, selected row, chosen scope chip, current power profile — uses the
-**same four tiers**:
+A selected row, tab or segment is a **lift**: one surface step of the ground
+it sits on, with primary ink, and no hue. On the window ground that is
+`colors.intent.selection` (hover `selection_hover`); on any other ground
+`colors.lift_on(ground, 1.0)` (hover `0.5`). In chrome, every "which one is
+chosen" state — active tab, active workspace, active strip, selected row,
+chosen scope chip, current power profile — uses the **same four tiers**:
 
 | State | Fill | Border | Inner glow | Scale |
 |---|---|---|---|---|
@@ -542,182 +863,266 @@ active strip, selected row, chosen scope chip, current power profile — uses th
 | **active** | `colors.lift(1.0)` | `hairline_on(ground, 26)` | `hairline_on(ground, 51)` | 1.0 |
 | pressed | as active | as active | as active | 0.97 |
 
-This is `ui::chrome::selection_tier` (promoted out of `widget::tabs`, where it
-was `pub(crate)` and therefore unreachable from the shell — which is precisely
-why the shell grew its own incompatible answers). Call it; do not restate it.
-This includes toolkit list selection: `TreeView`, `Table`, `DataTable` and
-`Sidebar` rows are a lift, never an accent wash.
+This is `ui::chrome::selection_tier`; call it, do not restate it. On any other
+ground use `chrome::selection_tier_on(theme, state, ground)`: the active fill
+is one surface step of that ground (`colors.lift_on(ground, 1.0)`, hover
+`0.5`), stepping the other way where the ground has no room (a white well on
+a dark palette), so it stays at least `SELECTION_MIN_STEP` (OKLCH ΔL 0.06)
+from the ground on content, sidebar, inspector, raised and panel grounds in
+every material.
 
-**One caveat the tier cannot absorb for you.** `Colors::lift` interpolates from
-`surfaces.base` toward `surfaces.raised`, and where those two are close it
-falls back to a derived step against the ground. That fallback is by design and
-is what the default dark palette already uses. But it is *weak*, and on the
-high-contrast palette — where `base` and `raised` are both pure black — it is
-weaker than a fixed floor. A control that gives its unselected state a floor of
-its own (because it has no row around it to supply context, as the strip ribbon
-does) can therefore end up painting the **selected** state less prominently
-than the unselected one. If a control needs its own floor, derive all of its
-states from one ordered ramp against the ground and assert the ordering per
-theme; do not mix a floor with the tier.
+**One content edge.** Inside a column, everything that is text starts on the
+column's content edge: a `ListRow`'s title, a `Section` or `SectionHeader`
+title, a `PropertyList`'s labels, a `StatTile`'s label, a `DataTable`'s first
+column, a `StatusLine`, an `ObjectHeader`. A section header's action ends its
+*label* on the trailing edge. What a row paints behind its text (the hover
+and selection lift, a zebra stripe, a header action's hover) **bleeds
+`chrome::row_bleed` (`s2`) outward past that edge** on both sides, so text
+never moves when a row is selected and a list lines up with the headings
+around it. A retained row grows its own layout box by the bleed when it
+paints; a face (`ListRowFace`, `PropertyListFace`) takes the row's outer
+rect, the content edge grown by the bleed. The column keeps the room for the
+bleed in its gutter; an app never insets a list, a header or a sentence by
+hand to make them line up. A list that clips its rows (`VirtualList`) stands
+them one bleed in from its own edges, so their lift fills it.
 
-Why lift rather than an accent fill:
+**A selected list row is the lift and nothing else.** Every list paints its
+rows' hover and selection through `ui::chrome::paint_row_selection(scene,
+transform, rect, state, ground, theme)`: the row's outer rect (the content
+edge grown by the bleed), at `radii.item` (6), primary ink, no border, no
+hue, no leading bar or stripe. A run of selected rows is one lift
+(`paint_row_selection_joined` with a `RowJoin`): the corners two lifted rows
+share are square, so a multi-selection has no notch. `TreeView`, `NavList`,
+`paint_nav_row`, `ListRow`, `VirtualList` and
+`DataTable` use it; a painted list calls it. A private `selected_on` / `row_tier_on` / `selection_fill` is a
+defect.
 
-- `Colors::lift` measures its move against the chrome's *own ground* by relative
-  luminance, so it lifts correctly on dark, light and high-contrast without a
-  per-theme branch. A fixed white wash only lifts over a dark ground, and a
-  fixed accent fill collides with whatever the accent is being used for.
-- It leaves the **accent free to mean one thing**: see §9.4.
-- Hover and active are the same *kind* of change at two strengths, so the
-  control reads as one continuous affordance rather than two unrelated looks.
+**The armed row of a menu is a lift too, one step stronger.** The row Enter
+or a click will activate in a menu, popover, dropdown, slash menu or palette
+result list is the panel's **overlay lift**: `colors.lift_on(panel_ground,
+OVERLAY_LIFT)` with primary ink, no hue, concentric inside the panel
+(`widget::floating_surface::armed_row` / `paint_armed_row`). A floating panel
+takes one and a half surface steps instead of one, because a single step
+measured ΔL* 11.6 on the dark panel and read as "no highlighting"; the
+stronger step clears ΔL* 15 on every
+material and stays a quiet grey on a light panel, the weight of the sidebar
+lift rather than an inverted slab. Pointer hover and the keyboard arm the
+same row, so a menu has one highlight. Every menu paints it with
+`paint_armed_row`, its rows inset `floating_surface::menu_inset` (`s2`) from
+the panel on every side and `metrics.menu_row_height` tall, so popover
+menus, dropdown lists and context menus are one shape. A state row ("Copy on
+select", a sort order) is `MenuItem::with_checked(bool)`, and the applied
+option of a popover menu or a dropdown list carries a check; the row a
+context menu acts on is ringed in your colour while it is open
+(`ContextMenu::anchor_row`).
 
-An active thing never gets *more* prominent on hover. The contrast gain belongs
-to the inactive things brightening toward the active tier.
+**A menu opens at its trigger, in the top layer.** Every anchored Panel
+(context menu, popover, dropdown list) is placed by
+`floating_surface::place_anchored`: under its trigger with the leading edges
+aligned (at the pointer for a right-click), flipped above when there is more
+room there, aligned to the trigger's trailing edge when it would run off the
+window, then shifted along the trigger into the window. A menu paints only
+in `Widget::draw_overlay`, like a popover or a modal, so no later sibling,
+pane or the window's chrome covers it; a painted host draws its menu from
+its own `draw_overlay` or returns it from `children_mut` while it is open.
+
+**A control with its own floor** (a filled rest face rather than a
+transparent one) takes all of its states from one ordered ramp against the
+ground: `chrome::selection_floor_ramp(theme, state, ground)` — rest, hover
+and active each a further step from the ground on every material. Do not mix
+a floor with the transparent tier.
+
+An active thing never gets *more* prominent on hover. The contrast gain
+belongs to the inactive things brightening toward the active tier.
 
 **Elevation and selection are different vocabularies and must not be mixed:**
 
 > **A shadow means "off the surface". A lift means "chosen on the surface".**
 
-A selected pill casts no shadow — it is not floating, it is picked. A dragged
-object casts `e4` — it is lifted and will land somewhere. Rows of
-idle pills each laying down a soft shadow is what made the tab strip read as
-muddy rather than as chrome.
+A selected pill casts no shadow. A dragged object casts `elevation.floating`
+— it is lifted and will land somewhere.
 
-**A shadow is the shape of the thing casting it, and comes from a token.** One
-painter, `surface::shadow(scene, transform, rect, radius, token)`: it blurs the
-surface's *own rounded outline*, so a shadow is equally dense the whole way
-round and its corners follow the surface's corners. Pass the radius. A surface
-that hands its shadow a square field gets a box around a rounded panel, with
-corners several times lighter than the flat edges — "boxy and uneven" is what
-that looks like from the outside.
+**Only floating things cast a shadow, and they all cast the same one.**
+`elevation.floating` is one soft, wide shadow (blur 32, offset a quarter of
+that); on a dark material the floating surface also strokes
+`elevation.floating_edge`, a 1 px light edge just inside its outline
+(`ui::surface::floating_edge`, painted for you by `ui::surface::panel`).
+Window tiles, bars, cards and selected controls have no shadow: a tile is
+separated by the ground and its window edge.
 
-The token is the whole description: `offset_y`, `blur`, and a `color` whose
-**alpha is the strength and is honoured**. Do not hand a shadow a bare `Color` —
-a caller given a colour and no offset or blur has to invent the other two, which
-is how four surfaces in this toolkit each grew a different shadow, three of them
-a solid rounded rect nudged down a few pixels and called soft. `offset_y` stays
-a quarter of `blur` across the ramp; a larger ratio slides the falloff onto the
-bottom edge and the surface stops looking lifted and starts looking like it has
-a dark bar under it.
+**A shadow is the shape of the thing casting it, and comes from the token.**
+One painter, `surface::shadow(scene, transform, rect, radius, token)`: it
+blurs the surface's *own rounded outline*, so a shadow is equally dense the
+whole way round and its corners follow the surface's corners. Pass the
+radius. Do not hand a shadow a bare `Color`. `soft_shadow` is the older
+sprite painter for effects with no outline to follow — the wheel disc's
+bloom, a glow around a dragged card — and is not for drop shadows.
 
-`soft_shadow` is the older sprite painter and is **not** for drop shadows any
-more. It survives for effects with no outline to follow — the wheel disc's
-bloom, a glow around a dragged card.
+### 9.4 There is no accent: intents and your colour
 
-### 9.4 Accent means live, not selected
+The interface is a quiet, near-colourless material; **colour means that
+someone is there or that something is happening.** Nothing in the theme is a
+brand hue, and an app cannot supply one. Every former accent use is one of
+these intents (`colors.intent`):
 
-`colors.accent` is reserved for **state the user did not choose and should
-notice**: recording, screen-sharing, a peer joining, a live collaborative
-session, an unread count, a sync in flight. Selection is a lift (§9.3); focus is
-`border_focus`; danger/warning/success are `colors.semantic.*`.
+| Intent | Token | For |
+|---|---|---|
+| inverted | `intent.inverted` / `inverted_hover` + `intent.on_inverted` | a primary action, a switch that is on, a checked box, a slider's filled track, a progress fill |
+| selection | `intent.selection` / `lift_on(ground, t)` | a selected row, tab, segment or item, and a menu's armed row at the overlay step (§9.3) |
+| your colour | `intent.you` (= `border_focus`) | the keyboard focus ring (never focus a click gave), the text caret, selection handles, a drop or insertion indicator |
+| selection tint | `intent.selection_tint` | the text-selection highlight (your colour, translucent) |
+| status | `semantic.{danger, warning, success, info}` | status only, muted (chroma at most 0.13), never decoration. A destructive button is danger ink on a neutral control, filled only inside the confirmation step |
+| presence | `presence.of_rgb(user_color(id))`, `presence.get(slot)`, `presence.series(i)` | a participant's cursor, selection, avatar and attribution; chart and tag series |
 
-This is the rule that kills per-surface palettes. A CPU label is not "green" —
-if a metric strip needs to distinguish its columns, it distinguishes them with
-`semantic.success` / `semantic.info` / `semantic.warning`, which every theme
-defines and high-contrast redefines. Literal `0x4a,0xde,0x80` is Tailwind
-green-400 wearing a costume, and it ignores the user's theme completely.
+Links are primary ink with an underline. An "active" icon is primary ink, an
+inactive one secondary ink. Which window has keyboard input is state, not
+you: the focused window's edge (`window_edge_focused`) and its active tab's
+keyline are neutral ink, so your colour is not painted around a window all
+day. A resting readout's labels are ink too; a status hue is not a label.
 
-Per-peer identity colours are the single sanctioned exception: they come from
-`ui::presence::user_color`, are derived from the peer id, and are *identity*,
-not decoration.
+**Your colour** is the local person's presence colour — one of the twelve
+presence hues (`PresenceHue`), the colour their cursor has for
+collaborators. It is identity, not theme: stored as `identity.colour` or
+derived from the stable identity, never read by `Theme::configured`. The
+host that shows a window applies it with the workspace's temperature
+(`ui::WindowAppearance`, `Theme::in_window`): the shell resolves both and
+sends each app window its own over the shell-ui channel
+(`FloatingSurfaceHostMessage::Appearance`, applied by
+`App::set_window_appearance`); a standalone app starts from the stored
+choice, or the hue nearest the host accent, and stays neutral. The theme
+sets only its lightness and chroma.
+
+**Emphasis** is the one theme role that may colour controls: under
+`Emphasis::Tinted { hue }` the `intent.inverted` fill (primary actions, on
+switches, filled tracks) and the selection lift take that hue. Widgets read
+the intents and never ask which emphasis is active; the label of the fill is
+always `intent.on_inverted`.
+
+**The presence palette** is twelve hues at one OKLCH lightness and chroma
+(dark L 0.74 C 0.14, light L 0.58 C 0.15), so no participant looks more
+important than another. Identities travel as colours
+(`ui::presence::user_color`, `PEER_PALETTE`); paint them through
+`colors.presence.of(..)`, which carries their hue at the active material's
+lightness and chroma.
 
 ### 9.5 Borders are derived, never declared
 
 Chrome borders call `Colors::hairline_on(ground, alpha)`, which picks white or
-black by whichever actually moves against that ground. A declared
-`border_standard` stroked onto a translucent Panel does not track the surface
-under it and disappears on one theme or glares on another.
+black by whichever actually moves against that ground. A hairline appears
+only where two equal surfaces meet; groups are separated by space and type
+weight, not boxes, and a card exists only for an *object* (something you can
+open, move, share or drag).
 
 - hairline on a control: alpha 26 (`/10`)
 - inner glow on an active control: alpha 51 (`/20`)
 - separator inside a Panel: alpha 26, inset from the panel edge by
   `spacing.s3`, never running full-bleed into the corner radius
 
-`surface_white_5` / `surface_white_10` / `border_white_10` were literal white at
-low alpha in **every** theme, including light ones where a white veneer over a
-white panel is invisible — the faint tier measured 1.01:1 on light, which is why
-every unselected filter chip there read as bare text. `Colors::themed` now
-washes them toward the contrasting extreme instead, so they flip to black on a
-light palette and a tier means the same thing on both sides of the line.
-
-They stay **deprecated in chrome** regardless, for the half that derivation
-cannot fix: the name says white while the value is a veneer, and the strength is
-*declared* rather than measured against the ground the surface actually lands
-on. `lift` and `hairline_on` take that measurement, so a hairline stays a
-hairline on a palette their author never saw. Reach for those.
+The state veneers are `overlay_subtle` / `overlay_medium` / `overlay_strong`
+and `overlay_border_subtle` / `overlay_border_strong`: directional washes that
+lighten a dark ground and darken a light one. The declared strength is
+still a declaration, so chrome prefers `lift` and `hairline_on`, which measure
+against the ground the surface actually lands on.
 
 #### Rest edges (toolkit and shell)
 
 At rest (idle, enabled) every control, card and popup has a **visible derived
 edge or a clear contrast step** against the surface it sits on, at 1× in dark
 and light alike. "Edge" is `ui::surface::edge_on(fill)` painted as a crisp
-inset 1 px stroke (`ui::surface::card`, `pill`, or the same geometry inline);
-chosen states use `selection_tier` (Controls) or `glass_selector` (Selectors);
-focus stays `border_focus`; disabled is the rest face under
-`widget::DISABLED_ALPHA`, so rest and disabled never look the same.
+inset 1 px stroke (`ui::surface::card`, the chip family's `ChipFace` /
+`BadgeFace`, or the same geometry inline); chosen states use `selection_tier`
+(Controls) or `glass_selector` (shell Selectors); focus is `intent.you` (your
+colour); disabled is the rest face under `widget::DISABLED_ALPHA`, with its
+edge kept at full strength, so rest and disabled never look the same.
 
 | Control | Rest fill | Rest edge |
 |---|---|---|
-| Button Neutral / Disabled, Dropdown field | `surfaces.raised` | `edge_on(raised)` |
-| Card / Container / ContentCard | as today | `edge_on(fill)`; a section inside a card gets space, not a second edge |
-| TextInput / NumberInput / SearchField | field fill | `edge_on(fill)`; focus `border_focus` |
-| Dropdown list, ContextMenu, Popover, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt, Toast, ModalDialog, ModalFrame | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`; separators `separator(.., s3, ..)`, never full-bleed |
-| Tooltip | as today | `edge_on(fill)` |
-| Segmented / ToggleGroup track | `surfaces.raised` | `edge_on(track)`; active segment `glass_selector` |
-| Chip quiet | `surfaces.raised` | `edge_on(raised)`; selected accent, no edge |
-| Toggle | off `lift(1.0)`, on `accent_primary` | `edge_on(track)`; one knob colour for both states |
-| Slider | unfilled `lift(1.0)`, filled `accent_primary` | `edge_on(unfilled)`; thumb contrasts against both halves |
-| Checkbox | unchecked `surfaces.raised` | `edge_on(raised)` |
-| Table / DataTable rules | — | `edge_on(table_fill)`, never into a rounded corner |
-| TreeView / Sidebar / VirtualList rows | transparent | none; selection is `selection_tier` |
-| Divider | — | `border_standard` only on `surfaces.base`; `Divider::on(surface)` elsewhere |
-| App chrome Toolbar / StatusBar | as today | `chrome_hairline` |
+| Button `Secondary` / `Destructive` / disabled, Dropdown field, NumberInput steppers | `surfaces.raised` (hover `lift_on(raised, 0.5)`, press `1.0`) | `edge_on(raised)`; `Destructive` letters it in danger ink |
+| Button `Primary` | `intent.inverted` (hover `inverted_hover`, press `Colors::inverted_pressed`, the hover step taken twice) | none; label `intent.on_inverted` |
+| Button `Plain`, toolbar commands, icon buttons | transparent (hover `intent.selection_hover`, press `selection`) | none; a toggle that is on (`Button::toggled(true)`, a toolbar toggle) is `intent.selection` |
+| Destructive confirmation (a `ModalDialog` danger action only) | `semantic.danger` | none |
+| Card / Container (objects only) | `surfaces.raised`; a pressable one lifts on hover and press | `edge_on(fill)`; a section inside a card gets space, not a second edge |
+| TextInput / NumberInput / SearchField | field fill (hover `lift_on(fill, 0.5)`, focus `1.0`) | `edge_on(fill)`; focus `border_focus`; a value `Field::with_error` rejected edges the field in danger ink (`Widget::set_invalid`) and its message is danger ink |
+| Popover, ModalDialog, Toast, StatusBubble, video controls | the floating Panel body (`widget::floating_surface::paint`): `radii.panel`, the blurred material, `elevation.floating`; what stands on it is drawn with `theme.on_ground(panel_ground)`, whose `surfaces.raised` stays off the panel (`Colors::raised_on`) | `panel_border`, `floating_edge` on dark; a toast's severity is its leading icon's colour, as on a banner |
+| Dropdown list, ContextMenu, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`, `floating_edge` on dark; separators `separator(.., s3, ..)`, never full-bleed. The dropdown list and context menu take `radii.panel`, rows `metrics.menu_row_height`, content inset `spacing.s3`, and a separator only between two rows |
+| Banner | `surfaces.raised` | `edge_on(raised)`; the severity is the icon's colour, never a tinted wash |
+| Tooltip | the blurred material (`surface::panel`) at `radii.control`, ink measured on the panel ground | `panel_border`, `floating_edge` on dark |
+| Segmented / ToggleGroup track (`SegmentedStyle::Segmented`) | `surfaces.raised`, `radii.control` | `edge_on(track)`; the chosen segment is a thumb `selection_tier_on(raised)` inset concentrically (`radii.item`); separators only between two unchosen segments. `Tabs`: no track, a 2 px primary-ink underline. `Quiet`: no track, a lift of the ground |
+| Chip / Badge `Neutral` | `surfaces.raised`, `radii.full` | `edge_on(raised)`; selected is a lift, no edge |
+| Chip / Badge `Tinted(tone)` | the tone washed 15 % into the ground | the tone at 38 %; label neutral ink measured on the wash |
+| Chip / Badge `Live` | `semantic.danger` | none; label measured on it |
+| Toggle | off `intent.selection`, on `intent.inverted` | `edge_on(track)`; on, the knob is `on_inverted`; off, a raised white knob with a ring that clears 3:1 on a light material and `text_dim` on a dark one |
+| Slider | unfilled `intent.selection`, filled `intent.inverted` | `edge_on(unfilled)`; the thumb is a raised white object with a ring on a light material and primary ink on a dark one, clearing both halves; never collapses below six knob widths |
+| Checkbox | unchecked `surfaces.raised`, checked `intent.inverted`; always the largest square in its rect, `radii.item` | `edge_on(raised)`, kept at full strength when disabled (as a switch's) |
+| ProgressBar | track `intent.selection` (a lift of the ground, as a slider's unfilled half), fill `intent.inverted`, `radii.detail` | none |
+| TimePicker | value cells `surfaces.raised` at `radii.control`; step arrows are `Icon::ChevronUp` / `ChevronDown`, lifted under the pointer | `edge_on(raised)`; the focused cell `border_focus` |
+| Scroll thumb | `text_tertiary` at rest (a third lighter on a light ground), `text_dim` active stepped to 3:1 on the ground; `metrics.scroll_thumb` thick, centred in its lane | none; a `Scrollable` (or a painted `ScrollRegion`) keeps `metrics.scrollbar_gutter` (thumb plus `s1` each side) free on its trailing edge while its content overflows, and on its bottom edge for a horizontal bar |
+| DataTable header and rules | the region's ground (no fill of its own) | `edge_on(ground)` under the header and, with `.ruled()`, between columns |
+| StatTile, PropertyList, Section | the ground | none: separated by space |
+| MediaCard art | the art | a seated `hairline_on(ground)` inside the art's outline; badges over the art use the floating material |
+| DropZone | the ground | dashed `edge_on(ground)`; your colour only while a drag hovers |
+| TreeView / NavList / VirtualList rows | transparent | none; selection is a lift inside the `s2` inset at `radii.item` (`paint_row_selection`) |
+| ListRow | transparent | as the rows above; separators are inset `edge_on(ground)`, hidden beside the selection |
+| Divider | — | `border_standard` only between two equal surfaces; `Divider::on(surface)` elsewhere |
+| App chrome Toolbar band (`toolbar::paint_band`) | none: the region's ground | `chrome_hairline` along the bottom |
+| StatusBar, History bar | none: the region's ground | `edge_on(ground)` where the bar meets the content |
 | Selectors (tab pills, tray pill, scope chip) | idle none | none (`glass_selector`) |
 
-A declared border or ramp token (`border_standard`, `border_strong`,
-`overlay_border_strong`, `colors.neutral[..]`) on a chrome surface is a defect;
+Forced-colour accessibility is the field-edge exception: when
+`Theme::colors_are_forced()` collapses surface levels, the shared field painter
+uses `border_standard` for its idle outline so its boundary retains non-text
+contrast, including disabled fields under the existing disabled group opacity.
+Enabled focus and error outlines keep their own roles.
+
+Outside that forced-colour field branch, a declared border or ramp token
+(`border_standard`, `border_strong`, `overlay_border_strong`,
+`colors.neutral[..]`) on a chrome surface is a defect;
 `tests/design_token_audit.rs::declared_borders_in_chrome_do_not_grow` ratchets
-their count against `tests/chrome_declared_border_baseline.txt`.
+their count against the shards under `tests/baselines/chrome-border/`.
 
 **One painter per row of that table.** `ui::surface::card(fill)` is the edged
-opaque surface; `ui::surface::panel(theme)` is the Panel row (`panel_ground`
-fill + `panel_border`) so no app spells the pair; `ui::surface::card_on(fill,
-ground)` is for a translucent wash (an accent tint, a hover film) — the edge
-derives from what the eye sees, the wash composited over its ground, because a
-hairline judged by a 16 % wash's own RGB flips polarity on light and vanishes.
-`edge_on` assumes an opaque fill. All three snap their rect to whole logical
-pixels and `separator` lands on one device-pixel row (`separator_rect`): a 1 px
-edge on a fractional coordinate is two half-covered rows that fall under
+opaque surface; `ui::surface::panel(theme)` is the Panel row (the floating
+material + `panel_border` + `floating_edge`) so no app spells the set;
+`ui::surface::card_on(fill, ground)` is for a translucent wash — the edge
+derives from what the eye sees, the wash composited over its ground. `edge_on`
+assumes an opaque fill. All three snap their rect to whole logical pixels and
+`separator` lands on one device-pixel row (`separator_rect`): a 1 px edge on a
+fractional coordinate is two half-covered rows that fall under
 `HAIRLINE_MIN_DELTA` even when the colour registers.
-
-**Selection lifts from the ground it sits on.** `chrome::selection_tier` measures
-its lift against `surfaces.base`; a row on `panel_ground`, a raised sidebar or a
-card is within rounding distance of that lift on dark and high-contrast (Δ
-0.008 / 0.002). Use `chrome::selection_tier_on(theme, state, ground)` there — it
-keeps the base lift where it registers and otherwise walks `LIFT_ALPHA_STEPS`
-until the active fill clears the ground by `HAIRLINE_MIN_DELTA`, with hover
-halfway between. The same rule for one control never yields a different fill
-depending on which panel hosts it, because the ground is the input.
 
 ### 9.6 Type and density
 
-Chrome type is a **compressed** version of the app scale — chrome labels a thing,
-it does not host prose.
+Chrome uses the same type roles as apps (`docs/typography.md`), from the
+compact end of the scale — chrome labels a thing, it does not host prose.
+There is no all-caps or letter-spaced chrome text; section headers are
+sentence case.
 
-| Use | Size | Weight | Colour |
-|---|---|---|---|
-| Panel title | `scale.base` (14) | `semibold` | `text_primary` |
-| Section header inside a Panel | `scale.xs` (10) | `medium` | `text_tertiary` |
-| Control label | `scale.sm` (12) | `medium` | `text_primary` |
-| Control sub-line / value | `scale.sm` (12) | `regular` | `text_dim` |
-| Bar label | `scale.sm` (12) | `medium` | `text_primary` |
-| Numeric readout | `scale.sm` (12) | `semibold`, tabular | `text_primary` |
+| Use | Role | Colour |
+|---|---|---|
+| Panel title | `Heading` | `text_primary` |
+| Section header inside a Panel | `Subheading`, sentence case | `text_dim` |
+| Control label | `Label` (a control's `ControlSize`) | `text_primary` |
+| Control sub-line / value | `Caption` | `text_dim` |
+| Bar label | `Label` | `text_primary` |
+| Numeric readout | `Label.numeric()` | `text_primary` |
 
 Density, so two panels built by two people come out the same size. Each value
 is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
 `ui_scale` like spacing; read it from there rather than restating the number:
 
-- Bar height 40 (`bar_height`; also the shared `Button`/`Dropdown` default);
-  Bar control height 28 (`bar_control_height`).
+- Bar height 40 (`bar_height`); Bar control height 28 (`bar_control_height`).
+- Controls take a `ControlSize`, never a height: `Small` 28, `Regular` 32
+  (the default for `Button`, `Dropdown`, `NumberInput`, `ToggleGroup`),
+  `Large` 40, each grown with the label's line at large text. A `Small`
+  control keeps its 28 px face and reaches the 32 px target through its hit
+  rect. A button is as wide as its label (at least twice its height; an
+  icon-only button is a square) and never elides while its parent has room.
+- Menu row 32 (`menu_row_height`); scroll bar gutter 16 (`scrollbar_gutter`),
+  thumb 8 (`scroll_thumb`), one wheel line 60 (`wheel_line`), a committing
+  swipe 88 (`swipe_commit`).
+- Readable width 720 (`readable_width`) for forms and pages of facts; reading
+  measure 640 (`reading_measure`) for long-form text; a chooser beside its
+  label 224 (`chooser_width`).
 - Panel padding `spacing.s4` (16); gap between Panel sections `spacing.s4`.
 - Panel row / Control height 44 (`panel_row_height`); Selector height 28
   (`selector_height`).
@@ -728,48 +1133,64 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   `panel_width_utility`; an overlay drawer is the same width,
   `drawer_width`), 360 for a roster or list Panel (`panel_width_list`), 560
   for a sheet with a form in it (`panel_width_sheet`).
-- Responsive shells: a genuine sidebar docks at `sidebar_width` 280, an
-  overview column at `overview_width` 340, and a sidebar docks beside its
-  content at or above `compact_breakpoint` 720. `NavShell` and `AppShell`
-  read those defaults from `theme.tokens.metrics` in `build_layout`, so they
-  follow `ui_scale`. `NavSplit` (300 / 900), `NavShell`'s 700 breakpoint and
-  `AppShell`'s 264 sidebar predate the tokens; the proposal on record is one
-  set for all four shells — sidebar `sidebar_width` 280, breakpoint
-  `compact_breakpoint` 720 (drawer: 720 + `drawer_width − sidebar_width` =
-  760), and one chip for `AppShell`'s Back button (34) and `NavShell`'s
-  collapse / Back chip (36): `min_pointer_target` 32 inside an `s3` inset,
-  which also makes the chip band (56) equal to a 56 px header bar.
-- **One text-scale rule for shell inputs (`Theme::responsive_scale`).** A
-  breakpoint or pane width handed to `NavSplit`, `NavShell`, `AppShell` or
-  `SidebarDrawer` is **authored at 1×** and the shell resolves it against the
-  theme when the tree is built: `× ui_scale × text_scale.max(1.0)`
-  (`Metrics::text_growth`). Panes and breakpoints are sized by the text they
-  hold, so they grow with it and never shrink below the authored geometry;
-  an app passes `with_breakpoint(760.0)` and deletes its own
-  `× text_scale` arithmetic (`widget::AuthoredExtent` is the rule as a
-  value, for a host that needs it directly). A width sized by icons rather
-  than text — a rail — takes the `with_icon_*_width` builder
-  (`SidebarDrawer::icon_docked_width`) and follows `ui_scale` alone.
-  `SidebarDrawer` has no `build_layout`, so a host adopting the rule calls
-  `drawer.scale_for(theme)` once from its own; until it does, the drawer lays
-  out the authored geometry, which is what every drawer host does today.
-  Read the resolved values back (`shell.breakpoint()`, `sidebar_width()`)
-  rather than comparing a window width against the authored constant. A
-  shell control that carries one line of text (the Back chip, the search
-  slot) grows by `widget::text_control_height(authored, theme)` — the
-  authored height until the body line outgrows it, then line + the authored
-  padding — never by the whole scale.
-- **Shell panes are measured with the host's theme and renderer.** A
-  `NavSplit` / `NavShell` pane is built against the theme its outer tree was
-  built with and solved in `adjust_layout_with_measure` with the renderer
-  the host hands the layout pass; a `Text` under a split measures at the
-  same text scale as everything beside it. Never lay a child out against
-  `Theme::dark()` or a fresh `TextRenderer::new()` on a draw or layout path.
-- **A docked sidebar keeps its full height.** The collapse chip sits in the
-  docked sidebar's own header row, which the sidebar clears horizontally
-  (mail: `CHIP_CLEARANCE`), so the three panes' headers share one top edge.
-  Only an overlay drawer, and a narrow content pane the chip floats over,
-  start below the chip band.
+- **The window shell (`NavShell`) reads every size from the metrics**; an app
+  passes none:
+
+  | Metric | 1× | For |
+  |---|---|---|
+  | `header_height` | 56 | the one header row: `min_pointer_target` 32 in an `s3` inset |
+  | `sidebar_width` | 280 | a docked sidebar (drag range `sidebar_min_width` 200 – `sidebar_max_width` 420) |
+  | `drawer_width` | 320 | the floating drawer, `s2` in from the window edges |
+  | `rail_width` | 76 | a docked icon rail (`NavMode::Docked`, `NavList::rail`) |
+  | `overview_width` | 340 | the overview column |
+  | `detail_min_width` | 360 | narrowest the detail beside an overview may get before they push |
+  | `content_min_width` | 560 | the room the content beside a sidebar needs, a readable column the width of a sheet; narrower, the sidebar becomes a drawer (`compact_breakpoint` 840 − `sidebar_width`) |
+  | `inspector_width` | 300 | the inspector; it floats from the trailing edge when it does not fit |
+  | `nav_row_height` | 32 | a navigation row (`NavList`, `paint_nav_row`) |
+
+  The breakpoints follow from them: the sidebar docks while
+  `sidebar_width + overview_width + detail_min_width` (980) — or
+  `sidebar_width + content_min_width` (840) without an overview — fits, so
+  collapse follows the room the content needs: an 800 × 600 window shows its
+  sidebar as a drawer rather than squeeze a document to 520; the
+  overview and detail stand side by side while `overview_width +
+  detail_min_width` (700) fits. The shell's buttons (sidebar toggle, Back,
+  inspector toggle, the window's History control) are Plain icon buttons of
+  `min_pointer_target` in the `s3` inset.
+  Chat's channel list and conversation form a master/detail composition:
+  its conversation reserves `detail_min_width`, rather than the form-sheet
+  `content_min_width`. With its rail, the initial docked breakpoint is 716.
+  Adaptive sidebar resizing reserves the declared content minimum, so
+  enlarging a docked panel cannot hide its own resize control.
+- **One text-scale rule (`Theme::responsive_scale`).** The shell grows its
+  text-sized widths and breakpoints by `ui_scale × text_scale.max(1.0)`
+  (`Metrics::text_growth`): at 200 % text the panes stop fitting side by side
+  at twice the width, and never shrink below 1×. A rail is sized by icons and
+  follows `ui_scale` alone. The header row and a one-line control (the
+  filter field) grow by `widget::text_control_height(authored, theme)` — the
+  authored height until the body line outgrows it — never by the whole
+  scale. A painted app's `SidebarDrawer` applies the same rule to the widths
+  it authors once the host calls `drawer.scale_for(theme)` from its
+  `build_layout`.
+- **The shell places its children through the host's layout pass.**
+  `NavShell` is a manual layout policy (`MANUAL_LAYOUT.md`): every column,
+  header action, the filter and the shell's buttons are children in the
+  host tree, measured with the host's renderer and placed at the rects the
+  responsive plan gives them, so focus, routing and semantics see the real
+  geometry. A column the shell is not showing (a hidden sidebar, a closed
+  drawer, a screen pushed away) is not in the host tree; behind an open
+  drawer the other columns stay laid out and painted but take no input,
+  and only the parts laid out this frame paint. A slot or header changed
+  while an event is routed takes effect at the next build. A part whose
+  overlay holds the pointer (a popover a header button owns) hears pointer
+  events before the columns.
+- **The header row is one face** (`chrome::HeaderRowFace`): `header_height`;
+  leading chips (toggle, Back) and trailing chips (inspector toggle,
+  History) of `min_pointer_target` in the `s3` inset, `s2` apart; the title
+  at the content gutter (`rhythm.group`) when no chip leads; the rule under
+  content columns. `NavShell` and every painted header row use it.
+- **Every column's header shares the one header row**, and every body starts
+  under it, so the columns' first rows share one top edge.
 
 ### 9.7 Motion
 
@@ -896,35 +1317,124 @@ Selector for scope, not a bespoke dialog per entry point. Specifically:
 
 ### 9.13 Enforcement
 
-Grep a chrome diff for these; each hit is a role you skipped:
+Every look rule that can be seen in source is a **ratchet** in
+`crates/sdk/ui-core/tests/`. A ratchet counts each pattern per production
+file (comments and `#[cfg(test)]` items are skipped) in the toolkit, the shell
+and every app, and the count may only fall. A change that adds a hit fails. A
+change that removes one passes, and the run notes the lower count so the
+baseline can be lowered in that change or a later one. Apps are scanned
+(`apps/*/src`, so a new app is covered the day it lands), and every root must
+yield files or the ratchet fails rather than passing empty.
 
-- `Color::from_rgb8(` / `Color::from_rgba8(` / `Color::rgb8(` / literal hex in a
-  draw path — match **both** constructor spellings, not just the one you happen
-  to have typed lately (see §8: grepping only for `Color::rgb` is how these
-  accumulated under a green check)
-- `Color::WHITE` / `Color::BLACK` — a colour is a colour even when it has a
-  name; the theme has an on-accent ink and a scrim token
-- `surface_white_` / `border_white_` (any suffix) — a declared strength, never
-  measured against its ground (§9.5)
-- `colors.neutral[` in chrome (use `surfaces.*`)
-- `.border_standard` / `.border_strong` / `overlay_border_strong` stroked on a
-  raised or overlay surface — a declared edge (§9.5); ratcheted by
-  `design_token_audit.rs::declared_borders_in_chrome_do_not_grow`
-- a numeric literal passed as a corner radius
-- `Duration::from_millis(` with a literal in an animation
+| Audit (baseline dir) | Scans | Keys | Test |
+|---|---|---|---|
+| `theme` | ui-core `src`, shell `src`, `apps/*/src`; not `theme.rs`, `tokens/`, `presence/render.rs` | `literal_color`, `white_or_black`, `theme_blind_white` | `design_token_audit.rs::theme_escape_hatches_do_not_grow` |
+| `app-paint` | shell `src`, `apps/*/src`; same exemptions | `literal_color_new`, `ramp_slot`, `legacy_alias`, `desktop_ground`, `literal_radius`, `literal_alpha`, `raw_paint`, `glyph_icon`, `transparent_shot` | `design_token_audit.rs::app_and_shell_paint_knobs_do_not_grow` |
+| `chrome-border` | ui-core `src/widget`, `src/chrome`, `surface.rs`, `status_bubble.rs`, shell `src` | `declared_border` | `design_token_audit.rs::declared_borders_in_chrome_do_not_grow` |
+| `spacing` | ui-core `src/widget`, `src/chrome`, shell `src`, `apps/*/src` | `pixel_const`, `taffy_length`, `literal_gap`, `literal_spacer` | `spacing_token_audit.rs::spacing_audit_sees_what_it_polices_and_literals_do_not_grow` |
+| `typography` | ui-core `src/widget`, `src/chrome`, shell `src`, `apps/*/src`; not `tokens/typography.rs`, `text_render*`, `text_metrics.rs` | `literal_font_size`, `legacy_size_api`, `font_size_const`, `type_step_arithmetic`, `raw_type_step`, `renderer_scale_helper` | `typography_token_audit.rs::typography_literals_do_not_grow` |
+| `copy` | `apps/*/src` | `all_caps_label`, `middle_dot_join`, `to_uppercase` | `copy_audit.rs::copy_rules_do_not_grow` |
+
+What each key counts (the test file pins every key against lines that must
+and must not match):
+
+- `literal_color`: `Color::from_rgb8(` / `from_rgba8(` with a literal first
+  argument. Match both constructor spellings (see §8: grepping only for
+  `Color::rgb` is how these accumulated under a green check).
+- `white_or_black`: `Color::WHITE` / `Color::BLACK`. A colour is a colour even
+  when it has a name; the theme has ink and scrim tokens.
+- `theme_blind_white`: `surface_white_*` / `border_white_*`, a declared
+  strength never measured against its ground (§9.5).
+- `literal_color_new`: `Color::new([<literal>, …])`.
+- `ramp_slot`: `.neutral[…]` or `accent[<digit>]`; use the semantic tier.
+- `legacy_alias`: `.bg_app`, `.bg_primary`, `.bg_hover`, `.bg_active`, the
+  removed theme aliases (they no longer compile; the key names them for
+  migration).
+- `desktop_ground`: `surfaces.base` / `surfaces.window_card` outside the
+  desktop. The framework paints the window ground; apps declare regions.
+- `literal_radius`: a numeric literal as a corner radius
+  (`to_rounded_rect(8.0)`, `RoundedRect::from_rect(r, 6.0)`,
+  `fill_round(s, r, 4.0, …)`, `.radius(12.0)`).
+- `literal_alpha`: `with_alpha(0.5)`, `with_alpha_factor(x * 0.4)`,
+  `multiply_alpha(0.6)`: a fractional literal opacity.
+- `raw_paint`: `scene.fill(` / `scene.stroke(`. Chrome is composed from
+  widgets; only genuine content drawing paints, from theme values.
+- `glyph_icon`: a string or char literal containing `✕ × ⟳ ↻ ⌫ ⇅ « » ‹ › ▾ ▸ ▴
+  ◍ ◎ ◷ ⚓ ➤ ⏰` or an emoji (U+1F300–U+1FAFF); use `ui::icons`.
+- `transparent_shot`: `render_png(…TRANSPARENT…)`; shots render on the
+  framework ground, like the live window.
+- `declared_border`: `.border_standard`, `.border_strong`,
+  `overlay_border_strong` or `colors.neutral[` on a chrome surface (§9.5).
+- `pixel_const`: a module-level `const NAME: f32|f64 = <whole number ≥ 1>;`.
+- `taffy_length`: a non-zero literal in taffy's `length(…)`.
+- `literal_gap`: `.with_gap(` / `.with_padding(` / `.with_row_gap(` /
+  `.with_column_gap(` with a literal.
+- `literal_spacer`: `Spacer::fixed(<literal>)`.
+- `literal_font_size`: a literal size passed to `TextStyle::new`,
+  `.with_size`, `.with_scaled_size`, `.with_fixed_size`, `.text_size`,
+  `.with_font_size` or `.set_font_size`.
+- `legacy_size_api`: the pixel-size text calls `.draw_text(`,
+  `.draw_text_weighted(`, `.measure(`, `.measure_weighted(`,
+  `.measure_styled(`, `.elide_to_width(`, `.elide_to_width_weighted(`.
+- `font_size_const`: an `f32` constant whose name contains `FONT`, `TEXT`,
+  `SIZE`, `TITLE`, `LABEL`, `CAPTION` or `HEADING` (`*CONTENT_PX` document
+  sizes excepted).
+- `type_step_arithmetic`: arithmetic on `typography.scale.<step>`.
+- `raw_type_step`: any `typography.scale.` read or `TypeScale::default()`.
+- `renderer_scale_helper`: `renderer_input_style` / `renderer_type_size`.
+- `all_caps_label`: a string literal opening with an upper-case word of three
+  or more letters (not an acronym such as `PDF`, `HTTP`, `GET`) on a line
+  that hands text to a label, title, caption, heading, header, placeholder,
+  tooltip, button, `Text` or a draw/measure/elide call.
+- `middle_dot_join`: a string literal containing ` · ` (an `A · B · C`
+  metadata chain).
+- `to_uppercase`: `.to_uppercase()`.
+
+Hard failures, with no inherited debt, in `crates/sdk/ui-core/src`:
+`cosmic_text::Color::rgb(<literal>…)`, `.to_rounded_rect(<literal>)` and a
+literal shadow `blur:` (`design_token_audit.rs::no_hardcoded_style_literals_in_tree`).
+
+**Baselines are sharded per unit** so app changes never conflict:
+`crates/sdk/ui-core/tests/baselines/<audit>/<unit>.txt`, where the unit is
+`apps-<name>`, `ui-core` or `shell`. Each line is `<path relative to the
+repository root> <key> <count>`. A missing shard allows zero, so a unit that
+reaches zero deletes its shard and is locked at zero from then on.
+
+Updating a shard:
+
+- With cargo (CI, or a checkout with a local toolchain):
+  `UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=apps/mail cargo test -p tilo-ui --test it do_not_grow`
+  rewrites only that unit's shards (`RATCHET_SCOPE` also takes
+  `crates/session/shell`, `crates/sdk/ui-core` or a unit name). Without
+  `RATCHET_SCOPE` every shard is rewritten. An update refuses to raise any
+  count unless `RATCHET_ALLOW_GROWTH=1` is also set; set it only after
+  reviewing why each count grew.
+- With a cargo drop-in that runs tests on a remote host, which neither
+  forwards the environment nor brings a test's writes back:
+  `cargo test -p tilo-ui --test it do_not_grow --success-output immediate`.
+  A ratchet with progress prints the stale entries and the full text each
+  affected shard should now hold (or `delete <path>` when the unit reached
+  zero). Write exactly that.
+
+**Inlining to dodge a ratchet is a defect.** Moving a literal into a local,
+renaming a constant so its name no longer matches, splitting a call over
+lines, or inlining "whole-number sizes at their call sites because this file
+carries no `pixel_const` to spare" (the justification once written above two
+font constants in `apps/git-client/src/app.rs`) hides the debt from the
+ratchet without paying any of it. The fix is the semantic API that removes
+the knob: a `TextRole`, a spacing token, a region, a widget. Never write a
+comment that explains why a value was shaped to avoid a ratchet; a hit that
+is genuinely correct (a document colour, a chart's data ink) stays in the
+shard with its count.
+
+Not automated yet; grep a diff for these:
+
+- an accent of any spelling: there is none; pick the intent (§9.4)
+- `Duration::from_millis(` with a literal in an animation (use
+  `tokens::motion`)
 - a `Command::new` / blocking read reachable from `draw`
 
-One regex covering the colour half, so it can be pasted rather than remembered:
-
-```bash
-git diff -U0 | grep -nE 'Color::(from_)?rgba?8\(|Color::(WHITE|BLACK)|(surface|border)_white_'
-```
-
-The first three are enforced for `crates/sdk/ui-core/src` by
-`crates/sdk/ui-core/tests/design_token_audit.rs::theme_escape_hatches_do_not_grow`, ratcheted
-against `crates/sdk/ui-core/tests/design_token_baseline.txt` so the count can only fall. Apps
-are not scanned yet; until they are, the grep above is what stands between an
-app and a colour the user's theme cannot reach.
+`docs/ui-migration.md` maps each key to the API that replaces it.
 
 ---
 

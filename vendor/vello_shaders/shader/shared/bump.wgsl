@@ -10,6 +10,10 @@ const STAGE_COARSE: u32 = 0x10u;
 // The optional canonical segment-order pass validates generated PTCL before
 // mutating any segment range. Its failure must suppress the following fine pass.
 const STAGE_CANONICAL_SEGMENT_ORDER: u32 = 0x20u;
+// Every counted crossing becomes one segment, allocated by coarse. Counts
+// that fit their buffer can still outnumber the segments buffer when the
+// device's binding limit caps it; coarse reports that before allocating.
+const STAGE_SEGMENTS: u32 = 0x40u;
 
 // This must be kept in sync with the struct in config.rs in the encoding crate.
 struct BumpAllocators {

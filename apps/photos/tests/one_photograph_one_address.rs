@@ -6,7 +6,7 @@
 //! absolute path the local machine had staged it at:
 //!
 //! ```text
-//! photos.image:/run/user/1000/qlva3099960/tilo-opened/623fdbf0….png
+//! photos.photo:/run/user/1000/qlva3099960/tilo-opened/623fdbf0….png
 //! ```
 //!
 //! Each session stages the content it is handed under its *own* runtime
@@ -32,18 +32,37 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
 use automerge::AutoCommit;
 use photos::PhotosApp;
-use photos::actions::{PhotosResources, register};
-use photos::doc::PhotosDoc;
+use photos::model::PhotoLibrary;
+use tilo_actions::ActionRegistry;
+use ui::tilo_resource::Resource as _;
+
+/// A new library's document, started the way a new record is: the
+/// resource's initial state at its current storage version.
+fn new_doc() -> AutoCommit {
+    let mut doc = AutoCommit::new();
+    PhotoLibrary::initialize(&mut doc).expect("a new library initializes");
+    doc
+}
+
+/// The library `doc` holds.
+fn library(doc: &AutoCommit) -> PhotoLibrary {
+    PhotoLibrary::read(doc).expect("the library reads")
+}
+
+/// The library `doc` holds, as it publishes itself.
+fn published(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    vec![ui::tilo_resource::publish::<PhotoLibrary>(
+        "photos.library",
+        "Photos",
+        &library(doc),
+    )]
+}
 use tilo_actions::door::{self, ActionAddress};
-use tilo_actions::{ActionRegistry, ResourceProvider};
 
 /// The bytes of one photograph. Identical in every session below — that is the
 /// premise: one picture, staged more than once.
@@ -52,7 +71,7 @@ fn photograph() -> Vec<u8> {
 }
 
 /// The region a `crop` invocation squares the 900×600 fixture to: the largest
-/// centred square, in the `x,y,w,h` argument `crop` collects.
+/// centred square, as the normalized `x, y, w, h` `crop` collects.
 ///
 /// Stands in for a dedicated "square it" operation — out of this port's
 /// scope, since the one in the source it was ported from existed only for a
@@ -60,7 +79,7 @@ fn photograph() -> Vec<u8> {
 /// depend on *which* operation reshapes the picture, only on the address
 /// reaching a session that did not mint it, so a `crop` with a fixed region
 /// proves the same thing.
-const SQUARE_900X600: &str = "0.166667,0,0.666667,1";
+const SQUARE_900X600: [f64; 4] = [0.166_667, 0.0, 0.666_667, 1.0];
 
 /// One participant's session: its own runtime directory, its own copy of the
 /// bytes on disk, its own document.
@@ -96,13 +115,14 @@ impl Session {
         std::fs::write(&path, bytes).expect("the session stages its own copy");
         let path = path.to_string_lossy().into_owned();
 
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
+        let mut doc = new_doc();
         let content = tilo_content::ContentStore::memory();
-        let mut app = PhotosApp::with_content(content.clone());
-        app.open_path(&mut doc, &path);
+        let dispatch = ui::framework::testing::dispatcher("so.tilo.photos");
+        let mut app = PhotosApp::with_content(content.clone()).with_dispatcher(dispatch.clone());
+        app.open_path(&path);
+        ui::framework::testing::resolve(&dispatch, &mut doc).expect("the photograph imports");
         assert!(
-            PhotosDoc::image(&doc).is_some(),
+            app.open_photo_id().is_some() && library(&doc).photos.len() == 1,
             "the fixture failed to open its own staged photograph, so nothing \
              below proves anything"
         );
@@ -121,15 +141,20 @@ impl Session {
         Self::staging(prefix, &name, bytes)
     }
 
-    /// The address of the open photograph, as this session publishes it.
+    /// The address of the session's photograph, as its library publishes it.
     fn published_id(&self) -> String {
-        let published = PhotosResources.resources(&self.doc);
+        let published = published(&self.doc);
+        let shown: Vec<_> = published[0]
+            .children
+            .iter()
+            .filter(|child| child.kind == photos::actions::PHOTO_KIND)
+            .collect();
         assert_eq!(
-            published.len(),
-            2,
-            "a session with one photograph open publishes its active resource and library"
+            shown.len(),
+            1,
+            "a session with one photograph publishes it once"
         );
-        published[0].id.0.clone()
+        shown[0].id.0.clone()
     }
 
     /// Resolve `address` against **this** session's resource tree and perform
@@ -138,12 +163,21 @@ impl Session {
     fn perform(
         &mut self,
         address: &ActionAddress,
-        argument: Option<&str>,
+        region: [f64; 4],
     ) -> Result<(), door::DoorError> {
-        let resources = PhotosResources.resources(&self.doc);
-        let encoded = door::encode(&resources, address, argument)?;
+        let resources = published(&self.doc);
+        let spec = door::resolve(&resources, address)
+            .ok_or_else(|| door::DoorError::Unknown(address.clone()))?;
+        let [x, y, w, h] = region;
+        let encoded = spec
+            .build_json(
+                serde_json::json!({ "region": { "x": x, "y": y, "w": w, "h": h } })
+                    .as_object()
+                    .expect("an object"),
+            )
+            .map_err(|error| door::DoorError::InvalidArguments(error.to_string()))?;
         let mut registry = ActionRegistry::new();
-        register(&mut registry);
+        PhotoLibrary::register(&mut registry);
         registry
             .decode(&encoded)
             .expect("the app's own registry decodes what its own tree encoded")
@@ -154,8 +188,9 @@ impl Session {
 
     /// The size of the picture as edited — what a person would see change.
     fn edited_size(&self) -> (u32, u32) {
-        let image = PhotosDoc::image(&self.doc).expect("something is open");
-        image.edited_size(&PhotosDoc::edits(&self.doc))
+        let library = library(&self.doc);
+        let photo = library.all_photos().next().unwrap();
+        photo.image.edited_size(&photo.edits)
     }
 }
 
@@ -188,7 +223,7 @@ fn operations_act_on_the_photograph_addressed_by_its_content() {
         // The agent enumerates its own session and squares the picture there.
         let address = ActionAddress::new(agent.published_id(), "crop");
         agent
-            .perform(&address, Some(SQUARE_900X600))
+            .perform(&address, SQUARE_900X600)
             .expect("the agent's own session performs it");
         assert_eq!(
             agent.edited_size(),
@@ -199,7 +234,7 @@ fn operations_act_on_the_photograph_addressed_by_its_content() {
         // The person watching is looking at the *other* session. The same address
         // has to reach the same photograph there.
         watcher
-            .perform(&address, Some(SQUARE_900X600))
+            .perform(&address, SQUARE_900X600)
             .unwrap_or_else(|e| {
                 panic!(
                     "the address the agent acted through — {} — names nothing in \
@@ -219,7 +254,7 @@ fn operations_act_on_the_photograph_addressed_by_its_content() {
         let mut third = Session::handed_the_content("qlvq-", &bytes);
         let from_the_watcher = ActionAddress::new(watcher.published_id(), "crop");
         third
-            .perform(&from_the_watcher, Some(SQUARE_900X600))
+            .perform(&from_the_watcher, SQUARE_900X600)
             .expect("an address minted in the watcher's session reaches the third");
         assert_eq!(third.edited_size(), (600, 600));
     }
@@ -270,13 +305,14 @@ fn operations_act_on_the_photograph_addressed_by_its_content() {
             let id = session.published_id();
             assert_eq!(
                 id,
-                format!("photos.image:{asked_for}"),
+                photos::resource::photo_resource_id(&format!("photos.photo:{asked_for}")),
                 "the session staging into {prefix}… published an address for \
                  where it put the picture rather than for the picture that was \
                  asked for"
             );
+            let photo = photos::resource::photo_of_resource(&id).expect("it names a photograph");
             assert!(
-                !id.contains('/'),
+                !photo.contains('/'),
                 "the published address carries a filesystem path, which is true \
                  on one machine: {id}"
             );
@@ -324,7 +360,8 @@ fn one_content_is_one_openable_address_that_survives_missing_content() {
         let session = Session::handed_the_content("qlva-", &bytes);
         let id = session.published_id();
 
-        let content = photos::actions::content_of(&id)
+        let photo = photos::resource::photo_of_resource(&id).expect("it names a photograph");
+        let content = photos::actions::content_of(&photo)
             .expect("an address for an open photograph names its content");
         let fetched = session
             .content
@@ -335,32 +372,6 @@ fn one_content_is_one_openable_address_that_survives_missing_content() {
             (decoded.w, decoded.h),
             (900, 600),
             "the address resolved to bytes that are not the photograph it names"
-        );
-    }
-
-    // A document written before a photograph had a content hash still publishes
-    // an address, and it is the one it always had.
-    //
-    // Nothing is migrated: the resource tree is a pure function of the document
-    // and is rebuilt every frame, so there are no stored ids to rewrite. A
-    // picture that only has a path is named by it — exactly as good as that ever
-    // was in the one session the path is true of, and better than publishing
-    // nothing.
-    eprintln!("phase a_photograph_that_names_no_content_keeps_the_address_it_had");
-    {
-        let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        let old = photos::OpenImage::from_path("/var/workspace/photos/harbour.png", 800, 600);
-        assert!(
-            old.content.is_none(),
-            "the fixture is not an older document"
-        );
-        PhotosDoc::set_image(&mut doc, Some(&old));
-
-        let published = PhotosResources.resources(&doc);
-        assert_eq!(
-            published[0].id.0, "photos.image:/var/workspace/photos/harbour.png",
-            "an older document's photograph lost the only address it had"
         );
     }
 }

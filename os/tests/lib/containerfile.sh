@@ -93,7 +93,7 @@ containerfile_expanded_rootfs_copy_contract() {
   containerfile_copy_contract "$file" rootfs |
     while IFS=$'\t' read -r stage source destination; do
       case "$stage:$source:$destination" in
-        desktop-binaries:/:/|remote-capture-files:/:/|rollback-files:/:/|recovery-files:/:/|codec-pack-files:/:/)
+        desktop-binaries:/:/|remote-capture-files:/:/|rollback-files:/:/|recovery-files:/:/|extension-files:/:/)
           containerfile_copy_contract "$file" "$stage"
           ;;
         *) printf '%s\t%s\t%s\n' "$stage" "$source" "$destination" ;;

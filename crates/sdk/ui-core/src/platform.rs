@@ -99,6 +99,17 @@ impl Shortcut {
         }
     }
 
+    /// A key pressed on its own, without the command modifier: F3, Delete,
+    /// or a single letter a view answers while it has focus.
+    pub fn key(key: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            command: false,
+            shift: false,
+            alt: false,
+        }
+    }
+
     #[must_use]
     pub fn shift(mut self) -> Self {
         self.shift = true;
@@ -112,8 +123,12 @@ impl Shortcut {
     }
 
     /// The key this shortcut is pressed with, as a keycap legend.
-    pub fn key(&self) -> &str {
+    pub fn key_name(&self) -> &str {
         &self.key
+    }
+
+    pub fn has_command(&self) -> bool {
+        self.command
     }
 
     pub fn has_shift(&self) -> bool {
@@ -163,6 +178,8 @@ pub enum HostShortcut {
     History,
     Undo,
     Redo,
+    /// Show or hide the window's sidebar (`NavShell`), in every app.
+    Sidebar,
 }
 
 impl HostShortcut {
@@ -177,6 +194,7 @@ impl HostShortcut {
             Self::Undo => Shortcut::command("Z"),
             Self::Redo if conventions.platform() == Platform::Windows => Shortcut::command("Y"),
             Self::Redo => Shortcut::command("Z").shift(),
+            Self::Sidebar => Shortcut::command("L").shift(),
         }
     }
 
@@ -190,6 +208,7 @@ impl HostShortcut {
             ("h", true) if !mac => Some(Self::History),
             ("z", false) => Some(Self::Undo),
             ("z", true) | ("y", false) => Some(Self::Redo),
+            ("l", true) => Some(Self::Sidebar),
             _ => None,
         }
     }
@@ -208,10 +227,11 @@ mod tests {
                 HostShortcut::History,
                 HostShortcut::Undo,
                 HostShortcut::Redo,
+                HostShortcut::Sidebar,
             ] {
                 let shortcut = service.shortcut(conventions);
                 assert_eq!(
-                    HostShortcut::resolve(conventions, shortcut.key(), shortcut.has_shift()),
+                    HostShortcut::resolve(conventions, shortcut.key_name(), shortcut.has_shift()),
                     Some(service),
                     "{platform:?} {service:?}"
                 );
@@ -220,6 +240,10 @@ mod tests {
         let mac = PlatformConventions::new(Platform::MacOs);
         let linux = PlatformConventions::new(Platform::Linux);
         assert_eq!(HostShortcut::History.shortcut(mac).label(mac), "⌘Y");
+        assert_eq!(
+            HostShortcut::Sidebar.shortcut(linux).label(linux),
+            "Ctrl+Shift+L"
+        );
         assert_eq!(
             HostShortcut::History.shortcut(linux).label(linux),
             "Ctrl+Shift+H"
@@ -285,5 +309,28 @@ mod tests {
                 DialogActionOrder::PrimaryLast
             );
         }
+    }
+}
+
+impl From<&str> for Shortcut {
+    fn from(label: &str) -> Self {
+        let mut parts = label.split('+').map(str::trim).collect::<Vec<_>>();
+        let key = parts.pop().unwrap_or_default();
+        Self {
+            key: key.to_owned(),
+            command: parts
+                .iter()
+                .any(|part| matches!(*part, "Ctrl" | "Cmd" | "Command" | "⌘")),
+            shift: parts.iter().any(|part| matches!(*part, "Shift" | "⇧")),
+            alt: parts
+                .iter()
+                .any(|part| matches!(*part, "Alt" | "Option" | "⌥")),
+        }
+    }
+}
+
+impl From<String> for Shortcut {
+    fn from(label: String) -> Self {
+        Self::from(label.as_str())
     }
 }

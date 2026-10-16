@@ -40,6 +40,8 @@ use std::path::PathBuf;
 
 #[cfg(feature = "decode")]
 use gstreamer::prelude::*;
+#[cfg(feature = "decode")]
+use tilo_lock::MutexRecover as _;
 
 /// Frames per second of the fixture clip.
 #[cfg(feature = "decode")]
@@ -261,8 +263,7 @@ pub fn fixture_source() -> tilo_media::Source {
 #[cfg(feature = "decode")]
 pub fn registry_policy_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    LOCK.lock_recover()
 }
 
 /// A one-line description of every video decoder the registry offers, for a
@@ -375,13 +376,12 @@ pub fn decode_frame_at(
     target_ms: u64,
     what: &str,
 ) -> tilo_media::Frame {
-    let ok = engine.seek_and_wait(target_ms, tilo_test_env::hang_bound());
-    assert!(
-        ok,
-        "{what}: the pipeline produced no picture for {target_ms}ms. \
-         Decoder: {}",
-        engine.hw_report().describe()
-    );
+    if let Err(error) = engine.seek_and_wait(target_ms, tilo_test_env::hang_bound()) {
+        panic!(
+            "{what}: no picture for {target_ms}ms: {error}. Decoder: {}",
+            engine.hw_report().describe()
+        );
+    }
     engine
         .latest()
         .cloned()

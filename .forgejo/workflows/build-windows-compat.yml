@@ -30,8 +30,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Verify native host and acquisition contract
         run: |
@@ -89,7 +87,7 @@ jobs:
 
       - name: Retain source and acquisition evidence
         if: always()
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: wine-native-inputs-${{ github.sha }}
           path: wine-input-evidence/
@@ -107,14 +105,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Require native x86 host
         run: bash os/dev/assert-native-arch.sh x86_64
 
       - name: Download authenticated source inputs
-        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: wine-native-inputs-${{ github.sha }}
           path: wine-inputs
@@ -134,7 +130,7 @@ jobs:
 
       - name: Retain immutable references and build diagnostics
         if: always()
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: wine-${{ matrix.target }}-${{ github.sha }}
           path: wine-evidence/
@@ -148,13 +144,13 @@ jobs:
       ref: ${{ steps.pair.outputs.ref }}
     steps:
       - name: Download x86-64 artifact reference
-        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: wine-x86_64-${{ github.sha }}
           path: inputs/x86_64
 
       - name: Download i686 artifact reference
-        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: wine-i686-${{ github.sha }}
           path: inputs/i686
@@ -206,7 +202,7 @@ jobs:
           echo "ref=$(cat paired-evidence/image.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Retain paired candidate identity
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: wine-paired-${{ github.sha }}
           path: paired-evidence/
@@ -222,7 +218,6 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           persist-credentials: false
       - name: Validate native packaging inputs
         run: |
@@ -240,7 +235,7 @@ jobs:
         run: python3 os/dev/run-development-windows-guest.py
       - name: Retain public inputs and payload identities
         if: always()
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: development-windows-guest-${{ github.sha }}-${{ github.run_id }}
           path: guest-evidence/
@@ -393,7 +388,7 @@ jobs:
           cosign verify-attestation --key keys/cosign.pub \
             --type slsaprovenance1 "$FEX_PAYLOAD_REF" >/dev/null
           echo "::notice::CI-signed development FEX candidate: $FEX_PAYLOAD_REF"
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always()
         with:
           name: development-fex-payload-${{ github.sha }}-${{ github.run_id }}

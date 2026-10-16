@@ -9,6 +9,92 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[test]
+fn default_admission_activates_a_live_owner_and_retries_after_its_exit() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct Endpoint {
+        active: Arc<AtomicBool>,
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+    impl Drop for Endpoint {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(thread) = self.thread.take() {
+                thread.join().unwrap();
+            }
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let listener = UnixListener::bind(directory.path().join("native.sock")).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let active = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (serving, stopping) = (active.clone(), stop.clone());
+    let endpoint = Endpoint {
+        active,
+        stop,
+        thread: Some(std::thread::spawn(move || {
+            while !stopping.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(1)))
+                            .unwrap();
+                        let mut request = String::new();
+                        BufReader::new(stream.try_clone().unwrap())
+                            .read_line(&mut request)
+                            .unwrap();
+                        let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+                        assert_eq!(
+                            request,
+                            serde_json::json!({"native":"activate", "app_id":"so.tilo.fixture"})
+                        );
+                        writeln!(
+                            stream,
+                            "{}",
+                            serde_json::json!({"activated": serving.load(Ordering::SeqCst)})
+                        )
+                        .unwrap();
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("activation endpoint failed: {error}"),
+                }
+            }
+        })),
+    };
+    let grace = Duration::from_millis(60);
+    let first = super::default_launch_guard(directory.path(), "so.tilo.fixture", grace)
+        .unwrap()
+        .unwrap();
+    endpoint.active.store(true, Ordering::SeqCst);
+    assert!(
+        super::default_launch_guard(directory.path(), "so.tilo.fixture", grace)
+            .unwrap()
+            .is_none(),
+        "a second healthy launch attaches without replacing its owner"
+    );
+    endpoint.active.store(false, Ordering::SeqCst);
+    let refusal =
+        super::default_launch_guard(directory.path(), "so.tilo.fixture", grace).unwrap_err();
+    assert_eq!(refusal.kind(), io::ErrorKind::WouldBlock);
+    assert!(refusal.to_string().contains("owner was retained"));
+    drop(first);
+    // The stale PID left in the lock file never counts as a live owner.
+    let retry = super::default_launch_guard(directory.path(), "so.tilo.fixture", grace)
+        .unwrap()
+        .expect("owner exit releases the kernel lease for a fresh launch");
+    drop(retry);
+    drop(endpoint);
+}
+
 const LIMITS: StartupLimits = StartupLimits {
     stall: Duration::from_millis(300),
     cap: Duration::from_secs(10),
@@ -300,6 +386,56 @@ fn dev_mode_is_an_explicit_daemon_flag() {
     assert!(args(&["--profile", "/tmp/profile", "--daemon", "--dev", "--dev"]).is_err());
 }
 
+/// A client that names a profile chose a standalone runtime itself; one that
+/// names none is routed by its login (`session_door::route`).
+#[test]
+fn standalone_is_the_clients_own_explicit_choice_for_connect() {
+    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+    assert!(args(&["--connect", "--standalone"]).unwrap().standalone);
+    assert!(
+        args(&["--profile", "/tmp/profile", "--connect"])
+            .unwrap()
+            .standalone,
+        "a named profile is a standalone runtime's"
+    );
+    assert!(args(&["--profile", "/tmp/profile", "--daemon", "--standalone"]).is_err());
+    assert!(args(&["--connect", "--standalone", "--standalone"]).is_err());
+}
+
+#[test]
+fn admission_daemon_requires_an_explicit_non_root_owner_and_no_dev_bypass() {
+    let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+    let parsed = args(&["--profile", "/run/admission", "--admission-daemon", "1000"]).unwrap();
+    assert_eq!(parsed.mode, Mode::AdmissionDaemon { owner_uid: 1000 });
+    for invalid in [
+        vec!["--admission-daemon", "1000"],
+        vec!["--profile", "/run/admission", "--admission-daemon"],
+        vec!["--profile", "/run/admission", "--admission-daemon", "0"],
+        vec![
+            "--profile",
+            "/run/admission",
+            "--admission-daemon",
+            "unknown",
+        ],
+        vec![
+            "--profile",
+            "/run/admission",
+            "--admission-daemon",
+            "1000",
+            "--dev",
+        ],
+        vec![
+            "--profile",
+            "/run/admission",
+            "--admission-daemon",
+            "1000",
+            "--daemon",
+        ],
+    ] {
+        assert!(args(&invalid).is_err(), "{invalid:?}");
+    }
+}
+
 /// One page resource with an `open` view action, offered by publisher `7`,
 /// and every invocation the host was asked to run.
 #[derive(Clone, Default)]
@@ -329,6 +465,7 @@ impl tilo_actions::remote::ActionHost for PageHost {
                     presentation: None,
                 },
                 action: Some(tilo_actions::ActionDescriptor {
+                    semantic_identity: None,
                     address: tilo_actions::ActionAddress::new("page:1", "open"),
                     resource_kind: "notes.page".into(),
                     resource_label: "Travel plans".into(),
@@ -415,7 +552,11 @@ fn a_result_another_process_was_handed_opens_through_the_action_host() {
                 let (stream, _) = listener.accept().unwrap();
                 super::serve_connection(
                     stream,
-                    crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into()),
+                    &std::sync::Arc::new(crate::mcp::McpServer::new(
+                        host.clone(),
+                        "room".into(),
+                        "owner".into(),
+                    )),
                     &super::Status {
                         version: 1,
                         pid: 1,
@@ -445,4 +586,83 @@ fn a_result_another_process_was_handed_opens_through_the_action_host() {
     assert!(refused.to_string().contains("NotOffered"), "{refused}");
     assert_eq!(host.invoked.lock().unwrap().len(), 1, "nothing more ran");
     serving.join().unwrap();
+}
+
+/// The daemon's native socket answers one session's MCP requests as they
+/// finish, not in the order asked: a `tilo_status` and a `tilo_cancel`
+/// answer while two invokes of the same connection wait.
+#[test]
+fn native_socket_serves_parallel_requests() {
+    use crate::mcp_http::tests::settle_tests::{GatedHost, overlapping_lines};
+    let host = GatedHost::default();
+    let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
+        std::sync::Arc::new(host.clone()),
+        tilo_actions::remote::Caller::local_person("owner").in_room("room"),
+    ));
+    let (client, served) = std::os::unix::net::UnixStream::pair().unwrap();
+    let serving = {
+        let host = host.clone();
+        std::thread::spawn(move || {
+            super::serve_connection(
+                served,
+                &std::sync::Arc::new(crate::mcp::McpServer::new(
+                    host,
+                    "room".into(),
+                    "owner".into(),
+                )),
+                &super::Status {
+                    version: 1,
+                    pid: 1,
+                    room: "room".into(),
+                },
+                None,
+                &search,
+            )
+        })
+    };
+    overlapping_lines(&host, &client);
+    serving.join().unwrap().unwrap();
+}
+
+/// The `--connect` proxy hands each reply to the client as it arrives, while
+/// the connection stays open: a client that waits for one answer before it
+/// asks the next must not wait for a reply that is sitting in a buffer.
+#[test]
+fn the_proxy_delivers_each_reply_before_the_stream_ends() {
+    /// A writer that records what reached its destination: only flushed bytes.
+    #[derive(Default)]
+    struct Client {
+        pending: Vec<u8>,
+        delivered: Vec<u8>,
+    }
+    impl io::Write for Client {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.pending.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.delivered.append(&mut self.pending);
+            Ok(())
+        }
+    }
+    /// The daemon's side: one reply, then a stream that is still open.
+    struct OpenStream(Vec<Vec<u8>>);
+    impl io::Read for OpenStream {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let Some(chunk) = self.0.pop() else {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, "still open"));
+            };
+            buffer[..chunk.len()].copy_from_slice(&chunk);
+            Ok(chunk.len())
+        }
+    }
+    let mut client = Client::default();
+    let reply = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n".to_vec();
+    let mut daemon = OpenStream(vec![reply[16..].to_vec(), reply[..16].to_vec()]);
+    let still_open = super::relay(&mut daemon, &mut client).unwrap_err();
+    assert_eq!(still_open.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(
+        client.delivered, reply,
+        "the whole reply reached the client while the stream is open"
+    );
 }

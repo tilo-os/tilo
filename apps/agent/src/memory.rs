@@ -1,11 +1,7 @@
 //! What an agent remembers across messages.
 //!
-//! Two sources, one shape. The host hands every task the agent's own durable
-//! history (`EnrolledTaskEnvelope::history`: its earlier requests, the exact
-//! operations each step ran with their outcomes, and its replies), composed
-//! from the Store, so memory survives a crash or a host restart. Within one
-//! process the agent also records each finished task itself, so a host that
-//! predates the history still gets a conversation.
+//! The agent records each finished task of this process: what was asked,
+//! the operations it ran with their outcomes, and what it replied.
 //!
 //! Rendered for the model as plain text after the stable prompt prefix: the
 //! most recent exchanges in full (with each action's argument summary, which
@@ -32,8 +28,6 @@ pub struct Exchange {
     /// Operations left out of `actions`.
     pub more_actions: usize,
     pub reply: String,
-    /// When it was asked (Unix ms), when known.
-    pub at_ms: Option<u64>,
 }
 
 /// The agent's rolling conversation memory.
@@ -42,12 +36,36 @@ pub struct Memory {
     pub(crate) exchanges: VecDeque<Exchange>,
     /// Exchanges older than those kept, known only to exist.
     omitted: usize,
-    /// Workspace members as the host's roster names them, one line each.
-    people: Vec<String>,
+}
+
+/// Most bytes of an action label.
+const MAX_LABEL_BYTES: usize = 120;
+
+/// The longest prefix of `text` within `max` bytes, cut on a character
+/// boundary.
+pub fn head(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.get(..end).unwrap_or_default()
+}
+
+/// An action's label as people read it: the action, then what it acts on.
+pub fn action_label(action_label: &str, resource_label: &str) -> String {
+    let label = if resource_label.is_empty() {
+        action_label.to_owned()
+    } else {
+        format!("{action_label}: {resource_label}")
+    };
+    head(&label, MAX_LABEL_BYTES).to_owned()
 }
 
 fn clip(text: &str, most: usize) -> String {
-    crate::live::head(text.trim(), most).to_owned()
+    head(text.trim(), most).to_owned()
 }
 
 impl Memory {
@@ -63,111 +81,11 @@ impl Memory {
                 .collect(),
             more_actions,
             reply: clip(reply, 1_200),
-            at_ms: None,
         });
         while self.exchanges.len() > MEMORY_EXCHANGES {
             self.exchanges.pop_front();
             self.omitted += 1;
         }
-    }
-
-    /// Replace memory with the host's durable history of this agent (JSON
-    /// `{"v":1,"tasks":[…],"omitted":n}`). A malformed or unknown history
-    /// leaves memory unchanged and returns false.
-    pub fn restore(&mut self, history: &str) -> bool {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(history) else {
-            return false;
-        };
-        if value.get("v").and_then(serde_json::Value::as_u64) != Some(1) {
-            return false;
-        }
-        let Some(tasks) = value.get("tasks").and_then(serde_json::Value::as_array) else {
-            return false;
-        };
-        let text = |value: &serde_json::Value, key: &str| {
-            value
-                .get(key)
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-                .to_owned()
-        };
-        let exchanges = tasks
-            .iter()
-            .map(|task| {
-                let actions = task
-                    .get("steps")
-                    .and_then(serde_json::Value::as_array)
-                    .map(|steps| {
-                        steps
-                            .iter()
-                            .map(|step| {
-                                let mut line = format!("{} ", text(step, "app"));
-                                let record = text(step, "record");
-                                if !record.is_empty() {
-                                    let _ = write!(line, "({record}) ");
-                                }
-                                line.push_str(&text(step, "action"));
-                                let resource = text(step, "resource");
-                                if !resource.is_empty() {
-                                    let _ = write!(line, " on {resource}");
-                                }
-                                let args = text(step, "args");
-                                if !args.is_empty() && args != "{}" {
-                                    let _ = write!(line, " {args}");
-                                }
-                                let _ = write!(line, " → {}", text(step, "outcome"));
-                                clip(&line, 600)
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let outcome = text(task, "outcome");
-                let reply = text(task, "reply");
-                Exchange {
-                    request: clip(&text(task, "request"), 1_200),
-                    actions,
-                    more_actions: task
-                        .get("more_steps")
-                        .and_then(serde_json::Value::as_u64)
-                        .map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX)),
-                    reply: if outcome == "succeeded" || outcome.is_empty() {
-                        clip(&reply, 1_200)
-                    } else {
-                        clip(&format!("({outcome}) {reply}"), 1_200)
-                    },
-                    at_ms: task.get("at_ms").and_then(serde_json::Value::as_u64),
-                }
-            })
-            .collect();
-        self.exchanges = exchanges;
-        self.people = value
-            .get("people")
-            .and_then(serde_json::Value::as_array)
-            .map(|people| {
-                people
-                    .iter()
-                    .take(24)
-                    .filter_map(|person| {
-                        let name = clip(person.get("name")?.as_str()?, 80);
-                        let role = text(person, "role");
-                        let requester = person
-                            .get("requester")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false);
-                        Some(match (role.is_empty(), requester) {
-                            (_, true) => format!("{name} ({role}; the person you work for)"),
-                            (false, false) => format!("{name} ({role})"),
-                            (true, false) => name,
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        self.omitted = value
-            .get("omitted")
-            .and_then(serde_json::Value::as_u64)
-            .map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX));
-        true
     }
 
     /// The memory as the model reads it; empty when there is none. Recent
@@ -186,13 +104,6 @@ impl Memory {
 
     fn render_from(&self, skip: usize) -> String {
         let mut s = String::new();
-        if !self.people.is_empty() {
-            let _ = writeln!(
-                s,
-                "People in this workspace (write @Name to mention someone): {}\n",
-                self.people.join(", ")
-            );
-        }
         let kept: Vec<&Exchange> = self.exchanges.iter().skip(skip).collect();
         if kept.is_empty() {
             return s;
@@ -228,42 +139,11 @@ impl Memory {
         s.push('\n');
         s
     }
-
-    pub fn len(&self) -> usize {
-        self.exchanges.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.exchanges.is_empty()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn history(tasks: usize) -> String {
-        serde_json::json!({
-            "v": 1,
-            "omitted": 2,
-            "tasks": (0..tasks).map(|index| serde_json::json!({
-                "at_ms": 1000 + index,
-                "request": format!("request {index} {}", "r".repeat(700)),
-                "reply": format!("reply {index} {}", "y".repeat(700)),
-                "outcome": "succeeded",
-                "steps": (0..6).map(|step| serde_json::json!({
-                    "app": "so.tilo.word-processor",
-                    "record": "tab:1",
-                    "resource": "word-processor.document",
-                    "action": format!("op-{step}"),
-                    "args": "{\"text\":\"Thunderstorms roll in.\"}",
-                    "outcome": "succeeded"
-                })).collect::<Vec<_>>(),
-                "more_steps": 1
-            })).collect::<Vec<_>>()
-        })
-        .to_string()
-    }
 
     #[test]
     fn memory_is_bounded_and_drops_the_oldest_first() {
@@ -277,44 +157,9 @@ mod tests {
         }
         let rendered = memory.render();
         assert!(rendered.len() <= MEMORY_CHARS, "{}", rendered.len());
-        assert!(memory.len() <= MEMORY_EXCHANGES);
+        assert!(memory.exchanges.len() <= MEMORY_EXCHANGES);
         assert!(rendered.contains("reply 19"));
         assert!(!rendered.contains("reply 0\n"));
         assert!(rendered.contains("older exchange(s) not shown"));
-    }
-
-    /// After a restart the process has nothing in memory; the host's durable
-    /// history restores it, action log included, tiered and capped.
-    #[test]
-    fn host_history_restores_memory_after_a_restart() {
-        let mut memory = Memory::default();
-        assert!(memory.render().is_empty());
-        assert!(memory.restore(&history(12)));
-        let rendered = memory.render();
-        assert!(rendered.len() <= MEMORY_CHARS, "{}", rendered.len());
-        assert!(rendered.contains("request 11"), "the newest is kept");
-        assert!(
-            rendered.contains(
-                "You did: so.tilo.word-processor (tab:1) op-0 on word-processor.document \
-                 {\"text\":\"Thunderstorms roll in.\"} → succeeded"
-            ),
-            "{rendered}"
-        );
-        assert!(rendered.contains("older exchange(s) not shown"));
-        // Recent in full, older summarised.
-        let newest = rendered.find("request 11").unwrap();
-        assert!(rendered[newest..].contains(&"r".repeat(600)));
-        let mut people = Memory::default();
-        assert!(people.restore(
-            r#"{"v":1,"tasks":[],"people":[{"name":"Ada","role":"owner","requester":true},{"name":"Ben","role":"editor"}]}"#
-        ));
-        assert_eq!(
-            people.render(),
-            "People in this workspace (write @Name to mention someone): Ada (owner; the person \
-             you work for), Ben (editor)\n\n"
-        );
-        assert!(!memory.restore("{\"v\":9,\"tasks\":[]}"));
-        assert!(!memory.restore("not json"));
-        assert_eq!(memory.len(), 12, "a bad history leaves memory as it was");
     }
 }

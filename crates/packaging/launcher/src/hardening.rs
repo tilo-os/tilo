@@ -57,6 +57,24 @@ pub const POLICY_PATH_ENV: &str = "TILO_UNTRUSTED_PARSERS_FILE";
 /// compiler-rt sanitizer/toolchain payload it came from.
 pub const TILO_SCUDO_PATH: &str = "/usr/lib/tilo/libclang_rt.scudo_standalone.so";
 
+/// glibc tunables that keep transparent huge pages out of malloc arenas and
+/// thread stacks. Fedora's glibc asks the kernel for them by default, which
+/// makes every thread's 2 MiB arena resident when it first allocates (an idle
+/// compositor held 180 MiB for 34 MiB of live data). The session sets this
+/// for the compositor and its services (`os/usr/libexec/tilo-session`, held to
+/// this value by a test) and every sandboxed app gets it too.
+pub const NO_HUGE_PAGES_TUNABLES: &str = "glibc.malloc.hugetlb=0:glibc.pthread.stack_hugetlb=0";
+
+/// `GLIBC_TUNABLES` for one launch: [`NO_HUGE_PAGES_TUNABLES`], plus the
+/// shadow-stack request when the launch has it.
+pub fn tunables(shadow_stack: bool) -> String {
+    if shadow_stack {
+        format!("glibc.cpu.hwcaps=SHSTK:{NO_HUGE_PAGES_TUNABLES}")
+    } else {
+        NO_HUGE_PAGES_TUNABLES.to_owned()
+    }
+}
+
 /// The extra runtime protections to apply to one launch.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RuntimeHardening {
@@ -158,7 +176,7 @@ fn search_for(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
 
 /// Decide the hardening for a package, reading the image's policy list.
 pub fn for_package(package_id: &str) -> RuntimeHardening {
-    let policy_path = crate::dev_env::dev_override(POLICY_PATH_ENV)
+    let policy_path = package_store::dev_env::dev_override(POLICY_PATH_ENV)
         .map_or_else(|| PathBuf::from(POLICY_PATH), PathBuf::from);
     let high_risk = match std::fs::read_to_string(&policy_path) {
         Ok(list) => policy_matches(&list, package_id),
@@ -178,6 +196,36 @@ pub fn for_package(package_id: &str) -> RuntimeHardening {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_session_starts_the_compositor_and_its_services_without_huge_pages() {
+        let session = include_str!("../../../../os/usr/libexec/tilo-session");
+        assert!(
+            session.contains(&format!(
+                "\nexport GLIBC_TUNABLES={NO_HUGE_PAGES_TUNABLES}\n"
+            )),
+            "the session script must export the launcher's tunables to the compositor"
+        );
+        let imports: Vec<&str> = session
+            .lines()
+            .filter(|line| {
+                line.contains("import-environment") || line.contains("$DBUS_UPDATE\" --systemd XDG")
+            })
+            .collect();
+        assert!(
+            imports.len() == 2 && imports.iter().all(|line| line.contains("GLIBC_TUNABLES")),
+            "the user manager's services must get them too: {imports:?}"
+        );
+    }
+
+    #[test]
+    fn a_launch_carries_the_huge_page_opt_out_beside_shadow_stacks() {
+        assert_eq!(tunables(false), NO_HUGE_PAGES_TUNABLES);
+        assert_eq!(
+            tunables(true),
+            format!("glibc.cpu.hwcaps=SHSTK:{NO_HUGE_PAGES_TUNABLES}")
+        );
+    }
 
     #[test]
     fn hardening_policy_entries_match_ids_and_families() {

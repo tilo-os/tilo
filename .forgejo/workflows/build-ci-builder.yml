@@ -22,8 +22,6 @@ on:
       - "os/dev/builder-canary-inputs.py"
       - "rust-toolchain.toml"
       - "crates/system/advisory-lock/**"
-      - "crates/system/atomic-file/**"
-      - "crates/dev/test-env/**"
       - "crates/workspace-hack/**"
       - "vendor/wayland-backend/**"
       - "tools/ci/check-build-env.sh"
@@ -36,6 +34,7 @@ on:
       - "tools/ci/sccache.sh"
       - "tools/ci/resolve_promoted_builder.py"
       - "tools/ci/verify-native-mold.sh"
+      - "tools/ci/windows/wine-prefix.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/actions/restore-cargo-downloads/**"
       - ".forgejo/workflows/build-ci-builder.yml"
@@ -55,7 +54,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     outputs:
       mode: ${{ steps.plan.outputs.mode }}
       reason: ${{ steps.plan.outputs.reason }}
@@ -64,7 +63,6 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Choose native build or promoted-builder qualification
         id: plan
         env:
@@ -74,7 +72,7 @@ jobs:
   signing-preflight:
     needs: plan
     if: needs.plan.outputs.mode == 'build'
-    runs-on: runner
+    runs-on: runner-quality
     timeout-minutes: 5
     enable-openid-connect: true
     steps:
@@ -117,8 +115,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Require a native build host
         run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
@@ -228,7 +224,7 @@ jobs:
           }))
           PY
       - name: Upload the native child descriptor
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: builder-native-${{ matrix.arch }}-${{ github.run_attempt }}
           path: native-child/
@@ -251,7 +247,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - if: needs.plan.outputs.mode == 'build'
-        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: native-candidates
       - name: Resolve exact successful native producer attempts
@@ -305,16 +301,16 @@ jobs:
     container:
       image: ${{ matrix.image }}
     env:
-      CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: /tmp/tilo-sccache-canary-target
       SCCACHE_IGNORE_SERVER_IO_ERROR: "0"
+      # The canary measures the cache, so a cache that will not start fails
+      # here (after bounded retries and a debug start log), never silently.
+      TILO_SCCACHE_REQUIRED: "1"
       CANDIDATE_ARCH: ${{ matrix.arch }}
       CANDIDATE_IMAGE: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Restore Cargo downloads
         id: cargo-cache
         uses: ./.forgejo/actions/restore-cargo-downloads
@@ -328,20 +324,17 @@ jobs:
         run: |
           test -n "${RUSTC_WRAPPER:-}"
           bash tools/ci/measure.sh "sccache cold canary" -- \
-            cargo build -p tilo-atomic-file --locked
+            cargo build -p tilo-advisory-lock --locked
           bash tools/ci/sccache-canary.sh cold
       - name: Save Cargo downloads
         if: steps.cargo-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+          path: ${{ steps.cargo-cache.outputs.paths }}
+          key: ${{ steps.cargo-cache.outputs.cache-key }}
       - name: Retain only successful cold acceptance
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: builder-cache-cold-${{ matrix.arch }}-${{ github.run_attempt }}
           path: cold-receipt/
@@ -357,19 +350,19 @@ jobs:
     container:
       image: ${{ matrix.image }}
     env:
-      CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: /tmp/tilo-sccache-canary-target
       SCCACHE_IGNORE_SERVER_IO_ERROR: "0"
+      # The canary measures the cache, so a cache that will not start fails
+      # here (after bounded retries and a debug start log), never silently.
+      TILO_SCCACHE_REQUIRED: "1"
       CANDIDATE_ARCH: ${{ matrix.arch }}
       CANDIDATE_IMAGE: ${{ matrix.image }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Restore Cargo downloads
         uses: ./.forgejo/actions/restore-cargo-downloads
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: cold-receipts
       - name: Select the exact successful cold namespace
@@ -382,10 +375,10 @@ jobs:
         run: |
           test -n "${RUSTC_WRAPPER:-}"
           bash tools/ci/measure.sh "sccache warm canary" -- \
-            cargo build -p tilo-atomic-file --locked
+            cargo build -p tilo-advisory-lock --locked
           bash tools/ci/sccache-canary.sh warm
       - name: Retain only successful warm acceptance
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: builder-cache-warm-${{ matrix.arch }}-${{ github.run_attempt }}
           path: warm-receipt/
@@ -405,7 +398,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: acceptance-receipts
       - name: Verify the exact native identities used by both canaries
@@ -480,7 +473,7 @@ jobs:
             --signing-key "$COSIGN_KEY_REF" --output builder-index.txt
           cat builder-index.txt >> "$GITHUB_STEP_SUMMARY"
       - name: Retain the immutable builder reference
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: builder-index-${{ github.sha }}
           path: builder-index.txt

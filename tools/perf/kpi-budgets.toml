@@ -1,0 +1,2114 @@
+# Budgets and comparison settings per KPI, read by tools/perf/compare.py.
+#
+# [defaults] are the KPIs' regression rule: fail on
+# a p50 more than 10 % or a p99 more than 20 % above the median of the last
+# five comparable runs, sustained over two runs.
+#
+# [kpi."<id>"] entries:
+#   unit                     the record's unit; a mismatch fails
+#   p50, p95, p99, max       ceilings on that percentile of the record
+#   enforce                  true: a ceiling miss fails the run at once;
+#                            false (default): it is reported as a target not
+#                            yet met (marketing targets that are not true yet)
+#   p50_tolerance, p99_tolerance, baseline_runs, baseline_min_runs, min_delta
+#                            override [defaults]; min_delta is the absolute
+#                            change (in the unit) below which a ratio never
+#                            counts as a regression; baseline_min_runs is how
+#                            many stored runs a baseline needs before a run is
+#                            compared with it (an accepted run counts at once)
+#   source                   where the number comes from
+#
+# A budgeted KPI whose group ran but produced no record fails the run as
+# `missing`, so list every KPI a benchmark is expected to report.
+#
+# [lanes.<workflow>] say which workflow produces which KPIs, so a run is owed
+# only its own: compare.py --lane names the run's workflow. `groups` are the
+# KPI id prefixes the workflow produces, each in exactly one lane; `kpis`
+# claims single KPIs whose prefix is another lane's group. Every budgeted KPI
+# needs exactly one lane, or the budgets do not load; tools/perf/test_compare.py
+# holds each workflow's selectable groups equal to its lane.
+
+[defaults]
+p50_tolerance = 1.10
+p99_tolerance = 1.20
+baseline_runs = 5
+baseline_min_runs = 1
+min_delta = 0.0
+
+# Perf / scheduled (.forgejo/workflows/perf-scheduled.yml): one job per group,
+# selected by its `kpis` input; its `compare` job runs with the default lane.
+[lanes.perf-scheduled]
+groups = ["fs", "footprint", "agent", "latency", "render", "wakeups", "search", "hosting", "browser", "stream"]
+
+# Dev / VM acceptance (.forgejo/workflows/vm-acceptance.yml): the installed
+# desktop in a KVM guest. Its R04 measures compositor CPU per painted frame on
+# that desktop, a render KPI the headless render benches cannot produce.
+[lanes.vm-acceptance]
+groups = ["boot", "session", "idle", "memory", "disk", "app"]
+kpis = ["render.frame_cpu_ms"]
+
+# The reference machines' weekly run (scripts/perf/device_latency_bench.py,
+# docs/benchmarks/reference-hardware.md), compared read-only.
+[lanes.reference-hardware]
+groups = ["hw"]
+
+# tilo-fs performance gate (crates/system/fs/tests/performance_gate.rs), a
+# debug build on the shared `runner` class. The ceilings are the gate's own
+# SLO constants (tools/perf/test_adapters.py keeps them equal): twice the p99
+# of 56 CI runs, derived beside the constants; change both together.
+# Tolerances are wider than the default because single runs
+# of this gate on the shared runner have spread up to 1.8x between nights
+# (KPI inventory: run 85201 against the maximum of eight runs); five
+# repetitions per night and a two-run rule absorb the rest.
+
+[kpi."fs.metadata-cold-open-and-1000-list"]
+unit = "ms"
+max = 360.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "COLD_METADATA_SLO"
+
+[kpi."fs.metadata-warm-8x-1000-list"]
+unit = "ms"
+max = 470.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "WARM_DIRECTORY_SLO"
+
+[kpi."fs.local-chunked-64x256k-ranged-read"]
+unit = "ms"
+max = 400.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "RANGED_READ_SLO"
+
+[kpi."fs.mount-64x256k-ranged-read-under-remote-apply"]
+unit = "ms"
+max = 680.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "REMOTE_APPLY_RANGED_READ_SLO"
+
+[kpi."fs.thumbnail-cold-decode-scale-encode-cache"]
+unit = "ms"
+max = 550.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "COLD_THUMBNAIL_SLO"
+
+[kpi."fs.thumbnail-warm-1000-cache-lookups"]
+unit = "ms"
+max = 12.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "WARM_THUMBNAIL_SLO"
+
+# One idle anti-entropy pass between two in-sync writers over a 50,000-change
+# namespace: independent of history, since a pass resumes from the
+# heads the last one agreed on.
+[kpi."fs.idle-namespace-pass-resumed-50k"]
+unit = "ms"
+max = 5.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "IDLE_SYNC_SLO"
+
+# A device's first exchange with a peer after a restart over a 50,000-file
+# namespace: resumed from the sync progress persisted beside the
+# document, so heads only; the gate also asserts the bytes.
+[kpi."fs.restart-resync-50k-files"]
+unit = "ms"
+max = 5.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "RESTART_RESYNC_SLO"
+
+# The conflict step of a writer's reconciliation pass over a 50,000-file
+# workspace. Idle: the namespace merge generation under one lock hold,
+# no node examined (the gate also asserts that count). After a merge: the
+# namespace lock holds of the stepwise scan, one step of
+# fs::conflict::SCAN_STEP_NODES nodes each at any workspace size. The mean
+# hold is the steady gate; the longest only bounds a stall, since one
+# step on the shared runner held 50-77 ms against a 3.3 ms mean.
+[kpi."fs.conflict-idle-pass-50k"]
+unit = "ms"
+max = 5.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "IDLE_CONFLICT_SLO"
+
+[kpi."fs.conflict-scan-mean-lock-hold-50k"]
+unit = "ms"
+max = 10.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "CONFLICT_SCAN_MEAN_HOLD_SLO"
+
+[kpi."fs.conflict-scan-longest-lock-hold-50k"]
+unit = "ms"
+max = 200.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "CONFLICT_SCAN_LONGEST_HOLD_SLO"
+
+# Document media after a daemon restart: the empty-range status read an
+# app's draw path makes, and one 4 MiB range near the end of a 64 MiB
+# attachment (the capability's limit). Each verifies only the chunk groups it
+# returns; loading the attachment whole instead takes the gate's reported
+# document-media-whole-blob-load-64m (464.5 ms on the first CI run).
+# Both latency ceilings are provisional until CI runs give a p99, derived
+# beside their constants. The tail read must also stay within one eighth of
+# the whole load in the same run. tests/document_media_footprint.rs gates the
+# daemon heap of the same reads.
+[kpi."fs.document-media-cold-64m-status"]
+unit = "ms"
+max = 5.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "MEDIA_STATUS_SLO"
+
+[kpi."fs.document-media-cold-64m-tail-4m-read"]
+unit = "ms"
+max = 40.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "MEDIA_TAIL_READ_SLO"
+
+# fs daemon heap (tests/document_media_footprint.rs, which asserts the same
+# ceilings on every run): what storing a 64 MiB attachment leaves behind,
+# the peak of uploading one over the app capability (the app's client
+# included), and what many large loose-blob reads leave behind. Before the
+# blob cache was bounded by bytes and uploads streamed: 64 MiB left behind,
+# a peak past 64 MiB, and every blob read kept.
+[kpi."fs.document-media-store-64m-retained-heap"]
+unit = "MiB"
+max = 0.25
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "STORE_RETAINED_HEAP_SLO"
+
+[kpi."fs.document-media-upload-64m-peak-heap"]
+unit = "MiB"
+max = 16.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "UPLOAD_PEAK_HEAP_SLO"
+
+[kpi."fs.blob-cache-large-reads-retained-heap"]
+unit = "MiB"
+max = 33.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "CACHE_RETAINED_HEAP_SLO"
+
+# App package size: bytes of the newest signed tapp per app in the public
+# registry index, over the apps of tools/perf/tapp-size-budget/ (the default
+# collection; runtime and provider stubs and withdrawn packages are not apps).
+# The KPI targets (median <= 2 MB, max <= 6 MB, decimal
+# megabytes) are reported here. The enforced gate is the same job's
+# tools/perf/tapp_size_ratchet.py fleet: each app within its budget, and the
+# median, p90 and max within the fleet ceilings beside those budgets.
+# The default relative rule also fails sustained growth.
+
+[kpi."footprint.tapp.bytes.x86_64"]
+unit = "bytes"
+p50 = 2000000.0
+max = 6000000.0
+source = "KPI: App package size"
+
+[kpi."footprint.tapp.bytes.aarch64"]
+unit = "bytes"
+p50 = 2000000.0
+max = 6000000.0
+source = "KPI: App package size"
+
+# The shared app runtime, libruntime_dylib.so: the newest published one per
+# architecture, measured from its ELF file by tools/perf/runtime_size_ratchet.py
+# published. The targets (tools/perf/runtime-size-budget/ [targets])
+# are reported here; the enforced gate is that command's per-architecture
+# budget, and the default relative rule fails sustained growth.
+
+[kpi."footprint.runtime.bytes.x86_64"]
+unit = "bytes"
+max = 150000000.0
+source = "#4000: shared runtime budget targets"
+
+[kpi."footprint.runtime.relocation_bytes.x86_64"]
+unit = "bytes"
+max = 1000000.0
+source = "#4000: shared runtime budget targets"
+
+[kpi."footprint.runtime.relocated_bytes.x86_64"]
+unit = "bytes"
+max = 4000000.0
+source = "#4000: shared runtime budget targets"
+
+[kpi."footprint.runtime.symbol_relocations.x86_64"]
+unit = "count"
+max = 5000.0
+source = "#4000: shared runtime budget targets"
+
+[kpi."footprint.runtime.bytes.aarch64"]
+unit = "bytes"
+max = 150000000.0
+source = "#4000: shared runtime budget targets"
+
+[kpi."footprint.runtime.relocation_bytes.aarch64"]
+unit = "bytes"
+max = 1000000.0
+source = "#4000: shared runtime budget targets"
+
+[kpi."footprint.runtime.relocated_bytes.aarch64"]
+unit = "bytes"
+max = 4000000.0
+source = "#4000: shared runtime budget targets"
+
+[kpi."footprint.runtime.symbol_relocations.aarch64"]
+unit = "count"
+max = 5000.0
+source = "#4000: shared runtime budget targets"
+
+# OS image size: main's newest production-layout image (the tilo-ci
+# base tilo-vm:main-ci names), measured by tools/perf/image_size.py in the
+# footprint group. One sample per night: compressed layer bytes (a full pull)
+# and unique content (what composefs stores after install; /sysroot, which
+# bootc does not deploy, is left out). Byte counts are deterministic, so one
+# stored run is a baseline, and growth of more than 5 % over the baseline
+# fails on the second night running; an intended growth is accepted by
+# dispatch (`accept`). The ceilings are enforced, set at 5 % over the image
+# #4003 measured (docs/benchmarks/os-image-size-2026-10-09.md) and lowered by
+# what each later change saved (#4055, #4064, #4072: docs/benchmarks/os-image-size-2026-10-10.md;
+# #4190, content-based layers: docs/benchmarks/os-image-size-2026-10-10-rechunk.md),
+# so creep below the nightly rule fails too. They may only be lowered, except
+# by a change that says why. The KPI targets, 3.5 GB compressed and 7 GB of content for x86_64,
+# are not met yet: Windows compatibility is most of the gap.
+# footprint.image.redundant_payload_bytes.<arch> (bytes shipped more than
+# once) is recorded beside them, under the relative rule only.
+
+[kpi."footprint.image.compressed_bytes.x86_64"]
+unit = "bytes"
+max = 4520000000.0
+enforce = true
+p50_tolerance = 1.05
+p99_tolerance = 1.05
+source = "#4003: 5,168,289,107 B with the font and botocore fixes, plus 5 %; #4055: -366,607,328 B (one package layer, no second initramfs); #4064: -40,963,819 B (identical files hard-linked); #4072: -44,785,493 B (env-runtime from host files); #4190: -456,868,541 B (content-based layers); KPI target 3.5 GB"
+
+[kpi."footprint.image.unique_content_bytes.x86_64"]
+unit = "bytes"
+max = 11356000000.0
+enforce = true
+p50_tolerance = 1.05
+p99_tolerance = 1.05
+source = "#4003: 10,909,686,891 B with the font and botocore fixes, plus 5 %; #4055: -103,299,459 B; KPI target 7 GB"
+
+[kpi."footprint.image.compressed_bytes.aarch64"]
+unit = "bytes"
+max = 3727000000.0
+enforce = true
+p50_tolerance = 1.05
+p99_tolerance = 1.05
+source = "#4003: 4,304,306,967 B on db91126b44, plus 5 %; #4055: -363,422,293 B; #4190: -428,950,281 B (content-based layers)"
+
+[kpi."footprint.image.unique_content_bytes.aarch64"]
+unit = "bytes"
+max = 9446000000.0
+enforce = true
+p50_tolerance = 1.05
+p99_tolerance = 1.05
+source = "#4003: 9,067,894,573 B on db91126b44, plus 5 %; #4055: -83,213,633 B"
+
+# OS update size: what a device on main's previous build downloads to reach
+# the newest (image_size.py --update-from-previous: the layers the newest
+# image has and the image of the newest earlier first-parent commit lacks).
+# How much changed between two builds varies with the commits between them,
+# so the rule is a ceiling, with a wide relative tolerance that still fails
+# when updates stay several times larger: before content-based layers an update
+# re-sent 3.7 GB; a per-build app key re-sent 215 MB of identical apps; the
+# release lane's commit-time epoch renewed the 116 MB UKI and the rpmdb in
+# every build. Consecutive rechunked main builds on 10-10 and 10-11 sent
+# 420-830 MB (x86_64) and 420-820 MB (aarch64), before the runtimes and Tilo's
+# programs got layers of their own.
+
+[kpi."footprint.image.update_bytes.x86_64"]
+unit = "bytes"
+max = 900000000.0
+enforce = true
+p50_tolerance = 3.0
+p99_tolerance = 3.0
+min_delta = 100000000.0
+source = "consecutive rechunked main builds 421,875,787-828,748,091 B before the runtime and Tilo trees"
+
+[kpi."footprint.image.update_bytes.aarch64"]
+unit = "bytes"
+max = 900000000.0
+enforce = true
+p50_tolerance = 3.0
+p99_tolerance = 3.0
+min_delta = 100000000.0
+source = "consecutive rechunked main builds 418,858,093-819,840,811 B before the runtime and Tilo trees"
+
+# Agent round trip (scripts/perf/agent_rtt.py): one headless compositor on
+# the shared `runner` class, a release build with `dev-overrides` and thin
+# LTO, timed from the client's side of the control socket. Targets from the
+# KPIs ("actions invoke round trip, local", "MCP tool call");
+# reported, not enforced, until three nightly records exist.
+#
+# Tolerances are measured. Two runs of the same code, 35 minutes apart on
+# `runner` (Perf / scheduled 87525 and 87819), spread by p50 x1.12 (no-op)
+# to x1.89 (state dump, +0.26 ms) and x1.75 (throughput), and by p99 up to
+# x1.85. The default 10 %/20 % rule would call that a regression most
+# nights, so the group takes the fs gate's 1.5/2.0 and an absolute floor
+# above the observed jitter. A 5 ms authorize cost (run 87820, the #3586
+# shape) still moves the no-op p50 from 0.54-0.61 ms to 7.26 ms, the list
+# p50 from 1.9-2.6 ms to 8.9 ms and throughput from 328-575 us to 6,757 us
+# per call: far past both.
+
+[kpi."agent.list.local"]
+unit = "ms"
+p99 = 10.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "KPI: actions list p99 <= 10 ms"
+
+# No KPI names a state-dump target; it is held to the list's.
+[kpi."agent.state_dump.local"]
+unit = "ms"
+p99 = 10.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+source = "provisional: the actions list target"
+
+[kpi."agent.invoke.local.noop.accept"]
+unit = "ms"
+p50 = 1.0
+p99 = 5.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+source = "KPI: no-op invoke p50 <= 1 ms, p99 <= 5 ms"
+
+[kpi."agent.invoke.local.noop"]
+unit = "ms"
+p50 = 1.0
+p99 = 5.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+source = "KPI: no-op invoke p50 <= 1 ms, p99 <= 5 ms"
+
+# Microseconds per completed no-op with eight clients at once, one sample
+# per second. A desktop that answers one client in 1 ms must at least keep
+# that rate under load.
+[kpi."agent.invoke.local.throughput"]
+unit = "us"
+p50 = 1000.0
+p50_tolerance = 2.0
+p99_tolerance = 2.5
+min_delta = 300.0
+source = "provisional: derived from the no-op p50 target"
+
+[kpi."agent.invoke.mcp.noop"]
+unit = "ms"
+p50 = 3.0
+p99 = 7.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+source = "KPI: MCP tool call <= local invoke + 2 ms"
+
+# Pipelined invokes (apps/agent `pipelined_task_benchmark`, a release test
+# on `runner`): the agent's own task loop with a scripted model and a broker
+# whose applications take 100 ms per step, one turn of three steps on three
+# records, timed for the whole task. `pipelined` is the plan as the model
+# marks it (independent steps run alongside each other), `sequential` the
+# same plan unmarked (each step waits for the one before to settle). The
+# floor is one step's 100 ms when pipelined and three steps' 300 ms in
+# order; the pipelined ceiling allows the loop 50 ms of its own on top of
+# one step. Reported, not enforced, until three nightly records exist.
+[kpi."agent.task.pipelined.wall"]
+unit = "ms"
+p50 = 150.0
+p99 = 200.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "floor: one 100 ms step, plus 50 ms of the agent loop's own"
+
+[kpi."agent.task.sequential.wall"]
+unit = "ms"
+p50 = 400.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "the same plan in order, for comparison: three 100 ms steps, plus the loop's own"
+
+# Native task steps (apps/agent `native_task_benchmark`, a release test on
+# `runner`): the same three-step plan as a native workspace task, whose steps
+# are children the agent follows by re-asks the broker holds until a child
+# moves on. Before held re-asks the agent re-asked every 50 ms: a focused
+# debug run measured 456 ms for the plan in order and in parallel alike (152
+# ms per 100 ms step) and 3.3 idle host round trips per step; with them, 307
+# ms in order, 105 ms pipelined and 1.7 idle round trips per step. `idle` is
+# the host round trips per step that brought no news while a step ran (the
+# plan in order). Reported, not enforced, until three nightly records exist.
+[kpi."agent.task.native.pipelined.wall"]
+unit = "ms"
+p50 = 150.0
+p99 = 200.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "floor: one 100 ms step, plus 50 ms of the agent loop's own"
+
+[kpi."agent.task.native.sequential.wall"]
+unit = "ms"
+p50 = 360.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "three 100 ms steps in order, each noticed one round trip after it settles"
+
+[kpi."agent.task.native.idle_round_trips"]
+unit = "count"
+p50 = 2.5
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+source = "per step: the held re-ask answers with news; only cancellation polls come back empty"
+
+# Latency, compositor side (scripts/perf/latency_bench.py): a headless dev
+# build on the shared `runner` class, input through the control socket,
+# lavapipe. The ceilings are the KPIs' 60 Hz targets ("Input→photon
+# latency": p50 <= 1 refresh + 8 ms, p99 <= 2 refreshes + 8 ms; "Workspace
+# switch": first frame <= 1 refresh, no dropped frame, <= 300 ms in all).
+# This lane has no panel, so they are reported, never enforced; the relative
+# rule catches regressions of the compositor's own work. A dropped-frame count
+# whose baseline is zero has no ratio, so one frame either way is not a change.
+# Timing KPIs need three stored runs before comparison: pointer p99 has ranged
+# from 7 to 13 ms between nights on identical code. Dropped frames
+# keep the one-run comparison: with a three-run minimum, elevated `new` runs
+# enter the baseline and can hide sustained growth from zero. Its two-run
+# regression rule still distinguishes a single noisy night.
+
+[kpi."latency.input_to_frame.pointer"]
+unit = "ms"
+p50 = 24.7
+p99 = 41.3
+baseline_min_runs = 3
+source = "KPI: Input→photon latency (compositor side, headless)"
+
+[kpi."latency.workspace_switch.first_frame"]
+unit = "ms"
+p99 = 16.7
+baseline_min_runs = 3
+source = "KPI: Workspace switch, first frame (compositor side, headless)"
+
+[kpi."latency.workspace_switch.settled"]
+unit = "ms"
+max = 300.0
+baseline_min_runs = 3
+source = "KPI: Workspace switch, total (compositor side, headless)"
+
+[kpi."latency.workspace_switch.dropped_frames"]
+unit = "count"
+max = 0.0
+min_delta = 1.0
+baseline_min_runs = 1
+source = "KPI: Workspace switch, dropped frames (compositor side, headless)"
+
+# Idle wakeups (crates/session/shell/examples/idle-wakeups.rs, #3973): a
+# headless dev build on the shared `runner` class with a signed-in desktop,
+# a restored Notes tab and a Terminal, left alone and sampled from /proc over
+# 60 s; context switches per second of every thread of the compositor's
+# process tree, of the compositor process alone, and its frame loop's
+# iterations. The installed desktop's counterpart is Dev / VM acceptance's
+# `idle.*`. The ceilings are the KPI target (an idle desktop <= 5
+# wakeups/s); reported, not enforced: the pull-request gate's budgets fail a
+# regression, and are lowered there as each idle fix lands.
+#
+# A count of timers moves little with the runner, so the default tolerances
+# hold (#3986 removed the frame-loop spin that once made these bimodal,
+# docs/benchmarks/idle-wakeups-2026-10-09.md). The floor keeps a single
+# extra timer tick from reading as a percentage regression.
+
+[kpi."wakeups.headless_two_apps"]
+unit = "per_s"
+max = 5.0
+min_delta = 1.0
+source = "KPI: idle desktop <= 5 wakeups/s (headless share)"
+
+[kpi."wakeups.headless_two_apps.shell"]
+unit = "per_s"
+max = 5.0
+min_delta = 1.0
+source = "KPI: idle desktop <= 5 wakeups/s (compositor process)"
+
+# The compositor's frame loop parks while nothing asks for a frame, so an
+# idle loop iterates about never; any rate here is a deadline or a source
+# that keeps it awake. Its baseline is 0 while parked, which has no ratio;
+# the floor is one iteration a second.
+[kpi."wakeups.frame_loop_ticks.headless_two_apps"]
+unit = "per_s"
+max = 1.0
+min_delta = 1.0
+source = "the frame loop parks while idle"
+
+# Files search's name index under file changes (the shell unit test
+# a_watched_change_costs_one_record_not_a_rebuild, through adapters.py
+# files-name-index): process CPU in a debug lib-test build on the shared
+# `runner` class, with an index of 50,000 names (the walk's MAX_ENTRIES).
+# A watched change upserts or removes its own records and commits
+# incrementally; before, every change rebuilt the whole index, which
+# `rebuild_cpu_ms` still measures (a walk or rescan builds it so).
+# Measured in two Dev / focused test runs of the test at 50,000 names
+# (Oct 2026, 14 change samples): change 8.6-34.4 ms, unchanged 0.02-0.26 ms,
+# rename 10.1-36.0 ms, 64-file burst 19.9-28.7 ms, whole build 4,053-4,544 ms.
+# Enforced ceilings are about twice the measured maximum, as the tilo-fs
+# gate's are; a regression to whole rebuilds lands two orders above them.
+# The build's ceiling is twice its maximum too, reported only.
+# Since each index keeps one writer and builds a commit's segment to its
+# batch's size (tilo-search), Perf / scheduled mode ab, 8 rounds on one
+# runner against the writer-per-commit base (Oct 2026): change 4.8-19.2 ms
+# (the first change of a run opens the writer; 4.8-7.5 ms after it; base
+# 9.7-131.8 ms), rename 5.8-14.7 ms, burst 17.0-35.7 ms, unchanged
+# 0.02-0.31 ms. Change and rename ceilings tightened to about twice that
+# maximum; the burst (60 ms) and unchanged (1 ms) ceilings already sit
+# below twice theirs.
+
+[kpi."search.files_name_index.change_cpu_ms.50k"]
+unit = "ms"
+max = 40.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "one watched new file, 50,000 names"
+
+[kpi."search.files_name_index.unchanged_cpu_ms.50k"]
+unit = "ms"
+max = 1.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+source = "one watched file growing within its recency band, 50,000 names"
+
+[kpi."search.files_name_index.rename_cpu_ms.50k"]
+unit = "ms"
+max = 30.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+source = "one watched rename (two paths), 50,000 names"
+
+[kpi."search.files_name_index.burst64_cpu_ms.50k"]
+unit = "ms"
+max = 60.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 5.0
+source = "a watched folder of 64 new files in one batch, 50,000 names"
+
+[kpi."search.files_name_index.rebuild_cpu_ms.50k"]
+unit = "ms"
+max = 9100.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 50.0
+source = "a whole-index build of 50,000 names: a walk or rescan, and what every change cost before"
+
+# Latency on reference hardware (scripts/perf/device_latency_bench.py,
+# docs/benchmarks/reference-hardware.md): kernel input event to KMS
+# presentation, per refresh rate. Weekly and report-only; never run by the
+# nightly workflow, so never missing from it.
+
+[kpi."hw.key_to_present.notes.60hz"]
+unit = "ms"
+p50 = 24.7
+p99 = 41.3
+source = "KPI: Input→photon latency at 60 Hz (to KMS presentation)"
+
+[kpi."hw.key_to_present.notes.144hz"]
+unit = "ms"
+p50 = 14.9
+p99 = 21.9
+source = "KPI: Input→photon latency at 144 Hz (to KMS presentation)"
+
+[kpi."hw.workspace_switch.first_frame.60hz"]
+unit = "ms"
+p99 = 16.7
+source = "KPI: Workspace switch, first frame at 60 Hz"
+
+[kpi."hw.workspace_switch.first_frame.144hz"]
+unit = "ms"
+p99 = 6.9
+source = "KPI: Workspace switch, first frame at 144 Hz"
+
+[kpi."hw.workspace_switch.settled.60hz"]
+unit = "ms"
+max = 300.0
+source = "KPI: Workspace switch, total at 60 Hz"
+
+[kpi."hw.workspace_switch.settled.144hz"]
+unit = "ms"
+max = 300.0
+source = "KPI: Workspace switch, total at 144 Hz"
+
+[kpi."hw.workspace_switch.dropped_frames.60hz"]
+unit = "count"
+max = 0.0
+min_delta = 1.0
+source = "KPI: Workspace switch, dropped frames at 60 Hz"
+
+[kpi."hw.workspace_switch.dropped_frames.144hz"]
+unit = "count"
+max = 0.0
+min_delta = 1.0
+source = "KPI: Workspace switch, dropped frames at 144 Hz"
+
+# Render frame time at native 4K (scripts/perf/render_bench.py timing): the
+# toolkit's dashboard harness (redrawing frames of 1,000 events) and the
+# shell's redraw_bench (1,000 clicks through FrameBuilder, the DRM bridge's
+# render, readback and XRGB swizzle). Both drive damage-limited frames, so the
+# ceiling is the KPI's damage-limited target. This lane renders with
+# lavapipe on the shared `runner` class: the CPU rasterises, so the ceiling is
+# reported, never enforced, and the relative rule catches regressions.
+# Tolerances follow the agent group's until this group has measured its own.
+
+[kpi."render.ui.frame_us.4k"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+[kpi."render.shell.redraw_us.4k"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+# Strip pans at native 4K: strip_pan_bench drives a continuous
+# three-finger pan of a six-window strip, and strip-to-strip moves, through
+# FrameBuilder and the DRM direct path's GPU target, with the presenter
+# compositing pans from retained strip layers. Frame time takes the render
+# group's rules (lavapipe: reported, never enforced). The pixels a pan frame
+# rasterises do not depend on the runner, so their median is enforced: a pan
+# frame rasterises the columns it uncovered (35,904 px measured, 0.4 % of the
+# output, run 95313), and one that goes back to repainting the strip
+# (8,294,400 px) fails the run at once. The p99 is a frame whose chrome or
+# strips changed during the pan: since a changed chrome is rasterised in the
+# tiles that changed and a changed strip where its changed window groups
+# show, it is about the median too (37,656 px, Perf / scheduled 100497;
+# 8,345,850 px at 150 % and 8,365,240 at 200 % before, run 100092), and is
+# enforced about 60 % above it.
+
+[kpi."render.shell.pan_us.4k"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+[kpi."render.shell.pan_pixels.4k"]
+unit = "pixels"
+p50 = 100000.0
+p99 = 60000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window pan frame rasterises"
+
+# The same pan on a 4K panel at 150 % and 200 %, and on a desktop of two
+# strips (the docked wheel riding the top strip over the second) at 100 % and
+# 200 %. Frame time is reported like the 100 % pan's. Raster pixels are
+# enforced about 40 % above the medians measured (Perf / scheduled 115087:
+# 55,566 at 150 %, 68,816 at 200 %, 94,548 on two strips, 187,872 on two
+# strips at 200 %: the uncovered columns, plus on two strips the band where
+# the panning strip's shadows meet the still one's); a pan that falls back to
+# repainting the output (8,294,400 px) fails at once.
+
+[kpi."render.shell.pan_pixels.4k_s150"]
+unit = "pixels"
+p50 = 80000.0
+p99 = 100000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window pan frame at 150 % rasterises"
+
+[kpi."render.shell.pan_pixels.4k_s200"]
+unit = "pixels"
+p50 = 100000.0
+p99 = 160000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window pan frame at 200 % rasterises"
+
+[kpi."render.shell.pan_pixels.4k_strips2"]
+unit = "pixels"
+p50 = 135000.0
+p99 = 150000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K pan frame of two strips rasterises"
+
+[kpi."render.shell.pan_pixels.4k_s200_strips2"]
+unit = "pixels"
+p50 = 265000.0
+p99 = 320000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K pan frame of two strips at 200 % rasterises"
+
+[kpi."render.shell.pan_us.4k_s150"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+[kpi."render.shell.pan_us.4k_s200"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+[kpi."render.shell.pan_us.4k_strips2"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+[kpi."render.shell.pan_us.4k_s200_strips2"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz, damage-limited (lavapipe; reported only)"
+
+# The CPU building a pan frame's scene (FrameBuilder::paint_with_damage). A
+# strip panning draws only the windows the screen shows; a window wholly off
+# screen replays its last drawing. Measured p50 3.5 ms on one strip, 5.4 ms on
+# two (Perf / scheduled 98362; 5.2 and 7.1 ms when every window of the strip
+# was drawn again each frame, run 98285). A wall-clock KPI: reported against
+# the 144 Hz frame budget, never enforced.
+
+[kpi."render.shell.pan_scene_us.4k"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz; the CPU share of a pan frame (lavapipe runner; reported only)"
+
+[kpi."render.shell.pan_scene_us.4k_s150"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz; the CPU share of a pan frame (lavapipe runner; reported only)"
+
+[kpi."render.shell.pan_scene_us.4k_s200"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz; the CPU share of a pan frame (lavapipe runner; reported only)"
+
+[kpi."render.shell.pan_scene_us.4k_strips2"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz; the CPU share of a pan frame (lavapipe runner; reported only)"
+
+[kpi."render.shell.pan_scene_us.4k_s200_strips2"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz; the CPU share of a pan frame (lavapipe runner; reported only)"
+
+# A pan's first frame from rest (strip_pan_bench `start` and `restart`: the
+# first pan's and a second pan's, two samples per case, each after a rest as
+# long as the session waits before it warms the layers). The presenter warms
+# its layers once the desktop rests, so a first frame copies and composites
+# like any pan frame instead of rasterising the backdrop, strips and chrome
+# whole (25.6 M px, 376-572 ms on this runner before). Each window group is a
+# damage part of its strip, so a window that changed off screen since the
+# warm (an app the warm drew for the first time presenting its content)
+# rasterises nothing: the strips' layer is no longer rasterised again in a
+# desktop's first pan (8.03 M px before, run 100092; 155,628 px at 100 %,
+# 231,684 at 150 %, 334,264 at 200 % after, run 100497). On two strips a
+# window on screen in the still strip changed between the warm and the first
+# pan (2.2-2.5 M px, its group's area): an in-process app's content, made on
+# its own thread, landed while the 4K warm ran, and the bench, which has no
+# event loop to draw it as it lands, left it to the pan's first frame. The
+# bench now rests and warms again until a frame after the warm changes
+# nothing, as a session reaches rest (`rest_and_warm`); the two-strip maxima
+# stay until a run measures that. The max is enforced about 50 % above
+# those. Frame time is reported like the pan frames'.
+
+[kpi."render.shell.pan_start_pixels.4k"]
+unit = "pixels"
+max = 240000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels the first frame of a 4K six-window pan from rest rasterises"
+
+[kpi."render.shell.pan_start_us.4k"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz, the first frame of a 4K six-window pan from rest (lavapipe; reported only)"
+
+[kpi."render.shell.pan_start_pixels.4k_s150"]
+unit = "pixels"
+max = 350000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels the first frame of a 4K six-window pan at 150 % from rest rasterises"
+
+[kpi."render.shell.pan_start_us.4k_s150"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz, the first frame of a 4K six-window pan at 150 % from rest (lavapipe; reported only)"
+
+[kpi."render.shell.pan_start_pixels.4k_s200"]
+unit = "pixels"
+max = 500000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels the first frame of a 4K six-window pan at 200 % from rest rasterises"
+
+[kpi."render.shell.pan_start_us.4k_s200"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz, the first frame of a 4K six-window pan at 200 % from rest (lavapipe; reported only)"
+
+[kpi."render.shell.pan_start_pixels.4k_strips2"]
+unit = "pixels"
+max = 3700000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels the first frame of a 4K pan of two strips from rest rasterises"
+
+[kpi."render.shell.pan_start_us.4k_strips2"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz, the first frame of a 4K pan of two strips from rest (lavapipe; reported only)"
+
+[kpi."render.shell.pan_start_pixels.4k_s200_strips2"]
+unit = "pixels"
+max = 3700000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels the first frame of a 4K pan of two strips at 200 % from rest rasterises"
+
+[kpi."render.shell.pan_start_us.4k_s200_strips2"]
+unit = "us"
+p99 = 6900.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz, the first frame of a 4K pan of two strips at 200 % from rest (lavapipe; reported only)"
+
+[kpi."render.shell.strip_move_us.4k"]
+unit = "us"
+p99 = 16700.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz, full repaint (lavapipe; reported only)"
+
+[kpi."render.shell.strip_move_us.4k_s150"]
+unit = "us"
+p99 = 16700.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz, full repaint (lavapipe; reported only)"
+
+[kpi."render.shell.strip_move_us.4k_s200"]
+unit = "us"
+p99 = 16700.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "KPI: Frame time p99 at 4K/144 Hz, full repaint (lavapipe; reported only)"
+
+# A strip-to-strip move is one frame: focus moves between two windows and the
+# strip ribbon and rail change. It repaints those: the two windows' edges (a
+# square at each corner, a band as thin as the stroke along each side), the
+# ribbon and the rail (404,224 px at 100 %, 495,616 at 150 %, 510,720 at 200 %,
+# Perf / scheduled 98362; 628,480 to 946,176 when the edges were damaged in
+# bands as deep as their corners, run 97828; 2,838,528 to 3,289,856 when Quick
+# Settings was damaged as one rect spanning its panel, the ribbon and the
+# rail). Every move is measured from a desktop at rest, the first one
+# included, so the max is a move too: a move that repaints the output
+# (8,294,400 px) fails at once. Raster pixels are enforced about 40 % above
+# the medians.
+
+[kpi."render.shell.strip_move_pixels.4k"]
+unit = "pixels"
+p50 = 570000.0
+max = 570000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window strip move frame rasterises"
+
+[kpi."render.shell.strip_move_pixels.4k_s150"]
+unit = "pixels"
+p50 = 700000.0
+max = 700000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window strip move frame at 150 % rasterises"
+
+[kpi."render.shell.strip_move_pixels.4k_s200"]
+unit = "pixels"
+p50 = 720000.0
+max = 720000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "strip_pan_bench, pixels a 4K six-window strip move frame at 200 % rasterises"
+
+# Opening a framework app over a long list: the framework-scaling
+# example (crates/sdk/tilo-app/examples/framework-scaling.rs, `open` mode)
+# reopens a checklist holding 5,000 and 50,000 items five times, to its first
+# laid-out frame, through adapters.py framework-open in the render job. Time
+# on the shared runner is noisy, so it takes the render group's tolerances;
+# allocations and heap per item are deterministic for one build, so a few
+# per cent is a regression. The time ceilings are the warm app-open target
+# (300 ms p95, #4004), reported and not yet met at 50,000 items; the count
+# ceilings are a quarter above the M5 Max measurement, reported too (#4178:
+# loading with the hashes the last save listed, 5k 121 -> 102 ms, 50k 1,170
+# -> 945 ms, allocations 1,707,519 / 16,556,849 -> 1,681,158 / 16,294,408).
+# The relative rule is what guards each.
+
+[kpi."render.framework_open.ms.5k"]
+unit = "ms"
+p95 = 300.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "framework-scaling open to first frame, 5,000 items"
+
+[kpi."render.framework_open.ms.50k"]
+unit = "ms"
+p95 = 300.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 200.0
+source = "framework-scaling open to first frame, 50,000 items"
+
+[kpi."render.framework_open.allocations.5k"]
+unit = "count"
+max = 2100000.0
+p50_tolerance = 1.05
+p99_tolerance = 1.05
+min_delta = 1000.0
+source = "framework-scaling allocations of one open, 5,000 items"
+
+[kpi."render.framework_open.allocations.50k"]
+unit = "count"
+max = 20400000.0
+p50_tolerance = 1.05
+p99_tolerance = 1.05
+min_delta = 10000.0
+source = "framework-scaling allocations of one open, 50,000 items"
+
+[kpi."render.framework_open.heap_per_item.5k"]
+unit = "bytes"
+max = 5900.0
+p50_tolerance = 1.1
+p99_tolerance = 1.1
+min_delta = 64.0
+source = "framework-scaling heap held per item with the window open, 5,000 items"
+
+[kpi."render.framework_open.heap_per_item.50k"]
+unit = "bytes"
+max = 5600.0
+p50_tolerance = 1.1
+p99_tolerance = 1.1
+min_delta = 64.0
+source = "framework-scaling heap held per item with the window open, 50,000 items"
+
+# Scrolling a long framework list: the framework-scaling example (`scroll`
+# mode, crates/sdk/tilo-app/examples/framework-scaling.rs) scrolls 5,000 items
+# 120 frames of 40 px, each frame presented over the last as a window that
+# copies what a scroll keeps on screen presents it, through adapters.py
+# framework-scroll in the render job; a frame that differs from a full render
+# fails the run. A frame repaints the strip the scroll exposed, the bar's
+# track and what reaches into the list: 99,792 px p50 of the 1280x800 window
+# on an M-series Mac (983,616 without copies; the whole window, 1,024,000,
+# before the copies and before History's toolbar stopped counting as a
+# layer). Pixels are enforced about 40 % above that. Whole-window frames, CPU
+# frame time and raster time on the shared runner are reported.
+
+[kpi."render.framework_scroll.pixels.5k"]
+unit = "pixels"
+p50 = 140000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "framework-scaling scroll, pixels one copied scroll frame repaints, 5,000 items"
+
+# The same list shown in a region of a host's scene, as the shell shows an
+# in-process app (`FRAMEWORK-SCROLL-HOSTED`): each frame's section is compared
+# with the last (scene_parts::damage_with_copies) and presented over it as a
+# host that keeps its target presents it, copies first (present_copies).
+# A frame repaints the strip the scroll exposed, the bar's track and the
+# tile's edge bands: 158,040 px p50 of the 1280x800 region on an M-series Mac
+# (985,280 for a host that does not copy). Enforced about 40 % above that.
+[kpi."render.framework_scroll.hosted_pixels.5k"]
+unit = "pixels"
+p50 = 220000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "framework-scaling scroll shown in a host's scene, pixels one copied scroll frame repaints, 5,000 items"
+
+[kpi."render.framework_scroll.hosted_whole_frames.5k"]
+unit = "count"
+max = 0.0
+p50_tolerance = 1.5
+p99_tolerance = 1.5
+min_delta = 2.0
+source = "framework-scaling scroll shown in a host's scene, frames repainted whole in 120, 5,000 items (reported)"
+
+# The same window scrolled with a collaborator's pointer and name resting over
+# the list, painted over the widgets as a window paints them
+# (`FRAMEWORK-SCROLL-PEER`): the copies go on, and the mark repaints where it
+# is and where the copy took it. 109,168 px p50 of the 1280x800 window on an
+# M-series Mac (99,792 alone; 983,616 when a peer on screen refused every copy).
+# Enforced about 40 % above that.
+[kpi."render.framework_scroll.peer_pixels.5k"]
+unit = "pixels"
+p50 = 153000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10000.0
+source = "framework-scaling scroll beside a collaborator's pointer, pixels one copied scroll frame repaints, 5,000 items"
+
+[kpi."render.framework_scroll.peer_whole_frames.5k"]
+unit = "count"
+max = 0.0
+p50_tolerance = 1.5
+p99_tolerance = 1.5
+min_delta = 2.0
+source = "framework-scaling scroll beside a collaborator's pointer, frames repainted whole in 120, 5,000 items (reported)"
+
+[kpi."render.framework_scroll.whole_frames.5k"]
+unit = "count"
+max = 0.0
+p50_tolerance = 1.5
+p99_tolerance = 1.5
+min_delta = 2.0
+source = "framework-scaling scroll, frames repainted whole in 120, 5,000 items (reported)"
+
+[kpi."render.framework_scroll.cpu_ms.5k"]
+unit = "ms"
+p50 = 2.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+source = "framework-scaling scroll, one scroll frame on the CPU p50, 5,000 items (reported)"
+
+[kpi."render.framework_scroll.raster_ms.5k"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+source = "framework-scaling scroll, presenting one frame on the GPU p50, 5,000 items (lavapipe; reported)"
+
+# The keyboard focus order of a long framework list: the framework-scaling
+# example (`focus` mode) mounts every row of a 500, 1,000 and 2,500 item
+# checklist (about four widgets an item), through adapters.py framework-focus
+# in the render job. Recomputing the order is one pass over the layout: on an
+# M5 Max 0.26 ms at 500 items (natively and in the test harness), 0.54-0.60 ms
+# at 1,000 and 2.0-2.3 ms at 2,500 (from 0.29-0.33, 0.70-0.83 and 1.9-2.4 ms
+# when the History-owned sort and its capture filter re-walked History per
+# node; about 25 ms at 500 when every node re-enumerated History). The 500 item
+# recomputations are enforced at 2 ms p95, far under what a per-node walk costs
+# and well over a slower runner's single pass; the 0.3 ms at 2,000 widgets and
+# 1.5 ms at 10,000 targets are reported. Adding one item through an agent call
+# is reported against a 16 ms frame: 8.9 / 17.7 / 240 ms at 500 / 1,000 /
+# 2,500 items (from 25 / 82 / 619 ms, when recovering focus after the rebuild
+# asked History about every node), most of it now layout and text shaping.
+
+[kpi."render.framework_focus.recompute_ms.500"]
+unit = "ms"
+p95 = 2.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.1
+source = "framework-scaling focus, one focus-order recomputation in the test harness, 500 items (about 2,000 widgets)"
+
+[kpi."render.framework_focus.native_recompute_ms.500"]
+unit = "ms"
+p95 = 2.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.1
+source = "framework-scaling focus, one focus-order recomputation of the live window, 500 items (about 2,000 widgets)"
+
+[kpi."render.framework_focus.recompute_ms.1k"]
+unit = "ms"
+p50 = 0.6
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.2
+source = "framework-scaling focus, one focus-order recomputation in the test harness, 1,000 items (reported)"
+
+[kpi."render.framework_focus.native_recompute_ms.1k"]
+unit = "ms"
+p50 = 0.6
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.2
+source = "framework-scaling focus, one focus-order recomputation of the live window, 1,000 items (reported)"
+
+[kpi."render.framework_focus.recompute_ms.2500"]
+unit = "ms"
+p50 = 1.5
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+source = "framework-scaling focus, one focus-order recomputation in the test harness, 2,500 items (about 10,000 widgets; reported)"
+
+[kpi."render.framework_focus.native_recompute_ms.2500"]
+unit = "ms"
+p50 = 1.5
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+source = "framework-scaling focus, one focus-order recomputation of the live window, 2,500 items (about 10,000 widgets; reported)"
+
+[kpi."render.framework_focus.add_item_ms.500"]
+unit = "ms"
+p50 = 16.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+source = "framework-scaling focus, an agent call adding one item end to end, 500 items (reported)"
+
+[kpi."render.framework_focus.add_item_ms.1k"]
+unit = "ms"
+p50 = 16.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 4.0
+source = "framework-scaling focus, an agent call adding one item end to end, 1,000 items (reported)"
+
+[kpi."render.framework_focus.add_item_ms.2500"]
+unit = "ms"
+p50 = 16.0
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 40.0
+source = "framework-scaling focus, an agent call adding one item end to end, 2,500 items (reported)"
+
+# Notes input latency: the notes-latency example
+# (apps/notes/examples/notes-latency.rs) opens Notes over a 27-note,
+# 838-block notebook and sends each input through the host's input path,
+# through adapters.py notes-latency in the render job. `to_frame_ms` runs from
+# the input to the end of the host frame that shows it (input handling, sync,
+# layout, the scene and the accessibility walk), `to_raster_ms` on to GPU
+# completion of that frame's damage; every input is a sample, checked against
+# the editor's canonical body. On an M5 Max, release, 200 keys back to back:
+# to frame p50 4.2-5.4 ms typing, 4.8-5.3 Enter, 5.3-5.8 Backspace, 2.7-2.9
+# a wheel step and 4.7-5.2 opening a note; to raster 3-4 ms more on Metal.
+# The ceilings are the 60 Hz frame (16.7 ms): to frame at p99, to raster at
+# p50, since lavapipe rasterises on the shared runner's CPU. Reported, not
+# enforced; the relative rule catches regressions once three runs are stored.
+
+[kpi."render.notes_latency.type.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a typed character to the frame that shows it, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.type.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, a typed character to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
+[kpi."render.notes_latency.enter.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, Enter splitting a block to the frame that shows it, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.enter.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, Enter splitting a block to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
+[kpi."render.notes_latency.backspace.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, Backspace joining a block to the frame that shows it, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.backspace.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, Backspace joining a block to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
+[kpi."render.notes_latency.scroll.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a 40 px wheel step in a 136-block note to the frame that shows it (reported)"
+
+[kpi."render.notes_latency.scroll.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, a 40 px wheel step in a 136-block note to its frame rasterised (lavapipe; reported)"
+
+[kpi."render.notes_latency.open.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a note's open action to the frame that shows it bound, 27 notes / 838 blocks (reported)"
+
+[kpi."render.notes_latency.open.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "notes-latency, a note's open action to its frame rasterised, 27 notes / 838 blocks (lavapipe; reported)"
+
+# The pointer moving a few pixels over the long note, and a host frame with no
+# input at all (what a caret blink or another window's animation costs Notes).
+# An idle frame publishes no accessibility change and walks no widgets; on an
+# M5 Max, release, it is 0.25-0.28 ms to frame (0.64-0.66 ms while every frame
+# rebuilt the semantic tree), a pointer move 0.7 ms.
+
+[kpi."render.notes_latency.pointer.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+baseline_min_runs = 3
+source = "notes-latency, a pointer move over a 136-block note to the frame that shows it (reported)"
+
+[kpi."render.notes_latency.pointer.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1.0
+baseline_min_runs = 3
+source = "notes-latency, a pointer move over a 136-block note to its frame rasterised (lavapipe; reported)"
+
+[kpi."render.notes_latency.idle.to_frame_ms"]
+unit = "ms"
+p99 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.25
+baseline_min_runs = 3
+source = "notes-latency, a host frame with no input over a 136-block note, accessibility walk included (reported)"
+
+[kpi."render.notes_latency.idle.to_raster_ms"]
+unit = "ms"
+p50 = 16.7
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.5
+baseline_min_runs = 3
+source = "notes-latency, a host frame with no input over a 136-block note, rasterised where it changed (lavapipe; reported)"
+
+# The installed desktop: Dev / VM acceptance's nightly run on the newest
+# published dev disk, a KVM guest on `runner-disk-100g` rendering with lavapipe
+# (scripts/vm-acceptance, acceptance/records.py). Those runs compare and publish
+# these groups (boot, idle, memory, app, render) themselves, not Perf / scheduled.
+# The ceilings are the KPI targets, which are hardware figures: a
+# software-rendered guest reports against them and is never quoted as one. The
+# checks that fail the acceptance run hold run.py's own budgets. Most of these are
+# one sample per night, so min_delta is the change below which run-to-run noise in a
+# shared runner's guest is not called a regression.
+
+[kpi."boot.to_greeter_s"]
+unit = "s"
+max = 20.0
+min_delta = 1.0
+source = "os/tests/boot_performance_gate.sh budget under KVM (KPI target: 10 s on the reference laptop)"
+
+# The kernel's memory init: the silence in the kernel log that ends at SLUB's first line,
+# while the boot CPU alone hands every free page to the page allocator. With the
+# init_on_free=1 karg it also zeroed all of RAM there (6.0 s of a 7.8 s kernel phase in a
+# 4.5 GiB guest), which is why that karg is not in 01-hardening.toml. Without it the pass
+# only links pages into the free lists; the ceiling is reported, not enforced, and the
+# regression rule flags zeroing coming back while min_delta keeps scheduler noise out.
+[kpi."boot.kernel_meminit_s"]
+unit = "s"
+max = 1.0
+min_delta = 0.5
+source = "vm-acceptance R06 R06-dmesg.txt, KVM guest; scales with guest RAM"
+
+# Userspace start to greetd active, and the greeter's sign-in request to a desktop that
+# has presented its first frame and answers its control socket. Boot to a usable
+# session is boot.to_greeter_s plus the person's typing plus session.sign_in_again.usable_s.
+# No KPI sets a sign-in target yet: these ceilings are run.py's VM budgets.
+[kpi."boot.userspace_to_greeter_s"]
+unit = "s"
+max = 10.0
+min_delta = 0.3
+source = "run.py userspace_to_greeter_s (R06), KVM guest"
+
+[kpi."session.sign_in_first.usable_s"]
+unit = "s"
+max = 10.0
+min_delta = 0.5
+source = "run.py sign_in_first_usable_s (R08): the account's first sign-in, cold caches, lavapipe"
+
+[kpi."session.sign_in_again.usable_s"]
+unit = "s"
+max = 10.0
+min_delta = 0.3
+source = "run.py sign_in_again_usable_s (R08): a later sign-in after signing out, lavapipe"
+
+[kpi."idle.shell_cpu_pct"]
+unit = "percent"
+max = 1.0
+min_delta = 0.5
+source = "KPI: Idle wakeups and idle power; run.py idle_shell_cpu_pct"
+
+# The part of idle.shell_cpu_pct spent on threads the GPU driver started. On a
+# software-rendered guest that is lavapipe rasterising the window's frames, a GPU's work on
+# the reference hardware, so R01/R02 judge the compositor's CPU without it. It moves by ~1.4
+# per clock frame that lands in the window, which idle.frames allows; min_delta absorbs two.
+[kpi."idle.gpu_driver_cpu_pct"]
+unit = "percent"
+max = 3.0
+min_delta = 3.0
+source = "#4085: lavapipe's share of idle.shell_cpu_pct, one clock frame ~1.4% of a 30 s window; reported only"
+
+[kpi."idle.frames"]
+unit = "count"
+max = 2.0
+min_delta = 2.0
+source = "KPI: 0 frames while still (the clock repaints once a minute); run.py idle_frames"
+
+[kpi."idle.wakeups_per_s.shell"]
+unit = "per_s"
+max = 1.0
+min_delta = 5.0
+source = "KPI: compositor at most 1 wakeup/s while still (context switches of its loop thread)"
+
+# The same over every thread of the compositor process: the loop thread can
+# sleep while the network runtime, session services or the renderer's threads do not.
+[kpi."idle.wakeups_per_s.shell_threads"]
+unit = "per_s"
+max = 5.0
+min_delta = 5.0
+source = "KPI: idle desktop at most 5 wakeups/s (context switches of every compositor thread)"
+
+# Terminal's shell runtime with its shell running and nothing typed: every
+# `tilo-ush` process, CPU and context switches of all their threads, measured once the
+# shell runs so the first session's runtime import is not in the window. Measured
+# 0.0/s once the egress DNS stub blocks on its sockets (#4086, run 91757; 10.7/s
+# before, run 91741); vm-acceptance's R02 gate holds the same 1/s (run.py).
+[kpi."idle.cpu_pct.tilo-ush.four_apps"]
+unit = "percent"
+max = 1.0
+min_delta = 0.5
+source = "#4057: an idle Terminal costs its shell runtime under 1% of a core; run.py idle_apps_ush_cpu_pct"
+
+[kpi."idle.wakeups_per_s.tilo-ush.four_apps"]
+unit = "per_s"
+max = 1.0
+min_delta = 1.0
+source = "#4086: an idle Terminal's tilo-ush wakes at most 1/s (every thread of its processes; KPI desktop target 5/s); run.py idle_apps_ush_wakeups_per_s"
+
+[kpi."idle.ram_mib"]
+unit = "MiB"
+max = 1024.0
+min_delta = 64.0
+source = "KPI: RAM at the idle desktop, at most 1.0 GiB system (guest MemTotal - MemAvailable)"
+
+# The same desktop as an installed machine runs it: idle.ram_mib less what only
+# the dev VM runs beside the slot, seat0's greeter (an installed machine ends it at
+# login), the dev image's services and the harness's ssh, counted as anon + shmem +
+# kernel (vm-acceptance resources.py footprint). idle.ram_mib keeps its definition.
+[kpi."idle.ram_mib.installed"]
+unit = "MiB"
+max = 1024.0
+min_delta = 64.0
+source = "KPI target, without the dev VM's seat0 greeter and harness (resources.py footprint)"
+
+# The same once a user has opened and closed four apps (R03): what they leave behind
+# counts against the target too (#4104: 1295 MiB before the compositor gave back the
+# device memory and image atlas the windows had used).
+[kpi."idle.ram_mib.installed.after_close"]
+unit = "MiB"
+max = 1024.0
+min_delta = 64.0
+source = "KPI target after four apps closed (#4104; resources.py footprint)"
+
+# The compositor's cgroup once the four apps have closed: at most its R01
+# idle figure (310-376 MiB on the dev VM, anon + shmem + kernel) plus 32 MiB; after the
+# close it is 331-335 MiB. It held 663-678 MiB while lavapipe kept every page closed
+# windows had touched. Since the renderer gives back the scratch the four windows grew
+# (its bump reservation and pooled buffers), 352 MiB after the close against 361 at the
+# same base (vm-acceptance 96816, 96817).
+[kpi."memory.idle_mib.compositor.after_close"]
+unit = "MiB"
+max = 380.0
+min_delta = 32.0
+source = "#4104: the compositor returns to within 32 MiB of idle after four apps close"
+
+# Shmem allocated to the compositor's memfds after the four apps closed, mapped or not:
+# on lavapipe its device memory. R01 holds 73 MiB; after the close 105-109 MiB, the
+# renderer's pooled buffers and bump buffers sized for the desktop it last drew
+# (vm-acceptance 91838, 91987). It held 441-466 MiB before freed device memory was
+# punched out and the image atlas came down after a close. Since the renderer
+# gives back what the windows grew of its bump reservation and pool, 101 MiB against
+# 105 at the same base (vm-acceptance 96816, 96817): what stays is the pool of the frame
+# the desktop drew last.
+[kpi."memory.compositor_memfd_mib.after_close"]
+unit = "MiB"
+max = 112.0
+min_delta = 16.0
+source = "#4104: R01's compositor memfd shmem (73 MiB) plus the renderer's working set"
+
+[kpi."memory.shell_anon_mib"]
+unit = "MiB"
+max = 250.0
+min_delta = 32.0
+source = "KPI: shell anon at most 250 MiB (run.py shell_anon_mb holds 500)"
+
+# The compositor with no app open (vm-acceptance R01, lavapipe): 238.7 MiB
+# on main (run 94055) and 159-167 MiB once startup's and every quiet moment's freed heap is
+# trimmed and the presenting renderer runs on Vulkan alone (runs 94419, 94637). Of what
+# remains, ~70 MiB is lavapipe's retained NIR (mtrace attribution, headless gate), which a
+# hardware GPU does not hold.
+[kpi."memory.shell_anon_mib.empty"]
+unit = "MiB"
+max = 200.0
+enforce = true
+min_delta = 24.0
+source = "vm-acceptance R01: the compositor's anonymous RSS with no app open (run.py shell_idle_anon_mb holds the same)"
+
+# The idle compositor's threads (R01, the process_memory report). 86 on main, 73 once the
+# presenting renderer stopped initialising GL beside Vulkan: a second llvmpipe
+# rasteriser pool on a machine without a GPU.
+[kpi."memory.shell_threads"]
+unit = "count"
+max = 80.0
+min_delta = 4.0
+source = "vm-acceptance R01: compositor threads with no app open"
+
+# What one warm open and close of an app leaves in the compositor (A15, least-squares
+# slope over its 33 cycles): it should return to where it was.
+[kpi."memory.shell_anon_mib.per_open_close"]
+unit = "MiB"
+max = 1.0
+min_delta = 1.0
+source = "compositor anon must return after an app closes"
+
+# Per-user runtime builds on disk after R03 closed its apps.
+# Collection after every change keeps the builds installed apps run on, plus one
+# installed within the last hour; at ~205 MB a build on x86_64, two builds.
+[kpi."disk.runtime_mib.per_user"]
+unit = "MiB"
+max = 450.0
+min_delta = 16.0
+source = "vm-acceptance R03: du of the slot user's $XDG_DATA_HOME/tilo-runtime"
+
+[kpi."memory.session_mib"]
+unit = "MiB"
+max = 2500.0
+min_delta = 64.0
+source = "run.py session_memory_mb: the compositor's and four open apps' cgroups"
+
+[kpi."memory.app_anon_mib.terminal"]
+unit = "MiB"
+max = 60.0
+min_delta = 16.0
+source = "KPI: idle app anon <= 60 MiB (R03, the app's cgroup)"
+
+[kpi."memory.app_anon_mib.file-explorer"]
+unit = "MiB"
+max = 60.0
+min_delta = 16.0
+source = "KPI: idle app anon <= 60 MiB (R03, the app's cgroup)"
+
+[kpi."memory.app_anon_mib.settings"]
+unit = "MiB"
+max = 60.0
+min_delta = 16.0
+source = "KPI: idle app anon <= 60 MiB (R03, the app's cgroup)"
+
+[kpi."memory.app_anon_mib.notes"]
+unit = "MiB"
+max = 60.0
+min_delta = 16.0
+source = "KPI: idle app anon <= 60 MiB (R03, the app's cgroup)"
+
+[kpi."app.open.warm_ms.file-explorer"]
+unit = "ms"
+p95 = 300.0
+min_delta = 100.0
+source = "KPI: App open, warm (request to first frame, sandbox included)"
+
+[kpi."app.open.warm_ms.notes"]
+unit = "ms"
+p95 = 300.0
+min_delta = 100.0
+source = "KPI: App open, warm (request to first frame, sandbox included)"
+
+# Settings builds only the pane it shows before its first frame and reads the
+# others off the UI thread afterwards, so a pane that comes
+# back onto the open path is a regression worth 50 ms, not 100.
+[kpi."app.open.warm_ms.settings"]
+unit = "ms"
+p95 = 300.0
+min_delta = 50.0
+source = "KPI: App open, warm (request to first frame, sandbox included)"
+
+[kpi."render.frame_cpu_ms"]
+unit = "ms"
+p95 = 16.7
+p99 = 33.4
+min_delta = 2.0
+source = "vm-acceptance R04: compositor CPU (frame trace cpu_us) per painted frame during overview, focus and zoom interactions"
+
+# Relay hosting cost: crates/hosting/tilo-relay/examples/relay_load,
+# 100 collaborators in rooms of four, ten measured minutes, one sample per
+# minute; tools/perf/adapters.py hosting-load prices them with
+# tools/perf/prices.toml. The KPI target is at most $0.001 per
+# active collaborator-hour.
+#
+# The enforced ceilings are about twice the first measurement (Perf /
+# scheduled run 90022 on `runner`): CPU 31.2 s, RSS 0.86 MiB, fan-out p50 13.8
+# and p99 244 ms. Bytes are nearly deterministic (egress 11.04 MB, frames
+# 9.50 MB, max within 0.5 % of p50), so their ceilings sit about 15 % above:
+# a delta resent whole or a presence storm fails at once. CPU and latency
+# share the runner and get the fs gate's wider tolerances.
+#
+# Baseline change, 2026-10-11: the nightly runs the relay on two CPUs
+# (`relay_load --relay-cpus 2`, record meta `relay_cpus = "2"`), the priced
+# 2-vCPU VM's shape, where it had run on all of the runner's (four runtime
+# workers, meta `relay_cpus = "all"` or absent). A scratch profile on the same
+# commit (Perf / scheduled 97584) measured 13.9 s CPU per collaborator-hour at
+# four workers and 12.4 s at two CPUs, fan-out p99 75.9 ms and 138.1 ms: fewer
+# idle workers woken to steal work, more queueing. The first two-CPU run
+# (Perf / scheduled on main, kpis=hosting, accept=all) starts the new
+# baseline, so neither series is compared with the other; the ceilings below
+# hold for both.
+
+[kpi."hosting.relay.cpu_s_per_collab_hour.n100"]
+unit = "s"
+p50 = 62.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 3.0
+source = "relay_load: relay process CPU-seconds per active collaborator-hour"
+
+[kpi."hosting.relay.rss_mib_per_collab.n100"]
+unit = "MiB"
+p50 = 2.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 0.2
+source = "relay_load: relay resident memory per connected collaborator, above the idle relay"
+
+[kpi."hosting.relay.egress_bytes_per_collab_hour.n100"]
+unit = "bytes"
+p50 = 12700000.0
+enforce = true
+source = "relay_load: UDP bytes the relay's endpoint sent per active collaborator-hour"
+
+[kpi."hosting.relay.frame_bytes_per_collab_hour.n100"]
+unit = "bytes"
+p50 = 10900000.0
+enforce = true
+source = "relay_load: framed bytes written to peer sessions per active collaborator-hour"
+
+# Packets (the levers after bytes): a change that sends the same bytes in more
+# packets passes every byte budget, and costs egress, relay CPU and client
+# radio time all the same. Counted on the collaborators' QUIC connections
+# (`Connection::stats`; loopback, so what they received is what the relay
+# sent). The relay's ACK-only datagrams answer client packets that carried
+# nothing to acknowledge back, so a client sending more packets shows twice.
+#
+# Measured in Perf / scheduled A/B runs 97792 and 97793 (8 rounds each): client
+# packets 23,838-23,923, of which data 6,188-6,210; relay datagrams
+# 26,652-26,736, of which ACK-only 7,790-8,103 (p99 up to 8,230). The first
+# three vary by under 1 % between rounds, so their ceilings sit about 15 %
+# above, as the byte budgets do; ACK-only datagrams follow timing (which
+# packets an ACK can ride) and vary by about 5 %, so theirs sits about 20 %
+# above. Run 97792's base, the bench on the commit before client pointer
+# pacing, measured 27,753 client packets, 9,086 data packets and 10,995
+# ACK-only datagrams: undoing that pacing fails three of the four at once.
+[kpi."hosting.relay.client_packets_per_collab_hour.n100"]
+unit = "count"
+p50 = 27500.0
+enforce = true
+source = "relay_load: UDP datagrams the collaborators sent the relay per active collaborator-hour"
+
+[kpi."hosting.relay.client_data_packets_per_collab_hour.n100"]
+unit = "count"
+p50 = 7150.0
+enforce = true
+source = "relay_load: collaborator datagrams carrying stream data per active collaborator-hour"
+
+[kpi."hosting.relay.datagrams_per_collab_hour.n100"]
+unit = "count"
+p50 = 30700.0
+enforce = true
+source = "relay_load: UDP datagrams the relay sent the collaborators per active collaborator-hour"
+
+[kpi."hosting.relay.ack_only_datagrams_per_collab_hour.n100"]
+unit = "count"
+p50 = 9700.0
+enforce = true
+source = "relay_load: relay datagrams carrying only acknowledgements per active collaborator-hour"
+
+[kpi."hosting.relay.fanout_ms.n100"]
+unit = "ms"
+p50 = 30.0
+p99 = 500.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10.0
+source = "relay_load: one edit, publish to receipt by each other member of the room"
+
+# Presence delivery: publish to receipt of each pointer move and
+# caret the relay forwarded. The relay paces a pointer to 20 Hz, so a move
+# waits up to 50 ms; carets wait 5 ms, or up to 20 ms for the delta they
+# follow. Measured in Perf / scheduled A/B run 94883: pointer 18.2 ms p50 and
+# 39.5 ms p99, caret 5.2 and 28.3 ms (a 5-minute run, 94831: pointer 18.8 and
+# 48.0, caret 9.0 and 39.7). The pointer's p99 ceiling is the 100 ms cursor
+# bound the issue set; the rest sit about twice the measurement, with the
+# fan-out's tolerances for the shared runner.
+[kpi."hosting.relay.presence_pointer_ms.n100"]
+unit = "ms"
+p50 = 40.0
+p99 = 100.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10.0
+source = "relay_load: one forwarded pointer move, publish to receipt by each other member of the room"
+
+[kpi."hosting.relay.presence_caret_ms.n100"]
+unit = "ms"
+p50 = 25.0
+p99 = 80.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 10.0
+source = "relay_load: one forwarded caret, publish to receipt by each other member of the room"
+
+# File and directory barriers per committed edit: two are the floor
+# of the one-file-per-record store (the record, then its directory). Measured
+# 2.82 before #4047 (Perf / scheduled run 91348) and 2.10 after (run 91404),
+# within 0.4 % per window, so the ceiling sits about 15 % above: a reservation
+# renewed per commit or a resynced ancestor fails at once.
+[kpi."hosting.relay.store_fsyncs_per_edit.n100"]
+unit = "count"
+p50 = 2.4
+enforce = true
+source = "relay_load: workspace-store fsyncs per committed delta (store::fsyncs)"
+
+# Directory entries listed per committed edit: a delta's commit
+# used to list its lineage's whole active generation, so this grew with the
+# document's history, 163 per edit at p50 and 313 by the tenth minute
+# (Perf / scheduled run 92268). The tail index answers from memory: 0.000 in
+# every window after (run 92278). It is deterministic, so the ceiling sits
+# just above zero: an edit that lists its history again fails at once.
+[kpi."hosting.relay.store_listed_entries_per_edit.n100"]
+unit = "count"
+p50 = 1.0
+enforce = true
+source = "relay_load: directory entries retention listed per committed delta (store::listed_entries)"
+
+# Compaction: each round verified every retained entry's document
+# signature 2-3 times, and every later round again, 23.47 per edit at p50
+# (max 45.6) and 2,115 ms of compaction CPU per collaborator-hour (Perf /
+# scheduled run 92376). Verifying each entry's bytes once per process: 1.11
+# per edit (max 1.14) and 325 ms (run 92377). Checks per edit are nearly
+# deterministic, so their ceiling sits about 35 % above: a round verifying
+# its whole channel again fails at once. CPU shares the runner and gets the
+# relay CPU's tolerances, at about twice the measurement.
+[kpi."hosting.relay.compaction_signature_checks_per_edit.n100"]
+unit = "count"
+p50 = 1.5
+enforce = true
+source = "relay_load: document signatures compaction verified per committed delta (compaction::signature_checks)"
+
+[kpi."hosting.relay.compaction_cpu_ms_per_collab_hour.n100"]
+unit = "ms"
+p50 = 700.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 100.0
+source = "relay_load: compaction thread CPU per active collaborator-hour (compaction::cpu_ns)"
+
+# Not met on AWS: egress at $0.09/GB is $0.00099 of the measured $0.00113.
+[kpi."hosting.relay.cost_usd_per_collab_hour.aws-t4g-small.n100"]
+unit = "usd"
+p50 = 0.001
+source = "KPI: Relay cost per active collaborator-hour"
+
+[kpi."hosting.relay.cost_usd_per_collab_hour.hetzner-cx22.n100"]
+unit = "usd"
+p50 = 0.001
+enforce = true
+source = "KPI: Relay cost per active collaborator-hour"
+
+# A public room host at 100 guests: crates/dev/room-load, three runs on
+# runner-large (perf-scheduled.yml, `hosting-room`; adapters.py room-load),
+# each run one sample. 100 is the largest room the capacity sweep of
+# 2026-10-14 (docs/benchmarks/room-host-capacity-2026-10.md, Perf / room host
+# capacity run 112979) admitted whole: there, 100 guests joined with join p99
+# 9.9 s and chat delivery p99 5.5 s, the host's process tree peaked at
+# 122 MiB and used 1.14 cores; past about 250 members joins time out at any
+# arrival rate. The ceilings are about twice those, with the relay CPU's
+# tolerances: join and delivery time at this size swing between runs (join
+# p99 5.7 s in the sweep's first run), and a guest that did not join fails
+# the adapter outright. Raise the point to 300 guests once the room admits
+# them.
+[kpi."hosting.room.join_p99_ms.g100"]
+unit = "ms"
+p50 = 20000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 2000.0
+source = "room-load: guests' p99 time from /join to the room's Ready, per run"
+
+[kpi."hosting.room.chat_p99_ms.g100"]
+unit = "ms"
+p50 = 12000.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 1000.0
+source = "room-load: p99 delivery of chat changes sent while their receiver was in the room, per run"
+
+[kpi."hosting.room.rss_mib_peak.g100"]
+unit = "MiB"
+p50 = 250.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "room-load: peak proportional memory of the host's process tree (relay and Automerge workers)"
+
+[kpi."hosting.room.cpu_percent.g100"]
+unit = "percent"
+p50 = 250.0
+enforce = true
+p50_tolerance = 1.5
+p99_tolerance = 2.0
+min_delta = 20.0
+source = "room-load: the host's process tree's CPU during the hold, as a share of one core"
+
+# Browser runtime (scripts/perf/browser_qualification.mjs): the release
+# desktop bundle (build.sh --bundle desktop, the bytes web-entry.yml
+# publishes) in headless Chrome for Testing on the shared `runner` class, one
+# fresh-context round at 960x540. The runner has no GPU, and Chrome offers
+# WebGPU no CPU driver but its own SwiftShader (it renders its page on
+# lavapipe, but its WebGPU adapter stays SwiftShader). So these records are
+# compared only with each other and never quoted as hardware figures, and the
+# ceilings are reported, never enforced; the relative rule catches regressions
+# of the runtime's own work. They time the page's side of each step (a frame
+# presented is a frame submitted). SwiftShader takes tens of seconds for a
+# panned FHD frame on this runner and queues its work behind the page (a first
+# FHD round took 20 minutes, a second never finished in two hours), hence one
+# small round. The demo workload is left out (--demo-seconds 0), so its frame
+# rate and the 30 and 120 fps goals are judged where a GPU draws (a hardware qualification: --renderer gpu --enforce-goals,
+# docs/measurements/performance.md). The ceilings are the runtime's goals: a
+# window activated within 50 ms and first opened within 250 ms
+# (crates/browser/tilo-web-desktop/scripts/open-times.mjs), its own code
+# drawing within a second (the limit of an uninterrupted flow of thought); the
+# desktop's first frame within 2.5 s of navigation (the web's "good" Largest
+# Contentful Paint), which SwiftShader's pipeline compiles alone exceed; an
+# idle desktop presenting at most two frames a second (idle.mjs). Timing KPIs
+# need three stored runs before comparison, as the latency group's do:
+# wall-clock on the shared runner varies between nights on identical code.
+
+[kpi."browser.load.desktop_presented"]
+unit = "ms"
+p99 = 2500.0
+baseline_min_runs = 3
+source = "navigation to the desktop's first presented frame, fresh browser context (headless, SwiftShader)"
+
+[kpi."browser.open.first_frame"]
+unit = "ms"
+p99 = 250.0
+baseline_min_runs = 3
+source = "launch command to the first frame presenting the new window, first open (headless, SwiftShader)"
+
+[kpi."browser.open.ready"]
+unit = "ms"
+p99 = 1000.0
+baseline_min_runs = 3
+source = "launch command to the first frame after the app's own code (its split-off module) is instantiated, first open (headless, SwiftShader)"
+
+[kpi."browser.activate.first_frame"]
+unit = "ms"
+p99 = 50.0
+baseline_min_runs = 3
+source = "select command to the first frame with the window active (headless, SwiftShader)"
+
+[kpi."browser.idle.presented_per_s"]
+unit = "per_s"
+max = 2.0
+min_delta = 0.5
+baseline_min_runs = 1
+source = "frames an idle desktop of the demo windows presents per second (headless, SwiftShader)"
+
+# A native window on the browser desktop
+# (scripts/perf/native_stream_qualification.mjs): a session's legacy window,
+# encoded by the production real-time encoder with the shell's legacy-share
+# configuration, through `tilo-relay dev`'s legacy-window bridge and live
+# plane, decoded with WebCodecs and drawn by the release desktop bundle in
+# headless Chrome for Testing on the shared `runner` class. The runner has no
+# GPU: the session encodes in software (30 fps, the shell's software ceiling),
+# Chrome decodes in software, and the desktop under the window draws on
+# SwiftShader. So these records are compared only with each other and never
+# quoted as hardware figures; a hardware encoder (60 fps), a hardware decoder
+# and a GPU desktop are a hardware qualification's (--renderer gpu
+# --enforce-goals, docs/measurements/performance.md). Every run is first
+# judged correct (no decoder error, no corrupt, misnamed or older picture, the
+# last frame shown, every press delivered) or it records nothing. SwiftShader
+# compiles the window tile's pipelines when the desktop first draws it, which
+# blocks the page for about 25 s on this runner: startup includes that, and
+# the frame KPIs are timed after a 30 s warm-up (--warm-up 30). The
+# ceilings are the harness's goals: the window's first picture within a second
+# of the session starting its stream (an uninterrupted flow of thought), a
+# frame on screen within 100 ms of its capture at p95, under 1 % of the frames
+# sent after the first picture never drawn, a click reaching the session
+# within 50 ms at p95 (it travels HTTPS, the host and the session's relay
+# connection, all on loopback here), and pictures arriving at the session's
+# software rate. Timing KPIs need three stored runs before comparison, as the
+# browser group's do.
+
+[kpi."stream.startup.first_picture"]
+unit = "ms"
+max = 1000.0
+baseline_min_runs = 3
+source = "the session starting its stream to the window's first picture on the desktop (software encode and decode, SwiftShader desktop)"
+
+[kpi."stream.frame.latency"]
+unit = "ms"
+p95 = 100.0
+baseline_min_runs = 3
+source = "a frame's capture at the session to its picture drawn by the page, per frame (software encode and decode)"
+
+[kpi."stream.frame.interval"]
+unit = "ms"
+p50 = 34.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "between consecutive new pictures the page draws while the window repaints at 30 fps (software encode and decode)"
+
+[kpi."stream.encode.frame"]
+unit = "ms"
+p95 = 33.3
+baseline_min_runs = 3
+source = "the production real-time encoder's time per 1280x720 frame, the shell's legacy-share configuration (software)"
+
+[kpi."stream.input.latency"]
+unit = "ms"
+p95 = 50.0
+baseline_min_runs = 3
+source = "a click on the window in the page to the press arriving at the session, through the host's input route"
+
+[kpi."stream.frame.missed"]
+unit = "percent"
+max = 1.0
+min_delta = 0.5
+baseline_min_runs = 1
+source = "frames sent after the first picture that the page never drew"
+
+# The same window streamed in software VP9 (--codec vp9, vp9enc): what a
+# session with no H.264 encoder sends, a stock device being the normal case,
+# and what every browser decodes. Everything else is the H.264 records' (same
+# build, same Chrome, same job, after the H.264 run), and the series is its
+# own so neither codec's baseline judges the other's. The ceilings come from
+# the first run on this runner (October 2026: startup 8974 ms,
+# latency p95 27.8 ms, interval p50 33.4 ms, encode p95 13.8 ms, input p95
+# 40.3 ms, nothing missed) with headroom for the shared runner, not from
+# H.264's goals: they are SwiftShader and software-codec figures, never a
+# product or hardware figure. Startup is far over the 1 s goal on this runner
+# for both codecs (H.264's first picture took 4248 ms in the same run), so its
+# ceiling is the run's with headroom, not the goal; encode stays under the 33.3 ms a
+# 30 fps frame allows, as H.264's does; a frame is still one 30 fps interval
+# apart; frames missed is a delivery ceiling, as H.264's is.
+
+[kpi."stream.vp9.startup.first_picture"]
+unit = "ms"
+max = 13500.0
+baseline_min_runs = 3
+source = "the session starting its VP9 stream to the window's first picture on the desktop (software encode and decode, SwiftShader desktop)"
+
+[kpi."stream.vp9.frame.latency"]
+unit = "ms"
+p95 = 45.0
+baseline_min_runs = 3
+source = "a frame's capture at the session to its picture drawn by the page, per frame (software VP9 encode and decode)"
+
+[kpi."stream.vp9.frame.interval"]
+unit = "ms"
+p50 = 34.0
+min_delta = 2.0
+baseline_min_runs = 3
+source = "between consecutive new pictures the page draws while the window repaints at 30 fps (software VP9 encode and decode)"
+
+[kpi."stream.vp9.encode.frame"]
+unit = "ms"
+p95 = 25.0
+baseline_min_runs = 3
+source = "the production real-time encoder's time per 1280x720 VP9 frame (vp9enc, software), the shell's legacy-share configuration"
+
+[kpi."stream.vp9.input.latency"]
+unit = "ms"
+p95 = 60.0
+baseline_min_runs = 3
+source = "a click on the window in the page to the press arriving at a VP9-streaming session, through the host's input route"
+
+[kpi."stream.vp9.frame.missed"]
+unit = "percent"
+max = 1.0
+min_delta = 0.5
+baseline_min_runs = 1
+source = "frames of the VP9 stream sent after the first picture that the page never drew"

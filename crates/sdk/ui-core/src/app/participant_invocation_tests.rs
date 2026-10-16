@@ -47,15 +47,12 @@ struct TwoViews(Rc<RefCell<Probe>>);
 fn tree(view: &str) -> Vec<Resource> {
     vec![
         Resource::new("test.doc", "test.document", "Document")
-            .with_action(
-                ActionSpec::immediate_encoded(
-                    "mark",
-                    "Mark",
-                    ExecutionLocus::ClientLocal,
-                    tilo_actions::EncodedAction::encode(MARK_TYPE, &Mark(view.into())).unwrap(),
-                )
-                .requiring(tilo_actions::PermissionRequirement::Write),
-            )
+            .with_action(ActionSpec::immediate_encoded(
+                "mark",
+                "Mark",
+                ExecutionLocus::ClientLocal,
+                tilo_actions::EncodedAction::encode(MARK_TYPE, &Mark(view.into())).unwrap(),
+            ))
             .with_action(
                 ActionSpec::operation("move-caret", "Move", OperationKind::View, VIEW_TYPE, &())
                     .unwrap()
@@ -76,23 +73,17 @@ impl Widget for TwoViews {
         dyn crate::resources::PublishesResources
     );
 
-    crate::testing::inert_widget_methods!(
-        leaf_layout,
-        apply_layout,
-        draw,
-        get_rect,
-        name = "two-views"
-    );
+    crate::testing::inert_widget_methods!(leaf_layout, name = "two-views");
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[VIEW_TYPE]
     }
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        _: &mut automerge::AutoCommit,
+        _: &mut crate::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest { type_id, .. }) = op.unscoped() else {
+        let Some(crate::host_operation::OperationRequest { type_id, .. }) = op.unscoped() else {
             return Ok(None);
         };
         let participant = crate::invocation_scope::current_participant();
@@ -186,6 +177,8 @@ impl crate::collaboration::participants::Participants for TwoViews {
 fn app() -> (App, Rc<RefCell<Probe>>) {
     let probe = Rc::new(RefCell::new(Probe::default()));
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(TwoViews(probe.clone())));
+    // Deliveries below are host-set fixture inputs on the legacy peer seam.
+    app.collaboration.manager = super::semantic_tree_app_tests::admitted_delivery_manager();
     app.action_registry_mut().register::<Mark>(MARK_TYPE);
     app.init_layout();
     (app, probe)
@@ -454,6 +447,7 @@ fn a_bound_component_builds_participant_trees_against_its_own_record() {
         required: vec![],
         optional: vec![],
         opens: &[],
+        room_record: false,
         create: bound_factory,
     };
     let target = crate::application::LaunchTarget::New;
@@ -526,7 +520,7 @@ fn a_bound_component_builds_participant_trees_against_its_own_record() {
         .find(|snapshot| snapshot.binding.same_component(&binding))
         .expect("component snapshot");
     let spec = tilo_actions::door::resolve(
-        &snapshot.resources,
+        snapshot.resources(),
         &tilo_actions::ActionAddress::new("test.doc", "mark"),
     )
     .expect("participant resolves mark");

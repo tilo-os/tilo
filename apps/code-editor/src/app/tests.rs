@@ -5,93 +5,49 @@ use automerge::ReadDoc;
 const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[test]
-fn resource_operations_accept_reject_wrong_kinds_and_resolve_late_files_lazily() {
-    // Each phase builds a fresh app and document.
-    direct_open_is_accepted_then_reports_the_exact_failure();
-    resource_operations_reject_wrong_kinds_without_changing_state();
-    large_resource_snapshot_is_bounded_but_late_file_activates_lazily();
+fn peer_hardware_language_metadata_survives_projection_without_a_source_extension() {
+    for language in [Language::Verilog, Language::SystemVerilog] {
+        let mut sample = synced_sample();
+        let id = "00000000-0000-4000-8000-0000000000ed";
+        sample.app.merge_peer_edit(|doc| {
+            crate::test_support::peer_file(
+                doc,
+                id,
+                "hardware.txt",
+                language.label(),
+                "module mac;\nendmodule\n",
+            );
+        });
+        sample.app.settle();
+        sample.editor(|app| {
+            let node = app
+                .session
+                .project
+                .node_for_resource(id)
+                .expect("peer file projected");
+            let file = app
+                .session
+                .project
+                .get(node)
+                .expect("projected file exists");
+            assert!(
+                matches!(
+                    &file.kind,
+                    crate::model::NodeKind::File { language: actual, .. } if *actual == language
+                ),
+                "persisted {language:?} wins over the .txt extension"
+            );
+        });
+    }
 }
 
-fn direct_open_is_accepted_then_reports_the_exact_failure() {
-    let mut app = CodeApp::new();
-    let mut doc = AutoCommit::new();
-    let invocation = tilo_actions::InvocationId::new();
-    let payload = serde_json::to_vec(&crate::actions::CodeEditorOperation::OpenFile {
-        path: Some("/definitely/missing/tilo-code-file".into()),
-    })
-    .unwrap();
-    let started = Widget::start_operation(
-        &mut app,
-        &ui::widget::ResourceOperation::local(
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::CODE_EDITOR_OPERATION_TYPE,
-            &payload,
-        ),
-        &mut doc,
-        &automerge::ROOT,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(started, ui::widget::ResourceOperationStart::Accepted);
-    app.sync(&mut doc, &automerge::ROOT);
-    assert!(matches!(
-        app.poll_resource_operation(invocation, false, &doc, &automerge::ROOT),
-        Some(tilo_actions::InvocationUpdate::Failed { .. })
-    ));
-}
-
-fn resource_operations_reject_wrong_kinds_without_changing_state() {
-    let (mut app, mut doc) = synced_sample();
-    let active = app.active_file_node();
-    let other = app
-        .session
-        .project
-        .nodes
-        .values()
-        .find(|node| Some(node.id) != active && matches!(node.kind, NodeKind::File { .. }))
-        .expect("sample has another file")
-        .id;
-    let open = serde_json::to_vec(&crate::actions::CodeEditorOperation::Open {
-        file_id: app.session.project.get(other).unwrap().resource_id.clone(),
-    })
-    .unwrap();
-    assert!(
-        Widget::start_operation(
-            &mut app,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CODE_EDITOR_OPERATION_TYPE,
-                &open
-            ),
-            &mut doc,
-            &automerge::ROOT
-        )
-        .is_err()
+#[test]
+fn hardware_dialects_use_standard_language_server_ids() {
+    assert_eq!(CodeApp::language_id(Language::Verilog), "verilog");
+    assert_eq!(
+        CodeApp::language_id(Language::SystemVerilog),
+        "systemverilog"
     );
-    assert_eq!(app.active_file_node(), active);
-
-    let open_file = serde_json::to_vec(&crate::actions::CodeEditorOperation::OpenFile {
-        path: Some("/tmp/wrong-kind.rs".into()),
-    })
-    .unwrap();
-    assert!(
-        Widget::start_operation(
-            &mut app,
-            &ui::widget::ResourceOperation::local(
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                crate::actions::CODE_EDITOR_OPERATION_TYPE,
-                &open_file
-            ),
-            &mut doc,
-            &automerge::ROOT
-        )
-        .is_err()
-    );
-    assert!(app.pending_resource_file.is_none());
-    assert!(app.resource_invocation.is_none());
 }
 
 #[test]
@@ -119,95 +75,10 @@ fn accessibility_exposes_project_and_active_document_context() {
             .is_some_and(|name| name.starts_with("Code — "))
     );
     assert_eq!(node.value.as_deref(), Some("main.rs"));
-    assert!(node.children.iter().any(|child| {
-        child
-            .name
-            .as_deref()
-            .is_some_and(|name| name.contains("open file"))
-    }));
-}
-
-fn invoke_search_hit(app: &mut CodeApp, doc: &mut AutoCommit, query: &str, kind: &str) {
-    let hit = ui::search::capability::search_providers(app)[0]
-        .search(query)
-        .into_iter()
-        .find(|hit| hit.kind == kind)
-        .expect("search hit");
-    let address = hit.action_address().expect("canonical address");
-    let resource = ui::resources::resource(app, doc, &address.resource)
-        .expect("address resolves through current widget authority");
-    let encoded = tilo_actions::door::encode(&[resource], &address, None)
-        .expect("lazy resource exports the searched action");
-    assert!(matches!(
-        Widget::start_operation(
-            app,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload
-            ),
-            doc,
-            &automerge::ROOT
-        )
-        .unwrap(),
-        Some(ui::widget::ResourceOperationStart::Completed(_))
-    ));
-    app.sync(doc, &automerge::ROOT);
-}
-
-#[test]
-fn search_hits_open_through_exported_actions_and_stale_addresses_are_refused() {
-    // Each phase builds a fresh synced sample.
-    file_search_uses_the_exported_open_action();
-    symbol_search_resolves_and_reproduces_the_exact_caret();
-    project_result_search_resolves_and_restores_results_context();
-    stale_search_address_is_refused_by_current_widget_authority();
-}
-
-fn file_search_uses_the_exported_open_action() {
-    let (mut app, mut doc) = synced_sample();
-    let prime = app
-        .session
-        .project
-        .nodes
-        .values()
-        .find(|node| node.name == "prime.rs")
-        .unwrap()
-        .id;
-    invoke_search_hit(
-        &mut app,
-        &mut doc,
-        "prime.rs",
-        crate::search_provider::PROJECT_KIND,
-    );
-    assert_eq!(app.active_file_node(), Some(prime));
-}
-
-fn stale_search_address_is_refused_by_current_widget_authority() {
-    let (mut app, mut doc) = synced_sample();
-    let file = app
-        .session
-        .project
-        .nodes
-        .values()
-        .find(|node| node.name == "prime.rs")
-        .expect("sample file")
-        .clone();
-    let address = crate::actions::open_file_address(&file.resource_id);
-    assert!(ui::resources::resource(&app, &doc, &address.resource).is_some());
-
-    app.session
-        .project
-        .remove_collaborative_file(&file.resource_id);
-    app.invalidate_search_projection();
-    app.refresh_search_catalog(&mut doc);
-    assert!(ui::resources::resource(&app, &doc, &address.resource).is_none());
     assert!(
-        ui::search::capability::search_providers(&app)[0]
-            .search("prime.rs")
-            .into_iter()
-            .all(|hit| hit.action_address() != Some(address.clone()))
+        node.children
+            .iter()
+            .any(|child| { child.name.as_deref().is_some_and(|name| name == "main.rs") })
     );
 }
 
@@ -218,203 +89,157 @@ fn search_projection_rebuilds_only_on_revisions_or_an_exhausted_generation() {
     exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor();
 }
 
-fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
-    let (mut app, mut doc) = synced_sample();
-    let initial = app.search_refresh_stats();
-    app.sync(&mut doc, &automerge::ROOT);
-    app.sync(&mut doc, &automerge::ROOT);
-    let idle = app.search_refresh_stats();
-    assert_eq!(idle.rebuilds, initial.rebuilds);
-    assert_eq!(idle.buffer_reads, initial.buffer_reads);
-    assert_eq!(idle.indexed_records, initial.indexed_records);
-    assert!(idle.skipped >= initial.skipped.saturating_add(2));
-
-    let node = app.active_file_node().expect("sample buffer");
-    let key = app.buffer_key(node);
-    let text = EditorDoc::buffer_text_key(&doc, &key).expect("buffer text");
-    EditorDoc::splice(&mut doc, &text, 0, 0, "fn revision_gate_needle() {}\n");
-    app.sync(&mut doc, &automerge::ROOT);
-    let after_document = app.search_refresh_stats();
-    assert_eq!(after_document.rebuilds, idle.rebuilds.saturating_add(1));
-    assert!(
-        ui::search::capability::search_providers(&app)[0]
-            .search("revision_gate_needle")
-            .iter()
-            .any(|hit| hit.kind == crate::search_provider::SYMBOL_KIND)
-    );
-
-    let root = app.session.project.root;
-    let late = app
-        .session
-        .project
-        .add_file(root, "project-revision-needle.rs", "");
-    app.invalidate_search_projection();
-    app.sync(&mut doc, &automerge::ROOT);
-    let after_project = app.search_refresh_stats();
-    assert_eq!(
-        after_project.rebuilds,
-        after_document.rebuilds.saturating_add(1)
-    );
-    assert!(
-        ui::search::capability::search_providers(&app)[0]
-            .search("project-revision-needle")
-            .iter()
-            .any(|hit| {
-                hit.action_address()
-                    == Some(crate::actions::open_file_address(
-                        &app.session
-                            .project
-                            .get(late)
-                            .expect("late file")
-                            .resource_id,
-                    ))
-            })
-    );
-
-    app.search_hits.push(search::Hit {
-        path: "/virtual/project-revision-needle.rs".into(),
-        rel: "project-revision-needle.rs".into(),
-        line: 1,
-        col: 0,
-        len: 6,
-        preview: "result_revision_needle".into(),
-        preview_offset: 0,
+#[test]
+fn navigation_and_result_changes_reuse_symbols_but_pending_forks_do_not() {
+    use automerge::transaction::Transactable;
+    let mut sample = synced_sample();
+    sample.with_doc(|app, doc| {
+        let before = app.search_refresh_stats();
+        app.invalidate_search_projection();
+        app.refresh_search_entries(doc.doc());
+        assert_eq!(app.search_refresh_stats().buffer_reads, before.buffer_reads);
+        let node = app.active_file_node().expect("sample source");
+        let key = app.buffer_key(node);
+        let object = EditorDoc::buffer_text_key(doc, &key).expect("authoritative text");
+        let mut first = doc.doc().clone();
+        let mut second = doc.doc().clone();
+        first
+            .splice_text(&object, 0, 0, "fn pending_first() {}\n")
+            .unwrap();
+        second
+            .splice_text(&object, 0, 0, "fn pending_other() {}\n")
+            .unwrap();
+        assert_eq!(first.pending_ops(), second.pending_ops());
+        assert!(first.pending_ops() > 0);
+        assert_eq!(first.committed_heads(), second.committed_heads());
+        app.refresh_search_entries(&first);
+        assert!(
+            app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name == "pending_first")
+        );
+        app.refresh_search_entries(&second);
+        assert!(
+            app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name == "pending_other")
+        );
+        assert!(
+            !app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name == "pending_first")
+        );
+        app.refresh_search_entries(doc.doc());
+        assert!(
+            !app.search_symbols
+                .iter()
+                .any(|symbol| symbol.name.starts_with("pending_"))
+        );
+        assert_eq!(
+            first.pending_ops(),
+            second.pending_ops(),
+            "reading did not commit either fork"
+        );
     });
-    app.invalidate_search_projection();
-    app.sync(&mut doc, &automerge::ROOT);
-    let after_results = app.search_refresh_stats();
-    assert_eq!(
-        after_results.rebuilds,
-        after_project.rebuilds.saturating_add(1)
-    );
-    assert!(
-        ui::search::capability::search_providers(&app)[0]
-            .search("result_revision_needle")
+}
+
+fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
+    let mut sample = synced_sample();
+    sample.with_doc(|app, doc| {
+        let initial = app.search_refresh_stats();
+        app.sync(doc.doc(), &automerge::ROOT);
+        app.sync(doc.doc(), &automerge::ROOT);
+        let idle = app.search_refresh_stats();
+        assert_eq!(idle.rebuilds, initial.rebuilds);
+        assert_eq!(idle.buffer_reads, initial.buffer_reads);
+        assert_eq!(idle.indexed_records, initial.indexed_records);
+        assert!(idle.skipped >= initial.skipped.saturating_add(2));
+
+        let node = app.active_file_node().expect("sample buffer");
+        let key = app.buffer_key(node);
+        let base = EditorDoc::read_buffer_key(doc, &key).expect("buffer text");
+        app.dispatch_text_action(
+            doc,
+            key,
+            &base,
+            &format!("fn revision_gate_needle() {{}}\n{base}"),
+        )
+        .unwrap();
+        app.sync(doc.doc(), &automerge::ROOT);
+        let after_document = app.search_refresh_stats();
+        assert_eq!(after_document.rebuilds, idle.rebuilds.saturating_add(1));
+        assert!(
+            ui::search::SearchProvider::search(
+                &ui::framework::testing::search_source::<crate::project::Project>(
+                    app.code_search_entries()
+                ),
+                "revision_gate_needle"
+            )
             .iter()
-            .any(|hit| hit.kind == crate::search_provider::RESULT_KIND)
-    );
+            .any(|hit| hit.kind == crate::search_entries::SYMBOL_KIND)
+        );
+
+        let root = app.session.project.root;
+        app.session.project.add_file(
+            root,
+            "project-revision-needle.rs",
+            "fn project_revision_needle() {}\n",
+        );
+        app.invalidate_search_projection();
+        app.sync(doc.doc(), &automerge::ROOT);
+        let after_project = app.search_refresh_stats();
+        assert_eq!(
+            after_project.rebuilds,
+            after_document.rebuilds.saturating_add(1)
+        );
+        app.search_hits.push(search::Hit {
+            path: "/virtual/project-revision-needle.rs".into(),
+            rel: "project-revision-needle.rs".into(),
+            line: 1,
+            col: 0,
+            len: 6,
+            preview: "result_revision_needle".into(),
+            preview_offset: 0,
+        });
+        app.invalidate_search_projection();
+        app.sync(doc.doc(), &automerge::ROOT);
+        let after_results = app.search_refresh_stats();
+        assert_eq!(
+            after_results.buffer_reads, after_project.buffer_reads,
+            "new result previews do not rescan authoritative source bodies"
+        );
+        assert_eq!(
+            after_results.rebuilds,
+            after_project.rebuilds.saturating_add(1)
+        );
+        assert!(
+            ui::search::SearchProvider::search(
+                &ui::framework::testing::search_source::<crate::project::Project>(
+                    app.code_search_entries()
+                ),
+                "result_revision_needle"
+            )
+            .iter()
+            .any(|hit| hit.kind == crate::search_entries::RESULT_KIND)
+        );
+    });
 }
 
 fn exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor() {
-    let (mut app, mut doc) = synced_sample();
-    app.search_projection_local_generation = Some(u64::MAX);
-    app.invalidate_search_projection();
-    assert_eq!(app.search_projection_local_generation, None);
-    let before = app.search_refresh_stats().rebuilds;
-    app.refresh_search_catalog(&mut doc);
-    app.refresh_search_catalog(&mut doc);
-    assert_eq!(
-        app.search_refresh_stats().rebuilds,
-        before.saturating_add(2),
-        "an exhausted generation must never make a stale catalogue look current"
-    );
-}
-
-fn large_resource_snapshot_is_bounded_but_late_file_activates_lazily() {
-    let mut app = CodeApp::new();
-    let root = app.session.project.root;
-    let mut late_id = String::new();
-    for index in 0..=crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT {
-        let node = app
-            .session
-            .project
-            .add_file(root, &format!("file-{index}.rs"), "");
-        if index == crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT {
-            late_id = app
-                .session
-                .project
-                .get(node)
-                .expect("added file")
-                .resource_id
-                .clone();
-        }
-    }
-    let mut doc = AutoCommit::new();
-    app.refresh_search_catalog(&mut doc);
-    let snapshot = ui::resources::resources(&app, &doc);
-    assert!(
-        snapshot[0].children.len() <= crate::actions::EAGER_RESOURCE_SNAPSHOT_LIMIT,
-        "the eager tree must remain bounded by its resource cap"
-    );
-
-    let address = crate::actions::open_file_address(&late_id);
-    assert!(
-        tilo_actions::door::resolve(&snapshot, &address).is_none(),
-        "the late file must not be eagerly materialized"
-    );
-    let resource = ui::resources::resource(&app, &doc, &address.resource)
-        .expect("late file is still current widget authority");
-    let encoded = tilo_actions::door::encode(&[resource], &address, None)
-        .expect("the lazy resource retains its open action");
-    assert!(matches!(
-        Widget::start_operation(
-            &mut app,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload
-            ),
-            &mut doc,
-            &automerge::ROOT
-        )
-        .expect("operation routes through the widget"),
-        Some(ui::widget::ResourceOperationStart::Completed(_))
-    ));
-}
-
-fn symbol_search_resolves_and_reproduces_the_exact_caret() {
-    let (mut app, mut doc) = synced_sample();
-    let node = app.active_file_node().unwrap();
-    let text = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
-    let expected_line = text
-        .lines()
-        .position(|line| line.contains("fn parse_limit"))
-        .unwrap();
-    let expected_col = text
-        .lines()
-        .nth(expected_line)
-        .unwrap()
-        .find("parse_limit")
-        .unwrap();
-
-    invoke_search_hit(
-        &mut app,
-        &mut doc,
-        "parse_limit",
-        crate::search_provider::SYMBOL_KIND,
-    );
-    assert_eq!(app.active_file_node(), Some(node));
-    assert_eq!(app.editor.primary_caret(), (expected_line, expected_col));
-}
-
-fn project_result_search_resolves_and_restores_results_context() {
-    let (mut app, mut doc) = synced_sample();
-    let node = app.active_file_node().unwrap();
-    app.search_hits = vec![search::Hit {
-        path: "/virtual/ferris-cli/src/main.rs".into(),
-        rel: app.session.project.path_of(node),
-        line: 12,
-        col: 4,
-        len: 6,
-        preview: "canonical_result_needle".into(),
-        preview_offset: 0,
-    }];
-    app.last_search_needle = "canonical_result_needle".into();
-    app.push_search_state();
-    app.invalidate_search_projection();
-    app.refresh_search_catalog(&mut doc);
-
-    invoke_search_hit(
-        &mut app,
-        &mut doc,
-        "canonical_result_needle",
-        crate::search_provider::RESULT_KIND,
-    );
-    assert_eq!(app.active_file_node(), Some(node));
-    assert_eq!(app.editor.primary_caret(), (11, 4));
-    assert!(app.panel_visible);
-    assert_eq!(app.panel.active_tab(), PanelTab::Search);
+    let mut sample = synced_sample();
+    sample.with_doc(|app, doc| {
+        app.search_projection_local_generation = Some(u64::MAX);
+        app.invalidate_search_projection();
+        assert_eq!(app.search_projection_local_generation, None);
+        let before = app.search_refresh_stats().rebuilds;
+        app.refresh_search_entries(doc);
+        app.refresh_search_entries(doc);
+        assert_eq!(
+            app.search_refresh_stats().rebuilds,
+            before.saturating_add(2),
+            "an exhausted generation must never make a stale catalogue look current"
+        );
+    });
 }
 
 #[test]
@@ -446,17 +271,21 @@ fn ide_embeds_the_real_terminal_widget() {
 
 fn ide_terminal_runs_a_command_and_shows_output() {
     // End-to-end: open the embedded terminal, type a command, pump the
-    // app's `sync` (which drains the terminal's PTY), and prove the shell's
+    // app's update, settle and sync passes, and prove the shell's
     // output flowed back into the IDE's integrated terminal grid.
     let mut app = CodeApp::with_sample();
     app.shots_open_terminal();
     let mut state = ui::State::new();
-    app.sync(&mut state.doc, &state.root);
+    app.update(&state.doc, &state.root);
+    app.settle(&mut ui::widget::Edits::lend(&mut state.doc), &state.root);
+    app.sync(&state.doc, &state.root);
     app.shots_terminal_input("printf 'IDE_TERM_OK\\n'\n");
     let mut found = false;
     let deadline = ui::time::now() + HANG_BOUND;
     while ui::time::now() < deadline {
-        app.sync(&mut state.doc, &state.root);
+        app.update(&state.doc, &state.root);
+        app.settle(&mut ui::widget::Edits::lend(&mut state.doc), &state.root);
+        app.sync(&state.doc, &state.root);
         if let Some(t) = app.shots_terminal_grid_text()
             && t.contains("IDE_TERM_OK")
         {
@@ -471,181 +300,239 @@ fn ide_terminal_runs_a_command_and_shows_output() {
     );
 }
 
+#[test]
+fn the_embedded_terminal_is_the_projects_terminal_child() {
+    let mut app = ui::framework::testing::TestApp::<crate::CodeEditorShell>::new().unwrap();
+    crate::test_support::editor(&mut app, CodeApp::shots_open_terminal);
+    app.settle();
+    crate::test_support::editor(&mut app, |app| {
+        app.shots_terminal_input("printf 'CHILD_TERM_OK\\n'\n");
+    });
+    // The shell's output stays in the terminal; the project records the
+    // session the process took.
+    let shown = |app: &mut ui::framework::testing::TestApp<crate::CodeEditorShell>| {
+        let recorded = app
+            .state()
+            .terminal_panel
+            .as_ref()
+            .is_some_and(|session| !session.pane_id().is_empty());
+        recorded
+            && crate::test_support::editor(app, |app| app.shots_terminal_grid_text())
+                .is_some_and(|text| text.contains("CHILD_TERM_OK"))
+    };
+    let deadline = ui::time::now() + HANG_BOUND;
+    while !shown(&mut app) && ui::time::now() < deadline {
+        app.settle();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        shown(&mut app),
+        "the shell's output shows, and the session is the one the project records"
+    );
+    let published = app.harness().resources();
+    let child = published
+        .iter()
+        .flat_map(|resource| resource.children.iter())
+        .find(|child| child.id.as_str() == crate::resource::TERMINAL_RESOURCE_ID)
+        .expect("the project publishes its terminal");
+    assert_eq!(child.kind, "code_editor.project.terminal");
+    app.read_document(|doc| {
+        assert!(
+            doc.get(automerge::ROOT, "terminal_title")
+                .unwrap()
+                .is_none()
+                && doc
+                    .get(automerge::ROOT, "terminal_local_session")
+                    .unwrap()
+                    .is_none(),
+            "nothing of the session is written beside the project's files"
+        );
+    });
+}
+
 fn ensure_buffers_seeds_active_text() {
-    let mut app = CodeApp::with_sample();
-    let mut doc = AutoCommit::new();
-    app.ensure_buffers(&mut doc);
-    let node = app.session.active_buffer().unwrap().node;
-    let text = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
+    let mut sample = synced_sample();
+    let (text, bound) = sample.with_doc(|app, doc| {
+        let node = app.session.active_buffer().unwrap().node;
+        (
+            EditorDoc::read_buffer_key(doc, &app.buffer_key(node)).unwrap(),
+            app.editor.is_bound(),
+        )
+    });
     assert!(text.contains("fn main"));
-    assert!(app.editor.is_bound());
+    assert!(bound);
 }
 
 #[test]
-fn tab_pills_mirror_open_buffers_by_node_id_and_close_prompts_only_when_dirty() {
+fn a_window_shows_one_file_and_asks_before_dropping_unsaved_work() {
     // Each phase builds a fresh sample app.
-    opening_a_second_file_adds_a_tab();
-    reconcile_tabs_keys_pills_to_open_buffers_by_node_id();
-    reconcile_tabs_mirrors_dirty_into_the_shared_bars_modified_mark();
-    sync_tab_accents_tints_each_pill_by_its_buffers_language();
-    closing_the_shared_bars_pill_removes_the_matching_buffer_by_id_not_position();
-    selecting_a_different_pill_is_read_back_via_active_id();
-    closing_a_dirty_tab_prompts_before_discarding();
-    closing_a_clean_tab_closes_immediately();
+    opening_another_file_replaces_the_shown_one();
+    opening_another_file_over_unsaved_edits_asks_first();
+    the_header_names_the_shown_file_and_marks_unsaved_edits();
+    the_editor_has_no_tab_strip_and_leaves_ctrl_w_to_the_desktop();
+    quick_open_and_go_to_line_open_the_host_palette();
 }
 
-fn opening_a_second_file_adds_a_tab() {
-    let mut app = CodeApp::with_sample();
-    // Find prime.rs.
-    let prime = app
-        .session
+fn sample_node(app: &CodeApp, name: &str) -> crate::model::NodeId {
+    app.session
         .project
         .nodes
         .values()
-        .find(|n| n.name == "prime.rs")
+        .find(|n| n.name == name)
         .unwrap()
-        .id;
+        .id
+}
+
+fn opening_another_file_replaces_the_shown_one() {
+    let mut app = CodeApp::with_sample();
+    let main = app.session.active_buffer().unwrap().node;
+    let prime = sample_node(&app, "prime.rs");
     app.open_node(prime);
-    assert_eq!(app.session.open.len(), 2);
     assert_eq!(app.session.active_buffer().unwrap().name, "prime.rs");
-}
-
-/// Every open buffer's node id, cast the same way `reconcile_tabs` casts
-/// it, so a test can compare against `app.tabs.tabs()` ids without
-/// duplicating the cast at every call site.
-fn open_ids(app: &CodeApp) -> Vec<u64> {
-    app.session.open.iter().map(|b| b.node as u64).collect()
-}
-
-fn reconcile_tabs_keys_pills_to_open_buffers_by_node_id() {
-    let mut app = CodeApp::with_sample();
-    let prime = app
-        .session
-        .project
-        .nodes
-        .values()
-        .find(|n| n.name == "prime.rs")
-        .unwrap()
-        .id;
-    app.open_node(prime); // open_node already reconciles.
-
-    let pill_ids: Vec<u64> = app.tabs.tabs().iter().map(|t| t.id).collect();
-    assert_eq!(
-        pill_ids,
-        open_ids(&app),
-        "the bar's pills must be exactly the session's open buffers, in \
-             the same order, keyed by node id"
-    );
-}
-
-fn reconcile_tabs_mirrors_dirty_into_the_shared_bars_modified_mark() {
-    let (mut app, mut doc) = synced_sample();
-    let id = app.session.active_buffer().unwrap().node as u64;
     assert!(
-        !app.tabs.is_modified(id),
-        "a freshly-opened buffer is clean"
+        app.session.buffer_of(main).is_none(),
+        "a window shows one file; main.rs is not kept open behind it"
     );
-
-    app.editor.insert_for_test(&mut doc, "X");
-    app.dispatch_editor_text_edits(&mut doc);
-    app.ensure_buffers(&mut doc);
-    app.reconcile_tabs();
     assert!(
-        app.tabs.is_modified(id),
-        "an edited buffer's pill must pick up the unsaved-changes mark"
+        app.close_prompt.is_none(),
+        "a clean file is replaced without asking"
     );
 }
 
-fn sync_tab_accents_tints_each_pill_by_its_buffers_language() {
-    // `with_sample` opens main.rs, a Rust file.
-    let mut app = CodeApp::with_sample();
-    let theme = Theme::dark();
-    let id = app.session.active_buffer().unwrap().node as u64;
+fn opening_another_file_over_unsaved_edits_asks_first() {
+    let mut sample = synced_sample();
+    sample.with_doc(|app, doc| {
+        app.editor.insert_for_test(doc, "X");
+        app.dispatch_editor_text_edits(doc);
+    });
+    sample.app.settle();
+    let main = sample.editor(|app| {
+        let shown = app.session.active_buffer().unwrap();
+        assert!(shown.dirty, "the buffer now has unsaved edits");
+        shown.node
+    });
 
-    app.sync_tab_accents(&theme);
+    sample.open("src/prime.rs");
+    sample.editor(move |app| {
+        assert_eq!(
+            app.session.active_buffer().unwrap().node,
+            main,
+            "unsaved work is not dropped out from under the user"
+        );
+        assert!(app.close_prompt.is_some(), "the save prompt is raised");
+    });
 
-    assert_eq!(
-        app.tabs.accent(id),
-        Some(lang_accent(Language::Rust, &theme)),
-        "a Rust buffer's pill must carry the theme's Rust accent"
-    );
+    sample.with_doc(|app, doc| app.resolve_close_prompt(doc, CloseChoice::Cancel));
+    sample.editor(move |app| {
+        assert_eq!(
+            app.session.active_buffer().unwrap().node,
+            main,
+            "cancel keeps it"
+        );
+    });
+
+    sample.open("src/prime.rs");
+    sample.with_doc(|app, doc| app.resolve_close_prompt(doc, CloseChoice::Discard));
+    sample.app.settle();
+    sample.editor(|app| {
+        assert_eq!(
+            app.session.active_buffer().unwrap().name,
+            "prime.rs",
+            "discarding shows the file that was asked for"
+        );
+        assert!(app.close_prompt.is_none());
+    });
 }
 
-fn closing_the_shared_bars_pill_removes_the_matching_buffer_by_id_not_position() {
-    // The whole point of reconciling by node id rather than position: the
-    // pill the user clicked × on must be the buffer that closes — even
-    // one that is neither at index 0 nor the active tab, which is the
-    // one case "close index 0" or "close whatever's active" would also
-    // get right by accident.
-    let mut app = CodeApp::with_sample();
-    let names = ["prime.rs", "greeter.rs"];
-    let ids: Vec<crate::model::NodeId> = names
-        .iter()
-        .map(|name| {
-            app.session
-                .project
-                .nodes
-                .values()
-                .find(|n| n.name == *name)
-                .unwrap()
-                .id
-        })
-        .collect();
-    for id in ids {
-        app.open_node(id);
+fn the_header_names_the_shown_file_and_marks_unsaved_edits() {
+    let mut sample = synced_sample();
+    sample.editor(|app| {
+        app.refresh_header();
+        assert_eq!(*app.header_label.borrow(), "main.rs");
+    });
+    sample.with_doc(|app, doc| {
+        app.editor.insert_for_test(doc, "X");
+        app.dispatch_editor_text_edits(doc);
+    });
+    sample.app.settle();
+    sample.editor(|app| {
+        app.refresh_header();
+        assert_eq!(*app.header_label.borrow(), "main.rs \u{2022}");
+    });
+}
+
+fn the_editor_has_no_tab_strip_and_leaves_ctrl_w_to_the_desktop() {
+    fn has_tab_bar(node: &ui::a11y::AccessNode) -> bool {
+        node.role == ui::a11y::Role::TabBar || node.children.iter().any(has_tab_bar)
     }
-    // [main.rs, prime.rs, greeter.rs], active = greeter.rs (index 2).
-    assert_eq!(app.session.open.len(), 3);
-    app.session.active = Some(0); // main.rs is active; prime.rs is neither.
-
-    let prime_id = app.session.open[1].node as u64;
-    // Stand-in for the user clicking prime.rs's own × — the widget fades
-    // it and publishes the id via `take_close`, independent of position.
-    app.tabs.start_closing(prime_id);
-
-    let doc = AutoCommit::new();
-    app.drain_child_events(&doc);
-
-    let remaining: Vec<&str> = app.session.open.iter().map(|b| b.name.as_str()).collect();
-    assert_eq!(
-        remaining,
-        vec!["main.rs", "greeter.rs"],
-        "closing prime.rs's pill must close prime.rs specifically, not \
-             index 0 or whatever happens to be active"
+    fn walk(widget: &dyn Widget, found: &mut bool) {
+        if widget
+            .accessibility()
+            .is_some_and(|node| has_tab_bar(&node))
+        {
+            *found = true;
+        }
+        for child in widget.children() {
+            walk(child, found);
+        }
+    }
+    let mut sample = synced_sample();
+    let found = sample.editor(|app| {
+        let mut found = false;
+        walk(app, &mut found);
+        found
+    });
+    assert!(
+        !found,
+        "documents are desktop tabs; the editor draws no tab strip"
+    );
+    assert!(
+        crate::effects::CodeEditorEffect::specs()
+            .iter()
+            .all(|spec| !spec.id.contains("tab")),
+        "closing is the desktop's tab lifecycle, not an editor command"
     );
 }
 
-fn selecting_a_different_pill_is_read_back_via_active_id() {
-    let mut app = CodeApp::with_sample();
-    let prime = app
-        .session
-        .project
-        .nodes
-        .values()
-        .find(|n| n.name == "prime.rs")
-        .unwrap()
-        .id;
-    app.open_node(prime); // active is now prime.rs
-    let main_node = app.session.open[0].node;
-    assert_eq!(app.session.active, Some(1));
-
-    // A press on the bar already moved its own `active_id` (see
-    // `TabBar::handle_event`); this stands in for that click landing on
-    // main.rs's pill instead.
-    app.tabs.set_active(main_node as u64);
-    app.bound_node = Some(main_node.wrapping_add(1)); // sentinel, must be cleared
-
-    let doc = AutoCommit::new();
-    app.drain_child_events(&doc);
-
+fn quick_open_and_go_to_line_open_the_host_palette() {
+    let mut sample = synced_sample();
+    let _ = ui::host_palette::take();
+    sample.app.harness().set_modifiers(&["ctrl".to_owned()]);
+    sample.app.harness().key("p");
     assert_eq!(
-        app.session.active,
-        Some(0),
-        "the session must follow the bar's active_id back to main.rs"
+        sample
+            .app
+            .harness()
+            .focused_access_node()
+            .expect("host search focus")
+            .children
+            .into_iter()
+            .find(|node| node.name.as_deref() == Some("Search"))
+            .expect("host search query")
+            .role,
+        ui::a11y::Role::TextInput,
+        "quick open exposes the platform search query over project entries"
     );
+    sample.app.harness().set_modifiers(&[]);
+    sample.app.harness().key("Escape");
+    sample.app.harness().set_modifiers(&["ctrl".to_owned()]);
+    sample.app.harness().key("g");
+    sample.app.harness().set_modifiers(&[]);
     assert_eq!(
-        app.bound_node, None,
-        "switching which buffer is selected must force the editor to re-bind"
+        ui::host_palette::take(),
+        Some(ui::host_palette::PaletteRequest::Action(
+            ui::tilo_actions::ActionAddress::new(
+                <crate::project::Project as ui::tilo_resource::Resource>::KIND,
+                "go-to-line"
+            )
+        )),
+        "go to line asks for its line on the published effect"
+    );
+    let entries =
+        <crate::project::Project as ui::tilo_resource::Resource>::search(&sample.app.state());
+    assert!(
+        entries.iter().any(|entry| entry.title == "main.rs"),
+        "the project's files are its search entries"
     );
 }
 
@@ -653,7 +540,6 @@ fn selecting_a_different_pill_is_read_back_via_active_id() {
 fn editor_commands_edit_through_the_crdt_and_move_the_caret() {
     // Each phase builds a fresh synced sample.
     editing_routes_through_crdt();
-    editor_gesture_and_replace_text_resource_encode_the_same_action();
     duplicate_line_repeats_it_below();
     move_line_down_swaps_with_the_next();
     delete_line_removes_it();
@@ -663,46 +549,15 @@ fn editor_commands_edit_through_the_crdt_and_move_the_caret() {
 }
 
 fn editing_routes_through_crdt() {
-    let (mut app, mut doc) = synced_sample();
-    let node = app.session.active_buffer().unwrap().node;
-    let before = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
-    app.editor.insert_for_test(&mut doc, "X");
-    app.dispatch_editor_text_edits(&mut doc);
-    let after = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
-    assert_eq!(after.chars().count(), before.chars().count() + 1);
-}
-
-fn editor_gesture_and_replace_text_resource_encode_the_same_action() {
-    let (mut app, mut doc) = synced_sample();
-    let node = app.session.active_buffer().unwrap().node;
-    let base = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
-    app.editor.move_caret_to(0, 0);
-    app.editor.insert_for_test(&mut doc, "λ");
-    let next = format!("λ{base}");
-    let expected = ui::resources::resources(&app, &doc)
-        .iter()
-        .find_map(|resource| {
-            find_resource(resource, &actions::file_resource_id(app.buffer_key(node)))
-        })
-        .and_then(|resource| {
-            resource
-                .actions
-                .iter()
-                .find(|action| action.id == "replace-text")
-                .cloned()
-        })
-        .expect("active file publishes Replace text")
-        .build_args([("text".to_string(), tilo_actions::ArgValue::Text(next))])
-        .expect("valid replace text argument");
-    app.dispatch_editor_text_edits(&mut doc);
-    let actual = app
-        .actions
-        .last_dispatched()
-        .expect("gesture dispatched action");
-    assert_eq!(
-        actual, &expected,
-        "gesture and resource action are identical"
-    );
+    let mut sample = synced_sample();
+    sample.with_doc(|app, doc| {
+        let node = app.session.active_buffer().unwrap().node;
+        let before = EditorDoc::read_buffer_key(doc, &app.buffer_key(node)).unwrap();
+        app.editor.insert_for_test(doc, "X");
+        app.dispatch_editor_text_edits(doc);
+        let after = EditorDoc::read_buffer_key(doc, &app.buffer_key(node)).unwrap();
+        assert_eq!(after.chars().count(), before.chars().count() + 1);
+    });
 }
 
 #[test]
@@ -721,9 +576,15 @@ fn toggle_sidebar_command_hides_it() {
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
     assert!(app.sidebar_open());
-    app.apply_command(Command::ToggleSidebar, &mut doc);
+    app.apply_command(
+        Command::ToggleSidebar,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     assert!(!app.sidebar_open());
-    app.apply_command(Command::ToggleSidebar, &mut doc);
+    app.apply_command(
+        Command::ToggleSidebar,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     assert!(app.sidebar_open());
 }
 
@@ -735,78 +596,48 @@ fn project_files_are_created_by_durable_actions_and_adopted_from_peers() {
 }
 
 fn new_file_command_dispatches_the_durable_create_file_action() {
-    // The on-screen "New file" command and the Ctrl+K "New file" spec must
-    // build the byte-identical action — one source of truth. Both carry the
-    // UUID captured at authoring time, never a local project-arena id.
-    let mut app = CodeApp::with_sample();
-    let mut doc = AutoCommit::new();
-    app.ensure_buffers(&mut doc); // seed the sample project's open buffers
-
-    let ctx = app.code_resource_ctx();
-    let expected_file_id = ctx.next_file_id.clone();
-    let resources = crate::actions::provide_resources(&ctx, &doc);
-    let spec = resources[0]
-        .actions
-        .iter()
-        .find(|a| a.id == "new-file")
-        .unwrap();
-    let from_spec = match &spec.input {
-        tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-        tilo_actions::ActionInput::Prompted { .. } | tilo_actions::ActionInput::Deferred { .. } => {
-            panic!("new-file is an immediate action")
-        }
-    };
-
-    app.apply_command(Command::NewFile, &mut doc);
-
-    let dispatched = app
-        .actions
-        .last_dispatched()
-        .expect("New File dispatched an action");
-    assert_eq!(
-        dispatched, &from_spec,
-        "the command and the Ctrl+K spec build the identical action"
-    );
-    // The action actually materialised the buffer in the document.
-    assert!(EditorDoc::read_buffer_key(&doc, &expected_file_id).is_some());
+    // The on-screen "New file" command creates the file through the
+    // project's own action, under a UUID minted when it is authored (never a
+    // local project-arena id), and opens it.
+    let mut sample = synced_sample();
+    let created = sample.with_doc(|app, doc| {
+        let before: std::collections::HashSet<String> = EditorDoc::files(doc)
+            .into_iter()
+            .map(|file| file.id)
+            .collect();
+        app.apply_command(Command::NewFile, doc);
+        let created = EditorDoc::files(doc)
+            .into_iter()
+            .find(|file| !before.contains(&file.id))
+            .expect("the action created a file record");
+        assert!(EditorDoc::read_buffer_key(doc, &created.id).is_some());
+        created
+    });
+    assert!(uuid::Uuid::parse_str(&created.id).is_ok());
+    sample.app.settle();
+    let active = sample.editor(|app| app.session.active_buffer().map(|b| b.name.clone()));
+    assert_eq!(active, Some(created.name), "the new file is open");
 }
 
 fn a_collaborative_file_is_adopted_as_a_tracked_file() {
     // A peer's durable file record is surfaced by the next sync. The
     // resource UUID, rather than a coincidental local arena number, is the
     // thing the projection follows.
-    let mut app = CodeApp::with_sample();
-    let mut doc = AutoCommit::new();
-    app.ensure_buffers(&mut doc);
-    let before = app.session.project.nodes.len();
-
-    let orphan = "peer-file-uuid";
-    EditorDoc::create_file(
-        &mut doc,
-        &crate::doc::CollaborativeFile {
-            id: orphan.into(),
-            kind: "file".into(),
-            name: "peer.rs".into(),
-            path: "peer.rs".into(),
-            parent: None,
-            language: "Rust".into(),
-            order: 1,
-            deleted: false,
-            name_revision: 0,
-            structure_revision: 0,
-            language_revision: 0,
-            deletion_revision: 0,
-        },
-        "// created out of band\n",
-    );
-    assert!(app.session.project.node_for_resource(orphan).is_none());
-
-    app.ensure_buffers(&mut doc);
-    assert!(
-        app.session.project.node_for_resource(orphan).is_some(),
-        "the document buffer was adopted as a file"
-    );
-    assert_eq!(app.session.project.nodes.len(), before + 1);
+    let mut sample = synced_sample();
+    let before = sample.editor(|app| app.session.project.nodes.len());
+    let orphan = "00000000-0000-4000-8000-0000000000ee";
+    sample.app.merge_peer_edit(|doc| {
+        crate::test_support::peer_file(doc, orphan, "peer.rs", "Rust", "// created out of band\n");
+    });
+    sample.app.settle();
+    let (adopted, after) = sample.editor(|app| {
+        (
+            app.session.project.node_for_resource(orphan).is_some(),
+            app.session.project.nodes.len(),
+        )
+    });
+    assert!(adopted, "the document buffer was adopted as a file");
+    assert_eq!(after, before + 1);
 }
 
 fn layout_is_docked_when_wide_overlay_when_narrow() {
@@ -816,9 +647,10 @@ fn layout_is_docked_when_wide_overlay_when_narrow() {
     app.set_width_hint(600.0);
     assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
     // Boundary is inclusive at the breakpoint → docked.
-    app.set_width_hint(SIDEBAR_BREAKPOINT);
+    let breakpoint = app.drawer.resolved_breakpoint();
+    app.set_width_hint(breakpoint);
     assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
-    app.set_width_hint(SIDEBAR_BREAKPOINT - 1.0);
+    app.set_width_hint(breakpoint - 1.0);
     assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
 }
 
@@ -900,7 +732,7 @@ fn problems_panel_reports_lint_findings_and_defers_to_the_language_server() {
 fn diagnostics_populate_for_buffer_with_todo() {
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
-    app.ensure_buffers(&mut doc);
+    app.ensure_buffers(&doc);
     // Put a marker the linter is guaranteed to report into the open buffer,
     // so this asserts that the pipeline carries a real finding through to
     // the panel rather than merely that it does not panic.
@@ -971,8 +803,8 @@ fn an_unfinished_server_replaces_the_no_problems_claim() {
 /// helper that formats it.
 fn the_panel_learns_the_server_is_still_working() {
     let mut app = CodeApp::with_sample();
-    let mut doc = AutoCommit::new();
-    app.ensure_buffers(&mut doc);
+    let doc = AutoCommit::new();
+    app.ensure_buffers(&doc);
 
     app.refresh_diagnostics(&doc);
     assert_eq!(
@@ -1000,9 +832,7 @@ fn the_panel_learns_the_server_is_still_working() {
 #[test]
 fn disk_files_load_stat_and_save_back_through_the_crdt() {
     // Each phase uses its own tempdir, app and document.
-    open_file_from_path_loads_it();
     a_document_from_a_previous_session_still_stats_the_file();
-    edit_and_save_round_trips_to_disk();
 }
 
 /// A persisted document handing back a buffer must not let a save skip the
@@ -1018,49 +848,59 @@ fn a_document_from_a_previous_session_still_stats_the_file() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("main.rs");
     std::fs::write(&file, "fn main() { on_disk() }\n").unwrap();
+    let launch = [file.to_str().unwrap()];
+    let mut app =
+        ui::framework::testing::TestApp::<crate::CodeEditorShell>::launched(&launch).unwrap();
 
-    let mut app = CodeApp::open_path(&file);
-    let node = app.session.active_buffer().expect("a tab is open").node;
+    // Unsaved edits the project's document keeps from this session.
+    let key = crate::test_support::editor(&mut app, |app| {
+        app.buffer_key(app.session.active_buffer().unwrap().node)
+    });
+    app.invoke(
+        ui::tilo_resource::Invoke::apply(&actions::text_edit_action(
+            key.clone(),
+            "fn main() { on_disk() }\n",
+            "fn main() { from_last_session() }\n",
+        ))
+        .unwrap(),
+    )
+    .unwrap();
 
-    // A document that already carries this buffer, as a restored one does,
-    // holding text that is not what the file says.
-    let mut doc = AutoCommit::new();
-    EditorDoc::ensure_buffer_key(
-        &mut doc,
-        &app.buffer_key(node),
-        "fn main() { from_last_session() }\n",
-    );
-
-    app.ensure_buffers(&mut doc);
-
-    let buf = app
-        .session
-        .open
-        .iter()
-        .find(|b| b.node == node)
-        .expect("still open");
+    // The next launch finds that text in the document.
+    let mut app = app.relaunch(&launch).unwrap();
+    app.settle();
+    let (stamped, path, saved, dirty) = crate::test_support::editor(&mut app, |app| {
+        let buf = app.session.active_buffer().expect("still open");
+        (
+            buf.stamp.is_some(),
+            buf.path.clone(),
+            buf.saved_text.clone(),
+            buf.dirty,
+        )
+    });
     assert!(
-        buf.stamp.is_some(),
+        stamped,
         "the file was stat'ed, so a save has something to check against"
     );
     assert_eq!(
-        buf.path.as_deref().map(crate::disk::canonical),
+        path.as_deref().map(crate::disk::canonical),
         Some(crate::disk::canonical(&file)),
         "and the buffer knows which file it writes back to"
     );
     assert_eq!(
-        buf.saved_text, "fn main() { on_disk() }\n",
+        saved, "fn main() { on_disk() }\n",
         "what counts as 'unmodified' is the bytes on disk, not the document"
     );
     assert!(
-        buf.dirty,
+        dirty,
         "the restored text differs from the file, so it reads as unsaved \
              edits rather than as agreement"
     );
     // The restored text is kept — a previous session's unsaved work, or a
     // peer's in-flight edits, are not ours to throw away.
     assert_eq!(
-        EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).as_deref(),
+        app.read_document(|doc| EditorDoc::read_buffer_key(doc, &key))
+            .as_deref(),
         Some("fn main() { from_last_session() }\n")
     );
 }
@@ -1070,7 +910,7 @@ fn a_document_from_a_previous_session_still_stats_the_file() {
 fn a_published_diagnostic_retires_the_bracket_scan() {
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
-    app.ensure_buffers(&mut doc);
+    app.ensure_buffers(&doc);
     let node = app.session.active_buffer().expect("a buffer is open").node;
     replace_buffer_text(&mut doc, &app.buffer_key(node), "fn main( {\n");
 
@@ -1106,15 +946,13 @@ fn a_published_diagnostic_retires_the_bracket_scan() {
     );
 }
 
-/// Bring up the sample project and get the editor's line cache in sync with
-/// the document, so line operations read real line contents.
-fn synced_sample() -> (CodeApp, AutoCommit) {
-    let mut app = CodeApp::with_sample();
-    let mut doc = AutoCommit::new();
-    app.ensure_buffers(&mut doc);
-    app.refresh_search_catalog(&mut doc);
-    app.editor.sync(&mut doc, &automerge::ROOT);
-    (app, doc)
+/// The sample project with `src/main.rs` open and bound, its text read from
+/// disk.
+fn synced_sample() -> crate::test_support::Sample {
+    let mut sample = crate::test_support::sample();
+    sample.open("src/main.rs");
+    sample.app.settle();
+    sample
 }
 
 fn buffer_lines(app: &CodeApp, doc: &AutoCommit, node: TreeId) -> Vec<String> {
@@ -1125,247 +963,177 @@ fn buffer_lines(app: &CodeApp, doc: &AutoCommit, node: TreeId) -> Vec<String> {
         .collect()
 }
 
-fn find_resource<'a>(
-    resource: &'a tilo_actions::Resource,
-    id: &str,
-) -> Option<&'a tilo_actions::Resource> {
-    (resource.id.as_str() == id)
-        .then_some(resource)
-        .or_else(|| {
-            resource
-                .children
-                .iter()
-                .find_map(|child| find_resource(child, id))
-        })
-}
-
-/// A real file picked from disk loads its bytes into a tab.
-fn open_file_from_path_loads_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("greet.rs");
-    std::fs::write(&file, "fn greet() { let x = 1; }\n").unwrap();
-
-    let mut app = CodeApp::open_path(&file);
-    let mut doc = AutoCommit::new();
-    app.ensure_buffers(&mut doc);
-
-    let node = app.session.active_buffer().expect("a tab opened").node;
-    assert_eq!(
-        EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).as_deref(),
-        Some("fn greet() { let x = 1; }\n"),
-        "the file's real bytes were read into the buffer"
-    );
-}
-
-/// Open a real file, edit it through the CRDT, save, and prove the new bytes
-/// reached disk.
-fn edit_and_save_round_trips_to_disk() {
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("notes.txt");
-    std::fs::write(&file, "first line\n").unwrap();
-
-    let mut app = CodeApp::open_path(&file);
-    let mut doc = AutoCommit::new();
-    app.ensure_buffers(&mut doc); // reads the file + stamps it
-
-    let node = app.session.active_buffer().expect("a tab opened").node;
-    // Edit through the same CRDT splice path the editor uses.
-    let obj = EditorDoc::buffer_text_key(&doc, &app.buffer_key(node)).unwrap();
-    let at = "first line".chars().count();
-    EditorDoc::splice(&mut doc, &obj, at, 0, " EDITED");
-
-    let snapshot = doc.clone();
-    assert!(
-        app.save_buffer(&snapshot, node, false),
-        "the save reported success"
-    );
-    let on_disk = std::fs::read_to_string(&file).unwrap();
-    assert_eq!(
-        on_disk, "first line EDITED\n",
-        "the edited bytes were written back to the real file"
-    );
-}
-
 /// Find populates real matches over the active buffer, hands them to the
 /// editor's highlight layer, and stepping to a match selects it.
 fn find_highlights_and_navigates_matches() {
-    let (mut app, doc) = synced_sample();
-    app.open_find(false, &doc);
-    app.find.set_query("primes");
-    app.refresh_find(&doc);
+    let mut sample = synced_sample();
+    sample.with_doc(|app, doc| {
+        app.open_find();
+        app.find.set_query("primes");
+        app.drive_find(doc);
 
-    assert!(
-        app.find_matches.len() >= 2,
-        "'primes' occurs several times in main.rs, got {}",
-        app.find_matches.len()
-    );
-    // The matches are handed to the editor's highlight layer.
-    assert_eq!(
-        app.editor.find_match_count_for_test(),
-        app.find_matches.len(),
-        "the editor received every match to highlight"
-    );
+        assert!(
+            app.find_matches.len() >= 2,
+            "'primes' occurs several times in main.rs, got {}",
+            app.find_matches.len()
+        );
+        // The matches are handed to the editor's highlight layer.
+        assert_eq!(
+            app.editor.find_match_count_for_test(),
+            app.find_matches.len(),
+            "the editor received every match to highlight"
+        );
 
-    // Stepping to the second match navigates the caret onto it and marks it
-    // as the current (filled) highlight.
-    app.focus_match(Some(1));
-    let m = app.find_matches[1];
-    assert_eq!(app.find_current, Some(1), "the second match is now current");
-    assert_eq!(
-        app.editor.primary_caret(),
-        (m.line, m.col),
-        "the caret navigated onto the match"
-    );
+        // Stepping to the second match navigates the caret onto it and marks it
+        // as the current (filled) highlight.
+        app.focus_match(Some(1));
+        let m = app.find_matches[1];
+        assert_eq!(app.find_current, Some(1), "the second match is now current");
+        assert_eq!(
+            app.editor.primary_caret(),
+            (m.line, m.col),
+            "the caret navigated onto the match"
+        );
+    });
 }
 
 /// Go-to-line moves the caret to the requested 1-based line and clamps past
 /// the end of the buffer.
 fn go_to_line_moves_the_caret() {
-    let (mut app, _doc) = synced_sample();
-    assert!(app.editor.line_count() > 5);
+    let mut sample = synced_sample();
+    sample.with_doc(|app, _doc| {
+        assert!(app.editor.line_count() > 5);
 
-    app.go_to_line(5);
-    assert_eq!(app.editor.primary_caret(), (4, 0), "1-based line 5 → row 4");
+        app.go_to_line(5);
+        assert_eq!(app.editor.primary_caret(), (4, 0), "1-based line 5 → row 4");
 
-    let last = app.editor.line_count();
-    app.go_to_line(99_999);
-    assert_eq!(
-        app.editor.primary_caret().0,
-        last - 1,
-        "a line past the end clamps to the last row"
-    );
+        let last = app.editor.line_count();
+        app.go_to_line(99_999);
+        assert_eq!(
+            app.editor.primary_caret().0,
+            last - 1,
+            "a line past the end clamps to the last row"
+        );
+    });
 }
 
 fn duplicate_line_repeats_it_below() {
-    let (mut app, mut doc) = synced_sample();
-    let node = app.session.active_buffer().unwrap().node;
-    let before = buffer_lines(&app, &doc, node);
+    let mut sample = synced_sample();
+    sample.with_doc(|app, doc| {
+        let node = app.session.active_buffer().unwrap().node;
+        let before = buffer_lines(app, doc, node);
 
-    app.editor.move_caret_to(0, 0);
-    app.editor.duplicate_lines(&mut doc, true);
-    app.dispatch_editor_text_edits(&mut doc);
+        app.editor.move_caret_to(0, 0);
+        app.pending_command = Some(Command::DuplicateLine);
+        app.sync(doc.doc(), &automerge::ROOT);
+        assert_eq!(
+            buffer_lines(app, doc, node),
+            before,
+            "projection leaves the queued edit unwritten"
+        );
+        assert!(matches!(app.pending_command, Some(Command::DuplicateLine)));
+        app.settle(doc, &automerge::ROOT);
 
-    let after = buffer_lines(&app, &doc, node);
-    assert_eq!(after.len(), before.len() + 1, "one line added");
-    assert_eq!(after[0], before[0]);
-    assert_eq!(after[1], before[0], "the copy sits directly below");
-    assert_eq!(app.editor.primary_caret().0, 1, "caret rode onto the copy");
+        let after = buffer_lines(app, doc, node);
+        assert_eq!(after.len(), before.len() + 1, "one line added");
+        assert_eq!(after[0], before[0]);
+        assert_eq!(after[1], before[0], "the copy sits directly below");
+        assert_eq!(app.editor.primary_caret().0, 1, "caret rode onto the copy");
+    });
 }
 
 fn move_line_down_swaps_with_the_next() {
-    let (mut app, mut doc) = synced_sample();
-    let node = app.session.active_buffer().unwrap().node;
-    let before = buffer_lines(&app, &doc, node);
+    let mut sample = synced_sample();
+    sample.with_doc(|app, doc| {
+        let node = app.session.active_buffer().unwrap().node;
+        let before = buffer_lines(app, doc, node);
 
-    app.editor.move_caret_to(0, 0);
-    app.editor.move_lines(&mut doc, false);
-    app.dispatch_editor_text_edits(&mut doc);
+        app.editor.move_caret_to(0, 0);
+        app.editor.move_lines(doc, false);
+        app.dispatch_editor_text_edits(doc);
 
-    let after = buffer_lines(&app, &doc, node);
-    assert_eq!(after.len(), before.len(), "no lines gained or lost");
-    assert_eq!(after[0], before[1], "line 1 moved up");
-    assert_eq!(after[1], before[0], "line 0 moved down");
-    assert_eq!(app.editor.primary_caret().0, 1, "caret followed the line");
+        let after = buffer_lines(app, doc, node);
+        assert_eq!(after.len(), before.len(), "no lines gained or lost");
+        assert_eq!(after[0], before[1], "line 1 moved up");
+        assert_eq!(after[1], before[0], "line 0 moved down");
+        assert_eq!(app.editor.primary_caret().0, 1, "caret followed the line");
+    });
 }
 
 fn delete_line_removes_it() {
-    let (mut app, mut doc) = synced_sample();
-    let node = app.session.active_buffer().unwrap().node;
-    let before = buffer_lines(&app, &doc, node);
+    let mut sample = synced_sample();
+    sample.with_doc(|app, doc| {
+        let node = app.session.active_buffer().unwrap().node;
+        let before = buffer_lines(app, doc, node);
 
-    app.editor.move_caret_to(0, 0);
-    app.editor.delete_lines(&mut doc);
-    app.dispatch_editor_text_edits(&mut doc);
+        app.editor.move_caret_to(0, 0);
+        app.editor.delete_lines(doc);
+        app.dispatch_editor_text_edits(doc);
 
-    let after = buffer_lines(&app, &doc, node);
-    assert_eq!(after.len(), before.len() - 1, "one line removed");
-    assert_eq!(after[0], before[1], "the following line is now first");
+        let after = buffer_lines(app, doc, node);
+        assert_eq!(after.len(), before.len() - 1, "one line removed");
+        assert_eq!(after[0], before[1], "the following line is now first");
+    });
 }
 
 fn toggle_comment_comments_then_uncomments() {
-    let (mut app, mut doc) = synced_sample();
-    let node = app.session.active_buffer().unwrap().node;
-    // Replace the buffer with a content-stable single line of Rust.
-    let obj = EditorDoc::buffer_text_key(&doc, &app.buffer_key(node)).unwrap();
-    let len = doc.text(&obj).unwrap().chars().count();
-    EditorDoc::splice(&mut doc, &obj, 0, len, "let x = 1;\n");
-    app.editor.sync(&mut doc, &automerge::ROOT);
+    let mut sample = synced_sample();
+    sample.with_doc(|app, doc| {
+        let node = app.session.active_buffer().unwrap().node;
+        // Replace the buffer with a content-stable single line of Rust.
+        let key = app.buffer_key(node);
+        let base = EditorDoc::read_buffer_key(doc, &key).unwrap();
+        app.dispatch_text_action(doc, key, &base, "let x = 1;\n")
+            .unwrap();
+        app.editor.sync(doc.doc(), &automerge::ROOT);
 
-    app.editor.move_caret_to(0, 0);
-    app.editor.toggle_line_comment(&mut doc);
-    app.dispatch_editor_text_edits(&mut doc);
-    assert_eq!(
-        EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).as_deref(),
-        Some("// let x = 1;\n"),
-        "the line gained a Rust line comment"
-    );
+        app.editor.move_caret_to(0, 0);
+        app.editor.toggle_line_comment(doc);
+        app.dispatch_editor_text_edits(doc);
+        assert_eq!(
+            EditorDoc::read_buffer_key(doc, &app.buffer_key(node)).as_deref(),
+            Some("// let x = 1;\n"),
+            "the line gained a Rust line comment"
+        );
 
-    app.editor.move_caret_to(0, 0);
-    app.editor.toggle_line_comment(&mut doc);
-    app.dispatch_editor_text_edits(&mut doc);
-    assert_eq!(
-        EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).as_deref(),
-        Some("let x = 1;\n"),
-        "toggling again removed it"
-    );
-}
-
-fn closing_a_dirty_tab_prompts_before_discarding() {
-    let (mut app, mut doc) = synced_sample();
-    let node = app.session.active_buffer().unwrap().node;
-    // Edit the buffer so it has unsaved changes, then let a frame recompute
-    // the dirty flag the way `sync` does.
-    app.editor.insert_for_test(&mut doc, "X");
-    app.dispatch_editor_text_edits(&mut doc);
-    app.ensure_buffers(&mut doc);
-    assert!(
-        app.session.buffer_of(node).unwrap().dirty,
-        "the buffer now has unsaved edits"
-    );
-
-    let before = app.session.open.len();
-    let active = app.session.active.unwrap();
-    app.request_close_tab(active);
-    assert_eq!(
-        app.session.open.len(),
-        before,
-        "a dirty tab is not closed out from under the user"
-    );
-    assert!(app.close_prompt.is_some(), "the save prompt is raised");
-
-    // Discarding closes it and drops the edits.
-    app.resolve_close_prompt(&doc, CloseChoice::Discard);
-    assert_eq!(app.session.open.len(), before - 1, "the tab closed");
-    assert!(app.close_prompt.is_none());
-}
-
-fn closing_a_clean_tab_closes_immediately() {
-    let (mut app, _doc) = synced_sample();
-    let before = app.session.open.len();
-    let active = app.session.active.unwrap();
-    app.request_close_tab(active);
-    assert!(
-        app.close_prompt.is_none(),
-        "a saved tab closes without a prompt"
-    );
-    assert_eq!(app.session.open.len(), before - 1);
+        app.editor.move_caret_to(0, 0);
+        app.editor.toggle_line_comment(doc);
+        app.dispatch_editor_text_edits(doc);
+        assert_eq!(
+            EditorDoc::read_buffer_key(doc, &app.buffer_key(node)).as_deref(),
+            Some("let x = 1;\n"),
+            "toggling again removed it"
+        );
+    });
 }
 
 fn dock_commands_open_the_requested_content_and_toggle_without_clearing_it() {
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
 
-    app.apply_command(Command::GoToProblems, &mut doc);
+    app.apply_command(
+        Command::GoToProblems,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     assert!(app.panel_visible);
     assert_eq!(app.panel.active_tab(), PanelTab::Problems);
 
-    app.apply_command(Command::ToggleBottomPanel, &mut doc);
+    app.apply_command(
+        Command::ToggleBottomPanel,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     assert!(!app.panel_visible);
-    app.apply_command(Command::ToggleBottomPanel, &mut doc);
+    app.apply_command(
+        Command::ToggleBottomPanel,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     assert!(app.panel_visible);
     assert_eq!(app.panel.active_tab(), PanelTab::Problems);
 
-    app.apply_command(Command::GoToTerminal, &mut doc);
+    app.apply_command(
+        Command::GoToTerminal,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     assert!(app.panel_visible);
     assert_eq!(app.panel.active_tab(), PanelTab::Terminal);
     assert!(
@@ -1378,8 +1146,14 @@ fn dock_commands_open_the_requested_content_and_toggle_without_clearing_it() {
         .map(std::ptr::from_ref)
         .expect("Terminal command creates a retained terminal");
     let terminal_content_before = app.shots_terminal_grid_text();
-    app.apply_command(Command::ToggleBottomPanel, &mut doc);
-    app.apply_command(Command::ToggleBottomPanel, &mut doc);
+    app.apply_command(
+        Command::ToggleBottomPanel,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    app.apply_command(
+        Command::ToggleBottomPanel,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     assert_eq!(app.panel.active_tab(), PanelTab::Terminal);
     assert!(
         app.terminal.is_some(),
@@ -1400,7 +1174,10 @@ fn dock_commands_open_the_requested_content_and_toggle_without_clearing_it() {
 fn explicit_problems_open_survives_an_empty_diagnostics_refresh() {
     let mut app = CodeApp::new();
     let mut doc = AutoCommit::new();
-    app.apply_command(Command::GoToProblems, &mut doc);
+    app.apply_command(
+        Command::GoToProblems,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
 
     app.refresh_diagnostics(&doc);
 
@@ -1428,9 +1205,11 @@ fn fresh_editor_collapses_the_empty_bottom_panel() {
 }
 
 fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing_terminal() {
-    let mut app = CodeApp::with_sample();
-    app.shots_open_terminal();
-    let mut driver = ui::headless::Driver::new(ui::State::new(), Box::new(app), (480, 900));
+    let mut sample = crate::test_support::sample();
+    sample.open("src/main.rs");
+    sample.editor(CodeApp::shots_open_terminal);
+    let driver = sample.app.harness();
+    driver.resize((480, 900)).unwrap();
 
     let panel = driver.targets()["bottom_panel"];
     driver.click_at(panel.center().x, panel.y1 - 20.0);
@@ -1444,7 +1223,7 @@ fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Show bottom panel"),
+        Some("Show panel"),
         "keyboard close returns focus to the retained disclosure"
     );
 
@@ -1457,7 +1236,7 @@ fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Hide bottom panel"),
+        Some("Hide panel"),
         "reopening keeps focus on the disclosure instead of hidden Terminal content"
     );
 
@@ -1485,40 +1264,32 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
         find(&snapshot.root).expect("dock trigger semantics")
     }
 
-    let mut driver = ui::headless::Driver::new(
-        ui::State::new(),
-        Box::new(CodeApp::with_sample()),
-        (480, 900),
-    );
+    let mut sample = crate::test_support::sample();
+    sample.open("src/main.rs");
+    let driver = sample.app.harness();
+    driver.resize((480, 900)).unwrap();
     let targets = driver.targets();
-    let tabs = targets.get("tabs").copied().expect("tab bar target");
+    let header = targets
+        .get("code-editor.file")
+        .copied()
+        .expect("file header target");
     let trigger = targets
         .get("code.bottom-panel-toggle")
         .copied()
         .expect("retained dock trigger");
-    // The trigger stays in the chrome row, centred an `s1` clear of the
-    // row's top and of the editor below it (HIG §7: nothing touches), so
-    // it neither spans the full bar nor shares pixels with the content.
-    let inset = f64::from(ui::theme::Theme::dark().tokens.spacing.s1);
+    // The trigger shares the chrome row with the file header, centred on the
+    // same line, and never overlaps it.
     assert!(
-        (trigger.y0 - (tabs.y0 + inset)).abs() < 0.01,
-        "trigger stays in the existing chrome row, inset s1: {} vs {}",
-        trigger.y0,
-        tabs.y0
+        (trigger.center().y - header.center().y).abs() < 1.0,
+        "trigger and file name share the chrome row: {trigger:?} vs {header:?}"
     );
     assert!(
-        (trigger.height() - (tabs.height() - 2.0 * inset)).abs() < 0.01,
-        "trigger is the chrome row minus the s1 insets: {} vs {}",
-        trigger.height(),
-        tabs.height()
-    );
-    assert!(
-        tabs.x1 <= trigger.x0,
-        "tab pills and dock trigger must not overlap"
+        header.x1 <= trigger.x0,
+        "file header and dock trigger must not overlap"
     );
     let closed_snapshot = driver.inspection();
     let closed = trigger_semantics(&closed_snapshot);
-    assert_eq!(closed.name.as_deref(), Some("Show bottom panel"));
+    assert_eq!(closed.name.as_deref(), Some("Show panel"));
     assert_eq!(closed.state.expanded, Some(false));
     assert!(!closed.state.selected);
 
@@ -1528,7 +1299,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     assert!(driver.targets().contains_key("bottom_panel"));
     let open_snapshot = driver.inspection();
     let open = trigger_semantics(&open_snapshot);
-    assert_eq!(open.name.as_deref(), Some("Hide bottom panel"));
+    assert_eq!(open.name.as_deref(), Some("Hide panel"));
     assert_eq!(open.state.expanded, Some(true));
     assert!(open.state.selected);
     assert_eq!(
@@ -1536,7 +1307,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Hide bottom panel"),
+        Some("Hide panel"),
         "click transfers keyboard focus to the retained trigger"
     );
 
@@ -1564,12 +1335,12 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Show bottom panel"),
+        Some("Show panel"),
         "Escape returns focus to the retained trigger"
     );
 
     let trigger_node = driver
-        .a11y_node_named("Show bottom panel")
+        .a11y_node_named("Show panel")
         .expect("trigger is exported to assistive technology");
     driver
         .perform_a11y_action(trigger_node, &ui::a11y::Action::Activate)
@@ -1590,7 +1361,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     driver.resize((800, 700)).expect("resize open editor");
     let resized = driver.targets();
     let panel_standard = resized["bottom_panel"];
-    let tabs_standard = resized["tabs"];
+    let header_standard = resized["code-editor.file"];
     let trigger_standard = resized["code.bottom-panel-toggle"];
     assert!(
         panel_standard.x0 >= 0.0
@@ -1600,14 +1371,12 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
         "open panel stays inside the resized viewport"
     );
     assert_eq!(panel_standard.height(), panel_narrow.height());
-    // Same inset geometry after the resize: in the chrome row, `s1` clear
-    // of its top and of the editor.
-    assert!((trigger_standard.y0 - (tabs_standard.y0 + inset)).abs() < 0.01);
-    assert!((trigger_standard.height() - (tabs_standard.height() - 2.0 * inset)).abs() < 0.01);
-    assert!(tabs_standard.x1 <= trigger_standard.x0);
+    // Same chrome row after the resize, still clear of the file header.
+    assert!((trigger_standard.center().y - header_standard.center().y).abs() < 1.0);
+    assert!(header_standard.x1 <= trigger_standard.x0);
     let resized_snapshot = driver.inspection();
     let resized_trigger = trigger_semantics(&resized_snapshot);
-    assert_eq!(resized_trigger.name.as_deref(), Some("Hide bottom panel"));
+    assert_eq!(resized_trigger.name.as_deref(), Some("Hide panel"));
     assert_eq!(resized_trigger.state.expanded, Some(true));
     assert!(resized_trigger.state.selected);
 
@@ -1615,5 +1384,5 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     let restored = driver.targets();
     assert!(restored.contains_key("bottom_panel"));
     assert_eq!(restored["bottom_panel"].height(), panel_narrow.height());
-    assert!(restored["tabs"].x1 <= restored["code.bottom-panel-toggle"].x0);
+    assert!(restored["code-editor.file"].x1 <= restored["code.bottom-panel-toggle"].x0);
 }

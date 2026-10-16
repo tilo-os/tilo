@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use tilo_action_broker::services::{
     NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
 };
+use tilo_lock::MutexRecover as _;
 
 const MAX_CALLS: usize = 16;
 const CONSENT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -419,10 +420,18 @@ impl NativeMediaService {
             .get_mut(key)
             .filter(|entry| entry.intent == intent)
             .ok_or("stale native media intent")?;
-        if entry.snapshot.state != State::Live || !entry.permit.is_current() {
+        if !entry.permit.is_current() {
             return Err("local call not ready".into());
         }
         (entry.caller.current)()?;
+        if entry.snapshot.state != State::Live {
+            // Transport recovery is a call state, not an RPC failure. A
+            // refusal would make the client leave an otherwise current call.
+            // Do not enqueue consent or remember a future capture request;
+            // the user must request unmute again when the call is live.
+            tracing::debug!(state = ?entry.snapshot.state, "native unmute requires a live call");
+            return Ok(self.0.snapshot(entry));
+        }
         if entry
             .capture
             .as_ref()
@@ -477,11 +486,30 @@ impl NativeMediaServices for NativeMediaService {
     fn command(&self, context: NativeMediaRequestContext, request: Request) -> NativeMediaFuture {
         // Device stop and generation invalidation happen in this synchronous
         // dispatch, before the returned RPC future is polled.
+        let command = match &request.command {
+            Command::Join { .. } => "join",
+            Command::Leave => "leave",
+            Command::SetMuted { muted: true } => "mute",
+            Command::SetMuted { muted: false } => "unmute",
+            Command::SelectInput { .. } => "select_input",
+            Command::Status => "status",
+        };
         let result = if request.dispatch_valid() {
             self.command_for(context.into(), request)
         } else {
             Err("invalid native media command".into())
         };
+        if let Err(error) = &result {
+            let category = match error.as_str() {
+                "local call not ready" => "call_not_ready",
+                "stale native media intent" => "stale_intent",
+                "local media admission ended" => "admission_ended",
+                "local media process ended" => "process_ended",
+                "local workspace unavailable" => "workspace_unavailable",
+                _ => "unavailable",
+            };
+            tracing::debug!(command, category, "native call local command refused");
+        }
         Box::pin(async move { result })
     }
     fn disconnect(&self, peer_id: u64) {
@@ -509,10 +537,7 @@ impl Shared {
         if policy.disable_sound_output {
             self.stop_all();
         } else if policy.disable_microphone {
-            let mut calls = self
-                .calls
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut calls = self.calls.lock_recover();
             for entry in calls.entries.values_mut() {
                 self.stop_capture(entry);
             }
@@ -607,10 +632,7 @@ impl Shared {
         if let Some(capture) = entry.capture.take() {
             capture.current.store(false, Ordering::Release);
             if let Some(backend) = &entry.backend {
-                backend
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .stop_capture();
+                backend.lock_recover().stop_capture();
             }
             if let Ok(mut broker) = self.capture.lock() {
                 broker.release(capture.lease);
@@ -625,20 +647,14 @@ impl Shared {
             worker.abort();
         }
         if let Some(backend) = entry.backend.take() {
-            backend
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .close();
+            backend.lock_recover().close();
         }
         if let Ok(mut broker) = self.capture.lock() {
             broker.session_ended(&entry.binding);
         }
     }
     fn stop_all(&self) {
-        let mut calls = self
-            .calls
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut calls = self.calls.lock_recover();
         for entry in calls.entries.values_mut() {
             self.stop_entry(entry);
         }
@@ -723,10 +739,7 @@ impl Shared {
                     .and_then(|backend| backend.capture_stop());
                 let Some(stop) = stop else {
                     current.store(false, Ordering::Release);
-                    backend
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .stop_capture();
+                    backend.lock_recover().stop_capture();
                     broker.release(lease);
                     return Err(Issue::CaptureFailed);
                 };
@@ -770,10 +783,7 @@ impl Shared {
         };
         if !capture.paused {
             if let Some(backend) = &entry.backend {
-                backend
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .pause_capture();
+                backend.lock_recover().pause_capture();
             }
             capture.paused = true;
         }
@@ -842,7 +852,14 @@ impl Shared {
         else {
             return false;
         };
-        if !entry.permit.is_current() || (entry.caller.current)().is_err() {
+        let lifecycle_current = entry.permit.is_current();
+        let admission_current = (entry.caller.current)().is_ok();
+        if !lifecycle_current || !admission_current {
+            tracing::warn!(
+                lifecycle_current,
+                admission_current,
+                "native call local authority ended"
+            );
             self.stop_entry(entry);
             calls.entries.remove(key);
             return false;

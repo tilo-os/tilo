@@ -5,26 +5,25 @@
     reason = "polar projection is bounded floating-point geometry"
 )]
 
-use crate::widget::{AppModel, ModelPath};
-use std::collections::{HashMap, HashSet};
+use crate::widget::ModelPath;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
+use crate::widget::Widget;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
+    ChartInspection, InteractiveChart, draw_title, handle_chart_event,
 };
-use crate::widget::{TaffyTreeExt, Widget};
 
 #[derive(Clone, Debug)]
 pub struct RadarAxis {
@@ -117,8 +116,8 @@ impl Default for RadarStyle {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct Hovered {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Hovered {
     series: usize,
     axis: usize,
 }
@@ -130,14 +129,9 @@ pub struct RadarChart {
     title: String,
     height: f32,
     rect: Rect,
-    pointer: Point,
-    hovered: Option<Hovered>,
+    inspection: ChartInspection<Hovered>,
     activated: Option<(String, String)>,
-    keyboard_inspection: bool,
-    touch: ChartTouchTracker,
-    hidden_series: HashSet<String>,
-    legend_hits: Vec<(String, Rect)>,
-    visibility_changed: Option<(String, bool)>,
+    toggles: chart_legend::SeriesToggles,
 }
 
 impl RadarChart {
@@ -149,30 +143,15 @@ impl RadarChart {
             title: String::new(),
             height: 400.0,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
-            hovered: None,
+            inspection: ChartInspection::default(),
             activated: None,
-            keyboard_inspection: false,
-            touch: ChartTouchTracker::default(),
-            hidden_series: HashSet::new(),
-            legend_hits: Vec::new(),
-            visibility_changed: None,
+            toggles: chart_legend::SeriesToggles::default(),
         }
     }
     #[must_use]
-    pub fn styled(mut self, style: RadarStyle) -> Self {
+    pub fn with_style(mut self, style: RadarStyle) -> Self {
         self.style = style;
         self
-    }
-    #[must_use]
-    pub fn with_style(self, style: RadarStyle) -> Self {
-        self.styled(style)
-    }
-    pub fn style(&self) -> &RadarStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut RadarStyle {
-        &mut self.style
     }
     #[must_use]
     pub fn titled(mut self, title: impl Into<String>) -> Self {
@@ -186,31 +165,27 @@ impl RadarChart {
     }
     pub fn set_series(&mut self, series: Vec<RadarSeries>) {
         self.series = series;
-        self.hidden_series
-            .retain(|id| self.series.iter().any(|series| series.id == *id));
-        self.hovered = None;
+        self.toggles
+            .retain(|id| self.series.iter().any(|series| series.id == id));
+        self.inspection.hovered = None;
     }
     pub fn is_series_visible(&self, id: &str) -> bool {
-        self.series.iter().any(|series| series.id == id) && !self.hidden_series.contains(id)
+        self.series.iter().any(|series| series.id == id) && !self.toggles.is_hidden(id)
     }
     pub fn set_series_visible(&mut self, id: &str, visible: bool) -> bool {
         if !self.series.iter().any(|series| series.id == id) {
             return false;
         }
-        let changed = if visible {
-            self.hidden_series.remove(id)
-        } else {
-            self.hidden_series.insert(id.to_owned())
-        };
+        let changed = self.toggles.set(id, visible);
         if changed {
             if self
+                .inspection
                 .hovered
                 .and_then(|hovered| self.series.get(hovered.series))
                 .is_some_and(|series| series.id == id)
             {
-                self.hovered = None;
+                self.inspection.hovered = None;
             }
-            self.visibility_changed = Some((id.to_owned(), visible));
         }
         changed
     }
@@ -218,14 +193,14 @@ impl RadarChart {
         self.set_series_visible(id, !self.is_series_visible(id))
     }
     pub fn take_visibility_changed(&mut self) -> Option<(String, bool)> {
-        self.visibility_changed.take()
+        self.toggles.take_changed()
     }
     pub fn take_activated(&mut self) -> Option<(String, String)> {
         self.activated.take()
     }
     pub fn inspect(&mut self, series_id: &str, axis_id: &str) -> bool {
-        self.hovered = self.series.iter().enumerate().find_map(|(series, values)| {
-            (!self.hidden_series.contains(&values.id) && values.id == series_id)
+        self.inspection.hovered = self.series.iter().enumerate().find_map(|(series, values)| {
+            (!self.toggles.is_hidden(&values.id) && values.id == series_id)
                 .then(|| {
                     self.axes
                         .iter()
@@ -241,18 +216,17 @@ impl RadarChart {
                 })
                 .flatten()
         });
-        self.keyboard_inspection = self.hovered.is_some();
-        if let Some(hovered) = self.hovered
+        self.inspection.keyboard = self.inspection.hovered.is_some();
+        if let Some(hovered) = self.inspection.hovered
             && let Some(series) = self.series.get(hovered.series)
             && let Some(point) = self.value_point(series, hovered.axis)
         {
-            self.pointer = point;
+            self.inspection.pointer = point;
         }
-        self.hovered.is_some()
+        self.inspection.hovered.is_some()
     }
     pub fn clear_inspection(&mut self) {
-        self.hovered = None;
-        self.keyboard_inspection = false;
+        self.inspection.clear();
     }
 
     fn geometry(&self) -> (Point, f64) {
@@ -323,17 +297,24 @@ impl RadarChart {
         path.close_path();
         path
     }
+}
+
+impl InteractiveChart for RadarChart {
+    type Hover = Hovered;
+    fn inspection(&mut self) -> &mut ChartInspection<Hovered> {
+        &mut self.inspection
+    }
     fn update_hover(&mut self) {
         let mut nearest: Option<(f64, Hovered)> = None;
         for (series_index, series) in self.series.iter().enumerate() {
-            if self.hidden_series.contains(&series.id) {
+            if self.toggles.is_hidden(&series.id) {
                 continue;
             }
             for axis in 0..self.axes.len() {
                 let Some(point) = self.value_point(series, axis) else {
                     continue;
                 };
-                let distance = point.distance(self.pointer);
+                let distance = point.distance(self.inspection.pointer);
                 if distance <= 22.0 && nearest.is_none_or(|current| distance < current.0) {
                     nearest = Some((
                         distance,
@@ -345,28 +326,20 @@ impl RadarChart {
                 }
             }
         }
-        self.hovered = nearest.map(|(_, hovered)| hovered);
+        self.inspection.hovered = nearest.map(|(_, hovered)| hovered);
     }
-}
-
-impl RadarChart {
     fn toggle_legend_at(&mut self, point: Point) -> bool {
         if !self.style.legend.interactive {
             return false;
         }
-        let Some(id) = self
-            .legend_hits
-            .iter()
-            .find(|(_, rect)| rect.contains(point))
-            .map(|(id, _)| id.clone())
-        else {
+        let Some(id) = self.toggles.hit(point) else {
             return false;
         };
         self.toggle_series(&id)
     }
 
     fn activate_hovered(&mut self) -> bool {
-        let Some(hovered) = self.hovered else {
+        let Some(hovered) = self.inspection.hovered else {
             return false;
         };
         let (Some(series), Some(axis)) =
@@ -378,12 +351,11 @@ impl RadarChart {
         true
     }
 
-    fn move_keyboard_inspection(&mut self, action: ChartNavAction) {
-        let candidates = self
-            .series
+    fn keyboard_items(&self) -> Vec<Hovered> {
+        self.series
             .iter()
             .enumerate()
-            .filter(|(_, series)| !self.hidden_series.contains(&series.id))
+            .filter(|(_, series)| !self.toggles.is_hidden(&series.id))
             .flat_map(|(series, values)| {
                 self.axes.iter().enumerate().filter_map(move |(axis, _)| {
                     values
@@ -393,50 +365,16 @@ impl RadarChart {
                         .map(|_| Hovered { series, axis })
                 })
             })
-            .collect::<Vec<_>>();
-        let current = self.hovered.and_then(|hovered| {
-            candidates.iter().position(|candidate| {
-                candidate.series == hovered.series && candidate.axis == hovered.axis
-            })
-        });
-        self.hovered = moved_index(current, candidates.len(), action)
-            .and_then(|index| candidates.get(index).copied());
-        self.keyboard_inspection = self.hovered.is_some();
-        if let Some(hovered) = self.hovered
-            && let Some(series) = self.series.get(hovered.series)
-            && let Some(point) = self.value_point(series, hovered.axis)
-        {
-            self.pointer = point;
-        }
+            .collect()
+    }
+    fn anchor(&self, hovered: &Hovered) -> Option<Point> {
+        self.value_point(self.series.get(hovered.series)?, hovered.axis)
     }
 }
 
 impl Widget for RadarChart {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(self.height),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-    }
+    crate::widget::chart_navigation::chart_leaf!();
+
     #[allow(
         clippy::too_many_lines,
         reason = "polar grid, series, legend and inspector share one paint pass"
@@ -453,24 +391,8 @@ impl Widget for RadarChart {
             return;
         }
         let (center, radius) = self.geometry();
-        if self.keyboard_inspection
-            && let Some(hovered) = self.hovered
-            && let Some(series) = self.series.get(hovered.series)
-            && let Some(point) = self.value_point(series, hovered.axis)
-        {
-            self.pointer = point;
-        }
-        if !self.title.is_empty() {
-            tr.draw_text_weighted(
-                scene,
-                &self.title,
-                theme.tokens.typography.scale.lg,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
-                None,
-                TextWeight::Semibold,
-            );
-        }
+        self.follow_keyboard_anchor();
+        draw_title(scene, transform, tr, theme, self.rect, &self.title);
         let grid = Color::from_rgba8(
             theme.tokens.colors.border_standard.r(),
             theme.tokens.colors.border_standard.g(),
@@ -499,11 +421,11 @@ impl Widget for RadarChart {
             );
             if let Some(spec) = self.axes.get(axis) {
                 let label_point = Self::polar(center, radius + 20.0, self.angle(axis));
-                let (width, _) = tr.measure(&spec.label, theme.tokens.typography.scale.xs, None);
-                tr.draw_text(
+                let (width, _) =
+                    tr.measure_style(&spec.label, None, &theme.text(TextRole::Caption));
+                tr.draw_style(
                     scene,
                     &spec.label,
-                    theme.tokens.typography.scale.xs,
                     theme.tokens.colors.text_dim,
                     transform
                         * Affine::translate((
@@ -511,11 +433,12 @@ impl Widget for RadarChart {
                             label_point.y - 6.0,
                         )),
                     None,
+                    &theme.text(TextRole::Caption),
                 );
             }
         }
         for (series_index, series) in self.series.iter().enumerate() {
-            if self.hidden_series.contains(&series.id) {
+            if self.toggles.is_hidden(&series.id) {
                 continue;
             }
             let path = self.polygon(series, 1.0);
@@ -540,7 +463,7 @@ impl Widget for RadarChart {
             );
             for axis in 0..self.axes.len() {
                 if let Some(point) = self.value_point(series, axis) {
-                    let selected = self.hovered.is_some_and(|hovered| {
+                    let selected = self.inspection.hovered.is_some_and(|hovered| {
                         hovered.series == series_index && hovered.axis == axis
                     });
                     if selected {
@@ -568,158 +491,52 @@ impl Widget for RadarChart {
             }
         }
         if self.style.legend.visible {
-            self.legend_hits.clear();
             let rows = chart_legend::rows(
                 self.series.iter().map(|series| series.name.as_str()),
                 self.rect.x0 + 12.0,
                 self.rect.x1 - 12.0,
             );
-            let items = chart_legend::layout(
-                self.series.iter().map(|series| series.name.as_str()),
-                self.rect.x0 + 12.0,
-                self.rect.x1 - 12.0,
-                self.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT,
+            let top = self.rect.y1 - crate::num::f64_of_usize(rows) * chart_legend::ROW_HEIGHT;
+            self.toggles.paint(
+                scene,
+                transform,
+                tr,
+                theme,
+                self.series
+                    .iter()
+                    .map(|series| (series.id.as_str(), series.name.as_str(), series.color)),
+                Rect::new(self.rect.x0 + 12.0, top, self.rect.x1 - 12.0, top),
             );
-            for (series, item) in self.series.iter().zip(items) {
-                let x = item.x0;
-                let y = item.y0;
-                let visible = !self.hidden_series.contains(&series.id);
-                let color = if visible {
-                    series.color
-                } else {
-                    Color::from_rgba8(series.color.r(), series.color.g(), series.color.b(), 65)
-                };
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    color,
-                    None,
-                    &Circle::new((x + 4.0, y + 6.0), 4.0),
-                );
-                tr.draw_text(
-                    scene,
-                    &series.name,
-                    theme.tokens.typography.scale.xs,
-                    if visible {
-                        theme.tokens.colors.text_dim
-                    } else {
-                        Color::from_rgba8(
-                            theme.tokens.colors.text_dim.r(),
-                            theme.tokens.colors.text_dim.g(),
-                            theme.tokens.colors.text_dim.b(),
-                            90,
-                        )
-                    },
-                    transform * Affine::translate((x + 14.0, y)),
-                    Some(crate::num::f32_of_f64((item.width() - 18.0).max(1.0))),
-                );
-                self.legend_hits.push((series.id.clone(), item));
-            }
         } else {
-            self.legend_hits.clear();
+            self.toggles.clear_hits();
         }
-        if let Some(hovered) = self.hovered.filter(|_| self.style.tooltip)
+        if let Some(hovered) = self.inspection.hovered.filter(|_| self.style.tooltip)
             && let (Some(series), Some(axis)) =
                 (self.series.get(hovered.series), self.axes.get(hovered.axis))
         {
             let value = series.values.get(hovered.axis).copied().unwrap_or_default();
             let title = format!("{} · {}", series.name, axis.label);
             let detail = format!("{value:.2} of {:.2}", axis.max);
-            let (tw, _) = tr.measure(&title, theme.tokens.typography.scale.sm, None);
-            let width = f64::from(tw).max(150.0) + 28.0;
-            let mut x = self.pointer.x + 16.0;
-            let mut y = self.pointer.y + 16.0;
-            if x + width > self.rect.x1 {
-                x = self.pointer.x - width - 16.0;
-            }
-            if y + 66.0 > self.rect.y1 {
-                y = self.pointer.y - 76.0;
-            }
-            let tooltip = Rect::new(x, y, x + width, y + 64.0);
-            scene.fill(
-                Fill::NonZero,
+            crate::widget::chart_labels::draw_tooltip(
+                scene,
                 transform,
-                theme.tokens.colors.surfaces.overlay,
-                None,
-                &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.md)),
-            );
-            tr.draw_text_weighted(
-                scene,
-                &title,
-                theme.tokens.typography.scale.sm,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((x + 14.0, y + 11.0)),
-                None,
-                TextWeight::Semibold,
-            );
-            tr.draw_text(
-                scene,
-                &detail,
-                theme.tokens.typography.scale.xs,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x + 14.0, y + 37.0)),
-                None,
+                tr,
+                theme,
+                self.inspection.pointer,
+                self.rect,
+                150.0,
+                (&title, &detail),
             );
         }
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
-            match action {
-                ChartTouchAction::Inspect(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    self.keyboard_inspection = false;
-                }
-                ChartTouchAction::Activate(point) => {
-                    self.pointer = point;
-                    self.update_hover();
-                    if self.toggle_legend_at(point) || self.activate_hovered() {
-                        *ctx.handled = true;
-                        *ctx.focus_target = Some(ctx.node_id);
-                    }
-                }
-                ChartTouchAction::Clear => self.hovered = None,
-            }
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.pointer =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                self.update_hover();
-                self.keyboard_inspection = false;
-            }
-            WindowEvent::CursorLeft { .. } if !self.keyboard_inspection => self.hovered = None,
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if self.toggle_legend_at(self.pointer) || self.activate_hovered() {
-                    *ctx.handled = true;
-                    *ctx.focus_target = Some(ctx.node_id);
-                }
-            }
-            _ if chart_nav_action(event).is_some() => {
-                let Some(action) = chart_nav_action(event) else {
-                    return;
-                };
-                if action == ChartNavAction::Activate {
-                    let _ = self.activate_hovered();
-                } else {
-                    self.move_keyboard_inspection(action);
-                }
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-            }
-            _ => {}
-        }
+        handle_chart_event(self, event, ctx);
     }
     fn accessibility(&self) -> Option<AccessNode> {
         let children = self
             .series
             .iter()
-            .filter(|series| !self.hidden_series.contains(&series.id))
+            .filter(|series| !self.toggles.is_hidden(&series.id))
             .flat_map(|series| {
                 self.axes.iter().enumerate().filter_map(|(index, axis)| {
                     series
@@ -734,10 +551,7 @@ impl Widget for RadarChart {
                                     "{value} of {}. {}",
                                     axis.max, series.detail
                                 ))
-                                .with_state(AccessState {
-                                    focusable: true,
-                                    ..Default::default()
-                                })
+                                .with_state(AccessState::new().focusable(true))
                         })
                 })
             })
@@ -745,20 +559,7 @@ impl Widget for RadarChart {
                 self.series
                     .iter()
                     .filter(|_| self.style.legend.interactive)
-                    .map(|series| {
-                        AccessNode::new(Role::Button)
-                            .with_action_target(format!("legend:{}", series.id))
-                            .with_name(format!("{} series", series.name))
-                            .with_description(if self.hidden_series.contains(&series.id) {
-                                "Hidden; activate to show".to_owned()
-                            } else {
-                                "Visible; activate to hide".to_owned()
-                            })
-                            .with_state(AccessState {
-                                focusable: true,
-                                ..Default::default()
-                            })
-                    }),
+                    .map(|series| self.toggles.access_node(&series.id, &series.name)),
             )
             .collect();
         Some(
@@ -771,34 +572,31 @@ impl Widget for RadarChart {
                 .with_children(children),
         )
     }
-    fn perform_action_at(
+    fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
-            return false;
-        }
-        let Some(key) = key_path.last() else {
+        let Some(key) = crate::widget::chart_navigation::activated_key(action, key_path) else {
             return false;
         };
-        if self.style.legend.interactive {
-            for series in &self.series {
-                let target = format!("legend:{}", series.id);
-                if crate::a11y::hash_key(&target) == *key {
-                    return self.toggle_series(&series.id.clone());
-                }
-            }
+        if self.style.legend.interactive
+            && let Some(id) = chart_legend::SeriesToggles::activated(
+                self.series.iter().map(|series| series.id.as_str()),
+                key,
+            )
+        {
+            return self.toggle_series(&id);
         }
         for series in &self.series {
-            if self.hidden_series.contains(&series.id) {
+            if self.toggles.is_hidden(&series.id) {
                 continue;
             }
             for axis in &self.axes {
                 let target = format!("{}:{}", series.id, axis.id);
-                if crate::a11y::hash_key(&target) == *key {
+                if crate::a11y::hash_key(&target) == key {
                     self.activated = Some((series.id.clone(), axis.id.clone()));
                     return true;
                 }
@@ -809,14 +607,8 @@ impl Widget for RadarChart {
     fn name(&self) -> &'static str {
         "RadarChart"
     }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
-    }
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 

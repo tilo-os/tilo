@@ -24,7 +24,6 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # replayable action dispatched through one executor, so undo, multi-peer replay
 # and the Ctrl+K command palette all work from a single implementation.
 tilo-actions = { path = "../../crates/collab/actions" }
-tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 automerge.workspace = true
 serde.workspace = true
@@ -34,12 +33,13 @@ sha2.workspace = true
 walkdir.workspace = true
 vello.workspace = true
 winit.workspace = true
-taffy.workspace = true
+chrono = { workspace = true, features = ["clock", "std"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
+tilo-history = { path = "../../crates/sdk/tilo-history" }
 
 [lints]
 workspace = true

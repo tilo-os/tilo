@@ -1,13 +1,10 @@
 name: Release / apps
 
-# PRs select affected apps without release-mode packaging. Main publishes only
+# Pull requests start no jobs here; CI covers their builds. Main publishes only
 # affected tapps and reuses unchanged members of the prior immutable collection.
 # Tags remain credential-free validation inputs only until a trusted
 # default-branch controller or server-enforced tag policy can authorize them.
 on:
-  pull_request:
-    branches: [main]
-    # Always run the cheap plan; app_release.py owns dependency applicability.
   push:
     branches: [main]
     tags: ["apps-v*", "app-*-v*"]
@@ -24,6 +21,9 @@ on:
       - "dist/apps/**"
       - "os/scripts/build-thin-apps.sh"
       - "os/scripts/bake-runtime-bundle.sh"
+      - "os/scripts/collect-runtime-dependencies.py"
+      - "os/scripts/verify-runtime-bundle-closure.sh"
+      - "os/scripts/stamp-runtime.sh"
       - "os/scripts/verify-elf-hardening.sh"
       - "os/Containerfile.builder"
       - "os/external-assets/github-assets.tsv"
@@ -35,17 +35,34 @@ on:
       - "tools/app_packaging_plan.py"
       - "tools/ci/__init__.py"
       - "tools/ci/workspace_graph.py"
+      - "tools/ci/runner_labels.py"
       - "tools/ci/check-build-env.sh"
       - "tools/ci/app_release_history.py"
       - "tools/ci/python.py"
       - "tools/ci/resolve_builder.py"
+      - "tools/ci/images.toml"
       - "tools/ci/rustc-thin-app-wrapper.sh"
+      - "tools/ci/runtime-dylib-lazy-link.py"
       - "tools/ci/sccache.sh"
       - "dist/apps/assemble-collection.sh"
       - ".forgejo/actions/restore-cargo-downloads/**"
       - ".forgejo/workflows/release-apps.yml"
   workflow_dispatch:
     inputs:
+      recover_97894:
+        description: "Reuse only pinned run97894 archives; no builds or reruns. Publish defaults false."
+        type: boolean
+        default: false
+      signal_provider_only:
+        description: "Publish only Signal's optional service and runtime using existing authorities; main, x86_64 and publish=true required."
+        type: boolean
+        required: false
+        default: false
+      engine_runtime_only:
+        description: "Build only the Browser engine; explicit trusted main dispatch only."
+        type: boolean
+        required: false
+        default: false
       apps:
         description: "Space/comma-separated app directory names; empty selects the collection."
         required: false
@@ -99,9 +116,8 @@ on:
 
 concurrency:
   group: release-apps-${{ github.ref }}
-  # Published collections advance in commit order; PR validation may supersede
-  # older validation because it does not mutate a channel.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Published collections advance in commit order.
+  cancel-in-progress: false
 
 jobs:
   tag-validation:
@@ -156,8 +172,9 @@ jobs:
               ('tools/app_packaging_qualification.py', 3650, 'c6fd766344d1b18d9c365b2f667627d2102df741a8ab1d1e18e7304240e14063'),
               ('tools/app_packaging_contract.py', 4099, 'f0a5862a39aca5fd0a61bd7915ca87c0915420989c056df3c64151ab9b70989b'),
               ('tools/ci/__init__.py', 61, 'd4ca8c8ec9228fafe30fae7d4532c4ac4455661dc92f75d2428f9d7779dba462'),
-              ('tools/ci/python.py', 4352, 'd376bc605d185b6a235db30dfac79d9f0825db96d38b19ac5e9f1e174a242a57'),
-              ('tools/ci/resolve_builder.py', 7138, 'dd2642f1c7d54c94ef2daf25b18052918a9a9bc9784dff2c1a57ae1a315d1fb4'),
+              ('tools/ci/python.py', 4403, '5a665e38b0097d5cf0d5a5aecd31fbe35597b80313bdaa5322d95d3a60c71968'),
+              ('tools/ci/resolve_builder.py', 7983, '58824c0b8a8cb969bae988379de273dad5e9948726299c553c4ab1b55f203e68'),
+              ('tools/ci/images.toml', 1502, '7ab8dfde76143098aca8b2d05f79d2d2eb1532f674d8d44e5728e9b74235dc86'),
           )
 
           class NoRedirect(HTTPRedirectHandler):
@@ -224,13 +241,15 @@ jobs:
             sh -c 'python3 -I tools/ci/python.py tools/app_packaging_qualification.py --preflight && printf "coordinator preguard accepted exact source closure\n"'
 
   plan:
-    if: "!startsWith(github.ref, 'refs/tags/')"
+    if: "!startsWith(github.ref, 'refs/tags/') && github.event.inputs.recover_97894 != 'true'"
     needs: coordinator-preguard
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     outputs:
+      engine_runtime_only: ${{ steps.engine-mode.outputs.engine_runtime_only }}
+      signal_provider_only: ${{ steps.engine-mode.outputs.signal_provider_only }}
       builder_image: ${{ steps.builder.outputs.image }}
       apps: ${{ steps.plan.outputs.apps }}
       packages: ${{ steps.plan.outputs.packages }}
@@ -258,10 +277,26 @@ jobs:
           # deepens only immutable comparison tips or one observed main tip.
           fetch-depth: 1
           persist-credentials: false
+      - name: Validate explicit engine-only release authority
+        id: engine-mode
+        env:
+          ENGINE_RUNTIME_ONLY: ${{ github.event.inputs.engine_runtime_only }}
+          SIGNAL_PROVIDER_ONLY: ${{ github.event.inputs.signal_provider_only }}
+          REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
+          REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}
+          REQUESTED_APPS: ${{ github.event.inputs.apps }}
+          REQUESTED_COLLECTION: ${{ github.event.inputs.collection }}
+          VERIFY_FINAL_RECEIPT: ${{ github.event.inputs.verify_final_receipt }}
+          COORDINATOR_INTENT: ${{ github.event.inputs.coordinator_intent }}
+          REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
+          BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}
+          BASELINE_RUN_ID: ${{ github.event.inputs.baseline_run_id }}
+          BASELINE_EVIDENCE: ${{ github.event.inputs.baseline_evidence }}
+          BASELINE_RECEIPT_SHA256: ${{ github.event.inputs.baseline_receipt_sha256 }}
+          COORDINATOR_POLICY_SHA256: ${{ github.event.inputs.coordinator_policy_sha256 }}
+        run: python3 -I tools/ci/python.py tools/apps/browser_runtime_release.py plan
       - name: Resolve one immutable builder for every architecture
         id: builder
-        # PRs only select affected apps; no builder-dependent job runs for them.
-        if: "github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/')"
         env:
           REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
         run: python3 -I tools/ci/python.py tools/ci/resolve_builder.py
@@ -281,8 +316,6 @@ jobs:
             base=${BASELINE_SHA:-}
           elif [[ $GITHUB_EVENT_NAME == push ]]; then
             base=${COLLECTION_SOURCE:-}
-          elif [[ $GITHUB_EVENT_NAME != workflow_dispatch ]]; then
-            base='${{ github.event.pull_request.base.sha }}'
           fi
           [[ $base != null ]] || base=
           if [[ -z $base || $base == 0000000000000000000000000000000000000000 ]]; then
@@ -353,7 +386,7 @@ jobs:
         id: plan
         shell: bash
         env:
-          REQUESTED_APPS: ${{ github.event.inputs.apps }}
+          REQUESTED_APPS: ${{ steps.engine-mode.outputs.signal_provider_only == 'true' && 'messages' || steps.engine-mode.outputs.engine_runtime_only == 'true' && 'browser' || github.event.inputs.apps }}
           REQUESTED_COLLECTION: ${{ github.event.inputs.collection }}
           REQUESTED_ARCHITECTURES: ${{ github.event.inputs.architectures }}
           REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}
@@ -410,13 +443,6 @@ jobs:
             if ! [[ $base =~ ^[0-9a-f]{40}$ ]] || ! use_base "$base"; then
               args+=(--collection default)
             fi
-          else
-            base='${{ github.event.pull_request.base.sha }}'
-            if [[ -z $base || $base == null ]]; then
-              args+=(--collection default)
-            else
-              use_base "$base"
-            fi
           fi
           echo "complete=$complete" >> "$GITHUB_OUTPUT"
           python3 -I tools/ci/python.py tools/apps/app_release.py "${args[@]}" | tee app-release-plan.json
@@ -467,7 +493,7 @@ jobs:
           BASELINE_EVIDENCE: ${{ github.event.inputs.baseline_evidence }}
           BASELINE_RECEIPT_SHA256: ${{ github.event.inputs.baseline_receipt_sha256 }}
         run: python3 -I tools/ci/python.py tools/app_packaging_plan.py
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: github.event.inputs.coordinator_intent != ''
         with:
           name: coordinator-plan-${{ github.run_attempt }}
@@ -499,7 +525,7 @@ jobs:
   build:
     # PR compilation belongs to the focused CI lane. Packaging remains available
     # through workflow_dispatch (publish=false) before requesting publication.
-    if: "github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.count != '0'"
+    if: "github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.count != '0' && needs.plan.outputs.engine_runtime_only != 'true' && needs.plan.outputs.signal_provider_only != 'true'"
     needs: [plan, authorize-publish]
     name: apps / ${{ matrix.arch }}
     runs-on: ${{ matrix.build_runner }}
@@ -513,7 +539,6 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
-      CARGO_HOME: /cargo-home
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_RELEASE_LTO: thin
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
@@ -570,6 +595,7 @@ jobs:
           fi
           [[ -z ${RUSTC_WRAPPER:-} ]] || "$RUSTC_WRAPPER" --show-stats || true
       - name: Package and sign selected tapps
+        id: package
         env:
           TILO_RELEASE_APPS: ${{ needs.plan.outputs.apps }}
           TILO_APP_RELEASE_SOURCE: ${{ needs.plan.outputs.publish == 'true' && github.sha || '' }}
@@ -603,6 +629,282 @@ jobs:
           # The publish job reuses this already-built CLI to create signed
           # registry mutations from the final tapp bytes.
           install -m 0755 target/release/tilo-app-package dist/app-release/tilo-app-package
+      # Two builds of one source must give the same bytes, or every OS image
+      # and update re-sends apps that did not change. One small app,
+      # packaged twice through package-apps.sh with a throwaway identity, the
+      # second time compiled again past the compiler cache; any differing byte
+      # in its tapp, the runtime or the runtime package fails the job. The
+      # runtime and the tools come from the build above, so this costs the
+      # app's own compile and two runtime bakes.
+      - name: An app package is byte-identical when built twice
+        run: tools/apps/check-reproducible-tapp.sh calculator
+      # The signed bytes a person downloads, each app against its own budget
+      # (tools/perf/tapp-size-budget/; docs/measurements/app-package-size.md).
+      # It measures only what this job built, so it adds no build.
+      - name: Shipped tapps within their size budget
+        run: >-
+          python3 tools/perf/tapp_size_ratchet.py measure dist/app-release
+          --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"
+      # The shared runtime every app maps (libruntime_dylib.so): its bytes,
+      # relocation tables, relocation-dirtied pages and symbol lookups against
+      # tools/perf/runtime-size-budget/ (docs/measurements/runtime-size.md), and
+      # what it and each built app of apps_without_media load at exec: never
+      # GLib or GStreamer, which the runtime loads on first use.
+      # package-apps.sh built it above for the whole default collection. The
+      # engine libraries built with it are reported beside it, and
+      # none may be loaded by those apps.
+      - name: Shared runtime within its size budget
+        # Each measurement below gates on its own subject: a tapp over its
+        # budget must not hide the runtime's numbers, or the reverse.
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        run: >-
+          python3 tools/perf/runtime_size_ratchet.py measure target/thin-app/libruntime_dylib.so
+          --arch "${{ matrix.arch }}" --summary "$GITHUB_STEP_SUMMARY"
+          --apps-dir target/thin-app --library-dir "$(rustc --print target-libdir)"
+          $(sed 's|^|--engine target/thin-app/|' target/thin-app/runtime-engines)
+      # What the loader spends on it, reported only, for an app that plays no
+      # media when one was built: glibc's statistics up to main (build-thin-
+      # apps.sh's own ABI check), the objects it loads, and its private dirty
+      # memory once it is up. The app's block is the one with the runtime's
+      # relocations; RELR entries are not in glibc's "relative relocations".
+      - name: Report the runtime's loader cost
+        # Each measurement below gates on its own subject: a tapp over its
+        # budget must not hide the runtime's numbers, or the reverse.
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=
+          for name in $(python3 tools/perf/runtime_size_ratchet.py apps-without-media); do
+            [[ -x target/thin-app/$name ]] && { app=target/thin-app/$name; break; }
+          done
+          [[ -n $app ]] || app=$(find target/thin-app -maxdepth 1 -type f -executable ! -name '*.so' ! -name '*.d' | sort | head -1)
+          [[ -n $app ]] || { echo "no built app to load" >&2; exit 1; }
+          # Resolved first: an assignment beside LD_DEBUG would print rustc's own statistics.
+          # An app need not accept --help; only reaching main matters, so its status is ignored.
+          libdir=$(rustc --print target-libdir)
+          export LD_LIBRARY_PATH="target/thin-app:$libdir"
+          stats=$(LD_DEBUG=statistics "$app" --help 2>&1 >/dev/null </dev/null \
+            | sed -n 's/^ *[0-9]*: *//p' | grep -E 'time|relocations' || true)
+          [[ -n $stats ]] || { echo "the loader printed no statistics for $app" >&2; exit 1; }
+          loaded=$(LD_DEBUG=files "$app" --help 2>&1 >/dev/null </dev/null \
+            | sed -n 's/^[[:space:]]*[0-9]*:[[:space:]]*file=\([^ ]*\) .*/\1/p' | sort -u | tr '\n' ' ' || true)
+          printf '%s --help\n%s\nloaded at exec: %s\n' "$(basename "$app")" "$stats" "$loaded" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          # Up, without a display: a headless drive that waits for a widget
+          # that never comes keeps the process alive to read its memory.
+          runtime=$(mktemp -d)
+          chmod 700 "$runtime"
+          XDG_RUNTIME_DIR=$runtime "$app" --headless-drive \
+            '{"actions":[{"wait_for_named":{"target":"tilo-loader-report","timeout_ms":4000}}]}' \
+            >/dev/null 2>&1 </dev/null &
+          pid=$!
+          sleep 2
+          if [[ -r /proc/$pid/smaps_rollup ]]; then
+            dirty=$(awk '/^Private_Dirty:/ { print $2 " kB" }' "/proc/$pid/smaps_rollup")
+            media=$(awk '/^[0-9a-f]+-[0-9a-f]+ / { lib = ($6 ~ /lib(gst|glib|gobject|gio)/) }
+                         lib && /^Private_Dirty:/ { kb += $2 } END { print kb + 0 " kB" }' "/proc/$pid/smaps")
+            printf 'private dirty once up: %s, of it in GLib/GStreamer mappings: %s\n' "$dirty" "$media" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "the app exited before its memory could be read" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          wait "$pid" || true
+          rm -rf "$runtime"
+      # The runtime's link keeps only code that something exported reaches
+      # (tools/ci/runtime-dylib-lazy-link.py). An app that needed a symbol
+      # nothing else did would fail to load or draw, so every windowed app
+      # built in this run draws its first frame against this exact runtime,
+      # with every symbol bound at exec.
+      - name: Every app draws its first frame against the runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          libdir=$(rustc --print target-libdir)
+          driver=$(find /usr/share/vulkan/icd.d -name 'lvp_icd.*.json' -print -quit 2>/dev/null || true)
+          [[ -z $driver ]] || export VK_DRIVER_FILES=$driver WGPU_BACKEND=vulkan WGPU_ADAPTER_NAME=llvmpipe
+          export LD_LIBRARY_PATH="target/thin-app:$libdir" LD_BIND_NOW=1
+          runtime=$(mktemp -d)
+          chmod 700 "$runtime"
+          drawn=0 failed=()
+          for manifest in apps/*/tilo-app.toml examples/apps/*/tilo-app.toml; do
+            binary=$(sed -n 's/^bin  *= *"bin\/\([^"]*\)".*/\1/p' "$manifest" | head -1)
+            [[ -x target/thin-app/$binary ]] || continue
+            grep -Eq '^kind *= *"service"' "$manifest" && continue
+            shot="$runtime/$binary.png"
+            if XDG_RUNTIME_DIR=$runtime timeout 180 "target/thin-app/$binary" --shots="$shot" \
+                 >"$runtime/$binary.log" 2>&1 </dev/null && [[ -s $shot ]]; then
+              drawn=$((drawn + 1))
+            else
+              tail -20 "$runtime/$binary.log" >&2 || true
+              failed+=("$binary")
+            fi
+          done
+          printf '%s apps drew their first frame against the runtime\n' "$drawn" | tee -a "$GITHUB_STEP_SUMMARY"
+          rm -rf "$runtime"
+          (( ${#failed[@]} == 0 )) || { echo "no first frame from: ${failed[*]}" >&2; exit 1; }
+      # A real media path through the runtime's lazily loaded GStreamer:
+      # Video Player decodes its H.264 fixture into a capture, which
+      # refuses to save without a decoded picture; the decoder (tilo-media) is
+      # runtime code, so its GStreamer calls go through the trampolines. The
+      # loader's trace says how libgstreamer arrived: by the runtime's dlopen,
+      # or at exec when the app's own code calls GStreamer too.
+      - name: A media app decodes through the lazily loaded runtime
+        # Each measurement below gates on its own subject: a tapp over its
+        # budget must not hide the runtime's numbers, or the reverse.
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -x target/thin-app/video-player ]]; then
+            echo "video-player is not among this run's apps; nothing to decode" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          clip=$(find target/thin-app/build -path '*/video-player-*/out/h264-aac.mp4' -print -quit)
+          [[ -s $clip ]] || { echo "video-player's build left no h264-aac.mp4 fixture" >&2; exit 1; }
+          libdir=$(rustc --print target-libdir)
+          driver=$(find /usr/share/vulkan/icd.d -name 'lvp_icd.*.json' -print -quit 2>/dev/null || true)
+          [[ -z $driver ]] || export VK_DRIVER_FILES=$driver WGPU_BACKEND=vulkan WGPU_ADAPTER_NAME=llvmpipe
+          runtime=$(mktemp -d)
+          chmod 700 "$runtime"
+          shot="$runtime/video-player.png"
+          status=0
+          XDG_RUNTIME_DIR=$runtime LD_LIBRARY_PATH="target/thin-app:$libdir" LD_DEBUG=files \
+            timeout 300 target/thin-app/video-player --shots="$shot" "$clip" \
+            >"$runtime/out.log" 2>"$runtime/loader.log" </dev/null || status=$?
+          if (( status != 0 )) || [[ ! -s $shot ]]; then
+            grep -v -e 'file=' -e 'calling' "$runtime/loader.log" | tail -40 >&2 || true
+            echo "video-player did not capture a decoded frame (exit $status)" >&2
+            exit 1
+          fi
+          arrival=$(grep -Eo 'file=libgstreamer-1\.0\.so\.0 \[0\];  (needed|dynamically loaded) by [^ ]*' \
+            "$runtime/loader.log" | head -1 || true)
+          [[ -n $arrival ]] || { echo "the loader never loaded libgstreamer, yet a frame decoded" >&2; exit 1; }
+          printf 'video-player decoded %s through the runtime (%s)\n' "$(basename "$clip")" "$arrival" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          rm -rf "$runtime"
+      # Typst lives in its own engine library beside the runtime.
+      # Typst Editor compiles its first document synchronously, so a capture
+      # that saves typesets through libtilo_typst_engine.so; the loader's trace
+      # says that Typst Editor, not the runtime, brought the engine in.
+      - name: Typst Editor typesets through its engine library
+        # Each measurement below gates on its own subject: a tapp over its
+        # budget must not hide the runtime's numbers, or the reverse.
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -x target/thin-app/typst-editor ]]; then
+            echo "typst-editor is not among this run's apps; nothing to typeset" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          grep -Fxq libtilo_typst_engine.so target/thin-app/runtime-engines \
+            || { echo "build-thin-apps.sh did not list libtilo_typst_engine.so" >&2; exit 1; }
+          libdir=$(rustc --print target-libdir)
+          driver=$(find /usr/share/vulkan/icd.d -name 'lvp_icd.*.json' -print -quit 2>/dev/null || true)
+          [[ -z $driver ]] || export VK_DRIVER_FILES=$driver WGPU_BACKEND=vulkan WGPU_ADAPTER_NAME=llvmpipe
+          runtime=$(mktemp -d)
+          chmod 700 "$runtime"
+          shot="$runtime/typst-editor.png"
+          status=0
+          XDG_RUNTIME_DIR=$runtime LD_LIBRARY_PATH="target/thin-app:$libdir" LD_DEBUG=files \
+            timeout 300 target/thin-app/typst-editor --shots="$shot" \
+            >"$runtime/out.log" 2>"$runtime/loader.log" </dev/null || status=$?
+          if (( status != 0 )) || [[ ! -s $shot ]]; then
+            grep -v -e 'file=' -e 'calling' "$runtime/loader.log" | tail -40 >&2 || true
+            echo "typst-editor did not capture a typeset document (exit $status)" >&2
+            exit 1
+          fi
+          arrival=$(grep -Eo 'file=libtilo_typst_engine\.so \[0\];  needed by [^ ]*' \
+            "$runtime/loader.log" | head -1 || true)
+          [[ $arrival == *typst-editor* ]] \
+            || { echo "typst-editor typeset without loading libtilo_typst_engine.so itself: ${arrival:-not loaded}" >&2; exit 1; }
+          printf 'typst-editor typeset its first document through %s\n' "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
+          rm -rf "$runtime"
+      # Spotify playback lives in its own engine library beside the runtime.
+      # Music's --probe-spotify-engine runs librespot's code without an
+      # account, network or audio device; the loader's trace says that Music,
+      # not the runtime, brought the engine in.
+      - name: Music runs Spotify playback from its engine library
+        # Each measurement below gates on its own subject: a tapp over its
+        # budget must not hide the runtime's numbers, or the reverse.
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -x target/thin-app/music ]]; then
+            echo "music is not among this run's apps; no Spotify engine to run" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          grep -Fxq libtilo_spotify_engine.so target/thin-app/runtime-engines \
+            || { echo "build-thin-apps.sh did not list libtilo_spotify_engine.so" >&2; exit 1; }
+          libdir=$(rustc --print target-libdir)
+          runtime=$(mktemp -d)
+          chmod 700 "$runtime"
+          status=0
+          XDG_RUNTIME_DIR=$runtime LD_LIBRARY_PATH="target/thin-app:$libdir" LD_DEBUG=files \
+            timeout 120 target/thin-app/music --probe-spotify-engine check \
+            >"$runtime/out.log" 2>"$runtime/loader.log" </dev/null || status=$?
+          if (( status != 0 )); then
+            grep -v -e 'file=' -e 'calling' "$runtime/loader.log" | tail -40 >&2 || true
+            echo "music could not run its Spotify engine (exit $status)" >&2
+            exit 1
+          fi
+          arrival=$(grep -Eo 'file=libtilo_spotify_engine\.so \[0\];  needed by [^ ]*' \
+            "$runtime/loader.log" | head -1 || true)
+          [[ $arrival == *music* ]] \
+            || { echo "music ran Spotify playback without loading libtilo_spotify_engine.so itself: ${arrival:-not loaded}" >&2; exit 1; }
+          printf '%s\nthrough %s\n' "$(cat "$runtime/out.log")" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
+          rm -rf "$runtime"
+      # Canvas's painting engines and the YouTube client of Music and Tube live
+      # in engine libraries beside the runtime. Each app's probe runs its
+      # engine's code without a document, display or network; the loader's
+      # trace says that the app, not the runtime, brought the engine in.
+      - name: Canvas, Music and Tube run their engine libraries
+        # Each measurement below gates on its own subject: a tapp over its
+        # budget must not hide the runtime's numbers, or the reverse.
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          libdir=$(rustc --print target-libdir)
+          failed=0
+          for probe in "canvas libtilo_paint_engine.so --probe-paint-engine" \
+                       "music libtilo_youtube_engine.so --probe-youtube-engine" \
+                       "tube libtilo_youtube_engine.so --probe-youtube-engine"; do
+            read -r app library option <<<"$probe"
+            if [[ ! -x target/thin-app/$app ]]; then
+              echo "$app is not among this run's apps; no $library to run" | tee -a "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if ! grep -Fxq "$library" target/thin-app/runtime-engines; then
+              echo "build-thin-apps.sh did not list $library" >&2
+              failed=1
+              continue
+            fi
+            runtime=$(mktemp -d)
+            chmod 700 "$runtime"
+            status=0
+            XDG_RUNTIME_DIR=$runtime LD_LIBRARY_PATH="target/thin-app:$libdir" LD_DEBUG=files \
+              timeout 120 "target/thin-app/$app" "$option" check \
+              >"$runtime/out.log" 2>"$runtime/loader.log" </dev/null || status=$?
+            if (( status != 0 )); then
+              grep -v -e 'file=' -e 'calling' "$runtime/loader.log" | tail -40 >&2 || true
+              echo "$app could not run $library (exit $status)" >&2
+              failed=1
+            else
+              arrival=$(grep -Eo "file=${library//./\\.} \[0\];  needed by [^ ]*" \
+                "$runtime/loader.log" | head -1 || true)
+              if [[ $arrival == */$app ]]; then
+                printf '%s\nthrough %s\n' "$(cat "$runtime/out.log")" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
+              else
+                echo "$app ran $option without loading $library itself: ${arrival:-not loaded}" >&2
+                failed=1
+              fi
+            fi
+            rm -rf "$runtime"
+          done
+          exit "$failed"
       - name: Generate unpublished receipt with canonical verifiers
         # Runs for publish=false too. Uses tools compiled by package-apps.sh;
         # adds no build, credentials, registry write or channel promotion.
@@ -615,18 +917,22 @@ jobs:
             --runtime-binary target/release/tilo-runtime-bundle \
             --signers dist/app-release/work/receipt-signers.json \
             --source-sha "$GITHUB_SHA" --architecture "$RECEIPT_ARCH"
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-apps-${{ matrix.arch }}
           path: |
             dist/app-release/tapp/*.tapp
             dist/app-release/runtime/**
+            dist/app-release/runtime-package/**
             dist/app-release/SHA256SUMS
             dist/app-release/index.json
             dist/app-release/publication-receipt.json
             dist/app-release/verification-policy.json
             dist/app-release/tilo-app-package
           if-no-files-found: error
+          # Read only by this run's qualify-collection and publish jobs; the
+          # cross-run baseline is final-app-collection-<arch>.
+          retention-days: 1
   qualify-collection:
     # Coordinator guard keeps this qualification disabled; no publisher OIDC.
     if: github.event.inputs.coordinator_intent != '' && needs.plan.outputs.publish == 'false' && needs.build.result == 'success'
@@ -641,7 +947,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release
       - name: Assemble and verify without publication
@@ -684,7 +990,7 @@ jobs:
               --baseline-proof "$baseline" --baseline-proof-sha256 "$BASELINE_RECEIPT_SHA256" \
               --baseline-source "$BASELINE_SHA"
           done < <(jq -r '.include[].arch' <<< "$MATRIX")
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: contains(github.event.inputs.architectures, 'x86_64')
         with:
           name: final-app-collection-x86_64
@@ -693,7 +999,7 @@ jobs:
             dist/qualified-apps/x86_64/final-publication-receipt.json
             dist/qualified-apps/x86_64/assembly-provenance.json
           if-no-files-found: error
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: contains(github.event.inputs.architectures, 'aarch64')
         with:
           name: final-app-collection-aarch64
@@ -704,11 +1010,15 @@ jobs:
           if-no-files-found: error
 
   publish:
-    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0'
+    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.count != '0' && needs.plan.outputs.engine_runtime_only != 'true' && needs.plan.outputs.signal_provider_only != 'true'
     needs: [plan, authorize-publish, build]
     # Execute tools from the first selected native architecture. Those tools can
     # verify either target archive without executing its application payloads.
-    runs-on: ${{ fromJSON(needs.plan.outputs.matrix).include[0].runner }}
+    # With both native artifacts, publish-collections.sh selects the tool
+    # matching uname -m. Reuse admitted portable pools rather than pinning
+    # the release lock to the first architecture's saturated test runners.
+    # A single-architecture release still needs its matching native pool.
+    runs-on: ${{ contains(fromJSON(needs.plan.outputs.matrix).include.*.arch, 'x86_64') && contains(fromJSON(needs.plan.outputs.matrix).include.*.arch, 'aarch64') && 'runner-native-portable' || fromJSON(needs.plan.outputs.matrix).include[0].runner }}
     container:
       # This public, immutable image is pulled before any release authorization.
       # It contains no compiler or build toolchain and needs no registry secret.
@@ -723,7 +1033,7 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release
       - name: Publish reusable tapps and assemble immutable collections
@@ -744,367 +1054,264 @@ jobs:
           PRIOR_ARM64_SHA256: ${{ needs.plan.outputs.prior_arm64_sha256 }}
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
           TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}
+          TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+          TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
+        run: tools/apps/publish-collections.sh
+
+  build-signal-provider:
+    if: needs.plan.outputs.signal_provider_only == 'true'
+    needs: [plan, authorize-publish]
+    name: Signal service / x86_64
+    runs-on: ${{ fromJSON(needs.plan.outputs.matrix).include[0].build_runner }}
+    timeout-minutes: 120
+    container:
+      image: ${{ needs.plan.outputs.builder_image }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      TILO_SCCACHE_KEY_PREFIX: tilo/apps/v2/x86_64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.forgejo/actions/restore-cargo-downloads
+      - name: Prepare compiler cache
+        run: bash tools/ci/sccache.sh prepare
+      - name: Install build-only Java compiler
+        run: dnf install -y java-25-openjdk-devel libffi-devel alsa-lib-devel cups-devel
+      - name: Compile only the owned provider and release tools without signing credentials
+        run: |
+          export PATH="/usr/lib/jvm/java-25-openjdk/bin:$PATH"
+          python3 -I tools/ci/python.py tools/apps/signal_provider_release.py compile --source "$GITHUB_SHA"
+      - name: Seal with the existing accepted runtime and app authorities
+        env:
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ secrets.RUNTIME_BUNDLE_SIGNING_KEY }}
           TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
         run: |
           set -euo pipefail
-          audience=$MAIN_AUDIENCE
-          [[ -n $audience ]] || { printf 'app release Authorized Integration audience is required\n' >&2; exit 1; }
-          jwt=$(curl --fail --silent --show-error \
-            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience" | jq -er .value)
-          echo "::add-mask::$jwt"
-          if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
-            policy_file="$RUNNER_TEMP/final-receipt-policy.json"
-            printf '%s' "$FINAL_RECEIPT_POLICY" > "$policy_file"
-            verifier_tools="$RUNNER_TEMP/platform-verifiers"
-            python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py fetch \
-              --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" \
-              --builder-image "$BUILDER_IMAGE" --output "$verifier_tools"
-            python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
-              --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" preflight \
-              --pkg-binary "$verifier_tools/tilo-app-package" --runtime-binary "$verifier_tools/tilo-runtime-bundle"
+          : "${RUNTIME_BUNDLE_SIGNING_KEY:?}" "${TAPP_PUBLISHER_IDENTITY:?}"
+          runtime_identity="$RUNNER_TEMP/tilo-signal-runtime-identity.json"
+          app_identity="$RUNNER_TEMP/tilo-signal-app-identity.json"
+          trap 'rm -f "$runtime_identity" "$app_identity"' EXIT
+          (umask 077; printf '%s' "$RUNTIME_BUNDLE_SIGNING_KEY" > "$runtime_identity")
+          (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "$app_identity")
+          unset RUNTIME_BUNDLE_SIGNING_KEY TAPP_PUBLISHER_IDENTITY
+          export RUNTIME_BUNDLE_IDENTITY_FILE="$runtime_identity" TAPP_PUBLISHER_IDENTITY_FILE="$app_identity"
+          python3 -I tools/ci/python.py tools/apps/signal_provider_release.py seal \
+            --source "$GITHUB_SHA" --sequence "$GITHUB_RUN_NUMBER"
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: signal-provider-x86_64
+          path: |
+            dist/signal-provider-release/runtime-package/**
+            dist/signal-provider-release/provider-package/**
+            dist/signal-provider-release/release.json
+            dist/signal-provider-release/bin/**
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-signal-provider:
+    if: needs.plan.outputs.signal_provider_only == 'true' && needs.plan.outputs.publish == 'true'
+    needs: [plan, authorize-publish, build-signal-provider]
+    runs-on: ${{ fromJSON(needs.plan.outputs.matrix).include[0].runner }}
+    timeout-minutes: 60
+    container:
+      image: registry.tilo.so/tilo/tilo-release-tools@sha256:2a7292af48bf8074e27f95661a293b2c48c420c5522d465da7fb31b6e22562fa
+    enable-openid-connect: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          pattern: signal-provider-x86_64
+          path: signal-release
+      - name: Verify both packages before acquiring existing publisher OIDC and submitting normal admission
+        env:
+          MAIN_AUDIENCE: ${{ vars.TILO_APP_RELEASE_MAIN_AUDIENCE }}
+          TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
+        run: bash tools/apps/publish-signal-provider.sh
+
+  build-engine-runtime:
+    if: needs.plan.outputs.engine_runtime_only == 'true'
+    needs: [plan, authorize-publish]
+    name: Browser engine / ${{ matrix.arch }}
+    runs-on: ${{ matrix.build_runner }}
+    timeout-minutes: 180
+    container:
+      image: ${{ needs.plan.outputs.builder_image }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      TILO_SCCACHE_KEY_PREFIX: tilo/apps/v2/${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Restore Cargo downloads
+        uses: ./.forgejo/actions/restore-cargo-downloads
+      - name: Prepare compiler cache
+        run: bash tools/ci/sccache.sh prepare
+      - name: Compile the pinned native engine without release credentials
+        run: |
+          set -euo pipefail
+          cpus=$(nproc)
+          if read -r quota period 2>/dev/null < /sys/fs/cgroup/cpu.max && [[ $quota != max ]]; then
+            cpus=$(( (quota + period - 1) / period ))
           fi
-          owner=${GITHUB_REPOSITORY%%/*}
-          package_api="$GITHUB_SERVER_URL/api/packages/$owner/generic"
-          package_public_api=${TILO_PACKAGE_PUBLIC_BASE_URL%/}
-          [[ $package_public_api == https://*/api/packages/*/generic \
-                && $package_public_api != *'.svc.cluster.local'* ]] || {
-            printf 'TILO_PACKAGE_PUBLIC_BASE_URL must be a public HTTPS generic-package base: %s\n' \
-              "$package_public_api" >&2
-            exit 1
-          }
-
-          # Every app/version/architecture is independently addressable. A
-          # one-app update uploads one tapp; collection assembly below fetches
-          # all unchanged members instead of rebuilding them.
-          upload_manifest="$RUNNER_TEMP/tilo-package-uploads.tsv"
-          : > "$upload_manifest"
-          for index in release/*/index.json; do
-            while IFS=$'\t' read -r name version file; do
-              tapp="${index%/index.json}/tapp/$file"
-              test -f "$tapp"
-              printf '%s\t%s\n' "$tapp" \
-                "$package_api/tilo-app-$name/$VERSION/$file" >> "$upload_manifest"
-            done < <(jq -r '.apps[] | [.name,.version,.file] | @tsv' "$index")
-          done
-          TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
-            tools/upload_immutable_packages.sh "$upload_manifest"
-
-          # Product artwork is immutable alongside its tapp release.  The
-          # metadata builder always emits an accessible owned icon, and adds
-          # checked-in app screenshots where available, so a store card can
-          # never become a blank patch of UI again.
-          registry_url=${TILO_REGISTRY_URL%/}
-          [[ $registry_url == https://* && $registry_url != *'.svc.cluster.local'* ]] || {
-            printf 'TILO_REGISTRY_URL must be a public HTTPS origin\n' >&2
-            exit 1
-          }
-          registry_metadata="$RUNNER_TEMP/tilo-registry-metadata"
-          registry_media="$RUNNER_TEMP/tilo-registry-media"
-          registry_media_urls="$RUNNER_TEMP/tilo-registry-media-public-urls.tsv"
-          registry_apps=$(for index in release/*/index.json; do jq -r '.apps[].name' "$index"; done | sort -u | xargs)
-          [[ -n $registry_apps ]] || { printf 'no apps selected for registry metadata\n' >&2; exit 1; }
-          python3 -I tools/ci/python.py tools/apps/registry_metadata.py build \
-            --apps "$registry_apps" \
-            --media-base "$registry_url/artifacts/$owner/generic/tilo-app-metadata/$VERSION" \
-            --output "$registry_metadata" --media-output "$registry_media"
-          registry_media_uploads="$RUNNER_TEMP/tilo-registry-media-uploads.tsv"
-          : > "$registry_media_uploads"
-          : > "$registry_media_urls"
-          while IFS= read -r media; do
-            printf '%s\t%s\n' "$registry_media/$media" \
-              "$package_api/tilo-app-metadata/$VERSION/$media" >> "$registry_media_uploads"
-            printf '%s\t%s\n' "$media" \
-              "$registry_url/artifacts/$owner/generic/tilo-app-metadata/$VERSION/$media" >> "$registry_media_urls"
-          done < <(find "$registry_media" -maxdepth 1 -type f -printf '%f\n' | sort)
-          TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=8 \
-            tools/upload_immutable_packages.sh "$registry_media_uploads"
-
-          # Registry metadata is a public API contract.  Do not sign image
-          # URLs into an entry until the public artifact endpoint can serve
-          # every generated icon or screenshot with its real image type.
-          # This guards against the package upload and public proxy drifting
-          # apart and avoids publishing Store cards that render as blanks.
-          check_media() {
-            local media=$1 media_url=$2 expected_type headers status=000 content_type= attempt
-            case "$media" in
-              *.svg) expected_type='image/svg+xml' ;;
-              *.png) expected_type='image/png' ;;
-              *.jpg|*.jpeg) expected_type='image/jpeg' ;;
-              *.webp) expected_type='image/webp' ;;
-              *) printf 'unsupported registry media type: %s\n' "$media" >&2; return 1 ;;
-            esac
-            headers=$(mktemp "$RUNNER_TEMP/tilo-registry-media-headers.XXXXXX")
-            for attempt in 1 2 3 4 5; do
-              : > "$headers"
-              status=$(curl --silent --show-error --location --head --dump-header "$headers" \
-                --output /dev/null --write-out '%{http_code}' "$media_url") || status='000'
-              content_type=$(tr -d '\r' < "$headers" | awk 'tolower($1) == "content-type:" { print tolower($2) }' | tail -n 1)
-              [[ $status == 200 && $content_type == "$expected_type" ]] && break
-              (( attempt < 5 )) && sleep "$attempt"
-            done
-            rm -f "$headers"
-            [[ $status == 200 && $content_type == "$expected_type" ]] || {
-              printf 'public registry media is unavailable or has the wrong type (%s: HTTP %s, %s; expected %s)\n' \
-                "$media_url" "$status" "${content_type:-no Content-Type}" "$expected_type" >&2
-              return 1
-            }
-          }
-          export -f check_media
-          export RUNNER_TEMP
-          tr '\t' '\n' < "$registry_media_urls" \
-            | xargs -d '\n' -n 2 -P 8 bash -c 'check_media "$1" "$2"' _
-
-          # Submit every newly built immutable tapp to the signed registry.
-          # The request is signed by the same identity as the package; retries
-          # are idempotent and the registry's collector/publisher jobs perform
-          # independent verification before advancing the public snapshot.
-          [[ -n ${TAPP_PUBLISHER_IDENTITY:-} ]] || {
-            printf 'TAPP_PUBLISHER_IDENTITY is required for registry publication\n' >&2
-            exit 1
-          }
-          registry_identity="$RUNNER_TEMP/tilo-registry-publisher.json"
-          (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "$registry_identity")
-          trap 'rm -f "$registry_identity"' EXIT
-          host_arch=$(uname -m)
-          registry_cli=
-          for index in release/*/index.json; do
-            if [[ $(jq -er .architecture "$index") == "$host_arch" ]]; then
-              registry_cli="${index%/index.json}/tilo-app-package"
-              break
-            fi
-          done
-          [[ -n $registry_cli && -f $registry_cli ]] || {
-            printf 'no native tilo-app-package registry client artifact found for %s\n' "$host_arch" >&2
-            exit 1
-          }
-          chmod 0755 "$registry_cli"
-          export SOURCE_DATE_EPOCH
-          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
-          snapshot="$RUNNER_TEMP/tilo-registry-snapshot.json"
-          response="$RUNNER_TEMP/tilo-registry-response.txt"
-          publication_plan="$RUNNER_TEMP/tilo-registry-publication.tsv"
-          : > "$publication_plan"
-          for index in release/*/index.json; do
-            arch=$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")
-            while IFS=$'\t' read -r id name file; do
-              printf '%s\t%s\t%s\t%s\t%s\n' \
-                "$id" "$name" "$file" "$arch" "${index%/index.json}" >> "$publication_plan"
-            done < <(jq -r '.apps[] | [.id,.name,.file] | @tsv' "$index")
-          done
-          LC_ALL=C sort -t $'\t' -k1,1 -k4,4 -o "$publication_plan" "$publication_plan"
-
-          # One package id is one publisher-signed registry entry. Fold every
-          # architecture into that entry before POSTing so the registry never
-          # has to synthesize or re-sign publisher data. This also upgrades an
-          # already-published single-architecture entry append-only.
-          # One snapshot serves every id; only a refused attempt re-reads it.
-          fetch_snapshot() {
-            curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
-              --retry 3 --retry-all-errors "$registry_url/entries" --output "$snapshot"
-            jq -e '.entries | type == "array"' "$snapshot" >/dev/null
-          }
-          fetch_snapshot
-          while IFS= read -r id; do
-            accepted=false
-            architectures=$(awk -F $'\t' -v id="$id" '$1 == id {print $4}' \
-              "$publication_plan" | paste -sd, -)
-            for attempt in 1 2 3; do
-              (( attempt == 1 )) || fetch_snapshot
-              matches=$(jq --arg id "$id" '[.entries[] | select(.package_id == $id)] | length' "$snapshot")
-              previous="$RUNNER_TEMP/tilo-registry-previous.json"
-              aggregate="$RUNNER_TEMP/tilo-registry-aggregate.json"
-              request="$RUNNER_TEMP/tilo-registry-request.json"
-              rm -f "$previous" "$aggregate" "$request"
-              # A request still waiting for review is replaced by this one and
-              # must keep its versions, so build on it when there is one.
-              "$registry_cli" pending --registry "$registry_url" \
-                --identity "$registry_identity" "$id" > "$previous"
-              [[ -s $previous ]] || rm -f "$previous"
-              case "$matches" in
-                0) action=add ;;
-                1)
-                  action=update
-                  [[ -f $previous ]] || jq --arg id "$id" \
-                    '.entries[] | select(.package_id == $id)' "$snapshot" > "$previous"
-                  ;;
-                *)
-                  printf 'registry snapshot contains duplicate package id %s\n' "$id" >&2
-                  exit 1
-                  ;;
-              esac
-              [[ -f $previous ]] && cp "$previous" "$aggregate"
-              while IFS=$'\t' read -r planned_id name file arch artifact_root; do
-                [[ $planned_id == "$id" ]] || continue
-                tapp="$artifact_root/tapp/$file"
-                metadata="$registry_metadata/$name.json"
-                test -f "$metadata"
-                tapp_url="$registry_url/artifacts/$owner/generic/tilo-app-$name/$VERSION/$file"
-                args=(entry --arch "$arch" --identity "$registry_identity" \
-                  --metadata "$metadata" --action "$action" --url "$tapp_url")
-                [[ -f $aggregate ]] && args+=(--previous-entry "$aggregate")
-                "$registry_cli" "${args[@]}" "$tapp" > "$request"
-                jq -e --arg id "$id" '.entry | select(.package_id == $id)' \
-                  "$request" > "$aggregate.next"
-                mv "$aggregate.next" "$aggregate"
-              done < "$publication_plan"
-              [[ -s $request && -s $aggregate ]] || {
-                printf 'no registry artifacts planned for %s\n' "$id" >&2
-                exit 1
-              }
-              if [[ -f $previous ]] && jq -e -s '.[0] == .[1]' \
-                "$previous" "$aggregate" >/dev/null; then
-                accepted=true
-                echo "::notice::$id ($architectures) is already current in the Tilo registry"
-                break
-              fi
-              status=$(curl --silent --show-error --connect-timeout 10 --max-time 30 \
-                --retry 3 --retry-all-errors \
-                --output "$response" --write-out '%{http_code}' --request POST \
-                --header 'Content-Type: application/json' --data-binary "@$request" \
-                "$registry_url/entries")
-              if [[ $status == 202 ]]; then
-                accepted=true
-                echo "::notice::submitted $id ($architectures) to the Tilo registry"
-                break
-              fi
-              # A concurrent publication can make the fetched predecessor
-              # stale. Re-read and regenerate the signed aggregate before the
-              # next bounded attempt; all other failures remain visible.
-              printf 'registry answered %s with HTTP %s: %s\n' \
-                "$id" "$status" "$(head -c 1000 "$response")" >&2
-              [[ $status == 409 || $status == 429 || $status == 5?? ]] || exit 1
-              sleep "$attempt"
-            done
-            [[ $accepted == true ]] || {
-              printf 'registry did not accept %s after bounded retries\n' "$id" >&2
-              exit 1
-            }
-          done < <(cut -f1 "$publication_plan" | uniq)
-
-          [[ -n ${COLLECTION:-} ]] || exit 0
-          collection_plan="$RUNNER_TEMP/tilo-collection-plan.json"
-          python3 -I tools/ci/python.py tools/apps/app_release.py --collection "$COLLECTION" > "$collection_plan"
-          source_epoch=$(git show -s --format=%ct "$GITHUB_SHA")
-          [[ $source_epoch =~ ^[0-9]+$ ]]
-          channel_url=
-          channel_sha=
-          for index in release/*/index.json; do
-            arch=$(jq -er '.architecture | select(. == "x86_64" or . == "aarch64")' "$index")
-            tapp_dir="$RUNNER_TEMP/tilo-collection-$arch"
-            mkdir -p "$tapp_dir"
-            prior_url=
-            prior_sha=
-            # Both continuous pushes and explicitly publishing manual runs on
-            # main may replace one app in the immutable prior collection.
-            # Tags remain self-contained release boundaries and rebuild their
-            # complete requested set instead of depending on a moving channel.
-            if [[ $GITHUB_REF == refs/heads/main ]]; then
-              case "$arch" in
-                x86_64) prior_url=$PRIOR_X86_URL; prior_sha=$PRIOR_X86_SHA256 ;;
-                aarch64) prior_url=$PRIOR_ARM64_URL; prior_sha=$PRIOR_ARM64_SHA256 ;;
-              esac
-            fi
-            TILO_PACKAGE_TOKEN="$jwt" tools/reuse_prior_app_collection.sh \
-              "$index" "$collection_plan" "$tapp_dir" "$arch" "$prior_url" "$prior_sha"
-            while IFS=$'\t' read -r name version; do
-              file="$name-$version-$arch.tapp"
-              built="${index%/index.json}/tapp/$file"
-              if [[ -f $built ]]; then
-                find "$tapp_dir" -maxdepth 1 -type f -name "$name-*-$arch.tapp" -delete
-                cp "$built" "$tapp_dir/$file"
-              fi
-              test -f "$tapp_dir/$file" || {
-                printf 'collection member %s was neither rebuilt nor reusable\n' "$file" >&2
-                exit 1
-              }
-            done < <(jq -r '.catalog[] | [.name,.version] | @tsv' "$collection_plan")
-            out="dist/app-collections/$arch"
-            TILO_APP_COLLECTION_PLAN="$collection_plan" \
-              TILO_APP_ARCH="$arch" TILO_APP_TAPP_DIR="$tapp_dir" \
-              TILO_APP_RUNTIME_DIR="${index%/index.json}/runtime" \
-              TILO_APP_COLLECTION_OUT="$out" SOURCE_DATE_EPOCH="$source_epoch" \
-              dist/apps/assemble-collection.sh
-            bundle="$out/tilo-apps-$arch.tar.gz"
-            digest_file="$bundle.sha256"
-            bundle_upload_url="$package_api/tilo-app-collections/$VERSION/${bundle##*/}"
-            bundle_url="$package_public_api/tilo-app-collections/$VERSION/${bundle##*/}"
-            if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
-              python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
-                --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" verify \
-                --collection "$out" --pkg-binary "$verifier_tools/tilo-app-package" \
-                --runtime-binary "$verifier_tools/tilo-runtime-bundle" \
-                --source-sha "$GITHUB_SHA" --architecture "$arch"
-            fi
-            bundle_upload="$RUNNER_TEMP/tilo-collection-bundle-$arch.tsv"
-            printf '%s\t%s\n' "$bundle" "$bundle_upload_url" > "$bundle_upload"
-            TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=1 \
-              tools/upload_immutable_packages.sh "$bundle_upload"
-            metadata_uploads="$RUNNER_TEMP/tilo-collection-metadata-$arch.tsv"
-            : > "$metadata_uploads"
-            if [[ ${VERIFY_FINAL_RECEIPT:-false} == true ]]; then
-              # A successful PUT alone is not evidence that consumers can read the bytes.
-              readback="$RUNNER_TEMP/tilo-upload-readback-$arch.tar.gz"
-              curl --fail --silent --show-error --header "Authorization: Bearer $jwt" \
-                "$bundle_upload_url" --output "$readback"
-              final_receipt="$out/final-publication-receipt.json"
-              python3 -I tools/ci/python.py tools/apps/final_app_receipt.py \
-                --trust-policy "$policy_file" --trust-policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256" bind-readback \
-                --receipt "$final_receipt" --receipt-sha256 "$(sha256sum "$final_receipt" | cut -d' ' -f1)" \
-                --downloaded "$readback" --url "$bundle_url" --output "$out/published-receipt.json"
-              rm -f "$readback"
-              printf '%s\t%s\n' \
-                "$out/published-receipt.json" \
-                "$package_api/tilo-app-collections/$VERSION/tilo-apps-$arch.receipt.json" \
-                "$out/published-receipt.upload.json" \
-                "$package_api/tilo-app-collections/$VERSION/tilo-apps-$arch.upload.json" \
-                >> "$metadata_uploads"
-            fi
-            printf '%s\t%s\n' "$digest_file" \
-              "$package_api/tilo-app-collections/$VERSION/${digest_file##*/}" \
-              >> "$metadata_uploads"
-            TILO_PACKAGE_TOKEN="$jwt" TILO_PACKAGE_UPLOAD_WORKERS=3 \
-              tools/upload_immutable_packages.sh "$metadata_uploads"
-            if [[ $arch == x86_64 ]]; then
-              channel_url=$bundle_url
-              channel_sha=$(awk '{print $1}' "$digest_file")
-            else
-              arm64_channel_url=$bundle_url
-              arm64_channel_sha=$(awk '{print $1}' "$digest_file")
-            fi
-          done
-
-          # Keep the OS input channel current after a successful default/main
-          # collection publish. The package URL remains immutable; only these
-          # two repository variables move.
-          if [[ $GITHUB_REF == refs/heads/main && $COLLECTION == default ]]; then
-            [[ -n $channel_url && $channel_sha =~ ^[0-9a-f]{64}$ ]]
-            variable_api="${GITHUB_API_URL:-$GITHUB_SERVER_URL/api/v1}/repos/$GITHUB_REPOSITORY/actions/variables"
-            update_variable() {
-              local name=$1 value=$2 endpoint status method
-              endpoint="$variable_api/$name"
-              status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
-                --header "Authorization: Bearer $jwt" "$endpoint")
-              case "$status" in 200) method=PUT ;; 404) method=POST ;; *) return 1 ;; esac
-              curl --fail --silent --show-error --request "$method" \
-                --header "Authorization: Bearer $jwt" \
-                --header 'Content-Type: application/json' \
-                --data "$(jq -cn --arg value "$value" '{value:$value}')" "$endpoint"
-            }
-            update_variable TILO_APP_COLLECTION_URL "$channel_url"
-            update_variable TILO_APP_COLLECTION_SHA256 "$channel_sha"
-            update_variable TILO_APP_COLLECTION_URL_X86_64 "$channel_url"
-            update_variable TILO_APP_COLLECTION_SHA256_X86_64 "$channel_sha"
-            if [[ -n ${arm64_channel_url:-} ]]; then
-              update_variable TILO_APP_COLLECTION_URL_AARCH64 "$arm64_channel_url"
-              update_variable TILO_APP_COLLECTION_SHA256_AARCH64 "$arm64_channel_sha"
-            fi
-            # Its runtime carries this builder's system libraries; the next
-            # main run may reuse the collection only with the same builder.
-            update_variable TILO_APP_COLLECTION_BUILDER "$BUILDER_IMAGE"
-            # The next main run selects its tapps relative to this commit.
-            if [[ $COMPLETE == true ]]; then
-              update_variable TILO_APP_COLLECTION_SOURCE "$GITHUB_SHA"
-            fi
-            echo '::notice::advanced the default OS app-collection channel'
+          memory=$(( $(sed -n 's/^MemTotal: *\([0-9]*\) kB$/\1/p' /proc/meminfo) << 10 ))
+          if read -r limit 2>/dev/null < /sys/fs/cgroup/memory.max && [[ $limit =~ ^[0-9]+$ ]]; then
+            (( limit < memory )) && memory=$limit
           fi
+          jobs=$(( memory / (2 << 30) ))
+          (( jobs > cpus )) && jobs=$cpus
+          (( jobs < 1 )) && jobs=1
+          export CARGO_BUILD_JOBS=$jobs
+          echo "::notice::cargo jobs: $jobs of $cpus CPUs, $(( memory >> 30 )) GiB"
+          export SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")
+          python3 -I tools/ci/python.py tools/apps/browser_runtime_release.py compile \
+            --arch '${{ matrix.arch }}' --source "$GITHUB_SHA"
+      - name: Seal the verified engine with existing runtime and app authorities
+        env:
+          REQUESTED_PUBLISH: ${{ needs.plan.outputs.publish }}
+          TAPP_PUBLISHER_IDENTITY: ${{ needs.plan.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ needs.plan.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+        run: |
+          set -euo pipefail
+          identity="$RUNNER_TEMP/tilo-engine-app-identity.json"
+          runtime_identity="$RUNNER_TEMP/tilo-engine-runtime-identity.json"
+          trap 'rm -f "$identity" "$runtime_identity"' EXIT
+          if [[ "$REQUESTED_PUBLISH" == true ]]; then
+            : "${TAPP_PUBLISHER_IDENTITY:?}" "${RUNTIME_BUNDLE_SIGNING_KEY:?}"
+            (umask 077; printf '%s' "$TAPP_PUBLISHER_IDENTITY" > "$identity")
+            (umask 077; printf '%s' "$RUNTIME_BUNDLE_SIGNING_KEY" > "$runtime_identity")
+            export TAPP_PUBLISHER_IDENTITY_FILE="$identity" RUNTIME_BUNDLE_IDENTITY_FILE="$runtime_identity"
+          fi
+          unset TAPP_PUBLISHER_IDENTITY RUNTIME_BUNDLE_SIGNING_KEY
+          python3 -I tools/ci/python.py tools/apps/browser_runtime_release.py seal \
+            --arch '${{ matrix.arch }}' --source "$GITHUB_SHA" --sequence "$GITHUB_RUN_NUMBER"
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: browser-engine-runtime-${{ matrix.arch }}
+          path: |
+            dist/browser-runtime-release/package/**
+            dist/browser-runtime-release/bin/**
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-engine-runtime:
+    if: needs.plan.outputs.engine_runtime_only == 'true' && needs.plan.outputs.publish == 'true'
+    needs: [plan, authorize-publish, build-engine-runtime]
+    runs-on: ${{ fromJSON(needs.plan.outputs.matrix).include[0].runner }}
+    timeout-minutes: 60
+    container:
+      image: registry.tilo.so/tilo/tilo-release-tools@sha256:2a7292af48bf8074e27f95661a293b2c48c420c5522d465da7fb31b6e22562fa
+    enable-openid-connect: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          pattern: browser-engine-runtime-*
+          path: engine-release
+      - name: Verify and publish only the signed Browser runtime
+        env:
+          MAIN_AUDIENCE: ${{ vars.TILO_APP_RELEASE_MAIN_AUDIENCE }}
+          TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
+          ENGINE_ARCHITECTURES: ${{ needs.plan.outputs.matrix }}
+        run: tools/apps/publish-browser-runtime.sh
+
+  recover-publication-97894:
+    # Same protected workflow/audience as normal publication. The source and
+    # archive IDs/digests are reviewed constants, never dispatch parameters.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.recover_97894 == 'true'
+    # Existing provisioned verifier policy contains only native x86_64 tools.
+    runs-on: runner
+    container:
+      image: registry.tilo.so/tilo/tilo-release-tools@sha256:2a7292af48bf8074e27f95661a293b2c48c420c5522d465da7fb31b6e22562fa
+    timeout-minutes: 60
+    enable-openid-connect: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Preserve and bind original successful build artifacts without rerunning
+        env:
+          FORGEJO_ARTIFACT_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ $GITHUB_REF == refs/heads/main && $GITHUB_EVENT_NAME == workflow_dispatch ]]
+          [[ $(git rev-parse HEAD) == "$GITHUB_SHA" ]]
+          python3 -I tools/ci/python.py tools/apps/recover_app_publication.py prepare             --manifest tools/apps/publication-recovery-97894.json             --preserved "$RUNNER_TEMP/recovery-97894" --release release
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: preserved-publication-97894
+          path: ${{ runner.temp }}/recovery-97894
+          if-no-files-found: error
+          retention-days: 30
+      - name: Verify original signed packages with independently provisioned policy
+        env:
+          FINAL_RECEIPT_POLICY: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY }}
+          FINAL_RECEIPT_POLICY_SHA256: ${{ vars.TILO_APP_FINAL_RECEIPT_POLICY_SHA256 }}
+          VERIFIER_BUNDLE_READ_TOKEN: ${{ secrets.TILO_VERIFIER_BUNDLE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$FINAL_RECEIPT_POLICY" > "$RUNNER_TEMP/recovery-policy.json"
+          python3 -I tools/ci/python.py tools/apps/recover_app_publication.py verify             --manifest tools/apps/publication-recovery-97894.json --release release             --policy "$RUNNER_TEMP/recovery-policy.json" --policy-sha256 "$FINAL_RECEIPT_POLICY_SHA256"             --tools "$RUNNER_TEMP/recovery-verifiers"
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: publication-97894-verification
+          path: release/recovery-verification.json
+          if-no-files-found: error
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: github.event.inputs.publish == 'true'
+        with:
+          ref: 919dfbd901dff103b79e3d0fdef9f4af4b2e24c5
+          path: original-source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Recover exact immutable publication after verification
+        # Operator keeps any namespace hold intact: do not dispatch publish=true
+        # until its scope is reconciled. No key, policy or grant is created here.
+        if: github.event.inputs.publish == 'true'
+        env:
+          MAIN_AUDIENCE: ${{ vars.TILO_APP_RELEASE_MAIN_AUDIENCE }}
+          TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
+          TILO_REGISTRY_URL: ${{ vars.TILO_REGISTRY_URL || 'https://apps.tilo.so' }}
+          TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY: ${{ vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+          TAPP_PUBLISHER_IDENTITY: ${{ secrets.TAPP_PUBLISHER_IDENTITY }}
+          VERSION: 0.0.0-919dfbd901dff103b79e3d0fdef9f4af4b2e24c5
+          COLLECTION: default
+          COMPLETE: 'true'
+          VERIFY_FINAL_RECEIPT: 'false'
+        run: |
+          set -euo pipefail
+          test -s release/recovery-verification.json
+          [[ $(git -C original-source rev-parse HEAD) == 919dfbd901dff103b79e3d0fdef9f4af4b2e24c5 ]]
+          # Availability is a prerequisite, never permission to drop stage or
+          # accept an invalid snapshot. Normal publisher validates its contents.
+          curl --fail --silent --show-error --connect-timeout 10 --max-time 30             "${TILO_REGISTRY_URL%/}/entries" --output "$RUNNER_TEMP/recovery-catalogue.json"
+          jq -e '.entries | type == "array"' "$RUNNER_TEMP/recovery-catalogue.json" >/dev/null
+          mv release original-source/release
+          cd original-source
+          export GITHUB_SHA=919dfbd901dff103b79e3d0fdef9f4af4b2e24c5
+          tools/apps/publish-collections.sh

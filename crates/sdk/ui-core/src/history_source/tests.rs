@@ -1,15 +1,15 @@
 //! End-to-end tests for the history producer.
 //!
-//! These drive the production path only: real automerge documents, real qdoc
+//! These drive the production path only: real automerge documents, real tilo-doc
 //! schema, the real `HistorySource`, the real `ActivityTimeline` filter, and
 //! the real `State::restore_to_heads`. Nothing is stubbed — a bug in any of
 //! those links fails a test here.
 
 use crate::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::widget::EntryKind;
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, AutoCommit, ObjType, ROOT};
-use collab_types::OpClass;
 
 use super::*;
 use crate::permissions::UserId;
@@ -101,9 +101,9 @@ fn browsing_history_never_commits_or_invents_entries() {
         let (mut doc, block) = two_identity_document();
         let entries = source().entries(&mut doc);
         let first = content_rows(&entries)[0].id;
-        let c = qdoc::model::open(&doc, &ROOT).unwrap();
-        let mut ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
-        qdoc::DocMut {
+        let c = tilo_doc::model::open(&doc, &ROOT).unwrap();
+        let mut ids = tilo_doc::IdGen::new(doc.get_actor().to_hex_string());
+        tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -136,12 +136,12 @@ fn at(secs: i64) -> SystemTime {
         .unwrap_or(UNIX_EPOCH)
 }
 
-/// A document carrying the qdoc schema, authored by `handle`.
-fn qdoc_doc(handle: &str) -> (AutoCommit, qdoc::Containers, qdoc::IdGen) {
+/// A document carrying the tilo-doc schema, authored by `handle`.
+fn rich_doc(handle: &str) -> (AutoCommit, tilo_doc::Containers, tilo_doc::IdGen) {
     let mut doc = AutoCommit::new();
     doc.set_actor(ActorId::from(handle.as_bytes()));
-    let c = qdoc::model::init(&mut doc, &ROOT);
-    let ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
+    let c = tilo_doc::model::init(&mut doc, &ROOT);
+    let ids = tilo_doc::IdGen::new(doc.get_actor().to_hex_string());
     tilo_resource::history::commit_stamped_at(&mut doc, T0);
     (doc, c, ids)
 }
@@ -150,10 +150,10 @@ fn qdoc_doc(handle: &str) -> (AutoCommit, qdoc::Containers, qdoc::IdGen) {
 /// Alice appends "!" — each edit one commit, stamped an hour apart. Returns
 /// Alice's document (with Bob's change merged in) and the block id.
 fn two_identity_document() -> (AutoCommit, String) {
-    let (mut alice, c, mut alice_ids) = qdoc_doc("alice");
+    let (mut alice, c, mut alice_ids) = rich_doc("alice");
 
     let block = {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut alice,
             c: &c,
             ids: &mut alice_ids,
@@ -168,8 +168,8 @@ fn two_identity_document() -> (AutoCommit, String) {
     let mut bob = alice.fork();
     bob.set_actor(ActorId::from("bob".as_bytes()));
     {
-        let mut bob_ids = qdoc::IdGen::new(bob.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut {
+        let mut bob_ids = tilo_doc::IdGen::new(bob.get_actor().to_hex_string());
+        let mut dm = tilo_doc::DocMut {
             doc: &mut bob,
             c: &c,
             ids: &mut bob_ids,
@@ -181,7 +181,7 @@ fn two_identity_document() -> (AutoCommit, String) {
     alice.merge(&mut bob).expect("peers merge");
 
     {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut alice,
             c: &c,
             ids: &mut alice_ids,
@@ -261,16 +261,16 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         assert_eq!(rows[1].summary, "+6 -0 chars", "\" world\"");
         assert_eq!(rows[2].summary, "+1 -0 chars", "\"!\"");
         for r in &rows {
-            assert_eq!(r.op_class, OpClass::Splice, "text edits are splices");
+            assert_eq!(r.entry_kind, EntryKind::Text, "text edits are splices");
         }
     }
     // phase: deletions_are_counted_and_a_removed_block_is_a_tombstone
     // A deletion is reported as a deletion, and a change that only removes a block
     // is classed as a tombstone so it lands under the timeline's "Deletes" chip.
     {
-        let (mut doc, c, mut ids) = qdoc_doc("alice");
+        let (mut doc, c, mut ids) = rich_doc("alice");
         let (a, b) = {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut doc,
                 c: &c,
                 ids: &mut ids,
@@ -284,7 +284,7 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         tilo_resource::history::commit_stamped_at(&mut doc, T0 + HOUR);
 
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut doc,
                 c: &c,
                 ids: &mut ids,
@@ -294,7 +294,7 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         tilo_resource::history::commit_stamped_at(&mut doc, T0 + 2 * HOUR);
 
         {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut doc,
                 c: &c,
                 ids: &mut ids,
@@ -310,18 +310,18 @@ fn rows_attribute_and_summarise_what_actually_changed() {
             rows[1].summary, "+0 -5 chars",
             "deleting \" this\" is five chars"
         );
-        assert_eq!(rows[1].op_class, OpClass::Splice);
+        assert_eq!(rows[1].entry_kind, EntryKind::Text);
         assert_eq!(
-            rows[2].op_class,
-            OpClass::Tombstone,
+            rows[2].entry_kind,
+            EntryKind::Delete,
             "a removed block is a delete"
         );
         assert_eq!(rows[2].summary, "-1 block");
     }
     // phase: a_plain_automerge_document_falls_back_to_patch_summaries
-    // A document with no qdoc schema still produces real rows via the patch
+    // A document with no tilo-doc schema still produces real rows via the patch
     // fallback, which is what makes the producer usable over the compositor's
-    // chrome document, not just qdoc artifacts.
+    // chrome document, not just tilo-doc artifacts.
     {
         let mut doc = AutoCommit::new();
         doc.set_actor(ActorId::from("alice".as_bytes()));
@@ -337,12 +337,12 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         assert_eq!(entries.len(), 3, "three commits, three rows");
         assert_eq!(entries[0].summary, "+5 -0 chars");
         assert_eq!(entries[1].summary, "+6 -0 chars");
-        assert_eq!(entries[1].op_class, OpClass::Splice);
+        assert_eq!(entries[1].entry_kind, EntryKind::Text);
         assert_eq!(
             entries[2].summary, "Edited title",
             "a map put names the field it edited"
         );
-        assert_eq!(entries[2].op_class, OpClass::EditMeta);
+        assert_eq!(entries[2].entry_kind, EntryKind::Details);
         assert!(
             entries.iter().all(|e| e.author.name == "Alice"),
             "single-actor document, single author"
@@ -373,8 +373,8 @@ fn rows_attribute_and_summarise_what_actually_changed() {
     }
     // phase: semantic_action_context_becomes_the_row_summary_and_browse_metadata
     {
-        let (mut doc, c, mut ids) = qdoc_doc("alice");
-        let mut dm = qdoc::DocMut {
+        let (mut doc, c, mut ids) = rich_doc("alice");
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -382,7 +382,6 @@ fn rows_attribute_and_summarise_what_actually_changed() {
         let block = dm.insert_block(None, "paragraph");
         dm.splice_text(&block, 0, 0, "launch");
         let context = tilo_actions::ActionContext::for_resource(
-            "Edit",
             "notes.note:launch",
             "notes.note",
             "Launch brief",
@@ -426,8 +425,8 @@ fn restore_appends_an_undoable_entry_or_does_nothing() {
         let v1 = rows[0].id;
         let ids_before: Vec<HistoryEntryId> = before.iter().map(|e| e.id).collect();
 
-        let containers = qdoc::model::open(&state.doc, &ROOT).unwrap();
-        let text_now = qdoc::model::materialize(&state.doc, &containers).blocks[0]
+        let containers = tilo_doc::model::open(&state.doc, &ROOT).unwrap();
+        let text_now = tilo_doc::model::materialize(&state.doc, &containers).blocks[0]
             .text
             .clone();
         assert_eq!(text_now, "hello world!", "precondition: latest content");
@@ -444,8 +443,8 @@ fn restore_appends_an_undoable_entry_or_does_nothing() {
             "restoring to a different version must change the document"
         );
 
-        let containers = qdoc::model::open(&state.doc, &ROOT).unwrap();
-        let restored = qdoc::model::materialize(&state.doc, &containers).blocks[0]
+        let containers = tilo_doc::model::open(&state.doc, &ROOT).unwrap();
+        let restored = tilo_doc::model::materialize(&state.doc, &containers).blocks[0]
             .text
             .clone();
         assert_eq!(restored, "hello", "content matches the version restored to");
@@ -473,7 +472,7 @@ fn restore_appends_an_undoable_entry_or_does_nothing() {
         );
         assert_eq!(
             &block,
-            &qdoc::model::materialize(&state.doc, &containers).blocks[0].id
+            &tilo_doc::model::materialize(&state.doc, &containers).blocks[0].id
         );
     }
     // phase: a_restore_is_undoable
@@ -490,8 +489,10 @@ fn restore_appends_an_undoable_entry_or_does_nothing() {
 
         state.restore_to_heads(&target, None, None, Some(UserId("alice".into())));
         let text = |s: &State| {
-            let c = qdoc::model::open(&s.doc, &ROOT).unwrap();
-            qdoc::model::materialize(&s.doc, &c).blocks[0].text.clone()
+            let c = tilo_doc::model::open(&s.doc, &ROOT).unwrap();
+            tilo_doc::model::materialize(&s.doc, &c).blocks[0]
+                .text
+                .clone()
         };
         assert_eq!(text(&state), "hello");
 
@@ -641,9 +642,9 @@ fn entries_are_stamped_capped_and_stably_addressed() {
     // phase: the_entry_cap_keeps_the_most_recent_versions
     // The window cap keeps the newest rows, not the oldest.
     {
-        let (mut doc, c, mut ids) = qdoc_doc("alice");
+        let (mut doc, c, mut ids) = rich_doc("alice");
         let p = {
-            let mut dm = qdoc::DocMut {
+            let mut dm = tilo_doc::DocMut {
                 doc: &mut doc,
                 c: &c,
                 ids: &mut ids,
@@ -653,7 +654,7 @@ fn entries_are_stamped_capped_and_stably_addressed() {
         tilo_resource::history::commit_stamped_at(&mut doc, T0);
         for i in 0..6 {
             {
-                let mut dm = qdoc::DocMut {
+                let mut dm = tilo_doc::DocMut {
                     doc: &mut doc,
                     c: &c,
                     ids: &mut ids,
@@ -704,7 +705,7 @@ fn entries_are_stamped_capped_and_stably_addressed() {
 
         for (row, expected) in rows.iter().zip(["hello", "hello world", "hello world!"]) {
             let idx = version_index_for_entry(&mut doc, &row.id).expect("row addresses a version");
-            let snap = qdoc::snapshot::at(&mut doc, idx).expect("version materialises");
+            let snap = tilo_doc::snapshot::at(&mut doc, idx).expect("version materialises");
             assert_eq!(
                 snap.blocks[0].text, expected,
                 "version {idx} should read {expected:?}"
@@ -799,11 +800,20 @@ fn an_action_context_names_its_change_before_any_field_fallback() {
     doc.put(ROOT, "title", "draft").unwrap();
     doc.commit();
     doc.put(ROOT, "title", "final").unwrap();
-    let context = tilo_actions::ActionContext::for_resource("Rename report", "r", "doc", "Report");
+    let context = tilo_actions::ActionContext::for_resource("r", "doc", "Report").with_described(
+        tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new("org.tilo.Reports", "doc", "finalize"),
+            [],
+        )),
+    );
     doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
     let entries = HistorySource::new().entries(&mut doc);
     let last = entries.last().unwrap();
-    assert_eq!(Some(last.summary.clone()), context.summary());
+    assert_eq!(
+        last.summary,
+        crate::history_source::sentence::sentence(&context)
+    );
+    assert_eq!(last.summary, "Finalize in Report");
     assert!(!last.summary.contains("title"), "{}", last.summary);
 }
 
@@ -918,4 +928,369 @@ fn a_package_primary_documents_genesis_is_left_out_of_a_feed_too() {
         1,
         "a document's first edit is not a genesis unless its store made it"
     );
+}
+
+#[test]
+fn rows_tell_the_readers_changes_from_a_collaborators_and_an_agents() {
+    use crate::widget::history::AuthorRelation;
+    use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+    let mut doc = AutoCommit::new();
+    let step = |doc: &mut AutoCommit, key: &str, invoker: ActionInvoker| {
+        doc.put(ROOT, key, "x").unwrap();
+        let context = ActionContext::for_resource("r", "doc", "Report")
+            .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+                tilo_actions::ActionKey::new("org.tilo.Reports", "doc", "edit"),
+                [],
+            )))
+            .with_invoker(invoker);
+        doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    };
+    step(&mut doc, "mine", ActionInvoker::actor("ada"));
+    step(&mut doc, "theirs", ActionInvoker::actor("ada"));
+    step(
+        &mut doc,
+        "agents",
+        ActionInvoker::actor("agent:claude")
+            .with_kind(ActorKind::Agent)
+            .acting_for("ada"),
+    );
+    let mut authors = AuthorDirectory::new();
+    authors.set_reader("ada");
+    let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
+    let rows: Vec<(String, AuthorRelation)> = entries
+        .iter()
+        .rev()
+        .take(3)
+        .map(|entry| (entry.author.name.clone(), entry.author.relation))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (
+                "claude · Agent, for you".to_owned(),
+                AuthorRelation::Software
+            ),
+            ("ada".to_owned(), AuthorRelation::Person),
+            ("You".to_owned(), AuthorRelation::Reader),
+        ]
+    );
+}
+
+/// An agent's change is the agent's, on behalf of its person: by the
+/// invoker its entry records, and by its own key when it writes as itself.
+/// The row names both and carries them as data.
+#[test]
+fn an_agents_change_reads_as_the_agent_on_behalf_of_its_person() {
+    use crate::widget::history::{AuthorRelation, HistoryAttribution};
+    use tilo_actions::{ActionContext, ActionInvoker, ActorKind};
+    // Through the action surface: the host stamps the authenticated agent
+    // and the person it acted for on the change.
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "title", "x").unwrap();
+    let context = ActionContext::for_resource("r", "doc", "Report")
+        .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
+            tilo_actions::ActionKey::new("org.tilo.Reports", "doc", "edit"),
+            [],
+        )))
+        .with_invoker(
+            ActionInvoker::actor("agent:claude")
+                .with_kind(ActorKind::Agent)
+                .acting_for("ada"),
+        );
+    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    let mut authors = AuthorDirectory::new();
+    authors.set_reader("ada");
+    let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
+    let author = &entries.last().unwrap().author;
+    assert_eq!(author.name, "claude · Agent, for ada");
+    assert_eq!(author.relation, AuthorRelation::Software);
+    assert_eq!(
+        author.attribution,
+        Some(HistoryAttribution {
+            actor: "agent:claude".into(),
+            kind: ActorKind::Agent,
+            actor_name: "claude".into(),
+            on_behalf_of: Some("ada".into()),
+            on_behalf_of_name: Some("ada".into()),
+        })
+    );
+
+    // As itself: a delegated agent signs with its own device key, which the
+    // directory knows as the agent of its person, in its own colour.
+    let device = [7_u8; 32];
+    let person = hex::encode([9_u8; 32]);
+    let mut doc = AutoCommit::new();
+    doc.set_actor(ActorId::from(device.as_slice()));
+    doc.put(ROOT, "title", "y").unwrap();
+    doc.commit();
+    let mut authors = AuthorDirectory::new();
+    authors.set_reader("ada");
+    authors.register_person(&person, HistoryAuthor::new("Ada", 0.0, "ada00000"));
+    authors.register_agent(
+        &hex::encode(device),
+        HistoryAgent {
+            principal: "agent:scribe".into(),
+            label: "Scribe".into(),
+            rgb: (10, 20, 30),
+            person: person.clone(),
+        },
+    );
+    let entries = HistorySource::new()
+        .with_authors(authors.clone())
+        .entries(&mut doc);
+    let author = &entries.last().unwrap().author;
+    assert_eq!(author.name, "Scribe · Agent, for Ada");
+    assert_eq!(author.relation, AuthorRelation::Software);
+    assert_eq!(author.rgb(), (10, 20, 30), "the agent's presence colour");
+    assert_eq!(
+        author.attribution,
+        Some(HistoryAttribution {
+            actor: "agent:scribe".into(),
+            kind: ActorKind::Agent,
+            actor_name: "Scribe".into(),
+            on_behalf_of: Some(person.clone()),
+            on_behalf_of_name: Some("Ada".into()),
+        })
+    );
+    // The person reading it sees it was done for them.
+    authors.set_reader(person);
+    let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
+    assert_eq!(
+        entries.last().unwrap().author.name,
+        "Scribe · Agent, for you"
+    );
+}
+
+// N. A long-lived reader reads each change once and says what a fresh read says
+
+/// What `entries_since` says and how many changes it read doing so.
+fn read_since(
+    source: &HistorySource,
+    doc: &mut AutoCommit,
+    log: &mut HistoryLog,
+) -> (Vec<HistoryEntry>, usize) {
+    let before = log.changes_read();
+    let entries = source.entries_since(doc, log);
+    (entries, log.changes_read() - before)
+}
+
+/// `entries_since` agrees with a fresh `entries`, and so do the heads the
+/// log names for every row and the hash and dependencies it keeps for them.
+fn assert_matches_a_fresh_read(
+    source: &HistorySource,
+    doc: &mut AutoCommit,
+    log: &HistoryLog,
+    since: &[HistoryEntry],
+    step: &str,
+) {
+    let fresh = source.entries(doc);
+    assert_eq!(since, fresh.as_slice(), "{step}: rows");
+    for entry in &fresh {
+        assert_eq!(
+            log.heads_for_entry(&entry.id),
+            heads_for_entry(doc, &entry.id),
+            "{step}: heads of {:?}",
+            entry.summary
+        );
+        let (hash, deps) = log.change(&entry.id).expect("a listed change is logged");
+        let change = doc.get_change_by_hash(&hash).expect("the logged hash");
+        assert_eq!(entry_id_from_hash(&hash.to_string()), entry.id, "{step}");
+        assert_eq!(deps, change.deps(), "{step}: deps of {:?}", entry.summary);
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one growing document, one labelled phase per kind of change appended"
+)]
+fn entries_since_reads_only_appended_changes_and_matches_entries() {
+    // A window of four, so appending slides it past changes read earlier.
+    let source = source().with_max_entries(4);
+    let mut log = HistoryLog::default();
+
+    // phase: a tilo-doc document, edited by one person a change at a time
+    let (mut doc, c, mut ids) = rich_doc("alice");
+    let (rows, read) = read_since(&source, &mut doc, &mut log);
+    assert_eq!(
+        read,
+        doc.get_changes(&[]).len().min(4),
+        "the first read reads the window"
+    );
+    assert_matches_a_fresh_read(&source, &mut doc, &log, &rows, "genesis");
+    let block = {
+        let mut dm = tilo_doc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
+        dm.insert_block(None, "paragraph")
+    };
+    tilo_resource::history::commit_stamped_at(&mut doc, T0 + HOUR);
+    let mut len = 0;
+    for ((n, word), hours) in ["one", " two", " three", " four", " five", " six"]
+        .into_iter()
+        .enumerate()
+        .zip(2_i64..)
+    {
+        {
+            let mut dm = tilo_doc::DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
+            dm.splice_text(&block, len, 0, word);
+        }
+        len += word.chars().count();
+        tilo_resource::history::commit_stamped_at(&mut doc, T0 + HOUR * hours);
+        let (rows, read) = read_since(&source, &mut doc, &mut log);
+        assert_eq!(
+            read,
+            if n == 0 { 2 } else { 1 },
+            "edit {n}: only what was appended"
+        );
+        assert_matches_a_fresh_read(&source, &mut doc, &log, &rows, &format!("edit {n}"));
+    }
+
+    // phase: a peer's concurrent edits, merged in
+    let mut bob = doc.fork();
+    bob.set_actor(ActorId::from("bob".as_bytes()));
+    {
+        let mut bob_ids = tilo_doc::IdGen::new(bob.get_actor().to_hex_string());
+        let mut dm = tilo_doc::DocMut {
+            doc: &mut bob,
+            c: &c,
+            ids: &mut bob_ids,
+        };
+        dm.splice_text(&block, 0, 0, "Bob: ");
+    }
+    tilo_resource::history::commit_stamped_at(&mut bob, T0 + 20 * HOUR);
+    {
+        let mut dm = tilo_doc::DocMut {
+            doc: &mut doc,
+            c: &c,
+            ids: &mut ids,
+        };
+        dm.splice_text(&block, 0, 0, "Alice: ");
+    }
+    tilo_resource::history::commit_stamped_at(&mut doc, T0 + 21 * HOUR);
+    doc.merge(&mut bob).expect("peers merge");
+    let (rows, read) = read_since(&source, &mut doc, &mut log);
+    assert_eq!(read, 2, "both sides of the merge, once each");
+    assert_matches_a_fresh_read(&source, &mut doc, &log, &rows, "merge");
+
+    // phase: a change that only names a version is read but listed by no one
+    let start = rows.first().expect("rows").id;
+    groups::name_range(&mut doc, &start, None, "Draft");
+    tilo_resource::history::commit_stamped_at(&mut doc, T0 + 22 * HOUR);
+    let (rows, read) = read_since(&source, &mut doc, &mut log);
+    assert_eq!(read, 1, "the naming change");
+    assert_matches_a_fresh_read(&source, &mut doc, &log, &rows, "named range");
+
+    // phase: nothing new reads nothing
+    let (rows, read) = read_since(&source, &mut doc, &mut log);
+    assert_eq!(read, 0, "an unchanged document");
+    assert_matches_a_fresh_read(&source, &mut doc, &log, &rows, "unchanged");
+
+    // phase: another document is read from scratch
+    let (mut other, _block) = two_identity_document();
+    let (rows, read) = read_since(&source, &mut other, &mut log);
+    let changes = other.get_changes(&[]).len();
+    assert_eq!(read, changes.min(4), "the other document's window");
+    assert_matches_a_fresh_read(&source, &mut other, &log, &rows, "another document");
+
+    // phase: a change of locale reads the window again, in its words
+    crate::i18n::I18nManager::set_pseudo_locale(crate::i18n::PseudoLocale::Expanded);
+    let (rows, read) = read_since(&source, &mut other, &mut log);
+    let fresh = source.entries(&mut other);
+    crate::i18n::I18nManager::set_pseudo_locale(crate::i18n::PseudoLocale::Off);
+    assert_eq!(read, changes.min(4), "a new locale reads again");
+    assert_eq!(rows, fresh, "rows in the new locale");
+
+    // phase: an unschematised document whose window slides one change at a time
+    let mut plain = AutoCommit::new();
+    plain.set_actor(ActorId::from("alice".as_bytes()));
+    let mut log = HistoryLog::default();
+    for n in 0..8_i64 {
+        plain.put(ROOT, format!("field-{}", n % 3), n).unwrap();
+        if n % 4 == 3 {
+            plain.delete(ROOT, "field-0").unwrap();
+        }
+        tilo_resource::history::commit_stamped_at(&mut plain, T0 + n * HOUR);
+        let (rows, read) = read_since(&source, &mut plain, &mut log);
+        assert_eq!(read, 1, "plain edit {n}");
+        assert_matches_a_fresh_read(&source, &mut plain, &log, &rows, &format!("plain {n}"));
+    }
+}
+
+/// A source that passes over the changes that only move a view: one
+/// operation putting the root `view` key.
+fn only_moves_the_view(change: &automerge::Change) -> bool {
+    use automerge::legacy::{Key, ObjectId};
+    change.len() == 1
+        && change.decode().operations.first().is_some_and(|op| {
+            op.obj == ObjectId::Root && matches!(&op.key, Key::Map(key) if key == "view")
+        })
+}
+
+#[test]
+fn passed_over_changes_make_no_row_and_take_no_place_in_the_window() {
+    let viewer = source()
+        .with_max_entries(3)
+        .passing_over(only_moves_the_view);
+    let mut log = HistoryLog::default();
+    let mut doc = AutoCommit::new();
+    let mut hours = 0_i64..;
+    let mut commit = |doc: &mut AutoCommit| {
+        let hour = hours.next().unwrap_or_default();
+        tilo_resource::history::commit_stamped_at(doc, T0 + HOUR * hour);
+    };
+    for title in ["one", "two", "three"] {
+        doc.put(ROOT, "title", title).unwrap();
+        commit(&mut doc);
+    }
+    let (rows, _) = read_since(&viewer, &mut doc, &mut log);
+    assert_eq!(rows.len(), 3, "the window holds the three edits");
+    assert_matches_a_fresh_read(&viewer, &mut doc, &log, &rows, "edits");
+
+    // phase: moving the view, many times, reads each change once and moves
+    // no row
+    let revision = log.rows_revision();
+    for view in 0..10_u64 {
+        doc.put(ROOT, "view", view).unwrap();
+        commit(&mut doc);
+        let (after, read) = read_since(&viewer, &mut doc, &mut log);
+        assert_eq!(read, 1, "view {view}: its own change");
+        assert_eq!(after, rows, "view {view}: the rows are as they were");
+        assert_eq!(log.rows_revision(), revision, "view {view}: rows unmoved");
+        assert_matches_a_fresh_read(&viewer, &mut doc, &log, &after, "view");
+    }
+
+    // phase: an edit after them is a row, read at heads that include them,
+    // and slides the window by one place, not by the views
+    doc.put(ROOT, "title", "four").unwrap();
+    commit(&mut doc);
+    let (rows, read) = read_since(&viewer, &mut doc, &mut log);
+    assert_eq!(read, 1);
+    assert_ne!(log.rows_revision(), revision, "a row moved");
+    assert_eq!(rows.len(), 3, "the window still holds three edits");
+    assert_matches_a_fresh_read(&viewer, &mut doc, &log, &rows, "edit after views");
+
+    // phase: a change that moves the view and edits is no view change
+    doc.put(ROOT, "view", 99_u64).unwrap();
+    doc.put(ROOT, "title", "five").unwrap();
+    commit(&mut doc);
+    let (rows, _) = read_since(&viewer, &mut doc, &mut log);
+    assert_matches_a_fresh_read(&viewer, &mut doc, &log, &rows, "view and edit");
+    let unfiltered = source().with_max_entries(3).entries(&mut doc);
+    assert_eq!(
+        rows.last().map(|row| row.id),
+        unfiltered.last().map(|row| row.id),
+        "it is a row"
+    );
+
+    // phase: a log read from scratch passes over the same changes
+    let mut scratch = HistoryLog::default();
+    let (fresh, _) = read_since(&viewer, &mut doc, &mut scratch);
+    assert_eq!(fresh, rows);
 }

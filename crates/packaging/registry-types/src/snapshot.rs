@@ -1,4 +1,12 @@
 //! Registry-owner signed, replay-resistant catalogue snapshots.
+//!
+//! A snapshot carries app entries under `entries`, signed exactly as every
+//! released client checks them, and bot entries under `bots` with a second
+//! signature by the same key (`bots_signature_hex`) that binds them to the
+//! snapshot's signed content. A client that predates bots ignores both
+//! fields, so the owner signature and the snapshot's hash (its identity in
+//! the chain and in client checkpoints) cover app entries only. In memory
+//! [`SignedRegistrySnapshot::entries`] holds both kinds.
 
 use std::collections::HashSet;
 
@@ -13,6 +21,7 @@ pub const DELEGATED_SNAPSHOT_PROTOCOL: u16 = 3;
 pub const CHANNEL_AUTHORIZATION_PROTOCOL: u16 = 1;
 const CHANNEL_AUTHORIZATION_DOMAIN: &[u8] = b"tilo-registry-channel-authorization-v1\0";
 const DELEGATED_INDEX_DOMAIN: &[u8] = b"tilo-registry-index-v3\0";
+const BOTS_DOMAIN: &[u8] = b"tilo-registry-bots-v1\0";
 pub const MAX_SNAPSHOT_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_SNAPSHOT_ENTRIES: usize = 10_000;
 pub const MAX_SNAPSHOT_PUBLISHERS: usize = 4_096;
@@ -43,9 +52,10 @@ pub struct ChannelAuthorization {
     pub owner_signature_hex: String,
 }
 
-/// One immutable view of a registry. The signature binds every entry, the
-/// publisher authorization set, expiry, predecessor and moderation-log head.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One immutable view of a registry. The signature binds every app entry,
+/// the publisher authorization set, expiry, predecessor and moderation-log
+/// head; `bots_signature_hex` binds the bot entries to all of that.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignedRegistrySnapshot {
     pub protocol: u16,
     pub sequence: u64,
@@ -54,10 +64,170 @@ pub struct SignedRegistrySnapshot {
     pub previous_snapshot_hash_hex: String,
     pub moderation_head_hex: String,
     pub publishers: Vec<PublisherAuthorization>,
+    /// App and bot entries. On the wire app entries travel under `entries`
+    /// and bot entries under `bots`.
     pub entries: Vec<RegistryEntry>,
     pub owner_signature_hex: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_authorization: Option<ChannelAuthorization>,
+    /// The signing key's signature over the bot entries and the snapshot's
+    /// signed content; empty when the snapshot lists no bots.
+    pub bots_signature_hex: String,
+}
+
+/// App entries first-class, bot entries apart: the split every snapshot form
+/// shares on the wire.
+pub(crate) fn split_kinds<T>(
+    items: &[T],
+    entry: impl Fn(&T) -> &RegistryEntry,
+) -> (Vec<&T>, Vec<&T>) {
+    items
+        .iter()
+        .partition(|item| entry(item).kind == crate::EntryKind::App)
+}
+
+/// Rejoin the wire's app and bot lists, refusing an entry filed under the
+/// other kind.
+pub(crate) fn join_kinds<T, E: serde::de::Error>(
+    mut apps: Vec<T>,
+    bots: Vec<T>,
+    entry: impl Fn(&T) -> &RegistryEntry,
+) -> Result<Vec<T>, E> {
+    if apps
+        .iter()
+        .any(|item| entry(item).kind != crate::EntryKind::App)
+        || bots
+            .iter()
+            .any(|item| entry(item).kind != crate::EntryKind::Bot)
+    {
+        return Err(E::custom("an entry is filed under the other kind"));
+    }
+    apps.extend(bots);
+    Ok(apps)
+}
+
+#[derive(Serialize)]
+#[serde(rename = "SignedRegistrySnapshot")]
+struct SnapshotOut<'a> {
+    protocol: u16,
+    sequence: u64,
+    issued_at_unix: u64,
+    expires_at_unix: u64,
+    previous_snapshot_hash_hex: &'a str,
+    moderation_head_hex: &'a str,
+    publishers: &'a [PublisherAuthorization],
+    entries: Vec<&'a RegistryEntry>,
+    owner_signature_hex: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    channel_authorization: Option<&'a ChannelAuthorization>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    bots: Vec<&'a RegistryEntry>,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    bots_signature_hex: &'a str,
+}
+
+#[derive(Deserialize)]
+struct SnapshotIn {
+    protocol: u16,
+    sequence: u64,
+    issued_at_unix: u64,
+    expires_at_unix: u64,
+    previous_snapshot_hash_hex: String,
+    moderation_head_hex: String,
+    publishers: Vec<PublisherAuthorization>,
+    entries: Vec<RegistryEntry>,
+    owner_signature_hex: String,
+    #[serde(default)]
+    channel_authorization: Option<ChannelAuthorization>,
+    #[serde(default)]
+    bots: Vec<RegistryEntry>,
+    #[serde(default)]
+    bots_signature_hex: String,
+}
+
+impl SignedRegistrySnapshot {
+    /// The app entries, in order: what the owner signature covers.
+    #[must_use]
+    pub fn apps(&self) -> Vec<&RegistryEntry> {
+        split_kinds(&self.entries, |entry| entry).0
+    }
+
+    /// The bot entries, in order: what `bots_signature_hex` covers.
+    #[must_use]
+    pub fn bots(&self) -> Vec<&RegistryEntry> {
+        split_kinds(&self.entries, |entry| entry).1
+    }
+
+    /// The snapshot as a client that predates bots reads it.
+    fn core(&self) -> SnapshotOut<'_> {
+        SnapshotOut {
+            protocol: self.protocol,
+            sequence: self.sequence,
+            issued_at_unix: self.issued_at_unix,
+            expires_at_unix: self.expires_at_unix,
+            previous_snapshot_hash_hex: &self.previous_snapshot_hash_hex,
+            moderation_head_hex: &self.moderation_head_hex,
+            publishers: &self.publishers,
+            entries: self.apps(),
+            owner_signature_hex: &self.owner_signature_hex,
+            channel_authorization: self.channel_authorization.as_ref(),
+            bots: Vec::new(),
+            bots_signature_hex: "",
+        }
+    }
+}
+
+impl Serialize for SignedRegistrySnapshot {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let (entries, bots) = split_kinds(&self.entries, |entry| entry);
+        SnapshotOut {
+            entries,
+            bots,
+            bots_signature_hex: &self.bots_signature_hex,
+            ..self.core()
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SignedRegistrySnapshot {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = SnapshotIn::deserialize(deserializer)?;
+        Ok(Self {
+            protocol: wire.protocol,
+            sequence: wire.sequence,
+            issued_at_unix: wire.issued_at_unix,
+            expires_at_unix: wire.expires_at_unix,
+            previous_snapshot_hash_hex: wire.previous_snapshot_hash_hex,
+            moderation_head_hex: wire.moderation_head_hex,
+            publishers: wire.publishers,
+            entries: join_kinds(wire.entries, wire.bots, |entry| entry)?,
+            owner_signature_hex: wire.owner_signature_hex,
+            channel_authorization: wire.channel_authorization,
+            bots_signature_hex: wire.bots_signature_hex,
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct BotsSigningPayload<'a, T> {
+    /// The digest the snapshot's own signature covers.
+    signed: [u8; 32],
+    bots: Vec<&'a T>,
+}
+
+/// `domain || postcard(signed, bots)`, hashed: what `bots_signature_hex`
+/// signs in every snapshot form.
+pub(crate) fn bots_signing_message<T: Serialize>(
+    domain: &[u8],
+    signed: [u8; 32],
+    bots: Vec<&T>,
+) -> Result<[u8; 32], SnapshotError> {
+    let body = postcard::to_stdvec(&BotsSigningPayload { signed, bots })
+        .map_err(|_| SnapshotError::Encoding)?;
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(domain);
+    hasher.update(&body);
+    Ok(*hasher.finalize().as_bytes())
 }
 
 #[derive(Serialize)]
@@ -69,7 +239,7 @@ struct SnapshotSigningPayload<'a> {
     previous_snapshot_hash_hex: &'a str,
     moderation_head_hex: &'a str,
     publishers: &'a [PublisherAuthorization],
-    entries: &'a [RegistryEntry],
+    entries: Vec<&'a RegistryEntry>,
 }
 
 #[derive(Serialize)]
@@ -81,7 +251,7 @@ struct DelegatedSnapshotSigningPayload<'a> {
     previous_snapshot_hash_hex: &'a str,
     moderation_head_hex: &'a str,
     publishers: &'a [PublisherAuthorization],
-    entries: &'a [RegistryEntry],
+    entries: Vec<&'a RegistryEntry>,
     channel_authorization: &'a ChannelAuthorization,
 }
 
@@ -106,7 +276,7 @@ struct LegacySignedSnapshot<'a> {
     previous_snapshot_hash_hex: &'a str,
     moderation_head_hex: &'a str,
     publishers: &'a [PublisherAuthorization],
-    entries: &'a [RegistryEntry],
+    entries: Vec<&'a RegistryEntry>,
     owner_signature_hex: &'a str,
 }
 
@@ -136,6 +306,8 @@ pub enum SnapshotError {
     UnauthorizedPublisher,
     #[error("canonical registry snapshot encoding failed")]
     Encoding,
+    #[error("registry snapshot's bot entries are not signed with it")]
+    BotsSignature,
 }
 
 fn payload(snapshot: &SignedRegistrySnapshot) -> SnapshotSigningPayload<'_> {
@@ -147,7 +319,7 @@ fn payload(snapshot: &SignedRegistrySnapshot) -> SnapshotSigningPayload<'_> {
         previous_snapshot_hash_hex: &snapshot.previous_snapshot_hash_hex,
         moderation_head_hex: &snapshot.moderation_head_hex,
         publishers: &snapshot.publishers,
-        entries: &snapshot.entries,
+        entries: snapshot.apps(),
     }
 }
 
@@ -167,7 +339,7 @@ pub fn snapshot_signing_message(
             previous_snapshot_hash_hex: &snapshot.previous_snapshot_hash_hex,
             moderation_head_hex: &snapshot.moderation_head_hex,
             publishers: &snapshot.publishers,
-            entries: &snapshot.entries,
+            entries: snapshot.apps(),
             channel_authorization: authorization,
         };
         (
@@ -193,7 +365,7 @@ pub fn snapshot_signing_message(
 /// Returns an encoding error if the signed snapshot cannot be serialized.
 pub fn snapshot_hash(snapshot: &SignedRegistrySnapshot) -> Result<String, SnapshotError> {
     let bytes = if snapshot.channel_authorization.is_some() {
-        postcard::to_stdvec(snapshot).map_err(|_| SnapshotError::Encoding)?
+        postcard::to_stdvec(&snapshot.core()).map_err(|_| SnapshotError::Encoding)?
     } else {
         postcard::to_stdvec(&LegacySignedSnapshot {
             protocol: snapshot.protocol,
@@ -203,7 +375,7 @@ pub fn snapshot_hash(snapshot: &SignedRegistrySnapshot) -> Result<String, Snapsh
             previous_snapshot_hash_hex: &snapshot.previous_snapshot_hash_hex,
             moderation_head_hex: &snapshot.moderation_head_hex,
             publishers: &snapshot.publishers,
-            entries: &snapshot.entries,
+            entries: snapshot.apps(),
             owner_signature_hex: &snapshot.owner_signature_hex,
         })
         .map_err(|_| SnapshotError::Encoding)?
@@ -225,6 +397,36 @@ pub fn sign_snapshot(
     snapshot.owner_signature_hex.clear();
     snapshot.owner_signature_hex =
         hex::encode(key.sign(&snapshot_signing_message(snapshot)?).to_bytes());
+    sign_snapshot_bots(snapshot, key)
+}
+
+/// The digest `bots_signature_hex` signs: the bot entries bound to what the
+/// snapshot's own signature covers.
+///
+/// # Errors
+/// Returns an encoding error if the canonical payload cannot be serialized.
+pub fn snapshot_bots_signing_message(
+    snapshot: &SignedRegistrySnapshot,
+) -> Result<[u8; 32], SnapshotError> {
+    bots_signing_message(
+        BOTS_DOMAIN,
+        snapshot_signing_message(snapshot)?,
+        snapshot.bots(),
+    )
+}
+
+fn sign_snapshot_bots(
+    snapshot: &mut SignedRegistrySnapshot,
+    key: &SigningKey,
+) -> Result<(), SnapshotError> {
+    snapshot.bots_signature_hex = if snapshot.bots().is_empty() {
+        String::new()
+    } else {
+        hex::encode(
+            key.sign(&snapshot_bots_signing_message(snapshot)?)
+                .to_bytes(),
+        )
+    };
     Ok(())
 }
 
@@ -282,12 +484,22 @@ pub fn sign_snapshot_delegated(
             .sign(&snapshot_signing_message(snapshot)?)
             .to_bytes(),
     );
-    Ok(())
+    sign_snapshot_bots(snapshot, channel_key)
 }
 
-fn valid_hex(value: &str, bytes: usize) -> bool {
+pub(crate) fn valid_hex(value: &str, bytes: usize) -> bool {
     value.len() == bytes.saturating_mul(2)
         && hex::decode(value).is_ok_and(|decoded| decoded.len() == bytes)
+}
+
+/// Whether a snapshot issued at `issued_at_unix` and expiring at
+/// `expires_at_unix` may be used at `now_unix`: issued no further ahead than
+/// the clock skew a verifier tolerates, and not yet expired. The only part
+/// of [`verify_snapshot`] and [`verify_compact_snapshot`] that depends on
+/// the time, so a server that verified a snapshot once re-checks just this.
+#[must_use]
+pub fn within_validity_window(issued_at_unix: u64, expires_at_unix: u64, now_unix: u64) -> bool {
+    issued_at_unix <= now_unix.saturating_add(300) && expires_at_unix >= now_unix
 }
 
 /// Verify owner signature, freshness, structural bounds, publisher signatures,
@@ -307,95 +519,204 @@ pub fn verify_snapshot(
     if (snapshot.protocol == SNAPSHOT_PROTOCOL) != snapshot.channel_authorization.is_none() {
         return Err(SnapshotError::Protocol);
     }
-    if snapshot.sequence == 0
-        || (snapshot.sequence == 1 && !snapshot.previous_snapshot_hash_hex.is_empty())
-        || (snapshot.sequence > 1 && !valid_hex(&snapshot.previous_snapshot_hash_hex, 32))
-    {
-        return Err(SnapshotError::Sequence);
-    }
-    if snapshot.issued_at_unix > now_unix.saturating_add(300)
-        || snapshot.expires_at_unix < now_unix
-        || snapshot.expires_at_unix <= snapshot.issued_at_unix
-        || snapshot
-            .expires_at_unix
-            .saturating_sub(snapshot.issued_at_unix)
-            > MAX_SNAPSHOT_VALIDITY_SECONDS
-    {
-        return Err(SnapshotError::Freshness);
-    }
-    if snapshot.entries.len() > MAX_SNAPSHOT_ENTRIES
-        || snapshot.publishers.len() > MAX_SNAPSHOT_PUBLISHERS
-        || snapshot
-            .entries
-            .iter()
-            .any(|entry| !entry_within_bounds(entry))
+    let header = SignedHeader {
+        sequence: snapshot.sequence,
+        issued_at_unix: snapshot.issued_at_unix,
+        expires_at_unix: snapshot.expires_at_unix,
+        previous_snapshot_hash_hex: &snapshot.previous_snapshot_hash_hex,
+        moderation_head_hex: &snapshot.moderation_head_hex,
+        publishers: &snapshot.publishers,
+        entry_count: snapshot.entries.len(),
+        signature_hex: &snapshot.owner_signature_hex,
+        channel_authorization: snapshot.channel_authorization.as_ref(),
+    };
+    header.check_window(now_unix)?;
+    if snapshot
+        .entries
+        .iter()
+        .any(|entry| !entry_within_bounds(entry))
     {
         return Err(SnapshotError::Oversize);
     }
-    if !snapshot.moderation_head_hex.is_empty() && !valid_hex(&snapshot.moderation_head_hex, 32) {
-        return Err(SnapshotError::Shape);
-    }
-
-    let owner_bytes: [u8; 32] = hex::decode(pinned_owner_pubkey_hex)
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or(SnapshotError::OwnerKey)?;
-    if owner_bytes == [0; 32] {
-        return Err(SnapshotError::OwnerKey);
-    }
-    let owner = VerifyingKey::from_bytes(&owner_bytes).map_err(|_| SnapshotError::OwnerKey)?;
-    let signature = Signature::from_slice(
-        &hex::decode(&snapshot.owner_signature_hex).map_err(|_| SnapshotError::OwnerSignature)?,
-    )
-    .map_err(|_| SnapshotError::OwnerSignature)?;
-
-    if let Some(authorization) = &snapshot.channel_authorization {
-        verify_channel_authorization_scope(authorization, &owner, snapshot)?;
-        let channel_bytes: [u8; 32] = hex::decode(&authorization.channel_pubkey_hex)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or(SnapshotError::ChannelAuthorization)?;
-        let channel = VerifyingKey::from_bytes(&channel_bytes)
-            .map_err(|_| SnapshotError::ChannelAuthorization)?;
-        channel
-            .verify(&snapshot_signing_message(snapshot)?, &signature)
-            .map_err(|_| SnapshotError::ChannelSignature)?;
-    } else {
-        owner
-            .verify(&snapshot_signing_message(snapshot)?, &signature)
-            .map_err(|_| SnapshotError::OwnerSignature)?;
-    }
-
-    let mut publishers = HashSet::with_capacity(snapshot.publishers.len());
-    for publisher in &snapshot.publishers {
-        if !valid_hex(&publisher.pubkey_hex, 32)
-            || !publishers.insert(publisher.pubkey_hex.to_ascii_lowercase())
-        {
-            return Err(SnapshotError::Shape);
-        }
-    }
+    let publishers = header.check_signature(
+        pinned_owner_pubkey_hex,
+        &snapshot_signing_message(snapshot)?,
+    )?;
+    header.check_bots_signature(
+        pinned_owner_pubkey_hex,
+        !snapshot.bots().is_empty(),
+        &snapshot.bots_signature_hex,
+        &snapshot_bots_signing_message(snapshot)?,
+    )?;
     let mut packages = HashSet::with_capacity(snapshot.entries.len());
     for entry in &snapshot.entries {
-        if entry.package_id.is_empty()
-            || entry.package_id.len() > 255
-            || !packages.insert(entry.package_id.clone())
-        {
-            return Err(SnapshotError::Shape);
-        }
+        check_entry_identity(entry, &mut packages, &publishers)?;
         if !verify_entry_signature(entry) {
             return Err(SnapshotError::PublisherSignature);
-        }
-        if !publishers.contains(&entry.publisher_pubkey_hex.to_ascii_lowercase()) {
-            return Err(SnapshotError::UnauthorizedPublisher);
         }
     }
     Ok(())
 }
 
+/// The signed fields every snapshot format shares, borrowed for verification.
+#[derive(Clone, Copy)]
+pub(crate) struct SignedHeader<'a> {
+    pub sequence: u64,
+    pub issued_at_unix: u64,
+    pub expires_at_unix: u64,
+    pub previous_snapshot_hash_hex: &'a str,
+    pub moderation_head_hex: &'a str,
+    pub publishers: &'a [PublisherAuthorization],
+    pub entry_count: usize,
+    pub signature_hex: &'a str,
+    pub channel_authorization: Option<&'a ChannelAuthorization>,
+}
+
+impl SignedHeader<'_> {
+    /// Sequence shape, freshness and size bounds.
+    pub(crate) fn check_window(&self, now_unix: u64) -> Result<(), SnapshotError> {
+        if self.sequence == 0
+            || (self.sequence == 1 && !self.previous_snapshot_hash_hex.is_empty())
+            || (self.sequence > 1 && !valid_hex(self.previous_snapshot_hash_hex, 32))
+        {
+            return Err(SnapshotError::Sequence);
+        }
+        if !within_validity_window(self.issued_at_unix, self.expires_at_unix, now_unix)
+            || self.expires_at_unix <= self.issued_at_unix
+            || self.expires_at_unix.saturating_sub(self.issued_at_unix)
+                > MAX_SNAPSHOT_VALIDITY_SECONDS
+        {
+            return Err(SnapshotError::Freshness);
+        }
+        if self.entry_count > MAX_SNAPSHOT_ENTRIES
+            || self.publishers.len() > MAX_SNAPSHOT_PUBLISHERS
+        {
+            return Err(SnapshotError::Oversize);
+        }
+        Ok(())
+    }
+
+    /// The owner's or the authorized channel's signature over `message`, and
+    /// the shape of the publisher set. Returns the authorized publishers.
+    pub(crate) fn check_signature(
+        &self,
+        pinned_owner_pubkey_hex: &str,
+        message: &[u8; 32],
+    ) -> Result<HashSet<String>, SnapshotError> {
+        if !self.moderation_head_hex.is_empty() && !valid_hex(self.moderation_head_hex, 32) {
+            return Err(SnapshotError::Shape);
+        }
+        let owner_bytes: [u8; 32] = hex::decode(pinned_owner_pubkey_hex)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or(SnapshotError::OwnerKey)?;
+        if owner_bytes == [0; 32] {
+            return Err(SnapshotError::OwnerKey);
+        }
+        let owner = VerifyingKey::from_bytes(&owner_bytes).map_err(|_| SnapshotError::OwnerKey)?;
+        let signature = Signature::from_slice(
+            &hex::decode(self.signature_hex).map_err(|_| SnapshotError::OwnerSignature)?,
+        )
+        .map_err(|_| SnapshotError::OwnerSignature)?;
+
+        if let Some(authorization) = self.channel_authorization {
+            verify_channel_authorization_scope(authorization, &owner, &self.scope())?;
+            let channel_bytes: [u8; 32] = hex::decode(&authorization.channel_pubkey_hex)
+                .ok()
+                .and_then(|bytes| bytes.try_into().ok())
+                .ok_or(SnapshotError::ChannelAuthorization)?;
+            let channel = VerifyingKey::from_bytes(&channel_bytes)
+                .map_err(|_| SnapshotError::ChannelAuthorization)?;
+            channel
+                .verify(message, &signature)
+                .map_err(|_| SnapshotError::ChannelSignature)?;
+        } else {
+            owner
+                .verify(message, &signature)
+                .map_err(|_| SnapshotError::OwnerSignature)?;
+        }
+
+        let mut publishers = HashSet::with_capacity(self.publishers.len());
+        for publisher in self.publishers {
+            if !valid_hex(&publisher.pubkey_hex, 32)
+                || !publishers.insert(publisher.pubkey_hex.to_ascii_lowercase())
+            {
+                return Err(SnapshotError::Shape);
+            }
+        }
+        Ok(publishers)
+    }
+
+    /// The same key's signature over the bot entries, when there are any;
+    /// none may be claimed when there are not.
+    pub(crate) fn check_bots_signature(
+        &self,
+        pinned_owner_pubkey_hex: &str,
+        has_bots: bool,
+        bots_signature_hex: &str,
+        message: &[u8; 32],
+    ) -> Result<(), SnapshotError> {
+        if !has_bots {
+            return if bots_signature_hex.is_empty() {
+                Ok(())
+            } else {
+                Err(SnapshotError::BotsSignature)
+            };
+        }
+        SignedHeader {
+            signature_hex: bots_signature_hex,
+            ..*self
+        }
+        .check_signature(pinned_owner_pubkey_hex, message)
+        .map(|_| ())
+        .map_err(|error| match error {
+            SnapshotError::OwnerSignature | SnapshotError::ChannelSignature => {
+                SnapshotError::BotsSignature
+            }
+            other => other,
+        })
+    }
+
+    fn scope(&self) -> Scope<'_> {
+        Scope {
+            issued_at_unix: self.issued_at_unix,
+            expires_at_unix: self.expires_at_unix,
+            entry_count: self.entry_count,
+            publishers: self.publishers,
+        }
+    }
+}
+
+/// A unique, bounded package id from an authorized publisher.
+pub(crate) fn check_entry_identity(
+    entry: &RegistryEntry,
+    packages: &mut HashSet<String>,
+    publishers: &HashSet<String>,
+) -> Result<(), SnapshotError> {
+    if entry.package_id.is_empty()
+        || entry.package_id.len() > 255
+        || !packages.insert(entry.package_id.clone())
+    {
+        return Err(SnapshotError::Shape);
+    }
+    if !publishers.contains(&entry.publisher_pubkey_hex.to_ascii_lowercase()) {
+        return Err(SnapshotError::UnauthorizedPublisher);
+    }
+    Ok(())
+}
+
+/// What a channel authorization bounds.
+struct Scope<'a> {
+    issued_at_unix: u64,
+    expires_at_unix: u64,
+    entry_count: usize,
+    publishers: &'a [PublisherAuthorization],
+}
+
 fn verify_channel_authorization_scope(
     authorization: &ChannelAuthorization,
     owner: &VerifyingKey,
-    snapshot: &SignedRegistrySnapshot,
+    snapshot: &Scope<'_>,
 ) -> Result<(), SnapshotError> {
     if authorization.protocol != CHANNEL_AUTHORIZATION_PROTOCOL
         || authorization.generation == 0
@@ -411,8 +732,8 @@ fn verify_channel_authorization_scope(
             .expires_at_unix
             .saturating_sub(snapshot.issued_at_unix)
             > authorization.max_snapshot_validity_seconds
-        || snapshot.entries.len() > authorization.max_snapshot_entries
-        || snapshot.publishers != authorization.publishers
+        || snapshot.entry_count > authorization.max_snapshot_entries
+        || snapshot.publishers != authorization.publishers.as_slice()
     {
         return Err(SnapshotError::ChannelAuthorization);
     }
@@ -455,22 +776,19 @@ pub fn verify_channel_authorization(
     if now_unix < authorization.not_before_unix || now_unix > authorization.expires_at_unix {
         return Err(SnapshotError::ChannelAuthorization);
     }
-    let probe = SignedRegistrySnapshot {
-        protocol: DELEGATED_SNAPSHOT_PROTOCOL,
-        sequence: 1,
-        issued_at_unix: now_unix,
-        expires_at_unix: now_unix.saturating_add(1),
-        previous_snapshot_hash_hex: String::new(),
-        moderation_head_hex: String::new(),
-        publishers: authorization.publishers.clone(),
-        entries: Vec::new(),
-        owner_signature_hex: String::new(),
-        channel_authorization: Some(authorization.clone()),
-    };
-    verify_channel_authorization_scope(authorization, &owner, &probe)
+    verify_channel_authorization_scope(
+        authorization,
+        &owner,
+        &Scope {
+            issued_at_unix: now_unix,
+            expires_at_unix: now_unix.saturating_add(1),
+            entry_count: 0,
+            publishers: &authorization.publishers,
+        },
+    )
 }
 
-fn entry_within_bounds(entry: &RegistryEntry) -> bool {
+pub(crate) fn entry_within_bounds(entry: &RegistryEntry) -> bool {
     entry.validate().is_ok()
         && entry.package_id.len() <= 255
         && entry.categories.len() <= 64
@@ -491,30 +809,37 @@ fn entry_within_bounds(entry: &RegistryEntry) -> bool {
         && entry.versions.len() <= 128
         && entry.versions.iter().all(|version| {
             version.version.len() <= 128
-                && version.tapp_url.len() <= 4_096
-                && version.tapp_root_hash_hex.len() == 64
-                && version
-                    .tapp_root_hash_hex
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit())
-                && version.tapp_blake3_hex.len() == 64
-                && version
-                    .tapp_blake3_hex
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit())
-                && version.target.isa.len() <= crate::target::MAX_TARGET_ISA_BYTES
-                && version
-                    .target
-                    .runtime
-                    .as_ref()
-                    .is_none_or(|runtime| runtime.len() <= crate::target::MAX_TARGET_RUNTIME_BYTES)
+                && match &version.artifact {
+                    crate::VersionArtifact::Tapp(tapp) => {
+                        tapp.tapp_url.len() <= 4_096
+                            && tapp.tapp_root_hash_hex.len() == 64
+                            && tapp
+                                .tapp_root_hash_hex
+                                .bytes()
+                                .all(|byte| byte.is_ascii_hexdigit())
+                            && tapp.tapp_blake3_hex.len() == 64
+                            && tapp
+                                .tapp_blake3_hex
+                                .bytes()
+                                .all(|byte| byte.is_ascii_hexdigit())
+                            && tapp.target.isa.len() <= crate::target::MAX_TARGET_ISA_BYTES
+                            && tapp.target.runtime.as_ref().is_none_or(|runtime| {
+                                runtime.len() <= crate::target::MAX_TARGET_RUNTIME_BYTES
+                            })
+                    }
+                    crate::VersionArtifact::Bot(bot) => {
+                        bot.program_url.len() <= 4_096
+                            && bot.program_blake3_hex.len() == 64
+                            && bot.program_size_bytes <= crate::entry::MAX_BOT_PROGRAM_BYTES
+                    }
+                }
         })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{RegistryVersion, sign_entry};
+    use crate::{EntryKind, RegistryVersion, TappArtifact, VersionArtifact, sign_entry};
 
     fn fixture() -> (SignedRegistrySnapshot, SigningKey) {
         let owner = SigningKey::from_bytes(&[8; 32]);
@@ -522,6 +847,7 @@ mod tests {
         let publisher_hex = hex::encode(publisher.verifying_key().to_bytes());
         let mut entry = RegistryEntry {
             package_id: "so.tilo.notes".into(),
+            kind: EntryKind::App,
             name: "Notes".into(),
             description: "Notes".into(),
             tagline: "Write together".into(),
@@ -536,17 +862,20 @@ mod tests {
             publisher_pubkey_hex: publisher_hex.clone(),
             versions: vec![RegistryVersion {
                 version: "1".into(),
-                tapp_url: "https://apps.tilo.so/n.tapp".into(),
-                tapp_root_hash_hex: "ab".repeat(32),
-                tapp_size_bytes: 1,
                 released_at_unix: 1,
-                tapp_blake3_hex: "cd".repeat(32),
-                target: crate::RegistryTarget {
-                    platform: crate::TILO_OS_PLATFORM.into(),
-                    architecture: "x86_64".into(),
-                    isa: "x86_64-v3".into(),
-                    runtime: None,
-                },
+                artifact: VersionArtifact::Tapp(TappArtifact {
+                    tapp_url: "https://apps.tilo.so/n.tapp".into(),
+                    tapp_root_hash_hex: "ab".repeat(32),
+                    tapp_size_bytes: 1,
+                    tapp_blake3_hex: "cd".repeat(32),
+                    target: crate::RegistryTarget {
+                        platform: crate::TILO_OS_PLATFORM.into(),
+                        architecture: "x86_64".into(),
+                        isa: "x86_64-v3".into(),
+                        runtime: None,
+                        interfaces: Vec::new(),
+                    },
+                }),
             }],
             updated_at_unix: 1,
             signature_hex: String::new(),
@@ -566,9 +895,106 @@ mod tests {
             entries: vec![entry],
             owner_signature_hex: String::new(),
             channel_authorization: None,
+            bots_signature_hex: String::new(),
         };
         sign_snapshot(&mut snapshot, &owner).unwrap();
         (snapshot, owner)
+    }
+
+    fn with_bot(snapshot: &SignedRegistrySnapshot) -> SignedRegistrySnapshot {
+        let publisher = SigningKey::from_bytes(&[7; 32]);
+        let hash = "ef".repeat(32);
+        let mut bot = RegistryEntry {
+            package_id: "so.tilo.bots.greeter".into(),
+            kind: EntryKind::Bot,
+            versions: vec![RegistryVersion {
+                version: "1.0.0".into(),
+                released_at_unix: 1,
+                artifact: VersionArtifact::Bot(crate::BotArtifact {
+                    program_url: crate::bot_program_url("https://apps.tilo.so", &hash),
+                    program_blake3_hex: hash,
+                    program_size_bytes: 10,
+                    requires: crate::BotRequirements::default(),
+                }),
+            }],
+            ..snapshot.entries[0].clone()
+        };
+        sign_entry(&mut bot, &publisher);
+        let mut mixed = snapshot.clone();
+        mixed.entries.insert(0, bot);
+        mixed
+    }
+
+    #[test]
+    fn bot_entries_ride_beside_what_older_clients_verify() {
+        let (plain, owner) = fixture();
+        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+        let mut mixed = with_bot(&plain);
+        sign_snapshot(&mut mixed, &owner).unwrap();
+        assert_eq!(verify_snapshot(&mixed, &owner_hex, 15), Ok(()));
+        // phase: app_part_is_unchanged
+        {
+            // The owner signature and the chain identity cover app entries
+            // only, so they equal those of the same snapshot without bots.
+            assert_eq!(mixed.owner_signature_hex, plain.owner_signature_hex);
+            assert_eq!(snapshot_hash(&mixed), snapshot_hash(&plain));
+            assert!(plain.bots_signature_hex.is_empty());
+        }
+        // phase: older_clients_see_only_app_entries
+        {
+            let mut json = serde_json::to_value(&mixed).unwrap();
+            assert_eq!(json["entries"].as_array().unwrap().len(), 1);
+            assert_eq!(json["bots"].as_array().unwrap().len(), 1);
+            assert_eq!(json, {
+                let mut with_bots = serde_json::to_value(&plain).unwrap();
+                with_bots["bots"] = json["bots"].clone();
+                with_bots["bots_signature_hex"] = json["bots_signature_hex"].clone();
+                with_bots
+            });
+            let object = json.as_object_mut().unwrap();
+            object.remove("bots");
+            object.remove("bots_signature_hex");
+            let read: SignedRegistrySnapshot = serde_json::from_value(json).unwrap();
+            assert_eq!(read, plain);
+            assert_eq!(verify_snapshot(&read, &owner_hex, 15), Ok(()));
+        }
+        // phase: wire_round_trip_keeps_both_kinds
+        {
+            let read: SignedRegistrySnapshot =
+                serde_json::from_slice(&serde_json::to_vec(&mixed).unwrap()).unwrap();
+            assert_eq!(read.bots(), mixed.bots());
+            assert_eq!(read.apps(), mixed.apps());
+            assert_eq!(verify_snapshot(&read, &owner_hex, 15), Ok(()));
+        }
+        // phase: bots_are_bound_to_the_snapshot
+        {
+            let mut swapped = mixed.clone();
+            swapped.entries.retain(|entry| entry.kind == EntryKind::App);
+            swapped.bots_signature_hex = mixed.bots_signature_hex.clone();
+            assert_eq!(
+                verify_snapshot(&swapped, &owner_hex, 15),
+                Err(SnapshotError::BotsSignature)
+            );
+            let mut unsigned = mixed.clone();
+            unsigned.bots_signature_hex.clear();
+            assert!(verify_snapshot(&unsigned, &owner_hex, 15).is_err());
+            let mut replayed = with_bot(&plain);
+            replayed.sequence = 2;
+            replayed.previous_snapshot_hash_hex = snapshot_hash(&plain).unwrap();
+            sign_snapshot(&mut replayed, &owner).unwrap();
+            replayed.bots_signature_hex = mixed.bots_signature_hex.clone();
+            assert_eq!(
+                verify_snapshot(&replayed, &owner_hex, 15),
+                Err(SnapshotError::BotsSignature)
+            );
+        }
+        // phase: an_entry_under_the_other_kind_is_refused
+        {
+            let mut json = serde_json::to_value(&mixed).unwrap();
+            let bot = json["bots"][0].clone();
+            json["entries"].as_array_mut().unwrap().push(bot);
+            assert!(serde_json::from_value::<SignedRegistrySnapshot>(json).is_err());
+        }
     }
 
     #[test]

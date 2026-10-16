@@ -5,19 +5,32 @@
 use super::*;
 use crate::network::actor::HostIdentity;
 use crate::shell::native_workspace_owner::NativeWorkspaceOwner;
+use neighbour_wire::NeighbourMsg;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::{WORKSPACE_JOIN_ALPN, WorkspaceJoinService};
 use tilo_joined_room::enroll::prepare_and_complete;
 use tilo_joined_room::testing::governor::TestGovernor;
 use tilo_joined_room::testing::ns as now_ns;
-use tilo_peer_state::NeighbourMsg;
 use tilo_peer_state::join::{self, JoinTransportRequest};
 use tilo_peer_state::join::{JoinTransportResponse, MemberRole};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspace_join::WorkspaceJoinProtocol;
 use tilo_user_identity::RevocationList;
 
+#[path = "native_exchange_tests/cold_code.rs"]
+mod cold_code;
+
+#[path = "native_exchange_tests/mounted_code.rs"]
+mod mounted_code;
+
+#[path = "native_exchange_tests/network_ownership.rs"]
+mod network_ownership;
+#[path = "native_exchange_tests/receipts.rs"]
+mod receipts;
+
+#[path = "native_exchange_tests/governance.rs"]
+mod governance;
 #[path = "native_exchange_tests/refresh.rs"]
 mod refresh;
 type ActualAuthority = Arc<Mutex<Option<TestGovernor>>>;
@@ -76,12 +89,12 @@ impl WorkspaceJoinService for ActualService {
 
 #[tokio::test]
 async fn native_enrollment_pinned_exchange_persists_complete_before_send() {
-    Box::pin(actual_exchange(false)).await;
+    Box::pin(actual_exchange(false, false, None)).await;
 }
 
 #[tokio::test]
 async fn native_enrollment_restart_automatically_refreshes_and_resends_retained_history() {
-    Box::pin(actual_exchange(true)).await;
+    Box::pin(actual_exchange(true, false, None)).await;
 }
 
 #[allow(
@@ -89,11 +102,19 @@ async fn native_enrollment_restart_automatically_refreshes_and_resends_retained_
     reason = "one end-to-end enrollment exchange over a real relay; the steps share live \
               endpoints and custody state that splitting would have to thread through helpers"
 )]
-async fn actual_exchange(restart: bool) {
+#[expect(
+    clippy::future_not_send,
+    reason = "the mounted journey keeps Rc UI roots on this test runtime thread"
+)]
+async fn actual_exchange(restart: bool, cold_code: bool, mounted: Option<mounted_code::Journey>) {
     use ed25519_dalek::SigningKey;
     use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-    let mut remote_owner = TestGovernor::new();
+    let mut remote_owner = if cold_code {
+        cold_code::governor(directory.path())
+    } else {
+        TestGovernor::new()
+    };
     let governor = remote_owner.governor().clone();
     let governor_key = remote_owner.governor_key().clone();
     let host = remote_owner.host().clone();
@@ -109,7 +130,7 @@ async fn actual_exchange(restart: bool) {
     let topic = tilo_relay::room_workspace_id(&room.to_string()).unwrap();
     let hint = remote_owner.hint(server.addr());
     let device_key = SigningKey::from_bytes(&[81; 32]);
-    let root_key = SigningKey::from_bytes(&[82; 32]);
+    let root_key = SigningKey::from_bytes(&[if cold_code { 0xC2 } else { 82 }; 32]);
     let mut device = DeviceCert {
         user_public_key: root_key.verifying_key().to_bytes(),
         device_public_key: device_key.verifying_key().to_bytes(),
@@ -132,6 +153,13 @@ async fn actual_exchange(restart: bool) {
     let local = tree.desktop.active;
     tree.persist_path = Some(directory.path().join("state.json"));
     let receiving_owner = crate::shell::native_workspace_owner::open(tree.shared()).unwrap();
+    if cold_code {
+        assert!(
+            receiving_owner.with_current(room, |_| Ok(())).is_err(),
+            "the receiving owner must not have native custody before signed enrollment"
+        );
+        assert!(!directory.path().join("cold-code-profile").exists());
+    }
     let saw = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let actual = ActualService {
         authority: Arc::new(Mutex::new(Some(remote_owner))),
@@ -170,7 +198,7 @@ async fn actual_exchange(restart: bool) {
                 replication: tilo_relay::ReplicationIntent::FullWorkspace,
                 admitted_users: vec![],
                 shell_authority: Some(
-                    tilo_peer_state::retained_proof::RetentionAuthority::new(
+                    tilo_relay_protocol::retention::RetentionAuthority::new(
                         &room.to_string(),
                         governor.clone(),
                     )
@@ -234,8 +262,19 @@ async fn actual_exchange(restart: bool) {
         .unwrap();
     // Reconcile relay access only from the actual issuing owner's committed peer.
     let (access, publications) = {
-        let state = actual_authority.lock().unwrap();
-        let state = state.as_ref().unwrap();
+        let mut state = actual_authority.lock().unwrap();
+        let state = state.as_mut().unwrap();
+        state.refresh_checkpoint().unwrap();
+        let before = receiving_owner
+            .with_current(room, |view| {
+                tilo_peer_state::durability::entries(view.peer().admitted_room().unwrap())
+            })
+            .unwrap();
+        assert_ne!(
+            before,
+            tilo_peer_state::durability::entries(state.peer().admitted_room().unwrap()).unwrap(),
+            "proof needs genuinely new signed governor receipts"
+        );
         (
             state.governed_access(SystemTime::now()).unwrap(),
             state
@@ -267,8 +306,9 @@ async fn actual_exchange(restart: bool) {
     )
     .await
     .unwrap();
-    let publisher =
-        tilo_relay::RelayCoeditSession::join(client, topic, governor.device_public_key).unwrap();
+    let publisher = Arc::new(
+        tilo_relay::RelayCoeditSession::join(client, topic, governor.device_public_key).unwrap(),
+    );
     tilo_test_env::within("the publisher's Ready", async {
         loop {
             if matches!(
@@ -314,21 +354,20 @@ async fn actual_exchange(restart: bool) {
     .await;
     for (bytes, kind) in &publications {
         let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
-        let (channel, _) = tilo_peer_state::transport::retention(
-            &message,
-            *kind == tilo_peer_state::transport::Retention::Checkpoint,
-        )
-        .unwrap();
+        let (channel, _) =
+            neighbour_wire::retention(&message, *kind == neighbour_wire::Retention::Checkpoint)
+                .unwrap();
         match kind {
-            tilo_peer_state::transport::Retention::Checkpoint => {
+            neighbour_wire::Retention::Checkpoint => {
                 publisher.publish_checkpoint(channel, bytes.clone())
             }
-            tilo_peer_state::transport::Retention::Delta => {
+            neighbour_wire::Retention::Delta => {
                 publisher.publish_retained_delta(channel, bytes.clone())
             }
         }
         .unwrap();
     }
+    governance::assert_admitted_without_ui_drain(&actual_authority, &receiving_owner, room).await;
     let mut last = None;
     tilo_test_env::within("every native input publication", async {
         let mut count = 0;
@@ -348,12 +387,24 @@ async fn actual_exchange(restart: bool) {
     receiving_owner
         .with_current(room, |view| {
             assert!(
-                view.peer().document("so.tilo.chat", "").is_some(),
-                "actual retained Chat admitted before fanout"
+                view.peer()
+                    .document(
+                        if cold_code {
+                            cold_code::APP
+                        } else {
+                            "so.tilo.chat"
+                        },
+                        if cold_code { cold_code::RECORD } else { "" }
+                    )
+                    .is_some(),
+                "actual retained application body admitted before fanout"
             );
             Ok(())
         })
         .unwrap();
+    if cold_code {
+        cold_code::assert_native_body(&receiving_owner, &identity, directory.path());
+    }
     commands
         .send(crate::network::actor::NetCmd::LeaveWorkspace { ws: topic })
         .await
@@ -371,10 +422,39 @@ async fn actual_exchange(restart: bool) {
         last.unwrap().admit(&identity).is_err(),
         "closed session input cannot cross the owner again"
     );
-    drop(commands);
-    actor.abort();
-    let _ = actor.await;
+    retire_actor_before_endpoint_reuse(commands, actor).await;
     drop(received);
+    if let Some(journey) = mounted {
+        Box::pin(mounted_code::run(
+            mounted_code::Context {
+                journey,
+                directory: &directory,
+                relay: &relay,
+                publisher: &publisher,
+                server: server.addr(),
+                endpoint: &endpoint,
+            },
+            receiving_owner.clone(),
+            &identity,
+            actual_authority.clone(),
+            receiving_custody.clone(),
+        ))
+        .await;
+    } else if cold_code {
+        Box::pin(cold_code::restart_after_offline_edits(
+            refresh::LiveExchange {
+                directory: &directory,
+                identity: &identity,
+                endpoint: &endpoint,
+                relay: &relay,
+                publisher: &publisher,
+            },
+            receiving_owner.clone(),
+            room,
+            actual_authority.clone(),
+        ))
+        .await;
+    }
     if restart {
         Box::pin(refresh::restart_after_offline_snapshot(
             refresh::LiveExchange {
@@ -395,4 +475,17 @@ async fn actual_exchange(restart: bool) {
     publisher_endpoint.close().await;
     endpoint.close().await;
     relay.shutdown().await;
+}
+
+/// Retire the enrollment actor while keeping its endpoint for the next native session.
+async fn retire_actor_before_endpoint_reuse(
+    commands: impl Send,
+    actor: tokio::task::JoinHandle<()>,
+) {
+    // The actor's ordinary channel-closed exit shuts down its Router and
+    // closes the shared endpoint. Cancel and join while its last sender is
+    // still retained, then release that sender after router ownership ends.
+    actor.abort();
+    let _ = actor.await;
+    drop(commands);
 }

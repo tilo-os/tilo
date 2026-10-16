@@ -7,16 +7,17 @@
 //!
 //! [`splice_text_diffed`] / [`put_text_diffed`] diff old vs. new down to the
 //! common prefix + suffix and splice only the changed middle span, so one
-//! keystroke costs one op. [`put_if_changed`] is the scalar analogue.
-//!
-//! The typed readers ([`read_str`], [`read_bool`], [`read_number`], …) are
-//! the read side: each returns `None` for a missing or differently typed
-//! value and names any conversion it applies, so callers keep their own
-//! defaults explicit.
+//! keystroke costs one op. [`read_text`] and [`read_str_or_text`] read text
+//! back.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value};
 use std::any::Any;
+
+/// Where `doc` stands, to tell whether a settle pass changed it.
+pub(crate) fn settle_mark(doc: &AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
+    (doc.base_heads(), doc.pending_ops())
+}
 
 /// The document and object a widget pass lent as its
 /// [`AppModel`](crate::widget::AppModel) and [`ModelPath`](crate::widget::ModelPath).
@@ -29,14 +30,14 @@ use std::any::Any;
     clippy::panic,
     reason = "a document host lends its document; any other model is a host bug"
 )]
-pub fn document<'a>(model: &'a mut dyn Any, path: &'a dyn Any) -> (&'a mut AutoCommit, &'a ObjId) {
-    let (Some(doc), Some(path)) = (
-        model.downcast_mut::<AutoCommit>(),
-        path.downcast_ref::<ObjId>(),
-    ) else {
-        panic!("the host lent a model that is not an Automerge document");
+pub fn document<'a, 'doc>(
+    model: &'a mut crate::widget::Edits<'doc>,
+    path: &'a dyn Any,
+) -> (&'a mut crate::widget::Edits<'doc>, &'a ObjId) {
+    let Some(path) = path.downcast_ref::<ObjId>() else {
+        panic!("the host lent a path that is not an Automerge object");
     };
-    (doc, path)
+    (model, path)
 }
 
 /// Read-only [`document`].
@@ -167,56 +168,11 @@ pub fn put_text_diffed<P: Into<Prop>>(
     splice_text_diffed(doc, &tid, new)
 }
 
-/// Returns `true` if an op was emitted. Guards against unbounded document growth
-/// from re-`put`ting an unchanged scalar every frame. `f64` fields that can hold
-/// `NaN` need a bit-exact guard at the call site instead — `NaN != NaN` would
-/// make this re-emit forever.
-pub fn put_if_changed<P: Into<Prop>, V: Into<ScalarValue>>(
-    doc: &mut AutoCommit,
-    obj: &ObjId,
-    key: P,
-    val: V,
-) -> bool {
-    let prop = key.into();
-    let val = val.into();
-    let unchanged = matches!(
-        doc.get(obj, prop.clone()),
-        Ok(Some((Value::Scalar(cur), _))) if cur.as_ref() == &val
-    );
-    if unchanged {
-        return false;
-    }
-    let _ = doc.put(obj, prop, val);
-    true
-}
+// Text readers: each returns `None` when the property is missing, holds a
+// value of another type, or the lookup itself fails.
 
-// Typed readers.
-//
-// Each reader returns `None` when the property is missing, holds a value of
-// another type, or the lookup itself fails, so a caller chooses its own
-// default (`unwrap_or_default()`, a documented fallback) at the call site.
-// Readers that accept more than one stored representation say so in their
-// name and document the conversion.
-
-/// The scalar stored at `prop`, or `None` for a missing property or an object.
-pub fn read_scalar<P: Into<Prop>>(doc: &impl ReadDoc, obj: &ObjId, prop: P) -> Option<ScalarValue> {
-    match doc.get(obj, prop) {
-        Ok(Some((Value::Scalar(value), _))) => Some(value.into_owned()),
-        _ => None,
-    }
-}
-
-/// A string scalar. A `Text` object at `prop` is not a string scalar; see
-/// [`read_str_or_text`].
-pub fn read_str<P: Into<Prop>>(doc: &impl ReadDoc, obj: &ObjId, prop: P) -> Option<String> {
-    match read_scalar(doc, obj, prop)? {
-        ScalarValue::Str(value) => Some(value.to_string()),
-        _ => None,
-    }
-}
-
-/// The contents of a `Text` object. A string scalar is not a `Text` object;
-/// see [`read_str_or_text`].
+/// The contents of a `Text` object; see [`read_str_or_text`] for a field
+/// that may hold a string scalar instead.
 pub fn read_text<P: Into<Prop>>(doc: &impl ReadDoc, obj: &ObjId, prop: P) -> Option<String> {
     match doc.get(obj, prop) {
         Ok(Some((Value::Object(ObjType::Text), text))) => doc.text(&text).ok(),
@@ -237,89 +193,18 @@ pub fn read_str_or_text<P: Into<Prop>>(doc: &impl ReadDoc, obj: &ObjId, prop: P)
     }
 }
 
-/// A boolean scalar.
-pub fn read_bool<P: Into<Prop>>(doc: &impl ReadDoc, obj: &ObjId, prop: P) -> Option<bool> {
-    match read_scalar(doc, obj, prop)? {
-        ScalarValue::Boolean(value) => Some(value),
-        _ => None,
-    }
-}
-
-/// An `F64` scalar, exactly. Integers are not converted; see
-/// [`read_number`].
-pub fn read_f64<P: Into<Prop>>(doc: &impl ReadDoc, obj: &ObjId, prop: P) -> Option<f64> {
-    match read_scalar(doc, obj, prop)? {
-        ScalarValue::F64(value) => Some(value),
-        _ => None,
-    }
-}
-
-/// A number stored as `F64`, `Int` or `Uint`, as `f64`. Integers beyond 2^53
-/// round to the nearest representable value. Counters and timestamps are not
-/// numbers here.
-#[allow(
-    clippy::cast_precision_loss,
-    reason = "documented: integers beyond 2^53 round to the nearest f64"
-)]
-pub fn read_number<P: Into<Prop>>(doc: &impl ReadDoc, obj: &ObjId, prop: P) -> Option<f64> {
-    match read_scalar(doc, obj, prop)? {
-        ScalarValue::F64(value) => Some(value),
-        ScalarValue::Int(value) => Some(value as f64),
-        ScalarValue::Uint(value) => Some(value as f64),
-        _ => None,
-    }
-}
-
-/// An integer through Automerge's own [`ScalarValue::to_i64`] coercion:
-/// `Int`, `Counter` and `Timestamp` as stored, `Uint` reinterpreted as `i64`
-/// (values above `i64::MAX` wrap), and `F64` truncated toward zero
-/// (saturating, `NaN` as 0).
-pub fn read_i64_coerced<P: Into<Prop>>(doc: &impl ReadDoc, obj: &ObjId, prop: P) -> Option<i64> {
-    read_scalar(doc, obj, prop)?.as_i64()
-}
-
-/// A number through Automerge's own [`ScalarValue::to_f64`] coercion:
-/// `F64` as stored, and `Int`, `Uint`, `Counter` and `Timestamp` widened to
-/// `f64`. See [`read_number`] for plain numbers only.
-pub fn read_f64_coerced<P: Into<Prop>>(doc: &impl ReadDoc, obj: &ObjId, prop: P) -> Option<f64> {
-    read_scalar(doc, obj, prop)?.as_f64()
-}
-
-/// An unsigned integer stored as `Uint`, or as a non-negative `Int`.
-pub fn read_u64<P: Into<Prop>>(doc: &impl ReadDoc, obj: &ObjId, prop: P) -> Option<u64> {
-    match read_scalar(doc, obj, prop)? {
-        ScalarValue::Uint(value) => Some(value),
-        ScalarValue::Int(value) => u64::try_from(value).ok(),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use automerge::ROOT;
 
-    fn reader_fixture() -> AutoCommit {
+    #[test]
+    fn text_readers_distinguish_scalars_from_text_objects() {
         let mut doc = AutoCommit::new();
         doc.put(&ROOT, "str", "plain").unwrap();
         seed_text(&mut doc, "text", "rich");
         doc.put(&ROOT, "yes", true).unwrap();
-        doc.put(&ROOT, "float", 2.5_f64).unwrap();
-        doc.put(&ROOT, "int", -7_i64).unwrap();
-        doc.put(&ROOT, "uint", 9_u64).unwrap();
-        doc.put(&ROOT, "huge", u64::MAX).unwrap();
-        doc.put(&ROOT, "stamp", ScalarValue::Timestamp(42)).unwrap();
         doc.put_object(&ROOT, "map", ObjType::Map).unwrap();
-        doc
-    }
-
-    #[test]
-    fn readers_distinguish_types_and_apply_documented_coercions() {
-        // All readers are pure, so one fixture serves every probe.
-        let doc = reader_fixture();
-        // String readers distinguish scalars from text objects.
-        assert_eq!(read_str(&doc, &ROOT, "str").as_deref(), Some("plain"));
-        assert_eq!(read_str(&doc, &ROOT, "text"), None);
         assert_eq!(read_text(&doc, &ROOT, "text").as_deref(), Some("rich"));
         assert_eq!(read_text(&doc, &ROOT, "str"), None);
         assert_eq!(
@@ -333,48 +218,6 @@ mod tests {
         for missing in ["absent", "yes", "map"] {
             assert_eq!(read_str_or_text(&doc, &ROOT, missing), None, "{missing}");
         }
-
-        // Scalar readers report a mismatched type as absent.
-        assert_eq!(read_bool(&doc, &ROOT, "yes"), Some(true));
-        assert_eq!(read_bool(&doc, &ROOT, "int"), None);
-        assert_eq!(read_f64(&doc, &ROOT, "float"), Some(2.5));
-        assert_eq!(read_f64(&doc, &ROOT, "int"), None, "exact F64 only");
-        assert_eq!(read_scalar(&doc, &ROOT, "map"), None);
-        assert_eq!(read_scalar(&doc, &ROOT, "absent"), None);
-        assert_eq!(read_scalar(&doc, &ROOT, "uint"), Some(ScalarValue::Uint(9)));
-
-        // Numeric readers apply their documented coercions.
-        assert_eq!(read_number(&doc, &ROOT, "float"), Some(2.5));
-        assert_eq!(read_number(&doc, &ROOT, "int"), Some(-7.0));
-        assert_eq!(read_number(&doc, &ROOT, "uint"), Some(9.0));
-        assert_eq!(read_number(&doc, &ROOT, "stamp"), None);
-        assert_eq!(read_number(&doc, &ROOT, "str"), None);
-
-        assert_eq!(read_i64_coerced(&doc, &ROOT, "int"), Some(-7));
-        assert_eq!(read_i64_coerced(&doc, &ROOT, "float"), Some(2));
-        assert_eq!(
-            read_i64_coerced(&doc, &ROOT, "huge"),
-            Some(-1),
-            "Uint wraps"
-        );
-        assert_eq!(read_i64_coerced(&doc, &ROOT, "stamp"), Some(42));
-        assert_eq!(read_i64_coerced(&doc, &ROOT, "yes"), None);
-
-        assert_eq!(read_f64_coerced(&doc, &ROOT, "int"), Some(-7.0));
-        assert_eq!(read_f64_coerced(&doc, &ROOT, "stamp"), Some(42.0));
-        assert_eq!(read_f64_coerced(&doc, &ROOT, "str"), None);
-
-        assert_eq!(read_u64(&doc, &ROOT, "uint"), Some(9));
-        assert_eq!(read_u64(&doc, &ROOT, "huge"), Some(u64::MAX));
-        assert_eq!(read_u64(&doc, &ROOT, "int"), None, "negative Int");
-        assert_eq!(read_u64(&doc, &ROOT, "float"), None);
-
-        // Readers accept list indices.
-        let mut doc = AutoCommit::new();
-        let list = doc.put_object(&ROOT, "list", ObjType::List).unwrap();
-        doc.insert(&list, 0, "first").unwrap();
-        assert_eq!(read_str(&doc, &list, 0).as_deref(), Some("first"));
-        assert_eq!(read_str(&doc, &list, 1), None);
     }
 
     fn seed_text(doc: &mut AutoCommit, key: &str, s: &str) -> ObjId {
@@ -506,52 +349,6 @@ mod tests {
                 s,
                 "typed value must round-trip exactly"
             );
-        }
-    }
-
-    #[test]
-    fn put_if_changed_skips_redundant_writes_for_every_scalar_kind() {
-        // Integers: the first write happens, an unchanged re-put is a no-op.
-        {
-            let mut doc = AutoCommit::new();
-
-            assert!(
-                put_if_changed(&mut doc, &ROOT, "n", 1i64),
-                "first write happens"
-            );
-            let before = doc.save().len();
-
-            assert!(
-                !put_if_changed(&mut doc, &ROOT, "n", 1i64),
-                "unchanged re-put is a no-op"
-            );
-            assert_eq!(
-                doc.save().len(),
-                before,
-                "unchanged re-put must not grow the doc"
-            );
-
-            assert!(
-                put_if_changed(&mut doc, &ROOT, "n", 2i64),
-                "changed value writes"
-            );
-            let got = match doc.get(&ROOT, "n").unwrap().unwrap().0 {
-                Value::Scalar(v) => v.as_i64(),
-                Value::Object(_) => None,
-            };
-            assert_eq!(got, Some(2));
-        }
-
-        // Strings and bools.
-        {
-            let mut doc = AutoCommit::new();
-            assert!(put_if_changed(&mut doc, &ROOT, "s", "a"));
-            assert!(!put_if_changed(&mut doc, &ROOT, "s", "a"));
-            assert!(put_if_changed(&mut doc, &ROOT, "s", "b"));
-
-            assert!(put_if_changed(&mut doc, &ROOT, "flag", true));
-            assert!(!put_if_changed(&mut doc, &ROOT, "flag", true));
-            assert!(put_if_changed(&mut doc, &ROOT, "flag", false));
         }
     }
 }

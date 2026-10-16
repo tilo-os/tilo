@@ -25,20 +25,12 @@ impl App {
             self.bindings.clear();
             self.focused_node = None;
             history.invalidate_owner();
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         }
         self.persistence.autosave = Some(autosave);
         self
     }
 
-    #[cfg(feature = "native")]
-    pub(crate) fn with_legacy_persistence(
-        mut self,
-        policy: crate::launch::LegacyPersistencePolicy,
-    ) -> Self {
-        self.legacy_persistence = policy;
-        self
-    }
     #[must_use]
     pub fn with_records(
         mut self,
@@ -52,7 +44,7 @@ impl App {
             self.bindings.clear();
             self.focused_node = None;
             history.invalidate_owner();
-            self.layout.structure_dirty = true;
+            self.layout.request_rebuild();
         }
         // Learn the current room grant before the widget selects a record.
         // Discovery is metadata-only: it must not create an empty record
@@ -79,6 +71,94 @@ impl App {
             .room_index
             .as_ref()
             .map(crate::state::DocumentReplica::document)
+    }
+
+    /// Show the record the window's component asked to open in its place
+    /// ([`AppComponent::take_replacement`](crate::application::AppComponent::take_replacement)):
+    /// close the component, keeping its recovery, mount the one it built,
+    /// and move the window's collaboration to the new record's route.
+    /// Whether the window now shows another record.
+    pub fn swap_requested_component(&mut self) -> bool {
+        let _entry = self.enter_wake_scope();
+        let Some(replacement) =
+            crate::component_lifecycle::take_replacement(self.root_widget.as_mut())
+        else {
+            return false;
+        };
+        let (mut component, outcome) = replacement.into_parts();
+        let Some(handle) = self.wake_scope.as_ref().map(crate::wake::WakeScope::handle) else {
+            let _ = component.close();
+            outcome.answer(Err("this window cannot show another record".into()));
+            return false;
+        };
+        let retirement = component.take_root_retirement();
+        if let Err(error) =
+            component.mount(move |event| crate::app::forward_component_wake(&handle, &event))
+        {
+            let _ = component.close();
+            outcome.answer(Err(error.to_string()));
+            return false;
+        }
+        let binding = component.callback_binding();
+        let history = component.history.take();
+        let mut root: Box<dyn Widget> = Box::new(crate::widget::BoundAppWidget::new(component));
+        if let Some(registration) = &history
+            && let Err(error) = registration.validate_root(root.as_ref())
+        {
+            self.component_close_reports
+                .extend(crate::component_lifecycle::close_components(root.as_mut()));
+            outcome.answer(Err(error.to_string()));
+            return false;
+        }
+        // The asking component answers the operation that asked before it
+        // closes.
+        outcome.answer(Ok(()));
+        self.poll_directed_invocations();
+        // The outgoing component is closed whole: its controls, its
+        // semantic mount and its writer.
+        self.close_components();
+        self.retirement = retirement;
+        let control_domain = crate::control_custody::ControlDomain::outer();
+        crate::widget::controls::install_control_custody(
+            root.as_mut(),
+            &control_domain,
+            crate::control_custody::CustodyAttachment::Initial,
+        );
+        control_domain.finish_initial_installation();
+        self.control_domain = control_domain;
+        self.root_widget = root;
+        self.history = None;
+        self.layout.node_map.clear();
+        self.bindings.clear();
+        self.focused_node = None;
+        self.layout.request_rebuild();
+        self.layout.layout_dirty = true;
+        self.needs_sync = true;
+        if let Some(registration) = history
+            && let Err(error) = self.install_history(registration)
+        {
+            tracing::warn!(%error, "the reopened record shows without its history");
+        }
+        let checkout = binding.checkout;
+        if self.collaboration.manager.has_native_committed_primary() {
+            if let Err(error) = self.collaboration.manager.switch_native_record(&checkout) {
+                tracing::warn!(%error, "the reopened record collaborates once its route opens");
+            }
+        } else {
+            self.collaboration.manager = CollaborationManager::for_record(&checkout);
+        }
+        if let Some(scope) = self.presence.broadcast_scope.clone() {
+            self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
+        }
+        self.collaboration.snapshot_on_ready = true;
+        self.request_checkout_snapshot();
+        true
+    }
+
+    /// The window's collaboration, for a test of what it joined.
+    #[cfg(test)]
+    pub(crate) fn collaboration_manager(&self) -> &CollaborationManager {
+        &self.collaboration.manager
     }
 
     pub fn record_tick(&mut self) -> bool {
@@ -146,7 +226,7 @@ impl App {
                     self.bindings.clear();
                     self.focused_node = None;
                     history.invalidate_owner();
-                    self.layout.structure_dirty = true;
+                    self.layout.request_rebuild();
                 }
                 self.state.rebase_outbound();
                 // Preserve the launcher's unqualified route for the room
@@ -252,17 +332,6 @@ impl App {
     /// keystroke still finds it on disk.
     #[cfg(feature = "native")]
     fn autosave_flush(&mut self) {
-        if self.legacy_persistence == crate::launch::LegacyPersistencePolicy::WidgetOwned {
-            self.close_components();
-            if let Err(error) = flush_widget_owned_persistence(
-                self.root_widget.as_mut(),
-                &mut self.component_close_reports,
-            ) {
-                tracing::error!(%error, "widget-owned persistence failed during shutdown");
-                eprintln!("tilo: notebook save failed during shutdown: {error}");
-            }
-            return;
-        }
         if let Some(set) = self.persistence.records.as_mut() {
             set.flush(&mut self.state.doc);
             if let (Some(saver), Some(room)) = (

@@ -4,15 +4,6 @@
 //! so a future spec edit is one place away.
 
 #![allow(dead_code)] // each test file pulls a different subset
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use std::path::Path;
 
@@ -135,13 +126,5 @@ pub fn write_app_payload(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir.join("share"))?;
     std::fs::write(dir.join("bin/editor"), b"#!/notreal")?;
     std::fs::write(dir.join("share/splash.png"), b"PNG\x00\x00\x00")?;
-    Ok(())
-}
-
-/// Lay out a valid format-provider payload (must contain
-/// `provider.wasm` somewhere — we put it at the root).
-pub fn write_format_provider_payload(dir: &Path) -> std::io::Result<()> {
-    // Header of an empty core WebAssembly module.
-    std::fs::write(dir.join("provider.wasm"), b"\x00asm\x01\x00\x00\x00")?;
     Ok(())
 }

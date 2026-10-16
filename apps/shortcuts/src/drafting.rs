@@ -7,6 +7,8 @@
 //! consents, and checked against the catalogue. It is only ever offered to
 //! the person to open as a draft; saving still goes through the grant review.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Map, Value, json};
 use tilo_automation::{
     AGENT_APP_ID, AGENT_FREEFORM_ACTION, AGENT_TRANSFORM_KIND, ActionCatalog, SHORTCUTS_APP_ID,
@@ -14,7 +16,8 @@ use tilo_automation::{
 };
 use ui::tilo_actions::remote::RemoteActionTarget;
 
-use crate::grant;
+use crate::editor;
+use tilo_automation::grant;
 
 /// Largest description a person may give.
 pub const MAX_DESCRIPTION: usize = 2 * 1024;
@@ -44,10 +47,12 @@ pub fn catalogue_summary(catalog: &ActionCatalog) -> String {
             continue;
         }
         let line = json!({
-            "app_id": row.app_id,
+            "action": {
+                "app": row.app_id,
+                "kind": row.resource.kind,
+                "action": descriptor.address.action,
+            },
             "resource": row.resource.id,
-            "resource_kind": row.resource.kind,
-            "action": descriptor.address.action,
             "label": descriptor.action_label,
             "params": descriptor.params,
             "result": descriptor.contract.result,
@@ -81,8 +86,9 @@ pub fn schema() -> Value {
 const INSTRUCTIONS: &str = "Write a Tilo shortcut that does what the person describes, using \
 only the actions listed in the input (one JSON object per line). Answer with the shortcut as \
 JSON: {\"name\", \"inputs\"?, \"steps\", \"output\"?}. Each step has a unique \"id\" (letters, \
-digits, - or _) and a \"step\" kind: \"invoke\" with \"app_id\", \"resource\": {\"fixed\": \
-resource id}, \"action\" and \"args\" mapping parameter names to bindings; \"if\" with \
+digits, - or _) and a \"step\" kind: \"invoke\" with \"action\" (the listed action's \
+{\"app\", \"kind\", \"action\"} as given), \"resource\": {\"fixed\": resource id} and \
+\"args\" mapping parameter names to bindings; \"if\" with \
 \"cond\": {\"truthy\": binding} or {\"equals\": {\"left\", \"right\"}}, \"then\" and \"else\" \
 step lists; \"for_each\" with \"items\" binding, \"item\" variable name and \"body\"; \
 \"set_var\" with \"name\" and \"value\"; \"ask\" with \"param\": {\"name\", \"ty\", \
@@ -132,7 +138,7 @@ pub fn adopt(value: Value, saved: &[Shortcut], catalog: &ActionCatalog) -> Resul
         other => return Err(format!("the agent answered {other}, not a shortcut")),
     };
     object.insert("id".to_owned(), Value::String("drafted".to_owned()));
-    for authority in ["grant", "triggers", "consents", "saved_by"] {
+    for authority in ["grant", "triggers", "saved_by"] {
         object.remove(authority);
     }
     let mut shortcut: Shortcut = serde_json::from_value(Value::Object(object))
@@ -142,7 +148,16 @@ pub fn adopt(value: Value, saved: &[Shortcut], catalog: &ActionCatalog) -> Resul
     let resolver = |id: &str| saved.iter().find(|other| other.id == id).cloned();
     let problems = match check(&shortcut, catalog, &resolver) {
         Ok(()) => Vec::new(),
-        Err(errors) => errors.iter().map(ToString::to_string).collect(),
+        Err(errors) => {
+            let mut by_step: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for error in &errors {
+                by_step
+                    .entry(error.path.as_str().to_owned())
+                    .or_default()
+                    .push(editor::explain(error, &shortcut.steps, catalog));
+            }
+            editor::problem_lines(&shortcut.steps, &by_step)
+        }
     };
     Ok(Drafted { shortcut, problems })
 }
@@ -192,13 +207,13 @@ mod tests {
             "id": "tidy",
             "name": "Tidy notes",
             "steps": [
-                {"id": "list", "step": "invoke", "app_id": "so.tilo.notes",
-                 "resource": {"fixed": "notes.folder:inbox"}, "action": "list"},
-                {"id": "note", "step": "invoke", "app_id": "so.tilo.notes",
-                 "resource": {"fixed": "notes.folder:inbox"}, "action": "create",
+                {"id": "list", "step": "invoke", "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "list"},
+                 "resource": {"fixed": "notes.folder:inbox"}},
+                {"id": "note", "step": "invoke", "action": {"app": "so.tilo.notes", "kind": "notes.folder", "action": "create"},
+                 "resource": {"fixed": "notes.folder:inbox"},
                  "args": {"title": {"literal": "Digest"}}}
             ],
-            "grant": [{"scope": "Any", "effect": "Grant", "verb": "Admin"}],
+            "grant": [{"node": "**", "kinds": ["read", "undoable", "outside"], "answer": "allow"}],
             "triggers": [{"trigger": "keyboard", "chord": "Super+X"}]
         });
         let drafted = adopt(answer, &saved, &catalog).unwrap();
@@ -216,7 +231,7 @@ mod tests {
             drafted
                 .problems
                 .iter()
-                .any(|problem| problem.contains("pinned")),
+                .any(|problem| problem == "Step 2: Pin it needs a value"),
             "the checker's verdict comes with it: {:?}",
             drafted.problems
         );

@@ -36,8 +36,7 @@ use shell::compositor::backend::drm::paint::{
 };
 use shell::compositor::frame::FrameBuilder;
 use ui::taffy::NodeId;
-use winit::dpi::PhysicalPosition;
-use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::Modifiers;
 
 const WIDTH: u32 = 3_840;
 const HEIGHT: u32 = 2_160;
@@ -47,6 +46,7 @@ const P99_LIMIT_US: u128 = 50_000;
 const ACTION_TARGETS: [&str; 2] = ["topbar_tray_pill", "topbar_overview_button"];
 const PROFILE_ENV: &str = "TILO_REDRAW_BENCH_PROFILE";
 const PROFILE_OUTPUT_ENV: &str = "TILO_REDRAW_BENCH_PROFILE_OUTPUT";
+const SAMPLES_ENV: &str = "TILO_REDRAW_BENCH_SAMPLES";
 const SCENE_REUSE_ENV: &str = "TILO_REDRAW_BENCH_SCENE_REUSE";
 const GEOMETRY_REUSE_ENV: &str = "TILO_REDRAW_BENCH_GEOMETRY_REUSE";
 const XRGB_DAMAGE_ENV: &str = "TILO_DRM_XRGB_DAMAGE";
@@ -133,6 +133,7 @@ struct FinishDiagnostics<'a> {
     gpu_dispatch_timestamp_profile: Option<&'a GpuDispatchTimestampProfile>,
     action_correlations: Option<&'a ActionCorrelationProfile>,
     profile_output_path: Option<&'a Path>,
+    samples_output_path: Option<&'a Path>,
     scene_reuse: Option<&'a SceneReuseTelemetry>,
     geometry_reuse: Option<&'a GeometryReuseTelemetry>,
     xrgb_writes: CpuXrgbWriteTotals,
@@ -1307,6 +1308,39 @@ fn profile_output_path(diagnostic: bool) -> Result<Option<PathBuf>, String> {
     profile_output_path_from_value(true, std::env::var_os(PROFILE_OUTPUT_ENV))
 }
 
+/// The acceptance samples' destination for the scheduled performance lane. A diagnostic run times
+/// extra work, so its samples are never handed over as acceptance samples.
+fn samples_output_path_from_value(
+    diagnostic: bool,
+    value: Option<OsString>,
+) -> Result<Option<PathBuf>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_empty() {
+        return Err(format!("{SAMPLES_ENV} must name a non-empty output path"));
+    }
+    if diagnostic {
+        return Err(format!(
+            "{SAMPLES_ENV} is incompatible with {PROFILE_ENV}=1; diagnostic timings are not acceptance samples"
+        ));
+    }
+    Ok(Some(PathBuf::from(value)))
+}
+
+/// One validated sample per line, in microseconds and action order: the samples file
+/// `tools/perf/record.py emit` reads. Only a set `summarize_samples` accepts is written, so a
+/// recorded distribution is always a complete one.
+fn sample_lines(samples: &[Option<u128>]) -> Result<String, SampleError> {
+    summarize_samples(samples)?;
+    let mut lines = String::with_capacity(samples.len().saturating_mul(8));
+    for us in samples.iter().flatten() {
+        lines.push_str(&us.to_string());
+        lines.push('\n');
+    }
+    Ok(lines)
+}
+
 fn xrgb_damage_requested() -> bool {
     xrgb_damage_requested_from_value(std::env::var(XRGB_DAMAGE_ENV).ok().as_deref())
 }
@@ -1528,10 +1562,6 @@ fn print_gpu_dispatch_timestamp_profile(totals: &GpuDispatchTimingTotals, buffer
     }
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "each profile-only action line keeps the wall sample, CPU phases, returned sparse facts, and exact timestamp-match state together"
-)]
 fn write_action_correlation_profile(
     writer: &mut impl Write,
     profile: &ActionCorrelationProfile,
@@ -1762,6 +1792,8 @@ fn print_geometry_reuse_profile(telemetry: &GeometryReuseTelemetry) {
 fn run() -> Result<(), String> {
     let diagnostic = profiling_requested();
     let profile_output_path = profile_output_path(diagnostic)?;
+    let samples_output_path =
+        samples_output_path_from_value(diagnostic, std::env::var_os(SAMPLES_ENV))?;
     let scene_reuse_requested = scene_reuse_requested();
     let geometry_reuse_requested = geometry_reuse_requested();
     let xrgb_damage_requested = xrgb_damage_requested();
@@ -1932,6 +1964,7 @@ fn run() -> Result<(), String> {
         let scene_started = diagnostic.then(Instant::now);
         let frame_paint = frame.paint_with_damage();
         let scene_us = scene_started.map_or(0, |started| started.elapsed().as_micros());
+        bridge.set_backdrop(frame_paint.backdrop.clone());
         let damage = SceneDamage {
             revision: frame_paint.revision,
             previous_revision: frame_paint.previous_revision,
@@ -2096,6 +2129,7 @@ fn run() -> Result<(), String> {
             gpu_dispatch_timestamp_profile: gpu_dispatch_timestamp_profile.as_ref(),
             action_correlations: action_correlations.as_ref(),
             profile_output_path: profile_output_path.as_deref(),
+            samples_output_path: samples_output_path.as_deref(),
             scene_reuse: scene_reuse.as_ref(),
             geometry_reuse: geometry_reuse.as_ref(),
             xrgb_writes,
@@ -2111,6 +2145,7 @@ fn paint_initial_desktop(
     destination_pitch: usize,
 ) -> Result<(), String> {
     let initial = frame.paint_with_damage();
+    bridge.set_backdrop(initial.backdrop.clone());
     bridge
         .paint_damage_into_xrgb8888(
             &initial.scene,
@@ -2140,12 +2175,26 @@ fn finish_run(
         gpu_dispatch_timestamp_profile,
         action_correlations,
         profile_output_path,
+        samples_output_path,
         scene_reuse,
         geometry_reuse,
         xrgb_writes,
     } = diagnostics;
     let summary =
         summarize_samples(samples).map_err(|error| format!("invalid sample set: {error:?}"))?;
+    // Written before the gate decides: the lane records the distribution of a run whether or not
+    // this renderer meets the hardware gate below.
+    if let Some(path) = samples_output_path {
+        let lines =
+            sample_lines(samples).map_err(|error| format!("invalid sample set: {error:?}"))?;
+        std::fs::write(path, lines)
+            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+        println!(
+            "samples: {} action redraw totals (us) written to {}",
+            summary.count,
+            path.display()
+        );
+    }
     println!(
         "DRM render/readback at {WIDTH}x{HEIGHT}: samples={} mean={}us p99={}us min={}us max={}us",
         summary.count, summary.mean_us, summary.p99_us, summary.min_us, summary.max_us
@@ -2282,27 +2331,34 @@ fn dispatch_click(
     focus: &mut Option<NodeId>,
 ) -> Result<(), String> {
     let events = [
-        WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: PhysicalPosition::new(center.x, center.y),
-        },
-        WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-        WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
+        ui::synthetic_input::cursor_moved(center.x, center.y),
+        ui::synthetic_input::mouse_press(),
+        ui::synthetic_input::mouse_release(),
     ];
     // Pointer motion can be consumed merely by hover handling, so only a button event qualifies
     // the action as delivered. The motion still precedes it exactly as it does on the native wire.
     let [cursor, press, release] = events;
-    let _ = frame.dispatch_event(&cursor, &modifiers, document, &ROOT, focus);
-    let pressed = frame.dispatch_event(&press, &modifiers, document, &ROOT, focus);
-    let released = frame.dispatch_event(&release, &modifiers, document, &ROOT, focus);
+    let _ = frame.dispatch_event(
+        &cursor,
+        &modifiers,
+        &mut ui::widget::Edits::lend(document),
+        &ROOT,
+        focus,
+    );
+    let pressed = frame.dispatch_event(
+        &press,
+        &modifiers,
+        &mut ui::widget::Edits::lend(document),
+        &ROOT,
+        focus,
+    );
+    let released = frame.dispatch_event(
+        &release,
+        &modifiers,
+        &mut ui::widget::Edits::lend(document),
+        &ROOT,
+        focus,
+    );
     if pressed || released {
         Ok(())
     } else {
@@ -2330,7 +2386,8 @@ mod tests {
         dispatch_stage_breakdown, dispatch_timestamp_status_after_take, gate_outcome,
         geometry_reuse_configuration_is_valid, geometry_reuse_requested_from_value,
         geometry_reuse_telemetry_enabled, gpu_dispatch_timestamp_status_name, meets_gates,
-        open_profile_output, profile_output_path_from_value, scene_reuse_configuration_is_valid,
+        open_profile_output, profile_output_path_from_value, sample_lines,
+        samples_output_path_from_value, scene_reuse_configuration_is_valid,
         scene_reuse_requested_from_value, scene_reuse_telemetry_enabled,
         summarize_diagnostic_values, summarize_samples, timestamp_profile_configuration_is_valid,
         write_action_correlation_profile, xrgb_damage_requested_from_value,
@@ -2990,6 +3047,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn samples_output_is_acceptance_only_and_writes_complete_sets() {
+        assert_eq!(samples_output_path_from_value(false, None), Ok(None));
+        assert_eq!(samples_output_path_from_value(true, None), Ok(None));
+        assert_eq!(
+            samples_output_path_from_value(false, Some(OsString::from("samples.txt")))
+                .expect("an acceptance run writes samples")
+                .as_deref(),
+            Some(std::path::Path::new("samples.txt"))
+        );
+        assert!(
+            samples_output_path_from_value(true, Some(OsString::from("samples.txt"))).is_err(),
+            "diagnostic timings must not reach the performance lane"
+        );
+        assert!(samples_output_path_from_value(false, Some(OsString::new())).is_err());
+        assert_eq!(
+            sample_lines(&[Some(9_000), Some(7_000), Some(12_000)]),
+            Ok("9000\n7000\n12000\n".to_owned())
+        );
+        assert_eq!(
+            sample_lines(&[Some(9_000), None]),
+            Err(SampleError::Missing { index: 1 })
+        );
+        assert_eq!(sample_lines(&[]), Err(SampleError::Empty));
+    }
+
     fn full_scene_reuse_observation(
         damage: Option<&[vello::FineDamageRect]>,
     ) -> Result<SceneReuseObservation<'_>, super::SceneReuseObservationRejection> {
@@ -3233,6 +3316,7 @@ mod tests {
                     cpu_copy_swizzle_us: 8,
                     readback_bytes: 9,
                     cpu_output_bytes: 10,
+                    backdrop_us: 0,
                 },
             });
             totals.add_sample(BenchmarkPhaseTiming {
@@ -3247,6 +3331,7 @@ mod tests {
                     cpu_copy_swizzle_us: 80,
                     readback_bytes: 90,
                     cpu_output_bytes: 100,
+                    backdrop_us: 0,
                 },
             });
             assert_eq!(totals.input_us, 11);
@@ -3473,6 +3558,7 @@ mod tests {
                     cpu_copy_swizzle_us: 8,
                     readback_bytes: 9,
                     cpu_output_bytes: 10,
+                    backdrop_us: 0,
                 },
             },
             attempts: 1,
@@ -3705,10 +3791,8 @@ mod tests {
         }
         // Phase `profile_output_file_is_created_new_and_never_overwritten`.
         {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("the test clock is after the Unix epoch")
-                .as_nanos();
+            let stamp =
+                tilo_clock::try_unix_now_ns().expect("the test clock is after the Unix epoch");
             let path = std::env::temp_dir().join(format!(
                 "tilo-redraw-bench-profile-output-{}-{stamp}",
                 std::process::id()
@@ -3843,6 +3927,16 @@ mod tests {
         let len = pitch.checked_mul(height).expect("native output fits usize");
         let mut retained = VelloDrmBridge::new(WIDTH, HEIGHT).expect("retained bridge");
         let mut dense = VelloDrmBridge::new(WIDTH, HEIGHT).expect("dense oracle bridge");
+        // An exact comparison needs a repeatable oracle. Unordered, a tile's
+        // segments sum in GPU scheduling order, so two renders of one scene can
+        // differ by one level on a multi-threaded device
+        // (`native_4k_fixed_quick_settings_pose_225_segment_order_is_causal`).
+        for bridge in [&mut retained, &mut dense] {
+            bridge
+                .enable_canonical_segment_order()
+                .expect("canonical segment order");
+            assert!(bridge.canonical_segment_order_available());
+        }
         retained.set_phase_timing_enabled(true);
         let mut retained_pixels = vec![0_u8; len];
         let mut dense_pixels = vec![0_u8; len];
@@ -4057,16 +4151,12 @@ mod tests {
                 "row mask must not be reported without an available renderer opt-in"
             );
         }
-        if !canonical_segment_order_requested || !canonical_segment_order_available {
-            assert_eq!(
-                canonical_segment_order_selected_full_attempts, 0,
-                "canonical segment order must not be reported without an available renderer opt-in"
-            );
-            assert_eq!(
-                canonical_segment_order_selected_sparse_attempts, 0,
-                "canonical segment order must not be reported without an available renderer opt-in"
-            );
-        }
+        assert!(
+            canonical_segment_order_requested
+                && canonical_segment_order_available
+                && canonical_segment_order_selected_full_attempts > 0,
+            "the dense oracle must render in canonical segment order"
+        );
         if area_ppt8_requested && area_ppt8_available && !area_ppt8_preempted {
             assert!(
                 area_ppt8_selected_full_attempts.saturating_add(area_ppt8_selected_sparse_attempts)

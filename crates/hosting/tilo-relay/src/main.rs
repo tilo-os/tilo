@@ -22,11 +22,7 @@
 #![cfg_attr(
     test,
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
         clippy::string_slice,
-        clippy::panic,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )
@@ -41,6 +37,14 @@ use tracing_subscriber::{EnvFilter, fmt};
 use tilo_relay::{RelayConfig, daemon::RelayIdentity};
 use tilo_user_identity::{IdentityPaths, RevocationList, persist};
 
+#[cfg(feature = "agents")]
+mod persistent_moderation;
+#[cfg(feature = "agents")]
+mod persistent_room_cli;
+#[cfg(feature = "agents")]
+mod room_seed;
+#[cfg(feature = "agents")]
+mod room_strips;
 #[cfg(feature = "web")]
 mod web_cli;
 
@@ -76,7 +80,7 @@ enum Cmd {
     /// A short-lived shared room: its own user root and browser listener,
     /// certifying only the browsers its operator admits on stdin.
     #[cfg(feature = "web")]
-    Room(web_cli::RoomArgs),
+    Room(Box<web_cli::RoomArgs>),
     /// Print current metrics + hosted workspace list.
     Status,
     /// Add a workspace to the config file.
@@ -113,6 +117,11 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return Ok(std::process::ExitCode::from(code));
     }
+    // So do the confined workers agents and room actions run apps in.
+    #[cfg(feature = "agents")]
+    if let Some(code) = tilo_agent_participant::worker::dispatch_early() {
+        return Ok(std::process::ExitCode::from(code));
+    }
     run().map(|()| std::process::ExitCode::SUCCESS)
 }
 
@@ -132,7 +141,7 @@ fn run() -> anyhow::Result<()> {
         }
         #[cfg(feature = "web")]
         Cmd::Room(args) => {
-            tilo_rt::daemon("tilo-relay").run(web_cli::room(args, wait_for_shutdown()))?
+            tilo_rt::daemon("tilo-relay").run(web_cli::room(*args, wait_for_shutdown()))?
         }
         Cmd::Status => cmd_status(&cli.config),
         Cmd::BindWorkspace { id, pin } => cmd_bind(&cli.config, id, pin),
@@ -216,6 +225,10 @@ fn cmd_status(path: &Path) -> anyhow::Result<()> {
             metrics.deltas_received, metrics.deltas_fanned_out
         );
         println!("bytes queued: {}", metrics.bytes_queued);
+        println!(
+            "bytes sent: {} ({} live fan-out)",
+            metrics.bytes_sent, metrics.bytes_sent_live
+        );
     }
     Ok(())
 }
@@ -227,6 +240,14 @@ fn cmd_status(path: &Path) -> anyhow::Result<()> {
 fn cmd_run(path: &Path, #[cfg(feature = "web")] web: web_cli::WebArgs) -> anyhow::Result<()> {
     let cfg = load_or_default(path)?;
     tilo_rt::daemon("tilo-relay").run(async move {
+        // Every change the relay receives is decided against its app's
+        // surface, fetched by hash from the registry.
+        tilo_relay::surfaces::decide_receipt_from_registry(
+            &std::env::var("TILO_REGISTRY")
+                .unwrap_or_else(|_| tilo_relay::surfaces::DEFAULT_REGISTRY.to_owned()),
+        );
+        #[cfg(feature = "web")]
+        web_cli::await_certificate(&cfg.identity_root, &web, &cfg.state_root).await?;
         let identity = load_identity(&cfg.identity_root, &cfg.state_root)?;
         #[cfg(feature = "web")]
         let state_root = cfg.state_root.clone();
@@ -355,22 +376,12 @@ mod tests {
         status.full_content_replication = true;
         status.filesystem_endpoints.push(filesystem_endpoint);
         fs::full_replica::save_status(&status_path, &status).unwrap();
-        // The filesystem process keeps its status fresh; the relay honours
-        // only a recent one. Relay start can take longer than that bound.
-        let beating = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let heartbeat = std::thread::spawn({
-            let (path, beating) = (status_path.clone(), std::sync::Arc::clone(&beating));
-            move || {
-                while beating.load(std::sync::atomic::Ordering::Acquire) {
-                    let mut status = status.clone();
-                    status.updated_at_ms = tilo_clock::unix_now_ms();
-                    let staged = path.with_extension("staged");
-                    std::fs::write(&staged, serde_json::to_vec(&status).unwrap()).unwrap();
-                    std::fs::rename(&staged, &path).unwrap();
-                    std::thread::sleep(std::time::Duration::from_millis(250));
-                }
-            }
-        });
+        // The relay judges the stamp by a clock stopped where it was written,
+        // so it stays recent however long the relay takes to start.
+        let stamped = fs::full_replica::load_status(&status_path)
+            .unwrap()
+            .unwrap()
+            .updated_at_ms;
 
         let bundle_path = temp.path().join("home-peer.toml");
         let bundle = fs::full_replica::HomePeerSet {
@@ -401,7 +412,7 @@ mod tests {
         config.save(&config_path).unwrap();
         let config = RelayConfig::load(&config_path).unwrap();
 
-        let relay = Relay::start(
+        let relay = Relay::start_with_replica_clock(
             config,
             RelayIdentity {
                 user_public_key: user.public_key,
@@ -409,6 +420,7 @@ mod tests {
                 device_cert: cert,
                 revocations: RevocationList::new(),
             },
+            std::sync::Arc::new(tilo_clock::FixedClock(stamped)),
         )
         .await
         .unwrap();
@@ -419,8 +431,6 @@ mod tests {
         );
         assert!(profile.services.full_content_replication);
         assert_eq!(profile.filesystem_endpoints.len(), 1);
-        beating.store(false, std::sync::atomic::Ordering::Release);
-        heartbeat.join().unwrap();
         relay.shutdown().await;
     }
 }

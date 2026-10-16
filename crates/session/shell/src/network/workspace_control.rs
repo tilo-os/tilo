@@ -18,6 +18,7 @@ use crate::network::actor::WorkspaceControlRoute;
 use crate::network::behaviour::peer_liveness_handle;
 use crate::network::protocol::{NeighbourMsg, SurfaceId};
 use crate::network::streaming::InputEvent;
+pub use runtime_collab::WorkspaceControlCloseReason;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceControlStatus {
@@ -28,15 +29,6 @@ pub enum WorkspaceControlStatus {
         height: u32,
     },
     Closed(WorkspaceControlCloseReason),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum WorkspaceControlCloseReason {
-    Denied(String),
-    Revoked,
-    TargetDisconnected,
-    RelayDisconnected,
-    LocalDisconnect,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -294,6 +286,7 @@ mod tests {
             hdr_static_metadata: None,
             bit_depth: 8,
             app_id: "word-processor".into(),
+            tab: 0,
         }
     }
 

@@ -26,20 +26,19 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # labels, local folders, drafts) are exported as replayable actions and a Ctrl+K
 # resource tree. See `src/actions.rs`.
 tilo-actions = { path = "../../crates/collab/actions" }
+# Read-only address-book hints; selection never confirms identity or sends mail.
+tilo-contact-directory = { path = "../../crates/platform/tilo-contact-directory" }
 # The shared multi-account store + encrypted secret vault. Mail reads its
 # email accounts from here (Settings owns the write lifecycle); credentials
 # are sealed in the vault, never in the plaintext store.
-accounts = { path = "../../crates/system/accounts" }
-# Durable replace-after-portal-write; a failed/crashed export never leaves a
-# partially-written attachment at the destination the user chose.
-tilo-files = { path = "../../crates/platform/tilo-files" }
+accounts = { path = "../../crates/system/accounts", features = ["person"] }
 # Content store for draft attachments. Drafts carry only a verified content
 # identity; the bytes live in the app's content store.
 tilo-content = { path = "../../crates/system/content" }
 # The draft body is rich text, edited in the SDK rich-text editor and sent as
 # its HTML part.
-qdoc-codecs = { path = "../../crates/doc/qdoc-codecs", default-features = false, features = ["html"] }
-qdoc-rich-text = { path = "../../crates/doc/qdoc-rich-text" }
+tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["html"] }
+tilo-document = { path = "../../crates/doc/tilo-document" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # Calendar invitations are validated as parsed iCalendar content lines.
 pim-lines = { path = "../../crates/text/pim-lines" }
@@ -84,14 +83,11 @@ workspace-hack = { version = "0.1" }
 [features]
 thin = ["dep:runtime-dylib"]
 # The default app includes the live account engine; it remains idle without a
-# configured account. HTML WebKit rendering is opt-in and requires WPE.
+# configured account.
 default = ["live"]
 # Compile the IMAP/SMTP backend and remote avatar fetch; requires a TLS/async
 # stack and a configured account at runtime.
 live = ["account-custody/custody", "dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:tilo-net", "dep:futures-util"]
-# Render HTML mail bodies with WPE WebKit; requires the stack from
-# os/dev/build-wpe.sh.
-html-webview = ["ui/webview"]
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -101,6 +97,9 @@ rcgen.workspace = true
 # sign-in tests.
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 tilo-test-env = { path = "../../crates/dev/test-env" }
+# Cross-app acceptance: drive the real Settings sign-in and consume its store.
+settings = { path = "../settings" }
+test-http = { path = "../../crates/dev/test-http" }
 
 [lints]
 workspace = true

@@ -824,10 +824,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn translated_launches_replace_inherited_overrides_and_allow_listed_modes() {
         // Phase `native_dxvk_overrides_apply_only_to_managed_wine_applications`.
         {

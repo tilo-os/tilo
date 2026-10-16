@@ -22,9 +22,16 @@ impl BoundedExactAdmissions {
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&AdmissionKey, &[u8; 32])> {
         self.index.0.iter()
     }
-    #[cfg(test)]
     pub(crate) fn get(&self, key: &AdmissionKey) -> Option<&[u8; 32]> {
         self.index.0.get(key)
+    }
+}
+
+/// An index's entries as their canonical wire map.
+pub(super) struct WireEntries<'a>(pub(super) &'a ExactAdmissions);
+impl Serialize for WireEntries<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize_entries(serializer)
     }
 }
 
@@ -32,7 +39,7 @@ impl BoundedExactAdmissions {
 struct WireIndex(ExactAdmissions);
 impl Serialize for WireIndex {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.entries.serialize(serializer)
+        self.0.serialize_entries(serializer)
     }
 }
 impl<'de> Deserialize<'de> for WireIndex {
@@ -53,14 +60,12 @@ impl<'de> Deserialize<'de> for WireIndex {
                 }
                 let mut value = ExactAdmissions::default();
                 while let Some((key, operation_id)) = map.next_entry::<AdmissionKey, [u8; 32]>()? {
-                    if value.entries.contains_key(&key) {
+                    if value.get(&key).is_some() {
                         return Err(A::Error::custom("duplicate exact admission key"));
                     }
                     let admission = DocumentAdmission { key, operation_id };
                     let bytes = value.check(&admission).map_err(A::Error::custom)?;
-                    value.entries.insert(admission.key, admission.operation_id);
-                    // `check` bounded the new total by MAX_EXACT_ADMISSION_BYTES.
-                    value.entry_bytes = value.entry_bytes.saturating_add(bytes);
+                    value.add(admission.key, admission.operation_id, bytes);
                 }
                 Ok(WireIndex(value))
             }
@@ -86,58 +91,14 @@ pub(super) fn decode_index(bytes: &[u8]) -> Result<ExactAdmissions, AdmissionErr
 pub(super) fn entry_bytes(op: &DocumentAdmission) -> Result<usize, AdmissionError> {
     // The closed entry contains only borrowed strings, fixed key/hash bytes,
     // and a u64. Its Serialize code creates no temporary owned allocations.
-    postcard::serialize_with_flavor(&(&op.key, op.operation_id), Count(0))
+    crate::postcard_sink::encoded_len(&(&op.key, op.operation_id), MAX_EXACT_ADMISSION_BYTES)
         .map_err(|_| AdmissionError::ResourceLimit)
-}
-struct Count(usize);
-impl postcard::ser_flavors::Flavor for Count {
-    type Output = usize;
-    fn try_push(&mut self, _: u8) -> postcard::Result<()> {
-        self.add(1)
-    }
-    fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-        self.add(bytes.len())
-    }
-    fn finalize(self) -> postcard::Result<usize> {
-        Ok(self.0)
-    }
-}
-impl Count {
-    fn add(&mut self, bytes: usize) -> postcard::Result<()> {
-        self.0 = self
-            .0
-            .checked_add(bytes)
-            .filter(|n| *n <= MAX_EXACT_ADMISSION_BYTES)
-            .ok_or(postcard::Error::SerializeBufferFull)?;
-        Ok(())
-    }
 }
 
 // Compare the exact existing canonical map bytes without an encoded Vec.
 // No digest substitutes for byte equality and no signed representation changes.
 fn matches_wire(value: &WireIndex, bytes: &[u8]) -> bool {
-    postcard::serialize_with_flavor(value, Compare(bytes)).is_ok()
-}
-struct Compare<'a>(&'a [u8]);
-impl postcard::ser_flavors::Flavor for Compare<'_> {
-    type Output = ();
-    fn try_push(&mut self, byte: u8) -> postcard::Result<()> {
-        self.try_extend(&[byte])
-    }
-    fn try_extend(&mut self, bytes: &[u8]) -> postcard::Result<()> {
-        let Some(tail) = self.0.strip_prefix(bytes) else {
-            return Err(postcard::Error::SerializeBufferFull);
-        };
-        self.0 = tail;
-        Ok(())
-    }
-    fn finalize(self) -> postcard::Result<()> {
-        if self.0.is_empty() {
-            Ok(())
-        } else {
-            Err(postcard::Error::SerializeBufferFull)
-        }
-    }
+    crate::postcard_sink::encodes_as(value, bytes)
 }
 
 #[cfg(test)]

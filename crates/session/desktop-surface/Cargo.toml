@@ -13,11 +13,32 @@ homepage.workspace = true
 # present the same model. Hosts supply tab contents through `TileSource`.
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 tilo-desktop-model = { version = "0.1.0", path = "../desktop-model" }
 tilo-desktop-search = { version = "0.1.0", path = "../desktop-search" }
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# The workspace history pane reads causal documents and draws with the
+# toolkit's renderer and input types.
+automerge.workspace = true
+tilo-automerge.workspace = true
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+blake3.workspace = true
+uuid.workspace = true
+taffy.workspace = true
+vello.workspace = true
+winit.workspace = true
+
+[dev-dependencies]
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-copy-lint = { path = "../../dev/copy-lint" }
+# The integration tests count named scopes on the frame path.
+tilo-resource = { path = "../../sdk/tilo-resource", features = ["test-support"] }
 
 [lints]
 workspace = true

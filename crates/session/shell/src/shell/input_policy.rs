@@ -6,7 +6,7 @@ use crate::shell::state::{
 };
 use vello::kurbo::{Point as KurboPoint, Rect};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
+use winit::keyboard::{Key, NamedKey};
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const BTN_MIDDLE: u32 = 0x112;
@@ -63,8 +63,13 @@ pub fn foreign_tile_at(
     host: &ShellOverlayHost,
     point: (f64, f64),
 ) -> Option<TileHit> {
+    if host.dictation_pointer_at(point) {
+        return None;
+    }
     let p = KurboPoint::new(point.0, point.1);
-    find_foreign_tile(tree, host, |hit| hit.rect.contains(p))
+    find_foreign_tile(tree, host, |hit| {
+        hit.rect.contains(p) && !host.group_resize_hit(hit.group, point)
+    })
 }
 
 /// The live laid-out rect for one foreign surface in the active workspace.
@@ -296,11 +301,14 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
     if matches!(
         key,
         ChordKey::Tab
+            | ChordKey::Space
             | ChordKey::ArrowLeft
             | ChordKey::ArrowRight
             | ChordKey::ArrowUp
             | ChordKey::ArrowDown
-            | ChordKey::Char('k' | 'q' | '/' | '-' | '=' | '1'..='9' | 'e' | 'v' | 'a' | 'f' | '.')
+            | ChordKey::Char(
+                'k' | 'l' | 'q' | '/' | '-' | '=' | '1'..='9' | 'e' | 'v' | 'a' | 'f' | '.'
+            )
     ) && ((mods.logo && !mods.ctrl && !mods.alt)
         || (matches!(key, ChordKey::Tab) && (mods.ctrl || mods.alt)))
     {
@@ -427,161 +435,12 @@ pub fn is_shell_chord(event: &WindowEvent, modifiers: &Modifiers, overlay_open: 
 /// logical-key table for events synthesised without a physical key — the DRM backend's libinput bridge and the test-control socket both build `KeyEvent`s that way.
 pub fn evdev_keycode(key: &KeyEvent) -> Option<u32> {
     // Only an identified physical key carries a trustworthy scancode: winit maps `PhysicalKey::Unidentified` to `KEY_UNKNOWN` (240), which would otherwise make every synthesised keystroke a dead key.
-    if let PhysicalKey::Code(code) = key.physical_key
-        && let Some(scancode) = evdev_from_physical(code)
+    if let Some(scancode) = ui::evdev::from_physical(key.physical_key)
         && scancode != 0
     {
         return Some(scancode);
     }
     evdev_from_logical(&key.logical_key)
-}
-
-/// Physical key positions use the peer protocol's Linux input-event codes on every host.
-/// Table follows the vendored winit Linux keymap (MIT/Apache-2.0).
-#[allow(
-    clippy::too_many_lines,
-    reason = "One auditable physical-position to wire-code table preserves the complete protocol mapping."
-)]
-pub fn evdev_from_physical(code: KeyCode) -> Option<u32> {
-    match code {
-        KeyCode::Escape => Some(1),
-        KeyCode::Digit1 => Some(2),
-        KeyCode::Digit2 => Some(3),
-        KeyCode::Digit3 => Some(4),
-        KeyCode::Digit4 => Some(5),
-        KeyCode::Digit5 => Some(6),
-        KeyCode::Digit6 => Some(7),
-        KeyCode::Digit7 => Some(8),
-        KeyCode::Digit8 => Some(9),
-        KeyCode::Digit9 => Some(10),
-        KeyCode::Digit0 => Some(11),
-        KeyCode::Minus => Some(12),
-        KeyCode::Equal => Some(13),
-        KeyCode::Backspace => Some(14),
-        KeyCode::Tab => Some(15),
-        KeyCode::KeyQ => Some(16),
-        KeyCode::KeyW => Some(17),
-        KeyCode::KeyE => Some(18),
-        KeyCode::KeyR => Some(19),
-        KeyCode::KeyT => Some(20),
-        KeyCode::KeyY => Some(21),
-        KeyCode::KeyU => Some(22),
-        KeyCode::KeyI => Some(23),
-        KeyCode::KeyO => Some(24),
-        KeyCode::KeyP => Some(25),
-        KeyCode::BracketLeft => Some(26),
-        KeyCode::BracketRight => Some(27),
-        KeyCode::Enter => Some(28),
-        KeyCode::ControlLeft => Some(29),
-        KeyCode::KeyA => Some(30),
-        KeyCode::KeyS => Some(31),
-        KeyCode::KeyD => Some(32),
-        KeyCode::KeyF => Some(33),
-        KeyCode::KeyG => Some(34),
-        KeyCode::KeyH => Some(35),
-        KeyCode::KeyJ => Some(36),
-        KeyCode::KeyK => Some(37),
-        KeyCode::KeyL => Some(38),
-        KeyCode::Semicolon => Some(39),
-        KeyCode::Quote => Some(40),
-        KeyCode::Backquote => Some(41),
-        KeyCode::ShiftLeft => Some(42),
-        KeyCode::Backslash => Some(43),
-        KeyCode::KeyZ => Some(44),
-        KeyCode::KeyX => Some(45),
-        KeyCode::KeyC => Some(46),
-        KeyCode::KeyV => Some(47),
-        KeyCode::KeyB => Some(48),
-        KeyCode::KeyN => Some(49),
-        KeyCode::KeyM => Some(50),
-        KeyCode::Comma => Some(51),
-        KeyCode::Period => Some(52),
-        KeyCode::Slash => Some(53),
-        KeyCode::ShiftRight => Some(54),
-        KeyCode::NumpadMultiply => Some(55),
-        KeyCode::AltLeft => Some(56),
-        KeyCode::Space => Some(57),
-        KeyCode::CapsLock => Some(58),
-        KeyCode::F1 => Some(59),
-        KeyCode::F2 => Some(60),
-        KeyCode::F3 => Some(61),
-        KeyCode::F4 => Some(62),
-        KeyCode::F5 => Some(63),
-        KeyCode::F6 => Some(64),
-        KeyCode::F7 => Some(65),
-        KeyCode::F8 => Some(66),
-        KeyCode::F9 => Some(67),
-        KeyCode::F10 => Some(68),
-        KeyCode::NumLock => Some(69),
-        KeyCode::ScrollLock => Some(70),
-        KeyCode::Numpad7 => Some(71),
-        KeyCode::Numpad8 => Some(72),
-        KeyCode::Numpad9 => Some(73),
-        KeyCode::NumpadSubtract => Some(74),
-        KeyCode::Numpad4 => Some(75),
-        KeyCode::Numpad5 => Some(76),
-        KeyCode::Numpad6 => Some(77),
-        KeyCode::NumpadAdd => Some(78),
-        KeyCode::Numpad1 => Some(79),
-        KeyCode::Numpad2 => Some(80),
-        KeyCode::Numpad3 => Some(81),
-        KeyCode::Numpad0 => Some(82),
-        KeyCode::NumpadDecimal => Some(83),
-        KeyCode::Lang5 => Some(85),
-        KeyCode::IntlBackslash => Some(86),
-        KeyCode::F11 => Some(87),
-        KeyCode::F12 => Some(88),
-        KeyCode::IntlRo => Some(89),
-        KeyCode::Lang3 => Some(90),
-        KeyCode::Lang4 => Some(91),
-        KeyCode::Convert => Some(92),
-        KeyCode::KanaMode => Some(93),
-        KeyCode::NonConvert => Some(94),
-        KeyCode::NumpadEnter => Some(96),
-        KeyCode::ControlRight => Some(97),
-        KeyCode::NumpadDivide => Some(98),
-        KeyCode::PrintScreen => Some(99),
-        KeyCode::AltRight => Some(100),
-        KeyCode::Home => Some(102),
-        KeyCode::ArrowUp => Some(103),
-        KeyCode::PageUp => Some(104),
-        KeyCode::ArrowLeft => Some(105),
-        KeyCode::ArrowRight => Some(106),
-        KeyCode::End => Some(107),
-        KeyCode::ArrowDown => Some(108),
-        KeyCode::PageDown => Some(109),
-        KeyCode::Insert => Some(110),
-        KeyCode::Delete => Some(111),
-        KeyCode::AudioVolumeMute => Some(113),
-        KeyCode::AudioVolumeDown => Some(114),
-        KeyCode::AudioVolumeUp => Some(115),
-        KeyCode::NumpadEqual => Some(117),
-        KeyCode::Pause => Some(119),
-        KeyCode::NumpadComma => Some(121),
-        KeyCode::Lang1 => Some(122),
-        KeyCode::Lang2 => Some(123),
-        KeyCode::IntlYen => Some(124),
-        KeyCode::SuperLeft => Some(125),
-        KeyCode::SuperRight => Some(126),
-        KeyCode::ContextMenu => Some(127),
-        KeyCode::MediaTrackNext => Some(163),
-        KeyCode::MediaPlayPause => Some(164),
-        KeyCode::MediaTrackPrevious => Some(165),
-        KeyCode::MediaStop => Some(166),
-        KeyCode::F13 => Some(183),
-        KeyCode::F14 => Some(184),
-        KeyCode::F15 => Some(185),
-        KeyCode::F16 => Some(186),
-        KeyCode::F17 => Some(187),
-        KeyCode::F18 => Some(188),
-        KeyCode::F19 => Some(189),
-        KeyCode::F20 => Some(190),
-        KeyCode::F21 => Some(191),
-        KeyCode::F22 => Some(192),
-        KeyCode::F23 => Some(193),
-        KeyCode::F24 => Some(194),
-        _ => None,
-    }
 }
 
 /// Logical-key → evdev keycode fallback. Values are from `linux/input-event-codes.h`.
@@ -845,6 +704,11 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().file_picker().is_some() {
         return true;
     }
+    // Permission and other portal sheets are the same kind of modal. Without
+    // this, a key or click lands in the window behind the sheet.
+    if fb.host().portal_dialog_open() {
+        return true;
+    }
     // Alt is held after Alt+Tab. The focused client gives up the keyboard
     // for as long as the switcher is open, so Tab, the arrows and Escape
     // reach it, and the client never sees Alt pressed and released alone
@@ -912,6 +776,7 @@ pub fn insert_foreign_group(
         active_tab: tab_id,
         width: WindowWidth::Normal,
         maximized: false,
+        focus_history: Vec::new(),
     };
     let group_id = group.id;
     let strip_id = strip.id;
@@ -1087,23 +952,12 @@ impl SuperTap {
 #[cfg(test)]
 mod super_tap_tests {
     use super::*;
-    use winit::keyboard::{KeyLocation, PhysicalKey};
+    use winit::keyboard::KeyLocation;
 
     fn key(logical: Key, state: ElementState) -> WindowEvent {
-        // winit's `KeyEvent` has a private platform field, so the struct is
-        // zero-initialised and every public field overwritten.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        let mut ev = ui::synthetic_input::key_event(logical, None, state);
         ev.location = KeyLocation::Left;
-        ev.state = state;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
+        ui::synthetic_input::keyboard_input(ev)
     }
 
     fn super_key(state: ElementState) -> WindowEvent {
@@ -1139,19 +993,11 @@ mod super_tap_tests {
     fn a_super_click_or_scroll_is_not_a_tap() {
         let mut tap = SuperTap::default();
         tap.observe(&super_key(ElementState::Pressed));
-        tap.observe(&WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        });
+        tap.observe(&ui::synthetic_input::mouse_press());
         assert!(!tap.observe(&super_key(ElementState::Released)));
 
         tap.observe(&super_key(ElementState::Pressed));
-        tap.observe(&WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
-            delta: MouseScrollDelta::LineDelta(0.0, 1.0),
-            phase: winit::event::TouchPhase::Moved,
-        });
+        tap.observe(&ui::synthetic_input::mouse_wheel(0.0, 1.0));
         assert!(!tap.observe(&super_key(ElementState::Released)));
     }
 
@@ -1173,25 +1019,18 @@ mod tests {
     use crate::shell::state::{AppKind, Strip, Workspace, WorkspaceId};
     use std::time::{Duration, Instant};
     use ui::widget::{WheelJumpAccum, wheel_jump_detents};
-    use winit::event::{DeviceId, KeyEvent};
     use winit::keyboard::{KeyLocation, ModifiersState, PhysicalKey, SmolStr};
     fn key_event(logical: Key, pressed: bool) -> WindowEvent {
-        // Mirrors the synthesis helpers already used by the test-control executor: winit's `KeyEvent` has a private platform field, so the struct is zero-initialised.
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = if pressed {
-            ElementState::Pressed
-        } else {
-            ElementState::Released
-        };
-        ev.repeat = false;
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed::<DeviceId>() },
-            event: ev,
-            is_synthetic: false,
-        }
+        let ev = ui::synthetic_input::key_event(
+            logical,
+            None,
+            if pressed {
+                ElementState::Pressed
+            } else {
+                ElementState::Released
+            },
+        );
+        ui::synthetic_input::keyboard_input(ev)
     }
     fn mods(state: ModifiersState) -> Modifiers {
         Modifiers::from(state)
@@ -1212,6 +1051,7 @@ mod tests {
             active_tab: stub_tab_id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         };
         let foreign_tab = Tab {
             id: next_id(),
@@ -1228,6 +1068,7 @@ mod tests {
             active_tab: foreign_tab_id,
             width: WindowWidth::Normal,
             maximized: false,
+            focus_history: Vec::new(),
         };
         let foreign_group = foreign.id;
         let strip_id = StripId::from(next_id());
@@ -1247,6 +1088,135 @@ mod tests {
         tree.desktop.active_strip.insert(ws_id, strip_id);
         (tree, strip_id, foreign_group)
     }
+    #[test]
+    fn sole_foreign_window_right_edge_belongs_to_compositor_resize() {
+        use ui::Widget;
+        let mut fb = FrameBuilder::with_tree(WorkspaceTree::bootstrap_default(), (1280, 800));
+        let mut placed = None;
+        fb.with_chrome(|chrome| {
+            placed =
+                insert_foreign_group(&mut chrome.tree_mut(), 991_001, Some("org.example.resize"));
+            chrome.bump();
+        });
+        let (strip, group) = placed.expect("foreign group");
+        let _ = fb.paint_settled();
+        let rect = fb
+            .host_mut()
+            .group_at_for_tests(strip, 0)
+            .expect("group")
+            .get_rect();
+        let point = (rect.x1 - 2.0, rect.center().y);
+        assert!(
+            fb.host_mut()
+                .group_at_for_tests(strip, 0)
+                .expect("group")
+                .resize_grab_hit(KurboPoint::new(point.0, point.1)),
+            "fixture grabs painted grip"
+        );
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        assert_eq!(tree.desktop.active_group_for(strip), Some(group));
+        assert_eq!(
+            tree.desktop.active_workspace().expect("workspace").strips[0]
+                .window_groups
+                .len(),
+            1
+        );
+        assert!(
+            foreign_tile_at(&tree, fb.host(), point).is_none(),
+            "the sole window's painted resize grip must reach chrome, not its client"
+        );
+        let content = fb.host().active_tile_rect(group).expect("content");
+        assert_eq!(
+            foreign_tile_at(&tree, fb.host(), (content.center().x, content.center().y))
+                .expect("client interior")
+                .surface_id,
+            991_001
+        );
+    }
+
+    #[test]
+    fn scrolled_foreign_window_grip_uses_screen_coordinates() {
+        use ui::Widget;
+        let mut fb = FrameBuilder::with_tree(WorkspaceTree::bootstrap_default(), (1472, 800));
+        let mut placed = None;
+        fb.with_chrome(|chrome| {
+            placed =
+                insert_foreign_group(&mut chrome.tree_mut(), 991_002, Some("org.example.resize"));
+            insert_foreign_group(
+                &mut chrome.tree_mut(),
+                991_003,
+                Some("org.example.neighbor"),
+            );
+            chrome.bump();
+        });
+        let (strip, group) = placed.expect("first group");
+        let _ = fb.paint_settled();
+        let initial = fb
+            .host_mut()
+            .group_at_for_tests(strip, 0)
+            .expect("group")
+            .get_rect();
+        let viewport = fb.host().group_row_rect_for_tests(strip).expect("viewport");
+        assert!(
+            fb.host_mut()
+                .update_active_strip_pan(initial.x0 - viewport.x0 + 80.0, true)
+        );
+        let _ = fb.paint_settled();
+        let rect = fb
+            .host_mut()
+            .group_at_for_tests(strip, 0)
+            .expect("group")
+            .get_rect();
+        let viewport = fb.host().group_row_rect_for_tests(strip).expect("viewport");
+        assert!(
+            rect.x0 < viewport.x0 && rect.x1 > viewport.x0 + 10.0,
+            "scrolled group {rect:?} in {viewport:?}"
+        );
+        let point = (rect.x1 - 2.0, rect.center().y);
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        assert!(fb.host().group_resize_hit(group, point));
+        assert!(foreign_tile_at(&tree, fb.host(), point).is_none());
+        let inside = (rect.x1 - 20.0, rect.center().y);
+        assert_eq!(
+            foreign_tile_at(&tree, fb.host(), inside)
+                .expect("client")
+                .surface_id,
+            991_002
+        );
+    }
+
+    #[test]
+    fn maximized_foreign_window_retains_client_edge_input() {
+        let mut fb = FrameBuilder::with_tree(WorkspaceTree::bootstrap_default(), (1280, 800));
+        let mut placed = None;
+        fb.with_chrome(|chrome| {
+            placed = insert_foreign_group(
+                &mut chrome.tree_mut(),
+                991_004,
+                Some("org.example.maximized"),
+            );
+            let mut tree = chrome.tree_mut();
+            tree.desktop.workspaces[0].strips[0].window_groups[0].maximized = true;
+            drop(tree);
+            chrome.bump();
+        });
+        let (_, group) = placed.expect("group");
+        let _ = fb.paint_settled();
+        let rect = fb.host().active_tile_rect(group).expect("client rect");
+        let point = (rect.x1 - 2.0, rect.center().y);
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        assert!(!fb.host().group_resize_hit(group, point));
+        assert_eq!(
+            foreign_tile_at(&tree, fb.host(), point)
+                .expect("client edge")
+                .surface_id,
+            991_004
+        );
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -1332,7 +1302,11 @@ mod tests {
         }
 
         fn evdev_keycode_prefers_the_physical_scancode() {
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+            let mut ev = ui::synthetic_input::key_event(
+                winit::keyboard::Key::Unidentified(winit::keyboard::NativeKey::Unidentified),
+                None,
+                winit::event::ElementState::Pressed,
+            );
             // `KeyA` is evdev 30; the logical key deliberately disagrees so a fallback to the table would produce a different value.
             ev.physical_key = PhysicalKey::Code(winit::keyboard::KeyCode::KeyA);
             ev.logical_key = Key::Character(SmolStr::new("z"));
@@ -1560,6 +1534,7 @@ mod tests {
                 tabs,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             };
             let group_id = group.id;
             let strip_id = StripId::from(next_id());
@@ -1702,8 +1677,8 @@ mod tests {
         fn only_immutable_super_chords_are_static_client_firewall_rules() {
             let m = mods(ModifiersState::SUPER);
             for key in [
-                Key::Character(SmolStr::new("l")),
-                Key::Named(NamedKey::Space),
+                Key::Character(SmolStr::new("w")),
+                Key::Named(NamedKey::Enter),
             ] {
                 let ev = key_event(key.clone(), true);
                 assert!(
@@ -1713,6 +1688,8 @@ mod tests {
             }
             for key in [
                 Key::Character(SmolStr::new("k")),
+                Key::Character(SmolStr::new("l")),
+                Key::Named(NamedKey::Space),
                 Key::Named(NamedKey::Tab),
                 Key::Named(NamedKey::ArrowUp),
                 Key::Named(NamedKey::ArrowDown),
@@ -2287,19 +2264,6 @@ pub fn is_lock_chord(
     modifiers: Modifiers,
     shortcuts: &settings_store::hardware::ShortcutConfig,
 ) -> bool {
-    let WindowEvent::KeyboardInput { event: key, .. } = event else {
-        return false;
-    };
-    // Super+L is a fixed alias: it locks whatever the editable Lock
-    // binding is, exactly as the shell dispatcher behind the router does.
-    if key.state == ElementState::Pressed
-        && crate::shell::fixed_chords::fixed_action(
-            chord_key_for_logical(&key.logical_key),
-            ChordMods::from(&modifiers),
-        ) == Some(crate::shell::fixed_chords::FixedChordAction::LockSession)
-    {
-        return true;
-    }
     shortcuts
         .bindings
         .get(&settings_store::hardware::ShortcutAction::Lock)
@@ -2357,7 +2321,7 @@ mod lock_chord_tests {
     use super::*;
     use crate::shell::input_policy as client_input;
     use crate::shell::test_control::keyboard_input_event;
-    use winit::dpi::PhysicalPosition;
+
     use winit::keyboard::{ModifiersState, SmolStr};
     fn mods_with_super(on: bool) -> Modifiers {
         let mut mask = ModifiersState::empty();
@@ -2392,13 +2356,13 @@ mod lock_chord_tests {
             "a custom lock chord only locks while the snapshot assigns it"
         );
         assert!(
-            is_lock_chord(&l, mods_with_super(true), &rebound),
-            "Super+L is a fixed lock alias alongside the editable binding"
+            !is_lock_chord(&l, mods_with_super(true), &rebound),
+            "rebinding Lock screen replaces Super+L"
         );
 
         let mut unbound = ShortcutConfig::default();
         unbound.bindings.remove(&ShortcutAction::Lock);
-        assert!(is_lock_chord(&l, mods_with_super(true), &unbound));
+        assert!(!is_lock_chord(&l, mods_with_super(true), &unbound));
         assert!(!is_lock_chord(&l, ctrl_alt, &unbound));
     }
 
@@ -2470,10 +2434,7 @@ mod lock_chord_tests {
 
         /// A non-keyboard event (cursor move) is never the lock chord even with Super held.
         fn cursor_move_is_not_lock_chord() {
-            let ev = WindowEvent::CursorMoved {
-                device_id: unsafe { std::mem::zeroed() },
-                position: PhysicalPosition::new(10.0, 10.0),
-            };
+            let ev = ui::synthetic_input::cursor_moved(10.0, 10.0);
             assert!(!locks(&ev, mods_with_super(true)));
         }
 

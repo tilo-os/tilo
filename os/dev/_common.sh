@@ -110,6 +110,8 @@ TILO_SMP="${TILO_SMP:-4}"
 # device, and otherwise falls back to QEMU's multithreaded software emulator.
 # The fallback is intentionally slower, but lets the release gate run inside a
 # Kata-isolated CI runner without exposing the Kubernetes node's /dev/kvm.
+# `hvf` is Apple's Hypervisor.framework: a Homebrew QEMU on an Apple silicon Mac
+# running an aarch64 guest (set TILO_AAVMF_DIRS to its edk2 firmware).
 TILO_ACCEL="${TILO_ACCEL:-auto}"
 TILO_BOOT_WAIT_ATTEMPTS="${TILO_BOOT_WAIT_ATTEMPTS:-90}"
 TILO_QEMU_START_ATTEMPTS="${TILO_QEMU_START_ATTEMPTS:-100}"
@@ -257,20 +259,30 @@ inenv() {
 }
 
 qemu_accel_args() {
+  local kvm_cpu=host
+  case "${TILO_KVM_CPU_VARIANT:-host}" in
+    host) ;;
+    host-no-sve) kvm_cpu=host,sve=off ;;
+    *) die "TILO_KVM_CPU_VARIANT must be host or host-no-sve" ;;
+  esac
   case "$TILO_ACCEL" in
     auto)
       # Kata can expose a /dev/kvm node while denying KVM_CREATE_VM.
       local probe
       printf -v probe 'python3 %q %q' "$_COMMON_DIR/probe-kvm.py" "$TILO_VM_ARCH"
       if inenv "$probe"; then
-        echo "-enable-kvm -cpu host"
+        echo "-enable-kvm -cpu $kvm_cpu"
       else
+        # Emulated CPU: boot and frame timings from this VM say nothing about
+        # a KVM guest (the release gate) or hardware. Do not compare them.
+        warn "no usable KVM here: this VM runs under TCG emulation, so its timings are not comparable with KVM or hardware"
         echo "-accel tcg,thread=multi -cpu max"
       fi
       ;;
-    kvm) echo "-enable-kvm -cpu host" ;;
+    kvm) echo "-enable-kvm -cpu $kvm_cpu" ;;
     tcg) echo "-accel tcg,thread=multi -cpu max" ;;
-    *) die "TILO_ACCEL must be auto, kvm, or tcg (got $TILO_ACCEL)" ;;
+    hvf) echo "-accel hvf -cpu host" ;;
+    *) die "TILO_ACCEL must be auto, kvm, tcg or hvf (got $TILO_ACCEL)" ;;
   esac
 }
 
@@ -449,9 +461,19 @@ firmware_setup() {
   fi
 
   cands=""; for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.secboot.qcow2"; done
+  if [ "$TILO_VM_S3" = 1 ]; then
+    # S3 needs the build without SMM: the SMM-protected store and S3 resume do
+    # not coexist (see secboot_qemu_args). Same 4 MB measuring build otherwise.
+    [ "$TILO_SECBOOT_KEYS" = none ] || [ "$TILO_SECBOOT_KEYS" = persist ] \
+      || die "TILO_VM_S3=1 boots the firmware without Secure Boot; it cannot hold TILO_SECBOOT_KEYS=$TILO_SECBOOT_KEYS"
+    cands=""; for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.qcow2"; done
+  fi
   # shellcheck disable=SC2086
   TILO_FW_CODE="$(_env_first_file $cands)"
-  if [ -n "$TILO_FW_CODE" ]; then
+  if [ "$TILO_VM_S3" = 1 ] && [ -n "$TILO_FW_CODE" ]; then
+    TILO_FW_FMT=qcow2; TILO_FW_MEASURES=1; TILO_FW_SMM=0
+    TILO_FW_VARS="$(dirname "$TILO_FW_CODE")/OVMF_VARS_4M.qcow2"
+  elif [ -n "$TILO_FW_CODE" ]; then
     TILO_FW_FMT=qcow2; TILO_FW_MEASURES=1; TILO_FW_SMM=1
     dir="$(dirname "$TILO_FW_CODE")"
     case "$TILO_SECBOOT_KEYS" in
@@ -462,12 +484,19 @@ firmware_setup() {
   else
     # Debian and Ubuntu ship the 4 MB build as raw .fd (OVMF_CODE_4M*.fd with
     # OVMF_VARS_4M*.fd) and no 2 MB one; Fedora's 2 MB build is OVMF_CODE*.fd.
+    # Their .secboot builds carry SMM, which S3 resume cannot coexist with.
     cands=""
-    for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.secboot.fd $d/OVMF_CODE_4M.fd"; done
-    for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.secboot.fd"; done
-    for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.fd"; done
+    if [ "$TILO_VM_S3" = 1 ]; then
+      for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.fd $d/OVMF_CODE.fd"; done
+    else
+      for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.secboot.fd $d/OVMF_CODE_4M.fd"; done
+      for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.secboot.fd"; done
+      for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.fd"; done
+    fi
     # shellcheck disable=SC2086
     TILO_FW_CODE="$(_env_first_file $cands)"
+    [ "$TILO_VM_S3" != 1 ] || [ -n "$TILO_FW_CODE" ] \
+      || die "TILO_VM_S3=1 needs an OVMF build without SMM: OVMF_CODE_4M.qcow2 (Fedora edk2-ovmf) or OVMF_CODE_4M.fd (Debian ovmf)"
     [ -n "$TILO_FW_CODE" ] || die "no OVMF firmware in ${TILO_DISTROBOX:-the host} (looked in $TILO_OVMF_DIRS).
   Remedy: distrobox enter ${TILO_DISTROBOX:-…} -- sudo dnf install edk2-ovmf (Fedora), or apt install ovmf (Debian/Ubuntu)"
     case "$TILO_FW_CODE" in *_4M*) four_mb=1 ;; *) four_mb=0 ;; esac
@@ -569,6 +598,13 @@ secboot_qemu_args() {
   printf -- '-global driver=cfi.pflash01,property=secure,value=on -global ICH9-LPC.disable_s3=1'
 }
 # q35 machine options; SMM is required by the Secure-Boot firmware.
+# TILO_VM_S3=1 offers the guest suspend-to-RAM, which the monitor's
+# `system_wakeup` resumes (x86_64 only; ARM `virt` has no S3).
+TILO_VM_S3="${TILO_VM_S3:-0}"
+# Refused at load time, like the LAN settings: inside the substitution that
+# builds QEMU's arguments a refusal would only end that subshell.
+[ "$TILO_VM_S3" != 1 ] || [ "$TILO_VM_ARCH" != aarch64 ] \
+  || die "TILO_VM_S3=1: the ARM virt machine has no suspend-to-RAM"
 machine_args() {
   if [ "$TILO_VM_ARCH" = aarch64 ]; then
     printf -- '-machine virt,gic-version=max'
@@ -576,6 +612,8 @@ machine_args() {
   fi
   if [ "$TILO_FW_SMM" = "1" ]; then
     printf -- '-machine q35,smm=on'
+  elif [ "$TILO_VM_S3" = 1 ]; then
+    printf -- '-machine q35 -global ICH9-LPC.disable_s3=0'
   else
     printf -- '-machine q35'
   fi
@@ -615,6 +653,36 @@ TILO_CONSOLE="$TILO_RUN/console.sock"
 console_qemu_args() {
   printf -- '-device virtio-serial-pci -chardev socket,id=tiloconsole,path=%s,server=on,wait=off -device virtserialport,chardev=tiloconsole,name=org.tilo.console.0' \
     "$TILO_CONSOLE"
+}
+
+# Optional second NIC: a point-to-point Ethernet segment to one other VM on this
+# host, carried as UDP between two loopback ports. It is a real shared L2 link —
+# broadcasts and ARP cross it — which user-mode networking (one private NAT per
+# VM) cannot give two guests. Set all three to attach it:
+#   TILO_VM_LAN_PORT=23901 TILO_VM_LAN_PEER=23902 TILO_VM_LAN_MAC=52:54:00:23:83:0a
+# and the mirror image on the peer VM.
+TILO_VM_LAN_PORT="${TILO_VM_LAN_PORT:-}"
+TILO_VM_LAN_PEER="${TILO_VM_LAN_PEER:-}"
+TILO_VM_LAN_MAC="${TILO_VM_LAN_MAC:-}"
+# The NIC model on that segment. e1000 implements Wake-on-LAN settings, so a
+# guest can enable magic-packet wake on it; virtio-net cannot.
+TILO_VM_LAN_MODEL="${TILO_VM_LAN_MODEL:-virtio-net-pci}"
+# Validated here, at load time: a refusal inside the command substitution that
+# builds QEMU's arguments would only end that subshell and boot without the NIC.
+if [ -n "$TILO_VM_LAN_PORT$TILO_VM_LAN_PEER$TILO_VM_LAN_MAC" ]; then
+  [[ "$TILO_VM_LAN_PORT" =~ ^[0-9]{4,5}$ && "$TILO_VM_LAN_PEER" =~ ^[0-9]{4,5}$ ]] \
+    || die "TILO_VM_LAN_PORT and TILO_VM_LAN_PEER must both be loopback UDP ports"
+  [[ "$TILO_VM_LAN_MAC" =~ ^52:54:00(:[0-9a-f]{2}){3}$ ]] \
+    || die "TILO_VM_LAN_MAC must be a lowercase 52:54:00:xx:xx:xx address"
+  case "$TILO_VM_LAN_MODEL" in
+    virtio-net-pci|e1000) ;;
+    *) die "TILO_VM_LAN_MODEL must be virtio-net-pci or e1000" ;;
+  esac
+fi
+lan_qemu_args() {
+  [ -n "$TILO_VM_LAN_PORT" ] || return 0
+  printf -- '-netdev socket,id=tilolan,udp=127.0.0.1:%s,localaddr=127.0.0.1:%s -device %s,netdev=tilolan,mac=%s' \
+    "$TILO_VM_LAN_PEER" "$TILO_VM_LAN_PORT" "$TILO_VM_LAN_MODEL" "$TILO_VM_LAN_MAC"
 }
 
 input_qemu_args() {

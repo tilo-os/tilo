@@ -1,0 +1,163 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "word-processor.document"
+label = "Document"
+version = 1
+fields = [
+  { path = "body", type = "RichText", ops = "sha256:1ce89d3350d639da" },
+  { path = "comments", type = "Collection<Comment>", stored = "collection", unit = true },
+  { path = "comments.*.anchor", type = "TextAnchor" },
+  { path = "comments.*.author", type = "String", readonly = true },
+  { path = "comments.*.date", type = "String", readonly = true },
+  { path = "comments.*.text", type = "String", label = true },
+  { path = "comments.*.replies", type = "Collection<Reply>", stored = "collection" },
+  { path = "comments.*.replies.*.author", type = "String", readonly = true },
+  { path = "comments.*.replies.*.date", type = "String", readonly = true },
+  { path = "comments.*.replies.*.text", type = "String", label = true },
+  { path = "comments.*.replies.*.body", type = "Json<Vec<ClipBlock>>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "append-paragraph"
+kind = "undoable"
+params = [
+  { name = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "insert-table"
+kind = "undoable"
+params = [
+  { name = "after", required = true, schema = { type = "string" } },
+  { name = "rows", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "columns", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "add-row"
+kind = "undoable"
+params = [
+  { name = "table", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "add-column"
+kind = "undoable"
+params = [
+  { name = "table", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-row"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "table", required = true, schema = { type = "string" } },
+  { name = "row", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "delete-column"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "table", required = true, schema = { type = "string" } },
+  { name = "column", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "delete-table"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "table", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "delete-image"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "image", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "accept-change"
+kind = "undoable"
+params = [
+  { name = "change", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "reject-change"
+kind = "undoable"
+params = [
+  { name = "change", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "accept-all-changes"
+destructive = true
+kind = "undoable"
+
+[[resources.verbs]]
+id = "reject-all-changes"
+destructive = true
+kind = "undoable"
+
+[[resources.verbs]]
+id = "add-comment"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "block", required = true, schema = { type = "string" } },
+  { name = "start", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "end", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "reply-to-comment"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "comment", required = true, schema = { type = "string" } },
+  { name = "text", required = true, schema = { type = "string" } },
+  { name = "body", required = false, schema = { type = ["array", "null"], items = { type = "object", additionalProperties = false, properties = { align = { type = ["string", "null"] }, attrs = { type = "object" }, kind = { type = "string" }, level = { type = ["integer", "null"] }, marks = { type = "array", items = { type = "object", additionalProperties = false, properties = { name = { type = "string" }, end = { type = "integer", minimum = 0 }, start = { type = "integer", minimum = 0 }, value = { oneOf = [{ type = "object", additionalProperties = false, properties = { Bool = { type = "boolean" } }, required = ["Bool"] }, { type = "object", additionalProperties = false, properties = { Int = { type = "integer" } }, required = ["Int"] }, { type = "object", additionalProperties = false, properties = { Str = { type = "string" } }, required = ["Str"] }] } }, required = ["start", "end", "name", "value"] } }, ordered = { type = ["boolean", "null"] }, text = { type = "string" } }, required = ["kind", "text", "marks"] } } },
+]
+
+[[resources.verbs]]
+id = "resolve-comment"
+kind = "undoable"
+writes = ["record", "comments.*"]
+params = [
+  { name = "comment", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "adopt-comments"
+kind = "undoable"
+writes = ["record", "comments.*"]
+
+[[resources.verbs]]
+id = "set-page-margins"
+kind = "undoable"
+params = [
+  { name = "top", required = true, schema = { type = "number" } },
+  { name = "right", required = true, schema = { type = "number" } },
+  { name = "bottom", required = true, schema = { type = "number" } },
+  { name = "left", required = true, schema = { type = "number" } },
+]
+
+[[resources.verbs]]
+id = "generate-toc"
+kind = "undoable"
+
+[[resources.verbs]]
+id = "note-file-written"
+kind = "undoable"
+params = [
+  { name = "digest", required = true, schema = { type = "string" } },
+]
+

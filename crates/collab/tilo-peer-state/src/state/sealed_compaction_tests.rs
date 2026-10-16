@@ -4,6 +4,7 @@ use super::*;
 use crate::{InputDisposition, TransportOrigin, peer_handle};
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::{ContentRetention, EncryptionMetadata, SealedCompaction};
+use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -51,14 +52,8 @@ fn fixture() -> Fixture {
         .unwrap();
     let roster = vec![authority.clone(), other_cert, editor_cert.clone()];
     let mut room = room::candidate(None, &seed_room(ROOM, &authority, &roster).unwrap()).unwrap();
-    let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
-    put_member_capability(
-        &mut room,
-        &caps,
-        editor_cert.user_public_key,
-        crate::join::MemberRole::Editor,
-    )
-    .unwrap();
+    let caps = room.get(ROOT, "members").unwrap().unwrap().1;
+    put_member(&mut room, &caps, editor_cert.user_public_key, Role::Editor).unwrap();
     let room_changes = room
         .get_changes(&[])
         .iter()
@@ -153,7 +148,7 @@ fn route() -> Route {
 }
 
 fn held(peer: &StatePeer) -> Vec<SignedOp> {
-    peer.core.documents[&route()].sealed.clone()
+    peer.core.documents[&route()].sealed.to_vec()
 }
 
 fn envelope_of(message: &NeighbourMsg) -> SignedOp {
@@ -191,7 +186,7 @@ fn message(op: SignedOp) -> NeighbourMsg {
 fn signed(
     key: &SigningKey,
     seq: u64,
-    op_class: OpClass,
+    kind: OpKind,
     payload: Vec<u8>,
     encryption: Option<EncryptionMetadata>,
     now: SystemTime,
@@ -201,7 +196,7 @@ fn signed(
         artifact(),
         Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
         collab_types::document_attestation_id(APP, ROOM, RECORD),
-        op_class,
+        kind,
         now,
         seq,
     );
@@ -243,7 +238,7 @@ fn write(
     message(signed(
         key,
         next_seq(peer, key),
-        OpClass::Splice,
+        OpKind::Change,
         payload,
         Some(metadata),
         now,
@@ -313,7 +308,7 @@ fn forged(
     message(signed(
         key,
         next_seq(peer, key),
-        OpClass::Compaction,
+        OpKind::Compaction,
         wrapper.encode().unwrap(),
         Some(*metadata),
         now,
@@ -377,7 +372,7 @@ fn a_minted_compaction_after_a_rotation_opens_as_a_current_write_with_every_chan
         vec![compaction.clone()],
         "history superseded"
     );
-    assert_eq!(compaction.op_class, OpClass::Compaction);
+    assert_eq!(compaction.kind, OpKind::Compaction);
     let metadata = compaction.encryption.unwrap();
     assert_eq!(metadata.epoch, current.epoch());
     assert_eq!(metadata.retention(), Some(ContentRetention::Checkpoint));
@@ -557,7 +552,7 @@ fn forged_compactions_are_refused() {
     let cleartext = signed(
         &f.owner,
         next_seq(&f.host, &f.owner),
-        OpClass::Compaction,
+        OpKind::Compaction,
         DocumentMutation::Snapshot(f.host.document(APP, RECORD).unwrap())
             .encode()
             .unwrap(),
@@ -709,7 +704,7 @@ fn a_full_history_refuses_writes_until_a_verified_compaction_supersedes_it() {
     let first = write(&f.host, &f.other, &keys, &author.edit("value", "1"), now);
     admit(&mut f.host, &f.other, first, now);
     let one = held(&f.host).remove(0);
-    f.host.core.documents.get_mut(&route()).unwrap().sealed = vec![one; MAX_SEALED_OPS];
+    f.host.core.documents.get_mut(&route()).unwrap().sealed = vec![one; MAX_SEALED_OPS].into();
     let more = write(&f.host, &f.other, &keys, &author.edit("value", "2"), now);
     let other = f.other.clone();
     refused_with(
@@ -795,7 +790,8 @@ fn a_history_near_its_bound_is_due_for_compaction() {
     admit(&mut f.host, &f.editor, first, now);
     assert!(f.host.sealed_records_to_compact().is_empty());
     let one = held(&f.host).remove(0);
-    f.host.core.documents.get_mut(&route()).unwrap().sealed = vec![one; MAX_SEALED_OPS / 4 * 3];
+    f.host.core.documents.get_mut(&route()).unwrap().sealed =
+        vec![one; MAX_SEALED_OPS / 4 * 3].into();
     assert_eq!(
         f.host.sealed_records_to_compact(),
         vec![(APP.to_owned(), RECORD.to_owned())]
@@ -902,4 +898,309 @@ fn the_governor_acknowledges_sealed_writes_without_a_cleartext_checkpoint() {
         .unwrap();
     assert!(!documents(&messages));
     assert_eq!(watermark(&bootstrapped), Some(envelope_of(&sealed).seq));
+}
+
+fn bounded_history(
+    f: &Fixture,
+    bytes: &[u8],
+) -> Result<crate::BoundedStatePeer, crate::BoundedPeerError> {
+    crate::BoundedStatePeer::restore(
+        bytes,
+        ROOM,
+        &f.authority,
+        &[],
+        &RevocationList::new(),
+        f.now,
+        &crate::PeerLimits::default(),
+    )
+}
+
+#[test]
+fn bounded_history_replays_causal_order_and_continues_the_original_writer() {
+    let mut f = fixture();
+    let keys = f.keys();
+    let mut author = Author::new(&f.host);
+    let actor = automerge::ActorId::from(vec![0x31]);
+    author.0.set_actor(actor.clone());
+    let first = author.edit("value", "first");
+    let second = author.edit("value", "second");
+    let first = write(&f.host, &f.owner, &keys, &first, f.now);
+    let second = write(&f.host, &f.other, &keys, &second, f.now);
+    // A keyless replica admits the later causal mutation first.
+    admit(&mut f.host, &f.other, second, f.now);
+    admit(&mut f.host, &f.owner, first, f.now);
+    let before = f.host.durable().unwrap();
+    let bounded = bounded_history(&f, &before).unwrap();
+    let capture = bounded
+        .read()
+        .capture_document(
+            f.authority.device_public_key,
+            (APP, RECORD),
+            f.now,
+            1024 * 1024,
+            &mut |op| open(&keys, op),
+        )
+        .unwrap();
+    let mut restored = AutoCommit::load(&capture.into_bytes()).unwrap();
+    assert_eq!(restored.get_heads(), author.0.get_heads());
+    assert_eq!(
+        restored
+            .get(ROOT, "value")
+            .unwrap()
+            .unwrap()
+            .0
+            .into_string()
+            .unwrap(),
+        "second"
+    );
+    restored.set_actor(actor);
+    let before_edit = restored.get_heads();
+    restored.put(ROOT, "value", "third").unwrap();
+    restored.commit();
+    let next = restored.get_changes(&before_edit);
+    assert_eq!(next.len(), 1);
+    assert_eq!(
+        next[0].seq(),
+        3,
+        "replay must retain the original writer's sequence"
+    );
+    author.0.merge_incoming(&mut restored).unwrap();
+    assert_eq!(
+        author
+            .0
+            .get(ROOT, "value")
+            .unwrap()
+            .unwrap()
+            .0
+            .into_string()
+            .unwrap(),
+        "third"
+    );
+    assert_eq!(
+        f.host.durable().unwrap(),
+        before,
+        "reading never changes durable admission"
+    );
+}
+
+#[test]
+fn bounded_history_keeps_the_conflicting_original_writer_refusal() {
+    let mut f = fixture();
+    let keys = f.keys();
+    let mut first = Author::new(&f.host);
+    let mut conflicting = Author::new(&f.host);
+    let actor = automerge::ActorId::from(vec![0x41]);
+    first.0.set_actor(actor.clone());
+    conflicting.0.set_actor(actor);
+    let first = first.edit("value", "canonical");
+    let conflicting = conflicting.edit("value", "conflicting");
+    let one = write(&f.host, &f.owner, &keys, &first, f.now);
+    let two = write(&f.host, &f.other, &keys, &conflicting, f.now);
+    admit(&mut f.host, &f.owner, one, f.now);
+    admit(&mut f.host, &f.other, two, f.now);
+    let before = f.host.durable().unwrap();
+    let bounded = bounded_history(&f, &before).unwrap();
+    let error = bounded
+        .read()
+        .capture_document(
+            f.authority.device_public_key,
+            (APP, RECORD),
+            f.now,
+            1024 * 1024,
+            &mut |op| open(&keys, op),
+        )
+        .err()
+        .expect("a conflicting same-writer history must not be replaced or normalized");
+    assert!(error.to_string().contains("duplicate seq 1"), "{error}");
+    assert_eq!(f.host.durable().unwrap(), before);
+}
+
+#[test]
+fn bounded_history_validates_route_signature_admission_and_watermarks() {
+    let mut f = fixture();
+    let keys = f.keys();
+    let mut author = Author::new(&f.host);
+    let plaintext = author.edit("value", SECRET);
+    let op = write(&f.host, &f.owner, &keys, &plaintext, f.now);
+    admit(&mut f.host, &f.owner, op, f.now);
+    let before = f.host.durable().unwrap();
+    for corruption in 0..4 {
+        let mut wire: DurableV6<'_> = postcard::from_bytes(&before).unwrap();
+        match corruption {
+            0 => wire.sealed[0].1[0].signature.0[0] ^= 1,
+            1 => wire.sealed[0].0.app = "other.app".into(),
+            2 => {
+                wire.sealed[0].1[0].payload[0] ^= 1;
+                collab_types::sign_op(&mut wire.sealed[0].1[0], &f.owner).unwrap();
+            }
+            _ => {
+                assert_eq!(corruption, 3);
+                wire.base.base.documents[0].watermarks.clear();
+            }
+        }
+        let corrupted = postcard::to_allocvec(&wire).unwrap();
+        assert!(
+            f.restore(&corrupted).is_err(),
+            "full restore corruption {corruption}"
+        );
+        assert!(
+            bounded_history(&f, &corrupted).is_err(),
+            "bounded restore corruption {corruption}"
+        );
+    }
+    assert_eq!(f.host.durable().unwrap(), before);
+}
+
+#[test]
+fn bounded_history_missing_admitted_write_is_refused_before_opening() {
+    let mut f = fixture();
+    let keys = f.keys();
+    let mut author = Author::new(&f.host);
+    for value in ["first", "second"] {
+        let plaintext = author.edit("value", value);
+        let message = write(&f.host, &f.owner, &keys, &plaintext, f.now);
+        admit(&mut f.host, &f.owner, message, f.now);
+    }
+    let before = f.host.durable().unwrap();
+    let mut wire: DurableV6<'_> = postcard::from_bytes(&before).unwrap();
+    wire.sealed[0].1.remove(0);
+    let incomplete = postcard::to_allocvec(&wire).unwrap();
+    let bounded = bounded_history(&f, &incomplete).unwrap();
+    let mut opened = 0;
+    let result = bounded.read().capture_document(
+        f.authority.device_public_key,
+        (APP, RECORD),
+        f.now,
+        1024 * 1024,
+        &mut |op| {
+            opened += 1;
+            open(&keys, op)
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(crate::PeerDocumentReadError::Incomplete)
+    ));
+    assert_eq!(opened, 0, "incomplete coverage is not decrypted");
+    assert_eq!(f.host.durable().unwrap(), before);
+}
+
+#[test]
+fn bounded_history_denial_and_capacity_precede_opening_and_missing_keys_refuse() {
+    let mut f = fixture();
+    let keys = f.keys();
+    let mut author = Author::new(&f.host);
+    let plaintext = author.edit("value", SECRET);
+    let message = write(&f.host, &f.owner, &keys, &plaintext, f.now);
+    admit(&mut f.host, &f.owner, message, f.now);
+    let before = f.host.durable().unwrap();
+    let bounded = bounded_history(&f, &before).unwrap();
+    let mut opened = 0;
+    let result =
+        bounded
+            .read()
+            .capture_document([0x77; 32], (APP, RECORD), f.now, 1024 * 1024, &mut |op| {
+                opened += 1;
+                open(&keys, op)
+            });
+    assert!(matches!(result, Err(crate::PeerDocumentReadError::Peer(_))));
+    assert_eq!(opened, 0, "an unauthenticated reader is not decrypted");
+    let result = bounded.read().capture_document(
+        f.authority.device_public_key,
+        (APP, RECORD),
+        f.now,
+        1,
+        &mut |op| {
+            opened += 1;
+            open(&keys, op)
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(crate::PeerDocumentReadError::Peer(
+            crate::BoundedPeerError::Capacity
+        ))
+    ));
+    assert_eq!(
+        opened, 0,
+        "the base exceeds the caller's bound before opening"
+    );
+    let wrong_keys = fixture().keys();
+    let result = bounded.read().capture_document(
+        f.authority.device_public_key,
+        (APP, RECORD),
+        f.now,
+        1024 * 1024,
+        &mut |op| open(&wrong_keys, op),
+    );
+    assert!(matches!(
+        result,
+        Err(crate::PeerDocumentReadError::Opening(_))
+    ));
+    assert_eq!(f.host.durable().unwrap(), before);
+}
+
+#[test]
+fn bounded_history_replays_compaction_and_requires_all_held_epochs() {
+    let mut f = fixture();
+    let old_keys = f.keys();
+    let mut author = Author::new(&f.host);
+    let plaintext = author.edit("value", "before rotation");
+    let message = write(&f.host, &f.owner, &old_keys, &plaintext, f.now);
+    admit(&mut f.host, &f.owner, message, f.now);
+    mint(&mut f.host, &old_keys, &f.owner, f.now).unwrap();
+    let new_keys = f.rotate();
+    let plaintext = author.edit("value", "after rotation");
+    let message = write(&f.host, &f.owner, &new_keys, &plaintext, f.now);
+    admit(&mut f.host, &f.owner, message, f.now);
+    let before = f.host.durable().unwrap();
+    let bounded = bounded_history(&f, &before).unwrap();
+    let read = bounded.read();
+    let capture = read
+        .capture_document(
+            f.authority.device_public_key,
+            (APP, RECORD),
+            f.now,
+            1024 * 1024,
+            &mut |op| {
+                let keys = if op.encryption.unwrap().epoch == old_keys.epoch() {
+                    &old_keys
+                } else {
+                    &new_keys
+                };
+                open(keys, op)
+            },
+        )
+        .unwrap();
+    let mut restored = AutoCommit::load(&capture.into_bytes()).unwrap();
+    assert_eq!(restored.get_heads(), author.0.get_heads());
+    assert_eq!(
+        restored
+            .get(ROOT, "value")
+            .unwrap()
+            .unwrap()
+            .0
+            .into_string()
+            .unwrap(),
+        "after rotation"
+    );
+    assert!(matches!(
+        read.capture_document(
+            f.authority.device_public_key,
+            (APP, RECORD),
+            f.now,
+            1024 * 1024,
+            &mut |op| open(&old_keys, op),
+        ),
+        Err(crate::PeerDocumentReadError::Opening(_))
+    ));
+    let mut wire: DurableV6<'_> = postcard::from_bytes(&before).unwrap();
+    wire.sealed[0].1.swap(0, 1);
+    let misplaced = postcard::to_allocvec(&wire).unwrap();
+    assert!(
+        bounded_history(&f, &misplaced).is_err(),
+        "a compaction is first, never a later write"
+    );
+    assert!(f.restore(&misplaced).is_err());
+    assert_eq!(f.host.durable().unwrap(), before);
 }

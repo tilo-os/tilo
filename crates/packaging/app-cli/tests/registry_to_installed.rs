@@ -39,7 +39,18 @@ mod authoring;
 /// Locate the `tilo-install` binary this workspace builds. A missing
 /// binary **fails** the test rather than skipping it; without the binary the
 /// installation path cannot be exercised.
-fn tilo_install_bin() -> PathBuf {
+pub(crate) fn tilo_install_bin() -> PathBuf {
+    // Remote builds can remap CARGO_MANIFEST_DIR to the caller's checkout.
+    // The running test still lives in the actual Cargo profile's deps dir.
+    let executable = std::env::current_exe().expect("running test executable");
+    let profile = executable
+        .parent()
+        .and_then(Path::parent)
+        .expect("Cargo test executable lives under a profile's deps directory");
+    let sibling = profile.join("tilo-install");
+    if sibling.is_file() {
+        return sibling;
+    }
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest_dir
         .ancestors()
@@ -73,7 +84,11 @@ fn author_tapp(package_id: &str, identity: &SigningIdentity) -> Vec<u8> {
     author_tapp_version(package_id, "1.4.0", identity)
 }
 
-fn author_tapp_version(package_id: &str, version: &str, identity: &SigningIdentity) -> Vec<u8> {
+pub(crate) fn author_tapp_version(
+    package_id: &str,
+    version: &str,
+    identity: &SigningIdentity,
+) -> Vec<u8> {
     let pubhex = hex::encode(identity.public_key_bytes());
     let dir = tempfile::tempdir().unwrap();
     let payload = dir.path().join("payload");
@@ -116,7 +131,7 @@ type = "gui"
 }
 
 /// Manifest key/value and registry wire label for the runner's architecture.
-fn native_target() -> (&'static str, &'static str, &'static str) {
+pub(crate) fn native_target() -> (&'static str, &'static str, &'static str) {
     #[cfg(target_arch = "x86_64")]
     {
         ("x86_64", "baseline", "x86_64")
@@ -129,7 +144,7 @@ fn native_target() -> (&'static str, &'static str, &'static str) {
     compile_error!("registry installation tests require a supported package architecture");
 }
 
-fn test_publisher() -> SigningIdentity {
+pub(crate) fn test_publisher() -> SigningIdentity {
     SigningIdentity::from_signing_key(SigningKey::from_bytes(&[11_u8; 32]))
 }
 
@@ -138,7 +153,7 @@ fn signed_entry(package_id: &str, tapp_url: &str, tapp: &[u8]) -> RegistryEntry 
     signed_entry_version(package_id, "1.4.0", tapp_url, tapp)
 }
 
-fn signed_entry_version(
+pub(crate) fn signed_entry_version(
     package_id: &str,
     version: &str,
     tapp_url: &str,
@@ -150,6 +165,7 @@ fn signed_entry_version(
         .package_id;
     let mut entry = RegistryEntry {
         package_id: package_id.to_string(),
+        kind: registry_types::EntryKind::App,
         name: "Sheets".into(),
         description: "A spreadsheet".into(),
         tagline: "Native Tilo OS app".into(),
@@ -164,17 +180,20 @@ fn signed_entry_version(
         publisher_pubkey_hex: hex::encode(key.verifying_key().to_bytes()),
         versions: vec![RegistryVersion {
             version: version.into(),
-            tapp_url: tapp_url.to_string(),
-            tapp_root_hash_hex: root.to_hex(),
-            tapp_size_bytes: tapp.len() as u64,
             released_at_unix: 1,
-            tapp_blake3_hex: blake3::hash(tapp).to_hex().to_string(),
-            target: registry_types::RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: native_target().0.into(),
-                isa: native_target().2.into(),
-                runtime: None,
-            },
+            artifact: registry_types::VersionArtifact::Tapp(registry_types::TappArtifact {
+                tapp_url: tapp_url.to_string(),
+                tapp_root_hash_hex: root.to_hex(),
+                tapp_size_bytes: tapp.len() as u64,
+                tapp_blake3_hex: blake3::hash(tapp).to_hex().to_string(),
+                target: registry_types::RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: native_target().0.into(),
+                    isa: native_target().2.into(),
+                    runtime: None,
+                    interfaces: Vec::new(),
+                },
+            }),
         }],
         updated_at_unix: 2,
         signature_hex: String::new(),
@@ -192,10 +211,7 @@ fn signed_snapshot(
     owner: &SigningKey,
     previous: Option<&SignedRegistrySnapshot>,
 ) -> SignedRegistrySnapshot {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = tilo_clock::try_unix_now().unwrap();
     let publisher = entry.publisher_pubkey_hex.clone();
     let mut snapshot = SignedRegistrySnapshot {
         protocol: registry_types::SNAPSHOT_PROTOCOL,
@@ -218,6 +234,7 @@ fn signed_snapshot(
         entries: vec![entry],
         owner_signature_hex: String::new(),
         channel_authorization: None,
+        bots_signature_hex: String::new(),
     };
     sign_snapshot(&mut snapshot, owner).unwrap();
     snapshot
@@ -292,7 +309,7 @@ fn serve_one(mut stream: TcpStream, entries: &str, tapp: &[u8]) {
 
 /// Point every relevant environment variable at scratch directories, restoring them when the
 /// returned scope drops.
-fn scoped_env(vars: &[(&'static str, &Path)]) -> tilo_test_env::ScopedEnv {
+pub(crate) fn scoped_env(vars: &[(&'static str, &Path)]) -> tilo_test_env::ScopedEnv {
     let mut env = tilo_test_env::ScopedEnv::new();
     for (k, v) in vars {
         env.set(k, v);
@@ -684,7 +701,7 @@ fn installed_apps_keep_exactly_the_services_they_declared() {
         let root = packaged_payload_root(scratch.path(), PKG);
 
         // What the publisher declared, read with the launcher's own reader, so "declared" means what the launcher would act on.
-        let declared = launcher::manifest::read_manifest(&root.join("manifest.toml"))
+        let declared = tilo_app_package::view::read_manifest(&root.join("manifest.toml"))
             .expect("the fixture manifest parses");
         assert!(
             declared.sandbox.services.contains_key("collab"),
@@ -716,7 +733,7 @@ fn installed_apps_keep_exactly_the_services_they_declared() {
             runtime_dir.path(),
         );
 
-        let reached = launcher::manifest::read_manifest(&installed.manifest_path)
+        let reached = tilo_app_package::view::read_manifest(&installed.manifest_path)
             .expect("the installed manifest parses");
         assert_eq!(
             reached.sandbox.services, declared.sandbox.services,
@@ -749,4 +766,79 @@ fn installed_apps_keep_exactly_the_services_they_declared() {
             binds.iter().map(|b| &b.name).collect::<Vec<_>>()
         );
     }
+}
+
+#[test]
+fn explicit_version_updates_an_existing_app_to_the_requested_signed_offer() {
+    const ID: &str = "so.tilo.explicit-version-e2e";
+    let publisher = test_publisher();
+    let owner = SigningKey::from_bytes(&[12; 32]);
+    let config_dir = tempfile::tempdir().unwrap();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let apps_dir = tempfile::tempdir().unwrap();
+    let installer = tilo_install_bin();
+    let _env = scoped_env(&[
+        ("TILO_STORE_CONFIG_DIR", config_dir.path()),
+        ("TILO_STORE_CACHE_DIR", cache_dir.path()),
+        ("TILO_APPS_DATA_DIR", apps_dir.path()),
+        ("TILO_INSTALL_BIN", &installer),
+    ]);
+    let mut artifacts = Vec::new();
+    let mut versions = Vec::new();
+    let mut latest = None;
+    for version in ["1.4.0", "1.5.0", "1.6.0"] {
+        let tapp = author_tapp_version(ID, version, &publisher);
+        artifacts.push(Registry::start(String::new(), tapp.clone()));
+        let url = format!(
+            "http://127.0.0.1:{}/app.tapp",
+            artifacts.last().unwrap().port
+        );
+        let entry = signed_entry_version(ID, version, &url, &tapp);
+        versions.extend(entry.versions.clone());
+        latest = Some(entry);
+    }
+    let mut entry = latest.unwrap();
+    entry.versions = versions;
+    sign_entry(&mut entry, &SigningKey::from_bytes(&[11; 32]));
+    let registry = Registry::start(signed_snapshot_json(entry, &owner), Vec::new());
+    std::fs::write(
+        config_dir.path().join("registries.toml"),
+        toml::to_string_pretty(&RegistriesFile {
+            registries: vec![RegistryConfig {
+                name: "local".into(),
+                base_url: registry.base_url(),
+                owner_pubkey_hex: hex::encode(owner.verifying_key().to_bytes()),
+                enabled: true,
+                channel: tilo_app_package::version::ReleaseChannel::Stable,
+            }],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let install = |version: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_app"))
+            .args(["install", ID, "--version", version])
+            .output()
+            .unwrap()
+    };
+    for version in ["1.4.0", "1.5.0", "1.5.0"] {
+        let result = install(version);
+        assert!(
+            result.status.success(),
+            "explicit version {version} must succeed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(
+            app_cli::installed_version(ID).unwrap().as_deref(),
+            Some(version),
+            "install must select the requested signed version, not the latest 1.6.0"
+        );
+    }
+    let downgrade = install("1.4.0");
+    assert!(!downgrade.status.success(), "downgrades still use rollback");
+    assert!(String::from_utf8_lossy(&downgrade.stderr).contains("app rollback"));
+    assert_eq!(
+        app_cli::installed_version(ID).unwrap().as_deref(),
+        Some("1.5.0")
+    );
 }

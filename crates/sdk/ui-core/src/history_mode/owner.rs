@@ -179,6 +179,24 @@ impl HistoryOwner {
             checkout.id.clone(),
         ))
     }
+    /// Read the committed frontier through the same custody and record loan as `document`.
+    pub(crate) fn committed_heads(
+        &self,
+        outer: &AutoCommit,
+    ) -> Result<Vec<automerge::ChangeHash>, HistoryRegistrationError> {
+        self.validate()?;
+        match &self.0 {
+            OwnerKind::Component(binding) => binding
+                .read_document(outer, |doc, _| doc.base_heads())
+                .map_err(|_| HistoryRegistrationError::UnsupportedOwner),
+            OwnerKind::Legacy {
+                store, checkout, ..
+            } => store
+                .read_checked(&checkout.id, |doc| doc.base_heads())
+                .map_err(|_| HistoryRegistrationError::UnsupportedOwner),
+        }
+    }
+
     pub(crate) fn document(
         &self,
         outer: &AutoCommit,

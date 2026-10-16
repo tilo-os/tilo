@@ -1,6 +1,7 @@
 [package]
 autotests = false
 name = "tilo-ntfs-helper"
+description = "Isolated administrative broker that reads NTFS volumes through a sandboxed native parser and reports block-claim facts"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-2.0-or-later"
@@ -33,3 +34,6 @@ path = "src/main.rs"
 [[bin]]
 name = "tilo-ntfs-image-test"
 path = "src/bin/image_test.rs"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

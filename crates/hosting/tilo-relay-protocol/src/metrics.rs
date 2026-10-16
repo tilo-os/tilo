@@ -4,16 +4,32 @@
 //! `<state_root>/metrics.json`; offline status commands and Settings read the
 //! file back to tell whether the relay is alive and what it has carried.
 
+use std::collections::BTreeMap;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
 /// Last daemon counter snapshot, consumed by offline admin/status commands.
 pub const METRICS_FILE: &str = "metrics.json";
 
+/// The relay's own state root under the `--state` of `tilo-relay room`: it
+/// keeps [`METRICS_FILE`] there. A room host reads the snapshot from here.
+#[must_use]
+pub fn room_relay_root(room_state: &Path) -> PathBuf {
+    room_state.join("relay")
+}
+
+/// Where the connector workers of a `tilo-relay room` keep their counters as
+/// Prometheus text, one `<app>.prom` each, under its `--state`. A room host
+/// appends these to its metrics page.
+#[must_use]
+pub fn room_textfile_dir(room_state: &Path) -> PathBuf {
+    room_state.join("metrics.d")
+}
+
 /// Immutable copy of every relay counter for status reports.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MetricsSnapshot {
     /// Connections accepted since start (pre-auth).
     pub conns_accepted: u64,
@@ -37,6 +53,41 @@ pub struct MetricsSnapshot {
     pub subscriber_dropped: u64,
     /// Live subscribers dropped because they could not keep up.
     pub subscriber_dropped_backpressure: u64,
+    /// Egress: bytes written to authenticated peer sessions, framed, before
+    /// QUIC. Counts everything a session is sent: live fan-out, replay,
+    /// replies, positions and private-action deliveries. Zero in snapshots
+    /// from relays that predate the counter.
+    #[serde(default)]
+    pub bytes_sent: u64,
+    /// The part of [`Self::bytes_sent`] that live fan-out wrote: deltas and
+    /// presence forwarded to subscribers as they arrived, not replay.
+    #[serde(default)]
+    pub bytes_sent_live: u64,
+    /// Peer sessions connected when the snapshot was taken (a gauge, unlike
+    /// the counters above).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sessions_open: u64,
+    /// Egress per workspace (relay room), for the frames that belong to one.
+    /// Lists only rooms that were sent something since the daemon started.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub rooms: BTreeMap<u64, RoomEgress>,
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if passes a reference"
+)]
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+/// Bytes one relay room's frames put on the wire since the daemon started.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RoomEgress {
+    /// Every frame of the room written to a peer session.
+    pub bytes_sent: u64,
+    /// The room's live fan-out frames (deltas and presence), not replay.
+    pub bytes_sent_live: u64,
 }
 
 /// Failure reading or writing [`METRICS_FILE`].
@@ -59,7 +110,7 @@ pub enum MetricsFileError {
 pub fn save_metrics(state_root: &Path, snapshot: &MetricsSnapshot) -> Result<(), MetricsFileError> {
     std::fs::create_dir_all(state_root)?;
     let bytes = serde_json::to_vec_pretty(snapshot)?;
-    atomic_file::write(&state_root.join(METRICS_FILE), &bytes)?;
+    tilo_files::native::atomic::write(&state_root.join(METRICS_FILE), &bytes)?;
     Ok(())
 }
 
@@ -88,6 +139,15 @@ mod tests {
         let snapshot = MetricsSnapshot {
             conns_accepted: 3,
             deltas_fanned_out: 9,
+            bytes_sent: 1_200,
+            bytes_sent_live: 900,
+            rooms: BTreeMap::from([(
+                7,
+                RoomEgress {
+                    bytes_sent: 1_000,
+                    bytes_sent_live: 900,
+                },
+            )]),
             ..MetricsSnapshot::default()
         };
         save_metrics(tmp.path(), &snapshot).unwrap();

@@ -79,11 +79,64 @@ A deployment that has never booted successfully gets a **try counter** in its bo
 loader entry's file name — `bootc_fedora-44-1+3.conf`. systemd-boot decrements it
 on every attempt, and when it reaches zero it stops offering that entry first.
 
+`tilo-boot-entries.service` adds the counter to every bootc entry except the one
+running now, which it recognises by the `composefs=` identity of the running root.
+On the sealed image every entry has to name a UKI under `EFI/Linux/bootc/`, and the
+identity is read from that UKI's sealed command line; any other entry fails the
+pass. Only a dev image (`/usr/lib/tilo/image-flavour` reads `dev`) also accepts
+bootc's split kernel/initrd entries: `linux` and `initrd` from one
+`EFI/Linux/bootc_composefs-<id>/` directory and exactly one `composefs=` on the
+`options` line. Such a deployment counts and rolls back the same way; it gets no
+repair entry, because that is derived from a UKI.
+
 The counter is only removed when the boot is declared good.
 `tilo-boot-health.service` is what declares it: it is ordered before
 `boot-complete.target`, which `systemd-bless-boot.service` requires, so an
-unblessed boot keeps its spent try. Health means **greetd came up**, i.e. the
-machine reached the point where a person can log in.
+unblessed boot keeps its spent try. Health means **the greeter came up and
+stayed up**, i.e. the machine reached the point where a person can log in:
+greetd is active, its greeter has presented a frame (or a person is already
+signed in through greetd), and for 20 seconds after that greetd is not
+restarted and the greeter keeps presenting. The check waits up to three
+minutes for the first frame, because a machine that renders in software needs
+tens of seconds for it.
+
+`greetd is active` alone is not enough. greetd restarts when its greeter
+exits, so it is active between restarts, and a greeter that cannot draw (an
+update that breaks the GPU driver, cage or the greeter) crash-loops behind an
+active greetd. Judged by that alone, such a boot was blessed on its first try
+and the machine never rolled back. The greeter's evidence is its own startup
+record, `/run/tilo-greeter/startup-metrics.json`, which its first presented
+frame completes; `journalctl -b -u tilo-boot-health` says which of the checks
+a failed boot missed.
+
+One machine keeps the plain verdict: a virtual machine made without any display
+device (the headless dev VMs reached over SSH), where no greeter can present on
+any generation. On real hardware no display device at all is what a broken GPU
+driver leaves behind, so there the greeter is still required.
+
+Blessing renames the booted entry (`name+2-1.conf` to `name.conf`) on the ESP,
+which stays mounted read-only. `systemd-bless-boot.service` therefore remounts
+it writable in its own private mount namespace, as `tilo-esp-write@` does;
+the global mount never becomes writable. Without that, every rename failed with
+`EROFS`, and a deployment that booted fine spent a try on each boot until the
+boot loader abandoned it.
+
+Where the ESP is mounted depends on the layout. On a sealed disk `/etc/fstab`
+mounts it at `/boot`, on a dev disk the entry's `systemd.mount-extra` does. An
+installed system has an encrypted root and a separate ext4 `/boot` (`TILO_BOOT`)
+that only its signed target UKI mounts; it has no fstab, and an update's own UKI
+mounts no `/boot` at all. Nothing mounted its ESP: `systemd-gpt-auto-generator`,
+which would take an unclaimed `/boot`, mounts nothing on this composefs layout,
+and the image has no `/efi`. The boot-entry maintenance found no boot loader and
+gave no update a try counter ("nothing to maintain"), so a broken update was
+never rolled back, and `systemd-bless-boot` stopped with "Couldn't find $BOOT
+partition", so a good boot was never blessed. `tilo-esp-generator` now mounts the
+ESP the boot loader names (`LoaderDevicePartUUID`) where every one of those tools
+looks: at `/boot/efi` when `/boot` comes from anything but that ESP, and at
+`/boot` itself when nothing claims `/boot`. Its FAT superblock stays writable and
+the mount everyone sees is a read-only bind (`tilo-esp-mount`): bootc mounts the
+same ESP read-write to stage an update, and a read-only superblock would refuse
+that. The live installer is left alone: it refuses to install to a mounted ESP.
 
 Three failed boots and the previous deployment becomes the default. Nothing runs
 a rollback command — the boot loader simply declines to keep choosing an entry it
@@ -216,6 +269,22 @@ sudo /usr/libexec/tilo-recovery-boot-check
 ./os/dev/composefs/build.sh 1 && ./os/dev/composefs/install.sh 1
 TILO_CFS_SESSION_OK=0 ./os/dev/composefs/build.sh 2
 ./os/dev/composefs/recovery-series.sh
+
+# The same rollback on the installed image itself, not the probe image: stage a
+# real update, make only it unable to reach the greeter (a greetd drop-in keyed
+# to its composefs identity), and require it to spend exactly its tries before
+# the boot loader goes back by itself. RUNNER is anything that runs a command
+# line in the guest; RESET power-cycles a guest that stopped answering. CI runs
+# it on a published dev disk: Dev / native disk boot diagnostic with
+# boot_assessment_image set. FAULT=greeter keeps greetd active and makes its
+# greeter exit 12 s after each start instead, the crash loop a check of
+# "greetd is active" would bless (boot_assessment_fault=greeter in CI).
+RUNNER='./os/dev/vm.sh ssh' SUDO_PASS=tilo \
+  ./os/tests/boot_assessment_rollback.sh registry.tilo.so/tilo/tilo-vm@sha256:<other-digest>
+
+# The health verdict itself against a stand-in greetd, no VM: a crash-looping
+# greeter fails, one that holds passes, boards are judged by their own unit.
+./os/tests/boot_health_greeter.sh
 
 # The state-version refusal, against the compositor binary:
 cargo build -p shell --bin shell

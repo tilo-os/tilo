@@ -29,6 +29,7 @@ use std::time::Duration;
 use crate::cache::{ThumbCache, ThumbKey};
 use crate::category::FileCategory;
 use crate::generate::{self, DEFAULT_EDGE, RgbaThumb, Source, ThumbSize};
+use tilo_lock::MutexRecover as _;
 
 /// Requests waiting for a worker before the lowest-priority one is dropped.
 pub const DEFAULT_MAX_QUEUED: usize = 512;
@@ -36,20 +37,9 @@ pub const DEFAULT_MAX_QUEUED: usize = 512;
 pub const DEFAULT_MAX_SETTLED: usize = 2048;
 /// How long a worker holding an open video pipeline waits for more work before
 /// closing it — long enough for a scrub, short enough not to pin a decoder.
-#[cfg_attr(
-    not(feature = "video"),
-    allow(dead_code, reason = "only a worker with a video pipeline retires it")
-)]
 const PIPELINE_IDLE: Duration = Duration::from_secs(20);
 /// How deep into its priority tier a worker with an open pipeline looks for a
 /// job on that same source before taking the head of the queue.
-#[cfg_attr(
-    not(feature = "video"),
-    allow(
-        dead_code,
-        reason = "only a worker with a video pipeline has a preference"
-    )
-)]
 const AFFINITY_SCAN: usize = 32;
 
 /// How urgently a preview is wanted. Workers always take the highest first.
@@ -309,9 +299,7 @@ struct Shared {
 
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner.lock_recover()
     }
 }
 
@@ -366,12 +354,10 @@ impl ThumbnailService {
     pub fn open_default(workers: usize) -> std::io::Result<Self> {
         // No cache directory and no file system (the page): previews live
         // in memory. `temp_dir` panics there rather than failing.
-        if tilo_paths::availability(tilo_paths::Feature::NativePaths)
-            != tilo_paths::Availability::Available
-        {
+        if !tilo_paths::available(tilo_paths::Feature::NativePaths) {
             return Ok(Self::ephemeral(workers));
         }
-        let dir = xdg_paths::cache_dir().map_or_else(
+        let dir = tilo_paths::cache_dir().map_or_else(
             || std::env::temp_dir().join("tilo-thumbnails"),
             |cache| cache.join("tilo").join("thumbnails"),
         );
@@ -436,11 +422,7 @@ impl ThumbnailService {
     /// Call `wake` (from a worker thread) whenever a preview settles, so an
     /// app that sleeps between frames repaints when one lands.
     pub fn set_wake(&self, wake: impl Fn() + Send + Sync + 'static) {
-        *self
-            .shared
-            .wake
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(wake));
+        *self.shared.wake.lock_recover() = Some(Arc::new(wake));
     }
 
     /// The configured default longest edge for generated thumbnails.
@@ -740,11 +722,7 @@ fn finish(shared: &Shared, key: ThumbKey, slot: Slot) {
     }
     drop(inner);
     shared.settled.notify_all();
-    let wake = shared
-        .wake
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
+    let wake = shared.wake.lock_recover().clone();
     if let Some(wake) = wake {
         wake();
     }
@@ -873,10 +851,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn thumbnail_requests_settle_off_thread_as_ready_or_badge() {
         // Phase `image_file_loads_then_ready_and_second_request_hits`.
         {

@@ -1,0 +1,2359 @@
+//! The artwork's vocabulary: every edit a person, the palette, an agent or a
+//! script makes is one of these values, applied the same way, one undo step
+//! and one attributed history entry each.
+//!
+//! The vocabulary is deliberately small. A passage of painting is one
+//! `paint` with many strokes, a composition is one `draw` with many shapes;
+//! everything after that is addressed by the ids marks were given.
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "kurbo's geometry operators (Affine, Point, Vec2) are float geometry, not overflowing integer arithmetic"
+)]
+
+use std::collections::BTreeMap;
+use ui::num::f64_of_usize;
+
+use serde::{Deserialize, Serialize};
+use ui::tilo_resource::Refusal;
+use ui::tilo_resource::{self, JsonSchema, order};
+use ui::vello::kurbo::BezPath;
+
+use crate::media::{self, MediumSpec};
+use crate::model::{
+    Adjust, Artwork, BLENDS, Gradient, Layer, MAX_MARKS_PER_ACTION, MAX_SIDE, Mark, Reference,
+    Shadow, Shape, StrokePoint, Style, valid_id,
+};
+
+/// The arguments `invoke` gives the verb `id`, read as that verb's struct;
+/// none when it invokes another.
+pub fn read_as<T: serde::de::DeserializeOwned>(
+    invoke: &ui::tilo_resource::Invoke<Artwork>,
+    id: &str,
+) -> Option<T> {
+    if invoke.id != id {
+        return None;
+    }
+    serde_json::from_value(serde_json::Value::Object(invoke.arguments.clone())).ok()
+}
+
+/// Set the artwork's title, size or ground.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetArtwork {
+    pub title: Option<String>,
+    /// Width in units, 16 to 8192.
+    pub width: Option<f64>,
+    /// Height in units, 16 to 8192.
+    pub height: Option<f64>,
+    /// `smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`.
+    pub texture: Option<String>,
+    /// Ground colour, `#rrggbb`.
+    pub ground_colour: Option<String>,
+    /// Crop to `[x, y, width, height]`; marks move with it.
+    pub crop: Option<[f64; 4]>,
+    /// Crop to what this mark or group shows.
+    pub fit: Option<String>,
+}
+
+/// Start over on a blank artwork: its size, ground and first layer. The
+/// artwork before it stays in history, one undo away.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NewArtwork {
+    pub title: Option<String>,
+    /// A size preset; `width` and `height` override it.
+    pub size: Option<String>,
+    /// Turn the size on its side.
+    pub landscape: Option<bool>,
+    /// Width in units, 16 to 8192.
+    pub width: Option<f64>,
+    /// Height in units, 16 to 8192.
+    pub height: Option<f64>,
+    /// A ground and first medium; the fields below override it.
+    pub start: Option<String>,
+    pub texture: Option<String>,
+    /// Ground colour, `#rrggbb`.
+    pub ground_colour: Option<String>,
+    /// The first layer's medium; empty for plain.
+    pub medium: Option<String>,
+}
+
+/// Replace the artwork with one saved as a file: its title, size, ground,
+/// layers, marks and media.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OpenArtwork {
+    /// A `.artwork` path, a content address, or the file's JSON.
+    // The action keeps the JSON, so every replica opens the same artwork.
+    pub file: String,
+}
+
+/// Add a layer on top, or above another.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AddLayer {
+    /// An id to address the layer by (`sky`); one is made when absent.
+    pub id: Option<String>,
+    pub name: String,
+    /// A medium id (`oil`, `watercolour`, … see `media`) to paint this
+    /// layer's marks with; absent or empty for plain vector art.
+    pub medium: Option<String>,
+    /// `0..=1`.
+    pub opacity: Option<f64>,
+    /// Put the new layer directly above this layer instead of on top.
+    pub above: Option<String>,
+    /// `0..=1`: let the ground's tooth show through the layer's marks.
+    pub texture: Option<f64>,
+}
+
+/// A value whose schema another action already teaches: its parameter
+/// names that action instead of repeating the whole schema, which keeps
+/// what an agent reads before it can act small. Serialized as the value.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Taught<T>(pub T);
+
+impl<T> JsonSchema for Taught<T> {
+    fn json_schema() -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+}
+
+impl<T> std::ops::Deref for Taught<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+/// Change a layer.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EditLayer {
+    pub id: String,
+    pub name: Option<String>,
+    /// Organisational folder name; empty removes the layer from its folder.
+    /// Consecutive members are presented together without changing stacking.
+    pub group: Option<String>,
+    /// A medium id, or empty for plain vector art.
+    pub medium: Option<String>,
+    pub opacity: Option<f64>,
+    pub visible: Option<bool>,
+    /// Locked marks are not picked by the pointer.
+    pub locked: Option<bool>,
+    /// `front`, `back`, `forward` or `backward` among the layers.
+    pub to: Option<String>,
+    /// `0..=1`: let the ground's tooth show through the layer's marks.
+    pub texture: Option<f64>,
+    /// Colour and tone of all on it, as `edit-marks` adjust; `{}` clears.
+    pub adjust: Option<Taught<Box<Adjust>>>,
+    /// `reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint
+    /// greys on, white shows, black hides; `unlink` keeps it put as the
+    /// layer's marks move (`link` again).
+    pub mask: Option<String>,
+    /// Invert the mask.
+    pub invert: Option<bool>,
+    /// Clip to the layer below.
+    pub clip: Option<bool>,
+}
+
+/// Remove a layer and everything on it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveLayer {
+    pub id: String,
+}
+
+/// One shape to draw.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NewMark {
+    /// Images: preserve hard pixel edges when enlarged.
+    pub pixelated: Option<bool>,
+    /// An id to address the mark by later (`sun`, `hill-2`); one is made when
+    /// absent.
+    pub id: Option<String>,
+    pub name: Option<String>,
+    /// The geometry: `{"kind": "rect", "x": 0, "y": 0, "width": 10, "height": 10}`,
+    /// `ellipse` (cx, cy, rx, ry), `polygon`/`line` (points), `path` (d: SVG
+    /// path data), `text` (x, y, text, size) or `stroke` (points, size).
+    pub shape: Shape,
+    /// `#rrggbb[aa]` or `pigment:<name>`.
+    pub fill: Option<String>,
+    /// Instead of `fill`; on an oil layer the brush is remixed along it.
+    pub gradient: Option<Gradient>,
+    /// Outline colour.
+    pub stroke: Option<String>,
+    /// Outline width in units.
+    pub stroke_width: Option<f64>,
+    /// `0..=1`.
+    pub opacity: Option<f64>,
+    /// Painted layers: the brush size a filled shape is laid in with.
+    pub brush_size: Option<f64>,
+    /// A stroke's brush preset, as `paint` takes it.
+    pub brush: Option<String>,
+    /// Painted layers: the brushwork's direction in degrees.
+    pub angle: Option<f64>,
+    /// Painted layers: paint into what is still wet.
+    pub wet: Option<bool>,
+    /// Painted layers: medium parameter overrides (`{"load": 0.3}`).
+    pub params: Option<BTreeMap<String, f64>>,
+    /// Outline dashes `[on, off, …]`.
+    pub dash: Option<Vec<f64>>,
+    /// `butt`, `round` or `square`.
+    pub cap: Option<String>,
+    /// `miter`, `round` or `bevel`.
+    pub join: Option<String>,
+    /// `normal`, `multiply`, `screen`, `overlay`, `darken`, `lighten`,
+    /// `color-dodge`, `color-burn`, `hard-light`, `soft-light`, `difference`,
+    /// `exclusion`, `hue`, `saturation`, `color` or `luminosity`.
+    pub blend: Option<String>,
+    pub shadow: Option<Shadow>,
+    /// As shadow, inside the mark from its edge; light colour = highlight.
+    pub inner_shadow: Option<Taught<Shadow>>,
+    /// `0..=1` film grain.
+    pub grain: Option<f64>,
+    /// Soften the edge outward over this many units.
+    pub feather: Option<f64>,
+    /// A group id: edits naming it change the members as one; `a/b`
+    /// nests group b in a.
+    pub group: Option<String>,
+    /// Cut to this mark's or group's shape (opacity 0 hides it), to
+    /// `selection` (its area now) or to an area's SVG path data.
+    pub clip: Option<String>,
+    /// An affine `[a, b, c, d, e, f]` on the geometry, as `inspect` shows.
+    pub transform: Option<[f64; 6]>,
+}
+
+impl NewMark {
+    /// `shape` with nothing else given.
+    pub fn new(shape: Shape) -> Self {
+        Self {
+            pixelated: None,
+            id: None,
+            name: None,
+            shape,
+            fill: None,
+            gradient: None,
+            stroke: None,
+            stroke_width: None,
+            opacity: None,
+            brush_size: None,
+            brush: None,
+            angle: None,
+            wet: None,
+            params: None,
+            dash: None,
+            cap: None,
+            join: None,
+            blend: None,
+            shadow: None,
+            inner_shadow: None,
+            grain: None,
+            feather: None,
+            group: None,
+            clip: None,
+            transform: None,
+        }
+    }
+}
+
+/// Draw shapes, in order, on top of a layer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Draw {
+    /// The layer to draw on; the top layer when absent.
+    pub layer: Option<String>,
+    pub marks: Vec<NewMark>,
+}
+
+/// One brush stroke.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NewStroke {
+    pub id: Option<String>,
+    pub name: Option<String>,
+    /// `[[x, y], …]` or `[[x, y, pressure], …]`, pressure `0..=1`; the
+    /// stroke is smoothed through them, so a few points make a curve.
+    pub points: Vec<StrokePoint>,
+    /// Brush width in units.
+    pub size: f64,
+    /// `#rrggbb[aa]` or `pigment:<name>`; an eraser takes none.
+    #[serde(default)]
+    pub colour: String,
+    /// Plain layers: `pen` (crisp ink, pressure sets width), `pencil`
+    /// (grainy, pressure sets darkness), `marker` (flat, overlaps darken),
+    /// `airbrush` (soft spray that builds up), `charcoal` (picks up the
+    /// ground's tooth), `calligraphy` (broad nib at `angle`, default 45).
+    /// Any layer: `eraser` clears paint beneath it on its layer. A round
+    /// ink brush when absent. Plain layers: `pixel` and `pixel-eraser`
+    /// paint or clear whole square cells, ignoring pressure and taper.
+    pub brush: Option<String>,
+    pub opacity: Option<f64>,
+    /// Paint into what is still wet: blends in oil, bleeds in watercolour.
+    pub wet: Option<bool>,
+    /// Medium overrides on a painted layer (`{"load": 0.2}` for dry brush);
+    /// on a plain layer the brush's flow, hardness, spacing, smoothing and
+    /// taper, each 0..=1.
+    pub params: Option<BTreeMap<String, f64>>,
+    /// A limb that lifts to a point and forks this many times (1-6) into
+    /// ever thinner twigs: a branch or a bare tree in one stroke.
+    pub forks: Option<u32>,
+    /// With `forks`: how widely the twigs splay, in degrees (default 35).
+    pub spread: Option<f64>,
+    /// Instead of one line, this many short dabs (1-600) of `size`
+    /// scattered along the points: foliage, flowers, broken light.
+    pub dabs: Option<u32>,
+    /// With `dabs`: how far they stray either side of the path, in units
+    /// (default twice `size`).
+    pub scatter: Option<f64>,
+    /// With `dabs`: how long each is, in units (about `size` when absent);
+    /// much longer than `size`, each is a flick lifting to a point (grass).
+    pub dab_length: Option<f64>,
+    /// Instead of one line, lines this many units apart across the area
+    /// the points enclose: shading in one stroke; another at a second
+    /// angle cross-hatches.
+    pub hatch: Option<f64>,
+    /// With `dabs`, the way they point in degrees (-90 is up; along the
+    /// path when absent); with `hatch`, the lines' (default 45).
+    pub angle: Option<f64>,
+    /// Keep the paint inside this mark's shape, as a painter cuts in
+    /// against an edge: texture a rock or a crown within its silhouette.
+    /// Or `selection` (its area now), or an area's SVG path data.
+    pub clip: Option<String>,
+}
+
+/// Paint brush strokes, in order, on top of a layer: a passage of painting
+/// in one step.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Paint {
+    /// The layer to paint on; the top layer when absent.
+    pub layer: Option<String>,
+    pub strokes: Vec<NewStroke>,
+    /// Put them in this group, to edit or remove them as one.
+    pub group: Option<String>,
+}
+
+/// Change marks: their colours and style, position, size, rotation or layer.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EditMarks {
+    /// Images: preserve hard pixel edges when enlarged.
+    pub pixelated: Option<bool>,
+    /// Marks, or groups (all their members).
+    pub ids: Vec<String>,
+    pub name: Option<String>,
+    /// Replace the geometry: a shape as `draw` takes it (e.g. a path's
+    /// new `d`).
+    pub shape: Option<Taught<Shape>>,
+    /// `[]` removes dashes.
+    pub dash: Option<Vec<f64>>,
+    pub cap: Option<String>,
+    pub join: Option<String>,
+    pub blend: Option<String>,
+    /// As draw's; zero offset and blur removes it.
+    pub shadow: Option<Taught<Shadow>>,
+    /// As draw's; zero offset and blur removes it.
+    pub inner_shadow: Option<Taught<Shadow>>,
+    /// 0 removes it.
+    pub grain: Option<f64>,
+    /// 0 removes it.
+    pub feather: Option<f64>,
+    /// Put into this group (`a/b` nests b in a); empty takes out of any.
+    pub group: Option<String>,
+    /// Cut to this mark's or group's shape, `selection` or an area's SVG
+    /// path data; empty uncuts.
+    pub clip: Option<String>,
+    /// A colour (replacing a gradient), or `none`.
+    pub fill: Option<String>,
+    /// As draw's.
+    pub gradient: Option<Taught<Gradient>>,
+    /// A colour, or `none`.
+    pub stroke: Option<String>,
+    pub stroke_width: Option<f64>,
+    pub opacity: Option<f64>,
+    /// A stroke's brush preset (see paint).
+    pub brush: Option<String>,
+    /// A stroke's width.
+    pub size: Option<f64>,
+    /// Painted layers: the brush size a filled shape is laid in with.
+    pub brush_size: Option<f64>,
+    pub angle: Option<f64>,
+    pub wet: Option<bool>,
+    pub params: Option<BTreeMap<String, f64>>,
+    /// Move by `[dx, dy]` units.
+    pub move_by: Option<[f64; 2]>,
+    /// Scale about each mark's or group's centre.
+    pub scale: Option<f64>,
+    /// Degrees clockwise about each centre.
+    pub rotate: Option<f64>,
+    /// Move the marks onto this layer, on top.
+    pub layer: Option<String>,
+    /// An affine `[a, b, c, d, e, f]` in artwork units applied after the
+    /// rest, to all the marks as one: a stretch or turn about any point.
+    pub transform: Option<[f64; 6]>,
+    /// `horizontal` or `vertical`: mirror about each centre.
+    pub flip: Option<String>,
+    /// Images: fractions `[x, y, w, h]` of the picture to show (it stays
+    /// put); `[]` all of it.
+    pub crop: Option<Vec<f64>>,
+    /// Images: degrees, -45 to 45, to level it.
+    pub straighten: Option<f64>,
+    /// Colour and tone; given steps replace, `{}` clears.
+    pub adjust: Option<Adjust>,
+    /// Strokes: take the wobble out of their paths, 0..=1.
+    pub smooth: Option<f64>,
+    /// Strokes: drop points within this many units of the line.
+    pub simplify: Option<f64>,
+    /// A stroke: continue it through these points, from the end they start
+    /// nearer.
+    pub extend: Option<Vec<StrokePoint>>,
+    /// A stroke: cut it in two at the point nearest [x, y]; the far part
+    /// gets a new id.
+    pub split: Option<[f64; 2]>,
+    /// Strokes: join them, in the order named, into the first.
+    pub merge: Option<bool>,
+}
+
+/// Remove marks by id, or every mark of a layer.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveMarks {
+    #[serde(default)]
+    pub ids: Vec<String>,
+    /// Remove every mark on this layer (with along: only its strokes).
+    pub layer: Option<String>,
+    /// Remove the brush strokes this path `[[x, y], …]` crosses, as a
+    /// stroke eraser does.
+    pub along: Option<Vec<[f64; 2]>>,
+}
+
+/// Move marks within their layer's stacking order.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Arrange {
+    pub ids: Vec<String>,
+    /// `front`, `back`, `forward`, `backward`, or `above`/`below` the mark or
+    /// group `of`.
+    pub to: String,
+    /// The mark or group `above` and `below` are relative to.
+    pub of: Option<String>,
+}
+
+/// Save a medium in the artwork (or replace one saved before), so layers can
+/// use it and everyone who opens the artwork has it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SaveMedium {
+    pub medium: MediumSpec,
+}
+
+/// Remove a medium saved in the artwork; layers using it paint plain.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveMedium {
+    pub id: String,
+}
+
+/// Line marks up along an edge, or space them evenly. A group moves as one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Align {
+    /// Marks or groups.
+    pub ids: Vec<String>,
+    /// `left`, `center`, `right`, `top`, `middle` or `bottom`.
+    pub edge: Option<String>,
+    /// `horizontal` or `vertical`: equal gaps.
+    pub distribute: Option<String>,
+    /// `artwork` or a mark/group id; else their extent.
+    pub to: Option<String>,
+}
+
+/// Set the reference picture to work from: shown over the artwork like
+/// tracing paper, compared by `compare`, never exported.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SetReference {
+    /// A PNG or JPEG: an absolute file path, a content address, or the
+    /// picture itself as `data:image/png;base64,…`.
+    pub image: Option<String>,
+    /// `[x, y, width, height]`; fitted to the artwork when absent.
+    pub frame: Option<[f64; 4]>,
+    /// `0..=1` (default 0.5).
+    pub opacity: Option<f64>,
+    pub visible: Option<bool>,
+    /// Remove the reference.
+    pub remove: Option<bool>,
+}
+
+/// Start a new artwork from a picture: sized to it, the picture its first
+/// mark (`picture`) on its one layer. Everything the artwork held before is
+/// replaced, as one step.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Open {
+    /// A PNG, JPEG or WebP: an absolute path, a content address or a data:
+    /// URI.
+    pub path: String,
+    /// The new artwork's title; the file's name when absent.
+    pub title: Option<String>,
+}
+
+pub(crate) fn refuse(message: impl Into<String>) -> Refusal {
+    Refusal(message.into())
+}
+
+/// The id of a mark or layer given none: a hash of what it is and where it
+/// sits in its action, so every replica of the action names it alike and two
+/// collaborators drawing different things never collide.
+/// A name for a new layer made from `base` that no layer has yet: "Layer
+/// 3" after "Layer 2"; another medium's base alone while it is unused
+/// ("Oil"), numbered once it is ("Oil 2"). Plain layers are always
+/// numbered, as people count them.
+pub fn numbered_name<'a>(names: impl IntoIterator<Item = &'a str>, base: &str) -> String {
+    let number = |name: &str| -> Option<u32> {
+        let rest = name.strip_prefix(base)?;
+        if rest.is_empty() {
+            return Some(1);
+        }
+        rest.strip_prefix(' ')?.parse().ok()
+    };
+    let highest = names.into_iter().filter_map(number).max();
+    match highest {
+        None if base != "Layer" => base.to_owned(),
+        None => format!("{base} 1"),
+        Some(highest) => format!("{base} {}", highest.saturating_add(1)),
+    }
+}
+
+pub fn derived_id(prefix: &str, content: &impl Serialize, index: usize) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(
+        serde_json::to_string(content)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+    hasher.update(&index.to_le_bytes());
+    let hex = hasher.finalize().to_hex();
+    format!("{prefix}-{}", hex.get(..10).unwrap_or_default())
+}
+
+pub(crate) fn check_colour(
+    art: &Artwork,
+    layer: &str,
+    colour: &str,
+    what: &str,
+) -> Result<(), Refusal> {
+    if colour == "none"
+        || tilo_wet_media::parse_paint(colour, &media::palette_for(art, layer)).is_some()
+    {
+        return Ok(());
+    }
+    let palette: Vec<String> = media::palette_for(art, layer)
+        .into_iter()
+        .map(|pigment| pigment.name)
+        .collect();
+    Err(refuse(format!(
+        "{what} {colour:?} is not a colour: use #rrggbb, #rrggbbaa or pigment:<name>; this layer's pigments are {}",
+        palette.join(", ")
+    )))
+}
+
+fn check_unit(value: Option<f64>, what: &str) -> Result<(), Refusal> {
+    match value {
+        Some(value) if !(0.0..=1.0).contains(&value) => {
+            Err(refuse(format!("{what} must be within 0..=1, got {value}")))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn check_style(art: &Artwork, layer: &str, style: &Style) -> Result<(), Refusal> {
+    for (colour, what) in [(&style.fill, "fill"), (&style.stroke, "stroke")] {
+        if let Some(colour) = colour {
+            check_colour(art, layer, colour, what)?;
+        }
+    }
+    if let Some(gradient) = &style.gradient {
+        if !matches!(gradient.kind.as_str(), "linear" | "radial") {
+            return Err(refuse("a gradient's kind is linear or radial"));
+        }
+        if gradient.stops.len() < 2 {
+            return Err(refuse("a gradient needs at least two stops"));
+        }
+        for (_, colour) in &gradient.stops {
+            check_colour(art, layer, colour, "gradient stop")?;
+        }
+    }
+    check_unit(style.opacity, "opacity")?;
+    if !style.stroke_width.is_finite() || style.stroke_width < 0.0 {
+        return Err(refuse("stroke_width must be zero or more"));
+    }
+    if style.dash.len() > 16
+        || style
+            .dash
+            .iter()
+            .any(|step| !step.is_finite() || *step < 0.0 || *step > MAX_SIDE)
+        || (!style.dash.is_empty() && style.dash.iter().sum::<f64>() <= 0.0)
+    {
+        return Err(refuse(
+            "dash is up to 16 lengths [on, off, …], zero or more and not all zero",
+        ));
+    }
+    for (value, what, choices) in [
+        (&style.cap, "cap", &["butt", "round", "square"][..]),
+        (&style.join, "join", &["miter", "round", "bevel"][..]),
+        (&style.blend, "blend", &BLENDS[..]),
+    ] {
+        if let Some(value) = value
+            && !choices.contains(&value.as_str())
+        {
+            return Err(refuse(format!(
+                "{what} {value:?} must be one of {}",
+                choices.join(", ")
+            )));
+        }
+    }
+    for shadow in style.shadow.iter().chain(&style.inner_shadow) {
+        if !shadow
+            .offset
+            .iter()
+            .all(|value| value.is_finite() && value.abs() <= MAX_SIDE)
+            || !(0.0..=500.0).contains(&shadow.blur)
+        {
+            return Err(refuse(
+                "a shadow's offset must be finite and its blur 0 to 500",
+            ));
+        }
+        if let Some(colour) = &shadow.colour {
+            check_colour(art, layer, colour, "shadow colour")?;
+        }
+    }
+    check_unit(style.grain, "grain")?;
+    if style
+        .feather
+        .is_some_and(|feather| !(0.0..=500.0).contains(&feather))
+    {
+        return Err(refuse("feather is 0 to 500 units"));
+    }
+    if let Some(gradient) = &style.gradient
+        && gradient
+            .focal
+            .is_some_and(|[x, y]| !x.is_finite() || !y.is_finite())
+    {
+        return Err(refuse("a gradient's focal point must be finite"));
+    }
+    Ok(())
+}
+
+/// A transform must be finite and keep some area, so the mark can be found
+/// and turned back.
+fn check_transform(transform: [f64; 6]) -> Result<(), Refusal> {
+    let affine = ui::vello::kurbo::Affine::new(transform);
+    if transform
+        .iter()
+        .all(|value| value.is_finite() && value.abs() <= MAX_SIDE * 4.0)
+        && affine.determinant().abs() > 1e-6
+    {
+        Ok(())
+    } else {
+        Err(refuse(
+            "a transform is [a, b, c, d, e, f], finite, and must not flatten the mark",
+        ))
+    }
+}
+
+/// The marks `ids` address, as units that move, scale and rotate together:
+/// a mark id is that mark, a group id all of the group's members. A mark
+/// named twice (itself and through its group) counts once.
+pub(crate) fn units<'a>(art: &'a Artwork, ids: &[String]) -> Result<Vec<Vec<&'a Mark>>, Refusal> {
+    if ids.is_empty() {
+        return Err(refuse("name marks or groups in ids"));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut units = Vec::new();
+    for id in ids {
+        let members: Vec<&Mark> = match art.mark(id) {
+            Some(mark) => vec![mark],
+            None => art.members(id).collect(),
+        };
+        if members.is_empty() {
+            let groups = art.groups();
+            return Err(refuse(format!(
+                "there is no mark or group {id:?}; the groups are {}; inspect lists the marks",
+                if groups.is_empty() {
+                    "none".to_owned()
+                } else {
+                    groups.join(", ")
+                }
+            )));
+        }
+        let fresh: Vec<&Mark> = members
+            .into_iter()
+            .filter(|mark| seen.insert(mark.id.as_str()))
+            .collect();
+        if !fresh.is_empty() {
+            units.push(fresh);
+        }
+    }
+    Ok(units)
+}
+
+/// The extent of a unit of marks: what of them can show.
+fn extent(art: &Artwork, unit: &[&Mark]) -> ui::vello::kurbo::Rect {
+    unit.iter()
+        .map(|mark| art.visible_bounds(mark))
+        .reduce(|a, b| a.union(b))
+        .unwrap_or_default()
+}
+
+/// A group id must be valid and not already a mark's id.
+fn check_group(art: &Artwork, group: &str, new_ids: &[String]) -> Result<(), Refusal> {
+    if !crate::model::valid_group(group) {
+        return Err(refuse(format!(
+            "group {group:?} must be 1-48 of a-z, 0-9, '-' and '_', or such ids joined by / to nest one group in another"
+        )));
+    }
+    if art.mark(group).is_some() || new_ids.iter().any(|id| id == group) {
+        return Err(refuse(format!(
+            "{group:?} is a mark's id; name the group differently"
+        )));
+    }
+    Ok(())
+}
+
+/// A clip must name an existing (or just drawn) mark other than itself, or
+/// a group it is not in.
+fn check_clip(
+    art: &Artwork,
+    (id, group): (&str, &str),
+    clip: &str,
+    new: &[Mark],
+) -> Result<(), Refusal> {
+    if clip == id {
+        return Err(refuse(format!("mark {id:?} cannot clip itself")));
+    }
+    let mark = art.mark(clip).is_some() || new.iter().any(|mark| mark.id == clip);
+    let members = art.members(clip).next().is_some()
+        || new
+            .iter()
+            .any(|mark| crate::model::in_group(&mark.group, clip));
+    if crate::model::in_group(group, clip) {
+        return Err(refuse(format!(
+            "mark {id:?} is in group {clip:?}, so the group cannot clip it"
+        )));
+    }
+    if !mark && !members {
+        return Err(refuse(format!(
+            "clip {clip:?} is not a mark or group; clip names what cuts this one"
+        )));
+    }
+    Ok(())
+}
+
+/// The layer an action names, or the top one.
+pub(crate) fn target_layer(art: &Artwork, named: Option<&str>) -> Result<String, Refusal> {
+    match named {
+        Some(id) => art.layer(id).map(|layer| layer.id.clone()).ok_or_else(|| {
+            refuse(format!(
+                "there is no layer {id:?}; the layers are {}",
+                layer_list(art)
+            ))
+        }),
+        None => art
+            .top_layer()
+            .map(|layer| layer.id.clone())
+            .ok_or_else(|| refuse("the artwork has no layer yet; add-layer first")),
+    }
+}
+
+pub(crate) fn layer_list(art: &Artwork) -> String {
+    if art.layers.is_empty() {
+        return "none".into();
+    }
+    art.layers
+        .iter()
+        .map(|layer| layer.id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Fresh order keys for `count` marks on top of `layer`.
+pub(crate) fn on_top(art: &Artwork, layer: &str, count: usize) -> Vec<String> {
+    let last = art.marks_of(layer).map(|mark| mark.order.clone()).max();
+    order::sequence(last.as_deref(), None, count)
+}
+
+fn unique_ids(art: &Artwork, ids: &[String]) -> Result<(), Refusal> {
+    let mut seen = std::collections::BTreeSet::new();
+    for id in ids {
+        if !valid_id(id) {
+            return Err(refuse(format!(
+                "id {id:?} must be 1-48 of a-z, 0-9, '-' and '_'"
+            )));
+        }
+        if art.mark(id).is_some() {
+            return Err(refuse(format!(
+                "a mark {id:?} already exists; edit-marks changes it, remove-marks removes it"
+            )));
+        }
+        if !seen.insert(id.as_str()) {
+            return Err(refuse(format!("id {id:?} is given twice")));
+        }
+    }
+    Ok(())
+}
+
+/// Write `marks` (their layer and order still to be given) on top of
+/// `layer`.
+pub(crate) fn add_marks(
+    doc: &mut Artwork,
+    art: &Artwork,
+    layer: &str,
+    marks: Vec<Mark>,
+) -> Result<(), Refusal> {
+    if marks.is_empty() {
+        return Err(refuse("give at least one mark"));
+    }
+    if marks.len() > MAX_MARKS_PER_ACTION {
+        return Err(refuse(format!(
+            "at most {MAX_MARKS_PER_ACTION} marks per action; split the passage"
+        )));
+    }
+    let ids: Vec<String> = marks.iter().map(|mark| mark.id.clone()).collect();
+    unique_ids(art, &ids)?;
+    for (index, mark) in marks.iter().enumerate() {
+        let problem = |error: Refusal| refuse(format!("mark {index}: {error}"));
+        if let Some(problem) = mark.shape.problem() {
+            return Err(refuse(format!("mark {index}: {problem}")));
+        }
+        if let Some(transform) = mark.transform {
+            check_transform(transform).map_err(problem)?;
+        }
+        check_style(art, layer, &mark.style).map_err(problem)?;
+        check_brush(art, layer, mark).map_err(problem)?;
+        if !mark.group.is_empty() {
+            check_group(art, &mark.group, &ids).map_err(problem)?;
+        }
+        if !mark.clip.is_empty() {
+            check_clip(art, (&mark.id, &mark.group), &mark.clip, &marks).map_err(problem)?;
+        }
+    }
+    let orders = on_top(art, layer, marks.len());
+    for (mark, order) in marks.into_iter().zip(orders) {
+        doc.put_mark(Mark {
+            layer: layer.to_owned(),
+            order,
+            ..mark
+        });
+    }
+    Ok(())
+}
+
+/// A mark to add, before its layer and order are known.
+pub(crate) fn placed(id: String, name: String, shape: Shape, style: Style) -> Mark {
+    Mark {
+        id,
+        layer: String::new(),
+        order: String::new(),
+        name,
+        shape,
+        style,
+        transform: None,
+        group: String::new(),
+        clip: String::new(),
+        area: String::new(),
+    }
+}
+
+/// What a new mark's `clip` names, as the mark keeps it: the mark it is
+/// cut to, or the area it is kept inside (`selection` is the selection's
+/// area as it is now; SVG path data is an area of its own).
+pub(crate) fn clip_named(art: &Artwork, clip: Option<&str>) -> Result<(String, String), Refusal> {
+    match clip {
+        None | Some("") => Ok((String::new(), String::new())),
+        Some(SELECTION_CLIP) => {
+            let selection = art.selection.as_ref().ok_or_else(|| {
+                refuse("clip \"selection\" keeps the mark inside the selection, but nothing is selected; select first")
+            })?;
+            Ok((String::new(), selection.d.clone()))
+        }
+        Some(clip) if art.mark(clip).is_none() && !valid_id(clip) => {
+            let area = BezPath::from_svg(clip).map_err(|_| {
+                refuse(format!(
+                    "clip {clip:?} is neither a mark, \"selection\" nor SVG path data of an area"
+                ))
+            })?;
+            if area.elements().len() < 3 {
+                return Err(refuse(format!("clip {clip:?} encloses no area")));
+            }
+            Ok((String::new(), clip.to_owned()))
+        }
+        Some(clip) => Ok((clip.to_owned(), String::new())),
+    }
+}
+
+/// The clip that keeps a new mark inside the selection.
+pub const SELECTION_CLIP: &str = "selection";
+
+impl Draw {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
+        let layer = target_layer(art, self.layer.as_deref())?;
+        let clips = self
+            .marks
+            .iter()
+            .map(|mark| clip_named(art, mark.clip.as_deref()))
+            .collect::<Result<Vec<(String, String)>, Refusal>>()?;
+        let marks = self
+            .marks
+            .iter()
+            .enumerate()
+            .map(|(index, mark)| {
+                let id = mark
+                    .id
+                    .clone()
+                    .unwrap_or_else(|| derived_id("m", mark, index));
+                let style = Style {
+                    pixelated: mark.pixelated.unwrap_or(false),
+                    fill: mark.fill.clone(),
+                    gradient: mark.gradient.clone(),
+                    stroke: mark.stroke.clone(),
+                    stroke_width: mark
+                        .stroke_width
+                        .unwrap_or_else(|| if mark.stroke.is_some() { 2.0 } else { 0.0 }),
+                    opacity: mark.opacity,
+                    brush: mark.brush.as_deref().and_then(crate::brushes::stored),
+                    brush_size: mark.brush_size,
+                    angle: mark.angle,
+                    wet: mark.wet.unwrap_or(false),
+                    params: mark.params.clone().unwrap_or_default(),
+                    dash: mark.dash.clone().unwrap_or_default(),
+                    cap: mark.cap.clone(),
+                    join: mark.join.clone(),
+                    blend: mark.blend.clone().filter(|blend| blend != "normal"),
+                    shadow: mark.shadow.clone(),
+                    inner_shadow: mark.inner_shadow.clone().map(|shadow| shadow.0),
+                    grain: mark.grain.filter(|grain| *grain > 0.0),
+                    feather: mark.feather.filter(|feather| *feather > 0.0),
+                    adjust: None,
+                };
+                let picture = matches!(mark.shape, Shape::Image { .. });
+                let style = if !picture
+                    && style.fill.is_none()
+                    && style.gradient.is_none()
+                    && style.stroke.is_none()
+                {
+                    // An uncoloured shape would be invisible: draw it in ink.
+                    Style {
+                        fill: mark.shape.closed().then(|| "#1d1b19".to_owned()),
+                        stroke: (!mark.shape.closed()).then(|| "#1d1b19".to_owned()),
+                        stroke_width: if mark.shape.closed() { 0.0 } else { 2.0 },
+                        ..style
+                    }
+                } else {
+                    style
+                };
+                let (clip, area) = clips.get(index).cloned().unwrap_or_default();
+                let mut placed = Mark {
+                    group: mark.group.clone().unwrap_or_default(),
+                    clip,
+                    transform: mark.transform,
+                    ..placed(
+                        id,
+                        mark.name.clone().unwrap_or_default(),
+                        mark.shape.clone(),
+                        style,
+                    )
+                };
+                placed.keep_inside(&area);
+                placed
+            })
+            .collect();
+        add_marks(doc, art, &layer, marks)
+    }
+}
+
+impl Paint {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
+        let layer = target_layer(art, self.layer.as_deref())?;
+        let clips = self
+            .strokes
+            .iter()
+            .map(|stroke| clip_named(art, stroke.clip.as_deref()))
+            .collect::<Result<Vec<(String, String)>, Refusal>>()?;
+        let marks = self
+            .strokes
+            .iter()
+            .enumerate()
+            .map(|(index, stroke)| {
+                let id = stroke
+                    .id
+                    .clone()
+                    .unwrap_or_else(|| derived_id("s", stroke, index));
+                let style = Style {
+                    stroke: (!stroke.colour.is_empty()).then(|| stroke.colour.clone()),
+                    brush: stroke.brush.as_deref().and_then(crate::brushes::stored),
+                    opacity: stroke.opacity,
+                    wet: stroke.wet.unwrap_or(false),
+                    params: stroke.params.clone().unwrap_or_default(),
+                    angle: stroke.angle,
+                    ..Style::default()
+                };
+                let shape = Shape::Stroke {
+                    points: stroke.points.clone(),
+                    size: stroke.size,
+                    forks: stroke.forks,
+                    spread: stroke.spread,
+                    dabs: stroke.dabs,
+                    scatter: stroke.scatter,
+                    dab_length: stroke.dab_length,
+                    hatch: stroke.hatch,
+                };
+                let mut mark = placed(id, stroke.name.clone().unwrap_or_default(), shape, style);
+                mark.group = self.group.clone().unwrap_or_default();
+                let (clip, area) = clips.get(index).cloned().unwrap_or_default();
+                mark.clip = clip;
+                mark.keep_inside(&area);
+                mark
+            })
+            .collect::<Vec<Mark>>();
+        for (index, (mark, stroke)) in marks.iter().zip(&self.strokes).enumerate() {
+            if let Some(brush) = &stroke.brush
+                && crate::brushes::Preset::parse(brush).is_none()
+            {
+                return Err(refuse(format!(
+                    "stroke {index}: brush {brush:?} is not a preset; use one of {}",
+                    crate::brushes::Preset::names()
+                )));
+            }
+            if mark.style.stroke.is_none() && !mark.erases() {
+                return Err(refuse(format!(
+                    "stroke {index}: give a colour (#rrggbb or pigment:<name>); only an eraser paints none"
+                )));
+            }
+        }
+        add_marks(doc, art, &layer, marks)
+    }
+}
+
+/// Move each linked mask with its layer's marks when they all moved as
+/// one (`moves`: each mark edited, and where it went): the mask belongs to
+/// the layer's content, as a picture's cut-out goes with the picture. A
+/// mask whose own marks were edited too, or whose layer's marks moved
+/// apart or only in part, stays where it is.
+fn carry_masks(doc: &mut Artwork, art: &Artwork, travels: &[(&Mark, ui::vello::kurbo::Affine)]) {
+    let same = |a: ui::vello::kurbo::Affine, b: ui::vello::kurbo::Affine| {
+        a.as_coeffs()
+            .iter()
+            .zip(b.as_coeffs())
+            .all(|(a, b)| (a - b).abs() < 1e-9)
+    };
+    for layer in &art.layers {
+        let Some(mask) = art.mask_of(&layer.id).filter(|mask| !mask.unlinked) else {
+            continue;
+        };
+        let mut layer_travels = travels.iter().filter(|(mark, _)| mark.layer == layer.id);
+        let Some(&(_, went)) = layer_travels.next() else {
+            continue;
+        };
+        let count = 1 + layer_travels.clone().count();
+        let together = layer_travels.all(|&(_, other)| same(went, other));
+        let whole = count == art.marks_of(&layer.id).count();
+        let mask_edited = travels.iter().any(|(mark, _)| mark.layer == mask.id);
+        if !together || !whole || mask_edited || same(went, ui::vello::kurbo::Affine::IDENTITY) {
+            continue;
+        }
+        let [a, b, c, d, dx, dy] = went.as_coeffs();
+        let shift = same(
+            ui::vello::kurbo::Affine::new([a, b, c, d, 0.0, 0.0]),
+            ui::vello::kurbo::Affine::IDENTITY,
+        );
+        for mark in art.marks_of(&mask.id) {
+            let mut carried = mark.clone();
+            if shift {
+                carried = carried.moved(dx, dy);
+            } else {
+                carried.transform = Some((went * mark.affine()).as_coeffs());
+            }
+            doc.put_mark(carried);
+        }
+    }
+}
+
+/// Why a stroke's preset or dynamics cannot draw it on its layer.
+fn check_brush(art: &Artwork, layer: &str, mark: &Mark) -> Result<(), Refusal> {
+    if !matches!(mark.shape, Shape::Stroke { .. }) {
+        return Ok(());
+    }
+    if mark.erases()
+        && let Shape::Stroke { forks: Some(_), .. } = mark.shape
+    {
+        return Err(refuse(
+            "an eraser does not fork; give it dabs to clear broken patches, or erase along plain strokes",
+        ));
+    }
+    if crate::brushes::Preset::of(&mark.style).pixel() {
+        let bounds = mark.bounds();
+        if bounds.width().max(bounds.height()) > 16384.0 {
+            return Err(refuse(
+                "a pixel stroke may travel at most 16384 artwork units",
+            ));
+        }
+    }
+    let plain = art.layer(layer).is_none_or(|layer| layer.medium.is_empty());
+    match crate::brushes::problem(mark.style.brush.as_deref(), &mark.style.params, plain) {
+        Some(problem) => Err(refuse(problem)),
+        None => Ok(()),
+    }
+}
+
+/// A colour edit: absent changes nothing; `none` clears the colour.
+enum ColourEdit {
+    Keep,
+    Set(Option<String>),
+}
+
+fn colour_patch(value: Option<&String>) -> ColourEdit {
+    match value {
+        None => ColourEdit::Keep,
+        Some(colour) => ColourEdit::Set((colour != "none").then(|| colour.clone())),
+    }
+}
+
+impl EditMarks {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
+        self.check_reshape()?;
+        if self.merge == Some(true) {
+            let kept = crate::strokes::merge(doc, art, &self.ids)?;
+            return Self {
+                ids: vec![kept],
+                merge: None,
+                ..self.clone()
+            }
+            .apply(doc, &doc.settled());
+        }
+        if let Some(at) = self.split {
+            let made = crate::strokes::split(doc, art, &self.ids, at)?;
+            return Self {
+                ids: made,
+                split: None,
+                ..self.clone()
+            }
+            .apply(doc, &doc.settled());
+        }
+        let units = units(art, &self.ids)?;
+        let count: usize = units.iter().map(Vec::len).sum();
+        let destination = match &self.layer {
+            Some(layer) => Some(target_layer(art, Some(layer))?),
+            None => None,
+        };
+        let mut orders = destination
+            .as_deref()
+            .map(|layer| on_top(art, layer, count))
+            .unwrap_or_default()
+            .into_iter();
+        let [dx, dy] = self.move_by.unwrap_or([0.0, 0.0]);
+        if !dx.is_finite() || !dy.is_finite() {
+            return Err(refuse("move_by must be finite"));
+        }
+        let scale = self.scale.unwrap_or(1.0);
+        let rotate = self.rotate.unwrap_or(0.0);
+        if !scale.is_finite() || scale <= 0.0 || !rotate.is_finite() {
+            return Err(refuse("scale must be positive and rotate finite"));
+        }
+        self.check_whole(art)?;
+        let (mirror, crop) = self.picture_edits()?;
+        let turns = self.scale.is_some() || self.rotate.is_some() || self.flip.is_some();
+        // Where each mark went, for the masks that go with their layer.
+        let mut travels: Vec<(&Mark, ui::vello::kurbo::Affine)> = Vec::new();
+        for unit in units {
+            let centre = extent(art, &unit).center() + ui::vello::kurbo::Vec2::new(dx, dy);
+            let about = ui::vello::kurbo::Affine::translate(centre.to_vec2())
+                * ui::vello::kurbo::Affine::rotate(rotate.to_radians())
+                * ui::vello::kurbo::Affine::scale(scale)
+                * mirror
+                * ui::vello::kurbo::Affine::translate(-centre.to_vec2());
+            let went = self.travel(turns.then_some(about), (dx, dy));
+            for original in unit {
+                if destination
+                    .as_ref()
+                    .is_none_or(|layer| *layer == original.layer)
+                {
+                    travels.push((original, went));
+                }
+                let mut mark = original.clone();
+                if let Some(layer) = &destination
+                    && *layer != mark.layer
+                {
+                    mark.layer.clone_from(layer);
+                    if let Some(order) = orders.next() {
+                        mark.order = order;
+                    }
+                }
+                if let Some(shape) = &self.shape {
+                    mark.shape = shape.0.clone();
+                }
+                if let Some(group) = &self.group {
+                    mark.group.clone_from(group);
+                }
+                self.restyle(&mut mark);
+                self.reframe(&mut mark, crop)?;
+                self.reshape(&mut mark);
+                if dx != 0.0 || dy != 0.0 {
+                    mark = mark.moved(dx, dy);
+                }
+                if turns {
+                    mark.transform = Some((about * mark.affine()).as_coeffs());
+                }
+                if let Some(transform) = self.transform {
+                    mark = mark.transformed(ui::vello::kurbo::Affine::new(transform));
+                }
+                // Cut last: the area is where it is now, wherever the mark moved.
+                self.recut(art, &mut mark)?;
+                check_style(art, &mark.layer, &mark.style)
+                    .and_then(|()| check_brush(art, &mark.layer, &mark))
+                    .map_err(|error| refuse(format!("mark {:?}: {error}", mark.id)))?;
+                if let Some(problem) = mark.shape.problem() {
+                    return Err(refuse(format!("mark {:?}: {problem}", mark.id)));
+                }
+                doc.put_mark(mark.clone());
+            }
+        }
+        carry_masks(doc, art, &travels);
+        Ok(())
+    }
+
+    /// Refuse a new shape, group or transform no mark can take.
+    fn check_whole(&self, art: &Artwork) -> Result<(), Refusal> {
+        if let Some(problem) = self.shape.as_deref().and_then(Shape::problem) {
+            return Err(refuse(problem));
+        }
+        if let Some(group) = self.group.as_deref().filter(|group| !group.is_empty()) {
+            check_group(art, group, &[])?;
+        }
+        if let Some(transform) = self.transform {
+            check_transform(transform)?;
+        }
+        Ok(())
+    }
+
+    /// Where a unit goes: moved by `by`, turned `about` its centre when it
+    /// turns, then the edit's own transform.
+    fn travel(
+        &self,
+        about: Option<ui::vello::kurbo::Affine>,
+        by: (f64, f64),
+    ) -> ui::vello::kurbo::Affine {
+        self.transform.map_or(
+            ui::vello::kurbo::Affine::IDENTITY,
+            ui::vello::kurbo::Affine::new,
+        ) * about.unwrap_or(ui::vello::kurbo::Affine::IDENTITY)
+            * ui::vello::kurbo::Affine::translate(by)
+    }
+
+    /// The flip as an affine about the origin, and the crop asked for,
+    /// refusing what cannot be.
+    fn picture_edits(&self) -> Result<(ui::vello::kurbo::Affine, Option<[f64; 4]>), Refusal> {
+        let mirror = match self.flip.as_deref() {
+            None => ui::vello::kurbo::Affine::IDENTITY,
+            Some("horizontal") => ui::vello::kurbo::Affine::FLIP_X,
+            Some("vertical") => ui::vello::kurbo::Affine::FLIP_Y,
+            Some(other) => {
+                return Err(refuse(format!(
+                    "flip {other:?} must be horizontal or vertical"
+                )));
+            }
+        };
+        if let Some(problem) = self.adjust.as_ref().and_then(Adjust::problem) {
+            return Err(refuse(problem));
+        }
+        let crop = match self.crop.as_deref() {
+            None => None,
+            Some([]) => Some([0.0, 0.0, 1.0, 1.0]),
+            Some(&[x, y, w, h]) => Some([x, y, w, h]),
+            Some(_) => {
+                return Err(refuse(
+                    "crop is [x, y, w, h] fractions of the picture, or [] for all of it",
+                ));
+            }
+        };
+        Ok((mirror, crop))
+    }
+
+    /// An image's crop and straightening, onto `mark`.
+    fn reframe(&self, mark: &mut Mark, crop: Option<[f64; 4]>) -> Result<(), Refusal> {
+        if crop.is_none() && self.straighten.is_none() {
+            return Ok(());
+        }
+        let Some(mut placement) = crate::picture::Placement::of(&mark.shape) else {
+            return Err(refuse(format!(
+                "mark {:?} is a {}; crop and straighten are for images",
+                mark.id,
+                mark.shape.kind()
+            )));
+        };
+        if let Some(crop) = crop {
+            placement = placement.with_crop(crop);
+        }
+        if let Some(angle) = self.straighten {
+            placement.straighten = angle;
+        }
+        placement.apply(&mut mark.shape);
+        if let Some(problem) = mark.shape.problem() {
+            return Err(refuse(format!("mark {:?}: {problem}", mark.id)));
+        }
+        Ok(())
+    }
+
+    /// Cut `mark` to what `clip` names, if it names anything.
+    fn recut(&self, art: &Artwork, mark: &mut Mark) -> Result<(), Refusal> {
+        if let Some(clip) = &self.clip {
+            let (cut, area) = clip_named(art, Some(clip))?;
+            mark.clip = cut;
+            mark.keep_inside(&area);
+            if !mark.clip.is_empty() {
+                check_clip(art, (&mark.id, &mark.group), &mark.clip, &[])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse reshaping values no stroke can take.
+    fn check_reshape(&self) -> Result<(), Refusal> {
+        check_unit(self.smooth, "smooth")?;
+        if self
+            .simplify
+            .is_some_and(|tolerance| !(0.0..=MAX_SIDE).contains(&tolerance))
+        {
+            return Err(refuse("simplify is a distance in units, 0 or more"));
+        }
+        if self
+            .size
+            .is_some_and(|size| !size.is_finite() || size <= 0.0 || size > MAX_SIDE)
+        {
+            return Err(refuse("size must be positive"));
+        }
+        if self
+            .split
+            .is_some_and(|[x, y]| !x.is_finite() || !y.is_finite())
+        {
+            return Err(refuse("split is a finite [x, y]"));
+        }
+        if let Some(points) = &self.extend
+            && (points.is_empty()
+                || !points.iter().all(|point| {
+                    (2..=3).contains(&point.len()) && point.iter().all(|value| value.is_finite())
+                }))
+        {
+            return Err(refuse("extend is points [[x, y] or [x, y, pressure], …]"));
+        }
+        Ok(())
+    }
+
+    /// The stroke edits, onto `mark`: its width and path.
+    fn reshape(&self, mark: &mut Mark) {
+        let Shape::Stroke { points, size, .. } = &mut mark.shape else {
+            return;
+        };
+        if let Some(width) = self.size {
+            *size = width;
+        }
+        if let Some(amount) = self.smooth {
+            // Laid evenly to smooth it, then as few points as keep its curve.
+            let smooth = crate::brushes::smoothed(points, amount, *size);
+            *points = crate::brushes::simplified(&smooth, 0.1);
+        }
+        if let Some(tolerance) = self.simplify {
+            *points = crate::brushes::simplified(points, tolerance);
+        }
+        if let Some(more) = &self.extend {
+            crate::strokes::extend(points, more);
+        }
+    }
+
+    /// The style edits, onto `mark`.
+    fn restyle(&self, mark: &mut Mark) {
+        if let Some(name) = &self.name {
+            mark.name.clone_from(name);
+        }
+        if let Some(dash) = &self.dash {
+            mark.style.dash.clone_from(dash);
+        }
+        for (edit, field) in [
+            (&self.cap, &mut mark.style.cap),
+            (&self.join, &mut mark.style.join),
+            (&self.blend, &mut mark.style.blend),
+        ] {
+            if let Some(value) = edit {
+                *field = Some(value.clone()).filter(|value| value != "normal");
+            }
+        }
+        for (edit, field) in [
+            (&self.shadow, &mut mark.style.shadow),
+            (&self.inner_shadow, &mut mark.style.inner_shadow),
+        ] {
+            if let Some(Taught(shadow)) = edit {
+                *field = (shadow.blur > 0.0 || shadow.offset != [0.0, 0.0]).then(|| shadow.clone());
+            }
+        }
+        if let Some(grain) = self.grain {
+            mark.style.grain = (grain > 0.0).then_some(grain);
+        }
+        if let Some(feather) = self.feather {
+            mark.style.feather = (feather > 0.0).then_some(feather);
+        }
+        {
+            let is_stroke = matches!(mark.shape, Shape::Stroke { .. });
+            if let ColourEdit::Set(fill) = colour_patch(self.fill.as_ref()) {
+                // A stroke's one colour is its stroke colour.
+                if is_stroke {
+                    mark.style.stroke = fill;
+                } else {
+                    mark.style.fill = fill;
+                    // A gradient is drawn instead of the fill: a new fill
+                    // replaces it.
+                    mark.style.gradient = None;
+                }
+            }
+            if let ColourEdit::Set(stroke) = colour_patch(self.stroke.as_ref()) {
+                mark.style.stroke = stroke;
+            }
+            if let Some(Taught(gradient)) = &self.gradient {
+                mark.style.gradient = Some(gradient.clone());
+            }
+            if let Some(width) = self.stroke_width {
+                mark.style.stroke_width = width;
+            }
+            if let Some(opacity) = self.opacity {
+                mark.style.opacity = Some(opacity);
+            }
+            if let Some(pixelated) = self.pixelated {
+                mark.style.pixelated = pixelated;
+            }
+            if let Some(brush) = &self.brush {
+                mark.style.brush = crate::brushes::stored(brush);
+            }
+            if self.brush_size.is_some() {
+                mark.style.brush_size = self.brush_size;
+            }
+            if self.angle.is_some() {
+                mark.style.angle = self.angle;
+            }
+            if let Some(wet) = self.wet {
+                mark.style.wet = wet;
+            }
+            if let Some(params) = &self.params {
+                mark.style.params.extend(params.clone());
+            }
+            if let Some(adjust) = &self.adjust {
+                mark.style.adjust = mark.style.adjust.clone().unwrap_or_default().merged(adjust);
+            }
+        }
+    }
+}
+
+/// Where `ids` go when moved `to` the front, back, forward or backward of
+/// the ordered `all`, or directly `above` or `below` the entries `of`: new
+/// order keys for the moved entries.
+fn rearranged(
+    all: &[(String, String)],
+    ids: &[String],
+    to: &str,
+    of: &[String],
+) -> Result<Vec<(String, String)>, Refusal> {
+    let moving: Vec<&(String, String)> = all.iter().filter(|(id, _)| ids.contains(id)).collect();
+    let staying: Vec<&(String, String)> = all.iter().filter(|(id, _)| !ids.contains(id)).collect();
+    let anchor = || {
+        let first = staying.iter().position(|(id, _)| of.contains(id));
+        let last = staying.iter().rposition(|(id, _)| of.contains(id));
+        first.zip(last).ok_or_else(|| {
+            refuse("name the mark or group to go above or below in `of`, on the same layer and not among ids")
+        })
+    };
+    let (low, high) = match to {
+        "above" => {
+            let (_, top) = anchor()?;
+            (
+                staying.get(top).map(|(_, order)| order.clone()),
+                staying
+                    .get(top.saturating_add(1))
+                    .map(|(_, order)| order.clone()),
+            )
+        }
+        "below" => {
+            let (bottom, _) = anchor()?;
+            (
+                bottom
+                    .checked_sub(1)
+                    .and_then(|before| staying.get(before))
+                    .map(|(_, order)| order.clone()),
+                staying.get(bottom).map(|(_, order)| order.clone()),
+            )
+        }
+        "front" => (staying.last().map(|(_, order)| order.clone()), None),
+        "back" => (None, staying.first().map(|(_, order)| order.clone())),
+        "forward" | "backward" => {
+            // Step past the nearest entry that is not moving.
+            let first = all.iter().position(|(id, _)| ids.contains(id)).unwrap_or(0);
+            let last = all
+                .iter()
+                .rposition(|(id, _)| ids.contains(id))
+                .unwrap_or(0);
+            let over = if to == "forward" {
+                all.iter().skip(last).find(|(id, _)| !ids.contains(id))
+            } else {
+                all.iter()
+                    .take(first)
+                    .rev()
+                    .find(|(id, _)| !ids.contains(id))
+            };
+            let Some((over, _)) = over else {
+                return Ok(Vec::new());
+            };
+            let at = staying.iter().position(|(id, _)| id == over).unwrap_or(0);
+            if to == "forward" {
+                (
+                    staying.get(at).map(|(_, order)| order.clone()),
+                    staying
+                        .get(at.saturating_add(1))
+                        .map(|(_, order)| order.clone()),
+                )
+            } else {
+                (
+                    at.checked_sub(1)
+                        .and_then(|before| staying.get(before))
+                        .map(|(_, order)| order.clone()),
+                    staying.get(at).map(|(_, order)| order.clone()),
+                )
+            }
+        }
+        other => {
+            return Err(refuse(format!(
+                "to {other:?} must be front, back, forward, backward, above or below"
+            )));
+        }
+    };
+    let orders = order::sequence(low.as_deref(), high.as_deref(), moving.len());
+    Ok(moving
+        .into_iter()
+        .zip(orders)
+        .map(|((id, _), order)| (id.clone(), order))
+        .collect())
+}
+
+/// Move marks within their layer's stacking order.
+pub(crate) fn arrange_marks(
+    doc: &mut Artwork,
+    art: &Artwork,
+    arrange: &Arrange,
+) -> Result<(), Refusal> {
+    let ids: Vec<String> = units(art, &arrange.ids)?
+        .into_iter()
+        .flatten()
+        .map(|mark| mark.id.clone())
+        .collect();
+    let Some(first) = ids.first().and_then(|id| art.mark(id)) else {
+        return Err(refuse("name existing marks in ids"));
+    };
+    if let Some(other) = ids
+        .iter()
+        .find(|id| art.mark(id).is_none_or(|mark| mark.layer != first.layer))
+    {
+        return Err(refuse(format!(
+            "{other:?} is not a mark on layer {:?}; arrange marks of one layer at a time",
+            first.layer
+        )));
+    }
+    let all: Vec<(String, String)> = art
+        .marks_of(&first.layer)
+        .map(|mark| (mark.id.clone(), mark.order.clone()))
+        .collect();
+    let of: Vec<String> = match &arrange.of {
+        Some(of) => units_of(art, of)?
+            .into_iter()
+            .map(|mark| mark.id.clone())
+            .collect(),
+        None => Vec::new(),
+    };
+    for (id, order) in rearranged(&all, &ids, &arrange.to, &of)? {
+        if let Some(mark) = art.mark(&id) {
+            doc.put_mark(Mark {
+                order,
+                ..mark.clone()
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Remove layer `remove.id` and every mark on it; its mask goes with it.
+pub(crate) fn remove_layer(
+    doc: &mut Artwork,
+    art: &Artwork,
+    remove: &RemoveLayer,
+) -> Result<(), Refusal> {
+    if art.layer(&remove.id).is_none() {
+        return Err(refuse(format!(
+            "there is no layer {:?}; the layers are {}",
+            remove.id,
+            layer_list(art)
+        )));
+    }
+    let mask = art.mask_of(&remove.id).map(|mask| mask.id.clone());
+    for layer in std::iter::once(remove.id.clone()).chain(mask) {
+        crate::selection::remove_layer_marks(doc, art, &layer);
+        doc.drop_layer(&layer);
+    }
+    Ok(())
+}
+
+/// Remove the marks `remove` names, a layer's, or the strokes its path
+/// crosses.
+pub(crate) fn remove_marks(
+    doc: &mut Artwork,
+    art: &Artwork,
+    remove: &RemoveMarks,
+) -> Result<(), Refusal> {
+    let mut ids: Vec<String> = if remove.ids.is_empty() {
+        Vec::new()
+    } else {
+        units(art, &remove.ids)?
+            .into_iter()
+            .flatten()
+            .map(|mark| mark.id.clone())
+            .collect()
+    };
+    if let Some(path) = &remove.along {
+        let layer = match &remove.layer {
+            Some(layer) => Some(target_layer(art, Some(layer))?),
+            None => None,
+        };
+        let crossed = crate::strokes::crossed(art, path, layer.as_deref());
+        if crossed.is_empty() && ids.is_empty() {
+            return Err(refuse(
+                "along crosses no brush stroke on a shown, unlocked layer; look with grid: true to find them",
+            ));
+        }
+        ids.extend(crossed);
+    } else if let Some(layer) = &remove.layer {
+        let layer = target_layer(art, Some(layer))?;
+        ids.extend(art.marks_of(&layer).map(|mark| mark.id.clone()));
+        if ids.is_empty() {
+            return Ok(());
+        }
+    }
+    if ids.is_empty() {
+        return Err(refuse(
+            "name marks or groups in ids, a layer to clear, or a path along",
+        ));
+    }
+    for id in ids {
+        doc.remove_mark(&id);
+    }
+    Ok(())
+}
+
+pub(crate) fn set_artwork(
+    doc: &mut Artwork,
+    art: &Artwork,
+    set: &SetArtwork,
+) -> Result<(), Refusal> {
+    let crop = match (&set.crop, &set.fit) {
+        (Some(_), Some(_)) => return Err(refuse("give crop or fit, not both")),
+        (Some([x, y, width, height]), None) => {
+            Some(ui::vello::kurbo::Rect::new(*x, *y, x + width, y + height))
+        }
+        // Whole units inside what the mark shows, so no sliver of ground
+        // is left along an edge.
+        (None, Some(id)) => {
+            let shown = extent(art, &units_of(art, id)?);
+            Some(ui::vello::kurbo::Rect::new(
+                (shown.x0 - 1e-6).ceil(),
+                (shown.y0 - 1e-6).ceil(),
+                (shown.x1 + 1e-6).floor(),
+                (shown.y1 + 1e-6).floor(),
+            ))
+        }
+        (None, None) => None,
+    };
+    if let Some(crop) = crop {
+        crop_artwork(doc, art, crop)?;
+    }
+    for (value, what) in [(set.width, "width"), (set.height, "height")] {
+        if let Some(value) = value {
+            if !(16.0..=MAX_SIDE).contains(&value) {
+                return Err(refuse(format!("{what} must be within 16..={MAX_SIDE}")));
+            }
+            if what == "width" {
+                doc.width = value;
+            } else {
+                doc.height = value;
+            }
+        }
+    }
+    if let Some(title) = &set.title {
+        doc.title.clone_from(title);
+    }
+    if set.texture.is_some() || set.ground_colour.is_some() {
+        let mut ground = doc.ground.clone();
+        if let Some(texture) = &set.texture {
+            if tilo_wet_media::Texture::parse(texture).is_none() {
+                return Err(refuse(format!(
+                    "texture {texture:?} must be one of {}",
+                    tilo_wet_media::Texture::names()
+                )));
+            }
+            ground.texture.clone_from(texture);
+        }
+        if let Some(colour) = &set.ground_colour {
+            if tilo_wet_media::colour::parse_hex(colour).is_none() {
+                return Err(refuse(format!("ground_colour {colour:?} must be #rrggbb")));
+            }
+            ground.colour.clone_from(colour);
+        }
+        doc.ground = ground;
+    }
+    Ok(())
+}
+
+impl NewArtwork {
+    /// The blank artwork this starts: a size and a start resolved, each
+    /// overridden by what is given exactly.
+    ///
+    /// # Errors
+    /// Names the size, start, side, texture, colour or medium that is not
+    /// one of the choices.
+    pub fn file(&self) -> Result<crate::document::ArtworkFile, Refusal> {
+        use crate::document::{self, ArtworkFile, FileLayer};
+        let size = match &self.size {
+            Some(id) => Some(document::size(id).ok_or_else(|| {
+                refuse(format!(
+                    "size {id:?} must be one of {}",
+                    document::SIZES.map(|size| size.id).join(", ")
+                ))
+            })?),
+            None => None,
+        };
+        let start = match &self.start {
+            Some(id) => document::start(id).ok_or_else(|| {
+                refuse(format!(
+                    "start {id:?} must be one of {}",
+                    document::STARTS.map(|start| start.id).join(", ")
+                ))
+            })?,
+            None => document::STARTS[0],
+        };
+        let defaults = Artwork::default();
+        let (mut width, mut height) = size.map_or((defaults.width, defaults.height), |size| {
+            (size.width, size.height)
+        });
+        if self
+            .landscape
+            .is_some_and(|landscape| landscape != (width > height))
+        {
+            std::mem::swap(&mut width, &mut height);
+        }
+        let width = self.width.unwrap_or(width);
+        let height = self.height.unwrap_or(height);
+        for (value, what) in [(width, "width"), (height, "height")] {
+            if !(16.0..=MAX_SIDE).contains(&value) {
+                return Err(refuse(format!("{what} must be within 16..={MAX_SIDE}")));
+            }
+        }
+        let texture = self.texture.clone().unwrap_or_else(|| start.texture.into());
+        if tilo_wet_media::Texture::parse(&texture).is_none() {
+            return Err(refuse(format!(
+                "texture {texture:?} must be one of {}",
+                tilo_wet_media::Texture::names()
+            )));
+        }
+        let colour = self
+            .ground_colour
+            .clone()
+            .unwrap_or_else(|| start.colour.into());
+        if tilo_wet_media::colour::parse_hex(&colour).is_none() {
+            return Err(refuse(format!("ground_colour {colour:?} must be #rrggbb")));
+        }
+        let medium = self.medium.clone().unwrap_or_else(|| start.medium.into());
+        check_medium(&Artwork::default(), &medium)?;
+        let name = if medium.is_empty() {
+            "Layer 1".to_owned()
+        } else {
+            // "Watercolour, washes" names its layer "Watercolour".
+            media::resolve(&Artwork::default(), &medium).map_or_else(
+                || medium.clone(),
+                |spec| {
+                    spec.label
+                        .split(',')
+                        .next()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_owned()
+                },
+            )
+        };
+        Ok(ArtworkFile {
+            title: self.title.clone().unwrap_or_default(),
+            width,
+            height,
+            ground: crate::model::Ground { texture, colour },
+            layers: vec![FileLayer {
+                id: "layer-1".into(),
+                group: String::new(),
+                name,
+                medium,
+                opacity: 1.0,
+                visible: true,
+                texture: 0.0,
+                locked: false,
+                mask_of: String::new(),
+                base: 1.0,
+                invert: false,
+                clip: false,
+                unlinked: false,
+                adjust: None,
+            }],
+            ..ArtworkFile::of(&Artwork::default())
+        })
+    }
+}
+
+/// Refuse a file whose sides, marks, layer ids or media are not valid.
+fn check_file(file: &crate::document::ArtworkFile) -> Result<(), Refusal> {
+    for (value, what) in [(file.width, "width"), (file.height, "height")] {
+        if !(16.0..=MAX_SIDE).contains(&value) {
+            return Err(refuse(format!("{what} must be within 16..={MAX_SIDE}")));
+        }
+    }
+    if file.marks.len() > crate::model::MAX_MARKS {
+        return Err(refuse(format!(
+            "the artwork has {} marks, more than the {} one artwork holds",
+            file.marks.len(),
+            crate::model::MAX_MARKS
+        )));
+    }
+    for layer in &file.layers {
+        if !valid_id(&layer.id) {
+            return Err(refuse(format!(
+                "layer id {:?} must be 1-48 of a-z, 0-9, '-' and '_'",
+                layer.id
+            )));
+        }
+    }
+    for medium in file.media.values() {
+        medium.validate().map_err(refuse)?;
+    }
+    let with_media = Artwork {
+        media: file.media.clone().into(),
+        ..Artwork::default()
+    };
+    for layer in &file.layers {
+        check_medium(&with_media, &layer.medium)?;
+    }
+    for mark in &file.marks {
+        if !file.layers.iter().any(|layer| layer.id == mark.layer) {
+            return Err(refuse(format!(
+                "mark {:?} is on layer {:?}, which the artwork does not have",
+                mark.id, mark.layer
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Make the artwork `file`: everything the artwork had is removed and the
+/// file's title, size, ground, layers, marks and media written in their
+/// order.
+pub(crate) fn replace(
+    doc: &mut Artwork,
+    file: &crate::document::ArtworkFile,
+) -> Result<(), Refusal> {
+    check_file(file)?;
+    let old = doc.settled();
+    for mark in &old.marks {
+        doc.remove_mark(&mark.id);
+    }
+    for layer in &old.layers {
+        doc.drop_layer(&layer.id);
+    }
+    for id in old.media.keys() {
+        doc.media.remove(id);
+    }
+    doc.reference = None;
+    doc.selection = None;
+    doc.title.clone_from(&file.title);
+    doc.width = file.width;
+    doc.height = file.height;
+    doc.ground = file.ground.clone();
+    for medium in file.media.values() {
+        doc.media.insert(medium.id.clone(), medium.clone());
+    }
+    let mut below: Option<String> = None;
+    for layer in &file.layers {
+        let order = order::between(below.as_deref(), None);
+        doc.put_layer(Layer {
+            id: layer.id.clone(),
+            name: layer.name.clone(),
+            group: layer.group.clone(),
+            order: order.clone(),
+            medium: layer.medium.clone(),
+            opacity: layer.opacity.clamp(0.0, 1.0),
+            visible: layer.visible,
+            texture: layer.texture.clamp(0.0, 1.0),
+            locked: layer.locked,
+            mask_of: layer.mask_of.clone(),
+            base: layer.base.clamp(0.0, 1.0),
+            invert: layer.invert,
+            clip: layer.clip,
+            unlinked: layer.unlinked,
+            adjust: layer.adjust.clone(),
+        });
+        below = Some(order);
+    }
+    let mut last: BTreeMap<&str, String> = BTreeMap::new();
+    for mark in &file.marks {
+        let order = order::between(last.get(mark.layer.as_str()).map(String::as_str), None);
+        doc.put_mark(Mark::of_body(
+            mark.id.clone(),
+            mark.layer.clone(),
+            order.clone(),
+            mark.body.clone(),
+        ));
+        last.insert(&mark.layer, order);
+    }
+    Ok(())
+}
+
+/// The artwork cut down to `area`: its corner becomes the origin, every
+/// mark and the reference moving with it.
+fn crop_artwork(
+    doc: &mut Artwork,
+    art: &Artwork,
+    area: ui::vello::kurbo::Rect,
+) -> Result<(), Refusal> {
+    // Whole units, so the picture an export makes is exactly the area.
+    let (x0, y0) = (area.x0.round(), area.y0.round());
+    let (width, height) = ((area.x1.round() - x0), (area.y1.round() - y0));
+    if ![x0, y0, width, height]
+        .iter()
+        .all(|value| value.is_finite())
+        || !(16.0..=MAX_SIDE).contains(&width)
+        || !(16.0..=MAX_SIDE).contains(&height)
+    {
+        return Err(refuse(format!(
+            "a crop is [x, y, width, height] with width and height 16 to {MAX_SIDE}"
+        )));
+    }
+    doc.width = width;
+    doc.height = height;
+    if x0 != 0.0 || y0 != 0.0 {
+        for mark in &art.marks {
+            doc.put_mark(mark.moved(-x0, -y0));
+        }
+        if let Some(reference) = &art.reference
+            && let Some([x, y, w, h]) = reference.frame
+        {
+            let moved = Reference {
+                frame: Some([x - x0, y - y0, w, h]),
+                ..reference.clone()
+            };
+            doc.reference = Some(moved);
+        }
+    }
+    Ok(())
+}
+
+impl Open {
+    /// Open the picture, kept as content, whose size is `pixels`.
+    pub(crate) fn apply(
+        &self,
+        doc: &mut Artwork,
+        art: &Artwork,
+        pixels: [u32; 2],
+    ) -> Result<(), Refusal> {
+        let [width, height] = pixels.map(f64::from);
+        if width < 1.0 || height < 1.0 {
+            return Err(refuse("the picture has no pixels"));
+        }
+        // A unit to a pixel, unless the picture is larger than an artwork
+        // may be; never smaller than an artwork may be.
+        let fit = (MAX_SIDE / width.max(height)).min(1.0);
+        let fit = fit.max(16.0 / width.min(height));
+        let (width, height) = ((width * fit).round(), (height * fit).round());
+        for mark in &art.marks {
+            doc.remove_mark(&mark.id);
+        }
+        for layer in &art.layers {
+            doc.drop_layer(&layer.id);
+        }
+        for medium in art.media.keys() {
+            doc.media.remove(medium);
+        }
+        doc.reference = None;
+        doc.width = width.clamp(16.0, MAX_SIDE);
+        doc.height = height.clamp(16.0, MAX_SIDE);
+        doc.title = self.title.clone().unwrap_or_default();
+        doc.ground = crate::model::Ground {
+            texture: "smooth".into(),
+            colour: "#ffffff".into(),
+        };
+        let fresh = doc.settled();
+        add_layer(
+            doc,
+            &fresh,
+            &AddLayer {
+                id: Some("layer-1".into()),
+                name: "Layer 1".into(),
+                ..AddLayer::default()
+            },
+        )?;
+        let fresh = doc.settled();
+        let shape = Shape::Image {
+            src: self.path.clone(),
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+            crop: None,
+            straighten: None,
+        };
+        add_marks(
+            doc,
+            &fresh,
+            "layer-1",
+            vec![placed(
+                "picture".into(),
+                self.title.clone().unwrap_or_default(),
+                shape,
+                Style::default(),
+            )],
+        )
+    }
+}
+
+fn check_medium(art: &Artwork, medium: &str) -> Result<(), Refusal> {
+    if medium.is_empty() || media::resolve(art, medium).is_some() {
+        return Ok(());
+    }
+    let known: Vec<String> = media::available(art)
+        .into_iter()
+        .map(|medium| medium.id)
+        .collect();
+    Err(refuse(format!(
+        "there is no medium {medium:?}; the media are {} (or empty for plain)",
+        known.join(", ")
+    )))
+}
+
+pub(crate) fn add_layer(doc: &mut Artwork, art: &Artwork, add: &AddLayer) -> Result<(), Refusal> {
+    let id = add
+        .id
+        .clone()
+        .unwrap_or_else(|| derived_id("layer", add, art.layers.len()));
+    if !valid_id(&id) {
+        return Err(refuse(format!(
+            "id {id:?} must be 1-48 of a-z, 0-9, '-' and '_'"
+        )));
+    }
+    if art.layer(&id).is_some() {
+        return Err(refuse(format!("a layer {id:?} already exists")));
+    }
+    let medium = add.medium.clone().unwrap_or_default();
+    check_medium(art, &medium)?;
+    check_unit(add.opacity, "opacity")?;
+    check_unit(add.texture, "texture")?;
+    let order = match &add.above {
+        Some(above) => {
+            let at = art
+                .layers
+                .iter()
+                .position(|layer| layer.id == *above)
+                .ok_or_else(|| refuse(format!("there is no layer {above:?} to go above")))?;
+            order::between(
+                art.layers.get(at).map(|layer| layer.order.as_str()),
+                art.layers
+                    .get(at.saturating_add(1))
+                    .map(|layer| layer.order.as_str()),
+            )
+        }
+        None => order::between(art.layers.last().map(|layer| layer.order.as_str()), None),
+    };
+    doc.put_layer(Layer {
+        id,
+        name: if add.name.trim().is_empty() {
+            numbered_name(art.layers.iter().map(|layer| layer.name.as_str()), "Layer")
+        } else {
+            add.name.clone()
+        },
+        order,
+        medium,
+        opacity: add.opacity.unwrap_or(1.0),
+        visible: true,
+        texture: add.texture.unwrap_or(0.0),
+        locked: false,
+        ..Layer::default()
+    });
+    Ok(())
+}
+
+pub(crate) fn edit_layer(
+    doc: &mut Artwork,
+    art: &Artwork,
+    edit: &EditLayer,
+) -> Result<(), Refusal> {
+    let mut layer = art.layer(&edit.id).cloned().ok_or_else(|| {
+        refuse(format!(
+            "there is no layer {:?}; the layers are {}",
+            edit.id,
+            layer_list(art)
+        ))
+    })?;
+    if let Some(name) = &edit.name {
+        layer.name.clone_from(name);
+    }
+    if let Some(group) = &edit.group {
+        if layer.is_mask() {
+            return Err(refuse("a mask belongs to its layer’s folder"));
+        }
+        let group = group.trim();
+        if group.chars().count() > 80 {
+            return Err(refuse("a layer folder name must be at most 80 characters"));
+        }
+        layer.group = group.into();
+    }
+    if let Some(medium) = &edit.medium {
+        check_medium(art, medium)?;
+        if layer.is_mask() && !medium.is_empty() {
+            return Err(refuse("a mask is drawn in greys, not painted in a medium"));
+        }
+        layer.medium.clone_from(medium);
+    }
+    if let Some(clip) = edit.clip {
+        if layer.is_mask() {
+            return Err(refuse("a mask cannot be clipped; clip the layer it masks"));
+        }
+        layer.clip = clip;
+    }
+    if let Some(invert) = edit.invert {
+        // A layer's mask is inverted by naming the layer or the mask.
+        match art.mask_of(&layer.id) {
+            Some(mask) if !layer.is_mask() => doc.put_layer(Layer {
+                invert,
+                ..mask.clone()
+            }),
+            _ if layer.is_mask() => layer.invert = invert,
+            _ => {
+                return Err(refuse(format!(
+                    "{:?} has no mask to invert; give it one with mask",
+                    layer.id
+                )));
+            }
+        }
+    }
+    check_unit(edit.opacity, "opacity")?;
+    if let Some(opacity) = edit.opacity {
+        layer.opacity = opacity;
+    }
+    if let Some(visible) = edit.visible {
+        layer.visible = visible;
+    }
+    check_unit(edit.texture, "texture")?;
+    if let Some(texture) = edit.texture {
+        layer.texture = texture;
+    }
+    if let Some(locked) = edit.locked {
+        layer.locked = locked;
+    }
+    if let Some(adjust) = &edit.adjust {
+        if let Some(problem) = adjust.problem() {
+            return Err(refuse(problem));
+        }
+        layer.adjust = layer.adjust.clone().unwrap_or_default().merged(adjust);
+    }
+    if let Some(to) = &edit.to {
+        let all: Vec<(String, String)> = art
+            .layers
+            .iter()
+            .map(|layer| (layer.id.clone(), layer.order.clone()))
+            .collect();
+        if let Some((_, order)) = rearranged(&all, std::slice::from_ref(&layer.id), to, &[])?.pop()
+        {
+            layer.order = order;
+        }
+    }
+    doc.put_layer(layer.clone());
+    if let Some(mask) = &edit.mask {
+        crate::selection::edit_mask(doc, &doc.settled(), &layer.id, mask)?;
+    }
+    Ok(())
+}
+
+impl Align {
+    pub(crate) fn apply(&self, doc: &mut Artwork, art: &Artwork) -> Result<(), Refusal> {
+        use ui::vello::kurbo::Rect;
+        let units = units(art, &self.ids)?;
+        if self.edge.is_none() && self.distribute.is_none() {
+            return Err(refuse(
+                "give an edge (left, center, right, top, middle, bottom), distribute (horizontal, vertical) or both",
+            ));
+        }
+        let boxes: Vec<Rect> = units.iter().map(|unit| extent(art, unit)).collect();
+        let target = match self.to.as_deref() {
+            None => boxes
+                .iter()
+                .copied()
+                .reduce(|a, b| a.union(b))
+                .unwrap_or_default(),
+            Some("artwork") => art.bounds(),
+            Some(id) => {
+                let unit: Vec<&Mark> = units_of(art, id)?;
+                extent(art, &unit)
+            }
+        };
+        let mut shifts = vec![(0.0, 0.0); boxes.len()];
+        if let Some(edge) = &self.edge {
+            for (shift, b) in shifts.iter_mut().zip(&boxes) {
+                match edge.as_str() {
+                    "left" => shift.0 = target.x0 - b.x0,
+                    "center" => shift.0 = target.center().x - b.center().x,
+                    "right" => shift.0 = target.x1 - b.x1,
+                    "top" => shift.1 = target.y0 - b.y0,
+                    "middle" => shift.1 = target.center().y - b.center().y,
+                    "bottom" => shift.1 = target.y1 - b.y1,
+                    other => {
+                        return Err(refuse(format!(
+                            "edge {other:?} must be left, center, right, top, middle or bottom"
+                        )));
+                    }
+                }
+            }
+        }
+        if let Some(axis) = &self.distribute {
+            let horizontal = match axis.as_str() {
+                "horizontal" => true,
+                "vertical" => false,
+                other => {
+                    return Err(refuse(format!(
+                        "distribute {other:?} must be horizontal or vertical"
+                    )));
+                }
+            };
+            if boxes.len() < 2 && self.to.is_none() {
+                return Err(refuse(
+                    "distribute needs two or more marks or groups, or a `to` to spread across",
+                ));
+            }
+            let start = |b: &Rect| if horizontal { b.x0 } else { b.y0 };
+            let length = |b: &Rect| if horizontal { b.width() } else { b.height() };
+            let mut order: Vec<usize> = (0..boxes.len()).collect();
+            order.sort_by(|a, b| {
+                let centre =
+                    |index: usize| boxes.get(index).map_or(0.0, |b| start(b) + length(b) / 2.0);
+                centre(*a).total_cmp(&centre(*b))
+            });
+            let (from, to) = if self.to.is_some() {
+                (start(&target), start(&target) + length(&target))
+            } else {
+                let all = boxes
+                    .iter()
+                    .copied()
+                    .reduce(|a, b| a.union(b))
+                    .unwrap_or_default();
+                (start(&all), start(&all) + length(&all))
+            };
+            let total: f64 = boxes.iter().map(length).sum();
+            let gaps = f64_of_usize(boxes.len().saturating_sub(1)).max(1.0);
+            let gap = (to - from - total) / gaps;
+            let mut cursor = if boxes.len() == 1 {
+                from + (to - from - total) / 2.0
+            } else {
+                from
+            };
+            for index in order {
+                if let (Some(b), Some(shift)) = (boxes.get(index), shifts.get_mut(index)) {
+                    let moved = cursor - start(b);
+                    if horizontal {
+                        shift.0 = moved;
+                    } else {
+                        shift.1 = moved;
+                    }
+                    cursor += length(b) + gap;
+                }
+            }
+        }
+        for (unit, (dx, dy)) in units.into_iter().zip(shifts) {
+            if dx.abs() < 1e-9 && dy.abs() < 1e-9 {
+                continue;
+            }
+            for mark in unit {
+                doc.put_mark(mark.moved(dx, dy));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The members `id` addresses: a mark, or a group's members.
+fn units_of<'a>(art: &'a Artwork, id: &str) -> Result<Vec<&'a Mark>, Refusal> {
+    Ok(units(art, &[id.to_owned()])?
+        .into_iter()
+        .flatten()
+        .collect())
+}
+
+pub(crate) fn set_reference(
+    doc: &mut Artwork,
+    art: &Artwork,
+    set: &SetReference,
+) -> Result<(), Refusal> {
+    if set.remove == Some(true) {
+        if art.reference.is_some() {
+            doc.reference = None;
+        }
+        return Ok(());
+    }
+    let mut reference = match (&art.reference, &set.image) {
+        (_, Some(image)) => {
+            if ui::tilo_actions::content_hash(image).is_none() {
+                return Err(refuse(format!(
+                    "image {image:?} must be an absolute path to a PNG or JPEG, a content address, or data:image/png;base64,…"
+                )));
+            }
+            Reference {
+                image: image.clone(),
+                frame: None,
+                opacity: art.reference.as_ref().map_or(0.5, |old| old.opacity),
+                visible: true,
+            }
+        }
+        (Some(existing), None) => existing.clone(),
+        (None, None) => {
+            return Err(refuse(
+                "there is no reference yet: give image, a PNG or JPEG path, content address or data: URI",
+            ));
+        }
+    };
+    if let Some(frame) = set.frame {
+        if !frame
+            .iter()
+            .all(|value| value.is_finite() && value.abs() <= MAX_SIDE * 4.0)
+            || frame[2] <= 0.0
+            || frame[3] <= 0.0
+        {
+            return Err(refuse(
+                "frame is [x, y, width, height] with a positive width and height",
+            ));
+        }
+        reference.frame = Some(frame);
+    }
+    check_unit(set.opacity, "opacity")?;
+    if let Some(opacity) = set.opacity {
+        reference.opacity = opacity;
+    }
+    if let Some(visible) = set.visible {
+        reference.visible = visible;
+    }
+    doc.reference = Some(reference);
+    Ok(())
+}

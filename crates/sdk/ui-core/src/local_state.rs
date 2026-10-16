@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
 
+use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tokio::task::AbortHandle;
 
 pub use crate::wake::WakeHandle;
@@ -48,11 +49,7 @@ impl<T> LocalState<T> {
 
     /// Read the current value without exposing the backing lock.
     pub fn with<R>(&self, read: impl FnOnce(&T) -> R) -> R {
-        let value = self
-            .inner
-            .value
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let value = self.inner.value.read_recover();
         read(&value)
     }
 
@@ -77,11 +74,7 @@ impl<T> LocalState<T> {
         if !self.inner.wake.authorize_publication() {
             return None;
         }
-        let mut current = self
-            .inner
-            .value
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut current = self.inner.value.write_recover();
         let revision = self.next_revision()?;
         *current = value;
         self.inner.revision.store(revision, Ordering::Release);
@@ -103,11 +96,7 @@ impl<T> LocalState<T> {
         if !self.inner.wake.authorize_publication() {
             return false;
         }
-        let mut value = self
-            .inner
-            .value
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut value = self.inner.value.write_recover();
         let Some(revision) = self.next_revision() else {
             return false;
         };
@@ -117,7 +106,8 @@ impl<T> LocalState<T> {
         true
     }
 
-    pub(crate) fn revision(&self) -> u64 {
+    /// Monotonic local edit revision for correlating asynchronous receipts.
+    pub fn revision(&self) -> u64 {
         self.inner.revision.load(Ordering::Acquire)
     }
 
@@ -444,13 +434,7 @@ impl<T> LatestTask<T> {
     /// Abort the future started by [`Self::spawn`], if one is running, and
     /// remember `next` as the one to abort later.
     fn replace_task(&self, next: Option<AbortHandle>) {
-        let previous = std::mem::replace(
-            &mut *self
-                .task
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            next,
-        );
+        let previous = std::mem::replace(&mut *self.task.lock_recover(), next);
         if let Some(previous) = previous {
             previous.abort();
         }
@@ -516,10 +500,7 @@ impl<T> LatestTask<T> {
     where
         T: Send + Sync + 'static,
     {
-        let mut generation = self
-            .generation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut generation = self.generation.lock_recover();
         let run = generation.checked_add(1).filter(|next| *next != u64::MAX)?;
         self.replace_task(None);
         // Keep generation and state publication in one critical section so a
@@ -544,10 +525,7 @@ impl<T> LatestTask<T> {
 
     /// Fallible form of [`Self::cancel`].
     pub fn try_cancel(&self, cancelled: T) -> bool {
-        let mut generation = self
-            .generation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut generation = self.generation.lock_recover();
         let Some(next) = generation.checked_add(1) else {
             return false;
         };
@@ -578,10 +556,7 @@ impl<T> TaskCompletion<T> {
         if self.run == 0 || !self.writer.wake.is_active() {
             return false;
         }
-        let generation = self
-            .generation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = self.generation.lock_recover();
         *generation == self.run
     }
 
@@ -589,10 +564,7 @@ impl<T> TaskCompletion<T> {
     /// Returns whether the value was accepted. The captured owner may close
     /// after authorization and suppress notification without revoking it.
     pub fn complete(self, value: T) -> bool {
-        let generation = self
-            .generation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let generation = self.generation.lock_recover();
         if self.run == 0 || *generation != self.run {
             return false;
         }
@@ -1148,10 +1120,13 @@ mod tests {
             on_ui_thread(|scope, wakes| {
                 let ui_thread = std::thread::current().id();
                 let mut request = LatestRequest::new();
-                assert!(request.spawn(async {
+                // Held until the checks below, so the result cannot already
+                // be there when they look.
+                let (release, gate) = tokio::sync::oneshot::channel::<()>();
+                assert!(request.spawn(async move {
                     // Cross an await point, so a runtime driven from the caller
                     // would have to be polled again here.
-                    tokio::task::yield_now().await;
+                    let _ = gate.await;
                     let current = std::thread::current();
                     (
                         current.id(),
@@ -1163,6 +1138,7 @@ mod tests {
                 // future inline.
                 assert!(!tilo_rt::in_runtime());
                 assert!(request.try_take().is_none());
+                release.send(()).unwrap();
 
                 let event = wakes.recv_timeout(WAKE_DEADLINE).unwrap();
                 assert!(scope.accepts(&event));
@@ -1244,5 +1220,44 @@ mod tests {
         fn drop(&mut self) {
             let _ = self.0.send(());
         }
+    }
+}
+
+/// The queue a view's controls write what they ask for to, and its app
+/// applies in one ordered place after the event: a click, a key and an
+/// accessibility action all become the same intent. Clones share the queue.
+pub struct Intents<T>(std::rc::Rc<std::cell::RefCell<Vec<T>>>);
+
+impl<T> Clone for Intents<T> {
+    fn clone(&self) -> Self {
+        Self(std::rc::Rc::clone(&self.0))
+    }
+}
+
+impl<T> Default for Intents<T> {
+    fn default() -> Self {
+        Self(std::rc::Rc::default())
+    }
+}
+
+impl<T> Intents<T> {
+    /// Queue `intent`.
+    pub fn push(&self, intent: T) {
+        self.0.borrow_mut().push(intent);
+    }
+
+    /// Everything queued, oldest first, leaving the queue empty.
+    #[must_use]
+    pub fn take(&self) -> Vec<T> {
+        std::mem::take(&mut *self.0.borrow_mut())
+    }
+}
+
+impl<T: Clone + 'static> Intents<T> {
+    /// A callback that queues `intent` each time it runs, for a control's
+    /// `on_view` / `on_effect`.
+    pub fn sender(&self, intent: T) -> impl FnMut() + 'static {
+        let intents = self.clone();
+        move || intents.push(intent.clone())
     }
 }

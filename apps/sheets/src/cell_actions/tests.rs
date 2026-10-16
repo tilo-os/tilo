@@ -1,101 +1,76 @@
 use std::io::Read;
 
-use automerge::AutoCommit;
 use serde_json::json;
-use tilo_actions::{ActionRegistry, Resource};
+use ui::tilo_resource::{Id, Invoke, Replica};
 
 use super::*;
-use crate::actions::{SearchableSheet, SheetsResourceCtx, provide_resources};
-use crate::model::format_value;
+use crate::resource::verbs;
+use crate::workbook::Workbook;
 
-fn workbook(rows: &[&[&str]]) -> AutoCommit {
-    let mut doc = AutoCommit::new();
-    let sheet = SheetsDoc::add_sheet(&mut doc, "Data");
-    for (r, row) in (0u32..).zip(rows) {
-        for (c, raw) in (0u32..).zip(row.iter()) {
-            SheetsDoc::set_cell_raw(&mut doc, sheet, (c, r), raw);
-        }
-    }
-    doc.commit();
-    doc
-}
-
-/// The resource tree as the app publishes it, with the searchable cells the
-/// live app keeps (sort reads them).
-fn sheet_resource(doc: &AutoCommit) -> Resource {
-    let mut scratch = doc.clone();
-    let snap = SheetsDoc::snapshot_sheet(&mut scratch, 0, Currency::USD);
-    let values = crate::formula::recalculate(&snap.raw);
-    let cells = snap
-        .raw
-        .iter()
-        .map(|(&(col, row), raw)| SearchableCell {
-            col,
-            row,
-            raw: raw.clone(),
-            display: values.get(&(col, row)).map_or_else(String::new, |value| {
-                format_value(value, CellFormat::General)
-            }),
+/// A workbook whose first sheet, "Data", holds `rows` from A1.
+fn workbook(rows: &[&[&str]]) -> Replica<Workbook> {
+    let mut book = Replica::<Workbook>::new();
+    let cells = (0u32..)
+        .zip(rows)
+        .flat_map(|(r, row)| {
+            (0u32..)
+                .zip(row.iter())
+                .map(move |(c, raw)| CellWrite::at((c, r), *raw, None))
         })
         .collect();
-    let ctx = SheetsResourceCtx {
-        sheet_names: SheetsDoc::sheet_names(&mut scratch),
-        searchable_sheets: vec![SearchableSheet {
-            id: SheetsDoc::sheet_resource_id(doc, 0).unwrap(),
-            name: snap.name,
+    book.apply(Workbook::IMPORT_SHEETS.with(verbs::ImportSheets {
+        sheets: vec![crate::resource::ImportedSheet {
+            name: "Data".into(),
             cells,
         }],
-        palette_actions: Vec::new(),
-        selection: None,
-    };
-    provide_resources(&ctx, doc)
-        .into_iter()
-        .flat_map(|workbook| workbook.children)
-        .find(|child| child.kind == "sheets.sheet")
-        .unwrap()
+        source: None,
+    }))
+    .unwrap();
+    book
 }
 
-fn build(doc: &AutoCommit, action: &str, args: &serde_json::Value) -> EncodedAction {
-    let resource = sheet_resource(doc);
-    let spec = resource
-        .actions
-        .iter()
-        .find(|spec| spec.id == action)
+fn sheet(book: &Replica<Workbook>) -> Id {
+    book.state().unwrap().sheets.ids().next().unwrap().clone()
+}
+
+fn snapshot(book: &Replica<Workbook>) -> SheetSnapshot {
+    book.state()
+        .unwrap()
+        .sheets
+        .values()
+        .next()
+        .unwrap()
+        .snapshot()
+}
+
+fn read_back(book: &Replica<Workbook>, range: Option<&str>) -> serde_json::Value {
+    read(&snapshot(book), range).unwrap()
+}
+
+fn write(book: &mut Replica<Workbook>, cells: Vec<CellWrite>) {
+    let sheet = sheet(book);
+    book.apply(Workbook::WRITE_CELLS.with(verbs::WriteCells { sheet, cells }))
         .unwrap();
-    spec.build_json(args.as_object().unwrap()).unwrap()
 }
 
-fn invoke(doc: &mut AutoCommit, action: &str, args: &serde_json::Value) {
-    let encoded = build(doc, action, args);
-    assert_ne!(
-        encoded.type_id,
-        tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
-        "{action} refused: {}",
-        String::from_utf8_lossy(&encoded.payload)
-    );
-    let mut registry = ActionRegistry::new();
-    crate::actions::register(&mut registry);
-    let decoded = registry.decode(&encoded).unwrap();
-    tilo_actions::apply_local(doc, decoded.as_ref(), encoded).unwrap();
+fn format(
+    book: &mut Replica<Workbook>,
+    range: &str,
+    format: Option<CellFormat>,
+    bold: Option<bool>,
+) {
+    let sheet = sheet(book);
+    book.apply(Workbook::FORMAT_CELLS.with(verbs::FormatCells {
+        sheet,
+        range: range.into(),
+        format,
+        bold,
+    }))
+    .unwrap();
 }
 
-fn read(doc: &AutoCommit, range: Option<&str>) -> serde_json::Value {
-    let resource = sheet_resource(doc);
-    let encoded = build(
-        doc,
-        "read-cells",
-        &range.map_or_else(|| json!({}), |range| json!({ "range": range })),
-    );
-    assert_eq!(encoded.type_id, READ_OPERATION_TYPE);
-    validate_read(&resource, &encoded.payload).unwrap();
-    project_read(doc, &doc.clone().get_heads(), &encoded.payload)
-        .unwrap()
-        .content
-}
-
-fn raws(doc: &AutoCommit) -> Vec<Vec<String>> {
-    let mut scratch = doc.clone();
-    let snap = SheetsDoc::snapshot_sheet(&mut scratch, 0, Currency::USD);
+fn raws(book: &Replica<Workbook>) -> Vec<Vec<String>> {
+    let snap = snapshot(book);
     let rows = snap.raw.keys().map(|addr| addr.1).max().unwrap_or(0);
     let cols = snap.raw.keys().map(|addr| addr.0).max().unwrap_or(0);
     (0..=rows)
@@ -107,35 +82,32 @@ fn raws(doc: &AutoCommit) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// An `open` of a workbook answers the used cells through the one action a
-/// sheet declares as its document's read.
-#[test]
-fn read_cells_is_the_sheets_declared_document_read() {
-    let doc = workbook(&[&["Region", "Q1"], &["North", "120"]]);
-    let readers: Vec<_> = sheet_resource(&doc)
-        .actions
-        .iter()
-        .filter(|spec| spec.contract.reads_document())
-        .map(|spec| spec.id.clone())
-        .collect();
-    assert_eq!(readers, ["read-cells"]);
-    assert_eq!(read(&doc, None)["range"], "A1:B2");
+fn cell(reference: &str, input: &str) -> CellWrite {
+    CellWrite {
+        cell: reference.into(),
+        input: Some(input.into()),
+        ..CellWrite::default()
+    }
 }
 
 #[test]
-fn set_cells_writes_values_and_formulas_that_read_back_computed() {
-    let mut doc = workbook(&[&["Region", "Q1"], &["North", "120"], &["South", "90"]]);
-    invoke(
-        &mut doc,
-        "set-cells",
-        &json!({"start": "A4", "rows": [["Total", "=SUM(B2:B3)"]]}),
+fn a_read_answers_the_used_cells() {
+    let book = workbook(&[&["Region", "Q1"], &["North", "120"]]);
+    assert_eq!(read_back(&book, None)["range"], "A1:B2");
+}
+
+#[test]
+fn written_values_and_formulas_read_back_computed() {
+    let mut book = workbook(&[&["Region", "Q1"], &["North", "120"], &["South", "90"]]);
+    write(
+        &mut book,
+        vec![cell("A4", "Total"), cell("B4", "=SUM(B2:B3)")],
     );
-    invoke(
-        &mut doc,
-        "set-cells",
-        &json!({"start": "C1", "rows": [["Q2"], [135], [null], [true]]}),
+    write(
+        &mut book,
+        vec![cell("C1", "Q2"), cell("C2", "135"), cell("C4", "TRUE")],
     );
-    let page = read(&doc, None);
+    let page = read_back(&book, None);
     assert_eq!(page["range"], "A1:C4");
     assert_eq!(
         page["rows"],
@@ -147,26 +119,22 @@ fn set_cells_writes_values_and_formulas_that_read_back_computed() {
         ])
     );
     assert_eq!(page["formulas"], json!({"B4": "=SUM(B2:B3)"}));
-    assert_eq!(read(&doc, Some("B4"))["rows"], json!([[210.0]]));
+    assert_eq!(read_back(&book, Some("B4"))["rows"], json!([[210.0]]));
 }
 
 #[test]
 fn bold_is_stored_read_back_and_exported_to_xlsx() {
-    let mut doc = workbook(&[&["Region", "Q1"], &["North", "120"]]);
-    invoke(
-        &mut doc,
-        "format-cells",
-        &json!({"range": "A1:B1", "bold": true}),
+    let mut book = workbook(&[&["Region", "Q1"], &["North", "120"]]);
+    format(&mut book, "A1:B1", None, Some(true));
+    format(
+        &mut book,
+        "B2",
+        Some(CellFormat::Currency(tilo_locale::Currency::USD)),
+        None,
     );
-    invoke(
-        &mut doc,
-        "format-cells",
-        &json!({"range": "B2", "format": "currency"}),
-    );
-    assert_eq!(read(&doc, None)["bold"], json!(["A1", "B1"]));
+    assert_eq!(read_back(&book, None)["bold"], json!(["A1", "B1"]));
 
-    let mut scratch = doc.clone();
-    let snap = SheetsDoc::snapshot_sheet(&mut scratch, 0, Currency::USD);
+    let snap = snapshot(&book);
     let values = crate::formula::recalculate(&snap.raw);
     let table =
         crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &snap.fmt, &values, &snap.bold);
@@ -204,25 +172,31 @@ fn bold_is_stored_read_back_and_exported_to_xlsx() {
         "{styles}"
     );
 
-    invoke(
-        &mut doc,
-        "format-cells",
-        &json!({"range": "A1", "bold": false}),
-    );
-    assert_eq!(read(&doc, None)["bold"], json!(["B1"]));
+    format(&mut book, "A1", None, Some(false));
+    assert_eq!(read_back(&book, None)["bold"], json!(["B1"]));
 }
 
 #[test]
 fn sort_rows_reorders_by_a_column_and_moves_formulas_with_their_row() {
-    let mut doc = workbook(&[
+    let mut book = workbook(&[
         &["name", "signed_up", "n"],
         &["Ada", "2026-03-02", "=ROW()"],
         &["Grace", "2026-01-15", "1"],
         &["Alan", "2026-02-20", "=B4"],
     ]);
-    invoke(&mut doc, "sort-rows", &json!({"range": "A2:C4", "by": "B"}));
+    let sort = |book: &mut Replica<Workbook>, by: &str, descending: Option<bool>| {
+        let sheet = sheet(book);
+        book.apply(Workbook::SORT_ROWS.with(verbs::SortRows {
+            sheet,
+            range: "A2:C4".into(),
+            by: by.into(),
+            descending,
+        }))
+        .unwrap();
+    };
+    sort(&mut book, "B", None);
     assert_eq!(
-        raws(&doc),
+        raws(&book),
         [
             ["name", "signed_up", "n"],
             ["Grace", "2026-01-15", "1"],
@@ -230,13 +204,9 @@ fn sort_rows_reorders_by_a_column_and_moves_formulas_with_their_row() {
             ["Ada", "2026-03-02", "=ROW()"],
         ]
     );
-    invoke(
-        &mut doc,
-        "sort-rows",
-        &json!({"range": "A2:C4", "by": "A", "descending": true}),
-    );
+    sort(&mut book, "A", Some(true));
     assert_eq!(
-        raws(&doc)
+        raws(&book)
             .iter()
             .skip(1)
             .map(|row| row[0].clone())
@@ -247,62 +217,80 @@ fn sort_rows_reorders_by_a_column_and_moves_formulas_with_their_row() {
 
 #[test]
 fn delete_rows_removes_several_rows_in_one_step_and_moves_bold() {
-    let mut doc = workbook(&[&["h"], &["a"], &["dup"], &["b"], &["dup"], &["c"]]);
-    invoke(
-        &mut doc,
-        "format-cells",
-        &json!({"range": "A6", "bold": true}),
-    );
-    invoke(&mut doc, "delete-rows", &json!({"rows": [5, 3]}));
-    assert_eq!(raws(&doc), [["h"], ["a"], ["b"], ["c"]]);
-    assert_eq!(read(&doc, None)["bold"], json!(["A4"]));
+    let mut book = workbook(&[&["h"], &["a"], &["dup"], &["b"], &["dup"], &["c"]]);
+    format(&mut book, "A6", None, Some(true));
+    let sheet = sheet(&book);
+    book.apply_confirmed(Workbook::DELETE_ROWS.with(verbs::DeleteRows {
+        sheet,
+        rows: vec![5, 3],
+    }))
+    .unwrap();
+    assert_eq!(raws(&book), [["h"], ["a"], ["b"], ["c"]]);
+    assert_eq!(read_back(&book, None)["bold"], json!(["A4"]));
 }
 
-/// What `action` answers its caller with, as the dispatch computes it from the
-/// change it applied.
-fn answer(doc: &mut AutoCommit, action: &str, args: &serde_json::Value) -> serde_json::Value {
-    let before = doc.get_heads();
-    invoke(doc, action, args);
-    let after = doc.get_heads();
-    let changes = doc.diff(&before, &after);
-    let sheet = SheetsDoc::sheet_resource_id(doc, 0).unwrap();
-    edit_result(doc, &sheet, action, &changes).unwrap_or(serde_json::Value::Null)
+/// What `invoke` (cell edit `action`) answers its caller with, as the door
+/// computes it from the change it applied.
+fn answer(
+    book: &mut Replica<Workbook>,
+    action: &str,
+    invoke: Invoke<Workbook>,
+) -> serde_json::Value {
+    let before = book.heads();
+    book.apply_confirmed(invoke).unwrap();
+    let after = book.heads();
+    let changes = book.doc_mut().diff(&before, &after);
+    super::answer(book.doc(), action, &changes).unwrap_or(serde_json::Value::Null)
+}
+
+fn set_cells(book: &Replica<Workbook>, start: &str, rows: serde_json::Value) -> Invoke<Workbook> {
+    let rows = serde_json::from_value(rows).unwrap();
+    Workbook::SET_CELLS.with(verbs::SetCells {
+        sheet: sheet(book),
+        start: start.into(),
+        rows,
+    })
 }
 
 #[test]
 fn cell_edits_answer_with_the_range_they_changed() {
-    let mut doc = workbook(&[&["Region", "Q1"], &["North", "120"], &["South", "90"]]);
-    let set = answer(
-        &mut doc,
-        "set-cells",
-        &json!({"start": "A4", "rows": [["Total", "=SUM(B2:B3)"]]}),
-    );
+    let mut book = workbook(&[&["Region", "Q1"], &["North", "120"], &["South", "90"]]);
+    let invoke = set_cells(&book, "A4", json!([["Total", "=SUM(B2:B3)"]]));
+    let set = answer(&mut book, "set-cells", invoke);
     assert_eq!(
         set,
         json!({"sheet": "Data", "range": "A4:B4", "rows": [["Total", 210.0]],
             "formulas": {"B4": "=SUM(B2:B3)"}, "bold": []})
     );
-    let bolded = answer(
-        &mut doc,
-        "format-cells",
-        &json!({"range": "A1:B1", "bold": true}),
-    );
+    let invoke = Workbook::FORMAT_CELLS.with(verbs::FormatCells {
+        sheet: sheet(&book),
+        range: "A1:B1".into(),
+        format: None,
+        bold: Some(true),
+    });
+    let bolded = answer(&mut book, "format-cells", invoke);
     assert_eq!(bolded["range"], "A1:B1");
     assert_eq!(bolded["bold"], json!(["A1", "B1"]));
-    let sorted = answer(&mut doc, "sort-rows", &json!({"range": "A2:B3", "by": "B"}));
+    let invoke = Workbook::SORT_ROWS.with(verbs::SortRows {
+        sheet: sheet(&book),
+        range: "A2:B3".into(),
+        by: "B".into(),
+        descending: None,
+    });
+    let sorted = answer(&mut book, "sort-rows", invoke);
     assert_eq!(sorted["range"], "A2:B3");
     assert_eq!(sorted["rows"], json!([["South", 90.0], ["North", 120.0]]));
-    let deleted = answer(&mut doc, "delete-rows", &json!({"rows": [1]}));
-    // Deleting rows rewrites the sheet, so it answers what remains from the top.
-    assert_eq!(deleted["range"], "A1:B4");
+    let invoke = Workbook::DELETE_ROWS.with(verbs::DeleteRows {
+        sheet: sheet(&book),
+        rows: vec![1],
+    });
+    let deleted = answer(&mut book, "delete-rows", invoke);
+    // Deleting rows moves everything below, so it answers what remains from
+    // the top.
+    assert_eq!(deleted["range"], "A1:B3");
     assert_eq!(
         deleted["rows"],
-        json!([
-            ["South", 90.0],
-            ["North", 120.0],
-            ["Total", 210.0],
-            [null, null]
-        ])
+        json!([["South", 90.0], ["North", 120.0], ["Total", 210.0]])
     );
     assert_eq!(deleted["formulas"], json!({"B3": "=SUM(B1:B2)"}));
     assert_eq!(deleted["bold"], json!([]));
@@ -311,51 +299,34 @@ fn cell_edits_answer_with_the_range_they_changed() {
 
 #[test]
 fn a_large_edit_answers_its_first_rows_and_names_the_whole_range() {
-    let mut doc = workbook(&[&["x"]]);
+    let mut book = workbook(&[&["x"]]);
     let rows: Vec<serde_json::Value> = (0..100).map(|row| json!([row, row, row, row])).collect();
-    let set = answer(&mut doc, "set-cells", &json!({"start": "A1", "rows": rows}));
+    let invoke = set_cells(&book, "A1", json!(rows));
+    let set = answer(&mut book, "set-cells", invoke);
     assert_eq!(set["changed"], "A1:D100");
     assert_eq!(set["range"], "A1:D64");
     assert_eq!(set["rows"].as_array().map(Vec::len), Some(64));
 
     let wide: Vec<serde_json::Value> = (0..300).map(|col| json!(col)).collect();
-    let set = answer(
-        &mut doc,
-        "set-cells",
-        &json!({"start": "A200", "rows": [wide]}),
-    );
+    let invoke = set_cells(&book, "A200", json!([wide]));
+    let set = answer(&mut book, "set-cells", invoke);
     assert_eq!(set["changed"], "A200:KN200");
     assert_eq!(set["rows"][0].as_array().map(Vec::len), Some(256));
 }
 
 #[test]
 fn the_app_answers_a_cell_edit_through_its_action_door() {
-    use ui::Widget as _;
-    let mut app = crate::app::SheetsApp::new();
-    app.shots_mode();
-    let mut state = ui::State::new();
-    app.sync(&mut state.doc, &state.root);
-    state.commit_action(None, None);
-    let mut harness = ui::headless::FrameHarness::new(state, Box::new(app), (1200, 800));
-    crate::actions::register(harness.action_registry_mut());
-    let sheet = harness
-        .resources()
-        .into_iter()
-        .flat_map(|workbook| workbook.children)
-        .find(|child| child.kind == "sheets.sheet")
-        .unwrap();
-    let address = tilo_actions::ActionAddress::new(sheet.id.as_str(), "set-cells");
-    let started = harness
-        .invoke_action(
-            &address,
-            json!({"start": "Z90", "rows": [["=1+2"]]})
-                .as_object()
-                .unwrap(),
-            false,
-            None,
+    use ui::framework::testing::TestApp;
+    let mut app = TestApp::<crate::SheetsShell>::new().unwrap();
+    let sheet = app.state().sheets.ids().next().unwrap().clone();
+    let item = ui::tilo_resource::items::item_resource_id::<Workbook>("sheets", &sheet);
+    let value = app
+        .call_on(
+            &item,
+            "set-cells",
+            json!({"start": "Z90", "rows": [["=1+2"]]}),
         )
         .unwrap();
-    let value = started.completed().and_then(|output| output.value);
     assert_eq!(
         value
             .as_ref()
@@ -367,8 +338,18 @@ fn the_app_answers_a_cell_edit_through_its_action_door() {
 
 #[test]
 fn only_the_cell_edits_declare_an_answer() {
-    let doc = workbook(&[&["x"]]);
-    for spec in &sheet_resource(&doc).actions {
+    use ui::tilo_actions::{OperationKind, ResultSpec};
+    use ui::tilo_resource::Resource as _;
+    let book = workbook(&[&["x"]]);
+    let state = book.state().unwrap();
+    let published = ui::tilo_resource::publish::<Workbook>(Workbook::KIND, Workbook::LABEL, &state);
+    let item = ui::tilo_resource::items::item_resource_id::<Workbook>("sheets", &sheet(&book));
+    let sheet = published
+        .children
+        .iter()
+        .find(|child| child.id.as_str() == item)
+        .expect("the sheet is published");
+    for spec in &sheet.actions {
         let answers = matches!(spec.contract.result, ResultSpec::Json { .. })
             && spec.kind == OperationKind::Document;
         assert_eq!(
@@ -382,86 +363,80 @@ fn only_the_cell_edits_declare_an_answer() {
 
 #[test]
 fn malformed_arguments_are_refused_by_name() {
-    let doc = workbook(&[&["x"]]);
-    for (action, args, message) in [
+    let mut book = workbook(&[&["x"]]);
+    let sheet = sheet(&book);
+    for (invoke, message) in [
         (
-            "set-cells",
-            json!({"start": "nowhere", "rows": [["x"]]}),
-            "start must be a cell",
+            Workbook::WRITE_CELLS.with(verbs::WriteCells {
+                sheet: sheet.clone(),
+                cells: vec![cell("nowhere", "x")],
+            }),
+            "not a cell",
         ),
         (
-            "set-cells",
-            json!({"start": "A1", "rows": [[{"nested": 1}]]}),
-            "cell values are",
+            Workbook::FORMAT_CELLS.with(verbs::FormatCells {
+                sheet: sheet.clone(),
+                range: "A1".into(),
+                format: None,
+                bold: None,
+            }),
+            "give a format, bold or both",
         ),
         (
-            "format-cells",
-            json!({"range": "A1"}),
-            "give bold, format or both",
+            Workbook::SORT_ROWS.with(verbs::SortRows {
+                sheet: sheet.clone(),
+                range: "A1:B3".into(),
+                by: "D".into(),
+                descending: None,
+            }),
+            "inside the range",
         ),
         (
-            "sort-rows",
-            json!({"range": "A1:B3", "by": "D"}),
-            "inside range",
+            Workbook::DELETE_ROWS.with(verbs::DeleteRows {
+                sheet,
+                rows: vec![0],
+            }),
+            "numbered from 1",
         ),
-        ("delete-rows", json!({"rows": [0]}), "starting at 1"),
     ] {
-        let encoded = build(&doc, action, &args);
-        assert_eq!(
-            encoded.type_id,
-            tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
-            "{action}"
-        );
-        assert!(
-            String::from_utf8_lossy(&encoded.payload).contains(message),
-            "{action}"
-        );
+        let invoke: Invoke<Workbook> = invoke;
+        let error = book.apply_confirmed(invoke).unwrap_err().to_string();
+        assert!(error.contains(message), "{error}");
     }
 }
 
 #[test]
-fn a_read_names_its_own_sheet_and_stays_bounded() {
-    let doc = workbook(&[&["x"]]);
-    let resource = sheet_resource(&doc);
-    let other = serde_json::to_vec(&ReadRequest {
-        sheet: "another-sheet".into(),
-        range: None,
-    })
-    .unwrap();
-    assert_eq!(
-        validate_read(&resource, &other),
-        Err(SemanticReadError::InvalidRequest)
-    );
-    let wide = build(&doc, "read-cells", &json!({"range": "A1:Z1000"}));
-    assert!(matches!(
-        project_read(&doc, &doc.clone().get_heads(), &wide.payload),
-        Err(SemanticReadError::Limit)
-    ));
+fn a_read_stays_bounded() {
+    let book = workbook(&[&["x"]]);
+    assert!(read(&snapshot(&book), Some("A1:Z1000")).is_err());
+    assert!(read(&snapshot(&book), Some("nowhere")).is_err());
 }
 
 #[test]
 fn an_import_into_a_blank_workbook_replaces_its_empty_sheet() {
-    let import = |doc: &mut AutoCommit| {
-        let mut action = crate::actions::import_sheets_action(vec![(
-            "sales".to_string(),
-            vec![CellWrite {
-                col: 0,
-                row: 0,
-                raw: "Region".into(),
-                fmt: None,
+    let import = |book: &mut Replica<Workbook>| {
+        book.apply(Workbook::IMPORT_SHEETS.with(verbs::ImportSheets {
+            sheets: vec![crate::resource::ImportedSheet {
+                name: "sales".into(),
+                cells: vec![cell("A1", "Region")],
             }],
-        )]);
-        if let SheetsAction::ImportSheets { replace_blank, .. } = &mut action {
-            *replace_blank = true;
-        }
-        tilo_actions::apply_local(doc, &action, encode(&action)).unwrap();
+            source: None,
+        }))
+        .unwrap();
     };
-    let mut blank = AutoCommit::new();
-    SheetsDoc::add_sheet(&mut blank, "Sheet1");
+    let names = |book: &Replica<Workbook>| -> Vec<String> {
+        book.state()
+            .unwrap()
+            .sheets
+            .values()
+            .map(|sheet| sheet.name.0.clone())
+            .collect()
+    };
+    let mut blank = Replica::<Workbook>::new();
     import(&mut blank);
-    assert_eq!(SheetsDoc::sheet_names(&mut blank), ["sales"]);
+    assert_eq!(names(&blank), ["sales"]);
 
     let mut used = workbook(&[&["kept"]]);
     import(&mut used);
-    assert_eq!(SheetsDoc::sheet_names(&mut used), ["Data", "sales"]);
+    assert_eq!(names(&used), ["Data", "sales"]);
 }

@@ -9,6 +9,7 @@
 //! to the borrowed `&mut ChannelState`; callers that want to
 //! validate-without-applying pass a clone and discard it.
 
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
@@ -16,7 +17,10 @@ use web_time::{Duration, SystemTime};
 
 use thiserror::Error;
 
-use crate::caps::{CapDecision, CapOverride, ResourceScope, decide, verb_for_opclass};
+use tilo_action_policy::{
+    ActionKind, Answer, Authority, Context, Grant, Party, Subject, TreePath, roles,
+};
+
 use crate::channel::ArtifactId;
 use crate::compaction::{CompactionCheckpoint, CompactionError, hash_op_prefix};
 use crate::crypto::{Ed25519PublicKey, VerifyError, verify_event, verify_op};
@@ -24,7 +28,7 @@ use crate::event::RoleAttestation;
 use crate::identity::{Attestation, AttestationId, Claim, Clearance};
 use crate::op::SignedOp;
 use crate::redaction::{OpId, RedactRequest, RedactedMarker, RedactionError, parse_redact_payload};
-use crate::role::{ArtifactKind, OpClass, Role, role_permits};
+use crate::role::{ArtifactKind, OpKind, Role};
 
 /// Default upper bound on the per-channel in-memory op log; the oldest op
 /// is evicted on overflow. 4096 balances "enough scrollback to satisfy a
@@ -66,17 +70,15 @@ pub enum ValidationError {
     #[error("op author does not match attestation subject")]
     AuthorMismatch,
 
-    /// Step 5: the role table forbids this op class for this
-    /// (role, artifact-kind, op-class) triple.
-    #[error("role does not permit this op class on this artifact kind")]
-    RoleForbidsOpClass,
+    /// Step 5: the author's grants do not allow the change this op makes. An
+    /// Ask answer is a refusal here: nobody can approve on the wire.
+    #[error("the author is not granted this change: {0}")]
+    NotGranted(String),
 
-    /// Step 5a: the coarse role table would have permitted this op, but a
-    /// per-app/per-resource capability override
-    /// ([`crate::caps::CapOverride`]) narrowed the actor's authority below
-    /// what the op requires — e.g. an Editor capped to comment-only in one app.
-    #[error("capability override denies this op class within its scope")]
-    CapabilityDenied,
+    /// Step 5: the change's app surface is not here yet, so its claims
+    /// cannot be decided: keep the op and decide it once the surface is.
+    #[error("the app surface this change is decided against is not here yet")]
+    SurfaceUnavailable,
 
     /// The signed document envelope does not match the app/workspace/record
     /// route on which it arrived, or does not carry the typed document
@@ -85,7 +87,7 @@ pub enum ValidationError {
     DocumentRouteMismatch,
 
     /// Step 5 sub-case: `op.artifact` is unknown to the validator — without
-    /// a kind the role-table lookup is undefined, so we reject.
+    /// it the op has no place in the tree, so we reject.
     #[error("unknown artifact id: {0:?}")]
     UnknownArtifact(ArtifactId),
 
@@ -150,6 +152,9 @@ pub enum ValidationError {
     },
 }
 
+/// The room a [`ChannelState::default`] names, until a host sets its own.
+pub const DEFAULT_ROOM: &str = "channel";
+
 /// The validator's snapshot of a channel.
 ///
 /// Built by the broker (or test harness) from cheap accessors, handed in
@@ -178,15 +183,27 @@ pub struct ChannelState {
     /// Artifact-kind lookup keyed by artifact id, required for step 5.
     pub artifacts: HashMap<ArtifactId, ArtifactKind>,
 
-    /// The app that owns each artifact, if known. Feeds the step-5a
-    /// capability check's `ResourceScope`; artifacts absent here have no app
-    /// scope (only `Workspace`/`ResourceType`/`ResourceInstance` overrides bite).
+    /// The app that owns each artifact, if known: the artifact's place in
+    /// the room's tree is `room › app › resource`.
     pub artifact_apps: HashMap<ArtifactId, String>,
 
-    /// The channel's `(subject × scope × verb)` capability overrides.
-    /// Empty by default (role table alone decides); consulted in step 5a
-    /// after `role_permits` passes — see [`crate::caps::decide`].
-    pub cap_overrides: Vec<CapOverride>,
+    /// The record each artifact is, if known: the artifact's node is
+    /// `room › app › record`; otherwise the artifact id stands in.
+    pub artifact_records: HashMap<ArtifactId, String>,
+
+    /// The record kind each artifact is, if known: which of its app's
+    /// resources the record's changes are decided against.
+    pub artifact_kinds: HashMap<ArtifactId, String>,
+
+    /// The room this channel is, as the tree names it.
+    pub room: String,
+
+    /// The app surfaces changes are decided against by their claims;
+    /// without a source, a change is decided as an edit of its record.
+    pub surfaces: crate::receipt::Surfaces,
+
+    /// The room's grants, role presets included. Step 5 decides with them.
+    pub grants: Vec<Grant>,
 
     /// Per-artifact classification override, composed with the channel floor
     /// via `max(channel_min, artifact_classification)`.
@@ -233,7 +250,11 @@ impl Default for ChannelState {
             accepted_trust_roots: Vec::new(),
             artifacts: HashMap::new(),
             artifact_apps: HashMap::new(),
-            cap_overrides: Vec::new(),
+            artifact_records: HashMap::new(),
+            artifact_kinds: HashMap::new(),
+            room: DEFAULT_ROOM.to_owned(),
+            surfaces: crate::receipt::Surfaces::default(),
+            grants: roles::room_role_grants(DEFAULT_ROOM, &Subject::Role(Role::Owner)),
             artifact_classifications: HashMap::new(),
             channel_min_clearance: None,
             last_seq_per_author: HashMap::new(),
@@ -345,7 +366,7 @@ impl ChannelState {
         // after the targeted op is gone.
         let before = self.op_log.len();
         self.op_log.retain(|op| {
-            !(op_in_checkpoint_prefix(op, checkpoint) && op.op_class != OpClass::Redact)
+            !(op_in_checkpoint_prefix(op, checkpoint) && op.kind != OpKind::Redaction)
         });
         Ok(before.saturating_sub(self.op_log.len()))
     }
@@ -384,7 +405,7 @@ impl ChannelState {
             .map_err(RedactionError::Malformed)?;
         let mut rewritten: usize = 0;
         for entry in &mut self.op_log {
-            if OpId::from_op(entry) == target && entry.op_class != OpClass::Redact {
+            if OpId::from_op(entry) == target && entry.kind != OpKind::Redaction {
                 // Snapshot the pre-redaction envelope for audit + stable compaction
                 // prefix hash. Only the first sighting matters — replays of the same
                 // target are idempotent.
@@ -443,7 +464,7 @@ impl ChannelState {
 /// Steps: 1. resolve `op.attestation_id`; 2. verify the attestation's own
 /// signature against an authorised signer; 3. verify the op's signature
 /// against the author; 4. `op.author == attestation.subject`; 5.
-/// `role_permits(role, kind, op_class)`; 5a. capability overrides narrow
+/// `role_permits(role, kind, kind)`; 5a. capability overrides narrow
 /// or extend the role baseline (fail-closed, see [`crate::caps::decide`]);
 /// 5b. if `Redact`, parse the payload and reject recursive redaction; 6.
 /// timestamp inside the attestation's validity window; 7. monotonic seq;
@@ -466,7 +487,16 @@ pub fn validate_inbound_op(
         return Err(ValidationError::OutsideValidityWindow);
     }
 
-    validate_authorized_op(op, ra.role, channel_state)
+    let subjects = [
+        Subject::Person(hex::encode(op.author.0)),
+        Subject::Role(ra.role),
+    ];
+    let grants = channel_state.grants.clone();
+    let mut author = Party::new(subjects.to_vec(), &grants);
+    if ra.role == Role::Owner {
+        author = author.owning(TreePath::room(&channel_state.room));
+    }
+    validate_authorized_op(op, &Authority::person(author), channel_state)
 }
 
 /// Validate an op whose author and role were established by a certified
@@ -476,7 +506,7 @@ pub fn validate_inbound_op(
 /// capability, freshness, replay, clearance, and redaction checks.
 ///
 /// Unlike [`validate_inbound_op`], no channel role-attestation is resolved:
-/// `role` is the broker's already-verified live roster result. `max_clock_skew`
+/// `author` is the author's authority from the room's live policy. `max_clock_skew`
 /// replaces the attestation validity window and bounds how far an admitted
 /// device may backdate or future-date an operation.
 ///
@@ -487,7 +517,7 @@ pub fn validate_inbound_op(
 /// or the same policy/replay/redaction errors as [`validate_inbound_op`].
 pub fn validate_admitted_inbound_op(
     op: &SignedOp,
-    role: Role,
+    author: &Authority<'_>,
     channel_state: &mut ChannelState,
     now: SystemTime,
     max_clock_skew: Duration,
@@ -501,7 +531,7 @@ pub fn validate_admitted_inbound_op(
         return Err(ValidationError::OutsideValidityWindow);
     }
 
-    validate_authorized_op(op, role, channel_state)
+    validate_authorized_op(op, author, channel_state)
 }
 
 /// Validate an admitted op that a workspace host replayed from its retained,
@@ -519,7 +549,7 @@ pub fn validate_admitted_inbound_op(
 /// [`ValidationError::OutsideValidityWindow`] only for a future-dated op.
 pub fn validate_replayed_inbound_op(
     op: &SignedOp,
-    role: Role,
+    author: &Authority<'_>,
     channel_state: &mut ChannelState,
     now: SystemTime,
     max_clock_skew: Duration,
@@ -529,21 +559,21 @@ pub fn validate_replayed_inbound_op(
     if op.timestamp > latest {
         return Err(ValidationError::OutsideValidityWindow);
     }
-    validate_authorized_op(op, role, channel_state)
+    validate_authorized_op(op, author, channel_state)
 }
 
 /// Checks shared by attestation-authorised and certified-roster-authorised
 /// operations after their respective identity/time proofs have passed.
 fn validate_authorized_op(
     op: &SignedOp,
-    role: Role,
+    author: &Authority<'_>,
     channel_state: &mut ChannelState,
 ) -> Result<(), ValidationError> {
-    // Steps 5, 5a: role table + capability overrides.
-    check_op_permission(op, role, channel_state)?;
+    // Step 5: the author's grants.
+    check_op_permission(op, author, channel_state)?;
 
     // Step 5b: Redact payload parsing + recursive-redaction rejection.
-    if op.op_class == OpClass::Redact {
+    if op.kind == OpKind::Redaction {
         check_redact_payload(op, channel_state)?;
     }
 
@@ -571,7 +601,7 @@ fn validate_authorized_op(
     // error), so a re-broadcast hits the same check idempotently. Redact
     // ops themselves are exempt — a Redact-of-a-Redact lands on step 5b,
     // and a Redact's own id is never in `redacted_ops` by construction.
-    if op.op_class != OpClass::Redact {
+    if op.kind != OpKind::Redaction {
         let id = OpId::from_op(op);
         if channel_state.redacted_ops.contains(&id) {
             return Err(ValidationError::OpAlreadyRedacted { target: id });
@@ -627,39 +657,155 @@ fn verify_attestation_chain(
     Ok(ra)
 }
 
-/// Steps 5, 5a: role-table lookup, then capability overrides on top of the
-/// coarse role table. `role_permits` is the base; overrides narrow
-/// (app-scoped `Restrict`) or extend (per-user `Grant`/share) it.
-/// Fail-closed: neither base nor grant ⇒ denied. `RoleForbidsOpClass` (pure
-/// role denial) is distinguished from `CapabilityDenied` (override narrowing).
+/// The node of a collaborative record: `room › app › resource`.
+#[must_use]
+pub fn document_node(room: &str, app: &str, record: &str) -> TreePath {
+    TreePath::room(room).app(app).resource(record)
+}
+
+/// Every record `room › app › resource` one of `grants` names (at the record
+/// or anywhere below it), as `(app, record)`, in grant order and possibly
+/// repeated.
+///
+/// A record's channel id is a hash of its route, so a steward cannot turn a
+/// channel back into the record it carries. A grant that names a record
+/// gives the route itself, so a steward admitting devices per record can
+/// decide a Read Deny on that record from the first admission on, without
+/// having seen the record written and without any mapping of its own to
+/// lose on a restart. A pattern grant (every resource of an app, any depth)
+/// names no record and is not inverted here.
+pub fn named_records<'g>(
+    grants: impl IntoIterator<Item = &'g Grant>,
+    room: &str,
+) -> impl Iterator<Item = (&'g str, &'g str)> {
+    use tilo_action_policy::{Level, Segment};
+    grants.into_iter().filter_map(move |grant| {
+        let [
+            Segment::Name(Level::Room, named_room),
+            Segment::Name(Level::App, app),
+            Segment::Name(Level::Resource, record),
+            ..,
+        ] = grant.node.segments()
+        else {
+            return None;
+        };
+        (named_room == room).then_some((app.as_str(), record.as_str()))
+    })
+}
+
+/// The record whose channel is `channel` among those `grants` name in
+/// `room` ([`named_records`]); `None` when no grant names it.
+#[must_use]
+pub fn named_record_of_channel<'g>(
+    grants: impl IntoIterator<Item = &'g Grant>,
+    room: &str,
+    channel: crate::ChannelId,
+) -> Option<(&'g str, &'g str)> {
+    named_records(grants, room)
+        .find(|(app, record)| crate::document_channel_id(app, room, record) == channel)
+}
+
+/// The id [`pattern_read_witnesses`] gives a level a pattern leaves open: no
+/// app or record is named so.
+const UNNAMED: &str = "\u{0}unnamed";
+
+/// One record for each grant of `grants` that can refuse Read on records of
+/// `room` it does not name: a Read grant whose answer is not Allow, over a
+/// pattern of records ("Finance: Deny Read" on `room › app`, every resource
+/// of an app, any depth) rather than one named record. Each is `(app,
+/// record)` of a record the grant covers that nothing names: the grant's own
+/// names where it has them, an id no app or record carries where it leaves a
+/// level open.
+///
+/// A steward that does not know which record a channel carries cannot decide
+/// a pattern for it. It still can decide whether the pattern could matter to
+/// someone: a person whose read of every witness is allowed reads every
+/// record those patterns cover. Only grants naming the open levels decide a
+/// witness and the records it stands for differently, and those name a record
+/// (or its app and record), which a route claim then gives the steward
+/// ([`crate::ChannelRoute`]). So a steward withholds every channel whose
+/// route it does not know from whoever may not read a witness, and nobody
+/// else loses anything. A Deny below a record (an item, a field) covers no
+/// record and has no witness: no record's key can carry it.
+#[must_use]
+pub fn pattern_read_witnesses<'g>(
+    grants: impl IntoIterator<Item = &'g Grant>,
+    room: &str,
+) -> BTreeSet<(String, String)> {
+    use tilo_action_policy::{ActionKind, Answer, Level, Segment};
+    let mut witnesses = BTreeSet::new();
+    for grant in grants {
+        if !grant.kinds.contains(ActionKind::Read) || grant.answer == Answer::Allow {
+            continue;
+        }
+        if named_records([grant], room).next().is_some() {
+            continue;
+        }
+        let name_at = |level: Level| {
+            grant
+                .node
+                .segments()
+                .iter()
+                .find_map(|segment| match segment {
+                    Segment::Name(at, id) if *at == level => Some(id.as_str()),
+                    _ => None,
+                })
+                .unwrap_or(UNNAMED)
+        };
+        let (app, record) = (name_at(Level::App), name_at(Level::Resource));
+        if grant.node.covers(&document_node(room, app, record)) {
+            witnesses.insert((app.to_owned(), record.to_owned()));
+        }
+    }
+    witnesses
+}
+
+/// The app segment of an artifact no app claims.
+const UNKNOWN_APP: &str = "-";
+
+/// Step 5: the change the op makes must be allowed by the author's grants.
+/// The wire shares no clock with the author, so grants are judged without
+/// expiry; the authoring device refused after expiry. Fail-closed: no grant,
+/// or one that asks, refuses. Admitting only an outright Allow also means the
+/// author's own grants allow it, which is all a privileged action needs
+/// (`tilo_action_policy::Verdict::privileged`).
 fn check_op_permission(
     op: &SignedOp,
-    role: Role,
+    author: &Authority<'_>,
     channel_state: &ChannelState,
 ) -> Result<(), ValidationError> {
-    let artifact_kind = channel_state
-        .artifacts
-        .get(&op.artifact)
-        .copied()
-        .ok_or(ValidationError::UnknownArtifact(op.artifact))?;
-    let base_role_allows = role_permits(role, artifact_kind, op.op_class);
-
-    let ctx = ResourceScope {
-        app: channel_state.artifact_apps.get(&op.artifact).cloned(),
-        kind: artifact_kind,
-        instance: op.artifact,
+    if !channel_state.artifacts.contains_key(&op.artifact) {
+        return Err(ValidationError::UnknownArtifact(op.artifact));
+    }
+    let artifact = op.artifact.0.to_string();
+    let record = crate::receipt::Record {
+        room: &channel_state.room,
+        app: channel_state
+            .artifact_apps
+            .get(&op.artifact)
+            .map_or(UNKNOWN_APP, String::as_str),
+        record: channel_state
+            .artifact_records
+            .get(&op.artifact)
+            .map_or(artifact.as_str(), String::as_str),
     };
-    match decide(
-        base_role_allows,
-        verb_for_opclass(op.op_class),
-        role,
-        op.author,
-        &ctx,
-        &channel_state.cap_overrides,
+    let allows = |node: &tilo_action_policy::TreePath, kind: ActionKind| {
+        author.decide(node, kind, &Context::at(0)).answer == Answer::Allow
+    };
+    match crate::receipt::decide_op(
+        op,
+        &record,
+        channel_state
+            .artifact_kinds
+            .get(&op.artifact)
+            .map(String::as_str),
+        None,
+        &channel_state.surfaces,
+        &allows,
     ) {
-        CapDecision::Allow => Ok(()),
-        CapDecision::DeniedByRole => Err(ValidationError::RoleForbidsOpClass),
-        CapDecision::DeniedByRestriction => Err(ValidationError::CapabilityDenied),
+        Ok(crate::receipt::Receipt::Admit) => Ok(()),
+        Ok(crate::receipt::Receipt::Hold) => Err(ValidationError::SurfaceUnavailable),
+        Err(refusal) => Err(ValidationError::NotGranted(refusal.to_string())),
     }
 }
 
@@ -677,7 +823,7 @@ fn check_redact_payload(
     // consulted since a previously-redacted Redact would have been
     // refused here on first apply, so by induction the cache never holds one.
     for entry in &channel_state.op_log {
-        if entry.op_class == OpClass::Redact && OpId::from_op(entry) == req.target_op_id {
+        if entry.kind == OpKind::Redaction && OpId::from_op(entry) == req.target_op_id {
             return Err(ValidationError::RecursiveRedaction {
                 target: req.target_op_id,
             });

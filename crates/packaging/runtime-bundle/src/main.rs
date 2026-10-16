@@ -3,6 +3,8 @@
 //! ```text
 //! tilo-runtime-bundle build   --version <ver> --out <dir> [--from <host-path>] \
 //!                            [--arch <arch>] [--identity <path>]
+//! tilo-runtime-bundle build   --release <rel> --out-root <dir> [--version-out <file>] ...
+//!                            # names the bundle <rel>+native.<abi digest>
 //! tilo-runtime-bundle verify  <dir> [--require-publisher <hex>]
 //!                                  [--require-signature]
 //!                                  [--require-arch <arch>]
@@ -15,26 +17,13 @@
 //! `/usr/lib/tilo-runtime/<v>/`, otherwise print the per-user path
 //! (which is where `tilo-install runtime install` would write to).
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use runtime_bundle::{
-    BuildOptions, Identity, VerifyOptions, build_bundle_with, default_bundle_path,
-    resolve_bundle_path, system_bundle_path, verify_bundle_with,
+    BuildOptions, Identity, VerifyOptions, build_abi_bundle, build_bundle_with,
+    default_bundle_path, resolve_bundle_path, system_bundle_path, verify_bundle_with,
 };
 
 #[derive(Debug, Parser)]
@@ -55,11 +44,23 @@ enum Cmd {
         /// Bundle version tag. Written into `bundle.toml` and used by
         /// the launcher to match `runtime = "tilo-runtime/<version>"`
         /// in package manifests.
-        #[arg(long)]
-        version: String,
+        #[arg(long, required_unless_present = "release", conflicts_with = "release")]
+        version: Option<String>,
         /// Output directory. Created if missing.
+        #[arg(long, required_unless_present = "release", conflicts_with = "release")]
+        out: Option<PathBuf>,
+        /// Build the runtime that thin apps link: the bundle's version
+        /// becomes `<release>+native.<abi digest>`, the digest of its
+        /// payload, so an app built against it names exactly this build.
+        #[arg(long, requires = "out_root")]
+        release: Option<String>,
+        /// With --release: the directory the bundle is created in, under
+        /// its version.
+        #[arg(long, requires = "release")]
+        out_root: Option<PathBuf>,
+        /// Write the built bundle's version to this file.
         #[arg(long)]
-        out: PathBuf,
+        version_out: Option<PathBuf>,
         /// Host root to resolve source paths against. Defaults to `/`.
         #[arg(long)]
         from: Option<PathBuf>,
@@ -80,7 +81,8 @@ enum Cmd {
         /// `libstd-<hash>.so` and the Tilo `libruntime_dylib.so` into
         /// the bundle so thin (`-C prefer-dynamic`) apps resolve them
         /// via the launcher's `LD_LIBRARY_PATH=<mount>/lib`. Each is
-        /// hashed + signed like every other bundle file.
+        /// hashed + signed like every other bundle file. A directory keeps
+        /// its tree under `lib/<name>/`, as the browser engine does.
         #[arg(long = "include", value_name = "PATH")]
         include: Vec<PathBuf>,
     },
@@ -138,18 +140,34 @@ fn main() -> ExitCode {
         Cmd::Build {
             version,
             out,
+            release,
+            out_root,
+            version_out,
             from,
             arch,
             identity,
             include,
-        } => cmd_build(
-            &version,
-            &out,
-            from.as_deref(),
-            arch.as_deref(),
-            identity.as_deref(),
-            &include,
-        ),
+        } => {
+            let opts = BuildOptions {
+                from: from.as_deref(),
+                arch: arch.as_deref(),
+                identity: identity.as_deref(),
+                extra_libs: &include,
+            };
+            let built = match (release, out_root, version, out) {
+                (Some(release), Some(root), _, _) => build_abi_bundle(&root, &release, &opts),
+                (_, _, Some(version), Some(out)) => {
+                    build_bundle_with(&out, &version, &opts).map(|manifest| (manifest, out))
+                }
+                _ => {
+                    eprintln!(
+                        "tilo-runtime-bundle build: pass --version and --out, or --release and --out-root"
+                    );
+                    return ExitCode::from(2);
+                }
+            };
+            cmd_build(built, version_out.as_deref())
+        }
         Cmd::Verify {
             dir,
             require_publisher,
@@ -162,24 +180,17 @@ fn main() -> ExitCode {
 }
 
 fn cmd_build(
-    version: &str,
-    out: &Path,
-    from: Option<&Path>,
-    arch: Option<&str>,
-    identity: Option<&Path>,
-    include: &[PathBuf],
+    built: Result<(runtime_bundle::BundleManifest, PathBuf), runtime_bundle::BundleError>,
+    version_out: Option<&Path>,
 ) -> ExitCode {
-    match build_bundle_with(
-        out,
-        version,
-        &BuildOptions {
-            from,
-            arch,
-            identity,
-            extra_libs: include,
-        },
-    ) {
-        Ok(manifest) => {
+    match built {
+        Ok((manifest, out)) => {
+            if let Some(path) = version_out
+                && let Err(e) = std::fs::write(path, format!("{}\n", manifest.version))
+            {
+                eprintln!("tilo-runtime-bundle build: writing {}: {e}", path.display());
+                return ExitCode::from(1);
+            }
             println!("built bundle at {}", out.display());
             println!("  version  : {}", manifest.version);
             println!("  arch     : {}", manifest.arch);

@@ -5,8 +5,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::panic,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -17,12 +15,13 @@ use serde_json::json;
 use tilo_agent::surface::Catalogue;
 use tilo_agent::tools::Answer;
 use tilo_agent_participant::{
-    HostedApp, ModelPlanner, PlanContext, PlanModel, Planner, Seed, StepAction,
+    ModelPlanner, PlanContext, PlanModel, Planner, Replica, Seed, StepAction,
 };
 use tilo_browser_peer::DocumentRoute;
 
 const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const SCRATCHPAD: &str = "so.tilo.scratchpad";
+const NOTES: &str = "so.tilo.notes";
 
 /// Answers with whatever it was built with, unchecked.
 struct Canned(Answer);
@@ -33,30 +32,41 @@ impl PlanModel for Canned {
     }
 }
 
-fn context_with_scratchpad() -> (PlanContext, DocumentRoute, HostedApp) {
+fn context_with(app_id: &str) -> (PlanContext, DocumentRoute, Replica) {
     let catalogue = common::catalogue();
-    let mut app = HostedApp::open(&catalogue, SCRATCHPAD, ROOM, "agent", true, Seed::New).unwrap();
+    let app = Replica::open(
+        &catalogue,
+        app_id,
+        ROOM,
+        "agent",
+        tilo_agent_participant::ReplicaActor::Agent,
+        Seed::New,
+    )
+    .unwrap();
     let route = DocumentRoute {
-        app_id: SCRATCHPAD.into(),
+        app_id: app_id.into(),
         cluster_id: ROOM.into(),
         record: app.record().to_owned(),
     };
     let context = PlanContext {
         open: vec![(route.clone(), app.survey())],
-        controls: vec![(route.clone(), app.controls())],
         known: Vec::new(),
-        apps: vec![SCRATCHPAD.into(), "so.tilo.notes".into()],
+        apps: vec![SCRATCHPAD.into(), NOTES.into()],
     };
     (context, route, app)
 }
 
+fn context_with_scratchpad() -> (PlanContext, DocumentRoute, Replica) {
+    context_with(SCRATCHPAD)
+}
+
 #[test]
 fn a_natural_language_task_becomes_a_published_action_with_typed_arguments() {
-    let (context, route, mut app) = context_with_scratchpad();
+    let (context, route, mut app) = context_with(NOTES);
     let mut planner = ModelPlanner::new(Box::new(KeywordModel));
     let steps = planner
         .plan(
-            r#"Please edit the note to say "Hello from the model""#,
+            r#"Please add a new note titled "Hello from the model""#,
             &context,
         )
         .unwrap();
@@ -65,20 +75,18 @@ fn a_natural_language_task_becomes_a_published_action_with_typed_arguments() {
     let StepAction::Invoke { address, arguments } = &steps[0].action else {
         panic!("{:?}", steps[0]);
     };
-    assert_eq!(address.resource, "scratchpad.note");
-    assert_eq!(address.action, "edit");
+    assert_eq!(address.action, "new-note");
     // The door accepts what the planner produced.
     app.invoke(address, arguments, false).unwrap();
     let body = app
         .read(|doc| serde_json::to_string(&automerge::AutoSerde::from(doc)).unwrap())
         .unwrap();
     assert!(body.contains("hello from the model"), "{body}");
-    app.close();
 }
 
 #[test]
 fn explicit_steps_still_bypass_the_model() {
-    let (context, _, app) = context_with_scratchpad();
+    let (context, _, _app) = context_with_scratchpad();
     let mut planner = ModelPlanner::new(Box::new(Canned(Answer {
         actions: vec!["never#asked".into()],
         arguments: vec![serde_json::Map::new()],
@@ -88,17 +96,20 @@ fn explicit_steps_still_bypass_the_model() {
     })));
     let steps = planner
         .plan(
-            &json!({"app": SCRATCHPAD, "control": "note-editor", "input": "focus"}).to_string(),
+            &json!({"app": SCRATCHPAD, "resource": "scratchpad.note", "action": "field-edit"})
+                .to_string(),
             &context,
         )
         .unwrap();
-    assert!(matches!(steps[0].action, StepAction::Operate { .. }));
-    app.close();
+    assert!(matches!(
+        &steps[0].action,
+        StepAction::Invoke { address, .. } if address.action == "field-edit"
+    ));
 }
 
 #[test]
 fn an_answer_outside_the_offers_is_refused_and_an_open_continues() {
-    let (context, _, app) = context_with_scratchpad();
+    let (context, _, _app) = context_with_scratchpad();
     let mut invented = ModelPlanner::new(Box::new(Canned(Answer {
         actions: vec!["scratchpad.note#format-disk".into()],
         arguments: vec![serde_json::Map::new()],
@@ -123,5 +134,4 @@ fn an_answer_outside_the_offers_is_refused_and_an_open_continues() {
         steps[1].action,
         StepAction::Continue("add a page called Plans".into())
     );
-    app.close();
 }

@@ -30,9 +30,15 @@ pub struct Session {
 /// # Errors
 /// Returns invalid directory, session lock, state, record-store or construction errors.
 pub fn prepare(options: &Options) -> Result<Session, Error> {
-    let inputs = HostedTileInputs::for_host_directory(&options.files_dir)?;
     std::fs::create_dir_all(&options.state_dir)?;
     let state_dir = options.state_dir.canonicalize()?;
+    // The apps this host mounts keep their records beside its state.
+    let apps = crate::shell::in_process::InProcessApps::at(
+        &state_dir.join("apps"),
+        &crate::shell::state::local_user_id(),
+    )
+    .map_err(|error| error.to_string())?;
+    let inputs = HostedTileInputs::for_host_directory(&options.files_dir, apps)?;
     let lock = advisory_lock::FileLock::try_open(
         &state_dir.join("session.lock"),
         advisory_lock::LockMode::Exclusive,
@@ -79,10 +85,10 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, String> {
         return Ok(None);
     }
     let mut options = Options {
-        state_dir: xdg_paths::data_local_dir()
+        state_dir: tilo_paths::data_local_dir()
             .ok_or("no local data directory")?
             .join("tilo/macos-shell"),
-        files_dir: xdg_paths::home().ok_or("no home directory")?,
+        files_dir: tilo_paths::home().ok_or("no home directory")?,
         shots: None,
     };
     let mut args = args.iter();
@@ -156,7 +162,7 @@ fn run_session(options: Options) -> Result<(), Error> {
         _lock,
     } = prepare(&options)?;
     if let Some(path) = options.shots {
-        let driver = ui::headless::Driver::new(ui::State::new(), Box::new(host), (1280, 800));
+        let driver = ui::headless::FrameHarness::new(ui::State::new(), Box::new(host), (1280, 800));
         driver.render_png(&path);
         println!("Rendered {}", path.display());
     } else {
@@ -166,5 +172,6 @@ fn run_session(options: Options) -> Result<(), Error> {
     }
     records.try_flush()?;
     persist::save_tree_to(&tree.read(), &options.state_dir.join("state.json"))?;
+    persist::wait_for_saves();
     Ok(())
 }

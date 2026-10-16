@@ -9,10 +9,10 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    # Stacked PRs (a PR whose base is another PR's pr/sdk-* branch) get the
+    # Stacked PRs (a PR whose base is another task branch) get the
     # same gate; affected-package selection diffs against that base, so each
     # layer tests its own change.
-    branches: ["main", "pr/sdk-*"]
+    branches: ["main", "pr/sdk-*", "codex/**"]
   workflow_dispatch:
 
 concurrency:
@@ -26,11 +26,13 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 30
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
+      image: registry.tilo.so/tilo/ci-fast@sha256:ecfe2c2abf7a48d9d00d71083aba6b7b9dfc11bc9de63b87e3144522daf6d97c
     env:
       # The policy suite's Cargo metadata and cargo deny resolve every locked
       # crate; read them from the shared download cache, not crates.io.
-      CARGO_HOME: /cargo-home
+      # The app lints build ~950 crates on the 20 GiB quality store.
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - name: Disable automatic Git maintenance in the disposable job container
         # Git 2.54 maintenance can rewrite shallow history between fetches.
@@ -40,7 +42,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 2
           fetch-tags: false
 
@@ -72,26 +73,9 @@ jobs:
           '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
 
-      - name: Require reasons for Rust lint exceptions in changed files
-        run: >-
-          python3 tools/ci/check_changed_rust_allows.py
-          '${{ steps.merge.outputs.main }}'
-          '${{ github.event.before }}'
-
-      - name: Repository policy suite
-        run: bash tools/policy/run.sh
-
-      # The lint app developers run locally: an app that adds platform code
-      # without moving it into a platform crate or declaring itself native
-      # fails here. ci-fast already provides /usr/bin/cc (pinned digest).
-      - name: Tilo app lints
-        run: cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all
-
-      - name: cargo deny
-        run: cargo deny --workspace check --hide-inclusion-graph
-
       # crates/workspace-hack unifies third-party features across members; a
       # dependency change that is not regenerated splits the shared builds again.
+      # Fail before the slower policy and dependency scans when it is stale.
       - name: Workspace-hack matches the dependency graph
         shell: bash
         run: |
@@ -102,8 +86,62 @@ jobs:
           fi
           cargo hakari verify
 
+      - name: Require reasons for Rust lint exceptions in changed files
+        run: >-
+          python3 tools/ci/check_changed_rust_allows.py
+          '${{ steps.merge.outputs.main }}'
+          '${{ github.event.before }}'
+
+      - name: Verify commit messages and exact new blob contents
+        env:
+          PR_HEAD_REF: ${{ github.head_ref }}
+        run: >-
+          python3 tools/policy/check_commit_policy.py
+          '${{ steps.merge.outputs.main }}'
+          '${{ github.event.before }}'
+
+      # The title becomes the merge commit's subject on main. It reaches the
+      # script through the environment, never through the shell command.
+      - name: Pull request title names no internal tracker reference
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: python3 tools/policy/check_commit_message.py --title "$TITLE"
+
+      - name: Repository policy suite
+        run: bash tools/ci/measure.sh "repository policy tests" -- bash tools/policy/run.sh
+
+      # Release / apps measures each shipped tapp against its budget; this
+      # text check, which builds nothing, makes every budget change reviewed:
+      # growth needs a raise file and a new app needs a budget.
+      - name: App package size budgets only decrease
+        shell: bash
+        run: |
+          # A pull request compares with the main it was merged onto; a push
+          # to main, with its first parent (the previous main).
+          base='${{ steps.merge.outputs.main }}'
+          python3 tools/perf/tapp_size_ratchet.py check-budget --base "${base:-HEAD~1}"
+
+      # The same rule for the shared app runtime's size and load-cost budgets
+      # (tools/perf/runtime-size-budget/; docs/measurements/runtime-size.md).
+      - name: Runtime size budgets only decrease
+        shell: bash
+        run: |
+          base='${{ steps.merge.outputs.main }}'
+          python3 tools/perf/runtime_size_ratchet.py check-budget --base "${base:-HEAD~1}"
+
+      # The lint app developers run locally: an app that adds platform code
+      # without moving it into a platform crate or declaring itself native
+      # fails here. ci-fast already provides /usr/bin/cc (pinned digest).
+      - name: Tilo app lints
+        run: bash tools/ci/measure.sh "app lint check" -- cargo run --locked --quiet -p tilo-app-cli --bin tilo-app -- check --lint --all
+
+      - name: cargo deny
+        run: bash tools/ci/measure.sh "dependency policy check" -- cargo deny --workspace check --hide-inclusion-graph
+
       - name: cargo machete
         run: >-
+          bash tools/ci/measure.sh "unused dependency check" --
           bash tools/ci/check-unused-dependencies.sh --changed
           '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'

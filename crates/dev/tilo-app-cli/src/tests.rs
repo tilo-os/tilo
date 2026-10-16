@@ -251,7 +251,7 @@ fn add_screen_emits_valid_accessible_model_bound_graphs_with_their_wiring() {
             settings.node("save"),
             Some(tilo_ui_graph::UiNode::Button {
                 on_click_path: Some(path),
-                style: tilo_ui_graph::UiButtonStyle::Primary,
+                role: tilo_ui_graph::UiButtonRole::Primary,
                 ..
             }) if path == "account-settings-save-requested"
         ));
@@ -1071,7 +1071,7 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         ));
         let source = std::fs::read_to_string(app.join("src/components/profile_form.rs")).unwrap();
         assert!(source.contains("// tilo-app:graph-props=form-v2"));
-        assert!(source.contains("TextInput::from_document_string(value_path)"));
+        assert!(source.contains("TextInput::from_state(&values.text(value_path))"));
         assert!(source.contains("pub fn register_ui_graph("));
         let report = doctor_app(&app).unwrap();
         assert!(report.is_ready(), "{}", report.summary());
@@ -1800,7 +1800,7 @@ fn add_artifact_protects_work_and_stays_inside_the_app() {
 /// add locale registers immediately and protects app-owned setup; the Fluent contract reports
 /// missing and stale entries; an invalid source is rejected before publishing; locale sync
 /// preserves translations and can resolve drift, validates every catalog before publishing any;
-/// only the previous generated setup is migrated.
+/// an app-owned registry is never rewritten.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1844,8 +1844,9 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
             parse_locale_registry(&registry).unwrap(),
             ["de-DE", "en-US"]
         );
-        assert!(registry.contains("include_str!(\"../locales/de-DE.ftl\")"));
-        assert!(registry.contains("(\"de-DE\", CATALOG_0)"));
+        assert!(
+            registry.contains(r#"ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);"#)
+        );
         syn::parse_file(&registry).expect("generated locale registry is Rust");
 
         let repeated = add_app_artifact(AddRequest {
@@ -2146,7 +2147,7 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
         );
 
         let button =
-            parse_ui_node(r#"{"type":"button","id":"create","label":"Create","style":"primary"}"#)
+            parse_ui_node(r#"{"type":"button","id":"create","label":"Create","role":"primary"}"#)
                 .expect("button node");
         edit_ui_graph(
             &graph,
@@ -2220,26 +2221,29 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
             &graph,
             UiGraphEdit::SetProperty {
                 id: "title".into(),
-                property: "size".into(),
-                value: serde_json::json!(24.0),
+                property: "role".into(),
+                value: serde_json::json!("large-title"),
             },
         )
-        .expect("set typed size");
+        .expect("set typed role");
         let source = std::fs::read_to_string(&graph).unwrap();
         assert!(source.contains("Recent projects"));
-        assert!(source.contains("\"size\": 24.0"));
+        assert!(source.contains("\"role\": \"large-title\""));
 
         edit_ui_graph(
             &graph,
             UiGraphEdit::UnsetProperty {
                 id: "title".into(),
-                property: "size".into(),
+                property: "role".into(),
             },
         )
         .expect("restore schema default");
         assert!(matches!(
             load_ui_graph(&graph).unwrap().node("title"),
-            Some(tilo_ui_graph::UiNode::Text { size: None, .. })
+            Some(tilo_ui_graph::UiNode::Text {
+                role: tilo_ui_graph::UiTextRole::Body,
+                ..
+            })
         ));
 
         let before_invalid = std::fs::read(&graph).unwrap();
@@ -2247,8 +2251,8 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
             &graph,
             UiGraphEdit::SetProperty {
                 id: "title".into(),
-                property: "size".into(),
-                value: serde_json::json!("large"),
+                property: "role".into(),
+                value: serde_json::json!("overline"),
             },
         )
         .unwrap_err();
@@ -2276,11 +2280,11 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
         let edits = parse_ui_graph_edits(
                 r#"[
                   {"op":"set-property","id":"title","property":"text.value","value":"Recent projects"},
-                  {"op":"insert","parent":"root","index":2,"node":{"type":"button","id":"create","label":"Create","style":"primary"}},
+                  {"op":"insert","parent":"root","index":2,"node":{"type":"button","id":"create","label":"Create","role":"primary"}},
                   {"op":"move","id":"create","parent":"root","index":1},
                   {"op":"set-property","id":"create","property":"enabled","value":false},
-                  {"op":"set-property","id":"title","property":"size","value":24},
-                  {"op":"unset-property","id":"title","property":"size"}
+                  {"op":"set-property","id":"title","property":"role","value":"heading"},
+                  {"op":"unset-property","id":"title","property":"role"}
                 ]"#,
             )
             .expect("parse mixed edit batch");
@@ -2291,7 +2295,7 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
                 .contains("\"op\":\"set-property\"")
         );
         let null_edit = parse_ui_graph_edits(
-            r#"[{"op":"set-property","id":"title","property":"size","value":null}]"#,
+            r#"[{"op":"set-property","id":"title","property":"role","value":null}]"#,
         )
         .unwrap();
         assert!(matches!(
@@ -2318,7 +2322,7 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
         ));
         assert!(matches!(
             document.node("title"),
-            Some(tilo_ui_graph::UiNode::Text { size: None, .. })
+            Some(tilo_ui_graph::UiNode::Text { .. })
         ));
         assert!(
             std::fs::read_to_string(&graph)
@@ -2330,7 +2334,7 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
         let invalid = parse_ui_graph_edits(
             r#"[
                   {"op":"set-property","id":"title","property":"text.value","value":"Do not publish"},
-                  {"op":"set-property","id":"title","property":"size","value":"large"}
+                  {"op":"set-property","id":"title","property":"role","value":"overline"}
                 ]"#,
         )
         .unwrap();
@@ -2484,6 +2488,9 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         assert!(destination.join(sdk_path).join("Cargo.toml").is_file());
         assert!(destination.join("src/main.rs").is_file());
         assert!(destination.join("tests/app.rs").is_file());
+        let agent_guide =
+            std::fs::read_to_string(destination.join("AGENTS.md")).expect("agent guide");
+        assert_eq!(agent_guide, APP_AGENT_GUIDE);
         assert!(destination.join("tests/headless-actions.json").is_file());
         let catalog =
             std::fs::read_to_string(destination.join("locales/en-US.ftl")).expect("catalog");
@@ -2493,19 +2500,21 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         let library = std::fs::read_to_string(destination.join("src/lib.rs")).expect("library");
         assert!(library.contains("pub const APP_ID: &str = \"local.dev.reading.list\";"));
         assert!(library.contains("#[derive(Model, Default, Debug, Clone, PartialEq)]"));
-        assert!(library.contains("#[resource(kind = \"generated.greeting\""));
+        assert!(library.contains("#[resource(kind = \"local.dev.reading.list.greeting\""));
         assert!(library.contains("impl ResourceApp for App"));
-        assert!(library.contains(".input(|greeting| greeting.name.clone(), Greeting::SET_NAME)"));
+        assert!(library.contains(".input(cx.paths().name)"));
         assert!(library.contains("with_id(\"name-input\")"));
         assert!(library.contains("cx.button(\"starter-clear\", Greeting::CLEAR.invoke())"));
         assert!(library.contains("labeled_field(\"starter-name-label\", name)"));
         assert!(!library.contains("LocalState::new"));
         assert!(!library.contains("ActionForm"));
         assert!(library.contains("pub mod locales;"));
-        assert!(library.contains("locales::install()"));
+        assert!(library.contains("Some(&crate::locales::CATALOG)"));
         let locale_registry =
             std::fs::read_to_string(destination.join("src/locales.rs")).expect("locale registry");
-        assert!(locale_registry.contains("I18nManager::install_system"));
+        assert!(
+            locale_registry.contains(r#"ui::embedded_catalog!(pub static CATALOG, ["en-US"]);"#)
+        );
         assert_eq!(parse_locale_registry(&locale_registry).unwrap(), ["en-US"]);
         let manifest =
             std::fs::read_to_string(destination.join("tilo-app.toml")).expect("manifest");
@@ -2878,6 +2887,55 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
     }
 }
 
+/// The framework is recognised from the parsed items, so a path-qualified
+/// `#[resource]` attribute and a `ResourceApp` kept outside `src/lib.rs`
+/// count, while the same words in a comment or a string do not.
+#[test]
+fn doctor_recognises_the_framework_by_its_parsed_items() {
+    let app = |files: &[(&str, &str)]| {
+        let temp = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir(temp.path().join("src")).expect("source directory");
+        for (name, text) in files {
+            std::fs::write(temp.path().join("src").join(name), text).expect("source file");
+        }
+        let mut checks = Vec::new();
+        check_app_root(temp.path(), &mut checks);
+        check_resource_action_surface(temp.path(), &mut checks);
+        checks
+            .into_iter()
+            .map(|check| (check.status, check.detail))
+            .collect::<Vec<_>>()
+    };
+
+    let qualified = app(&[
+        ("lib.rs", "pub mod record;\npub mod resource;\n"),
+        (
+            "record.rs",
+            "#[ui::tilo_resource::resource(kind = \"demo.thing\")]\nimpl Thing {}\n",
+        ),
+        (
+            "resource.rs",
+            "impl ui::framework::ResourceApp for App { type Resource = Thing; }\n",
+        ),
+    ]);
+    assert_eq!(qualified[0].0, DoctorStatus::Pass, "{qualified:#?}");
+    assert!(
+        qualified[0]
+            .1
+            .contains("resource.rs implements ResourceApp"),
+        "{qualified:#?}"
+    );
+    assert_eq!(qualified[1].0, DoctorStatus::Pass, "{qualified:#?}");
+
+    let mentioned = app(&[(
+        "lib.rs",
+        "// #[resource(kind = \"x\")] and impl ResourceApp for App\n\
+         const NOTE: &str = \"impl ResourceApp for App\";\n",
+    )]);
+    assert_eq!(mentioned[0].0, DoctorStatus::Warning, "{mentioned:#?}");
+    assert_eq!(mentioned[1].0, DoctorStatus::Fail, "{mentioned:#?}");
+}
+
 /// Doctor accumulates actionable failures, accepts registered document actions without widget
 /// glue, finds the SDK in target-specific dependencies, rejects one invalid target-specific UI
 /// dependency, and never asks for the Cap'n Proto compiler the SDK no longer needs.
@@ -3202,7 +3260,9 @@ fn creation_inputs_are_validated_and_printed_safely() {
         let outcome = create_app(req).expect("preview app");
         assert!(outcome.dry_run);
         assert!(!destination.exists());
-        assert_eq!(outcome.files.len(), 13);
+        assert_eq!(outcome.files.len(), 15);
+        assert!(outcome.files.contains(&PathBuf::from("AGENTS.md")));
+        assert!(outcome.files.contains(&PathBuf::from("surface.toml")));
     }
 
     // Phase: an_app_outside_every_repository_becomes_one.
@@ -3309,7 +3369,13 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
                 .filter(|(path, _)| path.extension().is_none_or(|extension| extension != "ftl"))
                 .map(|(_, source)| source.as_str())
                 .collect::<String>();
-            for id in messages.entries.keys() {
+            // History messages are looked up by verb name, not written out.
+            let history = format!("{}-", tilo_history::app_prefix(&spec.app_id));
+            for id in messages
+                .entries
+                .keys()
+                .filter(|id| !id.starts_with(&history))
+            {
                 assert!(
                     source.contains(&format!("\"{id}\"")),
                     "{}: {id} is in the catalog but not used",
@@ -3419,7 +3485,7 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
             template: Template::Document,
         };
         let source = app_lib(&spec);
-        assert!(source.contains(".input(|document| document.title.clone(), Document::SET_TITLE)"));
+        assert!(source.contains(".input(p.title)"));
         assert!(source.contains(".text(|document| document.title.clone())"));
         assert!(source.contains("multiline(true)"));
         assert!(source.contains("#[action(destructive)]"));
@@ -3497,7 +3563,7 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
             assert!(readme.contains("tilo-app keys new\n"));
             assert!(readme.contains("tilo-app apply --domain example.com\n"));
             assert!(readme.contains("tilo-app publish\n"));
-            assert!(readme.contains("\"resource\":\"generated.greeting\""));
+            assert!(readme.contains("\"resource\":\"so.tilo.notes.greeting\""));
             assert!(readme.contains("`#[derive(Model)]` resource"));
             assert!(readme.contains("tilo-app test\n"));
             assert!(readme.contains("tilo-app dev\n"));
@@ -4072,6 +4138,30 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         .to_string();
         collect_cargo_message(&dependency, &manifest, &mut artifacts);
         assert!(!artifacts.contains_key("other"));
+
+        // Cargo spells the manifest as it was reached, here through a symlinked directory
+        // (macOS's /tmp); the caller's canonical path names the same file.
+        #[cfg(unix)]
+        {
+            let temp = tempfile::tempdir().expect("temp dir");
+            let real = temp.path().join("real");
+            std::fs::create_dir(&real).expect("real directory");
+            std::fs::write(real.join("Cargo.toml"), "").expect("manifest");
+            std::os::unix::fs::symlink(&real, temp.path().join("link")).expect("symlink");
+            let canonical = real
+                .join("Cargo.toml")
+                .canonicalize()
+                .expect("canonical manifest");
+            let line = serde_json::json!({
+                "reason": "compiler-artifact",
+                "manifest_path": temp.path().join("link/Cargo.toml"),
+                "target": {"name": "linked", "kind": ["bin"]},
+                "executable": "/workspace/target/release/linked",
+            })
+            .to_string();
+            collect_cargo_message(&line, &canonical, &mut artifacts);
+            assert!(artifacts.contains_key("linked"));
+        }
     }
 
     // Phase: package_refuses_to_replace_output_before_building.
@@ -4086,6 +4176,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let error = package_app(
             &destination.join("src/lib.rs"),
             &PackageRequest {
+                sdk: None,
                 output: None,
                 identity: None,
                 profile: None,
@@ -4120,6 +4211,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let error = package_app(
             &destination,
             &PackageRequest {
+                sdk: None,
                 output: None,
                 identity: None,
                 profile: None,
@@ -4155,7 +4247,11 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let identity = pack::load_identity(&identity_path).expect("load identity");
         let output = temp.path().join("reading-list.tapp");
         let kinds = resource_kinds::declared_in(&spec.app_dir).expect("resource kinds");
-        assert_eq!(kinds, ["generated.greeting"], "the starter's resource");
+        assert_eq!(
+            kinds,
+            ["local.dev.reading.list.greeting"],
+            "the starter's resource, under the app's id"
+        );
         let manifest = || {
             tilo_app_package::Manifest::from_toml_str(
                 &std::fs::read_to_string(&spec.manifest_path).expect("manifest"),
@@ -4174,7 +4270,7 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         assert_eq!(tapp.meta.id.to_string(), packed.id);
         assert_eq!(
             tapp.meta.manifest.resources.kinds,
-            ["generated.greeting"],
+            ["local.dev.reading.list.greeting"],
             "the signed manifest declares the app's resource kinds"
         );
         assert_eq!(tapp.meta.publisher(), identity.public_key_bytes());
@@ -4378,8 +4474,17 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
         };
         assert_eq!(build_dev_candidate(&plan).unwrap(), executable);
         assert_eq!(dev_binary_name(&manifest).unwrap(), "desktop");
-        let arguments = std::fs::read_to_string(argument_log).unwrap();
+        let arguments = std::fs::read_to_string(&argument_log).unwrap();
         assert!(arguments.contains("--bin\ndesktop\n"), "{arguments}");
+        assert!(!arguments.contains("--profile"), "{arguments}");
+        let DevCandidate::Built(optimised) =
+            build_dev_candidate_interruptible(&plan, Some("thin-app"), None, &[], |_| {}).unwrap()
+        else {
+            panic!("no watcher, so nothing supersedes the build");
+        };
+        assert_eq!(optimised, executable);
+        let arguments = std::fs::read_to_string(&argument_log).unwrap();
+        assert!(arguments.contains("--profile\nthin-app\n"), "{arguments}");
 
         let failing_cargo = app.join("failing-cargo");
         std::fs::write(&failing_cargo, "#!/bin/sh\nexit 9\n").unwrap();
@@ -4411,13 +4516,16 @@ fn the_dev_loop_watches_rebuilds_and_restarts_only_on_real_edits() {
         let mut child = spawn_dev_binary(
             temp.path(),
             &executable,
-            &[OsString::from("--document"), OsString::from("A file.qdoc")],
+            &[
+                OsString::from("--document"),
+                OsString::from("A file.tilo-doc"),
+            ],
         )
         .unwrap();
         assert!(child.wait().unwrap().success());
         assert_eq!(
             std::fs::read_to_string(output).unwrap(),
-            format!("{}\n--document\nA file.qdoc\n", temp.path().display())
+            format!("{}\n--document\nA file.tilo-doc\n", temp.path().display())
         );
     }
 }
@@ -4513,7 +4621,8 @@ fn dev_build_cancels_when_a_newer_source_edit_arrives() {
         ))
         .add_path(source)));
     });
-    let outcome = build_dev_candidate_interruptible(&plan, Some(&events), &roots, |_| {}).unwrap();
+    let outcome =
+        build_dev_candidate_interruptible(&plan, None, Some(&events), &roots, |_| {}).unwrap();
     watcher.join().unwrap();
     assert!(
         matches!(outcome, DevCandidate::Superseded),
@@ -4577,7 +4686,8 @@ fn dev_build_keeps_compiling_through_editor_noise() {
         ))
         .add_path(app.join("target/debug/desktop"))))
         .unwrap();
-    let outcome = build_dev_candidate_interruptible(&plan, Some(&events), &roots, |_| {}).unwrap();
+    let outcome =
+        build_dev_candidate_interruptible(&plan, None, Some(&events), &roots, |_| {}).unwrap();
     assert_eq!(outcome_path(outcome), executable);
 }
 
@@ -4594,7 +4704,8 @@ fn dev_restart_hands_the_checkpoint_to_the_next_process() {
 dir=\"$TILO_DEV_SESSION\"\n\
 if [ -z \"$dir\" ]; then echo missing session >&2; exit 2; fi\n\
 if [ -f \"$dir/checkpoint.bin\" ]; then\n\
-  cp \"$dir/checkpoint.bin\" \"$dir/restored\"\n\
+  cp \"$dir/checkpoint.bin\" \"$dir/restored.part\"\n\
+  mv \"$dir/restored.part\" \"$dir/restored\"\n\
 fi\n\
 trap 'printf document-route-caret > \"$dir/checkpoint.bin\"; exit 0' TERM\n\
 touch \"$dir/ready\"\n\
@@ -4701,8 +4812,15 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
     // by path, as `tilo-winit`, `tilo-vello` and `tilo-automerge-fork`.
     let forks = ["wayland-backend", "rustls-native-certs"];
     // Forks pinned in public git repositories reach the app exactly as the workspace pins them.
-    let git_forks = ["accesskit", "atspi", "rustypipe"];
+    let git_forks = ["accesskit", "atspi"];
+    // A fork only an engine library's graph uses (rustypipe, which Music and
+    // Tube load from the YouTube engine) is not the SDK's and stays out.
+    let engine_forks = ["rustypipe"];
     let pinned_as_workspace = |patches: &toml::Table| {
+        for name in engine_forks {
+            assert!(workspace_patches.contains_key(name), "{name}");
+            assert!(!patches.contains_key(name), "{name}");
+        }
         for name in git_forks {
             assert_eq!(patches.get(name), workspace_patches.get(name), "{name}");
             assert!(
@@ -4911,7 +5029,13 @@ fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace
             .collect::<Vec<_>>()
     };
 
-    let member = thin_dev_steps(manifest, "notes", &ThinDevLinkage::WorkspaceToolkit, true);
+    let member = thin_dev_steps(
+        manifest,
+        "notes",
+        &ThinDevLinkage::WorkspaceToolkit,
+        None,
+        true,
+    );
     assert_eq!(
         member.iter().map(|step| step.label).collect::<Vec<_>>(),
         ["the reload host", "the reload library"]
@@ -4930,6 +5054,7 @@ fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace
         manifest,
         "notes",
         &ThinDevLinkage::Target(triple.into()),
+        None,
         false,
     );
     assert_eq!(
@@ -4950,8 +5075,34 @@ fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace
     assert_eq!(key, "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS");
     assert!(flags.to_string_lossy().ends_with("-C prefer-dynamic"));
 
+    assert!(
+        member
+            .iter()
+            .all(|step| !args(step).contains(&"--profile".to_owned()))
+    );
+    let optimised = thin_dev_steps(
+        manifest,
+        "notes",
+        &ThinDevLinkage::WorkspaceToolkit,
+        Some(DEV_RELEASE_PROFILE),
+        true,
+    );
+    assert!(optimised.iter().all(|step| {
+        let args = args(step);
+        let separator = args.iter().position(|arg| arg == "--").unwrap();
+        args[..separator]
+            .windows(2)
+            .any(|pair| pair == ["--profile", "thin-app"])
+    }));
+    assert!(profile_reloads_in_place(None));
+    assert!(profile_reloads_in_place(Some(DEV_RELEASE_PROFILE)));
+    assert!(
+        !profile_reloads_in_place(Some("release")),
+        "an LTO profile cannot link the toolkit dynamically"
+    );
+
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    assert!(app_is_workspace_member(&repo.join("apps/hot-reload-demo")));
+    assert!(app_is_workspace_member(&repo.join("apps/calculator")));
     let temp = tempfile::tempdir().unwrap();
     assert!(!app_is_workspace_member(temp.path()));
 }
@@ -4974,14 +5125,17 @@ fn rebuilt_dev_binary_receives_app_arguments_and_app_working_directory() {
     let mut child = spawn_dev_binary(
         temp.path(),
         &executable,
-        &[OsString::from("--document"), OsString::from("A file.qdoc")],
+        &[
+            OsString::from("--document"),
+            OsString::from("A file.tilo-doc"),
+        ],
     )
     .unwrap();
     assert!(child.wait().unwrap().success());
     assert_eq!(
         std::fs::read_to_string(output).unwrap(),
         format!(
-            "{}\n--document\nA file.qdoc\n",
+            "{}\n--document\nA file.tilo-doc\n",
             temp.path().canonicalize().unwrap().display()
         )
     );
@@ -5115,7 +5269,10 @@ fn platform_specific_app(root: &Path) -> PathBuf {
         .replacen("[features]\n", "[features]\nmedia = [\"ui/mpris\"]\n", 1);
     std::fs::write(
         app.join("Cargo.toml"),
-        format!("{cargo}\n[dev-dependencies]\nnix = \"0.29\"\n"),
+        format!(
+            "{cargo}\n[dev-dependencies]\nnix = \"0.29\"\n\n\
+             [target.'cfg(target_os = \"linux\")'.dev-dependencies]\nlibc = \"0.2\"\n"
+        ),
     )
     .unwrap();
     let mut lib = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
@@ -5144,7 +5301,8 @@ mod platform;
 #[cfg(test)]
 mod platform_tests;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 fn test_symlink() {
     std::os::unix::fs::symlink("a", "b").unwrap();
 }
@@ -5238,6 +5396,10 @@ fn portability_lint_reports_shipped_platform_code_with_remedies() {
             .count(),
         1,
         "dev-dependencies are exempt"
+    );
+    assert!(
+        !sites.contains(&("Cargo.toml".to_owned(), TargetCfg)),
+        "a target section of dev-dependencies is exempt"
     );
     let rendered = report.render();
     assert!(rendered.contains("error[portability/R2]: src/lib.rs:"));
@@ -5966,6 +6128,7 @@ fn portability_lint_records_what_the_web_target_cannot_run() {
     lib.push_str(
         r#"
 use std::time::{Duration, Instant, SystemTime};
+use ui::widget::ButtonRole;
 
 pub fn work() -> Duration {
     let started = Instant::now();
@@ -6109,4 +6272,17 @@ fn an_app_from_an_example_is_renamed_and_ready() {
         let report = doctor_app(&destination).unwrap();
         assert!(report.is_ready(), "{}: {}", example.name, report.summary());
     }
+}
+
+#[test]
+fn code_only_reads_past_quote_characters_and_raw_strings() {
+    let source = concat!(
+        "fn escape(t: &str) -> String { t.replace('\"', \"&quot;\").replace('\\'', \"'\") }\n",
+        "const A: &str = r#\" d=\"1\" x=\"#;\n",
+        "impl Resource for Artwork {}\n",
+    );
+    let code = rust_code_only(source);
+    assert!(code.contains("impl Resource for Artwork"), "{code}");
+    assert!(!code.contains("&quot;"), "{code}");
+    assert_eq!(code.lines().count(), source.lines().count());
 }

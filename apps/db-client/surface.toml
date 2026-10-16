@@ -1,0 +1,56 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "db-client.workspace"
+label = "Database"
+version = 1
+fields = [
+  { path = "connections", type = "Collection<SavedConnection>", stored = "collection" },
+  { path = "connections.*.name", type = "String", label = true },
+  { path = "connections.*.engine", type = "Engine" },
+  { path = "connections.*.host", type = "Atom" },
+  { path = "connections.*.port", type = "u16" },
+  { path = "connections.*.database", type = "Atom" },
+  { path = "connections.*.user", type = "Atom" },
+  { path = "connections.*.file_path", type = "Atom" },
+  { path = "saved_queries", type = "Collection<SavedQuery>", stored = "collection" },
+  { path = "saved_queries.*.name", type = "String", label = true },
+  { path = "saved_queries.*.sql", type = "String" },
+  { path = "sql", type = "String" },
+]
+
+[[resources.verbs]]
+id = "add-connection"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "engine", required = true, schema = { type = "string" } },
+  { name = "location", required = false, schema = { type = ["string", "null"] } },
+  { name = "database", required = false, schema = { type = ["string", "null"] } },
+  { name = "user", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "remove-connection"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "connection", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "save-query"
+kind = "undoable"
+params = [
+  { name = "name", required = true, schema = { type = "string" } },
+  { name = "sql", required = false, schema = { type = ["string", "null"] } },
+]
+
+[[resources.verbs]]
+id = "remove-query"
+destructive = true
+kind = "undoable"
+params = [
+  { name = "query", required = true, schema = { type = "string" } },
+]
+

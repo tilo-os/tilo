@@ -1,0 +1,21 @@
+[package]
+name = "tilo-messaging"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Portable host-owned messaging account metadata boundary"
+
+[dependencies]
+tilo-contact-directory = { path = "../tilo-contact-directory" }
+zeroize.workspace = true
+accounts = { path = "../../system/accounts", features = ["person"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-resource = { path = "../../sdk/tilo-resource" }
+
+[lints]
+workspace = true

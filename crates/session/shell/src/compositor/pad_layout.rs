@@ -47,11 +47,7 @@ pub fn find_layout(
 /// larger is not one.
 fn read_small(path: &Path) -> Option<String> {
     const LIMIT: u64 = 64 * 1024;
-    let metadata = std::fs::metadata(path).ok()?;
-    if metadata.len() > LIMIT {
-        return None;
-    }
-    std::fs::read_to_string(path).ok()
+    String::from_utf8(tilo_files::native::bounded::read(path, LIMIT).ok()??).ok()
 }
 
 /// The `key=value` entries of `section`.

@@ -8,28 +8,9 @@
 //! strings choose it; a message missing from a translation falls back to
 //! `en-US`.
 
-use ui::i18n::{ArgValue, EmbeddedCatalog};
+use ui::i18n::ArgValue;
 
-const SOURCE_FTL: &str = include_str!("../../locales/en-US.ftl");
-const DE_FTL: &str = include_str!("../../locales/de-DE.ftl");
-
-/// Loaded per thread on first use; a host's manager is joined, never replaced.
-/// The probe is a key every catalogue revision defines.
-static CATALOG: EmbeddedCatalog = catalog();
-
-const fn catalog() -> EmbeddedCatalog {
-    let catalog = EmbeddedCatalog::new(
-        "en-US",
-        &[("en-US", SOURCE_FTL), ("de-DE", DE_FTL)],
-        "continuity-continue",
-    )
-    .with_system_locale();
-    // Unit tests assert source copy throughout the shell; keep them
-    // deterministic on any developer or CI host locale.
-    #[cfg(test)]
-    let catalog = catalog.with_pinned_locale("en-US");
-    catalog
-}
+ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 /// Load the shell's catalogue and the toolkit's widget labels on this
 /// thread, in the desktop's language. Startup calls it once; every lookup
@@ -52,6 +33,42 @@ pub fn t_args(key: &str, args: &[(&str, ArgValue)]) -> String {
     CATALOG.t_args(key, args)
 }
 
+/// What `key` says in every language the shell has, whichever one the
+/// desktop speaks: a German desktop still gets "wifi" typed, and an English
+/// one "wlan". Each catalogue's message is a comma-separated list of words
+/// and phrases, returned trimmed and lowercased; a language without the
+/// message adds none. Search matches actions and settings pages by these.
+pub fn words_in_every_locale(key: &str) -> Vec<String> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static WORDS: OnceLock<HashMap<&'static str, Vec<String>>> = OnceLock::new();
+    let words = WORDS.get_or_init(|| {
+        let mut words: HashMap<&'static str, Vec<String>> = HashMap::new();
+        for (_, catalogue) in CATALOG.sources() {
+            for line in catalogue.lines() {
+                let Some((message, value)) = line.split_once(" = ") else {
+                    continue;
+                };
+                if !message.starts_with(KEYWORD_PREFIX) || line.starts_with(char::is_whitespace) {
+                    continue;
+                }
+                words.entry(message).or_default().extend(
+                    value
+                        .split(',')
+                        .map(|word| word.trim().to_lowercase())
+                        .filter(|word| !word.is_empty()),
+                );
+            }
+        }
+        words
+    });
+    words.get(key).cloned().unwrap_or_default()
+}
+
+/// Messages whose value is a list of search words; see
+/// [`words_in_every_locale`].
+pub const KEYWORD_PREFIX: &str = "search-kw-";
+
 /// The desktop's language (BCP 47), for content that is localised outside
 /// the catalogue, such as emoji names.
 pub fn current_locale() -> String {
@@ -73,60 +90,12 @@ pub fn apply_configured_locale() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluent::{FluentBundle, FluentResource};
-    use std::collections::{BTreeMap, BTreeSet};
+    use tilo_copy_lint::catalog;
 
-    /// Every message in a catalogue, keyed by id, with its full pattern
-    /// (continuation lines included).
-    fn catalog_messages(source: &str) -> BTreeMap<String, String> {
-        let mut messages = BTreeMap::new();
-        let mut current: Option<(String, String)> = None;
-        for line in source.lines() {
-            if !line.starts_with(char::is_whitespace)
-                && !line.starts_with('#')
-                && let Some((key, value)) = line.split_once(" = ")
-            {
-                if let Some((key, value)) = current.take() {
-                    messages.insert(key, value);
-                }
-                current = Some((key.trim().to_string(), value.to_string()));
-            } else if let Some((_, value)) = current.as_mut()
-                && (line.starts_with(char::is_whitespace) || line.trim() == "}")
-            {
-                value.push('\n');
-                value.push_str(line);
-            } else if let Some((key, value)) = current.take() {
-                messages.insert(key, value);
-            }
-        }
-        if let Some((key, value)) = current {
-            messages.insert(key, value);
-        }
-        messages
-    }
-
-    fn variables(pattern: &str) -> BTreeSet<String> {
-        pattern
-            .split('$')
-            .skip(1)
-            .map(|rest| {
-                rest.chars()
-                    .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-                    .collect()
-            })
-            .collect()
-    }
-
-    fn strict_bundle(locale: &str, source: &str) -> FluentBundle<FluentResource> {
-        let resource = FluentResource::try_new(source.to_string())
-            .unwrap_or_else(|(_, errors)| panic!("{locale}.ftl has syntax errors: {errors:?}"));
-        let mut bundle = FluentBundle::new(vec![locale.parse().expect("locale id")]);
-        bundle.set_use_isolating(false);
-        bundle
-            .add_resource(resource)
-            .unwrap_or_else(|errors| panic!("{locale}.ftl defines a key twice: {errors:?}"));
-        bundle
-    }
+    const CATALOGS: &[(&str, &str)] = &[
+        ("en-US", include_str!("../../locales/en-US.ftl")),
+        ("de-DE", include_str!("../../locales/de-DE.ftl")),
+    ];
 
     #[test]
     fn every_key_the_shell_uses_resolves_to_a_real_string() {
@@ -160,7 +129,7 @@ mod tests {
 
     #[test]
     fn every_catalogue_entry_resolves_to_a_real_string() {
-        let keys = catalog_messages(SOURCE_FTL);
+        let keys = catalog::messages(CATALOGS[0].1);
         assert!(!keys.is_empty());
         for key in keys.keys() {
             let value = t(key);
@@ -170,135 +139,19 @@ mod tests {
     }
 
     /// A key only English defines would show English on a German desktop,
-    /// and a German key English lacks is dead copy. Both catalogues must
-    /// define the same keys with the same variables, and parse cleanly.
+    /// and a German key English lacks is dead copy.
     #[test]
     fn every_shell_string_is_translated_in_every_locale() {
-        let source = catalog_messages(SOURCE_FTL);
-        for (locale, catalogue) in [("de-DE", DE_FTL)] {
-            let translated = catalog_messages(catalogue);
-            let missing: Vec<_> = source
-                .keys()
-                .filter(|key| !translated.contains_key(*key))
-                .collect();
-            assert!(missing.is_empty(), "{locale}.ftl lacks {missing:?}");
-            let extra: Vec<_> = translated
-                .keys()
-                .filter(|key| !source.contains_key(*key))
-                .collect();
-            assert!(
-                extra.is_empty(),
-                "{locale}.ftl has keys en-US lacks: {extra:?}"
-            );
-            for (key, pattern) in &source {
-                assert_eq!(
-                    variables(pattern),
-                    variables(&translated[key]),
-                    "{locale}.ftl changes the variables of {key}"
-                );
-            }
-            let bundle = strict_bundle(locale, catalogue);
-            for key in source.keys() {
-                assert!(
-                    bundle
-                        .get_message(key)
-                        .and_then(|message| message.value())
-                        .is_some(),
-                    "{locale}.ftl has no value for {key}"
-                );
-            }
-        }
-        strict_bundle("en-US", SOURCE_FTL);
-    }
-
-    /// Every literal key passed to [`t`] or [`t_args`] in `src/`.
-    fn keys_used_in_code() -> BTreeMap<String, String> {
-        fn visit(dir: &std::path::Path, found: &mut BTreeMap<String, String>) {
-            let mut entries: Vec<_> = std::fs::read_dir(dir)
-                .expect("read source directory")
-                .map(|entry| entry.expect("source entry").path())
-                .collect();
-            entries.sort();
-            for path in entries {
-                if path.is_dir() {
-                    visit(&path, found);
-                } else if path.extension().is_some_and(|ext| ext == "rs") {
-                    let source = std::fs::read_to_string(&path).expect("read source file");
-                    for key in literal_keys(&source) {
-                        found
-                            .entry(key)
-                            .or_insert_with(|| path.display().to_string());
-                    }
-                }
-            }
-        }
-        let mut found = BTreeMap::new();
-        visit(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-            &mut found,
-        );
-        found
-    }
-
-    /// The string literal that opens each `t(` / `t_args(` call in `source`.
-    fn literal_keys(source: &str) -> Vec<String> {
-        let mut keys = Vec::new();
-        for call in ["t(", "t_args("] {
-            for (start, _) in source.match_indices(call) {
-                let preceded_by_ident = source[..start]
-                    .chars()
-                    .next_back()
-                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
-                if preceded_by_ident {
-                    continue;
-                }
-                let Some(rest) = source[start..].strip_prefix(call) else {
-                    continue;
-                };
-                let Some(literal) = rest.trim_start().strip_prefix('"') else {
-                    continue;
-                };
-                let Some(end) = literal.find('"') else {
-                    continue;
-                };
-                let key = &literal[..end];
-                if !key.is_empty()
-                    && key
-                        .chars()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-                {
-                    keys.push(key.to_string());
-                }
-            }
-        }
-        keys
-    }
-
-    #[test]
-    fn literal_key_scan_finds_direct_and_wrapped_calls() {
-        let source = "t(\"a-b\") + crate::shell::i18n::t_args(\n    \"c-d\", &[]) + format(\"x\") + tt(\"no\")";
-        assert_eq!(literal_keys(source), vec!["a-b", "c-d"]);
+        catalog::check_translations(CATALOGS);
     }
 
     /// A key the code asks for but a catalogue lacks renders as the raw key
     /// (or English on a German desktop), so every one must be defined.
     #[test]
     fn every_key_used_in_code_is_in_every_catalogue() {
-        let used = keys_used_in_code();
-        assert!(
-            used.len() > 100,
-            "the source scan found only {} keys",
-            used.len()
-        );
-        for (locale, catalogue) in [("en-US", SOURCE_FTL), ("de-DE", DE_FTL)] {
-            let defined = catalog_messages(catalogue);
-            let missing: Vec<_> = used
-                .iter()
-                .filter(|(key, _)| !defined.contains_key(*key))
-                .map(|(key, file)| format!("{key} ({file})"))
-                .collect();
-            assert!(missing.is_empty(), "{locale}.ftl lacks {missing:?}");
-        }
+        catalog::UsedKeys::scan(&[concat!(env!("CARGO_MANIFEST_DIR"), "/src")])
+            .min_keys(100)
+            .check_defined(CATALOGS);
     }
 
     /// Toolkit widgets the shell draws take their labels from the toolkit's

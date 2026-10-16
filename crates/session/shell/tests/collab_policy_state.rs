@@ -6,11 +6,7 @@
 
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -21,7 +17,7 @@ use channel_crypto::{ChannelGroup, MemberKey};
 use collab_fixtures::{role_attestation, signed_op, signed_op_encrypted};
 use collab_types::{
     ArtifactId, ArtifactKind, AttestationId, ChannelId, ChannelState, CompactionCheckpoint,
-    Ed25519PublicKey, EncryptionMetadata, OpClass, OpId, RedactRequest, RedactedMarker, Role,
+    Ed25519PublicKey, EncryptionMetadata, OpId, OpKind, RedactRequest, RedactedMarker, Role,
     SignedOp, ValidationError, encode_compaction_payload, encode_redact_payload, generate_keypair,
     hash_op_prefix, hash_target_op, parse_compaction_payload, validate_inbound_op,
 };
@@ -95,7 +91,7 @@ fn redact(f: &Fixture, target: &SignedOp, author: Role, seq: u64) -> SignedOp {
         pk,
         f.artifact,
         att,
-        OpClass::Redact,
+        OpKind::Redaction,
         encode_redact_payload(&req).unwrap(),
         seq,
     )
@@ -149,10 +145,6 @@ renaming either away from it would hurt readability, not help it"
 including the compliance-record recheck after compaction, so the guard \
 must stay held for the whole function"
 )]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn signed_and_mls_ops_validate_replay_and_redact_without_decryption() {
     // Phase `signed_ops_accept_valid_reject_invalid_and_replay`.
     {
@@ -162,7 +154,7 @@ fn signed_and_mls_ops_validate_replay_and_redact_without_decryption() {
             f.editor_pk,
             f.artifact,
             f.editor_att,
-            OpClass::Splice,
+            OpKind::Change,
             b"valid".to_vec(),
             1,
         );
@@ -179,7 +171,7 @@ fn signed_and_mls_ops_validate_replay_and_redact_without_decryption() {
             outsider_pk,
             f.artifact,
             AttestationId::new(),
-            OpClass::Splice,
+            OpKind::Change,
             b"forged".to_vec(),
             1,
         );
@@ -217,7 +209,7 @@ fn signed_and_mls_ops_validate_replay_and_redact_without_decryption() {
             artifact,
             threshold_pk,
             editor_att,
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::now(),
             1,
             EncryptionMetadata::mls_application(alice.epoch(), channel),
@@ -244,7 +236,7 @@ fn signed_and_mls_ops_validate_replay_and_redact_without_decryption() {
             f.editor_pk,
             f.artifact,
             f.editor_att,
-            OpClass::Splice,
+            OpKind::Change,
             b"opaque MLS ciphertext".to_vec(),
             1,
             EncryptionMetadata::mls_application(7, ChannelId::new()),
@@ -305,7 +297,7 @@ fn redaction_scrollback_and_compaction_compose_under_one_policy() {
             f.editor_pk,
             f.artifact,
             f.editor_att,
-            OpClass::Splice,
+            OpKind::Change,
             b"secret".to_vec(),
             1,
         );
@@ -315,7 +307,7 @@ fn redaction_scrollback_and_compaction_compose_under_one_policy() {
         let denied = redact(&f, &target, Role::Editor, 2);
         assert!(matches!(
             validate_inbound_op(&denied, &mut f.state),
-            Err(ValidationError::RoleForbidsOpClass)
+            Err(ValidationError::NotGranted(_))
         ));
 
         let accepted = redact(&f, &target, Role::Owner, 10);
@@ -370,7 +362,7 @@ fn redaction_scrollback_and_compaction_compose_under_one_policy() {
             f.editor_pk,
             f.artifact,
             f.editor_att,
-            OpClass::Splice,
+            OpKind::Change,
             b"arrives later".to_vec(),
             100,
         );
@@ -396,7 +388,7 @@ fn redaction_scrollback_and_compaction_compose_under_one_policy() {
                 f.editor_pk,
                 f.artifact,
                 f.editor_att,
-                OpClass::Splice,
+                OpKind::Change,
                 format!("op-{seq}").into_bytes(),
                 seq,
             );
@@ -429,20 +421,20 @@ fn redaction_scrollback_and_compaction_compose_under_one_policy() {
             f.editor_pk,
             f.artifact,
             f.editor_att,
-            OpClass::Compaction,
+            OpKind::Compaction,
             payload.clone(),
             10,
         );
         assert!(matches!(
             validate_inbound_op(&editor_compaction, &mut f.state),
-            Err(ValidationError::RoleForbidsOpClass)
+            Err(ValidationError::NotGranted(_))
         ));
         let owner_compaction = signed_op(
             &f.owner_sk,
             f.owner_pk,
             f.artifact,
             f.owner_att,
-            OpClass::Compaction,
+            OpKind::Compaction,
             payload,
             100,
         );

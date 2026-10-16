@@ -4,14 +4,14 @@
 
 use crate::time::Duration;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpringParams {
     pub stiffness: f32,
     pub damping: f32,
     pub mass: f32,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpringPresets {
     /// Gentle, no overshoot (ζ ≈ 1.0). Ambient settles.
     pub subtle: SpringParams,
@@ -85,7 +85,7 @@ impl Default for SpringPresets {
 /// - `fast`  — micro-feedback: hover, drop-zone hints, chip toggles.
 /// - `base`  — the default: opens, closes, reflows, tab in/out.
 /// - `slow`  — large spatial moves: overview zoom, window spawn.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Durations {
     pub fast_ms: u32,
     pub base_ms: u32,
@@ -122,7 +122,7 @@ impl Durations {
 /// Each value is a *fraction of the surface's own reference extent*
 /// rather than an absolute distance, so one number covers a scroll
 /// viewport and a detented wheel alike. The caller supplies the extent.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Gesture {
     /// Ceiling on overscroll past an end, as a multiple of the surface's
     /// reference extent — the pull approaches this and never reaches it.
@@ -161,7 +161,7 @@ impl Default for Gesture {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Motion {
     pub springs: SpringPresets,
     pub durations: Durations,

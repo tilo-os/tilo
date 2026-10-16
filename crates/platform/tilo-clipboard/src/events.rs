@@ -9,10 +9,6 @@
 //!
 //! The scopes compile and nest on every target, so a host's dispatch code has
 //! no `cfg`; the desktop backends ignore them.
-#![cfg_attr(
-    not(all(target_arch = "wasm32", target_os = "unknown")),
-    allow(dead_code, reason = "only the web backend reads the event scopes")
-)]
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -23,6 +19,11 @@ pub trait EventTransfer {
     fn set_text(&self, text: &str) -> bool;
     /// The event's `text/plain`, if any.
     fn text(&self) -> Option<String>;
+    /// Paired HTML/plain payloads from this same event. Optional and bounded;
+    /// returning `None` leaves the ordinary plain-text read available.
+    fn rich_text(&self) -> Option<crate::RichTextOffer> {
+        None
+    }
 }
 
 /// How a copy made inside a click ended, reported to whoever dispatched it.
@@ -35,9 +36,14 @@ pub enum CopyReport {
 /// Where a copy made inside a click reports how it ended.
 type Report = Rc<dyn Fn(CopyReport)>;
 
+/// Only the web backend reads the event; the desktop backends ignore it.
 struct Transfer {
+    #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
     data: Rc<dyn EventTransfer>,
+    #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
     read: bool,
+    #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+    rich_attempted: bool,
     copied: bool,
 }
 
@@ -56,10 +62,16 @@ pub fn during<R>(transfer: Rc<dyn EventTransfer>, run: impl FnOnce() -> R) -> R 
             TRANSFER.with_borrow_mut(|slot| *slot = previous);
         }
     }
+    #[cfg(not(any(test, all(target_arch = "wasm32", target_os = "unknown"))))]
+    drop(transfer);
     let previous = TRANSFER.with_borrow_mut(|slot| {
         slot.replace(Transfer {
+            #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
             data: transfer,
+            #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
             read: false,
+            #[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+            rich_attempted: false,
             copied: false,
         })
     });
@@ -94,6 +106,7 @@ pub fn in_event() -> bool {
 }
 
 /// Write `text` to the event being dispatched. `None` when there is none.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn write(text: &str) -> Option<bool> {
     TRANSFER.with_borrow_mut(|slot| {
         let t = slot.as_mut()?;
@@ -106,6 +119,7 @@ pub(crate) fn write(text: &str) -> Option<bool> {
 
 /// Read the event being dispatched, once. `None` when there is none, it was
 /// already read, or it holds no text.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn read() -> Option<String> {
     TRANSFER.with_borrow_mut(|slot| {
         let t = slot.as_mut()?;
@@ -117,7 +131,24 @@ pub(crate) fn read() -> Option<String> {
     })
 }
 
+/// Probe rich text once. Only an accepted offer consumes the event's read;
+/// missing, empty or oversized HTML leaves the ordinary plain read available.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
+pub(crate) fn read_rich() -> Option<crate::RichTextOffer> {
+    TRANSFER.with_borrow_mut(|slot| {
+        let t = slot.as_mut()?;
+        if t.read || t.rich_attempted {
+            return None;
+        }
+        t.rich_attempted = true;
+        let offer = t.data.rich_text().filter(crate::RichTextOffer::is_valid)?;
+        t.read = true;
+        Some(offer)
+    })
+}
+
 /// The report of the input event being dispatched, if any.
+#[cfg(any(test, all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn input_report() -> Option<Report> {
     INPUT.with_borrow(Clone::clone)
 }
@@ -133,12 +164,18 @@ mod tests {
         text: Option<String>,
         refuse: bool,
         reads: Cell<usize>,
+        rich: Option<crate::RichTextOffer>,
+        rich_reads: Cell<usize>,
     }
 
     impl EventTransfer for Fake {
         fn set_text(&self, text: &str) -> bool {
             self.offered.borrow_mut().push(text.to_owned());
             !self.refuse
+        }
+        fn rich_text(&self) -> Option<crate::RichTextOffer> {
+            self.rich_reads.set(self.rich_reads.get().saturating_add(1));
+            self.rich.clone()
         }
         fn text(&self) -> Option<String> {
             self.reads.set(self.reads.get().saturating_add(1));
@@ -194,5 +231,124 @@ mod tests {
         });
         assert!(input_report().is_none());
         assert_eq!(*heard.borrow(), [CopyReport::Copied]);
+    }
+
+    #[test]
+    fn rich_offer_captures_fallback_and_consumes_the_event_once() {
+        let offer = crate::RichTextOffer {
+            html: "<b>Ä😀</b>".into(),
+            plain: Some("paired Ä😀\n".into()),
+        };
+        let fake = Rc::new(Fake {
+            rich: Some(offer.clone()),
+            text: Some("must not reread".into()),
+            ..Fake::default()
+        });
+        assert_eq!(read_rich(), None);
+        during(fake.clone(), || {
+            assert_eq!(read_rich(), Some(offer));
+            assert_eq!(read(), None);
+            assert_eq!(read_rich(), None);
+        });
+        assert_eq!(read_rich(), None);
+        assert_eq!(fake.rich_reads.get(), 1);
+        assert_eq!(fake.reads.get(), 0);
+    }
+
+    #[test]
+    fn refused_rich_offers_leave_plain_available_without_repeated_probes() {
+        for rich in [
+            None,
+            Some(crate::RichTextOffer {
+                html: String::new(),
+                plain: None,
+            }),
+            Some(crate::RichTextOffer {
+                html: "a".repeat(crate::MAX_CLIPBOARD_HTML_BYTES + 1),
+                plain: None,
+            }),
+            Some(crate::RichTextOffer {
+                html: "<p>small</p>".into(),
+                plain: Some("a".repeat(crate::MAX_CLIPBOARD_PLAIN_FALLBACK_BYTES + 1)),
+            }),
+        ] {
+            let fake = Rc::new(Fake {
+                rich,
+                text: Some("ordinary text".into()),
+                ..Fake::default()
+            });
+            during(fake.clone(), || {
+                assert_eq!(read_rich(), None);
+                assert_eq!(read_rich(), None);
+                assert_eq!(read().as_deref(), Some("ordinary text"));
+                assert_eq!(read(), None);
+            });
+            assert_eq!(fake.rich_reads.get(), 1);
+            assert_eq!(fake.reads.get(), 1);
+        }
+    }
+
+    #[test]
+    fn plain_first_prevents_a_later_rich_read() {
+        let fake = Rc::new(Fake {
+            rich: Some(crate::RichTextOffer {
+                html: "<b>secret</b>".into(),
+                plain: None,
+            }),
+            text: Some("plain".into()),
+            ..Fake::default()
+        });
+        during(fake.clone(), || {
+            assert_eq!(read().as_deref(), Some("plain"));
+            assert_eq!(read_rich(), None);
+        });
+        assert_eq!(fake.rich_reads.get(), 0);
+    }
+
+    #[test]
+    fn nested_rich_scopes_restore_outer_payload_and_consumption() {
+        let outer = Rc::new(Fake {
+            rich: Some(crate::RichTextOffer {
+                html: "outer".into(),
+                plain: None,
+            }),
+            ..Fake::default()
+        });
+        let inner = Rc::new(Fake {
+            rich: Some(crate::RichTextOffer {
+                html: "inner".into(),
+                plain: Some("paired".into()),
+            }),
+            ..Fake::default()
+        });
+        during(outer.clone(), || {
+            during(inner.clone(), || {
+                assert_eq!(read_rich(), inner.rich);
+            });
+            assert_eq!(read_rich(), outer.rich);
+            during(inner.clone(), || {
+                assert_eq!(read_rich(), inner.rich);
+            });
+            assert_eq!(read_rich(), None);
+            assert_eq!(read(), None);
+        });
+        assert_eq!(read_rich(), None);
+        assert_eq!(outer.rich_reads.get(), 1);
+        assert_eq!(inner.rich_reads.get(), 2);
+    }
+
+    #[test]
+    fn rich_limits_count_utf8_bytes_and_diagnostics_omit_payloads() {
+        let mut offer = crate::RichTextOffer {
+            html: "😀".repeat(crate::MAX_CLIPBOARD_HTML_BYTES / 4),
+            plain: Some("p".repeat(crate::MAX_CLIPBOARD_PLAIN_FALLBACK_BYTES)),
+        };
+        assert!(offer.is_valid());
+        offer.html.push('x');
+        assert!(!offer.is_valid());
+        let diagnostic = format!("{offer:?}");
+        assert!(!diagnostic.contains('😀'));
+        assert!(diagnostic.contains("html_bytes"));
+        assert!(diagnostic.len() < 100);
     }
 }

@@ -1,6 +1,6 @@
 //! The header bar an SDK app draws where the desktop leaves decorations to
 //! the client (GNOME, and any Wayland compositor without server-side
-//! `xdg-decoration`): History as a menu button, a search toggle, the title
+//! `xdg-decoration`): History as an icon menu button, a search toggle, the title
 //! and the window controls, in one bar that replaces the fallback frame.
 //!
 //! It presents the host command model and nothing else. A chosen History
@@ -25,6 +25,7 @@ use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::ControlSize;
 use crate::widget::{Button, ContextMenu, MenuItem, Row, Spacer, Text, Widget};
 
 /// What the person asked of the window or the app through the bar.
@@ -110,9 +111,7 @@ impl HeaderBar {
         }
 
         let open_menu = menu_requested.clone();
-        let history_button = Button::new("host-header-history", "host-menu-history", None)
-            .with_icon(Icon::ChevronDown)
-            .fit_content(BAR_CONTROL_HEIGHT)
+        let history_button = control("host-header-history", Icon::History, "host-menu-history")
             .with_enabled(!history.is_empty())
             .on_click(move || *open_menu.borrow_mut() = true);
         let mut row = Row::new().no_wrap().push(Box::new(history_button));
@@ -272,16 +271,8 @@ const DOUBLE_PRESS: std::time::Duration = std::time::Duration::from_millis(400);
 
 fn control(id: &str, icon: Icon, key: &str) -> Button {
     let label = I18nManager::lookup_plain(key);
-    Button::new(id, "", None)
-        .with_icon(icon)
-        .tooltip(label.clone())
-        .with_accessible_name(&label)
-        .fit_content(BAR_CONTROL_HEIGHT)
-        .ghost()
+    Button::icon_only(id, icon, &label).control_size(ControlSize::Small)
 }
-
-/// Buttons are built before a theme is known; the bar's own height scales.
-const BAR_CONTROL_HEIGHT: f32 = crate::tokens::metrics::Metrics::BASE.bar_control_height;
 
 impl Widget for HeaderBar {
     fn build_layout(
@@ -295,7 +286,7 @@ impl Widget for HeaderBar {
             let mut style = style.clone();
             style.size.width = taffy::Dimension::percent(1.0);
             style.size.height = taffy::Dimension::length(theme.tokens.metrics.bar_height);
-            style.padding = crate::chrome::bar_padding(theme);
+            style.padding = crate::widget::toolbar::band_padding(theme);
             let _ = taffy.set_style(node, style);
         }
         node
@@ -320,7 +311,7 @@ impl Widget for HeaderBar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        crate::chrome::paint_bar(scene, transform, theme, self.rect);
+        crate::widget::toolbar::paint_band(scene, transform, theme, self.rect);
         self.row.draw(scene, transform, text, theme, presence);
         self.menu.layout_within(text, theme);
     }
@@ -333,7 +324,8 @@ impl Widget for HeaderBar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.menu.draw(scene, transform, text, theme, presence);
+        self.menu
+            .draw_overlay(scene, transform, text, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -457,7 +449,7 @@ mod tests {
 
     use super::{HeaderBar, HeaderRequest, app_draws_frame, resize_edge};
     use crate::app::App;
-    use crate::headless::Driver;
+    use crate::headless::FrameHarness;
     use crate::host_chrome::HostChrome;
     use crate::host_chrome::model::{CommandGroup, HostCommand};
     use crate::widget::Widget;
@@ -475,8 +467,8 @@ mod tests {
         app
     }
 
-    fn driver(commands: &[HostCommand], theme: crate::Theme) -> Driver {
-        let mut driver = Driver::for_root(
+    fn driver(commands: &[HostCommand], theme: crate::Theme) -> FrameHarness {
+        let mut driver = FrameHarness::for_root(
             crate::State::new(),
             HeaderBar::new("Notes", commands),
             (900, 120),
@@ -549,8 +541,8 @@ mod tests {
             assert!(rect.width() >= height * 0.75, "{id} is squeezed: {rect:?}");
         }
         assert!(
-            controls[0].1.width() > controls[1].1.width(),
-            "History carries its label: {controls:?}"
+            (controls[0].1.width() - controls[1].1.width()).abs() < 0.5,
+            "History is a glyph like the others: {controls:?}"
         );
         assert!(
             controls.windows(2).all(|pair| pair[0].1.x1 <= pair[1].1.x0),
@@ -725,7 +717,7 @@ mod tests {
             ("dark", crate::Theme::dark()),
             ("high-contrast", crate::Theme::high_contrast()),
         ] {
-            let mut driver = Driver::for_root(
+            let mut driver = FrameHarness::for_root(
                 crate::State::new(),
                 HeaderBar::new("Notes", &commands),
                 (900, 260),
@@ -736,7 +728,7 @@ mod tests {
                 .set_viewport(vello::kurbo::Rect::new(0.0, 0.0, 900.0, 260.0));
             driver.relayout();
             driver.click_named("host-header-history").unwrap();
-            driver.render_window_png(
+            driver.render_png(
                 &std::path::Path::new(&directory).join(format!("header-bar-{name}.png")),
             );
         }

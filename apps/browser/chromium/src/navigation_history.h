@@ -14,17 +14,17 @@ class NavigationHistory final : public CefDevToolsMessageObserver {
   using Emit = std::function<void(const std::string&,CefRefPtr<CefDictionaryValue>)>;
   NavigationHistory(CefRefPtr<CefBrowser> browser,Emit emit):browser_(browser),emit_(std::move(emit)) {}
   void Attach() { registration_=browser_->GetHost()->AddDevToolsMessageObserver(this); }
-  void Detach() { registration_=nullptr;browser_=nullptr; }
+  void Detach() { execution_refused_={};execution_pending_=0;registration_=nullptr;browser_=nullptr; }
   void Invalidate() { allowed_.clear();snapshot_=0;pending_=0; }
   void Request(int request,bool forward=false) {
     Invalidate();request_=request;forward_=forward;
     pending_=browser_->GetHost()->ExecuteDevToolsMethod(0,"Page.getNavigationHistory",nullptr);
     if(!pending_) Publish(nullptr);
   }
-  void Navigate(int request,int entry) {
-    if(request!=snapshot_ || !allowed_.count(entry)) return;
+  bool Navigate(int request,int entry,std::function<void()> refused={}) {
+    if(request!=snapshot_ || !allowed_.count(entry)) return false;
     auto params=CefDictionaryValue::Create();params->SetInt("entryId",entry);
-    Invalidate();browser_->GetHost()->ExecuteDevToolsMethod(0,"Page.navigateToHistoryEntry",params);
+    Invalidate();execution_refused_=std::move(refused);execution_pending_=browser_->GetHost()->ExecuteDevToolsMethod(0,"Page.navigateToHistoryEntry",params);return execution_pending_!=0;
   }
   void OnDevToolsMethodResult(CefRefPtr<CefBrowser>,int id,bool success,const void* result,size_t size) override {
     // CEF may answer synchronously, before ExecuteDevToolsMethod returns its id.
@@ -37,7 +37,9 @@ class NavigationHistory final : public CefDevToolsMessageObserver {
   }
  private:
   void Result(int id,bool success,const std::string& result) {
-    if(!browser_ || id!=pending_) return;
+    if(!browser_)return;
+    if(id==execution_pending_) {execution_pending_=0;auto refused=std::move(execution_refused_);if(!success && refused)refused();return;}
+    if(id!=pending_) return;
     pending_=0;
     auto parsed=success?CefParseJSON(result,JSON_PARSER_RFC):nullptr;
     Publish(parsed && parsed->GetType()==VTYPE_DICTIONARY?parsed->GetDictionary():nullptr);
@@ -59,6 +61,8 @@ class NavigationHistory final : public CefDevToolsMessageObserver {
     auto event=CefDictionaryValue::Create();event->SetInt("request_id",request_);event->SetString("direction",forward_?"forward":"back");event->SetList("entries",entries);emit_("navigation_history",event);
   }
   CefRefPtr<CefBrowser> browser_;CefRefPtr<CefRegistration> registration_;Emit emit_;
+  std::function<void()> execution_refused_;
+  int execution_pending_=0;
   int pending_=0,request_=0,snapshot_=0;bool forward_=false;std::set<int> allowed_;
   IMPLEMENT_REFCOUNTING(NavigationHistory);
 };

@@ -24,11 +24,11 @@ use crate::priority_contacts::PriorityContactRegistry;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tilo_desktop::notifications::ContinuityNotificationId;
 #[cfg(target_os = "linux")]
-use zbus::names::{InterfaceName, MemberName, OwnedUniqueName};
+use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
 use zbus::object_server::{DispatchResult2, Interface, SignalEmitter};
 #[cfg(target_os = "linux")]
-use zbus::{Connection, ObjectServer, fdo, message::Header, message::Message};
+use zbus::{Connection, fdo, message::Header, message::Message};
 
 #[cfg(any(test, target_os = "linux"))]
 use std::path::Path;
@@ -38,8 +38,6 @@ use std::sync::{Arc, Mutex};
 #[cfg(any(test, target_os = "linux"))]
 use zbus::zvariant::OwnedValue;
 
-use getrandom::{SysRng, rand_core::UnwrapErr};
-use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "linux")]
@@ -50,6 +48,9 @@ use crate::portal::interface_dispatch;
 
 /// Bus name the freedesktop notification spec reserves for the
 /// notification daemon; owning it makes the compositor the system notification server.
+#[cfg(target_os = "linux")]
+mod scheduled;
+
 pub const BUS_NAME: &str = "org.freedesktop.Notifications";
 
 /// Object path the spec hard-codes for the notification interface.
@@ -249,6 +250,10 @@ pub struct IncomingNotification {
     /// communications app. The shell hashes and checks it against its private
     /// Contacts-owned registry before it can affect focus policy.
     pub contact_endpoint: Option<String>,
+    /// Tilo extension: the display name of the person the message is from,
+    /// shown with `contact_endpoint` on the banner. Trusted no further than
+    /// the handle it travels with.
+    pub sender_name: Option<String>,
     /// The system sound this notification stands for, from its `category`
     /// hint; `None` when the sender asked for silence (`suppress-sound`).
     pub sound: Option<settings_store::system_sounds::SystemSoundEvent>,
@@ -256,16 +261,61 @@ pub struct IncomingNotification {
 
 type ActionTap = Arc<dyn Fn(u32, &str) + Send + Sync + 'static>;
 
+/// A host action on one durable calendar-alarm occurrence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ScheduledAction {
+    Snooze,
+    Dismiss,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ScheduledActionRequest {
+    pub id: u64,
+    pub app_id: String,
+    pub target: tilo_desktop::notifications::ScheduledNotificationTarget,
+    pub action: ScheduledAction,
+}
+
+#[cfg(target_os = "linux")]
+struct ScheduledActionController {
+    store: std::sync::Weak<Mutex<scheduled::ScheduleStore>>,
+    /// The store's committed snoozes, read without its lock.
+    snoozed: scheduled::SnoozedView,
+    changed: crate::idle_wake::IdleWake,
+}
+
+/// A pending snooze projected from the durable scheduler, independent of history.
+#[derive(Clone, Debug)]
+pub(crate) struct SnoozedAlarm {
+    pub app_id: String,
+    pub title: String,
+    pub target: tilo_desktop::notifications::ScheduledNotificationTarget,
+}
+
 #[derive(Default)]
 struct BridgeInner {
     /// `Notify` → compositor toast pump.
     incoming: Vec<IncomingNotification>,
     /// `CloseNotification(id)` → compositor toast pump.
     close_requests: Vec<u32>,
+    /// Ongoing notices end when their authenticated unique bus owner exits.
+    ongoing_owners: HashMap<u32, String>,
     /// Toast removed in the compositor → `NotificationClosed` signal.
     closed_events: Vec<(u32, CloseReason)>,
     /// Toast action activated in the compositor → `ActionInvoked` signal.
     action_events: Vec<(u32, String)>,
+    #[cfg(target_os = "linux")]
+    schedule_controller: Option<ScheduledActionController>,
+    scheduled_actions: Vec<ScheduledActionRequest>,
+    scheduled_action_results: HashMap<u64, Result<(), String>>,
+    next_scheduled_action: u64,
+    scheduled_targets: HashMap<
+        u32,
+        (
+            PortalCaller,
+            tilo_desktop::notifications::ScheduledNotificationTarget,
+        ),
+    >,
     /// Additional protocol-specific consumers. The freedesktop notification
     /// service still drains `action_events`; taps receive a copy at write time
     /// so a portal backend never races it for the same toast click.
@@ -279,12 +329,22 @@ struct BridgeInner {
 
 impl std::fmt::Debug for BridgeInner {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("BridgeInner")
+        let mut debug = formatter.debug_struct("BridgeInner");
+        #[cfg(target_os = "linux")]
+        debug.field("schedule_controller", &self.schedule_controller.is_some());
+        debug
             .field("incoming", &self.incoming.len())
             .field("close_requests", &self.close_requests.len())
+            .field("ongoing_owners", &self.ongoing_owners.len())
             .field("closed_events", &self.closed_events.len())
             .field("action_events", &self.action_events.len())
+            .field("scheduled_targets", &self.scheduled_targets.len())
+            .field("scheduled_actions", &self.scheduled_actions.len())
+            .field(
+                "scheduled_action_results",
+                &self.scheduled_action_results.len(),
+            )
+            .field("next_scheduled_action", &self.next_scheduled_action)
             .field("action_taps", &self.action_taps.len())
             .field("sharing", &self.sharing.len())
             .field("continuity_routes", &self.continuity.by_id.len())
@@ -304,7 +364,7 @@ impl std::fmt::Debug for BridgeInner {
 
 /// Thread-safe mailbox between the async D-Bus service and the
 /// synchronous chrome pump; cloneable (`Arc` bump) so each side holds its own handle.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct NotificationBridge {
     inner: Arc<Mutex<BridgeInner>>,
     /// Monotonic id source. The spec requires ids be non-zero and unique for
@@ -313,6 +373,17 @@ pub struct NotificationBridge {
     /// A restart-scoped namespace. Stale routes can never address a new
     /// notification daemon process, even if its D-Bus ids are reused.
     continuity_epoch: [u8; 16],
+    /// Parked by the D-Bus signal emitter until a close or action is queued.
+    signal_wake: crate::idle_wake::IdleWake,
+    compositor_wake: Arc<Mutex<Option<crate::session_runtime::Wake>>>,
+}
+
+impl std::fmt::Debug for NotificationBridge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NotificationBridge")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for NotificationBridge {
@@ -323,11 +394,31 @@ impl Default for NotificationBridge {
 
 impl NotificationBridge {
     pub fn new() -> Self {
-        let continuity_epoch = random_nonzero_token();
+        let continuity_epoch = crate::random::nonzero::<16>();
         Self {
             inner: Arc::new(Mutex::new(BridgeInner::default())),
             next_id: Arc::new(AtomicU32::new(1)),
             continuity_epoch,
+            signal_wake: crate::idle_wake::IdleWake::default(),
+            compositor_wake: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Wake the native session when a background deadline delivers a notice.
+    pub fn set_wake(&self, wake: crate::session_runtime::Wake) {
+        if let Ok(mut slot) = self.compositor_wake.lock() {
+            *slot = Some(wake);
+        }
+    }
+
+    fn wake_compositor(&self) {
+        let wake = self
+            .compositor_wake
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone());
+        if let Some(wake) = wake {
+            wake();
         }
     }
 
@@ -347,13 +438,216 @@ impl NotificationBridge {
         if let Ok(mut g) = self.inner.lock() {
             g.incoming.push(n);
         }
+        self.wake_compositor();
     }
 
-    fn push_incoming_with_sharing(&self, n: IncomingNotification, sharing: NotificationSharing) {
+    #[cfg(target_os = "linux")]
+    fn attach_schedule_controller(
+        &self,
+        store: &Arc<Mutex<scheduled::ScheduleStore>>,
+        changed: crate::idle_wake::IdleWake,
+    ) {
+        let snoozed = store
+            .lock()
+            .map(|store| store.snoozed_view())
+            .unwrap_or_default();
         if let Ok(mut inner) = self.inner.lock() {
+            inner.schedule_controller = Some(ScheduledActionController {
+                store: Arc::downgrade(store),
+                snoozed,
+                changed,
+            });
+        }
+    }
+
+    pub(crate) fn scheduled_actions_available(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.inner.lock().ok().is_some_and(|inner| {
+                inner
+                    .schedule_controller
+                    .as_ref()
+                    .is_some_and(|controller| controller.store.upgrade().is_some())
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+
+    pub(crate) fn snoozed_alarms(&self, room: &str) -> Vec<SnoozedAlarm> {
+        #[cfg(target_os = "linux")]
+        {
+            // Called from the compositor's loop. The store's own lock is held
+            // across each commit's disk write, so read the committed view.
+            let snoozed = self.inner.lock().ok().and_then(|inner| {
+                inner
+                    .schedule_controller
+                    .as_ref()
+                    .filter(|controller| controller.store.strong_count() > 0)
+                    .map(|controller| Arc::clone(&controller.snoozed))
+            });
+            snoozed
+                .and_then(|snoozed| {
+                    snoozed.lock().ok().map(|alarms| {
+                        alarms
+                            .iter()
+                            .filter(|alarm| alarm.target.room == room)
+                            .cloned()
+                            .collect()
+                    })
+                })
+                .unwrap_or_default()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = room;
+            Vec::new()
+        }
+    }
+
+    pub(crate) fn request_scheduled_action(
+        &self,
+        app_id: String,
+        target: tilo_desktop::notifications::ScheduledNotificationTarget,
+        action: ScheduledAction,
+    ) -> Result<u64, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let (id, changed) = {
+                let mut inner = self
+                    .inner
+                    .lock()
+                    .map_err(|_| "notification mailbox failed")?;
+                let controller = inner
+                    .schedule_controller
+                    .as_ref()
+                    .filter(|controller| controller.store.upgrade().is_some())
+                    .ok_or("durable alarm actions are unavailable")?;
+                let changed = controller.changed.clone();
+                if inner
+                    .scheduled_actions
+                    .len()
+                    .saturating_add(inner.scheduled_action_results.len())
+                    >= 64
+                {
+                    return Err("too many pending alarm actions".into());
+                }
+                let id = inner
+                    .next_scheduled_action
+                    .checked_add(1)
+                    .ok_or("alarm action identifiers exhausted")?;
+                inner.next_scheduled_action = id;
+                inner.scheduled_actions.push(ScheduledActionRequest {
+                    id,
+                    app_id,
+                    target,
+                    action,
+                });
+                drop(inner);
+                (id, changed)
+            };
+            changed.poke();
+            Ok(id)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (app_id, target, action);
+            Err("durable alarm actions are unavailable".into())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn drain_scheduled_actions(&self) -> Vec<ScheduledActionRequest> {
+        self.inner
+            .lock()
+            .map(|mut inner| std::mem::take(&mut inner.scheduled_actions))
+            .unwrap_or_default()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn finish_scheduled_action(&self, id: u64, result: Result<(), String>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.scheduled_action_results.insert(id, result);
+        }
+        self.wake_compositor();
+    }
+
+    pub(crate) fn take_scheduled_action_result(&self, id: u64) -> Option<Result<(), String>> {
+        self.inner.lock().ok()?.scheduled_action_results.remove(&id)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn push_scheduled(
+        &self,
+        notice: IncomingNotification,
+        target: tilo_desktop::notifications::ScheduledNotificationTarget,
+    ) {
+        if let Some(caller) = notice.caller.clone()
+            && let Ok(mut inner) = self.inner.lock()
+        {
+            inner
+                .scheduled_targets
+                .insert(notice.dbus_id, (caller, target));
+            inner.incoming.push(notice);
+        }
+        self.wake_compositor();
+    }
+
+    pub(crate) fn take_scheduled_target(
+        &self,
+        id: u32,
+        caller: Option<&PortalCaller>,
+    ) -> Option<tilo_desktop::notifications::ScheduledNotificationTarget> {
+        let (owner, target) = self.inner.lock().ok()?.scheduled_targets.remove(&id)?;
+        let caller = caller?;
+        (owner.app_id == caller.app_id
+            && owner.workspace_id == caller.workspace_id
+            && target.valid())
+        .then_some(target)
+    }
+
+    fn push_incoming_with_sharing(
+        &self,
+        n: IncomingNotification,
+        sharing: NotificationSharing,
+        ongoing_owner: Option<String>,
+    ) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.ongoing_owners.remove(&n.dbus_id);
+            if let Some(owner) = ongoing_owner {
+                inner.ongoing_owners.insert(n.dbus_id, owner);
+            }
             inner.sharing.insert(n.dbus_id, sharing);
             inner.incoming.push(n);
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn close_ongoing_owner(&self, owner: &str) {
+        if let Ok(mut inner) = self.inner.lock() {
+            let ids: HashSet<_> = inner
+                .ongoing_owners
+                .iter()
+                .filter_map(|(&id, current)| (current == owner).then_some(id))
+                .collect();
+            inner.ongoing_owners.retain(|id, _| !ids.contains(id));
+            inner
+                .incoming
+                .retain(|notice| !ids.contains(&notice.dbus_id));
+            inner.close_requests.extend(ids);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn ongoing_update_allowed(&self, id: u32, sender: Option<&str>) -> bool {
+        self.inner.lock().is_ok_and(|inner| {
+            inner
+                .ongoing_owners
+                .get(&id)
+                .is_none_or(|owner| Some(owner.as_str()) == sender)
+        })
     }
 
     /// Consume the sender's privacy ceiling while handling its notification.
@@ -394,7 +688,9 @@ impl NotificationBridge {
     pub fn note_closed(&self, id: u32, reason: CloseReason) {
         if let Ok(mut g) = self.inner.lock() {
             g.closed_events.push((id, reason));
+            g.ongoing_owners.remove(&id);
             retire_continuity_route(&mut g, id);
+            self.signal_wake.poke();
         }
     }
 
@@ -406,6 +702,7 @@ impl NotificationBridge {
             for tap in &g.action_taps {
                 tap(id, &action_key);
             }
+            self.signal_wake.poke();
         }
     }
 
@@ -461,7 +758,7 @@ impl NotificationBridge {
             .copied()
             .unwrap_or_else(|| ContinuityNotificationId {
                 epoch: self.continuity_epoch,
-                token: random_nonzero_token(),
+                token: crate::random::nonzero::<16>(),
             });
         let redact = !draft.previews_allowed || draft.sharing == NotificationSharing::Redacted;
         let projection = ContinuityNotificationProjection {
@@ -545,6 +842,7 @@ impl NotificationBridge {
         inner.closed_events.push((dbus_id, CloseReason::Dismissed));
         push_bounded(&mut inner.continuity.local_closes, dbus_id);
         retire_continuity_route(&mut inner, dbus_id);
+        self.signal_wake.poke();
         true
     }
 
@@ -712,14 +1010,6 @@ impl NotificationBridge {
     }
 }
 
-fn random_nonzero_token() -> [u8; 16] {
-    let mut token = [0; 16];
-    while token == [0; 16] {
-        UnwrapErr(SysRng).fill_bytes(&mut token);
-    }
-    token
-}
-
 fn push_bounded<T>(queue: &mut VecDeque<T>, item: T) {
     if queue.len() == MAX_CONTINUITY_NOTIFICATIONS {
         queue.pop_front();
@@ -880,6 +1170,20 @@ fn parse_contact_endpoint(hints: &HashMap<String, OwnedValue>) -> Option<String>
     (value.len() <= 320 && !value.chars().any(char::is_control)).then_some(value)
 }
 
+/// The `x-tilo-sender-name` hint: a person's display name, one line and
+/// bounded like a contact handle.
+#[cfg(any(test, target_os = "linux"))]
+fn parse_sender_name(hints: &HashMap<String, OwnedValue>) -> Option<String> {
+    let value = hints
+        .get("x-tilo-sender-name")?
+        .try_clone()
+        .ok()
+        .and_then(|value| String::try_from(value).ok())?;
+    let value = value.trim();
+    (!value.is_empty() && value.len() <= 320 && !value.chars().any(char::is_control))
+        .then(|| value.to_string())
+}
+
 #[cfg(any(test, target_os = "linux"))]
 fn parse_notification_sharing(hints: &HashMap<String, OwnedValue>) -> NotificationSharing {
     let Some(value) = hints.get("x-tilo-device-sharing") else {
@@ -919,6 +1223,10 @@ pub struct NotificationService {
     callers: CallerMap,
     connection: Option<zbus::Connection>,
     priority_contacts: PriorityContactRegistry,
+    schedules: Option<Arc<Mutex<scheduled::ScheduleStore>>>,
+    schedule_changed: crate::idle_wake::IdleWake,
+    schedule_worker: Option<tokio::task::JoinHandle<()>>,
+    schedule_workspaces: Option<crate::portal::GrantStoreHandle>,
 }
 
 #[cfg(target_os = "linux")]
@@ -929,6 +1237,12 @@ impl NotificationService {
             callers,
             connection: None,
             priority_contacts: PriorityContactRegistry::in_memory(),
+            schedules: scheduled::ScheduleStore::open(None)
+                .ok()
+                .map(|s| Arc::new(Mutex::new(s))),
+            schedule_changed: crate::idle_wake::IdleWake::default(),
+            schedule_worker: None,
+            schedule_workspaces: None,
         }
     }
 
@@ -937,13 +1251,96 @@ impl NotificationService {
         callers: CallerMap,
         connection: zbus::Connection,
         priority_contacts: PriorityContactRegistry,
+        schedule_workspaces: Option<crate::portal::GrantStoreHandle>,
     ) -> Self {
+        let path = tilo_paths::xdg::state_home()
+            .map(|root| root.join("tilo/notifications/schedules.json"));
+        let schedules = path.and_then(|path| {
+            scheduled::ScheduleStore::open(Some(path))
+                .inspect_err(|error| tracing::warn!(%error, "notification schedules unavailable"))
+                .ok()
+                .map(|store| Arc::new(Mutex::new(store)))
+        });
+        let schedule_changed = crate::idle_wake::IdleWake::default();
+        let schedule_worker = schedules.as_ref().map(|store| {
+            bridge.attach_schedule_controller(store, schedule_changed.clone());
+            tokio::spawn(scheduled::drive(
+                Arc::downgrade(store),
+                bridge.clone(),
+                schedule_changed.clone(),
+                schedule_workspaces.clone(),
+            ))
+        });
         Self {
             bridge,
             callers,
             connection: Some(connection),
             priority_contacts,
+            schedules,
+            schedule_changed,
+            schedule_worker,
+            schedule_workspaces,
         }
+    }
+
+    async fn schedule_caller(&self, hdr: &Header<'_>) -> fdo::Result<scheduled::Owner> {
+        let denied = || {
+            fdo::Error::AccessDenied(
+                "scheduled notifications require a verified application workspace".into(),
+            )
+        };
+        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
+        let key = sender.as_ref().map(ToString::to_string).unwrap_or_default();
+        if let Some(caller) = self.callers.lookup(&key) {
+            if let Some(workspaces) = &self.schedule_workspaces {
+                let tree = workspaces.tree_handle();
+                let room = tree
+                    .read()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .find(|workspace| workspace.id == caller.workspace_id)
+                    .map(|workspace| workspace.room.to_string())
+                    .ok_or_else(denied)?;
+                return Ok(scheduled::Owner { caller, room });
+            }
+            return Ok(scheduled::Owner::mapped(caller));
+        }
+        let connection = self.connection.as_ref().ok_or_else(denied)?;
+        let sender = sender.as_ref().ok_or_else(denied)?;
+        let bus = zbus::fdo::DBusProxy::new(connection)
+            .await
+            .map_err(|_| denied())?;
+        let name = zbus::names::BusName::try_from(sender.as_str()).map_err(|_| denied())?;
+        let pid = bus
+            .get_connection_unix_process_id(name)
+            .await
+            .map_err(|_| denied())?;
+        let launch =
+            crate::shell::launcher::verified_launch_for_descendant(pid).ok_or_else(denied)?;
+        let room = launch
+            .workspace_id
+            .filter(|room| !room.is_empty())
+            .ok_or_else(denied)?;
+        let caller = self
+            .schedule_workspaces
+            .as_ref()
+            .and_then(|workspaces| workspaces.caller_in_room(&room, &launch.package_id))
+            .ok_or_else(denied)?;
+        Ok(scheduled::Owner { caller, room })
+    }
+
+    fn with_schedules<T>(
+        &self,
+        f: impl FnOnce(&mut scheduled::ScheduleStore) -> Result<T, String>,
+    ) -> fdo::Result<T> {
+        let store = self.schedules.as_ref().ok_or_else(|| {
+            fdo::Error::Failed("durable notification scheduler unavailable".into())
+        })?;
+        let mut store = store
+            .lock()
+            .map_err(|_| fdo::Error::Failed("notification scheduler lock failed".into()))?;
+        f(&mut store).map_err(fdo::Error::Failed)
     }
 
     /// Resolve the D-Bus sender to a workspace/app caller via the shared
@@ -994,6 +1391,15 @@ impl NotificationService {
             );
         }
         (self.resolve_caller(sender).await, false)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for NotificationService {
+    fn drop(&mut self) {
+        if let Some(worker) = &self.schedule_worker {
+            worker.abort();
+        }
     }
 }
 
@@ -1184,6 +1590,23 @@ const NOTIFICATIONS_INTROSPECTION: &str = r#"<interface name="org.freedesktop.No
    `CloseNotification` — ask the server to close a notification by id.
    The compositor pump removes the toast and the emitter fires `NotificationClosed(id, 3)`.
    -->
+  <method name="XTiloScheduleNotification">
+    <arg name="tag" type="s" direction="in"/>
+    <arg name="title" type="s" direction="in"/>
+    <arg name="body" type="s" direction="in"/>
+    <arg name="activation" type="s" direction="in"/>
+    <arg name="at_ms" type="x" direction="in"/>
+    <arg name="calendar" type="a(yyyxs)" direction="in"/>
+  </method>
+  <method name="XTiloScheduledNotifications">
+    <arg type="a(sx)" direction="out"/>
+  </method>
+  <method name="XTiloScheduledAlarms">
+    <arg type="a(s(yyyx)axaxs)" direction="out"/>
+  </method>
+  <method name="XTiloCancelScheduledNotification">
+    <arg name="tag" type="s" direction="in"/>
+  </method>
   <method name="CloseNotification">
     <arg name="id" type="u" direction="in"/>
   </method>
@@ -1221,65 +1644,21 @@ const NOTIFICATIONS_INTROSPECTION: &str = r#"<interface name="org.freedesktop.No
 "#;
 
 #[cfg(target_os = "linux")]
-#[zbus::export::async_trait::async_trait]
-impl Interface for NotificationService {
-    fn name() -> InterfaceName<'static> {
-        InterfaceName::from_static_str_unchecked("org.freedesktop.Notifications")
-    }
+interface_dispatch::method_interface!(
+    NotificationService,
+    "org.freedesktop.Notifications",
+    NOTIFICATIONS_INTROSPECTION
+);
 
-    async fn get(
-        &self,
-        _property: &str,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> Option<fdo::Result<OwnedValue>> {
-        None
-    }
-
-    async fn get_all(
-        &self,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> fdo::Result<HashMap<String, OwnedValue>> {
-        Ok(HashMap::new())
-    }
-
-    fn set<'call>(
+#[cfg(target_os = "linux")]
+impl NotificationService {
+    fn dispatch_call<'call>(
         &'call self,
-        _property: &'call str,
-        _value: &'call zbus::zvariant::Value<'_>,
-        _server: &'call ObjectServer,
-        _connection: &'call Connection,
-        _header: Option<&'call Header<'_>>,
-        _emitter: &'call SignalEmitter<'_>,
-    ) -> DispatchResult2<'call> {
-        DispatchResult2::NotFound
-    }
-
-    async fn set_mut(
-        &mut self,
-        _property: &str,
-        _value: &zbus::zvariant::Value<'_>,
-        _server: &ObjectServer,
-        _connection: &Connection,
-        _header: Option<&Header<'_>>,
-        _emitter: &SignalEmitter<'_>,
-    ) -> Option<fdo::Result<()>> {
-        None
-    }
-
-    fn call<'call>(
-        &'call self,
-        _server: &'call ObjectServer,
         connection: &'call Connection,
         message: &'call Message,
-        name: MemberName<'call>,
+        name: &str,
     ) -> DispatchResult2<'call> {
-        match name.as_str() {
+        match name {
             "Notify" => interface_dispatch::dispatch(
                 connection,
                 message,
@@ -1292,10 +1671,53 @@ impl Interface for NotificationService {
                     self.x_tilo_replace_priority_contacts(&hdr, contacts).await
                 },
             ),
-            "CloseNotification" => {
-                interface_dispatch::dispatch(connection, message, move |_hdr, id: u32| async move {
-                    self.close_notification(id);
+            "XTiloScheduleNotification" => interface_dispatch::dispatch(
+                connection,
+                message,
+                move |hdr, args: scheduled::ScheduleArgs| async move {
+                    let caller = self.schedule_caller(&hdr).await?;
+                    self.with_schedules(|store| store.schedule(&caller, args))?;
+                    self.schedule_changed.poke();
                     Ok(())
+                },
+            ),
+            "XTiloScheduledNotifications" => {
+                interface_dispatch::answer(connection, message, async move {
+                    let caller = self.schedule_caller(&message.header()).await?;
+                    self.with_schedules(|store| {
+                        store.deliver_due(
+                            &self.bridge,
+                            &chrono::Local::now(),
+                            self.schedule_workspaces.as_ref(),
+                        )?;
+                        Ok(store.pending(&caller))
+                    })
+                })
+            }
+            "XTiloScheduledAlarms" => interface_dispatch::answer(connection, message, async move {
+                let caller = self.schedule_caller(&message.header()).await?;
+                self.with_schedules(|store| {
+                    store.deliver_due(
+                        &self.bridge,
+                        &chrono::Local::now(),
+                        self.schedule_workspaces.as_ref(),
+                    )?;
+                    Ok(store.alarm_states(&caller))
+                })
+            }),
+            "XTiloCancelScheduledNotification" => interface_dispatch::dispatch(
+                connection,
+                message,
+                move |hdr, tag: String| async move {
+                    let caller = self.schedule_caller(&hdr).await?;
+                    self.with_schedules(|store| store.cancel(&caller, &tag))?;
+                    self.schedule_changed.poke();
+                    Ok(())
+                },
+            ),
+            "CloseNotification" => {
+                interface_dispatch::dispatch(connection, message, move |hdr, id: u32| async move {
+                    self.close_notification(id, hdr.sender().map(zbus::names::UniqueName::as_str))
                 })
             }
             "GetCapabilities" => interface_dispatch::answer(connection, message, async move {
@@ -1308,23 +1730,6 @@ impl Interface for NotificationService {
         }
     }
 
-    fn call_mut<'call>(
-        &'call mut self,
-        _server: &'call ObjectServer,
-        _connection: &'call Connection,
-        _message: &'call Message,
-        _name: MemberName<'call>,
-    ) -> DispatchResult2<'call> {
-        DispatchResult2::NotFound
-    }
-
-    fn introspect_to_writer(&self, writer: &mut dyn std::fmt::Write, level: usize) {
-        interface_dispatch::write_introspection(writer, level, NOTIFICATIONS_INTROSPECTION);
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl NotificationService {
     /// `Notify` — the core method. Queues a toast and returns its id.
     async fn notify(&self, hdr: &Header<'_>, request: NotifyRequest) -> u32 {
         let NotifyRequest {
@@ -1336,18 +1741,31 @@ impl NotificationService {
             hints,
             expire_timeout,
         } = request;
-        let id = if replaces_id != 0 {
+        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
+        let id = if replaces_id != 0
+            && self
+                .bridge
+                .ongoing_update_allowed(replaces_id, sender.as_ref().map(|name| name.as_str()))
+        {
             replaces_id
         } else {
             self.bridge.alloc_id()
         };
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let (caller, foreign_identity) = self.resolve_notification_caller(sender.as_ref()).await;
         tracing::debug!(
             "Notifications.Notify: app={app_name:?} id={id} caller_ws={:?}",
             caller.as_ref().map(|c| c.workspace_id)
         );
         let sharing = parse_notification_sharing(&hints);
+        let ongoing = caller.is_some()
+            && !foreign_identity
+            && hints
+                .get("category")
+                .and_then(|value| <&str>::try_from(value).ok())
+                == Some("x-tilo.android-ongoing");
+        let ongoing_owner = ongoing
+            .then(|| sender.as_ref().map(ToString::to_string))
+            .flatten();
         self.bridge.push_incoming_with_sharing(
             IncomingNotification {
                 dbus_id: id,
@@ -1355,7 +1773,11 @@ impl NotificationService {
                 summary,
                 body,
                 actions: pair_actions(&actions),
-                expire_timeout,
+                expire_timeout: if ongoing_owner.is_some() {
+                    0
+                } else {
+                    expire_timeout
+                },
                 urgency: parse_urgency(&hints),
                 caller,
                 // Per-app banner/sound rules may use a verified Flatpak identity,
@@ -1367,9 +1789,13 @@ impl NotificationService {
                 contact_endpoint: (!foreign_identity)
                     .then(|| parse_contact_endpoint(&hints))
                     .flatten(),
+                sender_name: (!foreign_identity)
+                    .then(|| parse_sender_name(&hints))
+                    .flatten(),
                 sound: parse_notification_sound(&hints),
             },
             sharing,
+            ongoing_owner,
         );
         id
     }
@@ -1405,8 +1831,14 @@ impl NotificationService {
 
     /// `CloseNotification` — ask the server to close a notification by id.
     /// The compositor pump removes the toast and the emitter fires `NotificationClosed(id, 3)`.
-    fn close_notification(&self, id: u32) {
+    fn close_notification(&self, id: u32, sender: Option<&str>) -> zbus::fdo::Result<()> {
+        if !self.bridge.ongoing_update_allowed(id, sender) {
+            return Err(zbus::fdo::Error::AccessDenied(
+                "ongoing notification belongs to another sender".into(),
+            ));
+        }
         self.bridge.request_close(id);
+        Ok(())
     }
 
     /// `GetCapabilities` — advertise the optional features we honour:
@@ -1487,6 +1919,16 @@ pub async fn serve_notifications(
     connection: zbus::Connection,
     service: NotificationService,
 ) -> Result<ServerHandle, zbus::Error> {
+    use futures_util::StreamExt;
+    // Subscribe before admitting ongoing notifications. A missing bus observer
+    // must fail registration rather than leave persistent orphaned notices.
+    let mut gone = crate::portal::lifecycle::disconnected_peers(&connection).await?;
+    let bridge = service.bridge.clone();
+    tokio::spawn(async move {
+        while let Some(owner) = gone.next().await {
+            bridge.close_ongoing_owner(&owner);
+        }
+    });
     connection.object_server().at(OBJECT_PATH, service).await?;
     if let Err(e) = connection.request_name(BUS_NAME).await {
         tracing::debug!("notifications: request_name skipped/failed: {e}");
@@ -1509,13 +1951,17 @@ pub fn spawn_signal_emitter(
                 return;
             }
         };
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(120));
         loop {
-            interval.tick().await;
-            for (id, reason) in bridge.drain_closed_events() {
+            let closed = bridge.drain_closed_events();
+            let actions = bridge.drain_action_events();
+            if closed.is_empty() && actions.is_empty() {
+                bridge.signal_wake.wait().await;
+                continue;
+            }
+            for (id, reason) in closed {
                 let _ = NotificationService::notification_closed(&ctxt, id, reason.code()).await;
             }
-            for (id, key) in bridge.drain_action_events() {
+            for (id, key) in actions {
                 let _ = NotificationService::action_invoked(&ctxt, id, key).await;
             }
         }
@@ -1585,6 +2031,7 @@ mod tests {
                 caller: None,
                 badge_count: None,
                 contact_endpoint: None,
+                sender_name: None,
                 sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
             });
             assert_eq!(b.pending_incoming_len(), 1);
@@ -1664,6 +2111,22 @@ mod tests {
             );
             assert_eq!(parse_contact_endpoint(&hints), None);
         }
+    }
+
+    #[test]
+    fn sender_name_hint_is_one_trimmed_line() {
+        let mut hints = HashMap::new();
+        assert_eq!(parse_sender_name(&hints), None);
+        hints.insert(
+            "x-tilo-sender-name".into(),
+            OwnedValue::from(zbus::zvariant::Str::from("  Ada  ")),
+        );
+        assert_eq!(parse_sender_name(&hints).as_deref(), Some("Ada"));
+        hints.insert(
+            "x-tilo-sender-name".into(),
+            OwnedValue::from(zbus::zvariant::Str::from("Ada\nLovelace")),
+        );
+        assert_eq!(parse_sender_name(&hints), None);
     }
 
     fn continuity_draft(sharing: NotificationSharing) -> ContinuityNotificationDraft {
@@ -2030,6 +2493,20 @@ mod tests {
             <(Vec<(String, String, Vec<String>)>,) as Type>::SIGNATURE.to_string()
         );
         assert_eq!(
+            advertised("XTiloScheduleNotification"),
+            <scheduled::ScheduleArgs as Type>::SIGNATURE.to_string()
+        );
+        assert_eq!(
+            advertised("XTiloCancelScheduledNotification"),
+            <(String,) as Type>::SIGNATURE.to_string()
+        );
+        for method in ["XTiloScheduledNotifications", "XTiloScheduledAlarms"] {
+            assert_eq!(
+                interface_dispatch::advertised_in_signature(NOTIFICATIONS_INTROSPECTION, method),
+                <() as Type>::SIGNATURE.to_string()
+            );
+        }
+        assert_eq!(
             advertised("CloseNotification"),
             <(u32,) as Type>::SIGNATURE.to_string()
         );
@@ -2070,6 +2547,135 @@ mod tests {
             .build()
             .await
             .expect("proxy build")
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn scheduled_alarm_history_round_trips_calendar_and_delivery_state() {
+        let callers = CallerMap::new();
+        callers.force_caller_for_tests(PortalCaller::new(WorkspaceId(1), "so.tilo.clocks"));
+        let bridge = NotificationBridge::new();
+        let (_server, client) = bring_up_pair(bridge.clone(), callers).await;
+        let proxy = notifications_proxy(&client).await;
+        let at = chrono::Utc::now().timestamp_millis().saturating_sub(1000);
+        let calendar = (12, 0, 0, 42);
+        let args: scheduled::ScheduleArgs = (
+            "once".into(),
+            "Alarm".into(),
+            "Wake up".into(),
+            "tilo-clocks:alarms".into(),
+            at,
+            vec![(
+                calendar.0,
+                calendar.1,
+                calendar.2,
+                calendar.3,
+                String::new(),
+            )],
+        );
+        proxy
+            .call_method("XTiloScheduleNotification", &args)
+            .await
+            .expect("handoff");
+        let states: Vec<scheduled::AlarmStateWire> = proxy
+            .call_method("XTiloScheduledAlarms", &())
+            .await
+            .expect("history")
+            .body()
+            .deserialize()
+            .expect("calendar wire rows");
+        assert_eq!(states.len(), 1);
+        let state = states.first().expect("alarm state");
+        assert_eq!(state.0, "once");
+        assert_eq!(state.1, calendar);
+        assert!(state.2.is_empty());
+        assert_eq!(state.3, vec![at]);
+        assert!(!state.4.is_empty());
+        assert_eq!(bridge.drain_incoming().len(), 1);
+        proxy
+            .call_method("XTiloScheduledAlarms", &())
+            .await
+            .expect("query again");
+        assert!(bridge.drain_incoming().is_empty());
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn scheduled_notification_rpc_requires_identity_and_isolates_owners() {
+        let (_server, client) = bring_up_pair(NotificationBridge::new(), CallerMap::new()).await;
+        let proxy = notifications_proxy(&client).await;
+        assert!(
+            proxy
+                .call_method("XTiloScheduledNotifications", &())
+                .await
+                .is_err(),
+            "unverified sender denied"
+        );
+        let callers = CallerMap::new();
+        callers.force_caller_for_tests(PortalCaller::new(WorkspaceId(1), "so.tilo.clocks"));
+        let (_server, client) = bring_up_pair(NotificationBridge::new(), callers.clone()).await;
+        let proxy = notifications_proxy(&client).await;
+        let at = chrono::Utc::now()
+            .timestamp_millis()
+            .saturating_add(3_600_000);
+        let args: scheduled::ScheduleArgs = (
+            "alarm".into(),
+            "Alarm".into(),
+            "Wake up".into(),
+            "tilo-clocks:alarms".into(),
+            at,
+            Vec::new(),
+        );
+        proxy
+            .call_method("XTiloScheduleNotification", &args)
+            .await
+            .expect("schedule own deadline");
+        let pending: Vec<(String, i64)> = proxy
+            .call_method("XTiloScheduledNotifications", &())
+            .await
+            .expect("pending")
+            .body()
+            .deserialize()
+            .expect("wire rows");
+        assert_eq!(pending, vec![("alarm".into(), at)]);
+        callers.force_caller_for_tests(PortalCaller::new(WorkspaceId(2), "so.tilo.clocks"));
+        proxy
+            .call_method("XTiloCancelScheduledNotification", &("alarm",))
+            .await
+            .expect("cancel scoped to caller");
+        let pending: Vec<(String, i64)> = proxy
+            .call_method("XTiloScheduledNotifications", &())
+            .await
+            .expect("other workspace pending")
+            .body()
+            .deserialize()
+            .expect("wire rows");
+        assert!(pending.is_empty());
+        callers.force_caller_for_tests(PortalCaller::new(WorkspaceId(1), "so.tilo.clocks"));
+        let pending: Vec<(String, i64)> = proxy
+            .call_method("XTiloScheduledNotifications", &())
+            .await
+            .expect("original pending")
+            .body()
+            .deserialize()
+            .expect("wire rows");
+        assert_eq!(
+            pending.len(),
+            1,
+            "another workspace cannot cancel this alarm"
+        );
+        proxy
+            .call_method("XTiloCancelScheduledNotification", &("alarm",))
+            .await
+            .expect("cancel own deadline");
+        let pending: Vec<(String, i64)> = proxy
+            .call_method("XTiloScheduledNotifications", &())
+            .await
+            .expect("cancelled pending")
+            .body()
+            .deserialize()
+            .expect("wire rows");
+        assert!(pending.is_empty());
     }
 
     #[tokio::test]

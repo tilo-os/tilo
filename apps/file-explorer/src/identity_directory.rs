@@ -8,26 +8,29 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use collab_types::Ed25519PublicKey;
+use fs_protocol::Ed25519PublicKey;
 use tilo_clock::try_unix_now_ns;
 use tilo_user_identity::{
     MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES, MAX_TRUSTED_IDENTITY_PROJECTION_BYTES,
-    MAX_TRUSTED_IDENTITY_PROJECTION_HUMANS, TrustedIdentityProjectionV1,
-    TrustedIdentityProjectionV2,
+    TrustedIdentityProjectionV1, TrustedIdentityProjectionV2,
 };
 
 pub const TRUSTED_IDENTITIES_ENV: &str = "TILO_TRUSTED_IDENTITIES";
 pub const DEFAULT_TRUSTED_IDENTITIES_PATH: &str =
     "/run/tilo/identity-projection/trusted-identities.json";
 pub const MAX_TRUSTED_IDENTITIES_BYTES: u64 = MAX_TRUSTED_IDENTITY_PROJECTION_BYTES;
-pub const MAX_TRUSTED_IDENTITIES: usize = MAX_TRUSTED_IDENTITY_PROJECTION_HUMANS;
 pub const MAX_IDENTITY_LABEL_BYTES: usize = MAX_TRUSTED_IDENTITY_DISPLAY_NAME_BYTES;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrustedHuman {
     pub person: Ed25519PublicKey,
     pub display_name: String,
+    /// The human's own devices: what sharing with them encrypts to.
     pub devices: Vec<TrustedDevice>,
+    /// Delegated agents of the human, by their own device. Kept apart from
+    /// [`Self::devices`]: an agent acts only within its delegation, so
+    /// sharing with its person never reaches it. Used to name who wrote.
+    pub agents: Vec<TrustedAgent>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,6 +42,16 @@ pub struct TrustedDevice {
     pub capabilities: tilo_user_identity::DeviceCapabilities,
     pub issued_at_ns: u64,
     pub expires_at_ns: Option<u64>,
+}
+
+/// A device governance knows as a delegated agent of its human: what it
+/// signs is the agent's, on behalf of that human. Presentation only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrustedAgent {
+    pub device: Ed25519PublicKey,
+    pub agent_id: String,
+    pub label: String,
+    pub color: [u8; 3],
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -56,18 +69,14 @@ impl TrustedHumanDirectory {
     /// Returns an error when the projection cannot be read within its bound or
     /// its schema and identity data fail validation.
     pub fn load(path: &Path) -> Result<Self, String> {
-        let metadata = match std::fs::metadata(path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self::default());
+        let bytes = match tilo_files::native::bounded::read(path, MAX_TRUSTED_IDENTITIES_BYTES) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return Ok(Self::default()),
+            Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+                return Err("Identity directory exceeds its size bound".into());
             }
             Err(error) => return Err(format!("Identity directory unavailable: {error}")),
         };
-        if metadata.len() > MAX_TRUSTED_IDENTITIES_BYTES {
-            return Err("Identity directory exceeds its size bound".into());
-        }
-        let bytes = std::fs::read(path)
-            .map_err(|error| format!("Identity directory unavailable: {error}"))?;
         let header: serde_json::Value = serde_json::from_slice(&bytes)
             .map_err(|error| format!("Identity directory is invalid: {error}"))?;
         match header
@@ -100,13 +109,18 @@ impl TrustedHumanDirectory {
     ///
     /// Returns the same read or validation errors as [`Self::load`].
     pub fn load_default() -> Result<Self, String> {
-        let path = std::env::var_os(TRUSTED_IDENTITIES_ENV)
+        Self::load(&Self::default_path())
+    }
+
+    /// The configured host projection's path, or the packaged default.
+    #[must_use]
+    pub fn default_path() -> PathBuf {
+        std::env::var_os(TRUSTED_IDENTITIES_ENV)
             .filter(|value| !value.is_empty())
             .map_or_else(
                 || PathBuf::from(DEFAULT_TRUSTED_IDENTITIES_PATH),
                 PathBuf::from,
-            );
-        Self::load(&path)
+            )
     }
 
     /// Convert and validate a legacy human-only projection.
@@ -137,6 +151,7 @@ impl TrustedHumanDirectory {
                 person: Ed25519PublicKey::from_bytes(identity.root_public_key),
                 display_name: display_name.to_string(),
                 devices: Vec::new(),
+                agents: Vec::new(),
             });
         }
         humans.sort_by(|left, right| {
@@ -167,21 +182,42 @@ impl TrustedHumanDirectory {
         let mut humans = projection
             .humans
             .into_iter()
-            .map(|identity| TrustedHuman {
-                person: Ed25519PublicKey::from_bytes(identity.root_public_key),
-                display_name: identity.display_name,
-                devices: identity
+            .map(|identity| {
+                let (agents, devices): (Vec<_>, Vec<_>) = identity
                     .devices
                     .into_iter()
                     .filter(|device| !device.certificate.is_expired_at(now_ns))
-                    .map(|device| TrustedDevice {
-                        device: Ed25519PublicKey::from_bytes(device.certificate.device_public_key),
-                        label: device.certificate.device_label,
-                        capabilities: device.certificate.capabilities,
-                        issued_at_ns: device.certificate.issued_at_ns,
-                        expires_at_ns: device.certificate.expires_at_ns,
-                    })
-                    .collect(),
+                    .partition(|device| device.agent.is_some());
+                TrustedHuman {
+                    person: Ed25519PublicKey::from_bytes(identity.root_public_key),
+                    display_name: identity.display_name,
+                    devices: devices
+                        .into_iter()
+                        .map(|device| TrustedDevice {
+                            device: Ed25519PublicKey::from_bytes(
+                                device.certificate.device_public_key,
+                            ),
+                            label: device.certificate.device_label,
+                            capabilities: device.certificate.capabilities,
+                            issued_at_ns: device.certificate.issued_at_ns,
+                            expires_at_ns: device.certificate.expires_at_ns,
+                        })
+                        .collect(),
+                    agents: agents
+                        .into_iter()
+                        .filter_map(|device| {
+                            let agent = device.agent?;
+                            Some(TrustedAgent {
+                                device: Ed25519PublicKey::from_bytes(
+                                    device.certificate.device_public_key,
+                                ),
+                                agent_id: agent.agent_id,
+                                label: agent.label,
+                                color: agent.color,
+                            })
+                        })
+                        .collect(),
+                }
             })
             .collect::<Vec<_>>();
         humans.sort_by(|left, right| {
@@ -210,6 +246,34 @@ impl TrustedHumanDirectory {
     pub fn display_name_or_fingerprint(&self, person: &Ed25519PublicKey) -> String {
         self.display_name(person)
             .map_or_else(|| fingerprint(person.as_bytes()), str::to_string)
+    }
+
+    /// Who signs file versions, as the shared history names them: each human
+    /// by their governed name, and each of their delegated agent devices as
+    /// that agent, on behalf of them.
+    #[must_use]
+    pub fn history_authors(&self) -> ui::history_source::AuthorDirectory {
+        let mut authors = ui::history_source::AuthorDirectory::new();
+        for human in &self.humans {
+            let person = hex::encode(human.person.as_bytes());
+            authors.register_person(
+                &person,
+                ui::history_source::author_for_identity(human.display_name.clone(), &person),
+            );
+            for agent in &human.agents {
+                let [red, green, blue] = agent.color;
+                authors.register_agent(
+                    &hex::encode(agent.device.as_bytes()),
+                    ui::history_source::HistoryAgent {
+                        principal: format!("agent:{}", agent.agent_id),
+                        label: agent.label.clone(),
+                        rgb: (red, green, blue),
+                        person: person.clone(),
+                    },
+                );
+            }
+        }
+        authors
     }
 }
 
@@ -359,7 +423,10 @@ mod tests {
                     humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
                         root_public_key: root.verifying_key().to_bytes(),
                         display_name: "Ada Lovelace".into(),
-                        devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 { certificate }],
+                        devices: vec![tilo_user_identity::GovernedDeviceIdentityV2 {
+                            certificate,
+                            agent: None,
+                        }],
                     }],
                 },
             )
@@ -377,5 +444,77 @@ mod tests {
                 &device.verifying_key().to_bytes()
             );
         }
+    }
+
+    /// A delegated agent device of a human names the versions it signs as
+    /// the agent's, on behalf of that human, and is never one of the devices
+    /// sharing with the human encrypts to.
+    #[test]
+    fn agent_devices_name_history_and_never_receive_shares() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        let person = root.verifying_key().to_bytes();
+        let signed = |seed: u8, capabilities| {
+            let device = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+            let mut certificate = tilo_user_identity::DeviceCert {
+                user_public_key: person,
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "device".into(),
+                capabilities,
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+            certificate
+        };
+        let laptop = signed(42, tilo_user_identity::DeviceCapabilities::member());
+        let scribe = signed(43, tilo_user_identity::CertificationPolicy::agent().ceiling);
+        let (laptop_key, scribe_key) = (laptop.device_public_key, scribe.device_public_key);
+        let directory = TrustedHumanDirectory::from_projection_v2(
+            tilo_user_identity::TrustedIdentityProjectionV2 {
+                schema_version: tilo_user_identity::TRUSTED_IDENTITY_PROJECTION_VERSION,
+                humans: vec![tilo_user_identity::GovernedHumanIdentityV2 {
+                    root_public_key: person,
+                    display_name: "Ada Lovelace".into(),
+                    devices: vec![
+                        tilo_user_identity::GovernedDeviceIdentityV2 {
+                            certificate: laptop,
+                            agent: None,
+                        },
+                        tilo_user_identity::GovernedDeviceIdentityV2 {
+                            certificate: scribe,
+                            agent: Some(tilo_user_identity::GovernedAgentIdentityV2 {
+                                agent_id: "scribe".into(),
+                                label: "Scribe".into(),
+                                color: [10, 20, 30],
+                            }),
+                        },
+                    ],
+                }],
+            },
+        )
+        .unwrap();
+        let human = &directory.humans()[0];
+        assert_eq!(
+            human
+                .devices
+                .iter()
+                .map(|device| *device.device.as_bytes())
+                .collect::<Vec<_>>(),
+            [laptop_key],
+            "sharing with Ada never reaches her agent"
+        );
+        assert_eq!(human.agents.len(), 1);
+
+        let authors = directory.history_authors();
+        let by_agent = authors.resolve_file_actor(&person, &scribe_key).unwrap();
+        assert_eq!(by_agent.name, "Scribe · Agent, for Ada Lovelace");
+        assert_eq!(by_agent.rgb(), (10, 20, 30));
+        let attribution = by_agent.attribution.unwrap();
+        assert_eq!(attribution.actor, "agent:scribe");
+        assert_eq!(attribution.on_behalf_of, Some(hex::encode(person)));
+        let by_person = authors.resolve_file_actor(&person, &laptop_key).unwrap();
+        assert_eq!(by_person.name, "Ada Lovelace");
+        assert_eq!(by_person.attribution, None);
     }
 }

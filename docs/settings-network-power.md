@@ -57,6 +57,12 @@ battery life.
   live compositor state machine. Settings-file changes update both the session
   timer and the service's lid/battery policy; old files retain the legacy
   timeout.
+- Idle-suspend waits while anything holds the machine awake: media, a running
+  task, an app's inhibit request, and also another program's logind `block`
+  lock, such as `systemd-inhibit --what=sleep` from a remote admin's SSH
+  session. A `sleep` lock holds off suspend only, so the screen still blanks
+  and locks; an `idle` lock keeps the whole session awake. Closing the lid and
+  critical battery still suspend.
 - Charge/health history is per-user state, contains only minute, percentage,
   health estimate and AC state, coalesces samples within 15 minutes, and is
   bounded to 30 days/2,880 points. The existing shell-owned UPower monitor is

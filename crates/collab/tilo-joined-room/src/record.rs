@@ -40,13 +40,17 @@ pub(crate) struct StoredRoom {
     pub workspace: u64,
     pub governor: DeviceCert,
     pub device: DeviceCert,
+    #[serde(with = "base64_bytes")]
     pub invitation: Vec<u8>,
+    #[serde(with = "base64_bytes")]
     pub enrollment_intent: Vec<u8>,
     pub enrolled_at_ns: u64,
     pub transport_hint: TransportHint,
     pub host: Option<DeviceCert>,
     pub locator: Option<TransportHint>,
     pub hint: Option<TransportHint>,
+    /// `StatePeer::durable()`: the largest field by far.
+    #[serde(with = "base64_bytes")]
     pub peer: Vec<u8>,
     pub generation: u64,
     pub continuity: u64,
@@ -54,6 +58,16 @@ pub(crate) struct StoredRoom {
     /// Outgoing publication state; required on every committed room record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication: Option<crate::publication::StoredPublication>,
+    /// Original person membership command outcomes, private to the owning host.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub workspace_memberships:
+        BTreeMap<String, crate::workspace_membership::StoredMembershipReceipt>,
+    /// Exact broker terminal bindings, committed with the signed room checkpoint.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub effect_receipts: BTreeMap<String, crate::effect_receipt::StoredEffectReceipt>,
+    /// Content-addressed cold UUID index, also anchored in signed public room history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_history_root: Option<[u8; 32]>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct DescriptorFloor {
@@ -120,5 +134,33 @@ impl StoredPendingEnrollment {
     #[must_use]
     pub fn status(&self) -> PendingEnrollmentStatus {
         self.status
+    }
+}
+
+/// Opaque byte fields of a room record: base64 text in a human-readable
+/// format (the owner file, the desktop state file), the unchanged `Vec<u8>`
+/// encoding in a binary one.
+pub(crate) mod base64_bytes {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+
+    pub(crate) fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&STANDARD.encode(bytes))
+        } else {
+            bytes.serialize(serializer)
+        }
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<u8>, D::Error> {
+        if deserializer.is_human_readable() {
+            STANDARD
+                .decode(String::deserialize(deserializer)?)
+                .map_err(de::Error::custom)
+        } else {
+            Vec::deserialize(deserializer)
+        }
     }
 }

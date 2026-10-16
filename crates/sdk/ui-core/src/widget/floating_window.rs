@@ -16,10 +16,10 @@
 )]
 
 use crate::time::{Duration, Instant};
-use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
+use crate::widget::ModelPath;
+use automerge::ObjId;
 use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
@@ -28,10 +28,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Metrics;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -659,7 +659,7 @@ impl<C: Widget> FloatingWindow<C> {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) {
@@ -672,7 +672,7 @@ impl<C: Widget> FloatingWindow<C> {
             &mut crate::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled: &mut inner_handled,
                 focus_target,
@@ -688,7 +688,7 @@ impl<C: Widget> FloatingWindow<C> {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) -> bool {
@@ -793,25 +793,11 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
     ) -> NodeId {
         self.layout_theme = theme.clone();
         // Occupies the whole viewport so it can clamp + paint anywhere.
-        let node = taffy.leaf_node(Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::percent(1.0),
-            },
-            ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        taffy.fill_leaf(node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        let viewport = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        let viewport = crate::widget::layout_rect(taffy, node, origin);
         // Default when the host hasn't supplied tighter bounds via `layout_within`.
         if self.bounds.width() <= 0.0 {
             self.bounds = viewport;
@@ -852,7 +838,13 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 visual,
                 &self.rect.inflate(48.0, 48.0),
             );
-            crate::surface::shadow(scene, visual, self.rect, 22.0, &theme.tokens.elevation.e4);
+            crate::surface::shadow(
+                scene,
+                visual,
+                self.rect,
+                22.0,
+                &theme.tokens.elevation.floating,
+            );
             scene.pop_layer();
         }
 
@@ -948,7 +940,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 // Capture PiP is primarily the selected pixels, not a tiny
                 // utility window. Keep the controls compact and legible over
                 // arbitrary light/dark imagery without reserving any layout.
-                let title_size = theme.tokens.typography.scale.sm;
+                let title_size = theme.tokens.typography.size(TextRole::Caption);
                 let glyph_width = f64::from(title_size) * 0.56;
                 let estimated_title_width = (self
                     .title
@@ -1005,14 +997,11 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 self.rect,
                 theme.tokens.colors.text_dim,
             );
-            let title_size = renderer_type_size(
-                text_renderer,
-                if self.overlay_chrome {
-                    theme.tokens.typography.scale.sm
-                } else {
-                    theme.tokens.typography.scale.base
-                },
-            );
+            let title_style = theme.text(if self.overlay_chrome {
+                TextRole::Label
+            } else {
+                TextRole::Body
+            });
             let tx = self.rect.x0
                 + if self.overlay_chrome {
                     18.0
@@ -1020,15 +1009,15 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     f64::from(theme.tokens.spacing.s4)
                 };
             // Centre on the measured line, not the font size.
-            let (_, title_h) = text_renderer.measure(&self.title, title_size, None);
+            let (_, title_h) = text_renderer.measure_style(&self.title, None, &title_style);
             let ty = self.rect.y0 + (self.title_bar_height() - f64::from(title_h)) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &self.title,
-                title_size,
                 theme.tokens.colors.text_primary,
                 visual.pre_translate(Vec2::new(tx, ty)),
                 None,
+                &title_style,
             );
             if self.closable {
                 crate::icons::draw_icon(
@@ -1075,7 +1064,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let pt = ctx.logical(position);
                 if let Some(drag) = self.drag {
                     self.update_pointer_presence(pt);
                     self.apply_drag(drag, pt);
@@ -1095,7 +1084,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                         event,
                         ctx.scale_factor,
                         *ctx.modifiers,
-                        ctx.state,
+                        &mut ctx.state,
                         ctx.path,
                         ctx.focus_target,
                     );
@@ -1145,7 +1134,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
@@ -1157,7 +1146,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
@@ -1202,7 +1191,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
@@ -1337,7 +1326,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if target == "floating-window.close"
@@ -1645,15 +1634,7 @@ mod tests {
             _t: &Theme,
             node_map: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
-            let n = taffy.leaf_node(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            });
-            node_map.insert(n, std::ptr::from_mut::<dyn Widget>(self));
-            n
+            taffy.fill_leaf(node_map, self)
         }
         fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
             let l = taffy.layout(node).copied().unwrap_or_default();
@@ -1663,15 +1644,6 @@ mod tests {
                 origin.x + f64::from(l.size.width),
                 origin.y + f64::from(l.size.height),
             );
-        }
-        fn draw(
-            &mut self,
-            _s: &mut Scene,
-            _t: Affine,
-            _tr: &mut TextRenderer,
-            _th: &Theme,
-            _p: &PresenceCtx,
-        ) {
         }
         fn handle_event(&mut self, _e: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
             self.events.set(self.events.get().saturating_add(1));
@@ -1708,60 +1680,21 @@ mod tests {
         (w, events)
     }
 
-    fn synth_device() -> winit::event::DeviceId {
-        unsafe { std::mem::zeroed() }
-    }
     fn cursor_at(p: Point) -> WindowEvent {
-        WindowEvent::CursorMoved {
-            device_id: synth_device(),
-            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
-        }
+        crate::synthetic_input::cursor_moved(p.x, p.y)
     }
-    fn left_press() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        }
-    }
-    fn left_release() -> WindowEvent {
-        WindowEvent::MouseInput {
-            device_id: synth_device(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        }
-    }
+    use crate::synthetic_input::mouse_press;
+    use crate::synthetic_input::mouse_release;
     fn touch(phase: winit::event::TouchPhase, id: u64, point: Point) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
-            device_id: synth_device(),
+            device_id: winit::event::DeviceId::dummy(),
             phase,
             location: winit::dpi::PhysicalPosition::new(point.x, point.y),
             force: None,
             id,
         })
     }
-    fn dispatch(w: &mut FloatingWindow<Probe>, e: &WindowEvent) -> bool {
-        let mut taffy = TaffyTree::<()>::new();
-        let node = taffy.leaf_node(Style::default());
-        let mut handled = false;
-        let mut ft = None;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        w.handle_event(
-            e,
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
-                path: &root,
-                handled: &mut handled,
-                focus_target: &mut ft,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        handled
-    }
+    use crate::testing::dispatch;
 
     #[test]
     fn window_moves_by_pointer_touch_and_keyboard_within_reach() {
@@ -1770,12 +1703,12 @@ mod tests {
             let start = w.window_rect();
             let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
             dispatch(&mut w, &cursor_at(grab));
-            assert!(dispatch(&mut w, &left_press()), "title press consumed");
+            assert!(dispatch(&mut w, &mouse_press()), "title press consumed");
             dispatch(
                 &mut w,
                 &cursor_at(Point::new(grab.x + 120.0, grab.y + 40.0)),
             );
-            dispatch(&mut w, &left_release());
+            dispatch(&mut w, &mouse_release());
             let moved = w.window_rect();
             assert!(
                 (moved.x0 - (start.x0 + 120.0)).abs() < 2.0,
@@ -1880,12 +1813,12 @@ mod tests {
             // Fling the window far past the bottom-right corner.
             let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
             dispatch(&mut w, &cursor_at(grab));
-            dispatch(&mut w, &left_press());
+            dispatch(&mut w, &mouse_press());
             dispatch(
                 &mut w,
                 &cursor_at(Point::new(grab.x + 5000.0, grab.y + 5000.0)),
             );
-            dispatch(&mut w, &left_release());
+            dispatch(&mut w, &mouse_release());
             let r = w.window_rect();
             assert!(
                 r.x0 >= 0.0 && r.y0 >= 0.0,
@@ -1907,12 +1840,12 @@ mod tests {
             // Fling it far past the top-left (negative) corner.
             let grab2 = Point::new(r.x0 + 40.0, r.y0 + 10.0);
             dispatch(&mut w, &cursor_at(grab2));
-            dispatch(&mut w, &left_press());
+            dispatch(&mut w, &mouse_press());
             dispatch(
                 &mut w,
                 &cursor_at(Point::new(grab2.x - 5000.0, grab2.y - 5000.0)),
             );
-            dispatch(&mut w, &left_release());
+            dispatch(&mut w, &mouse_release());
             let r2 = w.window_rect();
             assert!(
                 r2.x0 >= -0.5 && r2.y0 >= -0.5,
@@ -1933,12 +1866,12 @@ mod tests {
             assert_eq!(node.children[0].role, Role::Button);
             assert_eq!(node.children[0].name.as_deref(), Some("Close Compose"));
 
-            let mut state = AutoCommit::new();
+            let mut state = automerge::AutoCommit::new();
             assert!(Widget::perform_semantic_action(
                 &mut w,
                 "floating-window.close",
                 &Action::Activate,
-                &mut state,
+                &mut crate::widget::Edits::lend(&mut state),
                 &automerge::ROOT,
             ));
             assert!(!w.is_open());
@@ -1991,12 +1924,12 @@ mod tests {
             let start = w.window_rect();
             let corner = Point::new(start.x1, start.y1);
             dispatch(&mut w, &cursor_at(corner));
-            assert!(dispatch(&mut w, &left_press()), "corner press consumed");
+            assert!(dispatch(&mut w, &mouse_press()), "corner press consumed");
             dispatch(
                 &mut w,
                 &cursor_at(Point::new(corner.x + 60.0, corner.y + 50.0)),
             );
-            dispatch(&mut w, &left_release());
+            dispatch(&mut w, &mouse_release());
             let grown = w.window_rect();
             assert!(
                 grown.width() > start.width() + 50.0,
@@ -2013,12 +1946,12 @@ mod tests {
             let start = w.window_rect();
             let corner = Point::new(start.x1, start.y1);
             dispatch(&mut w, &cursor_at(corner));
-            dispatch(&mut w, &left_press());
+            dispatch(&mut w, &mouse_press());
             dispatch(
                 &mut w,
                 &cursor_at(Point::new(corner.x + 80.0, corner.y + 12.0)),
             );
-            dispatch(&mut w, &left_release());
+            dispatch(&mut w, &mouse_release());
 
             let resized = w.window_rect();
             assert!((resized.width() / resized.height() - 16.0 / 9.0).abs() < 0.001);
@@ -2030,12 +1963,12 @@ mod tests {
             let start = w.window_rect();
             let corner = Point::new(start.x1, start.y1);
             dispatch(&mut w, &cursor_at(corner));
-            dispatch(&mut w, &left_press());
+            dispatch(&mut w, &mouse_press());
             dispatch(
                 &mut w,
                 &cursor_at(Point::new(start.x0 + 10.0, start.y0 + 10.0)),
             );
-            dispatch(&mut w, &left_release());
+            dispatch(&mut w, &mouse_release());
             let r = w.window_rect();
             assert!(
                 r.width() >= MIN_WIDTH - 0.5,
@@ -2087,7 +2020,7 @@ mod tests {
             let start = w.window_rect();
             let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
             dispatch(&mut w, &cursor_at(grab));
-            dispatch(&mut w, &left_press());
+            dispatch(&mut w, &mouse_press());
             dispatch(&mut w, &cursor_at(Point::new(grab.x + 30.0, grab.y + 30.0)));
             assert_eq!(
                 Widget::cursor_shape(&w, Point::new(5.0, 5.0)),
@@ -2100,7 +2033,7 @@ mod tests {
             let (mut w, events) = laid_out(true);
             // Click far outside the window.
             dispatch(&mut w, &cursor_at(Point::new(5.0, 5.0)));
-            let handled = dispatch(&mut w, &left_press());
+            let handled = dispatch(&mut w, &mouse_press());
             assert!(handled, "outside click must be swallowed");
             assert!(w.is_open(), "outside click must NOT close the window");
             assert_eq!(events.get(), 0, "outside click must not forward to content");
@@ -2112,7 +2045,7 @@ mod tests {
             let c = w.content_area().center();
             dispatch(&mut w, &cursor_at(c));
             let before = events.get();
-            let handled = dispatch(&mut w, &left_press());
+            let handled = dispatch(&mut w, &mouse_press());
             assert!(handled, "in-box press consumed");
             assert!(
                 events.get() > before,

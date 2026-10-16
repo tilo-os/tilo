@@ -42,13 +42,14 @@
 //! variants return [`TryLockError::WouldBlock`] at once. There is deliberately
 //! no retry or timeout: a caller that cannot wait uses a `try` variant and
 //! reports the busy owner.
+
+// The browser has no files: there `std::fs::File` is an uninhabited stub, no
+// `FileLock` can be built, and its accessors are never reached.
 #![cfg_attr(
-    test,
+    target_arch = "wasm32",
     allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "test assertions exercise real filesystem behavior"
+        clippy::uninhabited_references,
+        reason = "std::fs::File is uninhabited on wasm32-unknown-unknown; no guard exists there"
     )
 )]
 
@@ -157,6 +158,42 @@ impl FileLock {
         Self::try_lock(open_lock_file(path).map_err(TryLockError::Error)?, mode)
     }
 
+    /// Like [`FileLock::open`], but the lock is on the file `path` names when
+    /// it is granted.
+    ///
+    /// A lock file that names a short-lived thing (a lease on one directory)
+    /// is removed with that thing, by an exclusive holder, so it does not
+    /// outlive it. A waiter that opened the old file would then hold a lock
+    /// nobody else can ever contend for. So once the lock is granted, the
+    /// locked file is compared with the one at `path`, and on a mismatch the
+    /// lock is dropped and taken again on the current file. Holders that
+    /// remove the file must do so only while holding it exclusively.
+    ///
+    /// # Errors
+    /// Returns the error from opening or locking the file.
+    pub fn open_current(path: &Path, mode: LockMode) -> io::Result<Self> {
+        loop {
+            let lock = Self::open(path, mode)?;
+            if sys::names(path, &lock.file)? {
+                return Ok(lock);
+            }
+        }
+    }
+
+    /// Like [`FileLock::open_current`], but never waits.
+    ///
+    /// # Errors
+    /// [`TryLockError::WouldBlock`] while a conflicting lock is held, and
+    /// [`TryLockError::Error`] when opening or locking fails otherwise.
+    pub fn try_open_current(path: &Path, mode: LockMode) -> Result<Self, TryLockError> {
+        loop {
+            let lock = Self::try_open(path, mode)?;
+            if sys::names(path, &lock.file).map_err(TryLockError::Error)? {
+                return Ok(lock);
+            }
+        }
+    }
+
     /// The mode this guard holds.
     pub fn mode(&self) -> LockMode {
         self.mode
@@ -165,6 +202,21 @@ impl FileLock {
     /// The locked file.
     pub fn file(&self) -> &File {
         &self.file
+    }
+
+    /// Transfers the file without explicitly unlocking its open description.
+    ///
+    /// This is for an executed child validating a lock inherited from its
+    /// parent: dropping a normal guard would unlock the parent's transaction.
+    /// The returned file closes normally; the lock survives while any parent
+    /// descriptor still refers to that same open description. Ordinary lock
+    /// owners should keep the guard so its explicit unlock-on-drop remains.
+    #[cfg(unix)]
+    pub fn into_file_preserving_lock(self) -> File {
+        let guard = std::mem::ManuallyDrop::new(self);
+        // SAFETY: suppressing Drop leaves the file initialized; read transfers
+        // its unique ownership exactly once, without executing the unlock.
+        unsafe { std::ptr::read(&raw const guard.file) }
     }
 
     /// Waits until the lock is converted to `mode`.
@@ -362,6 +414,18 @@ mod sys {
     pub(super) fn unlock(file: &File) -> io::Result<()> {
         Ok(flock(file, FlockOperation::Unlock)?)
     }
+
+    /// Whether `path` names `file` now: same device and inode. A missing
+    /// `path` names nothing.
+    pub(super) fn names(path: &std::path::Path, file: &File) -> io::Result<bool> {
+        use std::os::unix::fs::MetadataExt;
+        let held = file.metadata()?;
+        match std::fs::metadata(path) {
+            Ok(named) => Ok(named.dev() == held.dev() && named.ino() == held.ino()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 #[cfg(not(unix))]
@@ -412,5 +476,15 @@ mod sys {
 
     pub(super) fn unlock(file: &File) -> io::Result<()> {
         file.unlock()
+    }
+
+    // A file the standard library opened cannot be removed while it is
+    // open, so the name still refers to it.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "shares the fallible signature of the Unix implementation"
+    )]
+    pub(super) fn names(_path: &std::path::Path, _file: &File) -> io::Result<bool> {
+        Ok(true)
     }
 }

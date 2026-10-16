@@ -65,7 +65,20 @@ fn raw_changes(doc: &mut AutoCommit, since: &[ChangeHash]) -> Vec<Vec<u8>> {
 /// The whole document as a value tree, for comparing content across replicas
 /// and across an undo.
 pub fn hydrated(doc: &mut AutoCommit) -> automerge::hydrate::Value {
-    doc.document().hydrate(None)
+    use automerge::ReadDoc as _;
+    use automerge::transaction::Transactable as _;
+    // History's own bookkeeping (what is undone, named versions) is not
+    // content.
+    let mut content = doc.fork();
+    let bookkeeping: Vec<String> = content
+        .keys(automerge::ROOT)
+        .filter(|key| key.starts_with(crate::history_source::steps::BOOKKEEPING_PREFIX))
+        .collect();
+    for key in bookkeeping {
+        let _ = content.delete(automerge::ROOT, key);
+    }
+    content.commit();
+    content.document().hydrate(None)
 }
 
 /// What applying one action to a seed did.
@@ -107,7 +120,7 @@ pub fn replay_on_two_peers(
     let action = registry
         .decode(encoded)
         .unwrap_or_else(|e| panic!("the registry decodes {what}: {e}"));
-    let envelope = tilo_actions::apply_local(&mut origin, action.as_ref(), encoded.clone())
+    let envelope = apply_signed(&mut origin, action.as_ref(), encoded)
         .unwrap_or_else(|e| panic!("{what} applies on the origin: {e}"));
     tilo_actions::replay(&mut replica, &envelope, registry)
         .unwrap_or_else(|e| panic!("{what} replays on the peer: {e}"));
@@ -138,6 +151,22 @@ pub fn replay_on_two_peers(
     } else {
         Applied::Changed
     }
+}
+
+/// The author every action the contract applies is invoked by, as a
+/// window's dispatcher signs what its person does.
+pub const CONTRACT_AUTHOR: &str = "contract-author";
+
+/// Apply `encoded` as [`CONTRACT_AUTHOR`] invoked it: an action that signs
+/// what it writes with its author reads one, as it does in an app.
+fn apply_signed(
+    doc: &mut AutoCommit,
+    action: &dyn tilo_actions::Action,
+    encoded: &EncodedAction,
+) -> Result<tilo_actions::ActionEnvelope, tilo_actions::ActionError> {
+    let context = tilo_actions::ActionContext::default()
+        .with_invoker(tilo_actions::ActionInvoker::actor(CONTRACT_AUTHOR));
+    tilo_actions::apply_local_with_context(doc, action, encoded.clone(), None, context)
 }
 
 /// Assert `encoded`, applied on one replica of `seed` and replayed on another
@@ -186,13 +215,22 @@ pub fn undo_round_trip(
     let action = registry
         .decode(encoded)
         .unwrap_or_else(|e| panic!("the registry decodes {what}: {e}"));
-    tilo_actions::apply_local(&mut state.doc, action.as_ref(), encoded.clone())
+    apply_signed(&mut state.doc, action.as_ref(), encoded)
         .unwrap_or_else(|e| panic!("{what} applies: {e}"));
     state.record_committed_action(before, None, None);
 
     let after_doc = hydrated(&mut state.doc);
     if after_doc == before_doc && state.undo_depth() == depth {
         return Applied::Unchanged;
+    }
+    // Housekeeping and content from outside are nobody's undo step.
+    if !action.change_kind().is_step() {
+        assert_eq!(
+            state.undo_depth(),
+            depth,
+            "{what}: housekeeping records no undo step"
+        );
+        return Applied::Changed;
     }
     assert_eq!(
         state.undo_depth().checked_sub(depth),
@@ -335,7 +373,7 @@ fn prompted_argument(spec: &ActionSpec, text: &str) -> Option<(String, ArgValue)
 /// the external path builds a different action.
 pub fn spec_encoding(spec: &ActionSpec, arg: Option<&str>) -> EncodedAction {
     let (palette, supplied) = match (&spec.input, arg) {
-        (ActionInput::Immediate(encoded), None) => (encoded.clone(), Vec::new()),
+        (ActionInput::Immediate(encoded), None) => (encoded.as_ref().clone(), Vec::new()),
         (ActionInput::Deferred { build, .. }, None) => (build(), Vec::new()),
         (ActionInput::Prompted { build, .. }, Some(arg)) => (
             build(arg),
@@ -742,10 +780,10 @@ mod tests {
         }
         // phase: the_sweep_accepts_an_app_whose_document_actions_are_prompted
         {
-            let prompted = ActionSpec::prompted(
+            let prompted = ActionSpec::prompted_param(
                 "rename",
                 "Rename probe",
-                "Name",
+                tilo_actions::ActionParam::required("value", tilo_actions::ParamType::Text, "Name"),
                 "",
                 tilo_actions::ExecutionLocus::ClientLocal,
                 |name| encode(&Probe::Set(name.to_string())),
@@ -818,13 +856,6 @@ mod tests {
                 }),
             ),
             (
-                "an undo entry without a visible change fails",
-                "changes the document's content",
-                Box::new(|| {
-                    assert_one_undo_boundary_reverts(&seed(), &registry(), &encode(&Probe::Churn));
-                }),
-            ),
-            (
                 "a spec that disagrees with its builder fails",
                 "encode the same action",
                 Box::new(spec_disagrees),
@@ -858,6 +889,11 @@ mod tests {
                 }),
             ),
         ];
+        // A change with no visible effect is no undo step at all.
+        assert_eq!(
+            undo_round_trip(&seed(), &registry(), &encode(&Probe::Churn)),
+            Applied::Unchanged
+        );
         for (case, expected, check) in cases {
             let payload =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(check)).expect_err(case);

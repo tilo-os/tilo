@@ -100,11 +100,7 @@ impl AccountSyncReporter {
         let previous_success = store
             .get(&self.id)
             .and_then(|status| status.last_success_unix);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| {
-                i64::try_from(duration.as_secs()).unwrap_or(i64::MAX)
-            });
+        let now = tilo_clock::unix_now_i64();
         store.report(
             &self.id,
             AccountSyncStatus::sanitized(
@@ -258,7 +254,7 @@ impl AccountSyncStatusStore {
         }
         let json = serde_json::to_vec_pretty(self)
             .map_err(|error| std::io::Error::other(error.to_string()))?;
-        atomic_file::write(&path, &json)
+        tilo_files::native::atomic::write(&path, &json)
     }
 }
 

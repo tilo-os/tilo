@@ -7,8 +7,7 @@
 //! mode-0700 identity directory. That fallback is deliberately named *broker
 //! file*: the launcher may read it, sandboxed applications never receive
 //! either its path or its bytes. macOS always has the Keychain, so there a
-//! failing Keychain fails the operation, and a broker file an earlier build
-//! wrote moves into the Keychain the next time its identity is secured.
+//! failing Keychain fails the operation.
 //!
 //! `SecretProvider` is the hardware-backed seam. A TPM/FIDO implementation
 //! can implement it and pass it to the `_with_provider` APIs; this crate does
@@ -16,7 +15,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use tilo_secrets::{PutOptions, SecretError, SecretStore};
@@ -88,7 +87,7 @@ impl SecretServiceProvider {
     }
 
     /// Whether the store answers on this session.
-    #[cfg_attr(test, allow(dead_code, reason = "tests use the broker file provider"))]
+    #[cfg(not(test))]
     fn available(&self) -> bool {
         self.store.probe_blocking().is_ok()
     }
@@ -97,15 +96,6 @@ impl SecretServiceProvider {
 /// The key under which the store holds `locator`'s secret.
 fn secret_key(locator: &str) -> String {
     format!("{PURPOSE_ATTRIBUTE}.{}", locator.to_ascii_lowercase())
-}
-
-/// The item attributes earlier builds stored `locator`'s secret under,
-/// through `secret-tool store tilo-purpose … tilo-identity-key <locator>`.
-fn legacy_attributes(locator: &str) -> [(&str, &str); 2] {
-    [
-        ("tilo-purpose", PURPOSE_ATTRIBUTE),
-        ("tilo-identity-key", locator),
-    ]
 }
 
 fn store_error(error: SecretError) -> io::Error {
@@ -148,8 +138,6 @@ impl SecretProvider for SecretServiceProvider {
             Err(error) if crate::is_secret_service_unavailable_io(&error) => {}
             Err(error) => return Err(error),
         }
-        // Hex text, as earlier builds stored it: one format for adopted and
-        // new items.
         let encoded = Zeroizing::new(hex::encode(secret));
         self.store
             .put_blocking(
@@ -174,13 +162,7 @@ impl SecretProvider for SecretServiceProvider {
         validate_software_locator(locator)?;
         let stored = self
             .store
-            .get_or_adopt_blocking(
-                &secret_key(locator),
-                &legacy_attributes(locator),
-                PutOptions {
-                    label: Some("Tilo identity signing key".into()),
-                },
-            )
+            .get_blocking(&secret_key(locator))
             .map_err(store_error)?
             .ok_or_else(crate::secret_service_unavailable_error)?;
         // Corruption must surface; never mask it by generating a replacement key.
@@ -200,7 +182,7 @@ impl SecretProvider for SecretServiceProvider {
     fn remove(&self, locator: &str) -> io::Result<()> {
         validate_software_locator(locator)?;
         self.store
-            .delete_with_legacy_blocking(&secret_key(locator), &legacy_attributes(locator))
+            .delete_blocking(&secret_key(locator))
             .map_err(store_error)
     }
 }
@@ -231,6 +213,13 @@ impl BrokerFileProvider {
 
     fn ensure_root(&self) -> io::Result<()> {
         fs::create_dir_all(&self.root)?;
+        self.check_root()?;
+        fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))
+    }
+
+    /// The secrets directory is a real directory this user owns. Reading a
+    /// key checks it without creating or changing it.
+    fn check_root(&self) -> io::Result<()> {
         let meta = fs::symlink_metadata(&self.root)?;
         if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
             return Err(io::Error::new(
@@ -238,13 +227,13 @@ impl BrokerFileProvider {
                 "identity secrets directory must be a real directory",
             ));
         }
-        if meta.uid() != unsafe { libc::geteuid() } {
+        if !tilo_files::native::private::owned_by_me(&meta) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "identity secrets directory is not owned by the current user",
             ));
         }
-        fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))
+        Ok(())
     }
 }
 
@@ -285,17 +274,14 @@ impl SecretProvider for BrokerFileProvider {
     }
 
     fn load(&self, locator: &str) -> io::Result<Zeroizing<Vec<u8>>> {
-        self.ensure_root()?;
+        self.check_root()?;
         let path = self.path(locator)?;
         let file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(path)?;
         let meta = file.metadata()?;
-        if !meta.file_type().is_file()
-            || meta.uid() != unsafe { libc::geteuid() }
-            || meta.permissions().mode() & 0o077 != 0
-        {
+        if !meta.file_type().is_file() || !tilo_files::native::private::private_to_me(&meta) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "identity key fallback must be a private regular file",
@@ -319,8 +305,7 @@ impl SecretProvider for BrokerFileProvider {
         let meta = fs::symlink_metadata(&path)?;
         if !meta.file_type().is_file()
             || meta.file_type().is_symlink()
-            || meta.uid() != unsafe { libc::geteuid() }
-            || meta.permissions().mode() & 0o077 != 0
+            || !tilo_files::native::private::private_to_me(&meta)
         {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -405,7 +390,8 @@ pub(crate) fn fallback_provider(identity_dir: &Path) -> BrokerFileProvider {
     BrokerFileProvider::new(identity_dir)
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
+#[cfg(target_os = "macos")]
 mod tests {
     /// A dev build (cargo's test binaries included) has only the linker's
     /// ad-hoc signature, so its Keychain items would not outlive it.

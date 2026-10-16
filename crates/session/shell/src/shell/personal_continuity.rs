@@ -567,6 +567,10 @@ impl DeviceContinuationSnapshot {
     /// The resolver is intentionally pull-only and gets no mutable tree
     /// access. Receiving a remote checkpoint therefore cannot change local
     /// focus, launch an app, or start media as a side effect of capture.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one walk over the tree decides every tile kind's launch intent in place"
+    )]
     pub fn capture_with_resume<F>(
         tree: &WorkspaceTree,
         device: DeviceId,
@@ -606,7 +610,8 @@ impl DeviceContinuationSnapshot {
                             .get(&tab.id)
                             .cloned()
                             .or_else(|| match &tab.tile {
-                                TileContent::WorkspaceActivity => None,
+                                TileContent::WorkspaceActivity
+                                | TileContent::HostedWindow { .. } => None,
                                 TileContent::AppPlaceholder { kind, .. }
                                 | TileContent::Stub { kind, .. } => {
                                     LaunchIntent::app(kind.app_id()).ok()
@@ -692,6 +697,35 @@ impl DeviceContinuationSnapshot {
         CaptureReport {
             snapshot,
             redacted_foreign_tabs,
+        }
+    }
+
+    /// A change elsewhere in the desktop must not claim ownership of an
+    /// unchanged app view. Explicit local takeovers intentionally advance it.
+    pub(crate) fn preserve_owner_view_revisions(
+        &mut self,
+        previous: &Self,
+        registry: &crate::shell::personal_continuity_registry::ContinuationRegistry,
+    ) {
+        for workspace in &mut self.workspaces {
+            for app in &mut workspace.apps {
+                if registry.owner_claimed(workspace.room, app) {
+                    continue;
+                }
+                let prior = previous
+                    .workspaces
+                    .iter()
+                    .find(|prior| prior.room == workspace.room)
+                    .and_then(|prior| prior.apps.iter().find(|prior| prior.id == app.id));
+                if let Some(prior) = prior
+                    && app.launch == prior.launch
+                    && app.resume == prior.resume
+                    && app.record_instance == prior.record_instance
+                    && app.placement == prior.placement
+                {
+                    app.stamp = prior.stamp.clone();
+                }
+            }
         }
     }
 
@@ -1116,7 +1150,7 @@ mod tests {
             LaunchIntent::app("so.tilo.browser").unwrap(),
             Some(
                 ResumeMetadata::new(
-                    1,
+                    ui::collaboration::semantic_schema::WEB_LOCATION_V1,
                     ResumeSensitivity::Syncable,
                     br#"{"url":"https://example.test/page/4"}"#.to_vec(),
                 )
@@ -1297,7 +1331,7 @@ mod tests {
             let group_id = 10;
             let room = room(ROOM_A);
             let mut workspace = Workspace::new(workspace_id, "Reading");
-            workspace.room = room;
+            workspace.set_room(room);
             workspace.strips = vec![Strip {
                 id: strip_id,
                 name: "Main".into(),
@@ -1324,6 +1358,7 @@ mod tests {
                     active_tab: 11,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }];
             let mut active_strip = HashMap::new();
@@ -1371,7 +1406,7 @@ mod tests {
             let strip_id = StripId(9);
             let room = room(ROOM_A);
             let mut workspace = Workspace::new(workspace_id, "From another device");
-            workspace.room = room;
+            workspace.set_room(room);
             workspace.strips = vec![Strip {
                 id: strip_id,
                 name: "Available elsewhere".into(),
@@ -1388,6 +1423,7 @@ mod tests {
                     active_tab: 81,
                     width: WindowWidth::Normal,
                     maximized: false,
+                    focus_history: Vec::new(),
                 }],
             }];
             let mut continuation_tabs = BTreeSet::new();
@@ -1483,7 +1519,7 @@ mod tests {
                 );
                 app.resume = Some(
                     ResumeMetadata::new(
-                        1,
+                        ui::collaboration::semantic_schema::WEB_LOCATION_V1,
                         ResumeSensitivity::Syncable,
                         serde_json::to_vec(&serde_json::json!({ "url": url })).unwrap(),
                     )
@@ -1520,7 +1556,7 @@ mod tests {
                 );
                 app.resume = Some(
                     ResumeMetadata::new(
-                        1,
+                        ui::collaboration::semantic_schema::WEB_LOCATION_V1,
                         ResumeSensitivity::Syncable,
                         serde_json::to_vec(&serde_json::json!({ "url": url })).unwrap(),
                     )

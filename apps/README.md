@@ -22,19 +22,35 @@ Toolkit exception: `browser` embeds Servo for page rendering.
 
 ## Application contract (required)
 
-Expose each operation through the resource/action API. UI controls, scripts and
-agents must invoke the same typed operation:
+There is **one** resource / action / view model. Every app is a
+[`tilo-app`](../crates/sdk/tilo-app) `ResourceApp`: its state is a
+`tilo_resource::Resource`, its mutations are that resource's `Action` applied
+through the framework dispatcher, and its pixels are a `ViewCx` /
+`ResourceSurface` that only reads resource state and submits actions.
+`tilo_resource::publish` is the only bridge to the tree the palette, agents,
+scripts and the shell door see. Sync (Automerge, history, per-author undo,
+collaboration) is on by default — an app does not implement its own sync loop.
+External systems (CalDAV, a shared filesystem file) are projections drained by
+an `Effect`; undo of a document action that wrote a queue entry is the inverse
+action through `apply`.
 
-1. `Widget::resources` publishes stable resource and action IDs, labels,
-   availability, permission, risk/confirmation, retry, execution, discovery,
-   result, and typed parameters.
-2. CRDT mutations are serializable `Action` values registered in the app's
-   `ActionRegistry`. Views and effects are serializable operations handled only
-   by `Widget::start_operation`; every operation
-   type is declared by `local_resource_operation_handlers`.
+Do **not** hand-build a second `tilo_actions::Resource` tree for the same state,
+mutate a private `AutoCommit` from the widget, or keep an app-local action
+vocabulary that is not `Resource::Action`.
+
+UI controls, scripts and agents invoke the same typed operation:
+
+1. `ResourceApp` + `tilo_resource::publish` expose stable resource and action
+   IDs, labels, availability, permission, risk/confirmation, retry, execution,
+   discovery, result, and typed parameters (including nested child resources).
+2. CRDT mutations are the resource's serializable `Action`, registered under
+   `Resource::ACTION_TYPE`. Views and effects are serializable operations
+   handled only by `Widget::start_operation`; every operation type is declared
+   by `local_resource_operation_handlers`.
 3. Inputs needed by a headless caller are parameters, not hidden UI state. A
    file action may offer a portal when a person omits `path`, but agents and
-   scripts must be able to provide the path explicitly.
+   scripts must be able to provide the path explicitly. Saving into the shared
+   filesystem is a document action on a file resource, not an effect.
 4. `Immediate` means the work and its promised result exist before the handler
    returns. Queued, portal, network, worker, or service work returns `Accepted`,
    is polled by invocation ID, and terminates as succeeded, failed, or cancelled.
@@ -45,9 +61,9 @@ agents must invoke the same typed operation:
 For a zero-argument control:
 
 ```rust
-let sync = ui::Button::new("sync", "Sync", None)
+let sync = ui::Button::new("sync", "Sync")
     .on_effect(move || sync_now());
-let preview = ui::Button::new("preview", "Preview", None)
+let preview = ui::Button::new("preview", "Preview")
     .on_view(move || preview_state.toggle());
 ```
 
@@ -56,7 +72,7 @@ To bind a declared resource action:
 ```rust
 let resource = project_resource(&project);
 let binding = ui::tilo_actions::ActionBinding::unit_for(&resource, "build")?;
-let build = ui::Button::new("build", "Build", None).on_action(binding);
+let build = ui::Button::new("build", "Build").on_action(binding);
 ```
 
 Controls emit inert intents. The host permission-filters and re-resolves each
@@ -141,8 +157,8 @@ touch. Expanded neighbouring targets must not overlap.
 
 | Crate | What it is |
 |---|---|
-| `word-processor` | Rich-text word processor over `qdoc`; round-trips .odt/.docx/.md plus PDF/HTML/RTF/EPUB via the `qdoc-*` codec crates. Binary `word-processor`. |
-| `sheets` | Spreadsheet: A1 addressing, tokenizer→parser→evaluator formula engine with dependency-aware recalc; .xlsx and .ods import/export through qdoc's bounded codecs, and .csv. |
+| `word-processor` | Rich-text word processor over `tilo-doc`; round-trips .odt/.docx/.md plus PDF/HTML/RTF/EPUB via the `tilo-doc-*` codec crates. Binary `word-processor`. |
+| `sheets` | Spreadsheet: A1 addressing, tokenizer→parser→evaluator formula engine with dependency-aware recalc; .xlsx and .ods import/export through tilo-doc's bounded codecs, and .csv. |
 | `slides` | Presentation editor: slide editor, inspector, thumbnail rail, present mode; image import via the XDG file-chooser portal. |
 | `notes` | Collaborative block notes: nested note tree, rich Markdown editing, `[[Note]]` links, tables, formulas, images, metadata, history-aware actions, and host-owned Automerge storage. |
 | `calendar` | Calendar + task manager (Planify-style): month/week/day/agenda, recurrence, tasks; iCalendar interop and live CalDAV sync (PROPFIND/REPORT/ETag PUT, worker thread, `live` on by default). |
@@ -159,9 +175,8 @@ touch. Expanded neighbouring targets must not overlap.
 | Crate | What it is |
 |---|---|
 | `music` | Streaming + local library: swappable YouTube-Music backend (rustypipe InnerTube under `live`), GStreamer `playbin` audio (`audio`), lrclib synced lyrics, iroh P2P library sync — all off by default over a bundled sample library. |
-| `tube` | Privacy YouTube client: Invidious metadata, SponsorBlock skip, DeArrow de-clickbait; openh264 H.264 decode; optional rustypipe `live` backend and Grayjay device sync over the Noise protocol. |
-| `video-editor` | Non-linear editor: multi-track timeline; clips reference FUSE `/var/workspace` paths and hydrate on demand; `ui::VideoPlayer`/openh264 preview decode and GStreamer export, both feature-gated. |
-| `image-editor` | Non-destructive raster editor and reusable typed node-graph test bed; edits stay independently adjustable, projects are CRDT-native, and preview/export traverse the same DAG. |
+| `tube` | Privacy YouTube client: Invidious metadata, SponsorBlock skip, DeArrow de-clickbait; playback through the shared GStreamer media engine; optional rustypipe `live` backend and Grayjay device sync over the Noise protocol. |
+| `video-editor` | Non-linear editor: multi-track timeline; clips reference FUSE `/var/workspace` paths and hydrate on demand; `ui::VideoPlayer`/GStreamer preview decode and GStreamer export, both feature-gated. |
 | `camera` | Camera with QR/barcode and multi-page document scanning; typed SANE capture, reversible crop/rotation, and shared structured OCR; captured photos and videos open in their owning media apps; live v4l2 capture via GStreamer. |
 | `imager` | Install-media creator + Tilo installer ("Install Media"): `lsblk` target enumeration, dd-style ISO write + verify, structured/unattended install config. |
 | `maps` | OpenStreetMap client: Nominatim search, OSRM routing (car/bike/foot), Transitous/MOTIS transit; Vello vector basemap; device location via the XDG Location portal (GeoClue2). |
@@ -172,7 +187,7 @@ touch. Expanded neighbouring targets must not overlap.
 | Crate | What it is |
 |---|---|
 | `mail` | Email client: MIME parse/build via mail-parser / mail-builder; live IMAP (async-imap) + SMTP (lettre) behind the `live` feature. |
-| `chat` | Workspace-scoped collaborative chat + calls; Automerge document persisted to disk; voice/screen-share over iroh QUIC + GStreamer + the ScreenCast portal behind `live-media`. |
+| `chat` | Workspace-scoped collaborative chat + calls; the room's own record, synced like every document; calls through the shell's native voice service. |
 | `remote` | Remote-access app: SSH terminals, VNC/RDP desktops, and Tilo-to-Tilo relay sessions (SSH opens an embedded terminal grid). |
 | `feeds` | RSS/Atom/JSON-feed + Gemini reader (feed-rs, reqwest, tokio-rustls TOFU); OPML import/export. |
 
@@ -213,7 +228,7 @@ touch. Expanded neighbouring targets must not overlap.
 
 | Crate | What it is |
 |---|---|
-| `file-explorer` | Spatial file manager with safe native ZIP/TAR inspection, extraction and creation; opens editable documents in the word processor via `qdoc`. Binary `file-explorer`. |
+| `file-explorer` | Spatial file manager with safe native ZIP/TAR inspection, extraction and creation; opens editable documents in the word processor via `tilo-doc`. Binary `file-explorer`. |
 | `agent` | `tilo-agent`: a participant without a window. Consumes the broker-published live catalogue for arbitrary applications, plans typed arguments from their descriptors, invokes through broker permission/confirmation policy, and follows invocation receipts through terminal status. |
 | `browser` | Web browser embedding Servo (libservo + surfman + glow) with adblock; chrome is a `ui` widget (migrated off iced). |
 

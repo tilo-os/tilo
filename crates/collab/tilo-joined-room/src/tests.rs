@@ -2,7 +2,9 @@
 use crate::testing::{APP, ROOM, raw_fixture};
 use crate::{DocumentRead, NativeWorkspaceOwner, RoomId, open_file};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
+use neighbour_wire::NeighbourMsg;
 use std::{
     path::PathBuf,
     sync::{
@@ -11,10 +13,16 @@ use std::{
     },
     time::SystemTime,
 };
+use tilo_owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::{
-    NeighbourMsg, TransportOrigin,
-    owner_commit::{CommitOperation, OwnerCommitRequest},
+    TransportOrigin,
+    workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskCommandId},
 };
+
+#[path = "changes_read_tests.rs"]
+mod changes_read;
+#[path = "member_initialization_tests.rs"]
+mod member_initialization;
 
 struct Enrolled {
     _directory: tempfile::TempDir,
@@ -22,6 +30,7 @@ struct Enrolled {
     owner: NativeWorkspaceOwner,
     room: RoomId,
     now: SystemTime,
+    replay: NeighbourMsg,
 }
 
 /// Enroll through the file store and admit the governor's history.
@@ -34,6 +43,12 @@ fn enrolled() -> Enrolled {
     let enrollment = crate::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrollment, now).unwrap();
     let room = RoomId::parse(ROOM).unwrap();
+    let replay = messages
+        .iter()
+        .rev()
+        .find(|message| matches!(message, NeighbourMsg::AppDocument { .. }))
+        .expect("fixture has signed app state")
+        .clone();
     for message in messages.into_iter().skip(1) {
         owner
             .receive(
@@ -50,6 +65,7 @@ fn enrolled() -> Enrolled {
         owner,
         room,
         now,
+        replay,
     }
 }
 
@@ -57,33 +73,185 @@ fn member() -> SigningKey {
     SigningKey::from_bytes(&[63; 32])
 }
 
-fn edit(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> OwnerCommitRequest {
-    let message = owner
-        .with_current(room, |view| {
-            let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
-            let before = chat.get_heads();
-            chat.put(ROOT, "topic", "written while joined").unwrap();
-            chat.commit();
-            view.peer().clone().publish_incremental(
-                APP,
-                "",
-                chat.save_after(&before),
-                &member(),
-                now,
+fn admit_test_agent(joined: &Enrolled, agent: &str) {
+    set_test_agent_membership(joined, agent, true);
+}
+
+fn set_test_agent_membership(joined: &Enrolled, agent: &str, admitted: bool) {
+    let key = SigningKey::from_bytes(&[61; 32]);
+    let messages = joined
+        .owner
+        .with_current(joined.room, |view| {
+            let before = view.peer().clone();
+            let mut candidate = before.clone();
+            if admitted {
+                let room = candidate.room().to_owned();
+                candidate.governance_mut().put_governed_grants(
+                    &[tilo_action_policy::Grant::new(
+                        format!("test-agent-{agent}"),
+                        tilo_action_policy::Subject::agent(agent),
+                        tilo_action_policy::TreePath::room(&room),
+                        tilo_action_policy::KindSet::READ_UNDOABLE,
+                        tilo_action_policy::Answer::Allow,
+                        tilo_action_policy::Subject::person("governor"),
+                    )],
+                    &key,
+                    joined.now,
+                )?;
+            } else {
+                candidate.governance_mut().remove_governed_grants(
+                    &[tilo_action_policy::GrantId::new(format!(
+                        "test-agent-{agent}"
+                    ))],
+                    &key,
+                    joined.now,
+                )?;
+            }
+            candidate.durable_mutation_messages(
+                &before,
+                &key,
+                joined.now,
+                view.generation().checked_add(1).unwrap(),
             )
         })
         .unwrap();
-    let NeighbourMsg::AppDocument { envelope, .. } = message else {
-        panic!("a signed document write")
+    let governor = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.governor().device_public_key))
+        .unwrap();
+    for message in messages {
+        joined
+            .owner
+            .receive(
+                joined.room,
+                TransportOrigin::RetainedRelayDelta(governor),
+                message,
+                joined.now,
+            )
+            .unwrap();
+    }
+}
+
+fn queued_task(
+    joined: &Enrolled,
+) -> (
+    String,
+    tilo_user_identity::DeviceCert,
+    tilo_user_identity::DeviceCert,
+) {
+    admit_test_agent(joined, "scribe");
+    let (caller, host) = joined
+        .owner
+        .with_current(joined.room, |view| {
+            Ok((
+                view.device().clone(),
+                view.host().ok_or("test room has no pinned host")?.clone(),
+            ))
+        })
+        .unwrap();
+    let queue_invocation = uuid::Uuid::from_u128(91);
+    joined
+        .owner
+        .commit_workspace_task_command(
+            OwnerCommitRequest {
+                room: ROOM.into(),
+                operation: CommitOperation::WorkspaceTaskCommand {
+                    invocation: queue_invocation,
+                    authority: WorkspaceTaskAuthority::Person {
+                        caller: caller.clone(),
+                    },
+                    command: WorkspaceTaskCommand::Queue {
+                        title: "Prepare the release notes".into(),
+                        assigned_agent: "scribe".into(),
+                        route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+                        resource: None,
+                    },
+                },
+            },
+            joined.now,
+        )
+        .unwrap();
+    let result = joined
+        .owner
+        .workspace_task_result(
+            joined.room,
+            WorkspaceTaskCommandId {
+                device: caller.device_public_key,
+                invocation: queue_invocation,
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = result else {
+        panic!("queue result")
     };
-    OwnerCommitRequest {
+    (task_id, caller, host)
+}
+
+fn queued_and_started_task(joined: &Enrolled) -> (String, tilo_user_identity::DeviceCert) {
+    let (task_id, caller, host) = queued_task(joined);
+    joined
+        .owner
+        .commit_workspace_task_command(
+            OwnerCommitRequest {
+                room: ROOM.into(),
+                operation: CommitOperation::WorkspaceTaskCommand {
+                    invocation: uuid::Uuid::from_u128(92),
+                    authority: WorkspaceTaskAuthority::Host { attestor: host },
+                    command: WorkspaceTaskCommand::StartRun {
+                        task_id: task_id.clone(),
+                        agent_id: "scribe".into(),
+                    },
+                },
+            },
+            joined.now,
+        )
+        .unwrap();
+    (task_id, caller)
+}
+
+fn edit(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> OwnerCommitRequest {
+    edit_with(owner, room, now, "written while joined")
+}
+
+fn edit_with(
+    owner: &NativeWorkspaceOwner,
+    room: RoomId,
+    now: SystemTime,
+    topic: &str,
+) -> OwnerCommitRequest {
+    owner
+        .with_current(room, |view| edit_from_view(view, now, topic))
+        .unwrap()
+}
+
+fn edit_from_view(
+    view: &crate::NativeCommittedView,
+    now: SystemTime,
+    topic: &str,
+) -> Result<OwnerCommitRequest, String> {
+    let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+    let before = chat.get_heads();
+    chat.put(ROOT, "topic", topic).unwrap();
+    chat.commit_edit("fixture", "topic");
+    let message = view.peer().clone().publish_incremental(
+        APP,
+        "",
+        chat.save_after(&before),
+        &member(),
+        now,
+    )?;
+    let NeighbourMsg::AppDocument { envelope, .. } = message else {
+        return Err("test edit was not a signed document write".into());
+    };
+    Ok(OwnerCommitRequest {
         room: ROOM.into(),
         operation: CommitOperation::Document {
             app: APP.into(),
             record: String::new(),
             envelope,
         },
-    }
+    })
 }
 
 #[test]
@@ -118,6 +286,309 @@ fn a_joined_room_is_kept_in_its_own_private_file_and_reopens() {
 }
 
 #[test]
+fn chat_task_retry_after_owner_restart_keeps_one_executable_task() {
+    let joined = enrolled();
+    admit_test_agent(&joined, "scribe");
+    let caller = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.device().clone()))
+        .unwrap();
+    let parent = uuid::Uuid::from_u128(901);
+    let mut request = OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(91),
+            authority: WorkspaceTaskAuthority::Person {
+                caller: caller.clone(),
+            },
+            command: WorkspaceTaskCommand::Queue {
+                title: "Release notes".into(),
+                assigned_agent: "scribe".into(),
+                route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+                resource: Some(Box::new(tilo_desktop_model::WorkspaceTaskResource {
+                    app_id: Some("so.tilo.chat".into()),
+                    app_label: Some("Chat".into()),
+                    id: format!("chat.message:m_{parent}"),
+                    kind: "chat.message".into(),
+                    label: "Agent request".into(),
+                    agent_request: Some(tilo_desktop_model::WorkspaceAgentRequest {
+                        chat_record: "chat-record".into(),
+                        channel_id: "agent-dm".into(),
+                        message_id: format!("m_{parent}"),
+                        instruction: "Prepare complete release notes".into(),
+                        invocation: serde_json::from_value(serde_json::json!(parent)).unwrap(),
+                    }),
+                })),
+            },
+        },
+    };
+    joined
+        .owner
+        .commit_workspace_task_command(request.clone(), joined.now)
+        .unwrap();
+    let first = joined.owner.workspace_task_snapshot(joined.room).unwrap();
+    drop(joined.owner);
+    let reopened = open_file(&joined.path).unwrap();
+    if let CommitOperation::WorkspaceTaskCommand { invocation, .. } = &mut request.operation {
+        *invocation = uuid::Uuid::from_u128(92);
+    }
+    let receipt = reopened
+        .commit_workspace_task_command(request.clone(), joined.now)
+        .unwrap();
+    receipt.validate_for(&request).unwrap();
+    let state = reopened.workspace_task_snapshot(joined.room).unwrap();
+    assert_eq!(state.tasks, first.tasks);
+    assert_eq!(state.controls.values().next().unwrap().receipts.len(), 2);
+    let result = reopened
+        .workspace_task_result(
+            joined.room,
+            WorkspaceTaskCommandId {
+                device: caller.device_public_key,
+                invocation: uuid::Uuid::from_u128(92),
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        result,
+        tilo_desktop_model::WorkspaceTaskMutationResult::Queued {
+            task_id: first.tasks[0].id.clone(),
+        }
+    );
+    let durable = open_file(&joined.path)
+        .unwrap()
+        .workspace_task_snapshot(joined.room)
+        .unwrap();
+    assert_eq!(durable.tasks, state.tasks);
+    assert_eq!(durable.controls, state.controls);
+}
+
+#[test]
+fn typed_task_queue_and_exact_retry_survive_owner_restart() {
+    let joined = enrolled();
+    admit_test_agent(&joined, "scribe");
+    let caller = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.device().clone()))
+        .unwrap();
+    let invocation = uuid::Uuid::from_u128(91);
+    let request = OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation,
+            authority: WorkspaceTaskAuthority::Person {
+                caller: caller.clone(),
+            },
+            command: WorkspaceTaskCommand::Queue {
+                title: "Prepare the release notes".into(),
+                assigned_agent: "scribe".into(),
+                route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+                resource: None,
+            },
+        },
+    };
+    let first = joined
+        .owner
+        .commit_workspace_task_command(request.clone(), joined.now)
+        .unwrap();
+    let retry = joined
+        .owner
+        .commit_workspace_task_command(request, joined.now)
+        .unwrap();
+    assert_eq!(first.binding, retry.binding);
+    assert_eq!(first.generation, retry.generation);
+    assert_eq!(first.aggregate_hash, retry.aggregate_hash);
+    let id = WorkspaceTaskCommandId {
+        device: caller.device_public_key,
+        invocation,
+    };
+    assert!(
+        joined
+            .owner
+            .workspace_task_result(joined.room, id)
+            .unwrap()
+            .is_some()
+    );
+    drop(joined.owner);
+    let reopened = open_file(&joined.path).unwrap();
+    let snapshot = reopened.workspace_task_snapshot(joined.room).unwrap();
+    assert_eq!(snapshot.tasks.len(), 1);
+    assert_eq!(snapshot.tasks[0].assigned_agent.as_deref(), Some("scribe"));
+    assert!(
+        reopened
+            .workspace_task_result(joined.room, id)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn run_bound_steering_refuses_stale_epoch_and_revision_without_owner_write() {
+    let joined = enrolled();
+    let (task_id, caller) = queued_and_started_task(&joined);
+    let request = |invocation, epoch, after_revision| OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(invocation),
+            authority: WorkspaceTaskAuthority::Person {
+                caller: caller.clone(),
+            },
+            command: WorkspaceTaskCommand::DirectionForRun {
+                task_id: task_id.clone(),
+                run_epoch: epoch,
+                after_revision,
+                text: "Prioritize compatibility changes".into(),
+            },
+        },
+    };
+    let before = std::fs::read(&joined.path).unwrap();
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(request(93, 2, 0), joined.now)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+    let exact = request(94, 1, 0);
+    let receipt = joined
+        .owner
+        .commit_workspace_task_command(exact.clone(), joined.now)
+        .unwrap();
+    receipt.validate_for(&exact).unwrap();
+    let saved = std::fs::read(&joined.path).unwrap();
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(request(95, 1, 0), joined.now)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), saved);
+    let reopened = open_file(&joined.path).unwrap();
+    let state = reopened.workspace_task_snapshot(joined.room).unwrap();
+    let control = state.controls.get(&task_id).unwrap();
+    assert_eq!(control.directions.len(), 1);
+    assert_eq!(control.directions[0].revision, 1);
+    assert_eq!(
+        control
+            .active_run
+            .as_ref()
+            .unwrap()
+            .applied_direction_revision,
+        0
+    );
+    let retry = reopened
+        .commit_workspace_task_command(exact, joined.now)
+        .unwrap();
+    assert_eq!(retry.binding, receipt.binding);
+    assert_eq!(retry.generation, receipt.generation);
+    assert_eq!(retry.aggregate_hash, receipt.aggregate_hash);
+    assert_eq!(std::fs::read(&joined.path).unwrap(), saved);
+}
+
+#[test]
+fn task_action_admission_and_direction_commit_are_one_serialized_owner_turn() {
+    let joined = enrolled();
+    let (task_id, caller) = queued_and_started_task(&joined);
+    let admission_owner = joined.owner.clone();
+    let nested_read_owner = joined.owner.clone();
+    let room = joined.room;
+    let admission_task = task_id.clone();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let admission = std::thread::spawn(move || {
+        admission_owner.with_task_action_admission(
+            room,
+            &admission_task,
+            "scribe",
+            1,
+            0,
+            move || {
+                nested_read_owner.workspace_task_snapshot(room)?;
+                entered_tx.send(()).map_err(|error| error.to_string())?;
+                release_rx.recv().map_err(|error| error.to_string())?;
+                Ok(())
+            },
+        )
+    });
+    entered_rx.recv().unwrap();
+
+    let direction_owner = joined.owner.clone();
+    let direction_task = task_id.clone();
+    let now = joined.now;
+    let (attempted_tx, attempted_rx) = std::sync::mpsc::channel();
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let direction = std::thread::spawn(move || {
+        attempted_tx.send(()).unwrap();
+        let result = direction_owner.commit_workspace_task_command(
+            OwnerCommitRequest {
+                room: ROOM.into(),
+                operation: CommitOperation::WorkspaceTaskCommand {
+                    invocation: uuid::Uuid::from_u128(93),
+                    authority: WorkspaceTaskAuthority::Person { caller },
+                    command: WorkspaceTaskCommand::DirectionForRun {
+                        task_id: direction_task,
+                        run_epoch: 1,
+                        after_revision: 0,
+                        text: "Keep the migration warning prominent".into(),
+                    },
+                },
+            },
+            now,
+        );
+        finished_tx.send(result.is_ok()).unwrap();
+    });
+    attempted_rx.recv().unwrap();
+    assert!(matches!(
+        finished_rx.recv_timeout(std::time::Duration::from_millis(100)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    release_tx.send(()).unwrap();
+    admission.join().unwrap().unwrap();
+    direction.join().unwrap();
+    assert!(finished_rx.recv().unwrap());
+
+    assert!(
+        joined
+            .owner
+            .with_task_action_admission(joined.room, &task_id, "scribe", 1, 0, || Ok(()))
+            .is_err()
+    );
+    let host = joined
+        .owner
+        .with_current(joined.room, |view| {
+            view.host()
+                .cloned()
+                .ok_or_else(|| "test room has no pinned host".to_owned())
+        })
+        .unwrap();
+    joined
+        .owner
+        .commit_workspace_task_command(
+            OwnerCommitRequest {
+                room: ROOM.into(),
+                operation: CommitOperation::WorkspaceTaskCommand {
+                    invocation: uuid::Uuid::from_u128(94),
+                    authority: WorkspaceTaskAuthority::Agent {
+                        attestor: host,
+                        agent_id: "scribe".into(),
+                    },
+                    command: WorkspaceTaskCommand::AppliedAck {
+                        task_id: task_id.clone(),
+                        run_epoch: 1,
+                        revision: 1,
+                    },
+                },
+            },
+            joined.now,
+        )
+        .unwrap();
+    joined
+        .owner
+        .with_task_action_admission(joined.room, &task_id, "scribe", 1, 1, || Ok(()))
+        .unwrap();
+}
+
+#[test]
 fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
     let joined = enrolled();
     let request = edit(&joined.owner, joined.room, joined.now);
@@ -146,8 +617,189 @@ fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
 }
 
 #[test]
+fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
+    let joined = enrolled();
+    let stale = edit_with(&joined.owner, joined.room, joined.now, "stale edit");
+    let first = edit_with(
+        &joined.owner,
+        joined.room,
+        joined.now,
+        "first committed edit",
+    );
+    joined.owner.commit_document(first, joined.now).unwrap();
+    assert_eq!(
+        joined.owner.commit_document(stale, joined.now).unwrap_err(),
+        "signed operation conflicts with exact admitted sequence"
+    );
+
+    let receipt = joined
+        .owner
+        .commit_document_with_current(
+            joined.room,
+            |view| edit_from_view(view, joined.now, "edit from current owner turn"),
+            joined.now,
+        )
+        .unwrap();
+    assert!(receipt.generation > 1);
+    joined
+        .owner
+        .with_current(joined.room, |view| {
+            let chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+            assert_eq!(
+                chat.get(ROOT, "topic").unwrap().unwrap().0.as_str(),
+                Some("edit from current owner turn")
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// Commit one original edit that the governor has not yet admitted, then give
+/// the route a fresh governor checkpoint that does not cover it, so the next
+/// `reconcile_outgoing` signs a recovery projection at the dense `floor + 1`.
+fn with_pending_original(joined: &Enrolled) {
+    let governor_key = SigningKey::from_bytes(&[61; 32]);
+    let mut remote = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.peer().clone()))
+        .unwrap();
+    let original = edit_with(
+        &joined.owner,
+        joined.room,
+        joined.now,
+        "original awaiting ack",
+    );
+    joined.owner.commit_document(original, joined.now).unwrap();
+    for message in remote
+        .durable_bootstrap_messages(&governor_key, joined.now, 600)
+        .unwrap()
+    {
+        joined
+            .owner
+            .receive(
+                joined.room,
+                TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
+                message,
+                joined.now,
+            )
+            .unwrap();
+    }
+}
+
+fn projections(joined: &Enrolled) -> usize {
+    joined
+        .owner
+        .with_current(joined.room, |view| {
+            Ok(crate::testing::projection(view)?.len())
+        })
+        .unwrap()
+}
+
+/// A write signed outside the owner turn the way every SDK document signer
+/// signs it: with the process-wide unordered sequence, not `floor + 1`.
+fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
+    use collab_types::{
+        DocumentMutation, Ed25519PublicKey, OpKind, SignedOp, document_artifact_id,
+        document_attestation_id, next_unordered_document_sequence, sign_op,
+    };
+    let changes = joined
+        .owner
+        .with_current(joined.room, |view| {
+            let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+            let before = chat.get_heads();
+            chat.put(ROOT, "topic", topic).unwrap();
+            chat.commit_edit("fixture", "topic");
+            Ok(chat.save_after(&before))
+        })
+        .unwrap();
+    let key = member();
+    let mutation = DocumentMutation::Incremental(changes);
+    let mut envelope = SignedOp::new_unsigned(
+        mutation.encode().unwrap(),
+        document_artifact_id(APP, ROOM, ""),
+        Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+        document_attestation_id(APP, ROOM, ""),
+        OpKind::Change,
+        joined.now,
+        next_unordered_document_sequence(joined.now),
+    );
+    sign_op(&mut envelope, &key).unwrap();
+    OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::Document {
+            app: APP.into(),
+            record: String::new(),
+            envelope: Box::new(envelope),
+        },
+    }
+}
+
+#[test]
+fn dense_snapshot_sequence_is_stale_after_an_intervening_recovery_projection() {
+    let joined = enrolled();
+    with_pending_original(&joined);
+    let dense = edit_with(&joined.owner, joined.room, joined.now, "dense edit");
+    assert_eq!(projections(&joined), 0);
+    joined
+        .owner
+        .reconcile_outgoing(joined.room, &member(), joined.now)
+        .unwrap();
+    assert_eq!(
+        projections(&joined),
+        1,
+        "the owner's own turn must sign a recovery projection at floor + 1"
+    );
+    assert_eq!(
+        joined.owner.commit_document(dense, joined.now).unwrap_err(),
+        "native local document signed sequence is stale"
+    );
+}
+
+#[test]
+fn unordered_sequence_survives_an_intervening_recovery_projection() {
+    let joined = enrolled();
+    with_pending_original(&joined);
+    let request = unordered_edit(&joined, "unordered edit");
+    assert_eq!(projections(&joined), 0);
+    joined
+        .owner
+        .reconcile_outgoing(joined.room, &member(), joined.now)
+        .unwrap();
+    assert_eq!(
+        projections(&joined),
+        1,
+        "the owner's own turn must sign a recovery projection at floor + 1"
+    );
+    joined
+        .owner
+        .commit_document(request.clone(), joined.now)
+        .unwrap();
+    let CommitOperation::Document { envelope, .. } = &request.operation else {
+        panic!("the unordered edit is a document write")
+    };
+    joined
+        .owner
+        .with_current(joined.room, |view| {
+            assert!(
+                view.peer()
+                    .lookup_exact_local_document(APP, "", envelope, joined.now)
+                    .map_err(|error| error.to_string())?
+                    .is_some(),
+                "the caller-signed write must leave exact admission evidence"
+            );
+            let chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+            assert_eq!(
+                chat.get(ROOT, "topic").unwrap().unwrap().0.as_str(),
+                Some("unordered edit")
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn an_uncertain_write_fences_every_room_until_reopened() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let joined = enrolled();
     let calls = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&calls);
@@ -239,4 +891,1078 @@ fn a_member_reads_the_admitted_document_and_a_stranger_does_not() {
         "a device outside the room reads nothing"
     );
     assert!(read(member, "uuid:absent", None, usize::MAX).is_err());
+}
+
+/// A governor checkpoint reaches this owner as several signed frames. A read
+/// between them hands out nothing and says the checkpoint is pending, so the
+/// reader asks again; a refusal would end an app's collaboration for good.
+/// It still refuses a device that may not read the record.
+#[test]
+fn a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused() {
+    let joined = enrolled();
+    let member = member().verifying_key().to_bytes();
+    let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
+    let governor_key = SigningKey::from_bytes(&[61; 32]);
+    let covered = edit_with(&joined.owner, joined.room, joined.now, "covered next");
+    joined.owner.commit_document(covered, joined.now).unwrap();
+    let mut remote = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.peer().clone()))
+        .unwrap();
+    let frames = remote
+        .durable_bootstrap_messages(&governor_key, joined.now, 600)
+        .unwrap();
+    let read = |reader| {
+        joined.owner.with_current(joined.room, |view| {
+            view.read_document(reader, APP, "", None, usize::MAX, joined.now)
+        })
+    };
+    let mut pending = 0;
+    for frame in frames {
+        joined
+            .owner
+            .receive(
+                joined.room,
+                TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
+                frame,
+                joined.now,
+            )
+            .unwrap();
+        match read(member) {
+            Ok(DocumentRead::Captured(_)) => {}
+            Ok(DocumentRead::CheckpointPending) => {
+                pending += 1;
+                assert!(
+                    read(stranger).is_err(),
+                    "a pending checkpoint is reported only to a reader of the record"
+                );
+            }
+            Ok(DocumentRead::Unchanged(_)) => panic!("no revision was offered"),
+            Err(error) => panic!("a read between checkpoint frames was refused: {error}"),
+        }
+    }
+    assert!(
+        pending > 0,
+        "the checkpoint's frames leave the room between cuts"
+    );
+    let Ok(DocumentRead::Captured(document)) = read(member) else {
+        panic!("the completed checkpoint is read again");
+    };
+    let doc = AutoCommit::load(&document.bytes).unwrap();
+    assert_eq!(
+        doc.get(ROOT, "topic")
+            .unwrap()
+            .map(|(value, _)| value.to_string()),
+        Some("\"covered next\"".into())
+    );
+}
+
+#[test]
+fn an_unchanged_committed_read_does_not_restore_the_room() {
+    let joined = enrolled();
+    let member = member().verifying_key().to_bytes();
+    let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
+    let read = |reader, known| {
+        joined.owner.with_current(joined.room, |view| {
+            view.read_document(reader, APP, "", known, usize::MAX, joined.now)
+        })
+    };
+    crate::document_read::reset_room_restores();
+    let Ok(DocumentRead::Captured(document)) = read(member, None) else {
+        panic!("the first read admits the document");
+    };
+    assert!(
+        crate::document_read::room_restores() > 0,
+        "a first read restores the room so the counter can see a later skip"
+    );
+    let restores = crate::document_read::room_restores();
+    assert!(matches!(
+        read(member, Some(document.revision)),
+        Ok(DocumentRead::Unchanged(revision)) if revision == document.revision
+    ));
+    assert_eq!(
+        crate::document_read::room_restores(),
+        restores,
+        "an idle reread of the same revision must not restore the room"
+    );
+    assert!(
+        read(stranger, Some(document.revision)).is_err(),
+        "a device outside the room cannot reuse a revision it was never given"
+    );
+}
+
+#[test]
+fn a_held_revision_is_checked_from_heads_with_the_read_permission() {
+    let joined = enrolled();
+    let member = member().verifying_key().to_bytes();
+    let stranger = SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes();
+    let Ok(DocumentRead::Captured(document)) = joined.owner.with_current(joined.room, |view| {
+        view.read_document(member, APP, "", None, usize::MAX, joined.now)
+    }) else {
+        panic!("the first read admits the document");
+    };
+    let holds = |reader, known| {
+        joined.owner.with_current(joined.room, |view| {
+            view.holds_revision(reader, APP, "", known, joined.now)
+        })
+    };
+    crate::document_read::reset_room_restores();
+    assert_eq!(holds(member, document.revision), Ok(Some(true)));
+    assert_eq!(
+        holds(member, [0; 32]),
+        Ok(Some(false)),
+        "another revision is not held"
+    );
+    assert_eq!(
+        crate::document_read::room_restores(),
+        0,
+        "answered from the admitted heads, without restoring the room"
+    );
+    assert!(
+        holds(stranger, document.revision).is_err(),
+        "the read permission is checked as a read checks it"
+    );
+}
+
+/// What a sealed write says, which no file of the keyless owner may hold.
+const SECRET: &str = "only key holders read this";
+
+/// A channel's key holder, and its content keys before and after a rotation.
+fn rotated_channel() -> (
+    channel_crypto::ChannelContentKeys,
+    channel_crypto::ChannelContentKeys,
+) {
+    let channel = collab_types::document_channel_id(APP, ROOM, "");
+    let mut group = channel_crypto::ChannelGroup::create(
+        channel,
+        channel_crypto::MemberKey::generate("steward").unwrap(),
+    )
+    .unwrap();
+    let before = group.content_keys().unwrap();
+    group
+        .add_member(
+            channel_crypto::MemberKey::generate("reader")
+                .unwrap()
+                .fresh_key_package()
+                .unwrap(),
+        )
+        .unwrap();
+    (before, group.content_keys().unwrap())
+}
+
+/// Commit a write sealed under `keys`, as an SDK app seals it, at `now`.
+fn commit_sealed(
+    joined: &Enrolled,
+    keys: &channel_crypto::ChannelContentKeys,
+) -> collab_types::SignedOp {
+    commit_sealed_as(joined, keys, collab_types::ContentRetention::Delta)
+}
+
+/// Commit a write sealed under `keys` with the signed storage class `class`.
+fn commit_sealed_as(
+    joined: &Enrolled,
+    keys: &channel_crypto::ChannelContentKeys,
+    class: collab_types::ContentRetention,
+) -> collab_types::SignedOp {
+    let OwnerCommitRequest {
+        operation: CommitOperation::Document { mut envelope, .. },
+        ..
+    } = edit_with(&joined.owner, joined.room, joined.now, SECRET)
+    else {
+        panic!("a document write")
+    };
+    let (metadata, sealed) = keys
+        .seal_content(envelope.artifact, class, &envelope.payload)
+        .unwrap();
+    envelope.payload = sealed;
+    envelope.encryption = Some(metadata);
+    collab_types::sign_op(&mut envelope, &member()).unwrap();
+    joined
+        .owner
+        .commit_document(
+            OwnerCommitRequest {
+                room: ROOM.into(),
+                operation: CommitOperation::Document {
+                    app: APP.into(),
+                    record: String::new(),
+                    envelope: envelope.clone(),
+                },
+            },
+            joined.now,
+        )
+        .unwrap();
+    *envelope
+}
+
+fn sent(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> Vec<Vec<u8>> {
+    owner
+        .with_outgoing(room, now, |_, outgoing| {
+            Ok(outgoing
+                .entries()
+                .map(|entry| entry.bytes().to_vec())
+                .collect())
+        })
+        .unwrap()
+}
+
+/// Native publication classifies through the one host classifier browser
+/// peers use, so a sealed checkpoint is a checkpoint to it there too. A
+/// member still never replaces the record's retained checkpoint under its own
+/// relay author: the sealed checkpoint leaves as a delta after it, while a
+/// cleartext snapshot stays a checkpoint the member never releases.
+#[test]
+fn native_sealed_checkpoint_is_classified_like_browser() {
+    use neighbour_wire::{Retention, retention};
+    let joined = enrolled();
+    let (keys, _) = rotated_channel();
+    let envelope = commit_sealed_as(&joined, &keys, collab_types::ContentRetention::Checkpoint);
+    let [bytes] = sent(&joined.owner, joined.room, joined.now)
+        .try_into()
+        .expect("the committed sealed checkpoint is released");
+    let message: NeighbourMsg = postcard::from_bytes(&bytes).unwrap();
+    let NeighbourMsg::AppDocument { envelope: sent, .. } = &message else {
+        panic!("a document write")
+    };
+    assert_eq!(**sent, envelope);
+
+    let (channel, class) = retention(&message, false).expect("sealed state is retained");
+    assert_eq!(class, Retention::Checkpoint, "the browser peer's class");
+    let (_, recorded, incremental) = crate::publication::metadata(&message).unwrap();
+    assert_eq!(recorded, channel, "the same host channel as a browser peer");
+    assert!(
+        incremental,
+        "a member's sealed checkpoint is published as a delta"
+    );
+    let published = joined
+        .owner
+        .with_outgoing(joined.room, joined.now, |_, outgoing| {
+            Ok(outgoing
+                .entries()
+                .map(|entry| (entry.channel(), entry.retention()))
+                .collect::<Vec<_>>())
+        })
+        .unwrap();
+    assert_eq!(published, [(channel, Retention::Delta)]);
+
+    let mut snapshot = message.clone();
+    let mut single_use = message;
+    if let NeighbourMsg::AppDocument { envelope, .. } = &mut snapshot {
+        envelope.encryption = None;
+        envelope.payload = collab_types::DocumentMutation::Snapshot(vec![1])
+            .encode()
+            .unwrap();
+    }
+    assert_eq!(
+        retention(&snapshot, false).map(|(_, class)| class),
+        Some(Retention::Checkpoint)
+    );
+    assert!(
+        !crate::publication::metadata(&snapshot).unwrap().2,
+        "a cleartext snapshot stays the governor's checkpoint"
+    );
+    if let NeighbourMsg::AppDocument { envelope, .. } = &mut single_use {
+        envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
+            0,
+            collab_types::document_channel_id(APP, ROOM, ""),
+        ));
+    }
+    assert!(
+        crate::publication::metadata(&single_use).is_err(),
+        "a single-use MLS message has no retention class"
+    );
+}
+
+#[test]
+fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_original() {
+    let joined = enrolled();
+    let (before, current) = rotated_channel();
+    let original = commit_sealed(&joined, &before);
+    let later = joined
+        .now
+        .checked_add(std::time::Duration::from_secs(301))
+        .unwrap();
+    assert!(sent(&joined.owner, joined.room, later).is_empty());
+
+    let mut asked = 0;
+    joined
+        .owner
+        .renew_outgoing(
+            joined.room,
+            &member(),
+            &mut |op| {
+                asked += 1;
+                let metadata = op.encryption.ok_or("not sealed")?;
+                let plaintext = current
+                    .open_content(op.artifact, &metadata, &op.payload)
+                    .map_err(|e| e.to_string())?;
+                current
+                    .seal_content(
+                        op.artifact,
+                        collab_types::ContentRetention::Delta,
+                        &plaintext,
+                    )
+                    .map_err(|e| e.to_string())
+            },
+            later,
+        )
+        .unwrap();
+    assert_eq!(asked, 1);
+    let status = joined.owner.outgoing_status(joined.room, later).unwrap();
+    assert_eq!(status.pending, 1, "the renewal replaces its original");
+    let [bytes] = sent(&joined.owner, joined.room, later).try_into().unwrap();
+    let NeighbourMsg::AppDocument { envelope, .. } = postcard::from_bytes(&bytes).unwrap() else {
+        panic!("a document write")
+    };
+    collab_types::verify_op(&envelope).unwrap();
+    assert_eq!(envelope.seq, original.seq.checked_add(1).unwrap());
+    assert_eq!(envelope.timestamp, later);
+    let metadata = envelope.encryption.unwrap();
+    assert_eq!(metadata.epoch, current.epoch());
+    assert_eq!(
+        current
+            .open_current_content(envelope.artifact, &metadata, &envelope.payload)
+            .unwrap()
+            .as_slice(),
+        before
+            .open_content(
+                original.artifact,
+                &original.encryption.unwrap(),
+                &original.payload
+            )
+            .unwrap()
+            .as_slice(),
+        "the renewal carries the same content under the current epoch"
+    );
+
+    drop(joined.owner);
+    let reopened = open_file(&joined.path).unwrap();
+    assert_eq!(sent(&reopened, joined.room, later), vec![bytes]);
+    for file in std::fs::read_dir(joined.path.parent().unwrap()).unwrap() {
+        let contents = std::fs::read(file.unwrap().path()).unwrap();
+        assert!(
+            !contents
+                .windows(SECRET.len())
+                .any(|window| window == SECRET.as_bytes()),
+            "the keyless owner's files hold the plaintext"
+        );
+    }
+}
+
+#[test]
+fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
+    let joined = enrolled();
+    let (keys, _) = rotated_channel();
+    commit_sealed(&joined, &keys);
+    let committed = std::fs::read(&joined.path).unwrap();
+    let later = joined
+        .now
+        .checked_add(std::time::Duration::from_secs(301))
+        .unwrap();
+    joined
+        .owner
+        .renew_outgoing(
+            joined.room,
+            &member(),
+            &mut |_| Err("this device holds no current key".into()),
+            later,
+        )
+        .unwrap();
+    assert_eq!(std::fs::read(&joined.path).unwrap(), committed);
+    assert_eq!(
+        joined
+            .owner
+            .outgoing_status(joined.room, later)
+            .unwrap()
+            .pending,
+        1
+    );
+    assert!(sent(&joined.owner, joined.room, later).is_empty());
+    assert!(
+        joined
+            .owner
+            .renew_outgoing(
+                joined.room,
+                &SigningKey::from_bytes(&[99; 32]),
+                &mut |_| panic!("another signer's renewal asked the key holder"),
+                later,
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn removed_agent_cannot_receive_a_direction_for_its_retained_run() {
+    let joined = enrolled();
+    let (task_id, caller) = queued_and_started_task(&joined);
+    set_test_agent_membership(&joined, "scribe", false);
+    joined
+        .owner
+        .with_current(joined.room, |view| {
+            let (_, policy) = tilo_peer_state::room::extract_governed_fields(
+                view.peer().admitted_room().unwrap(),
+            );
+            assert!(
+                policy
+                    .grants
+                    .iter()
+                    .all(|grant| grant.subject != tilo_action_policy::Subject::agent("scribe")),
+                "the signed removal must actually remove the agent"
+            );
+            Ok(())
+        })
+        .unwrap();
+    let before = std::fs::read(&joined.path).unwrap();
+    let result = joined.owner.commit_workspace_task_command(
+        OwnerCommitRequest {
+            room: ROOM.into(),
+            operation: CommitOperation::WorkspaceTaskCommand {
+                invocation: uuid::Uuid::from_u128(501),
+                authority: WorkspaceTaskAuthority::Person { caller },
+                command: WorkspaceTaskCommand::DirectionForRun {
+                    task_id,
+                    run_epoch: 1,
+                    after_revision: 0,
+                    text: "Prioritize compatibility".into(),
+                },
+            },
+        },
+        joined.now,
+    );
+    assert!(
+        result.is_err(),
+        "a retained lease must not admit steering to a removed actor"
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+}
+
+#[test]
+fn person_cancel_is_frontier_fenced_and_durable_after_restart() {
+    let joined = enrolled();
+    let (task_id, caller) = queued_and_started_task(&joined);
+    let cancel = |invocation, epoch, revision| OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(invocation),
+            authority: WorkspaceTaskAuthority::Person {
+                caller: caller.clone(),
+            },
+            command: WorkspaceTaskCommand::CancelForRun {
+                task_id: task_id.clone(),
+                run_epoch: epoch,
+                after_revision: revision,
+            },
+        },
+    };
+    let before = std::fs::read(&joined.path).unwrap();
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(cancel(601, 0, 0), joined.now)
+            .is_err()
+    );
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(cancel(602, 1, 1), joined.now)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+    let request = cancel(603, 1, 0);
+    joined
+        .owner
+        .commit_workspace_task_command(request.clone(), joined.now)
+        .unwrap();
+    let bytes = std::fs::read(&joined.path).unwrap();
+    assert!(
+        joined
+            .owner
+            .with_task_action_admission(
+                joined.room,
+                &task_id,
+                "scribe",
+                1,
+                0,
+                || -> Result<(), String> { panic!("cancelled task admitted an action") }
+            )
+            .is_err()
+    );
+    joined
+        .owner
+        .commit_workspace_task_command(request, joined.now)
+        .unwrap();
+    assert_eq!(std::fs::read(&joined.path).unwrap(), bytes);
+    let reopened = open_file(&joined.path).unwrap();
+    let snapshot = reopened.workspace_task_snapshot(joined.room).unwrap();
+    let task = snapshot
+        .tasks
+        .iter()
+        .find(|task| task.id == task_id)
+        .unwrap();
+    assert_eq!(
+        task.status,
+        tilo_desktop_model::WorkspaceTaskStatus::Cancelled
+    );
+    assert_eq!(task.audit.last().unwrap().actor, task.created_by);
+    assert!(snapshot.controls[&task_id].active_run.is_none());
+    assert!(snapshot.controls[&task_id].execution.is_none());
+    assert!(
+        reopened
+            .workspace_task_result(
+                joined.room,
+                WorkspaceTaskCommandId {
+                    device: caller.device_public_key,
+                    invocation: uuid::Uuid::from_u128(603)
+                }
+            )
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        reopened
+            .commit_workspace_task_command(cancel(604, 1, 0), joined.now)
+            .is_err()
+    );
+}
+
+fn manual_resource(id: &str) -> tilo_desktop_model::WorkspaceTaskResource {
+    tilo_desktop_model::WorkspaceTaskResource {
+        app_id: Some("so.tilo.chip-design".into()),
+        app_label: Some("Chip Design".into()),
+        id: id.into(),
+        kind: "chip_design.verification".into(),
+        label: "Mapped tile evidence".into(),
+        agent_request: None,
+    }
+}
+
+fn manual_request(
+    joined: &Enrolled,
+    invocation: u128,
+    command: WorkspaceTaskCommand,
+) -> OwnerCommitRequest {
+    let caller = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.device().clone()))
+        .unwrap();
+    OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(invocation),
+            authority: WorkspaceTaskAuthority::Person { caller },
+            command,
+        },
+    }
+}
+
+#[test]
+fn manual_task_owner_replay_restart_and_attachment_are_canonical() {
+    let joined = enrolled();
+    let request = manual_request(
+        &joined,
+        701,
+        WorkspaceTaskCommand::CreateManual {
+            title: "Review mapped checkpoint evidence".into(),
+            resource: None,
+        },
+    );
+    let receipt = joined
+        .owner
+        .commit_workspace_task_command(request.clone(), joined.now)
+        .unwrap();
+    receipt.validate_for(&request).unwrap();
+    let snapshot = joined.owner.workspace_task_snapshot(joined.room).unwrap();
+    assert_eq!(snapshot.tasks.len(), 1);
+    let task = &snapshot.tasks[0];
+    let task_id = task.id.clone();
+    assert_eq!(task.route, tilo_desktop_model::WorkspaceTaskRoute::Manual);
+    assert!(task.assigned_agent.is_none());
+    assert_eq!(task.status, tilo_desktop_model::WorkspaceTaskStatus::Queued);
+    assert!(task.resource.is_none());
+    let author = joined
+        .owner
+        .with_current(joined.room, |view| {
+            Ok(view
+                .peer()
+                .permissions(view.device().device_public_key, joined.now)?
+                .person)
+        })
+        .unwrap();
+    assert_eq!(task.created_by, author);
+    assert_eq!(task.audit[0].actor, author);
+    assert_eq!(snapshot.controls[&task_id].run_epoch, 0);
+    assert!(snapshot.controls[&task_id].active_run.is_none());
+    assert_eq!(snapshot.controls[&task_id].receipts.len(), 1);
+    joined
+        .owner
+        .commit_workspace_task_command(request.clone(), joined.now)
+        .unwrap();
+    assert_eq!(
+        joined.owner.workspace_task_snapshot(joined.room).unwrap(),
+        snapshot
+    );
+    let attach = manual_request(
+        &joined,
+        702,
+        WorkspaceTaskCommand::AttachResource {
+            task_id: task_id.clone(),
+            expected_resource_id: None,
+            resource: Box::new(manual_resource("chip_design.verification:actual-pinned-id")),
+        },
+    );
+    joined
+        .owner
+        .commit_workspace_task_command(attach.clone(), joined.now)
+        .unwrap();
+    let attached = joined.owner.workspace_task_snapshot(joined.room).unwrap();
+    assert_eq!(
+        attached.tasks[0].resource.as_ref().unwrap().id,
+        "chip_design.verification:actual-pinned-id"
+    );
+    assert_eq!(attached.tasks[0].audit.len(), 2);
+    assert_eq!(attached.tasks[0].audit[1].actor, author);
+    assert!(attached.controls[&task_id].active_run.is_none());
+    joined
+        .owner
+        .commit_workspace_task_command(attach, joined.now)
+        .unwrap();
+    assert_eq!(
+        joined.owner.workspace_task_snapshot(joined.room).unwrap(),
+        attached
+    );
+    drop(joined.owner);
+    let reopened = open_file(&joined.path).unwrap();
+    assert_eq!(
+        reopened.workspace_task_snapshot(joined.room).unwrap(),
+        attached
+    );
+    reopened
+        .commit_workspace_task_command(request, joined.now)
+        .unwrap();
+    assert_eq!(
+        reopened.workspace_task_snapshot(joined.room).unwrap(),
+        attached
+    );
+}
+
+#[test]
+fn manual_attachment_cannot_overwrite_unobserved_or_managed_owner_state() {
+    let joined = enrolled();
+    let create = manual_request(
+        &joined,
+        710,
+        WorkspaceTaskCommand::CreateManual {
+            title: "Review mapping".into(),
+            resource: Some(Box::new(manual_resource("chip_design.verification:first"))),
+        },
+    );
+    joined
+        .owner
+        .commit_workspace_task_command(create, joined.now)
+        .unwrap();
+    let before = joined.owner.workspace_task_snapshot(joined.room).unwrap();
+    let stale = manual_request(
+        &joined,
+        711,
+        WorkspaceTaskCommand::AttachResource {
+            task_id: before.tasks[0].id.clone(),
+            expected_resource_id: None,
+            resource: Box::new(manual_resource("chip_design.verification:second")),
+        },
+    );
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(stale, joined.now)
+            .unwrap_err()
+            .contains("changed since")
+    );
+    assert_eq!(
+        joined.owner.workspace_task_snapshot(joined.room).unwrap(),
+        before
+    );
+    let exact = manual_request(
+        &joined,
+        712,
+        WorkspaceTaskCommand::AttachResource {
+            task_id: before.tasks[0].id.clone(),
+            expected_resource_id: Some("chip_design.verification:first".into()),
+            resource: Box::new(manual_resource("chip_design.verification:second")),
+        },
+    );
+    joined
+        .owner
+        .commit_workspace_task_command(exact, joined.now)
+        .unwrap();
+    let (managed_id, _) = queued_and_started_task(&joined);
+    let before = joined.owner.workspace_task_snapshot(joined.room).unwrap();
+    let managed = manual_request(
+        &joined,
+        713,
+        WorkspaceTaskCommand::AttachResource {
+            task_id: managed_id,
+            expected_resource_id: None,
+            resource: Box::new(manual_resource("chip_design.verification:second")),
+        },
+    );
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(managed, joined.now)
+            .unwrap_err()
+            .contains("managed, leased")
+    );
+    assert_eq!(
+        joined.owner.workspace_task_snapshot(joined.room).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn manual_owner_commands_refuse_host_impersonation_and_agent_instruction_carriers() {
+    let joined = enrolled();
+    let host = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.host().unwrap().clone()))
+        .unwrap();
+    let request = OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(720),
+            authority: WorkspaceTaskAuthority::Host { attestor: host },
+            command: WorkspaceTaskCommand::CreateManual {
+                title: "Must not impersonate a person".into(),
+                resource: None,
+            },
+        },
+    };
+    let before = joined.owner.workspace_task_snapshot(joined.room).unwrap();
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(request, joined.now)
+            .unwrap_err()
+            .contains("only a person")
+    );
+    let mut resource = manual_resource("chip_design.verification:unsafe");
+    resource.agent_request = Some(tilo_desktop_model::WorkspaceAgentRequest {
+        chat_record: "chat".into(),
+        channel_id: "agent-dm".into(),
+        message_id: "m_unsafe".into(),
+        instruction: "Run commands".into(),
+        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(721)),
+    });
+    let request = manual_request(
+        &joined,
+        721,
+        WorkspaceTaskCommand::CreateManual {
+            title: "Must not launch".into(),
+            resource: Some(Box::new(resource)),
+        },
+    );
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(request, joined.now)
+            .unwrap_err()
+            .contains("ordinary application resource")
+    );
+    assert_eq!(
+        joined.owner.workspace_task_snapshot(joined.room).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn removed_agent_cannot_admit_action_for_retained_run() {
+    let joined = enrolled();
+    let (task_id, _) = queued_and_started_task(&joined);
+    joined
+        .owner
+        .with_task_action_admission(joined.room, &task_id, "scribe", 1, 0, || Ok(()))
+        .unwrap();
+    set_test_agent_membership(&joined, "scribe", false);
+    let mut invoked = false;
+    let result =
+        joined
+            .owner
+            .with_task_action_admission(joined.room, &task_id, "scribe", 1, 0, || {
+                invoked = true;
+                Ok(())
+            });
+    assert!(
+        result.is_err(),
+        "removed agent must lose retained task execution authority"
+    );
+    assert!(
+        !invoked,
+        "a denied admission must not reach the application"
+    );
+}
+
+#[test]
+fn person_run_approval_replays_exactly_and_retains_direction_fences_after_restart() {
+    let joined = enrolled();
+    let (task_id, caller, host) = queued_task(&joined);
+    let approval = OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(500),
+            authority: WorkspaceTaskAuthority::Person {
+                caller: caller.clone(),
+            },
+            command: WorkspaceTaskCommand::ApproveRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+                expected_run_epoch: 0,
+                after_revision: 0,
+            },
+        },
+    };
+    let reopened = assert_approval_replay(&joined, &approval, &task_id, caller.device_public_key);
+    let mut changed_request = approval;
+    let CommitOperation::WorkspaceTaskCommand { invocation, .. } = &mut changed_request.operation
+    else {
+        panic!("approval");
+    };
+    *invocation = uuid::Uuid::from_u128(501);
+    assert!(
+        reopened
+            .commit_workspace_task_command(changed_request, joined.now)
+            .is_err()
+    );
+    let direction = OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(502),
+            authority: WorkspaceTaskAuthority::Person { caller },
+            command: WorkspaceTaskCommand::DirectionForRun {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                after_revision: 0,
+                text: "Keep the compatibility warning".into(),
+            },
+        },
+    };
+    reopened
+        .commit_workspace_task_command(direction, joined.now)
+        .unwrap();
+    assert!(
+        reopened
+            .with_task_action_admission(
+                joined.room,
+                &task_id,
+                "scribe",
+                1,
+                0,
+                || -> Result<(), String> { panic!("unseen direction must fence execution") }
+            )
+            .is_err()
+    );
+    let ack = OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(503),
+            authority: WorkspaceTaskAuthority::Agent {
+                attestor: host,
+                agent_id: "scribe".into(),
+            },
+            command: WorkspaceTaskCommand::AppliedAck {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                revision: 1,
+            },
+        },
+    };
+    reopened
+        .commit_workspace_task_command(ack.clone(), joined.now)
+        .unwrap();
+    let after = std::fs::read(&joined.path).unwrap();
+    let restarted = open_file(&joined.path).unwrap();
+    restarted
+        .commit_workspace_task_command(ack, joined.now)
+        .unwrap();
+    assert_eq!(std::fs::read(&joined.path).unwrap(), after);
+    restarted
+        .with_task_action_admission(joined.room, &task_id, "scribe", 1, 1, || Ok(()))
+        .unwrap();
+    set_test_agent_membership(&joined, "scribe", false);
+    assert!(
+        joined
+            .owner
+            .with_task_action_admission(
+                joined.room,
+                &task_id,
+                "scribe",
+                1,
+                1,
+                || -> Result<(), String> { panic!("removed agent must not execute") }
+            )
+            .is_err()
+    );
+}
+
+fn assert_approval_replay(
+    joined: &Enrolled,
+    approval: &OwnerCommitRequest,
+    task_id: &str,
+    device: [u8; 32],
+) -> NativeWorkspaceOwner {
+    let receipt = joined
+        .owner
+        .commit_workspace_task_command(approval.clone(), joined.now)
+        .unwrap();
+    receipt.validate_for(approval).unwrap();
+    let bytes = std::fs::read(&joined.path).unwrap();
+    let reopened = open_file(&joined.path).unwrap();
+    reopened
+        .commit_workspace_task_command(approval.clone(), joined.now)
+        .unwrap()
+        .validate_for(approval)
+        .unwrap();
+    assert_eq!(std::fs::read(&joined.path).unwrap(), bytes);
+    let state = reopened.workspace_task_snapshot(joined.room).unwrap();
+    let run = state.controls[task_id].active_run.as_ref().unwrap();
+    assert_eq!(run.epoch, 1);
+    assert_eq!(run.approval.as_ref().unwrap().device, device);
+    assert_eq!(
+        state.tasks[0].audit.last().unwrap().actor,
+        run.approval.as_ref().unwrap().person
+    );
+    reopened
+}
+
+#[test]
+fn owner_file_holds_byte_fields_as_compact_base64() {
+    let joined = enrolled();
+    let current = std::fs::read(&joined.path).unwrap();
+    assert!(!current.contains(&b'\n'), "the owner file is compact");
+    let value: serde_json::Value = serde_json::from_slice(&current).unwrap();
+    let room = &value["rooms"][joined.room.to_string()];
+    for field in ["peer", "invitation", "enrollment_intent"] {
+        assert!(room[field].is_string(), "{field} is base64 text");
+    }
+}
+
+#[test]
+fn retained_replay_reuses_exact_committed_publication() {
+    let joined = enrolled();
+    let governor = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.governor().device_public_key))
+        .unwrap();
+    let message = joined.replay.clone();
+    let before = std::fs::read(&joined.path).unwrap();
+    let generation = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.generation()))
+        .unwrap();
+    let report = joined
+        .owner
+        .receive(
+            joined.room,
+            TransportOrigin::RetainedRelayDelta(governor),
+            message,
+            joined.now,
+        )
+        .unwrap();
+    assert!(matches!(
+        report.primary(),
+        tilo_peer_state::InputDisposition::Duplicate(_)
+    ));
+    assert_eq!(
+        joined
+            .owner
+            .with_current(joined.room, |view| Ok(view.generation()))
+            .unwrap(),
+        generation,
+        "an unchanged authenticated replay must reuse the actual committed generation"
+    );
+    assert_eq!(
+        std::fs::read(&joined.path).unwrap(),
+        before,
+        "an unchanged authenticated replay must not rewrite durable owner state"
+    );
+}
+
+#[test]
+fn encrypted_committed_history_reads_through_held_keys_without_mutating_the_owner() {
+    let joined = enrolled();
+    let reader = member().verifying_key().to_bytes();
+    let (keys, _) = rotated_channel();
+    commit_sealed(&joined, &keys);
+    let before = std::fs::read(&joined.path).unwrap();
+    let mut decryptions = 0;
+    let mut opener = |op: &collab_types::SignedOp| {
+        decryptions += 1;
+        let ciphertext = collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
+        keys.open_content(
+            op.artifact,
+            &op.encryption.ok_or("not sealed")?,
+            &ciphertext,
+        )
+        .map(|bytes| bytes.to_vec())
+        .map_err(|error| error.to_string())
+    };
+    let captured = joined
+        .owner
+        .with_current(joined.room, |view| {
+            assert!(
+                view.read_document(reader, APP, "", None, 1024 * 1024, joined.now)
+                    .is_err(),
+                "the plaintext-only door must retain its encrypted refusal"
+            );
+            assert!(
+                view.read_document_with_history(
+                    [0x77; 32],
+                    (APP, ""),
+                    None,
+                    1024 * 1024,
+                    joined.now,
+                    &mut opener
+                )
+                .is_err(),
+                "a stranger cannot open history"
+            );
+            view.read_document_with_history(
+                reader,
+                (APP, ""),
+                None,
+                1024 * 1024,
+                joined.now,
+                &mut opener,
+            )
+        })
+        .unwrap();
+    let DocumentRead::Captured(captured) = captured else {
+        panic!("a first encrypted read captures history");
+    };
+    assert_eq!(
+        decryptions, 1,
+        "only the admitted member's read opens the write"
+    );
+    let doc = AutoCommit::load(&captured.bytes).unwrap();
+    assert_eq!(
+        doc.get(ROOT, "topic")
+            .unwrap()
+            .unwrap()
+            .0
+            .into_string()
+            .unwrap(),
+        SECRET
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+    let path = joined.path.clone();
+    let room = joined.room;
+    let now = joined.now;
+    drop(joined.owner);
+    let reopened = open_file(&path).unwrap();
+    assert!(matches!(reopened.with_current(room, |view| {
+        view.read_document_with_history(reader, (APP, ""), Some(captured.revision),
+            1024 * 1024, now, &mut |op| {
+                keys.open_content(op.artifact, &op.encryption.ok_or("not sealed")?,
+                    &collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?)
+                    .map(|bytes| bytes.to_vec()).map_err(|error| error.to_string())
+            })
+    }).unwrap(), DocumentRead::Unchanged(revision) if revision == captured.revision));
+    assert_eq!(std::fs::read(&path).unwrap(), before);
 }

@@ -1,0 +1,9 @@
+# The spacing ratchet for apps-video-editor: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/video-editor/src/app.rs pixel_const 33
+apps/video-editor/src/app/paint.rs pixel_const 2
+apps/video-editor/src/audio.rs pixel_const 1
+apps/video-editor/src/model.rs pixel_const 4
+apps/video-editor/src/presence.rs pixel_const 2
+apps/video-editor/src/probe.rs pixel_const 1

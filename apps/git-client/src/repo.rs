@@ -54,6 +54,10 @@ pub fn load(path: &Path) -> Option<(RepoModel, DiffMap)> {
     read_tags(&repo, &mut model);
     read_stashes(&repo, &mut model);
     read_remotes(&repo, &mut model);
+    match list_worktrees(path) {
+        Ok(worktrees) => model.worktrees = worktrees,
+        Err(error) => model.worktree_error = Some(format!("{error:#}")),
+    }
 
     let layout = crate::graph::layout(&mut model.commits);
     model.graph_width = layout.lanes;
@@ -477,7 +481,7 @@ fn short_id(full: &str) -> String {
 
 /// Coarse relative time string (e.g. "3 hr ago") against the current clock.
 fn relative_time(seconds: i64) -> String {
-    ui::format::relative(chrono::Utc::now().timestamp().saturating_sub(seconds))
+    ui::format::relative(ui::clock::local_now().timestamp().saturating_sub(seconds))
 }
 
 // =====================================================================
@@ -1103,4 +1107,105 @@ pub fn tree_has_path(path: &Path, rev: &str, file: &str) -> anyhow::Result<bool>
         return Ok(entry.kind() == Some(ObjectType::Blob));
     }
     Ok(false)
+}
+
+/// Read all working directories, failing if any registered directory cannot be read.
+/// The main checkout is included even when called from a linked worktree.
+///
+/// # Errors
+/// Returns an error if the repository or any registered checkout cannot be read.
+pub fn list_worktrees(path: &Path) -> anyhow::Result<Vec<crate::model::Worktree>> {
+    let current = Repository::discover(path)?;
+    let repo = Repository::open(current.commondir())?;
+    let current_path = current
+        .workdir()
+        .context("repository has no working directory")?
+        .canonicalize()?;
+    let describe = |repo: &Repository, name: String| -> anyhow::Result<crate::model::Worktree> {
+        let path = repo
+            .workdir()
+            .context("worktree has no working directory")?
+            .canonicalize()?;
+        let head = repo.head()?;
+        Ok(crate::model::Worktree {
+            name,
+            current: path == current_path,
+            path: path.to_string_lossy().into_owned(),
+            head: head.shorthand()?.to_owned(),
+        })
+    };
+    // An unborn main checkout still has a valid working directory.
+    let mut rows = if matches!(repo.head(), Err(error) if error.code() == git2::ErrorCode::UnbornBranch)
+    {
+        let path = repo
+            .workdir()
+            .context("repository has no working directory")?
+            .canonicalize()?;
+        vec![crate::model::Worktree {
+            name: "main".into(),
+            current: path == current_path,
+            path: path.to_string_lossy().into_owned(),
+            head: repo
+                .find_reference("HEAD")?
+                .symbolic_target()?
+                .unwrap_or("HEAD")
+                .trim_start_matches("refs/heads/")
+                .to_owned(),
+        }]
+    } else {
+        vec![describe(&repo, "main".into())?]
+    };
+    for name in &repo.worktrees()? {
+        let name = name?.context("worktree name is not UTF-8")?;
+        let worktree = repo.find_worktree(name)?;
+        worktree.validate()?;
+        rows.push(describe(
+            &Repository::open_from_worktree(&worktree)?,
+            name.into(),
+        )?);
+    }
+    rows.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(rows)
+}
+
+/// Create a new branch and linked checkout at an explicitly chosen revision.
+/// Never overwrite a branch or an existing path, and never switch the caller's HEAD.
+///
+/// # Errors
+/// Invalid paths, branches or revisions fail. If checkout creation fails after
+/// creating its branch, that branch is retained and the error states this.
+pub fn create_worktree(
+    path: &Path,
+    destination: &Path,
+    branch: &str,
+    start: &str,
+) -> anyhow::Result<()> {
+    if !destination.is_absolute() {
+        bail!("worktree destination must be an absolute path");
+    }
+    if destination.symlink_metadata().is_ok() {
+        bail!("worktree destination already exists");
+    }
+    let parent = destination
+        .parent()
+        .context("worktree destination has no parent")?;
+    if !parent.is_dir() {
+        bail!("worktree destination parent must exist");
+    }
+    if branch.trim().is_empty() || start.trim().is_empty() {
+        bail!("branch and start point must not be empty");
+    }
+    let current = Repository::discover(path)?;
+    let repo = Repository::open(current.commondir())?;
+    let commit_id = current.revparse_single(start)?.peel_to_commit()?.id();
+    let commit = repo.find_commit(commit_id)?;
+    let new_branch = repo.branch(branch, &commit, false)?;
+    // A safe administrative name independent of slashes in the branch name.
+    let worktree_name = format!("tilo-{}", hex::encode(branch.as_bytes()));
+    let mut options = git2::WorktreeAddOptions::new();
+    options.reference(Some(new_branch.get()));
+    if let Err(error) = repo.worktree(&worktree_name, destination, Some(&options)) {
+        bail!("worktree creation failed: {error}; newly created branch {branch} was retained");
+    }
+    Ok(())
 }

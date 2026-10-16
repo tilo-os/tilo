@@ -6,53 +6,41 @@
 
 [apps.agent]
 D1 = 3
-D2 = 15
-
-[apps.api-tester]
-D2 = 2
+D2 = 8
 
 [apps.backups]
 D1 = 1
 D2 = 2
-R3 = 1
 
 [apps.browser]
-D1 = 3
-D2 = 6
-
-[apps.calculator]
-D2 = 1
+D1 = 2
+D2 = 4
 
 [apps.calendar]
-D2 = 7
+D2 = 6
 
 [apps.camera]
 D1 = 1
-D2 = 5
+D2 = 4
+
+[apps.canvas]
+D1 = 1
+D2 = 2
 
 [apps.chat]
 D1 = 1
 D2 = 8
-
-[apps.clocks]
-D2 = 1
 
 [apps.code-editor]
 D1 = 1
 D2 = 4
 
 [apps.contacts]
-D2 = 3
+D2 = 2
 
 [apps.containers]
 D1 = 2
-D2 = 4
-
-[apps.db-client]
-D2 = 2
-
-[apps.diffmerge]
-D2 = 2
+D2 = 3
 
 [apps.disks]
 D1 = 2
@@ -60,38 +48,28 @@ D2 = 3
 
 [apps.ebook]
 D1 = 1
-D2 = 7
-
-[apps.feeds]
-D2 = 2
+D2 = 6
 
 [apps.file-explorer]
-D1 = 3
-D2 = 12
-R1 = 1
+D1 = 2
+D2 = 10
 R3 = 3
 
 [apps.firewall]
 D1 = 1
-D2 = 3
+D2 = 2
 
 [apps.git-client]
 D1 = 1
 D2 = 3
 
-[apps.hex-editor]
-D2 = 1
-
-[apps.image-editor]
-D2 = 2
-
 [apps.imager]
-D1 = 7
-D2 = 10
-R1 = 305
-R2 = 207
-R3 = 55
-R4 = 27
+D1 = 6
+D2 = 9
+R1 = 302
+R2 = 197
+R3 = 54
+R4 = 22
 
 [apps.logs]
 D1 = 1
@@ -101,19 +79,16 @@ D2 = 2
 D1 = 1
 D2 = 9
 
-[apps.maps]
-D2 = 2
-
 [apps.monitor]
 D1 = 2
-D2 = 2
+D2 = 1
 
 [apps.music]
 D2 = 3
 
 [apps.notes]
-D1 = 3
-D2 = 9
+D1 = 1
+D2 = 6
 
 [apps.osk]
 D1 = 3
@@ -130,86 +105,70 @@ D2 = 5
 
 [apps.photos]
 D1 = 1
-D2 = 8
+D2 = 7
 
 [apps.print-centre]
-D1 = 1
-D2 = 6
+D2 = 4
 
 [apps.publisher]
 D2 = 2
 
 [apps.remote]
-D1 = 2
-D2 = 6
+D1 = 1
+D2 = 3
 
 [apps.settings]
 D1 = 4
-D2 = 19
+D2 = 18
 
 [apps.sheets]
-D2 = 4
+D2 = 3
 
 [apps.shortcuts]
 D2 = 2
 
 [apps.slides]
 D1 = 1
-D2 = 8
-
-[apps.snippets]
-D2 = 2
+D2 = 7
 
 [apps.store]
-D1 = 2
-D2 = 8
+D1 = 1
+D2 = 5
 
 [apps.terminal]
-D1 = 5
-D2 = 5
-R1 = 53
-R2 = 58
+D1 = 4
+D2 = 3
+R1 = 41
+R2 = 16
 R3 = 3
 
-[apps.themes]
-D2 = 2
+[apps.thumbnails]
+D2 = 1
 
 [apps.totp]
-D2 = 3
+D2 = 1
 
 [apps.tube]
-D1 = 2
-D2 = 4
-
-[apps.typst-editor]
+D1 = 1
 D2 = 2
 
 [apps.video-editor]
 D2 = 3
 
-[apps.video-player]
-D2 = 3
-
 [apps.vpn]
 D1 = 1
-D2 = 4
+D2 = 2
 
 [apps.weather]
-D2 = 2
+D2 = 1
 
 [apps.windows]
 D1 = 2
 D2 = 4
 
 [apps.word-processor]
-D1 = 2
-D2 = 11
-
-[sdk.tilo-app-state]
-R1 = 9
-W1 = 1
-W2 = 3
-W3 = 7
+D1 = 1
+D2 = 10
 
 [sdk.settings-store]
 W3 = 11
@@ -217,12 +176,18 @@ W3 = 11
 [sdk.tilo-app]
 R1 = 24
 
+[sdk.tilo-app-state]
+R1 = 9
+W1 = 1
+W2 = 3
+W3 = 7
+
 [sdk.tilo-host]
 R1 = 18
 W3 = 11
 
 [sdk.tilo-ui]
-R1 = 321
-W1 = 21
+R1 = 251
+W1 = 14
 W2 = 2
-W3 = 80
+W3 = 57

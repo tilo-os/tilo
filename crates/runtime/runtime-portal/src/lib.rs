@@ -13,27 +13,21 @@
 //!   on top of the bootstrap returned here.
 //! - [`NotAvailable`] — the single error type service clients surface when
 //!   the platform can't provide the requested service.
+//! - [`tools`] — typed requests asking the shell to open a tool, such as
+//!   Terminal in a directory.
 //!
 //! Tilo apps must also run as Flatpaks on stock Linux, where there is no
 //! service connection: every client returns
 //! [`NotAvailable::ServiceFdMissing`] rather than panicking, and the app is
 //! expected to fall back to a local-only mode.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::string_slice,
-        clippy::panic,
-        clippy::unreachable,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod agent_transport;
 pub mod local_socket;
+pub mod pending_connection;
+pub mod process_binding;
+pub mod runtime_request;
+pub mod service_socket;
+pub mod tools;
 
 use std::env;
 use std::io;
@@ -42,15 +36,13 @@ use std::io;
 use std::os::fd::BorrowedFd;
 #[cfg(unix)]
 pub use std::os::fd::RawFd;
-#[cfg(all(unix, feature = "rpc"))]
+#[cfg(unix)]
 use std::os::fd::{FromRawFd, OwnedFd};
 /// Placeholder descriptor type on hosts that cannot receive Tilo Unix-socket
 /// service descriptors. Service discovery always returns `None` there.
 #[cfg(not(unix))]
 pub type RawFd = i32;
 
-#[cfg(feature = "rpc")]
-use capnp::capability::Promise;
 #[cfg(feature = "rpc")]
 use capnp_rpc::twoparty;
 #[cfg(feature = "rpc")]
@@ -59,6 +51,8 @@ use capnp_rpc::{RpcSystem, rpc_twoparty_capnp};
 use rustix::io::fcntl_getfd;
 #[cfg(all(unix, feature = "rpc"))]
 use rustix::io::{FdFlags, fcntl_setfd};
+#[cfg(test)]
+use tilo_lock::RwLockRecover as _;
 #[cfg(all(unix, feature = "rpc"))]
 use tokio::net::UnixStream;
 #[cfg(feature = "rpc")]
@@ -168,15 +162,8 @@ impl CapnpClient {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
     {
-        let (read_half, write_half) = tokio::io::split(stream);
-        let network = Box::new(twoparty::VatNetwork::new(
-            read_half.compat(),
-            write_half.compat_write(),
-            side,
-            capnp::message::ReaderOptions::default(),
-        ));
         Self {
-            rpc_system: RpcSystem::new(network, None),
+            rpc_system: rpc_system(stream, side, None),
             bootstrap_side: match side {
                 rpc_twoparty_capnp::Side::Client => rpc_twoparty_capnp::Side::Server,
                 rpc_twoparty_capnp::Side::Server => rpc_twoparty_capnp::Side::Client,
@@ -243,6 +230,42 @@ impl CapnpClient {
         });
         client
     }
+}
+
+#[cfg(feature = "rpc")]
+/// Serve `bootstrap` as the root capability to the peer on an owned,
+/// already-connected transport; the server-side counterpart of
+/// [`CapnpClient::from_connected_io`]. The returned system is the connection's
+/// driver: await or `spawn_local` it, and it resolves when the peer hangs up.
+pub fn serve_connected_io<S>(
+    stream: S,
+    bootstrap: capnp::capability::Client,
+) -> RpcSystem<rpc_twoparty_capnp::Side>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+{
+    rpc_system(stream, rpc_twoparty_capnp::Side::Server, Some(bootstrap))
+}
+
+#[cfg(feature = "rpc")]
+fn rpc_system<S>(
+    stream: S,
+    side: rpc_twoparty_capnp::Side,
+    bootstrap: Option<capnp::capability::Client>,
+) -> RpcSystem<rpc_twoparty_capnp::Side>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
+{
+    // Buffered: a message is a segment table plus segments, which would
+    // otherwise be one syscall each. The protocol flushes after every message.
+    let (read_half, write_half) = tokio::io::split(stream);
+    let network = Box::new(twoparty::VatNetwork::new(
+        tokio::io::BufReader::new(read_half).compat(),
+        tokio::io::BufWriter::new(write_half).compat_write(),
+        side,
+        capnp::message::ReaderOptions::default(),
+    ));
+    RpcSystem::new(network, bootstrap)
 }
 
 #[cfg(feature = "rpc")]
@@ -319,11 +342,6 @@ where
     Ok(client.bootstrap::<C>())
 }
 
-#[cfg(feature = "rpc")]
-/// `Promise` made return-friendly for `Result<_, capnp::Error>`, so wrappers
-/// can write `let p: Promise<_, _> = ...` without importing capnp.
-pub type RpcPromise<T> = Promise<T, capnp::Error>;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +407,31 @@ mod tests {
 
 #[cfg(unix)]
 pub mod fd_transport;
+
+/// A child forked between a descriptor's creation and its `exec` holds a copy of
+/// that descriptor until the `exec` closes it (every descriptor here is
+/// close-on-exec), so a test that waits for the last copy of one to close can
+/// find a sibling test's child still holding it. Tests that spawn a child hold
+/// the shared side of this lock for the spawn ([`spawning`]); tests that watch
+/// for a leaked descriptor hold the exclusive side ([`no_spawns`]), so no
+/// child is in that window while they look.
+#[cfg(test)]
+static CHILD_SPAWNS: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// Held by a test while it spawns a child process.
+#[cfg(test)]
+pub(crate) fn spawning() -> std::sync::RwLockReadGuard<'static, ()> {
+    CHILD_SPAWNS.read_recover()
+}
+
+/// Held by a test that checks a descriptor was closed, so that no sibling test
+/// has a child between its fork and its exec meanwhile.
+#[cfg(test)]
+pub(crate) fn no_spawns() -> std::sync::RwLockWriteGuard<'static, ()> {
+    CHILD_SPAWNS.write_recover()
+}
+
+pub mod editor;
 
 #[cfg(all(unix, feature = "rpc"))]
 mod shared;

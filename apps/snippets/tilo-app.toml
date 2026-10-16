@@ -24,6 +24,9 @@ aarch64 = "aarch64"
 [capabilities]
 optional = ["clipboard"]
 
+[resources]
+kinds = ["snippets.library"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
@@ -54,7 +57,6 @@ mode = "off"
 [sandbox.services]
 collab = "optional@1"
 tilo-fs = "optional@1"
-spellcheck = "optional@1"
 
 [entrypoint]
 bin             = "bin/snippets"

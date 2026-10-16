@@ -6,7 +6,7 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::Key;
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -20,6 +20,7 @@ use tilo_desktop::drill_in::{
     CONTROL_INSET, DrillInList, GLYPH, LIST_TOP, STATUS_DOT, trailing_dot_center,
     trailing_status_glyph,
 };
+use ui::widget::ButtonRole;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BluetoothOutcome {
@@ -191,23 +192,12 @@ impl QuickSettingsBluetoothPane {
         devices: &mut [BtDevice],
         actions: &dyn QsActions,
     ) -> Option<BluetoothOutcome> {
-        match logical_key {
-            Key::Named(NamedKey::Tab) => {
+        match super::PaneKey::of(logical_key, backwards)? {
+            super::PaneKey::Focus(backwards) => {
                 self.focus_next(panel, devices, backwards);
                 Some(BluetoothOutcome::None)
             }
-            Key::Named(NamedKey::ArrowUp | NamedKey::ArrowLeft) => {
-                self.focus_next(panel, devices, true);
-                Some(BluetoothOutcome::None)
-            }
-            Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight) => {
-                self.focus_next(panel, devices, false);
-                Some(BluetoothOutcome::None)
-            }
-            Key::Named(NamedKey::Enter | NamedKey::Space) => {
-                Some(self.activate_focused(panel, devices, actions))
-            }
-            _ => None,
+            super::PaneKey::Activate => Some(self.activate_focused(panel, devices, actions)),
         }
     }
 
@@ -274,7 +264,7 @@ impl QuickSettingsBluetoothPane {
                 text,
                 theme,
                 &ButtonFace::new(Self::back_rect(panel), "")
-                    .ghost()
+                    .role(ButtonRole::Plain)
                     .icon(ui::icons::Icon::ChevronLeft)
                     .focused(true)
                     .accessible_name(&t("qs-back")),
@@ -302,6 +292,7 @@ impl QuickSettingsBluetoothPane {
                 cursor,
                 72.0,
                 &device.name,
+                None,
             );
             if self.keyboard_focus == Some(Self::DEVICE_FOCUS_START.saturating_add(index)) {
                 Button::paint(
@@ -310,7 +301,7 @@ impl QuickSettingsBluetoothPane {
                     text,
                     theme,
                     &ButtonFace::new(*row, "")
-                        .ghost()
+                        .role(ButtonRole::Plain)
                         .focused(true)
                         .accessible_name(&device.name),
                 );
@@ -348,7 +339,7 @@ impl QuickSettingsBluetoothPane {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    colors.accent[5],
+                    colors.intent.inverted,
                     None,
                     &Circle::new(trailing_dot_center(*row, CONTROL_INSET), STATUS_DOT / 2.0),
                 );

@@ -14,9 +14,12 @@
 #   TILO_HEADLESS_PROFILE  directory to keep a scratch profile in across
 #                          runs. Unset, each run gets a fresh one that is
 #                          removed when the compositor exits.
+#   TILO_HEADLESS_BINARY   the compositor to run (default target/debug/shell).
+#                          A release build serves the control socket only
+#                          when built with `--features dev-overrides`.
 #
 # Behaviour:
-#   - Runs against a scratch profile: the four XDG homes, the device
+#   - Runs against a scratch profile: HOME, the four XDG homes, the device
 #     identity root (TILO_IDENTITY_ROOT) and the filesystem daemon's
 #     handoff directories all point inside it, so the compositor never
 #     reads or writes your real identity, settings or workspaces, nor
@@ -26,7 +29,7 @@
 #     compositor still answers on — that is someone's session.
 #   - Sets TILO_TEST_CONTROL to the socket path.
 #   - Unsets DISPLAY + WAYLAND_DISPLAY so the binary boots truly headless.
-#   - Runs ./target/debug/shell --backend headless.
+#   - Runs ./target/debug/shell (or $TILO_HEADLESS_BINARY) --backend headless.
 #   - Prints "PROFILE <dir>" to stderr and "READY <socket>" to stdout once
 #     usable; exits non-zero on timeout (the compositor's logs go to
 #     stderr so callers can grep them).
@@ -42,7 +45,22 @@
 set -euo pipefail
 
 SOCKET="${1:-${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is unset; pass a socket path in a private directory}/tilo-session/test-control.sock}"
-BINARY="$(dirname "$0")/../../target/debug/shell"
+# Linux sockaddr_un.sun_path holds 108 bytes including the terminating NUL.
+# Reject an unusable address before provisioning a profile or booting a server.
+python3 - "$SOCKET" <<'EOF'
+import os
+import sys
+
+size = len(os.fsencode(sys.argv[1]))
+if size > 107:
+    print(
+        f"FAIL: control socket path is {size} bytes; Linux Unix sockets allow at most 107. "
+        "Choose a shorter path inside a private runtime directory.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+EOF
+BINARY="${TILO_HEADLESS_BINARY:-$(dirname "$0")/../../target/debug/shell}"
 TIMEOUT="${TILO_HEADLESS_TIMEOUT:-60}"
 
 if ! [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
@@ -73,8 +91,13 @@ case "$REAL_CONFIG/" in
         exit 1
         ;;
 esac
-mkdir -p -m 700 -- "$PROFILE"/{config,data,state,cache,identity,system/run,system/fs-cache,system/peer-cache}
+mkdir -p -m 700 -- "$PROFILE"/{config,data,state,cache,home,identity,system/run,system/fs-cache,system/peer-cache}
 chmod 700 -- "$PROFILE"
+REAL_HOME="$(realpath -m -- "$HOME")"
+if [ "$(realpath -m -- "$PROFILE/home")" = "$REAL_HOME" ]; then
+    echo "FAIL: profile $PROFILE/home is your real HOME ($REAL_HOME)" >&2
+    exit 1
+fi
 echo "PROFILE $PROFILE" >&2
 
 if [ -S "$SOCKET" ]; then
@@ -109,13 +132,13 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 TILO_TEST_CONTROL="$SOCKET" \
+    HOME="$PROFILE/home" \
     XDG_CONFIG_HOME="$PROFILE/config" \
     XDG_DATA_HOME="$PROFILE/data" \
     XDG_STATE_HOME="$PROFILE/state" \
     XDG_CACHE_HOME="$PROFILE/cache" \
     TILO_IDENTITY_ROOT="$PROFILE/identity" \
     TILO_AUTHORITY_SOCKET_DIR="$PROFILE/system/run" \
-    TILO_FS_AUTHORITY_CACHE_DIR="$PROFILE/system/fs-cache" \
     TILO_FS_CONTENT_PEER_CACHE_DIR="$PROFILE/system/peer-cache" \
     env -u DISPLAY -u WAYLAND_DISPLAY \
     "$BINARY" --backend headless &

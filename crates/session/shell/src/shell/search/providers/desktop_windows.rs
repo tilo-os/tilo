@@ -21,7 +21,7 @@ use crate::shell::state::{GroupId, StripId, TabId, WorkspaceId};
 
 fn close_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
-        permission: tilo_actions::PermissionRequirement::Write,
+        kind: tilo_actions::ActionKind::Undoable,
         risk: tilo_actions::RiskLevel::Low,
         retry: tilo_actions::RetryPolicy::Idempotent,
         tags: vec!["desktop".into(), "window".into(), "close".into()],
@@ -31,7 +31,7 @@ fn close_contract() -> tilo_actions::ActionContract {
 
 fn move_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
-        permission: tilo_actions::PermissionRequirement::Write,
+        kind: tilo_actions::ActionKind::Undoable,
         risk: tilo_actions::RiskLevel::Low,
         retry: tilo_actions::RetryPolicy::AtMostOnce,
         tags: vec!["desktop".into(), "window".into(), "move".into()],
@@ -144,7 +144,7 @@ fn close_group(chrome: &Chrome, group_id: GroupId) -> Result<(), ActionError> {
             .map_err(|_| refused(tab))?;
     }
     if let Some(entry) = closed {
-        chrome.borrow_mut().remember_closed_tab(entry);
+        chrome.borrow_mut().remember_closed_tab_after_removal(entry);
     }
     Ok(())
 }
@@ -184,6 +184,7 @@ fn invoke(chrome: &Chrome, action: WindowAction) -> Result<(), ActionError> {
 fn result(row: WindowRow, score: i32) -> SearchResult {
     let action = row.action;
     SearchResult {
+        shortcut: None,
         kind: match row.kind {
             WindowRowKind::Tab => ResourceKind::Tab,
             WindowRowKind::WindowGroup => ResourceKind::WindowGroup,
@@ -275,6 +276,19 @@ impl SearchProvider for DesktopWindowsProvider {
         crate::shell::search::rank_rows(&self.ranker, ctx.needle, rows, &names)
     }
 
+    /// An address is looked up in the whole topology. The empty query's
+    /// first page holds [`ui::search::SearchBudget::PALETTE`] rows, fewer
+    /// than a long session has window actions, so resolving through it left
+    /// `group.close` for the focused window `unknown_action` (A07).
+    fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        let tree = ctx.chrome.tree();
+        let rows = window_rows(&tree.desktop, id);
+        drop(tree);
+        rows.into_iter()
+            .find(|row| row.id == id)
+            .map(|row| result(row, self.max_score()))
+    }
+
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
         let tree = ctx.chrome.tree();
         let revision = window_rows_revision(&tree.desktop);
@@ -288,9 +302,10 @@ mod tests {
     use super::*;
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
-    use crate::shell::search::{SearchRegistry, SearchScope};
+    use crate::shell::search::{SearchProvider, SearchRegistry, SearchScope};
     use crate::shell::state::{FreshId as _, Tab, TileContent, WindowGroup, WindowWidth};
     use automerge::{AutoCommit, ROOT};
+    use tilo_desktop::search::window_row_tile;
 
     fn fixture() -> (Chrome, AutoCommit) {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
@@ -318,6 +333,7 @@ mod tests {
                 active_tab: 2,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             },
             WindowGroup {
                 id: 200,
@@ -332,6 +348,7 @@ mod tests {
                 active_tab: 3,
                 width: WindowWidth::Normal,
                 maximized: false,
+                focus_history: Vec::new(),
             },
         ];
         tree.seed_doc_from_cache();
@@ -410,9 +427,13 @@ mod tests {
             catalog
                 .select(&ResourceRef::new(WINDOWS_PROVIDER_ID, "tab.close:200:3"))
                 .expect("exact live tab action")
-                .invoke(&mut doc, &ROOT, &chrome, [])
+                .invoke(&mut ui::widget::Edits::lend(&mut doc), &ROOT, &chrome, [])
                 .expect("close accepted");
 
+            crate::shell::tab_binding::close_tab_for_destroyed_surface_and_persist(
+                &mut chrome.borrow_mut().tree_mut(),
+                503,
+            );
             let mut state = chrome.borrow_mut();
             let tree = state.tree();
             let ids = tree.desktop.workspaces[0].strips[0]
@@ -507,7 +528,13 @@ mod tests {
         assert_eq!(ids, ["tab.focus:100:1", "tab.focus:200:3"]);
 
         // Enter on the unfocused row brings that window forward, as a click would.
-        (go.on_open)(&mut doc, &ROOT, &chrome, &ActionArgs::none()).expect("focused");
+        (go.on_open)(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &ROOT,
+            &chrome,
+            &ActionArgs::none(),
+        )
+        .expect("focused");
         let (active_group, active_tab) = {
             let state = chrome.borrow();
             let tree = state.tree();
@@ -620,7 +647,11 @@ mod tests {
         // An agent asking with nobody at the desktop to agree gets a refusal,
         // and nothing moves.
         chrome.borrow_mut().window_transfers.set_attended(|| false);
-        assert!(action.invoke(&mut doc, &ROOT, &chrome, []).is_err());
+        assert!(
+            action
+                .invoke(&mut ui::widget::Edits::lend(&mut doc), &ROOT, &chrome, [])
+                .is_err()
+        );
         assert_eq!(tabs_in(&chrome, 1), []);
 
         // With someone there, the sheet asks first. This window keeps its
@@ -637,7 +668,7 @@ mod tests {
                 .set_data_home(profiles.path().to_path_buf());
         }
         action
-            .invoke(&mut doc, &ROOT, &chrome, [])
+            .invoke(&mut ui::widget::Edits::lend(&mut doc), &ROOT, &chrome, [])
             .expect("the sheet is up");
         assert_eq!(tabs_in(&chrome, 1), [], "nothing changes before the answer");
         let mut sheet = crate::shell::portal_dialog::PortalDialogController::new(queue);
@@ -742,6 +773,10 @@ mod tests {
         );
         assert!(rows.iter().any(|row| row.id == "room.activity.open"));
         assert!(
+            rows.iter().any(|row| row.id == "shortcut-help.toggle"),
+            "help stays on the empty palette even when it is last in the catalogue"
+        );
+        assert!(
             groups
                 .iter()
                 .all(|group| group.total == group.results.len())
@@ -785,6 +820,127 @@ mod tests {
                     .count()
                     == 40,
             "agents still enumerate every action and app"
+        );
+    }
+
+    #[test]
+    fn every_window_row_resolves_to_the_tile_whose_face_it_wears() {
+        let (chrome, _doc) = fixture();
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let rows = window_rows(&tree.desktop, "");
+        assert!(
+            !rows.is_empty(),
+            "the fixture must offer window rows to resolve"
+        );
+        for row in &rows {
+            let tile = window_row_tile(&tree.desktop, &row.id)
+                .unwrap_or_else(|| panic!("{} must resolve to the tile it wears", row.id));
+            let app = match tile {
+                TileContent::Foreign { app_id, .. }
+                | TileContent::LocalApp { app_id, .. }
+                | TileContent::PeerWindow { app_id, .. }
+                | TileContent::HostedWindow { app_id, .. } => app_id.as_str(),
+                other => panic!("{} wore a tile with no app face: {other:?}", row.id),
+            };
+            let expected = if row.id.contains(":100:2") || row.id == "group.close:100" {
+                "com.openai.ChatGPT"
+            } else if row.id.contains(":100:1")
+                || row.id.contains(":200:3")
+                || row.id == "group.close:200"
+            {
+                "com.google.Chrome"
+            } else {
+                panic!("unexpected window row {}", row.id);
+            };
+            assert_eq!(
+                app, expected,
+                "{} must wear the same face as its tab or group",
+                row.id
+            );
+        }
+        assert!(
+            window_row_tile(&tree.desktop, "tab.focus:100:1").is_some(),
+            "an address still resolves when it is not in this listing"
+        );
+        assert!(
+            window_row_tile(&tree.desktop, "no-such-row").is_none(),
+            "an unknown address has no face"
+        );
+        drop(tree);
+    }
+
+    fn many_groups(count: usize, focused: u64) -> (Chrome, AutoCommit) {
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        tree.desktop.workspaces[0].strips[0].window_groups = (1..=count)
+            .map(|i| {
+                let gid = u64::try_from(i).unwrap_or(1);
+                WindowGroup {
+                    id: gid,
+                    tabs: vec![Tab {
+                        id: gid,
+                        title: format!("Win {i}"),
+                        tile: TileContent::Foreign {
+                            app_id: format!("app.{i}"),
+                            surface_id: 500_u64.saturating_add(gid),
+                        },
+                    }],
+                    active_tab: gid,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                    focus_history: Vec::new(),
+                }
+            })
+            .collect();
+        let strip = tree.desktop.workspaces[0].strips[0].id;
+        tree.desktop.set_active_group(strip, focused);
+        tree.seed_doc_from_cache();
+        (ChromeState::new(tree), AutoCommit::new())
+    }
+
+    #[test]
+    fn invoke_resolves_the_focused_groups_close_when_the_listing_is_truncated() {
+        let count = crate::shell::search::SearchBudget::PALETTE.max_results;
+        let focused = u64::try_from(count).unwrap_or(1);
+        let (chrome, doc) = many_groups(count, focused);
+        let id = format!("group.close:{focused}");
+        let catalog = {
+            let state = chrome.borrow();
+            ActionCatalog::build_for_resource(
+                &registry(),
+                &ResourceRef::new(WINDOWS_PROVIDER_ID, &id),
+                SearchScope::All,
+                None,
+                &state,
+                &doc,
+                &ROOT,
+                &AllVisible,
+            )
+        };
+        assert!(
+            catalog
+                .select(&ResourceRef::new(WINDOWS_PROVIDER_ID, &id))
+                .is_some(),
+            "A07 invoke uses build_for_resource, not the PALETTE page"
+        );
+        let state = chrome.borrow();
+        let page = DesktopWindowsProvider::new().query_page(
+            crate::shell::search::SearchContext {
+                query_scope: None,
+                include_programmatic: false,
+                needle: "",
+                wanted: KINDS.as_slice(),
+                chrome: &state,
+                doc: &doc,
+                doc_root: &ROOT,
+            },
+            None,
+            crate::shell::search::SearchBudget::PALETTE,
+        );
+        assert!(
+            page.results.iter().any(|row| row.id == id),
+            "the focused group's close stays on the empty page: {:?}",
+            page.results.iter().map(|row| &row.id).collect::<Vec<_>>()
         );
     }
 }

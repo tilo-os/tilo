@@ -8,26 +8,23 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use ui::a11y::Politeness;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::tokens::typography::TextRole;
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
 use ui::widget::NumberInput;
 use ui::widget::{
-    Button, Card, Column, Container, Row, Scrollable, Spacer, Text, TextInput, Widget,
+    Button, ButtonRole, Column, Container, ControlSize, ListRow, Row, Section, SectionHeader,
+    Spacer, Text, ToggleGroup, Widget, toggle_group::Segment,
 };
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Fill;
-use winit::event::WindowEvent;
 
-use super::controller::{FolderDestination, SetupController, SetupPage};
+use super::actions::SetupEffect;
+use super::controller::{SetupController, SetupPage};
 use super::desktop_catalog::{DesktopRelease, PackageFormat, RuntimeEvidence};
 use super::desktop_flow::{DesktopFailureKind, DesktopFlow, DesktopFlowState, DesktopSelection};
 use super::folders::{self, FolderScan, SkipReason, SkippedEntry};
@@ -42,16 +39,21 @@ use super::known_folders::{self, KnownFolder, KnownFolderKind};
 use super::model::{Capabilities, Experience, FolderMode, HostOs};
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
 use super::staging::helper::Action as HelperAction;
+use crate::resource::Imager;
+use ui::LocalState;
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ResourceSurface, RunMode, SurfaceCx,
+    ViewCx,
+};
+use ui::widget::Element;
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
-use super::{page, stack};
-use crate::rhythm::px::{FOOTER_INSET, PAGE_GUTTER, RELATED, SCROLLBAR_GUTTER, SIBLING};
+use crate::page::{self, Frame, stack};
 
 type CommandSink = Rc<RefCell<Vec<SetupCommand>>>;
 type WorkerTask = Box<dyn FnOnce() + Send + 'static>;
 type WorkerLauncher = fn(&str, WorkerTask) -> Result<(), String>;
-type ImportLauncher = fn() -> ImportApp;
 
-const FULL_OS_UNAVAILABLE: &str = "Full Tilo installation is not available in this build yet.";
+const FULL_OS_UNAVAILABLE: &str = "Full Tilo is not available on this computer yet.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SetupCapabilities {
@@ -73,6 +75,7 @@ enum SetupCommand {
     Next,
     Back,
     InstallDesktop,
+    OpenUsbWizard,
     CancelDesktopDownload,
     RetryDesktop,
     #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -154,14 +157,17 @@ pub struct SetupApp {
     show_help: bool,
     status: String,
     status_is_error: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
-    structure_dirty: bool,
+    composed: ui::widget::Composed,
     import_requested: bool,
-    import_launcher: ImportLauncher,
-    import_app: Option<ImportApp>,
+    /// Whether the view shows folder imports in place of setup.
+    imports: Option<LocalState<bool>>,
+    /// Built with live adapters: a live window starts them on attach.
+    starts_when_live: bool,
+    actions: Option<ui::framework::Actions<Imager>>,
+    usb: Option<LocalState<bool>>,
     desktop_flow: DesktopFlow,
     desktop_revision: u64,
+    review_saver: fn(&[super::controller::FolderChoice]) -> Result<(), String>,
     #[cfg(any(target_os = "linux", windows, all(test, unix)))]
     internal_download_flow: Option<InternalDownloadFlow>,
     #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -185,11 +191,12 @@ impl Default for SetupApp {
 }
 
 impl SetupApp {
-    /// Start live setup with only capabilities backed by actual adapters.
+    /// Live setup with only capabilities backed by actual adapters.
     /// Platform identity alone never enables Desktop or Full Tilo. Full Tilo
     /// becomes available only after the host probe passes, the catalog offers
     /// an internal release for this architecture and the product gate is open
-    /// (design spec §5, §9).
+    /// (design spec §5, §9). Nothing outside the process starts until it is
+    /// attached to a live window (or [`Self::start_live`] is called).
     #[must_use]
     pub fn new() -> Self {
         let host = if cfg!(target_os = "windows") {
@@ -219,11 +226,18 @@ impl SetupApp {
         );
         #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
         let mut app = Self::with_worker_launcher(capabilities, launch_worker);
-        app.desktop_flow = DesktopFlow::new_live();
-        app.start_known_folder_lookup();
-        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
-        app.start_host_probe();
+        app.starts_when_live = true;
         app
+    }
+
+    /// Start what live setup reads from this computer: the Desktop host
+    /// check, the familiar-folder lookup and the Full Tilo host probe.
+    pub fn start_live(&mut self) {
+        self.starts_when_live = false;
+        self.desktop_flow = DesktopFlow::new_live();
+        self.start_known_folder_lookup();
+        #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+        self.start_host_probe();
     }
 
     /// Deterministic constructor for tests and screenshot fixtures.
@@ -287,14 +301,15 @@ impl SetupApp {
             show_help: false,
             status: "Choose an available experience to begin.".into(),
             status_is_error: false,
-            composed: None,
-            rect: Rect::ZERO,
-            structure_dirty: true,
+            composed: ui::widget::Composed::default(),
             import_requested: false,
-            import_launcher: ImportApp::new,
-            import_app: None,
+            imports: None,
+            starts_when_live: false,
+            actions: None,
+            usb: None,
             desktop_flow,
             desktop_revision: 0,
+            review_saver: super::desktop_continuation::persist_review,
             #[cfg(any(target_os = "linux", windows, all(test, unix)))]
             internal_download_flow,
             #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -334,10 +349,10 @@ impl SetupApp {
                 "setup-experience-failed" => DesktopFlowState::Failed {
                     selection: None,
                     kind: DesktopFailureKind::WorkerLost,
-                    message: "The host check worker stopped before reporting readiness.".into(),
+                    message: "The check stopped before it finished.".into(),
                 },
                 _ => DesktopFlowState::Unavailable {
-                    host: "fedora 44 (aarch64)".into(),
+                    host: "Fedora Linux 44 (ARM64)".into(),
                     reasons: vec![
                         "No authenticated Desktop release matches this exact host.".into(),
                     ],
@@ -510,7 +525,25 @@ impl SetupApp {
                 folders,
                 suggestions,
                 help_open: self.show_help,
-                imports_open: self.import_requested || self.import_app.is_some(),
+                imports_open: self.import_requested,
+            },
+            desktop: super::desktop_journey::project(
+                &self.desktop_flow,
+                self.on_review_for(Experience::Desktop) && self.folder_selection_settled(),
+            ),
+            methods: super::desktop_journey::MethodProjection {
+                selected: chosen_experience.map(|experience| match experience {
+                    Experience::Desktop => "desktop",
+                    Experience::FullOs => "alongside",
+                }),
+                alongside: self.capabilities.platform.supports(Experience::FullOs),
+                usb: page == SetupPage::Experience
+                    && !self.desktop_flow.has_pending_operation()
+                    && self.usb.is_some()
+                    && matches!(
+                        self.capabilities.platform.host,
+                        HostOs::Linux | HostOs::Windows
+                    ),
             },
             review: super::actions::ReviewProjection {
                 ready: page == SetupPage::Review,
@@ -541,15 +574,26 @@ impl SetupApp {
         }
     }
 
-    fn apply_setup_operation(
-        &mut self,
-        operation: super::actions::SetupOperation,
-    ) -> Result<(), String> {
-        if self.import_app.is_some() {
+    /// Answer `effect` as its button would, after checking it against what
+    /// is shown now, with the setup's status afterwards.
+    ///
+    /// # Errors
+    /// Returns why the effect cannot run in the current setup state.
+    pub fn answer(&mut self, effect: SetupEffect) -> Result<serde_json::Value, String> {
+        if self.import_requested {
             return Err("Guided setup is closed while folder imports are open.".into());
         }
-        let command = match operation {
-            super::actions::SetupOperation::ChooseExperience { experience } => {
+        let command = match effect {
+            SetupEffect::ReadSetupStatus => return Ok(self.setup_projection().value()),
+            SetupEffect::ReadDesktopStatus => {
+                return serde_json::to_value(self.setup_projection().desktop)
+                    .map_err(|e| e.to_string());
+            }
+            SetupEffect::InstallDesktop
+            | SetupEffect::CancelDesktopDownload
+            | SetupEffect::RecheckDesktop
+            | SetupEffect::OpenUsbWizard => return self.answer_desktop(effect),
+            SetupEffect::ChooseExperience { experience } => {
                 if self.controller().page() != SetupPage::Experience {
                     return Err("Experience choices are available on the first setup page.".into());
                 }
@@ -562,17 +606,17 @@ impl SetupApp {
                 }
                 SetupCommand::ChooseExperience(experience)
             }
-            super::actions::SetupOperation::SetCommonMode { mode } => {
+            SetupEffect::SetCommonMode { mode } => {
                 if !matches!(self.controller().page(), SetupPage::Folders) {
                     return Err("Folder choices are not open on the current setup page.".into());
                 }
                 let mode = super::actions::parse_mode(&mode)?;
                 if mode == FolderMode::Connected && !self.capabilities.connected_folders {
-                    return Err("Folder syncing is not available in this build yet.".into());
+                    return Err("Connected folders are not available on this computer.".into());
                 }
                 SetupCommand::SetMode(mode)
             }
-            super::actions::SetupOperation::SetFolderMode { folder, mode } => {
+            SetupEffect::SetFolderMode { folder, mode } => {
                 let index = self
                     .controller()
                     .folder_index(&folder)
@@ -582,11 +626,11 @@ impl SetupApp {
                 }
                 let mode = super::actions::parse_mode(&mode)?;
                 if mode == FolderMode::Connected && !self.capabilities.connected_folders {
-                    return Err("Folder syncing is not available in this build yet.".into());
+                    return Err("Connected folders are not available on this computer.".into());
                 }
                 SetupCommand::SetFolderMode(index, mode)
             }
-            super::actions::SetupOperation::ClearFolderMode { folder } => {
+            SetupEffect::UseCommonMode { folder } => {
                 let index = self
                     .controller()
                     .folder_index(&folder)
@@ -599,7 +643,7 @@ impl SetupApp {
                 }
                 SetupCommand::ClearFolderMode(index)
             }
-            super::actions::SetupOperation::RemoveFolder { folder } => {
+            SetupEffect::RemoveFolder { folder } => {
                 let index = self
                     .controller()
                     .folder_index(&folder)
@@ -609,7 +653,7 @@ impl SetupApp {
                 }
                 SetupCommand::RemoveFolder(index)
             }
-            super::actions::SetupOperation::SelectSuggestion { suggestion } => {
+            SetupEffect::AddSuggestedFolder { suggestion } => {
                 if self.controller().page() != SetupPage::Folders
                     || !self.folder_selection_settled()
                 {
@@ -626,7 +670,7 @@ impl SetupApp {
                     })?;
                 SetupCommand::AddSuggested(index)
             }
-            super::actions::SetupOperation::ChooseFolder => {
+            SetupEffect::ChooseFolder => {
                 if self.controller().page() != SetupPage::Folders
                     || !self.folder_selection_settled()
                 {
@@ -634,13 +678,13 @@ impl SetupApp {
                 }
                 SetupCommand::AddFolder
             }
-            super::actions::SetupOperation::ToggleHelp => {
+            SetupEffect::ToggleHelp => {
                 if self.controller().page() != SetupPage::Folders {
                     return Err("Folder help is available on the folder page.".into());
                 }
                 SetupCommand::ToggleHelp
             }
-            super::actions::SetupOperation::Next => {
+            SetupEffect::ContinueSetup => {
                 if self.controller().page() == SetupPage::Folders
                     && !self.folder_selection_settled()
                 {
@@ -648,13 +692,13 @@ impl SetupApp {
                 }
                 SetupCommand::Next
             }
-            super::actions::SetupOperation::Back => {
+            SetupEffect::GoBackInSetup => {
                 if self.controller().page() == SetupPage::Experience {
                     return Err("Setup is already on its first page.".into());
                 }
                 SetupCommand::Back
             }
-            super::actions::SetupOperation::OpenImports => {
+            SetupEffect::OpenImports => {
                 if self.controller().page() == SetupPage::Folders {
                     return Err(
                         "Folder imports are available on the experience and review pages.".into(),
@@ -663,9 +707,9 @@ impl SetupApp {
                 SetupCommand::OpenImports
             }
             #[cfg(any(target_os = "linux", windows, all(test, unix)))]
-            operation => match self.internal_operation_command(operation)? {
+            effect => match self.internal_operation_command(effect)? {
                 Some(command) => command,
-                None => return Ok(()),
+                None => return Ok(self.setup_projection().value()),
             },
             #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
             _ => return Err(super::strings::t("imager-setup-internal-error-unavailable")),
@@ -674,15 +718,55 @@ impl SetupApp {
         if self.status_is_error {
             return Err(self.status.clone());
         }
-        self.ensure_import_app();
-        Ok(())
+        self.open_requested_imports();
+        Ok(self.setup_projection().value())
+    }
+
+    fn answer_desktop(&mut self, effect: SetupEffect) -> Result<serde_json::Value, String> {
+        let state = self.setup_projection();
+        let allowed = match effect {
+            SetupEffect::InstallDesktop => state.desktop.actions.install,
+            SetupEffect::CancelDesktopDownload => state.desktop.actions.cancel,
+            SetupEffect::RecheckDesktop => state.desktop.actions.recheck,
+            SetupEffect::OpenUsbWizard => state.methods.usb,
+            _ => false,
+        };
+        if !allowed {
+            return Err(super::strings::t(
+                "imager-setup-desktop-command-unavailable",
+            ));
+        }
+        self.status_is_error = false;
+        match effect {
+            SetupEffect::InstallDesktop => self.start_desktop_install(),
+            SetupEffect::CancelDesktopDownload => {
+                if !self.desktop_flow.cancel_download() {
+                    return Err(super::strings::t(
+                        "imager-setup-desktop-command-unavailable",
+                    ));
+                }
+            }
+            SetupEffect::RecheckDesktop => self.desktop_flow.retry()?,
+            SetupEffect::OpenUsbWizard => {
+                self.usb
+                    .as_ref()
+                    .ok_or_else(|| super::strings::t("imager-setup-usb-unavailable"))?
+                    .set(true);
+            }
+            _ => unreachable!("validated Desktop effect"),
+        }
+        self.composed.invalidate();
+        if self.status_is_error {
+            return Err(self.status.clone());
+        }
+        Ok(self.setup_projection().value())
     }
 
     fn start_desktop_install(&mut self) {
         if !self.folder_selection_settled() {
             return;
         }
-        match super::desktop_continuation::persist_review(self.controller.borrow().folders())
+        match (self.review_saver)(self.controller.borrow().folders())
             .and_then(|()| self.desktop_flow.start_install())
         {
             Ok(()) => self.status = "Rechecking this host before download…".into(),
@@ -714,7 +798,7 @@ impl SetupApp {
             }
             SetupCommand::SetMode(mode) => {
                 if mode == FolderMode::Connected && !self.capabilities.connected_folders {
-                    self.status = "Folder syncing is not available in this build yet.".into();
+                    self.status = "Connected folders are not available on this computer.".into();
                     self.status_is_error = true;
                 } else {
                     self.controller.borrow_mut().set_mode(mode);
@@ -723,7 +807,7 @@ impl SetupApp {
             }
             SetupCommand::SetFolderMode(index, mode) => {
                 if mode == FolderMode::Connected && !self.capabilities.connected_folders {
-                    self.status = "Folder syncing is not available in this build yet.".into();
+                    self.status = "Connected folders are not available on this computer.".into();
                     self.status_is_error = true;
                 } else if self.controller.borrow_mut().set_folder_mode(index, mode) {
                     self.status = format!("Folder policy changed to {}.", mode_label(mode));
@@ -781,6 +865,12 @@ impl SetupApp {
                 }
                 self.controller.borrow_mut().back();
                 self.status = "Your choices are retained while you make changes.".into();
+            }
+            SetupCommand::OpenUsbWizard => {
+                if let Err(error) = self.answer_desktop(SetupEffect::OpenUsbWizard) {
+                    self.status = error;
+                    self.status_is_error = true;
+                }
             }
             SetupCommand::InstallDesktop => self.start_desktop_install(),
             SetupCommand::CancelDesktopDownload => {
@@ -877,7 +967,7 @@ impl SetupApp {
             | SetupCommand::InternalDisableFastStartup
             | SetupCommand::RecheckInternal => self.apply_internal_install_command(command),
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -899,13 +989,13 @@ impl SetupApp {
             self.status =
                 "Wait for the current folder scan to finish before adding another.".into();
             self.status_is_error = true;
-            self.structure_dirty = true;
+            self.composed.invalidate();
             return;
         }
         if let Some(error) = self.scan_source_error(&source) {
             self.status = error;
             self.status_is_error = true;
-            self.structure_dirty = true;
+            self.composed.invalidate();
             return;
         }
         let source_label = source.display().to_string();
@@ -929,7 +1019,7 @@ impl SetupApp {
             self.pending_scans = self.pending_scans.saturating_sub(1);
             self.status = format!("Folder scan could not start for {source_label}: {error}");
             self.status_is_error = true;
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
     }
 
@@ -947,7 +1037,7 @@ impl SetupApp {
             self.known_folders = unavailable_suggestions("Known-folder lookup could not start.");
             self.status = format!("Known-folder lookup could not start: {error}");
             self.status_is_error = true;
-            self.structure_dirty = true;
+            self.composed.invalidate();
         }
     }
 
@@ -1013,7 +1103,7 @@ impl SetupApp {
                         if let Some(error) = self.scan_source_error(&scan.source) {
                             self.status = error;
                             self.status_is_error = true;
-                            self.structure_dirty = true;
+                            self.composed.invalidate();
                             return;
                         }
                         let skipped_count = scan.skipped_count;
@@ -1067,7 +1157,7 @@ impl SetupApp {
                 self.apply_host_command_result(command, result);
             }
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     fn poll_background(&mut self) -> bool {
@@ -1117,7 +1207,7 @@ impl SetupApp {
                     _ => {}
                 }
             }
-            self.structure_dirty = true;
+            self.composed.invalidate();
             changed = true;
         }
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -1134,7 +1224,7 @@ impl SetupApp {
                         Some(super::internal_cache::coordinator::Phase::Failed)
                     );
                 }
-                self.structure_dirty = true;
+                self.composed.invalidate();
                 changed = true;
             }
         }
@@ -1155,674 +1245,640 @@ impl SetupApp {
     }
 
     fn button(&self, id: &str, label: &str, command: SetupCommand) -> Button {
+        let effect = match command {
+            SetupCommand::InstallDesktop => Some(SetupEffect::InstallDesktop),
+            SetupCommand::CancelDesktopDownload => Some(SetupEffect::CancelDesktopDownload),
+            SetupCommand::RetryDesktop => Some(SetupEffect::RecheckDesktop),
+            SetupCommand::OpenUsbWizard => Some(SetupEffect::OpenUsbWizard),
+            _ => None,
+        };
+        if let (Some(actions), Some(effect)) = (&self.actions, effect) {
+            return actions.bind_effect_invocation(
+                Button::new(id, label).control_size(ControlSize::Regular),
+                &effect,
+            );
+        }
         let sink = Rc::clone(&self.commands);
-        Button::new(id, label, None)
-            .fit_content(40.0)
+        Button::new(id, label)
+            .control_size(ui::widget::ControlSize::Regular)
             .on_effect(move || sink.borrow_mut().push(command))
     }
 
-    fn desktop_experience_status(&self) -> (String, bool) {
+    /// Why Tilo Desktop is not on offer, or that it is still being checked,
+    /// as one sentence; and whether checking again can help.
+    fn desktop_unavailable(&self) -> (String, bool) {
+        if self.capabilities.platform.host != HostOs::Linux {
+            return (
+                experience_unavailable_reason(self.capabilities.platform, Experience::Desktop),
+                false,
+            );
+        }
         match self.desktop_flow.state() {
             DesktopFlowState::Checking => (
-                "Checking this host and the authenticated Tilo Desktop catalog…".into(),
+                "Checking whether it is available for this computer…".into(),
                 false,
             ),
-            DesktopFlowState::Unavailable { host, reasons } => {
-                (format!("Host: {host}\n{}", reasons.join("\n")), true)
+            DesktopFlowState::Unavailable { host, .. } => {
+                (format!("Not available for {host} yet."), true)
             }
-            DesktopFlowState::Ready(selection) => (
-                format!(
-                    "Tilo Desktop {} is available for {}.",
-                    selection.release.version, selection.host
-                ),
+            DesktopFlowState::Failed { message, .. } => (
+                format!("Couldn't check whether it is available. {message}"),
+                true,
+            ),
+            _ => (
+                experience_unavailable_reason(self.capabilities.platform, Experience::Desktop),
                 false,
             ),
-            DesktopFlowState::Downloading(selection) => (
-                format!(
-                    "Downloading Tilo Desktop {} for {}.",
-                    selection.release.version, selection.host
-                ),
-                false,
-            ),
-            DesktopFlowState::Authorizing(selection)
-            | DesktopFlowState::Preparing(selection)
-            | DesktopFlowState::Installing(selection)
-            | DesktopFlowState::Verifying(selection) => (
-                format!(
-                    "Installing Tilo Desktop {} for {}.",
-                    selection.release.version, selection.host
-                ),
-                false,
-            ),
-            DesktopFlowState::Installed { selection, result } => (
-                format!(
-                    "Tilo Desktop {} is installed and verified on {}.",
-                    result.version, selection.host
-                ),
-                false,
-            ),
-            DesktopFlowState::Failed { message, .. } => {
-                (format!("Desktop check failed: {message}"), true)
-            }
         }
     }
 
-    fn experience_body(&self) -> Box<dyn Widget> {
-        let header = stack()
-            .with_gap(RELATED)
-            .push(Box::new(
-                Text::new("Choose your Tilo experience")
-                    .with_role(TextRole::Title)
-                    .with_heading_level(1),
-            ))
-            .push(Box::new(Text::new(
-                "Setup keeps your current operating system. Options that are not ready in this build stay unavailable.",
-            ).dimmed()));
-        let mut body = stack();
+    /// One experience as a choice: what it is and what it does.
+    fn experience_row(&self, experience: Experience) -> ListRow {
+        let sink = Rc::clone(&self.commands);
+        let (id, secondary) = match experience {
+            Experience::Desktop => (
+                "setup.experience.desktop",
+                "Adds the Tilo session to this Linux installation.",
+            ),
+            Experience::FullOs => (
+                "setup.experience.full",
+                "Installs Tilo next to your current system, which stays the startup default.",
+            ),
+        };
+        ListRow::new(
+            id,
+            if experience == Experience::FullOs {
+                super::strings::t("imager-setup-alongside")
+            } else {
+                experience_label(experience).to_owned()
+            },
+        )
+        .icon(match experience {
+            Experience::Desktop => Icon::Monitor,
+            Experience::FullOs => Icon::HardDrive,
+        })
+        .secondary(secondary)
+        .selected(self.chosen_experience == Some(experience))
+        .on_activate(move || {
+            sink.borrow_mut()
+                .push(SetupCommand::ChooseExperience(experience));
+        })
+    }
+
+    fn experience_body(&self) -> Column {
+        let mut body = page::body("Choose your Tilo experience");
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
         if let Some(resume) = self.internal_resume_card() {
             body = body.push(Box::new(resume));
         }
-
-        for experience in [Experience::Desktop, Experience::FullOs] {
-            let supported = self.capabilities.platform.supports(experience);
-            let selected = self.chosen_experience == Some(experience);
-            let description = match experience {
-                Experience::Desktop => {
-                    "Add the Tilo desktop session to a supported Linux installation."
-                }
-                Experience::FullOs => {
-                    "Install Tilo alongside your current operating system and keep the current OS as the startup default."
-                }
-            };
-            let mut choose = self
-                .button(
-                    match experience {
-                        Experience::Desktop => "setup.experience.desktop",
-                        Experience::FullOs => "setup.experience.full",
-                    },
-                    if selected { "Selected" } else { "Choose" },
-                    SetupCommand::ChooseExperience(experience),
+        let (desktop, recheck): (Box<dyn Widget>, bool) =
+            if self.capabilities.platform.supports(Experience::Desktop) {
+                (Box::new(self.experience_row(Experience::Desktop)), false)
+            } else {
+                let (sentence, recheck) = self.desktop_unavailable();
+                (
+                    Box::new(
+                        ListRow::new("setup.desktop.live", experience_label(Experience::Desktop))
+                            .icon(Icon::Monitor)
+                            .secondary(sentence)
+                            .two_line_secondary()
+                            .with_enabled(false),
+                    ),
+                    recheck,
                 )
-                .with_enabled(supported);
-            if selected {
-                choose = choose.primary();
-            }
-            let mut card_body = Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(Text::new(description)));
-            // The card's commands form one action row (recheck before choose,
-            // matching the keyboard order) rather than a stack of one-button
-            // lines, so they read as a group beneath the status.
-            let mut actions = Row::new();
-            if experience == Experience::Desktop {
-                let (status, can_recheck) = self.desktop_experience_status();
-                card_body = card_body.push(Box::new(
-                    Text::new(&status)
-                        .with_id("setup.desktop.live")
-                        .with_live(Politeness::Polite),
-                ));
-                if can_recheck {
-                    actions = actions.push(Box::new(self.button(
-                        "setup.desktop.recheck",
-                        "Recheck Desktop support",
-                        SetupCommand::RetryDesktop,
-                    )));
-                }
-            }
-            card_body = card_body.push(Box::new(actions.push(Box::new(choose))));
-            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
-            if experience == Experience::FullOs && self.internal_install.gate() {
-                card_body = card_body.push(Box::new(
-                    Text::new(&self.internal_readiness_text())
-                        .with_id("setup.internal.readiness")
-                        .with_live(Politeness::Polite),
-                ));
-                body = body.push(Box::new(Card::titled(
-                    experience_label(experience),
-                    Box::new(card_body),
-                )));
-                continue;
-            }
-            if !supported && experience != Experience::Desktop {
-                card_body = card_body.push(Box::new(
-                    Text::new(&experience_unavailable_reason(
-                        self.capabilities.platform,
-                        experience,
-                    ))
-                    .dimmed(),
-                ));
-            }
-            body = body.push(Box::new(Card::titled(
-                experience_label(experience),
-                Box::new(card_body),
+            };
+        let rows = vec![desktop];
+        body = body.push(Box::new(Section::new(rows)));
+        body = body.push(Box::new(self.method_choices()));
+        if recheck {
+            body = body.push(Box::new(self.button(
+                "setup.desktop.recheck",
+                "Check again",
+                SetupCommand::RetryDesktop,
             )));
         }
-        Box::new(page(header).push(Box::new(body)))
+        body
     }
 
-    fn mode_card(&self, mode: FolderMode, title: &str, explanation: &str) -> Card {
-        let selected = self.controller().default_mode() == mode;
-        let enabled = mode != FolderMode::Connected || self.capabilities.connected_folders;
-        let mut button = self
-            .button(
-                match mode {
-                    FolderMode::Copy => "setup.mode.copy",
-                    FolderMode::Connected => "setup.mode.connected",
-                    FolderMode::Later => "setup.mode.later",
-                },
-                if selected { "Selected" } else { "Choose" },
-                SetupCommand::SetMode(mode),
-            )
-            .with_enabled(enabled);
-        if selected {
-            button = button.primary();
-        }
-        let detail = if mode == FolderMode::Connected && !enabled {
-            format!("{explanation} Folder syncing is not available in this build yet.")
-        } else {
-            explanation.to_string()
-        };
-        Card::new(Box::new(
-            Row::new()
-                .push(Box::new(
-                    Container::new()
-                        .with_no_padding()
-                        .with_flex_grow()
-                        .with_child(Box::new(
-                            Column::new()
-                                .with_no_padding()
-                                .with_intrinsic_height()
-                                .with_gap(RELATED)
-                                .push(Box::new(Text::new(title).with_role(TextRole::Heading)))
-                                .push(Box::new(Text::new(&detail).dimmed())),
-                        )),
-                ))
-                .push(Box::new(button)),
-        ))
-    }
-
-    fn known_folder_card(&self, index: usize, known: &KnownFolder) -> Card {
-        let (detail, enabled) = known.path.as_ref().map_or_else(
-            || {
-                (
-                    known
-                        .unavailable_reason
-                        .clone()
-                        .unwrap_or_else(|| "Unavailable".into()),
-                    false,
-                )
-            },
-            |path| (path.display().to_string(), true),
-        );
-        let add = self
-            .button(
-                &format!("setup.suggestion.{}", known.kind.label().to_lowercase()),
-                if enabled { "Add" } else { "Unavailable" },
-                SetupCommand::AddSuggested(index),
-            )
-            .with_enabled(enabled && self.folder_selection_settled());
-        Card::titled(
-            known.kind.label(),
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .push(Box::new(Text::new(&detail).dimmed()))
-                    .push(Box::new(add)),
+    /// One way of bringing folders over, as a choice.
+    fn mode_row(&self, mode: FolderMode) -> ListRow {
+        let sink = Rc::clone(&self.commands);
+        let (id, title, secondary) = match mode {
+            FolderMode::Copy => (
+                "setup.mode.copy",
+                "Copy selected folders",
+                "Recommended. Your originals stay where they are, and later changes don't carry over.",
             ),
-        )
+            FolderMode::Connected => (
+                "setup.mode.connected",
+                "Keep selected folders connected",
+                "Keeps a copy in Tilo and carries changes over while both systems are in use.",
+            ),
+            FolderMode::Later => (
+                "setup.mode.later",
+                "Decide later",
+                "Start empty and add folders any time.",
+            ),
+        };
+        ListRow::new(id, title)
+            .secondary(secondary)
+            .selected(self.controller().default_mode() == mode)
+            .on_activate(move || sink.borrow_mut().push(SetupCommand::SetMode(mode)))
     }
 
-    fn selected_folder_card(&self, index: usize, folder: &super::controller::FolderChoice) -> Card {
+    /// The ways a folder can come over on this computer.
+    fn offered_modes(&self) -> Vec<FolderMode> {
+        [FolderMode::Copy, FolderMode::Connected, FolderMode::Later]
+            .into_iter()
+            .filter(|mode| *mode != FolderMode::Connected || self.capabilities.connected_folders)
+            .collect()
+    }
+
+    fn method_choices(&self) -> Section {
+        let t = super::strings::t;
+        let methods = self.setup_projection().methods;
+        let mut rows: Vec<Box<dyn Widget>> =
+            vec![Box::new(Text::new(&t("imager-setup-method-body")))];
+        if methods.alongside {
+            rows.push(Box::new(self.experience_row(Experience::FullOs)));
+        } else {
+            let reason = t("imager-setup-alongside-unavailable");
+            #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+            let reason = if self.internal_install.gate() {
+                self.internal_readiness_text()
+            } else {
+                reason
+            };
+            rows.push(Box::new(
+                ListRow::new("setup.internal.readiness", t("imager-setup-alongside"))
+                    .icon(Icon::HardDrive)
+                    .secondary(reason)
+                    .with_enabled(false),
+            ));
+        }
+        rows.push(Box::new(
+            self.button(
+                "setup.method.usb",
+                &t("imager-setup-usb-open"),
+                SetupCommand::OpenUsbWizard,
+            )
+            .with_enabled(methods.usb),
+        ));
+        if !methods.usb {
+            rows.push(Box::new(Text::new(&t("imager-setup-usb-unavailable"))));
+        }
+        Section::new(rows).with_header(SectionHeader::heading(t("imager-setup-method-heading")))
+    }
+
+    /// One selected folder: what it holds, how it comes over, and removing it.
+    fn selected_folder(&self, index: usize, folder: &super::controller::FolderChoice) -> Column {
         let source = folder.scan.source.display().to_string();
-        let details = format!(
-            "{} files · {} · source: {source}",
+        let mut facts = format!(
+            "{} {}, {}",
             folder.scan.file_count,
+            if folder.scan.file_count == 1 {
+                "file"
+            } else {
+                "files"
+            },
             ui::format::bytes_si(folder.scan.bytes)
         );
-        let destination = match &folder.destination {
-            FolderDestination::Resolved(path) => path.display().to_string(),
-            FolderDestination::Unresolved => {
-                "Pending — choose and review a Tilo-managed destination after login".into()
+        if folder.scan.skipped_count > 0 {
+            let _ = write!(
+                facts,
+                ", {} skipped",
+                items_phrase(folder.scan.skipped_count)
+            );
+        }
+        let remove = Rc::clone(&self.commands);
+        let mut row = ListRow::new(format!("setup.folder.{index}"), &source)
+            .icon(Icon::Folder)
+            .secondary(facts)
+            .action(Icon::X, "Remove", move || {
+                remove.borrow_mut().push(SetupCommand::RemoveFolder(index));
+            });
+        if folder.scan.skipped_count > 0 {
+            row = row.warning();
+        }
+        let modes = self.offered_modes();
+        let sink = Rc::clone(&self.commands);
+        let choices = modes.clone();
+        let choice = ToggleGroup::new(
+            modes
+                .iter()
+                .map(|mode| Segment::new(mode_label(*mode)))
+                .collect(),
+            modes
+                .iter()
+                .position(|mode| *mode == folder.mode)
+                .unwrap_or(0),
+        )
+        .with_id(format!("setup.folder.{index}.mode"))
+        .control_size(ControlSize::Small)
+        .on_change(move |chosen| {
+            if let Some(mode) = choices.get(chosen) {
+                sink.borrow_mut()
+                    .push(SetupCommand::SetFolderMode(index, *mode));
             }
-        };
-        let destination_field = TextInput::local()
-            .with_initial_value(&destination)
-            .with_accessible_name(format!("Destination for {source}"))
-            .disabled(true);
-        let mode_button_label = |mode: FolderMode, label: &str| {
-            if folder.mode == mode {
-                if folder.mode_overridden {
-                    format!("Selected: {label}")
-                } else {
-                    format!("Common: {label}")
-                }
-            } else {
-                label.to_string()
-            }
-        };
-        let mut copy = self
-            .button(
-                &format!("setup.folder.{index}.copy"),
-                &mode_button_label(FolderMode::Copy, "Copy"),
-                SetupCommand::SetFolderMode(index, FolderMode::Copy),
-            )
-            .with_enabled(true);
-        if folder.mode == FolderMode::Copy {
-            copy = copy.primary();
+        });
+        // How the folder comes over sits under it, on the page's edge with
+        // the other controls, so a long path is never cut short.
+        let mut controls = Row::new()
+            .with_align_items(taffy::AlignItems::Center)
+            .push(Box::new(choice));
+        if folder.mode_overridden {
+            controls = controls.push(Box::new(
+                self.button(
+                    &format!("setup.folder.{index}.follow"),
+                    "Use the default",
+                    SetupCommand::ClearFolderMode(index),
+                )
+                .role(ButtonRole::Plain)
+                .control_size(ControlSize::Small),
+            ));
         }
-        let mut connected = self
-            .button(
-                &format!("setup.folder.{index}.connected"),
-                &mode_button_label(FolderMode::Connected, "Connected"),
-                SetupCommand::SetFolderMode(index, FolderMode::Connected),
-            )
-            .with_enabled(self.capabilities.connected_folders);
-        if folder.mode == FolderMode::Connected {
-            connected = connected.primary();
-        }
-        let mut later = self.button(
-            &format!("setup.folder.{index}.later"),
-            &mode_button_label(FolderMode::Later, "Later"),
-            SetupCommand::SetFolderMode(index, FolderMode::Later),
-        );
-        if folder.mode == FolderMode::Later {
-            later = later.primary();
-        }
-        let follow = self
-            .button(
-                &format!("setup.folder.{index}.follow"),
-                if folder.mode_overridden {
-                    "Use common choice"
-                } else {
-                    "Using common choice"
-                },
-                SetupCommand::ClearFolderMode(index),
-            )
-            .with_enabled(folder.mode_overridden);
-        let remove = self.button(
-            &format!("setup.folder.{index}.remove"),
-            "Remove",
-            SetupCommand::RemoveFolder(index),
-        );
-        let mut card_body = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(Text::new(&details).dimmed()));
+        let mut block = page::related().push(Box::new(row)).push(Box::new(controls));
         if let Some(warning) = scan_warning(&folder.scan) {
-            card_body = card_body.push(Box::new(
+            block = block.push(Box::new(
                 Text::new(&warning)
-                    .with_id(format!("setup.folder.{index}.warnings"))
-                    .with_live(Politeness::Polite),
+                    .with_role(TextRole::Caption)
+                    .dimmed()
+                    .with_id(format!("setup.folder.{index}.warnings")),
             ));
         }
-        card_body = card_body
-            .push(Box::new(
-                Text::new("Destination").with_role(TextRole::Label),
-            ))
-            .push(Box::new(destination_field))
-            .push(Box::new(
-                Row::new()
-                    .push(Box::new(copy))
-                    .push(Box::new(connected))
-                    .push(Box::new(later)),
-            ))
-            .push(Box::new(
-                Row::new().push(Box::new(follow)).push(Box::new(remove)),
-            ));
-        Card::titled(source, Box::new(card_body))
+        block
     }
 
-    fn folders_body(&self) -> Box<dyn Widget> {
-        let header = stack()
-            .with_gap(RELATED)
-            .push(Box::new(
-                Text::new("Bring your files into Tilo")
-                    .with_role(TextRole::Title)
-                    .with_heading_level(1),
-            ))
-            .push(Box::new(Text::new(
-                "Choose a common behavior. Suggestions are never selected automatically, shared, or uploaded.",
-            ).dimmed()));
-        let mut modes = stack()
-            .push(Box::new(self.mode_card(
-                FolderMode::Copy,
-                "Copy selected folders — recommended",
-                "Your originals stay where they are; later changes do not carry between systems.",
-            )))
-            .push(Box::new(self.mode_card(
-                FolderMode::Connected,
-                "Keep selected folders connected",
-                "Keep a local Tilo copy and carry changes over when synchronization runs.",
-            )))
-            .push(Box::new(self.mode_card(
-                FolderMode::Later,
-                "Decide later",
-                "Start empty and add folders anytime.",
-            )))
-            .push(Box::new(self.button(
+    fn folders_body(&self) -> Column {
+        let help = self
+            .button(
                 "setup.help",
                 if self.show_help {
-                    "Hide guidance"
+                    "Hide help"
                 } else {
                     "Help me choose"
                 },
                 SetupCommand::ToggleHelp,
-            )));
+            )
+            .role(ButtonRole::Plain);
+        let modes = self
+            .offered_modes()
+            .into_iter()
+            .map(|mode| Box::new(self.mode_row(mode)) as Box<dyn Widget>)
+            .collect();
+        let mut body =
+            page::body("Bring your files into Tilo")
+                .push(Box::new(Section::new(modes).with_header(
+                    SectionHeader::heading("Every folder").action(help),
+                )));
         if self.show_help {
-            modes = modes.push(Box::new(Card::titled(
-                "Help me choose",
-                Box::new(Text::new(
-                    "If you are trying Tilo or are unsure, choose Copy. If you will keep working in both systems, Connected may fit when folder syncing is available for this computer. You can always decide later.",
-                )),
+            body = body.push(Box::new(Text::new(
+                if self.capabilities.connected_folders {
+                    "If you are trying Tilo, or are unsure, choose Copy. If you keep working in both systems, Connected keeps them in step. You can always decide later."
+                } else {
+                    "If you are trying Tilo, or are unsure, choose Copy. Your originals are never changed, and you can always decide later."
+                },
             )));
         }
-        // Each heading opens its own section, a `GROUP` after the previous
-        // one; the cards inside keep the sibling step.
-        let mut suggested = stack().push(Box::new(
-            Text::new("Suggested folders")
-                .with_role(TextRole::Heading)
-                .with_heading_level(2),
-        ));
-        for (index, known) in self.known_folders.iter().enumerate() {
-            suggested = suggested.push(Box::new(self.known_folder_card(index, known)));
-        }
-        suggested = suggested.push(Box::new(
-            self.button("setup.add-folder", "Add folder…", SetupCommand::AddFolder)
-                .with_enabled(self.folder_selection_settled()),
-        ));
-        let mut body = page(header).push(Box::new(modes)).push(Box::new(suggested));
 
         let controller = self.controller();
-        if !controller.folders().is_empty() {
-            let mut selected = stack().push(Box::new(
-                Text::new("Selected folders")
-                    .with_role(TextRole::Heading)
-                    .with_heading_level(2),
-            ));
-            for (index, folder) in controller.folders().iter().enumerate() {
-                selected = selected.push(Box::new(self.selected_folder_card(index, folder)));
+        let chosen = |path: &Path| {
+            controller
+                .folders()
+                .iter()
+                .any(|folder| folder.scan.source == path)
+        };
+        let suggestions: Vec<Box<dyn Widget>> = self
+            .known_folders
+            .iter()
+            .enumerate()
+            .filter_map(|(index, known)| {
+                let path = known.path.as_ref()?;
+                if chosen(path) {
+                    return None;
+                }
+                let sink = Rc::clone(&self.commands);
+                let add = Rc::clone(&self.commands);
+                Some(Box::new(
+                    ListRow::new(
+                        format!("setup.suggestion.{}", known.kind.label().to_lowercase()),
+                        known.kind.label(),
+                    )
+                    .icon(Icon::Folder)
+                    .secondary(path.display().to_string())
+                    .action(Icon::Plus, "Add", move || {
+                        add.borrow_mut().push(SetupCommand::AddSuggested(index));
+                    })
+                    .on_activate(move || {
+                        sink.borrow_mut().push(SetupCommand::AddSuggested(index));
+                    }),
+                ) as Box<dyn Widget>)
+            })
+            .collect();
+        let add_folder = self
+            .button("setup.add-folder", "Add folder…", SetupCommand::AddFolder)
+            .with_icon(Icon::FolderPlus)
+            .role(ButtonRole::Plain)
+            .with_enabled(self.folder_selection_settled());
+        body = body.push(Box::new(Section::new(suggestions).with_header(
+            SectionHeader::heading("Suggested folders").action(add_folder),
+        )));
+
+        if !controller.folders().is_empty() || self.pending_scans > 0 {
+            let mut selected: Vec<Box<dyn Widget>> = controller
+                .folders()
+                .iter()
+                .enumerate()
+                .map(|(index, folder)| {
+                    Box::new(self.selected_folder(index, folder)) as Box<dyn Widget>
+                })
+                .collect();
+            if self.pending_scans > 0 {
+                selected.push(Box::new(
+                    Text::new(&self.status)
+                        .dimmed()
+                        .with_id("setup.scan")
+                        .with_live(Politeness::Polite),
+                ));
             }
-            body = body.push(Box::new(selected));
+            body = body.push(Box::new(Section::new(selected).with_header(
+                SectionHeader::heading("Selected folders").count(controller.folders().len()),
+            )));
         }
         drop(controller);
-        Box::new(body)
+        body
     }
 
-    fn review_copy_status(&self, experience: Experience) -> Card {
-        let pending = if experience == Experience::FullOs {
-            "Full Tilo folder copying remains pending until target-side migration resolves and reviews retained volume identities after installation. No destination or copy is authorized yet."
-        } else {
-            "Your folder choices are retained. After the first Tilo login, setup will resolve and show each Tilo-managed destination for review before any copy begins."
-        };
-        Card::titled(
-            "Folder copy status",
-            Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .push(Box::new(Text::new(pending).with_id("setup.review.pending")))
-                    .push(Box::new(self.button(
-                        "setup.open-imports",
-                        "Add folders now…",
-                        SetupCommand::OpenImports,
-                    ))),
-            ),
-        )
-    }
-
-    fn desktop_install_card(&self) -> Card {
-        let detail = match self.desktop_flow.state() {
-            DesktopFlowState::Checking => {
-                "Checking the live host and authenticated Desktop catalog…".to_string()
-            }
-            DesktopFlowState::Unavailable { host, reasons } => {
-                format!("Host: {host}\n{}", reasons.join("\n"))
-            }
-            DesktopFlowState::Ready(selection) => {
-                let action = if selection.already_installed {
-                    "The matching package is already installed. Continue to verify the Tilo login session. Approve verification when asked."
-                } else {
-                    "Continue to download the authenticated package. Approve installation when asked."
-                };
-                format!(
-                    "Host: {}\nSelected package version: {}\n{action}",
-                    selection.host, selection.release.version
-                )
-            }
-            DesktopFlowState::Downloading(selection) => format!(
-                "Downloading and verifying Tilo Desktop {} for {}. Cancellation here stops before native authorization.",
-                selection.release.version, selection.host
-            ),
-            DesktopFlowState::Authorizing(selection) => format!(
-                "Waiting for authorization for Tilo Desktop {} on {}. No native transaction has been reported yet.",
-                selection.release.version, selection.host
-            ),
-            DesktopFlowState::Preparing(selection) => format!(
-                "The helper is independently rechecking Tilo Desktop {} for {}.",
-                selection.release.version, selection.host
-            ),
-            DesktopFlowState::Installing(selection) => format!(
-                "The native package manager is installing Tilo Desktop {} on {}. Closing this view will not cancel the transaction.",
-                selection.release.version, selection.host
-            ),
-            DesktopFlowState::Verifying(selection) => format!(
-                "Verifying the installed package and Tilo login session for {}.",
-                selection.host
-            ),
-            DesktopFlowState::Installed { selection, result } => format!(
-                "Tilo Desktop {} is verified on {}. Save your work and sign out when you are ready, then choose Tilo on the login screen. Setup will not sign you out or change the default session. Selected folders remain pending for first-login review.",
-                result.version, selection.host
-            ),
-            DesktopFlowState::Failed { kind, message, .. } => {
-                let prefix = match kind {
-                    DesktopFailureKind::DownloadCancelled => "Download cancelled",
-                    DesktopFailureKind::AuthorizationCancelled => "Authorization cancelled",
-                    DesktopFailureKind::AuthorizationRefused => "Authorization refused",
-                    DesktopFailureKind::WorkerLost => "Worker connection lost",
-                    DesktopFailureKind::Readiness => "Readiness check failed",
-                    DesktopFailureKind::Download => "Download failed",
-                    DesktopFailureKind::NativeTransaction => "Native installation failed",
-                };
-                format!(
-                    "{prefix}. {message} Your folder choices are retained; Retry rechecks the host."
-                )
-            }
-        };
-        Card::titled(
-            "Tilo Desktop readiness",
-            Box::new(
-                Text::new(&detail)
-                    .with_id("setup.desktop.status")
-                    .with_live(Politeness::Polite),
-            ),
-        )
-    }
-
-    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
-    fn internal_download_card(&self) -> Card {
-        let mut content = stack();
-        if let Some(flow) = &self.internal_download_flow {
-            let presentation = flow.presentation();
-            let mut detail = format!("{}\n{}", presentation.title, presentation.details);
-            if presentation.phase.is_none()
-                && let Some(error) = flow.catalog_error()
-            {
-                detail.push('\n');
-                detail.push_str(error);
-            }
-            content = content.push(Box::new(
-                Text::new(&detail)
-                    .with_id("setup.internal.status")
-                    .with_live(Politeness::Polite),
-            ));
-            let mut actions = Row::new().no_wrap();
-            if flow.can_start() {
-                actions = actions.push(Box::new(self.button(
-                    "setup.internal.start",
-                    "Download Tilo",
-                    SetupCommand::StartInternalDownload,
-                )));
-            }
-            if flow.can_pause() {
-                actions = actions.push(Box::new(self.button(
-                    "setup.internal.pause",
-                    "Pause download",
-                    SetupCommand::PauseInternalDownload,
-                )));
-            }
-            if flow.can_cancel() {
-                actions = actions.push(Box::new(self.button(
-                    "setup.internal.cancel",
-                    "Cancel download",
-                    SetupCommand::CancelInternalDownload,
-                )));
-            }
-            if flow.can_resume() {
-                actions = actions.push(Box::new(self.button(
-                    "setup.internal.resume",
-                    "Resume download",
-                    SetupCommand::ResumeInternalDownload,
-                )));
-            }
-            if flow.can_release() {
-                actions = actions.push(Box::new(self.button(
-                    "setup.internal.release",
-                    "Keep for later",
-                    SetupCommand::ReleaseInternalDownload,
-                )));
-            }
-            if flow.can_discard() {
-                actions = actions.push(Box::new(self.button(
-                    "setup.internal.discard",
-                    "Discard unfinished download data",
-                    SetupCommand::DiscardInternalDownload,
-                )));
-            }
-            content = content.push(Box::new(actions));
-        } else {
-            let detail = self.internal_download_error.as_deref().unwrap_or(
-                "Full Tilo download is unavailable on this computer. Installation has not started.",
-            );
-            content = content.push(Box::new(
-                Text::new(&format!("Full Tilo download\n{detail}"))
-                    .with_id("setup.internal.status")
-                    .with_live(Politeness::Assertive),
-            ));
-        }
-        Card::titled("Full Tilo download", Box::new(content))
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one declarative review composition keeps its card order and accessibility labels visible"
-    )]
-    fn review_body(&self) -> Box<dyn Widget> {
+    /// The selected folders on the review, and what happens to them.
+    fn review_folders(&self, experience: Experience) -> Section {
         let controller = self.controller();
-        let plan = controller.plan();
-        let retained = match self.capabilities.platform.host {
-            HostOs::Windows => "Windows remains installed",
-            HostOs::Linux => "Your Linux installation remains installed",
-            HostOs::Other => "Your current operating system remains installed",
-        };
         let scheduled = controller
             .folders()
             .iter()
-            .filter(|folder| folder.mode != FolderMode::Later)
+            .enumerate()
+            .filter(|(_, folder)| folder.mode != FolderMode::Later)
             .collect::<Vec<_>>();
-        let folders = if scheduled.is_empty() {
-            "No folders are scheduled. You can add them later.".to_string()
-        } else {
-            scheduled
-                .iter()
-                .map(|folder| {
-                    let destination = match &folder.destination {
-                        FolderDestination::Resolved(path) => path.display().to_string(),
-                        FolderDestination::Unresolved => {
-                            "Destination pending review after login".into()
-                        }
-                    };
-                    let summary = format!(
-                        "{} → {} · {} · {}",
-                        folder.scan.source.display(),
-                        destination,
-                        mode_label(folder.mode),
-                        ui::format::bytes_si(folder.scan.bytes)
-                    );
-                    scan_warning(&folder.scan).map_or_else(
-                        || summary.clone(),
-                        |warning| format!("{summary}\n{warning}"),
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        let skipped_count = scheduled
+        let mut items: Vec<Box<dyn Widget>> = scheduled
             .iter()
-            .map(|folder| folder.scan.skipped_count)
-            .sum::<u64>();
-        let estimate = controller.selected_folder_bytes().map_or_else(
-            |_| "Space estimate is unavailable because the total overflowed.".to_string(),
-            |bytes| {
-                if skipped_count == 0 {
+            .map(|(index, folder)| {
+                let mut facts = format!(
+                    "{}, {}",
+                    mode_label(folder.mode),
+                    ui::format::bytes_si(folder.scan.bytes)
+                );
+                if folder.scan.skipped_count > 0 {
+                    let _ = write!(
+                        facts,
+                        ", {} skipped",
+                        items_phrase(folder.scan.skipped_count)
+                    );
+                }
+                let row = ListRow::new(
+                    format!("setup.review.folder.{index}"),
+                    folder.scan.source.display().to_string(),
+                )
+                .icon(Icon::Folder)
+                .secondary(facts);
+                Box::new(if folder.scan.skipped_count > 0 {
+                    row.warning()
+                } else {
+                    row
+                }) as Box<dyn Widget>
+            })
+            .collect();
+        if scheduled.is_empty() {
+            items.push(Box::new(
+                Text::new("No folders are scheduled. You can add them later.")
+                    .dimmed()
+                    .with_id("setup.review.folders"),
+            ));
+        } else {
+            let skipped = scheduled
+                .iter()
+                .map(|(_, folder)| folder.scan.skipped_count)
+                .sum::<u64>();
+            let estimate = controller.selected_folder_bytes().map_or_else(
+                |_| "The space these folders need could not be added up.".to_string(),
+                |bytes| {
+                    if skipped == 0 {
+                        format!(
+                            "These folders need about {} in Tilo.",
+                            ui::format::bytes_si(bytes)
+                        )
+                    } else {
+                        format!(
+                            "These folders need about {} in Tilo. The estimate is incomplete: it leaves out {} that could not be read.",
+                            ui::format::bytes_si(bytes),
+                            items_phrase(skipped)
+                        )
+                    }
+                },
+            );
+            items.push(Box::new(
+                Text::new(&estimate)
+                    .dimmed()
+                    .with_id("setup.review.estimate"),
+            ));
+        }
+        let pending = if experience == Experience::FullOs {
+            "After Tilo is installed and you sign in, setup shows where each folder goes before anything is copied."
+        } else {
+            "After your first Tilo login, setup shows where each folder goes before anything is copied."
+        };
+        items.push(Box::new(
+            Text::new(pending).dimmed().with_id("setup.review.pending"),
+        ));
+        Section::new(items).with_header(
+            SectionHeader::heading("Folders").action(
+                self.button(
+                    "setup.open-imports",
+                    "Add folders now…",
+                    SetupCommand::OpenImports,
+                )
+                .role(ButtonRole::Plain),
+            ),
+        )
+    }
+
+    /// Tilo Desktop on the review: what will happen, and on which computer.
+    fn desktop_install_card(&self) -> Section {
+        let detail = match self.desktop_flow.state() {
+            DesktopFlowState::Checking => {
+                "Checking this computer and the signed Tilo Desktop catalog…".to_string()
+            }
+            DesktopFlowState::Unavailable { host, .. } => {
+                format!("Tilo Desktop isn't available for {host} yet.")
+            }
+            DesktopFlowState::Ready(selection) => {
+                if selection.already_installed {
                     format!(
-                        "Estimated Tilo space for selected files: {}",
-                        ui::format::bytes_si(bytes)
+                        "Tilo Desktop {} is already installed on {}. Continue to check the Tilo session; approve the check when asked.",
+                        selection.release.version, selection.host
                     )
                 } else {
                     format!(
-                        "Estimated Tilo space for counted files: {}. This total is incomplete because {} skipped.",
-                        ui::format::bytes_si(bytes),
-                        skipped_count_phrase(skipped_count)
+                        "Tilo Desktop {} is ready for {}. Continue to download it; approve the installation when asked.",
+                        selection.release.version, selection.host
                     )
                 }
-            },
+            }
+            DesktopFlowState::Downloading(selection) => format!(
+                "Downloading and checking Tilo Desktop {} for {}. Cancelling now stops before anything is installed.",
+                selection.release.version, selection.host
+            ),
+            DesktopFlowState::Authorizing(selection) => format!(
+                "Waiting for you to approve installing Tilo Desktop {} on {}.",
+                selection.release.version, selection.host
+            ),
+            DesktopFlowState::Preparing(selection) => format!(
+                "Checking Tilo Desktop {} for {} once more before installing.",
+                selection.release.version, selection.host
+            ),
+            DesktopFlowState::Installing(selection) => format!(
+                "Installing Tilo Desktop {} on {}. Closing setup does not stop the installation.",
+                selection.release.version, selection.host
+            ),
+            DesktopFlowState::Verifying(selection) => {
+                format!("Checking the installed Tilo session on {}.", selection.host)
+            }
+            DesktopFlowState::Installed { selection, result } => format!(
+                "Tilo Desktop {} is installed and verified on {}. Save your work and sign out when you are ready, then choose Tilo on the login screen. Your current session stays the default.",
+                result.version, selection.host
+            ),
+            DesktopFlowState::Failed { kind, message, .. } => {
+                let what = match kind {
+                    DesktopFailureKind::DownloadCancelled => "The download was cancelled.",
+                    DesktopFailureKind::AuthorizationCancelled => {
+                        "The installation was not approved."
+                    }
+                    DesktopFailureKind::AuthorizationRefused => {
+                        "Installing needs an administrator's approval."
+                    }
+                    DesktopFailureKind::WorkerLost => "Checking this computer stopped early.",
+                    DesktopFailureKind::Readiness => "This computer is not ready for Tilo Desktop.",
+                    DesktopFailureKind::Download => "The download failed.",
+                    DesktopFailureKind::NativeTransaction => "The installation failed.",
+                };
+                format!("{what} {message} Your folder choices are kept; check again to retry.")
+            }
+        };
+        let retained = match self.capabilities.platform.host {
+            HostOs::Windows => "Windows stays installed and remains the startup default.",
+            HostOs::Linux => {
+                "Your Linux installation stays as it is and remains the default session."
+            }
+            HostOs::Other => "Your current system stays installed and remains the default.",
+        };
+        Section::new(vec![Box::new(
+            page::related()
+                .push(Box::new(
+                    Text::new(&detail)
+                        .with_id("setup.desktop.status")
+                        .with_live(Politeness::Polite),
+                ))
+                .push(Box::new(Text::new(retained).dimmed())),
+        )])
+        .with_header(SectionHeader::heading("Tilo Desktop"))
+    }
+
+    #[cfg(any(target_os = "linux", windows, all(test, unix)))]
+    fn internal_download_card(&self) -> Section {
+        let mut content = page::related();
+        if let Some(flow) = &self.internal_download_flow {
+            let presentation = flow.presentation();
+            let summary = if presentation.phase.is_none()
+                && let Some(error) = flow.catalog_error()
+            {
+                error.to_string()
+            } else {
+                presentation.summary.clone()
+            };
+            content = content.push(Box::new(
+                Text::new(&summary)
+                    .with_id("setup.internal.status")
+                    .with_live(Politeness::Polite),
+            ));
+            let mut actions = Row::new();
+            let mut any = false;
+            for (shown, id, label, command) in [
+                (
+                    flow.can_start(),
+                    "setup.internal.start",
+                    "Download Tilo",
+                    SetupCommand::StartInternalDownload,
+                ),
+                (
+                    flow.can_pause(),
+                    "setup.internal.pause",
+                    "Pause download",
+                    SetupCommand::PauseInternalDownload,
+                ),
+                (
+                    flow.can_cancel(),
+                    "setup.internal.cancel",
+                    "Cancel download",
+                    SetupCommand::CancelInternalDownload,
+                ),
+                (
+                    flow.can_resume(),
+                    "setup.internal.resume",
+                    "Resume download",
+                    SetupCommand::ResumeInternalDownload,
+                ),
+                (
+                    flow.can_release(),
+                    "setup.internal.release",
+                    "Keep for later",
+                    SetupCommand::ReleaseInternalDownload,
+                ),
+                (
+                    flow.can_discard(),
+                    "setup.internal.discard",
+                    "Discard unfinished download",
+                    SetupCommand::DiscardInternalDownload,
+                ),
+            ] {
+                if shown {
+                    actions = actions.push(Box::new(self.button(id, label, command)));
+                    any = true;
+                }
+            }
+            if any {
+                content = content.push(Box::new(actions));
+            }
+            return Section::new(vec![Box::new(content)])
+                .with_header(SectionHeader::heading(presentation.title.clone()));
+        }
+        let detail = self.internal_download_error.as_deref().unwrap_or(
+            "Tilo can't be downloaded on this computer, so installation has not started.",
         );
-        let connected_blocker = controller
-            .folders()
-            .iter()
-            .any(|folder| folder.mode == FolderMode::Connected)
-            .then_some("Folder syncing is not available in this build yet.");
+        content = content.push(Box::new(
+            Text::new(detail)
+                .with_id("setup.internal.status")
+                .with_live(Politeness::Assertive),
+        ));
+        Section::new(vec![Box::new(content)])
+            .with_header(SectionHeader::heading("Full Tilo download"))
+    }
+
+    fn review_body(&self) -> Column {
+        let experience = self.controller().plan().experience;
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
         let internal_offered =
-            plan.experience == Experience::FullOs && self.internal_install.offers_full_os();
+            experience == Experience::FullOs && self.internal_install.offers_full_os();
         #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
         let internal_offered = false;
-        let mut blockers = match plan.experience {
-            Experience::FullOs if internal_offered => String::new(),
-            Experience::FullOs => FULL_OS_UNAVAILABLE.to_string(),
-            Experience::Desktop => match self.desktop_flow.state() {
-                DesktopFlowState::Unavailable { reasons, .. } => reasons.join("\n"),
-                DesktopFlowState::Failed { message, .. } => message.clone(),
-                DesktopFlowState::Checking => "Live Desktop readiness is being checked.".into(),
-                _ => "No Desktop installation blockers are currently reported.".into(),
-            },
-        };
-        if let Some(blocker) = connected_blocker {
-            if !blockers.is_empty() {
-                blockers.push('\n');
-            }
-            blockers.push_str(blocker);
-        }
-        let copy_status = self.review_copy_status(plan.experience);
-        let installed = plan.experience == Experience::Desktop
+        let installed = experience == Experience::Desktop
             && matches!(
                 self.desktop_flow.state(),
                 DesktopFlowState::Installed { .. }
             );
-        let header = stack().push(Box::new(
-            Text::new(if installed {
-                "Tilo Desktop is installed"
-            } else {
-                "Review Tilo setup"
-            })
-            .with_role(TextRole::Title)
-            .with_heading_level(1),
-        ));
-        let mut body = stack();
-        if plan.experience == Experience::Desktop {
+        let mut body = page::body(if installed {
+            "Tilo Desktop is installed"
+        } else {
+            "Review Tilo setup"
+        });
+        if experience == Experience::Desktop {
             body = body.push(Box::new(self.desktop_install_card()));
         }
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -1835,40 +1891,30 @@ impl SetupApp {
             }
             body = body
                 .push(Box::new(self.internal_plan_card()))
-                .push(Box::new(self.internal_blockers_card(connected_blocker)));
+                .push(Box::new(self.internal_blockers_card(None)));
         }
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
-        if plan.experience == Experience::FullOs {
+        if experience == Experience::FullOs {
             body = body.push(Box::new(self.internal_download_card()));
         }
-        body = body.push(Box::new(Card::titled(
-                    "Operating systems",
-                    Box::new(Text::new(&format!(
-                        "{retained}. Tilo setup uses {}. Your existing OS stays the startup default initially.",
-                        experience_label(plan.experience)
-                    ))),
-                )))
-                .push(Box::new(Card::titled(
-                    "Folder policies",
-                    Box::new(Text::new(&folders).with_id("setup.review.folders")),
-                )))
-                .push(Box::new(Card::titled(
-                    "Space estimate",
-                    Box::new(Text::new(&estimate).with_id("setup.review.estimate")),
-                )));
-        if !internal_offered {
-            body = body.push(Box::new(Card::titled(
-                "Current blockers",
-                Box::new(Text::new(&blockers).with_live(Politeness::Polite)),
-            )));
+        if experience == Experience::FullOs && !internal_offered {
+            body = body.push(Box::new(
+                Section::new(vec![Box::new(
+                    Text::new(FULL_OS_UNAVAILABLE).with_live(Politeness::Polite),
+                )])
+                .with_header(SectionHeader::heading("Before installing")),
+            ));
         }
-        Box::new(page(header).push(Box::new(body.push(Box::new(copy_status)))))
+        body.push(Box::new(self.review_folders(experience)))
     }
 
-    fn ensure_import_app(&mut self) {
-        if self.import_requested && self.import_app.is_none() {
-            self.import_app = Some((self.import_launcher)());
-            self.structure_dirty = true;
+    /// Hand the window to folder imports once they were asked for: the
+    /// view shows them in place of setup.
+    fn open_requested_imports(&self) {
+        if self.import_requested
+            && let Some(imports) = &self.imports
+        {
+            imports.set(true);
         }
     }
 
@@ -1877,46 +1923,28 @@ impl SetupApp {
         reason = "the wizard shell declares its body, status, and state-dependent navigation together"
     )]
     fn build_composition(&self) -> Box<dyn Widget> {
-        let page = self.controller().page();
-        let body = match page {
+        let current = self.controller().page();
+        let body = match current {
             SetupPage::Experience => self.experience_body(),
             SetupPage::Folders => self.folders_body(),
             SetupPage::Review => self.review_body(),
         };
-        let scroll = Scrollable::new_vertical()
-            .fill_parent_height()
-            .always_visible()
-            .with_content_gutter(SCROLLBAR_GUTTER)
-            .with_bottom_content_inset(FOOTER_INSET)
-            .with_child(body);
-        let status = Text::new(&self.status).with_live(if self.status_is_error {
-            Politeness::Assertive
-        } else {
-            Politeness::Polite
-        });
-        let status = Card::new(Box::new(
-            Scrollable::new_vertical()
-                .with_max_height(56.0)
-                .with_content_gutter(SCROLLBAR_GUTTER)
-                .with_child(Box::new(stack().push(Box::new(status)))),
-        ));
         let mut nav = Row::new().no_wrap();
-        if page == SetupPage::Experience {
+        if current == SetupPage::Experience {
             nav = nav.push(Box::new(self.button(
                 "setup.open-imports",
                 "Add folders now…",
                 SetupCommand::OpenImports,
             )));
         } else {
-            nav = nav.push(Box::new(self.button(
-                "setup.back",
-                "Back",
-                SetupCommand::Back,
-            )));
+            nav = nav.push(Box::new(
+                self.button("setup.back", "Back", SetupCommand::Back)
+                    .with_icon(Icon::ChevronLeft),
+            ));
         }
         nav = nav.push(Box::new(Spacer::new()));
         #[cfg(any(target_os = "linux", windows, all(test, unix)))]
-        let internal_nav = page == SetupPage::Review
+        let internal_nav = current == SetupPage::Review
             && self.controller().plan().experience == Experience::FullOs
             && self.internal_install.offers_full_os();
         #[cfg(not(any(target_os = "linux", windows, all(test, unix))))]
@@ -1926,56 +1954,57 @@ impl SetupApp {
             {
                 nav = self.internal_nav(nav);
             }
-        } else if page == SetupPage::Review {
+        } else if current == SetupPage::Review {
             let experience = self.controller().plan().experience;
-            let (id, label, command, enabled) = if experience == Experience::FullOs {
-                (
+            // The review's main action names what happens; once Desktop is
+            // installed there is nothing left to do here.
+            let primary = if experience == Experience::FullOs {
+                Some((
                     "setup.internal.install-unavailable",
-                    "Installation has not started",
+                    "Install Tilo",
                     SetupCommand::InternalInstallUnavailable,
                     false,
-                )
+                ))
             } else {
                 match self.desktop_flow.state() {
-                    DesktopFlowState::Ready(_) => (
+                    DesktopFlowState::Ready(_) => Some((
                         "setup.install",
                         "Install Tilo Desktop",
                         SetupCommand::InstallDesktop,
                         self.folder_selection_settled(),
-                    ),
-                    DesktopFlowState::Downloading(_) => (
+                    )),
+                    DesktopFlowState::Downloading(_) => Some((
                         "setup.cancel-download",
                         "Cancel download",
                         SetupCommand::CancelDesktopDownload,
                         true,
-                    ),
-                    DesktopFlowState::Failed { .. } | DesktopFlowState::Unavailable { .. } => (
-                        "setup.retry-desktop",
-                        "Retry host check",
-                        SetupCommand::RetryDesktop,
-                        true,
-                    ),
-                    DesktopFlowState::Installed { .. } => (
+                    )),
+                    DesktopFlowState::Failed { .. } | DesktopFlowState::Unavailable { .. } => {
+                        Some((
+                            "setup.retry-desktop",
+                            "Check again",
+                            SetupCommand::RetryDesktop,
+                            true,
+                        ))
+                    }
+                    DesktopFlowState::Installed { .. } => None,
+                    _ => Some((
                         "setup.install",
-                        "Tilo Desktop installed",
+                        "Installing…",
                         SetupCommand::InstallDesktop,
                         false,
-                    ),
-                    _ => (
-                        "setup.install",
-                        "Desktop setup in progress…",
-                        SetupCommand::InstallDesktop,
-                        false,
-                    ),
+                    )),
                 }
             };
-            nav = nav.push(Box::new(
-                self.button(id, label, command)
-                    .primary()
-                    .with_enabled(enabled),
-            ));
+            if let Some((id, label, command, enabled)) = primary {
+                nav = nav.push(Box::new(
+                    self.button(id, label, command)
+                        .role(ButtonRole::Primary)
+                        .with_enabled(enabled),
+                ));
+            }
         } else {
-            let next_enabled = match page {
+            let next_enabled = match current {
                 SetupPage::Experience => self
                     .chosen_experience
                     .is_some_and(|choice| self.capabilities.platform.supports(choice)),
@@ -1984,34 +2013,23 @@ impl SetupApp {
             };
             nav = nav.push(Box::new(
                 self.button("setup.next", "Continue", SetupCommand::Next)
-                    .primary()
+                    .role(ButtonRole::Primary)
                     .with_enabled(next_enabled),
             ));
         }
 
-        Box::new(
-            Container::new().filling().with_child(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_horizontal_padding(PAGE_GUTTER, PAGE_GUTTER)
-                    .with_vertical_padding(PAGE_GUTTER)
-                    .with_gap(SIBLING)
-                    .push(Box::new(
-                        Text::new(&format!(
-                            "Set up Tilo  ·  Step {} of 3",
-                            match page {
-                                SetupPage::Experience => 1,
-                                SetupPage::Folders => 2,
-                                SetupPage::Review => 3,
-                            }
-                        ))
-                        .with_role(TextRole::Label),
-                    ))
-                    .push(Box::new(scroll))
-                    .push(Box::new(status))
-                    .push(Box::new(nav)),
-            )),
-        )
+        Frame::new(body)
+            .stepper(
+                &["Experience", "Folders", "Review"],
+                match current {
+                    SetupPage::Experience => 0,
+                    SetupPage::Folders => 1,
+                    SetupPage::Review => 2,
+                },
+            )
+            .notice(page::notice(&self.status, self.status_is_error))
+            .actions(nav)
+            .build()
     }
 }
 
@@ -2028,9 +2046,9 @@ impl SetupApp {
     /// anything runs.
     fn internal_operation_command(
         &mut self,
-        operation: super::actions::SetupOperation,
+        operation: SetupEffect,
     ) -> Result<Option<SetupCommand>, String> {
-        use super::actions::SetupOperation as Op;
+        use SetupEffect as Op;
         let t = super::strings::t;
         let review_only = |app: &Self| {
             if app.on_full_os_review() {
@@ -2086,7 +2104,7 @@ impl SetupApp {
                     &[("gib", gib.into())],
                 );
                 self.status_is_error = false;
-                self.structure_dirty = true;
+                self.composed.invalidate();
                 return Ok(None);
             }
             Op::InstallInternal { reviewed } => {
@@ -2147,7 +2165,7 @@ impl SetupApp {
             );
             self.status_is_error = true;
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     /// Mirror the gated readiness into the capabilities the controller and
@@ -2303,27 +2321,13 @@ impl SetupApp {
                 self.status_is_error = true;
             }
         }
-        self.structure_dirty = true;
+        self.composed.invalidate();
     }
 
     /// Follow helper runs and stepper commits; announce finished runs.
     fn poll_internal_install(&mut self) -> bool {
         let mut changed = self.internal_install.poll();
-        if matches!(
-            self.internal_install.run_state(),
-            RunState::Running {
-                action: HelperAction::Stage,
-                ..
-            }
-        ) && let Some(detail) = self
-            .internal_download_flow
-            .as_ref()
-            .and_then(InternalDownloadFlow::consume_failure)
-            .map(str::to_string)
-        {
-            self.internal_install.abort_stage("download", detail);
-            changed = true;
-        }
+        changed |= self.abort_stage_on_download_failure();
         if self.internal_install_revision != self.internal_install.revision() {
             self.internal_install_revision = self.internal_install.revision();
             let host = self.internal_install.host();
@@ -2352,7 +2356,7 @@ impl SetupApp {
                 self.status = status;
                 self.status_is_error = is_error;
             }
-            self.structure_dirty = true;
+            self.composed.invalidate();
             changed = true;
         }
         if self.internal_install.take_reprobe() {
@@ -2360,6 +2364,27 @@ impl SetupApp {
             changed = true;
         }
         changed
+    }
+
+    /// End a running stage whose download failed; returns whether it did.
+    fn abort_stage_on_download_failure(&mut self) -> bool {
+        if matches!(
+            self.internal_install.run_state(),
+            RunState::Running {
+                action: HelperAction::Stage,
+                ..
+            }
+        ) && let Some(detail) = self
+            .internal_download_flow
+            .as_ref()
+            .and_then(InternalDownloadFlow::consume_failure)
+            .map(str::to_string)
+        {
+            self.internal_install.abort_stage("download", detail);
+            true
+        } else {
+            false
+        }
     }
 
     fn internal_projection(&self) -> super::actions::InternalProjection {
@@ -2497,7 +2522,7 @@ impl SetupApp {
         row
     }
 
-    fn internal_plan_card(&self) -> Card {
+    fn internal_plan_card(&self) -> Section {
         let t = super::strings::t;
         let t_args = super::strings::t_args;
         let install = &self.internal_install;
@@ -2585,7 +2610,6 @@ impl SetupApp {
                         .with_suffix("GiB")
                         .with_id("setup.internal.target-size")
                         .with_accessible_name(t("imager-setup-internal-size-label"))
-                        .with_size(180.0, 40.0)
                         .with_enabled(editable),
                 ))
                 .push(Box::new(
@@ -2611,10 +2635,13 @@ impl SetupApp {
                     .dimmed(),
             ));
         }
-        Card::titled(t("imager-setup-internal-plan-title"), Box::new(content))
+        Section::titled(
+            t("imager-setup-internal-plan-title"),
+            vec![Box::new(content)],
+        )
     }
 
-    fn internal_blockers_card(&self, extra: Option<&str>) -> Card {
+    fn internal_blockers_card(&self, extra: Option<&str>) -> Section {
         let t = super::strings::t;
         let install = &self.internal_install;
         let idle_host = self.host_command_pending.is_none();
@@ -2666,17 +2693,20 @@ impl SetupApp {
             )
             .with_enabled(!install.is_probing() && !install.is_running()),
         ));
-        Card::titled(t("imager-setup-internal-blockers-title"), Box::new(content))
+        Section::titled(
+            t("imager-setup-internal-blockers-title"),
+            vec![Box::new(content)],
+        )
     }
 
-    fn internal_resume_card(&self) -> Option<Card> {
+    fn internal_resume_card(&self) -> Option<Section> {
         let t = super::strings::t;
         let install = &self.internal_install;
         install.pending()?;
         let enabled = !install.is_running();
-        Some(Card::titled(
+        Some(Section::titled(
             t("imager-setup-internal-resume-title"),
-            Box::new(
+            vec![Box::new(
                 stack()
                     .push(Box::new(
                         Text::new(&t("imager-setup-internal-resume"))
@@ -2701,11 +2731,11 @@ impl SetupApp {
                                 .with_enabled(enabled),
                             )),
                     )),
-            ),
+            )],
         ))
     }
 
-    fn internal_run_card(&self) -> Option<Card> {
+    fn internal_run_card(&self) -> Option<Section> {
         let t = super::strings::t;
         let install = &self.internal_install;
         let host = install.host();
@@ -2767,13 +2797,13 @@ impl SetupApp {
                 Politeness::Assertive,
             ),
         };
-        Some(Card::titled(
+        Some(Section::titled(
             &title,
-            Box::new(
+            vec![Box::new(
                 Text::new(&detail)
                     .with_id("setup.internal.run")
                     .with_live(politeness),
-            ),
+            )],
         ))
     }
 
@@ -2796,7 +2826,7 @@ impl SetupApp {
                     &t("imager-setup-internal-restart-now"),
                     SetupCommand::RestartInternal,
                 )
-                .primary()
+                .role(ButtonRole::Primary)
                 .with_enabled(self.host_command_pending.is_none()),
             ));
         }
@@ -2813,7 +2843,7 @@ impl SetupApp {
                 &label,
                 SetupCommand::InstallInternal,
             )
-            .primary()
+            .role(ButtonRole::Primary)
             .with_enabled(
                 install
                     .install_blocker(self.internal_download_ready())
@@ -2917,12 +2947,10 @@ fn experience_unavailable_reason(capabilities: Capabilities, experience: Experie
             "Tilo Desktop is available only on supported Linux installations.".into()
         }
         Experience::Desktop if capabilities.host == HostOs::Linux => {
-            "Tilo Desktop is not available for this Linux installation in this build yet.".into()
+            "Tilo Desktop isn't available for this Linux installation yet.".into()
         }
         Experience::Desktop => "Tilo Desktop is unavailable on this operating system.".into(),
-        Experience::FullOs => {
-            "Full Tilo installation is not available for this computer in this build yet.".into()
-        }
+        Experience::FullOs => "Full Tilo is not available on this computer yet.".into(),
     }
 }
 
@@ -2934,28 +2962,38 @@ fn mode_label(mode: FolderMode) -> &'static str {
     }
 }
 
+/// The entries a folder's scan left out, one per line under a sentence
+/// that says what that means for the estimate.
 fn scan_warning(scan: &FolderScan) -> Option<String> {
     if scan.skipped_count == 0 {
         return None;
     }
-    let count = scan.skipped_count;
     let mut warning = format!(
-        "Estimate incomplete: {} skipped. File count and size exclude them.",
-        skipped_count_phrase(count)
+        "The file count and size leave out {} that couldn't be read:",
+        items_phrase(scan.skipped_count)
     );
     for skipped in &scan.skipped {
         let reason = match &skipped.reason {
-            SkipReason::SymbolicLink => "symbolic link".to_string(),
-            SkipReason::ReadError(error) => format!("could not read: {error}"),
-            SkipReason::UnsupportedFileType => "unsupported file type".to_string(),
+            SkipReason::SymbolicLink => "a symbolic link".to_string(),
+            SkipReason::ReadError(error) => format!("couldn't be read ({error})"),
+            SkipReason::UnsupportedFileType => "not a regular file".to_string(),
         };
-        let _ = write!(warning, "\n{} — {reason}", skipped.path.display());
+        let _ = write!(warning, "\n{}, {reason}", skipped.path.display());
     }
     if scan.skipped_count > scan.skipped.len() as u64 {
         let hidden = scan.skipped_count - scan.skipped.len() as u64;
-        let _ = write!(warning, "\n…and {hidden} more skipped entries.");
+        let _ = write!(warning, "\n{} more", items_phrase(hidden));
     }
     Some(warning)
+}
+
+/// "1 item", "3 items".
+fn items_phrase(count: u64) -> String {
+    if count == 1 {
+        "1 item".to_string()
+    } else {
+        format!("{count} items")
+    }
 }
 
 fn skipped_count_phrase(count: u64) -> String {
@@ -3005,7 +3043,7 @@ fn fixture_desktop_release() -> DesktopRelease {
 
 fn fixture_desktop_selection(already_installed: bool) -> DesktopSelection {
     DesktopSelection {
-        host: "fedora 44 (aarch64)".into(),
+        host: "Fedora Linux 44 (ARM64)".into(),
         release: fixture_desktop_release(),
         already_installed,
     }
@@ -3016,8 +3054,8 @@ fn fixture_desktop_flow(available: bool) -> DesktopFlow {
         DesktopFlowState::Ready(fixture_desktop_selection(false))
     } else {
         DesktopFlowState::Unavailable {
-            host: "fixture host".into(),
-            reasons: vec!["No reviewed Desktop release matches this fixture.".into()],
+            host: "Fedora Linux 44 (ARM64)".into(),
+            reasons: vec!["No Tilo Desktop release matches this computer yet.".into()],
         }
     };
     DesktopFlow::from_fixture_state(state)
@@ -3032,62 +3070,17 @@ impl Drop for SetupApp {
 }
 
 impl Widget for SetupApp {
-    ui::provides!(dyn ui::resources::PublishesResources);
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            super::actions::SETUP_OPERATION_TYPE,
-            super::import_actions::IMPORT_OPERATION_TYPE,
-        ]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation_v2(request.kind, request.type_id, request.payload)?
-            .map(ui::widget::ResourceOperationStart::Completed))
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        self.ensure_import_app();
-        if let Some(import_app) = &mut self.import_app {
-            import_app.sync(state, path);
-            return;
-        }
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.poll_background();
         self.drain_commands();
-        self.ensure_import_app();
-        if let Some(import_app) = &mut self.import_app {
-            import_app.sync(state, path);
-            return;
-        }
-        if let Some(composed) = &mut self.composed {
-            composed.sync(state, path);
-        }
+        self.open_requested_imports();
+        self.composed.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        self.ensure_import_app();
-        if let Some(import_app) = &mut self.import_app {
-            return import_app.update(state, path);
-        }
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = self.poll_background() || self.drain_commands();
-        self.ensure_import_app();
-        if let Some(import_app) = &mut self.import_app {
-            let _ = import_app.update(state, path);
-            return true;
-        }
-        if let Some(composed) = &mut self.composed {
+        self.open_requested_imports();
+        if let Some(composed) = self.composed.element_mut() {
             changed |= composed.update(state, path);
         }
         changed
@@ -3099,124 +3092,27 @@ impl Widget for SetupApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        if let Some(import_app) = &mut self.import_app {
-            return import_app.build_layout(taffy, theme, node_map);
-        }
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let node = taffy
-            .new_with_children(
-                Style {
-                    display: taffy::Display::Flex,
-                    flex_direction: taffy::FlexDirection::Column,
-                    size: Size {
-                        width: Dimension::percent(1.0),
-                        height: Dimension::percent(1.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let composition = self.build_composition();
+        let child = self
+            .composed
+            .build_layout(composition, taffy, theme, node_map);
+        let style = Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
+            size: Size::from_percent(1.0, 1.0),
+            ..Default::default()
+        };
+        taffy.widget_node(style, &[child], node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        if let Some(import_app) = &mut self.import_app {
-            import_app.apply_layout(taffy, node, origin);
-            return;
-        }
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x + layout.size.width),
-            origin.y + f64::from(layout.location.y + layout.size.height),
-        );
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&child) = children.first()
-        {
-            composed.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(import_app) = &mut self.import_app {
-            import_app.draw(scene, transform, text_renderer, theme, presence);
-            return;
-        }
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
-        if let Some(composed) = &mut self.composed {
-            composed.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(import_app) = &mut self.import_app {
-            import_app.handle_event(event, ctx);
-            return;
-        }
-        if let Some(composed) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&child) = children.first()
-        {
-            composed.handle_event(event, &mut ctx.reborrow(ctx.path, child));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        if let Some(import_app) = &self.import_app {
-            return vec![import_app as &dyn Widget];
-        }
-        self.composed
-            .as_ref()
-            .map(|child| child.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if let Some(import_app) = &mut self.import_app {
-            return vec![import_app as &mut dyn Widget];
-        }
-        self.composed
-            .as_mut()
-            .map(|child| child.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
-    }
+    ui::forward_to_composed!(composed);
 
     fn name(&self) -> &'static str {
         "SetupApp"
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
     fn needs_idle_sync(&self) -> bool {
-        self.import_requested
-            || self
-                .import_app
-                .as_ref()
-                .is_some_and(Widget::needs_idle_sync)
-            || self.known_folder_lookup_pending
+        self.known_folder_lookup_pending
             || self.pending_scans > 0
             || self.picker_rx.is_some()
             || self.desktop_flow.has_pending_operation()
@@ -3236,63 +3132,120 @@ impl Widget for SetupApp {
                 }
             }
     }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty)
-            || self
-                .import_app
-                .as_mut()
-                .is_some_and(Widget::take_structure_dirty)
-            || self
-                .composed
-                .as_mut()
-                .is_some_and(|child| child.take_structure_dirty())
-    }
 }
 
-impl ui::resources::PublishesResources for SetupApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if let Some(import_app) = &self.import_app {
-            return import_app.resources(doc);
-        }
-        vec![super::actions::resource(&self.setup_projection())]
-    }
-}
+/// The screenshot scenarios guided setup stages.
+pub const SCENARIOS: &[&str] = &[
+    "setup-experience-checking",
+    "setup-experience",
+    "setup-experience-failed",
+    "setup-folders-copy",
+    "setup-folders-connected",
+    "setup-folders-later",
+    "setup-review",
+    "setup-desktop-installed",
+    "setup-full-review",
+    "setup-full-restart",
+];
 
-impl SetupApp {
-    fn answer_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        if self.import_app.is_some() {
-            return Ok(None);
+impl ResourceSurface<Imager, SetupEffect> for SetupApp {
+    fn present(&mut self, _state: &Rc<Imager>) {}
+
+    fn attach(&mut self, cx: SurfaceCx<Imager>) {
+        self.actions = Some(cx.actions());
+        if cx.mode().is_live() && self.starts_when_live {
+            self.start_live();
         }
-        let Some(operation) = super::actions::decode(type_id, payload)? else {
-            return Ok(None);
+    }
+
+    /// Pose the scenario's setup: its capabilities, folders and page. The
+    /// fixtures are deterministic and never read this computer.
+    fn stage(&mut self, scenario: Option<&str>) {
+        let Some(scenario) = scenario.filter(|name| SCENARIOS.contains(name)) else {
+            return;
         };
-        if kind != tilo_actions::OperationKind::View {
-            return Err("Guided setup operations are local view operations.".into());
-        }
-        self.apply_setup_operation(operation)?;
-        Ok(Some(tilo_actions::ActionOutput {
-            value: Some(self.setup_projection().value()),
-            resources: Vec::new(),
-        }))
+        let imports = self.imports.take();
+        let actions = self.actions.take();
+        let usb = self.usb.take();
+        *self = Self::for_shot(scenario);
+        self.imports = imports;
+        self.actions = actions;
+        self.usb = usb;
+        self.composed.invalidate();
+    }
+
+    fn effect(&mut self, effect: SetupEffect, _cx: &mut EffectCx<Imager, Self>) -> EffectAnswer {
+        self.answer(effect).map(Effected::value)
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        super::actions::statuses(&self.setup_projection())
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        vec![super::actions::row(&self.setup_projection())]
     }
 }
 
-/// Build the live guided-setup root.
-#[must_use]
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(SetupApp::new())
+/// Guided setup in a view of the imager resource. Asking for folder imports
+/// shows them in its place. A live window checks this computer; a capture
+/// or a past version starts from a fixture and reads nothing from it.
+pub fn view(cx: &mut ViewCx<Imager>) -> Element {
+    mount(cx, setup_for, |_| ImportApp::new())
+}
+
+/// The setup `mode` builds: live adapters in a live window, a fixture
+/// otherwise.
+fn setup_for(mode: RunMode) -> SetupApp {
+    if mode.is_live() {
+        SetupApp::new()
+    } else {
+        SetupApp::with_capabilities(SetupCapabilities {
+            platform: Capabilities {
+                host: HostOs::Linux,
+                desktop_session: false,
+                internal_dual_boot: false,
+            },
+            connected_folders: false,
+        })
+    }
+}
+
+/// [`view`] with the setup and the imports each run mode builds.
+pub(crate) fn mount(
+    cx: &mut ViewCx<Imager>,
+    setup: fn(RunMode) -> SetupApp,
+    imports: fn(RunMode) -> ImportApp,
+) -> Element {
+    let writing = cx.local(false);
+    let writer_shown = writing.clone();
+    cx.switch(&writer_shown, move |cx, writing_now| {
+        if *writing_now {
+            return cx.surface(crate::ImagerApp::new());
+        }
+        let importing = cx.local(false);
+        let shown = importing.clone();
+        let writing = writing.clone();
+        cx.switch(&shown, move |cx, importing_now| {
+            if *importing_now {
+                cx.surface(imports(cx.mode()))
+            } else {
+                let mut app = setup(cx.mode());
+                app.imports = Some(importing.clone());
+                app.usb = Some(writing.clone());
+                cx.surface(app)
+            }
+        })
+    })
 }
 
 // View fixtures depend on the Unix installer and cache worker test adapters.
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use std::path::PathBuf;
+
+    use crate::setup::controller::FolderDestination;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -3300,9 +3253,15 @@ mod tests {
     };
 
     use ui::a11y::Action;
+    use ui::framework::ResourceApp;
+    use ui::framework::testing::TestApp;
+    use ui::tilo_resource::{Effect, Resource};
+
+    use crate::setup::import_actions::ImportEffect;
     use ui::headless::{FrameHarness, SemanticExpectation};
 
     use super::*;
+    use crate::setup::actions::SETUP_ROW_ID;
     use crate::setup::folders::{FolderScan, SkipReason, SkippedEntry};
     use crate::setup::internal_bundle;
     use crate::setup::internal_cache::coordinator::{Phase as InternalPhase, Worker};
@@ -3322,6 +3281,8 @@ mod tests {
     const TEST_SYSTEM_ROOT: &str = r"C:\Windows";
     #[cfg(not(windows))]
     const TEST_SYSTEM_ROOT: &str = "/etc";
+
+    include!("desktop_journey_tests.rs");
 
     fn supported_fixture() -> SetupApp {
         SetupApp::with_capabilities(SetupCapabilities {
@@ -3653,7 +3614,7 @@ mod tests {
         // Phase `initial_unavailable_experience_can_activate_the_real_import_surface`.
         // Catches exposing later import only after unavailable installation steps.
         {
-            let mut app = SetupApp::with_capabilities(SetupCapabilities {
+            let app = SetupApp::with_capabilities(SetupCapabilities {
                 platform: Capabilities {
                     host: HostOs::Other,
                     desktop_session: false,
@@ -3661,14 +3622,14 @@ mod tests {
                 },
                 connected_folders: false,
             });
-            app.import_launcher = || ImportApp::for_shot("import-complete");
-            let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
+            let mut window = launch(app, || ImportApp::for_shot("import-complete"));
+            let harness = window.harness();
 
             harness
-                .expect(&SemanticExpectation::named("setup.experience.desktop").enabled(false))
-                .unwrap();
-            harness
-                .expect(&SemanticExpectation::named("setup.experience.full").enabled(false))
+                .expect(
+                    &SemanticExpectation::named("setup.internal.readiness")
+                        .value_contains("Not available"),
+                )
                 .unwrap();
             harness
                 .expect(&SemanticExpectation::named("setup.open-imports").enabled(true))
@@ -3676,8 +3637,10 @@ mod tests {
             harness
                 .perform_named("setup.open-imports", &Action::Activate)
                 .unwrap();
+            window.settle();
 
-            harness
+            window
+                .harness()
                 .expect(&SemanticExpectation::named("import.pick-source").enabled(true))
                 .unwrap();
         }
@@ -3735,14 +3698,13 @@ mod tests {
                 retained_widget_count(composition.as_ref(), "setup.internal.install"),
                 0
             );
-            let doc = AutoCommit::new();
             assert!(
-                !internal_action(&app, "setup.internal.install", &doc)
+                !internal_action(&app, "install-internal")
                     .contract
                     .availability
                     .is_available()
             );
-            assert!(invoke_internal(&mut app, "setup.internal.install").is_err());
+            assert!(invoke_internal(&mut app, "install-internal").is_err());
             assert_eq!(app.internal_install.run_state(), &RunState::Idle);
             let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (960, 720));
 
@@ -3755,7 +3717,7 @@ mod tests {
             harness
                 .expect(
                     &SemanticExpectation::named("setup.internal.install-unavailable")
-                        .name_contains("Installation has not started")
+                        .name_contains("Install Tilo")
                         .enabled(false),
                 )
                 .unwrap();
@@ -3970,7 +3932,7 @@ mod tests {
             harness
                 .expect(
                     &SemanticExpectation::named("setup.review.pending")
-                        .name_contains("remains pending"),
+                        .name_contains("before anything is copied"),
                 )
                 .unwrap();
         }
@@ -4013,14 +3975,8 @@ mod tests {
             let mut harness = FrameHarness::new(ui::State::new(), Box::new(app), (640, 640));
             harness
                 .expect(
-                    &SemanticExpectation::named("setup.review.folders")
-                        .name_contains("permission denied"),
-                )
-                .unwrap();
-            harness
-                .expect(
-                    &SemanticExpectation::named("setup.review.folders")
-                        .name_contains("symbolic link"),
+                    &SemanticExpectation::named("setup.review.folder.0")
+                        .value_contains("2 items skipped"),
                 )
                 .unwrap();
             harness
@@ -4208,13 +4164,15 @@ mod tests {
                 destination: Some(PathBuf::from(TEST_DEST_ROOT).join("Documents")),
                 result: Ok(scan("Documents", 12)),
             });
-            let mut harness = FrameHarness::new(ui::State::new(), Box::new(inherited), (1180, 820));
-            harness
-                .perform_named("setup.folder.0.copy", &Action::Focus)
-                .unwrap();
+            // A folder that follows the default offers no way back to it.
+            let composition = inherited.build_composition();
             assert_eq!(
-                harness.focused_access_node().and_then(|node| node.name),
-                Some("Common: Copy".into())
+                retained_widget_count(composition.as_ref(), "setup.folder.0.mode"),
+                1
+            );
+            assert_eq!(
+                retained_widget_count(composition.as_ref(), "setup.folder.0.follow"),
+                0
             );
 
             let mut overridden = supported_fixture();
@@ -4225,15 +4183,17 @@ mod tests {
                 result: Ok(scan("Documents", 12)),
             });
             overridden.apply_command(SetupCommand::SetFolderMode(0, FolderMode::Connected));
+            assert!(overridden.controller().folders()[0].mode_overridden);
+            let observed = overridden.controller_handle();
             let mut harness =
                 FrameHarness::new(ui::State::new(), Box::new(overridden), (1180, 820));
             harness
-                .perform_named("setup.folder.0.connected", &Action::Focus)
+                .expect(&SemanticExpectation::named("setup.folder.0.follow").enabled(true))
                 .unwrap();
-            assert_eq!(
-                harness.focused_access_node().and_then(|node| node.name),
-                Some("Selected: Connected".into())
-            );
+            harness
+                .perform_named("setup.folder.0.follow", &Action::Activate)
+                .unwrap();
+            assert!(!observed.borrow().folders()[0].mode_overridden);
         }
     }
 
@@ -4268,6 +4228,7 @@ mod tests {
                     os_release: Ok(super::super::desktop_probe::OsRelease {
                         id: "fedora".into(),
                         version_id: Some("44".into()),
+                        name: Some("Fedora Linux".into()),
                     }),
                     architecture: Ok("aarch64".into()),
                     package_manager: Ok(super::super::desktop_probe::PackageManager::Dnf),
@@ -4329,7 +4290,7 @@ mod tests {
             harness
                 .expect(
                     &SemanticExpectation::named("setup.desktop.live")
-                        .name_contains("worker stopped"),
+                        .value_contains("worker stopped"),
                 )
                 .unwrap();
             harness
@@ -4379,13 +4340,13 @@ mod tests {
             harness
                 .expect(
                     &SemanticExpectation::named("setup.desktop.status")
-                        .name_contains("fedora 44 (aarch64)"),
+                        .name_contains("Fedora Linux 44 (ARM64)"),
                 )
                 .unwrap();
             harness
                 .expect(
-                    &SemanticExpectation::named("setup.review.folders")
-                        .name_contains("Destination pending review after login"),
+                    &SemanticExpectation::named("setup.review.pending")
+                        .name_contains("shows where each folder goes"),
                 )
                 .unwrap();
             harness
@@ -4398,13 +4359,10 @@ mod tests {
                 .collect::<Vec<_>>();
             let desktop = labels
                 .iter()
-                .position(|label| label == "Tilo Desktop readiness")
+                .position(|label| label == "Tilo Desktop")
                 .unwrap();
-            let operating_systems = labels
-                .iter()
-                .position(|label| label == "Operating systems")
-                .unwrap();
-            assert!(desktop < operating_systems);
+            let folders = labels.iter().position(|label| label == "Folders").unwrap();
+            assert!(desktop < folders);
         }
 
         // Phase `installed_review_leads_with_login_guidance_and_completion_status`.
@@ -4415,13 +4373,6 @@ mod tests {
             assert!(
                 harness
                     .a11y_node_named("Tilo Desktop is installed")
-                    .is_some()
-            );
-            assert!(
-                harness
-                    .a11y_node_named(
-                        "Tilo Desktop is installed and verified. Sign out when you are ready."
-                    )
                     .is_some()
             );
             harness
@@ -4438,12 +4389,9 @@ mod tests {
             assert!(
                 labels
                     .iter()
-                    .position(|label| label == "Tilo Desktop readiness")
+                    .position(|label| label == "Tilo Desktop")
                     .unwrap()
-                    < labels
-                        .iter()
-                        .position(|label| label == "Folder policies")
-                        .unwrap()
+                    < labels.iter().position(|label| label == "Folders").unwrap()
             );
         }
 
@@ -4530,154 +4478,72 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn embedded_import_routes_the_live_child_and_its_public_pages() {
-        // Phase `embedded_import_routes_the_live_child_without_publishing_stale_setup_resources`.
+        // Phase `opened_imports_replace_setup_in_the_published_tree`.
         {
-            let mut app = supported_fixture();
-            app.import_launcher = || ImportApp::for_shot("import-first-login-later");
-            let mut doc = AutoCommit::new();
-            let setup = ui::resources::resources(&app, &doc).pop().unwrap();
-            let open = setup
-                .actions
-                .iter()
-                .find(|action| action.id == "open-imports")
-                .unwrap()
-                .build_json(&serde_json::Map::new())
-                .unwrap();
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    &open.type_id,
-                    &open.payload,
-                ),
-                &mut doc,
-                &automerge::ROOT,
-            )
-            .unwrap()
-            .unwrap();
-            let mut state = AutoCommit::new();
-            Widget::sync(&mut app, &mut state, &automerge::ROOT);
+            let mut app = launch(supported_fixture(), || {
+                ImportApp::for_shot("import-first-login-later")
+            });
+            assert!(find_row(&app.harness().resources(), SETUP_ROW_ID).is_some());
+            app.effect(&SetupEffect::OpenImports).unwrap();
+            app.settle();
 
-            let resources = ui::resources::resources(&app, &state);
-            assert_eq!(resources.len(), 1);
-            assert_eq!(resources[0].kind, "imager.import");
+            let resources = app.harness().resources();
+            assert!(find_row(&resources, SETUP_ROW_ID).is_none());
+            let imports = find_row(&resources, "imager.import").expect("the imports row");
             assert!(
-                resources
-                    .iter()
-                    .all(|resource| resource.kind != "imager.setup")
+                app.effect(&SetupEffect::OpenImports).is_err(),
+                "a retained setup effect must not reach the closed setup"
             );
-            assert!(
-                Widget::start_operation(
-                    &mut app,
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::View,
-                        &open.type_id,
-                        &open.payload
-                    ),
-                    &mut state,
-                    &automerge::ROOT
-                )
-                .unwrap()
-                .is_none(),
-                "a retained setup action must not mutate the hidden parent flow"
-            );
-            let folder = resources[0]
+            let folder = imports
                 .children
                 .iter()
                 .find(|resource| resource.kind == "imager.import.folder")
+                .unwrap()
+                .clone();
+            app.call_on(folder.id.as_str(), "set-folder-copy", serde_json::json!({}))
                 .unwrap();
-            let copy_action = folder
-                .actions
-                .iter()
-                .find(|action| action.id == "one-time-copy")
-                .unwrap();
-            let copy = copy_action.build_json(&serde_json::Map::new()).unwrap();
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    copy_action.kind,
-                    &copy.type_id,
-                    &copy.payload,
-                ),
-                &mut state,
-                &automerge::ROOT,
-            )
-            .unwrap()
-            .unwrap();
 
-            let updated = ui::resources::resources(&app, &state);
-            let folder = updated[0]
-                .children
-                .iter()
-                .find(|resource| resource.kind == "imager.import.folder")
-                .unwrap();
+            let updated = app.harness().resources();
+            let folder = find_row(&updated, folder.id.as_str()).unwrap();
             assert!(
                 folder
                     .presentation
                     .as_ref()
                     .and_then(|presentation| presentation.detail.as_deref())
-                    .is_some_and(|detail| detail.contains("copy"))
+                    .is_some_and(|detail| detail.contains("Copy"))
             );
         }
 
-        // Phase `embedded_import_publicly_observes_completed_issue_pages_before_layout`.
+        // Phase `opened_imports_publicly_observe_completed_issue_pages`.
         {
-            let mut app = supported_fixture();
-            app.import_launcher = || ImportApp::for_shot("import-issue-pages");
-            let mut state = AutoCommit::new();
-            let setup = ui::resources::resources(&app, &state).pop().unwrap();
-            let open = setup
-                .actions
-                .iter()
-                .find(|action| action.id == "open-imports")
+            let mut app = launch(supported_fixture(), || {
+                ImportApp::for_shot("import-issue-pages")
+            });
+            app.effect(&SetupEffect::OpenImports).unwrap();
+            app.settle();
+            let read = |app: &mut TestApp<SetupFlow>| {
+                app.effect(&ImportEffect::ReadStatus)
+                    .unwrap()
+                    .value
+                    .unwrap()
+            };
+            let resources = app.harness().resources();
+            let operation = find_row(&resources, "imager.import")
                 .unwrap()
-                .build_json(&serde_json::Map::new())
-                .unwrap();
-            invoke_encoded_setup(&mut app, &open).unwrap();
-            Widget::sync(&mut app, &mut state, &automerge::ROOT);
-
-            let resource = ui::resources::resources(&app, &state).pop().unwrap();
-            let operation = resource
                 .children
                 .iter()
                 .find(|resource| resource.kind == "imager.import.operation")
+                .cloned()
                 .unwrap_or_else(|| {
-                    let read = resource
-                        .actions
-                        .iter()
-                        .find(|action| action.id == "read-status")
-                        .unwrap()
-                        .build_json(&serde_json::Map::new())
-                        .unwrap();
-                    panic!(
-                        "issue-page fixture has no operation: {}",
-                        invoke_encoded_setup(&mut app, &read).unwrap()
-                    );
+                    panic!("issue-page fixture has no operation: {}", read(&mut app))
                 });
-            let next = operation
-                .actions
-                .iter()
-                .find(|action| action.id == "next-issues")
-                .unwrap()
-                .build_json(&serde_json::Map::new())
+            app.call_on(operation.id.as_str(), "next-issues", serde_json::json!({}))
                 .unwrap();
-            invoke_encoded_setup(&mut app, &next).unwrap();
 
             let deadline = tilo_test_env::hang_deadline();
             let observed = loop {
-                Widget::update(&mut app, &mut state, &automerge::ROOT);
-                let resource = ui::resources::resources(&app, &state).pop().unwrap();
-                let read = resource
-                    .actions
-                    .iter()
-                    .find(|action| action.id == "read-status")
-                    .unwrap()
-                    .build_json(&serde_json::Map::new())
-                    .unwrap();
-                let observed = invoke_encoded_setup(&mut app, &read).unwrap();
+                app.settle();
+                let observed = read(&mut app);
                 if observed["operations"][0]["issues"]
                     .as_array()
                     .is_some_and(|issues| issues.len() == 8)
@@ -4686,47 +4552,142 @@ mod tests {
                 }
                 assert!(
                     ui::time::now() < deadline,
-                    "embedded completed issue page was not publicly observable"
+                    "completed issue page was not publicly observable"
                 );
                 std::thread::yield_now();
             };
             assert_eq!(observed["operations"][0]["next_issues_available"], false);
-
-            let resource = ui::resources::resources(&app, &state).pop().unwrap();
-            let read = resource
-                .actions
-                .iter()
-                .find(|action| action.id == "read-status")
-                .unwrap()
-                .build_json(&serde_json::Map::new())
-                .unwrap();
-            let repeated = invoke_encoded_setup(&mut app, &read).unwrap();
-            assert_eq!(repeated, observed);
+            assert_eq!(read(&mut app), observed);
         }
     }
 
-    fn setup_resource(app: &SetupApp, doc: &AutoCommit) -> tilo_actions::Resource {
-        ui::resources::resources(app, doc)
-            .into_iter()
-            .find(|resource| resource.id.as_str() == super::super::actions::SETUP_RESOURCE_ID)
-            .unwrap()
+    thread_local! {
+        static NEXT_SETUP: std::cell::RefCell<Option<SetupApp>> =
+            const { std::cell::RefCell::new(None) };
+        static NEXT_IMPORTS: std::cell::Cell<Option<fn() -> ImportApp>> =
+            const { std::cell::Cell::new(None) };
     }
 
-    fn setup_action(app: &SetupApp, id: &str, doc: &AutoCommit) -> tilo_actions::ActionSpec {
-        setup_resource(app, doc)
+    /// The imager mounting guided setup as its view, over the setup and the
+    /// imports [`launch`] hands it.
+    struct SetupFlow;
+
+    impl ResourceApp for SetupFlow {
+        type Resource = Imager;
+        const ID: &'static str = "so.tilo.imager";
+        const TITLE: &'static str = "Disk Imager";
+
+        fn view(cx: &mut ViewCx<Imager>) -> Element {
+            mount(
+                cx,
+                |_| {
+                    NEXT_SETUP
+                        .with(|next| next.borrow_mut().take())
+                        .expect("a setup to mount")
+                },
+                |_| {
+                    NEXT_IMPORTS
+                        .with(std::cell::Cell::get)
+                        .expect("imports to mount")()
+                },
+            )
+        }
+    }
+
+    /// `setup` in a live window of the imager; asking for imports shows
+    /// `imports`.
+    fn launch(setup: SetupApp, imports: fn() -> ImportApp) -> TestApp<SetupFlow> {
+        NEXT_SETUP.with(|next| *next.borrow_mut() = Some(setup));
+        NEXT_IMPORTS.with(|next| next.set(Some(imports)));
+        TestApp::<SetupFlow>::new().unwrap()
+    }
+
+    fn find_row(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                Some(resource.clone())
+            } else {
+                find_row(&resource.children, id)
+            }
+        })
+    }
+
+    /// The imager mounting guided setup, as a screenshot captures it.
+    struct SetupShots;
+
+    impl ResourceApp for SetupShots {
+        type Resource = Imager;
+        const ID: &'static str = "so.tilo.imager";
+        const TITLE: &'static str = "Disk Imager";
+
+        fn scenarios() -> &'static [&'static str] {
+            SCENARIOS
+        }
+
+        fn view(cx: &mut ViewCx<Imager>) -> Element {
+            view(cx)
+        }
+    }
+
+    #[test]
+    fn every_setup_scenario_stages_its_page_without_reading_this_computer() {
+        for (scenario, badge) in [
+            ("setup-experience-checking", "Experience"),
+            ("setup-experience", "Experience"),
+            ("setup-experience-failed", "Experience"),
+            ("setup-folders-copy", "Folders"),
+            ("setup-folders-connected", "Folders"),
+            ("setup-folders-later", "Folders"),
+            ("setup-review", "Review"),
+            ("setup-desktop-installed", "Review"),
+            ("setup-full-review", "Review"),
+            ("setup-full-restart", "Review"),
+        ] {
+            let mut app = TestApp::<SetupShots>::capture(Some(scenario)).unwrap();
+            let resources = app.harness().resources();
+            let setup = find_row(&resources, SETUP_ROW_ID).unwrap_or_else(|| panic!("{scenario}"));
+            assert_eq!(
+                setup.presentation.as_ref().unwrap().badge.as_deref(),
+                Some(badge),
+                "{scenario}"
+            );
+            let inspection = app.harness().inspection_json().unwrap();
+            if badge != "Experience" {
+                assert!(inspection.contains("Pictures"), "{scenario}");
+            }
+            if scenario == "setup-desktop-installed" {
+                assert!(inspection.contains("installed and verified"), "{scenario}");
+            }
+        }
+    }
+
+    /// Setup as the imager resource publishes it: the live row, carrying
+    /// the setup effects as callers see them now.
+    fn setup_resource(app: &SetupApp) -> tilo_actions::Resource {
+        let mut root = app.live_rows().remove(0).into_resource();
+        let blocked = super::super::actions::blocked(&app.setup_projection());
+        root.actions = SetupEffect::specs()
+            .into_iter()
+            .map(
+                |spec| match blocked.iter().find(|blocked| blocked.id == spec.id) {
+                    Some(blocked) => spec.unavailable(blocked.code, blocked.reason.clone()),
+                    None => spec,
+                },
+            )
+            .collect();
+        root
+    }
+
+    fn setup_action(app: &SetupApp, id: &str) -> tilo_actions::ActionSpec {
+        setup_resource(app)
             .actions
             .into_iter()
             .find(|action| action.id == id)
-            .unwrap()
+            .unwrap_or_else(|| panic!("missing setup effect {id}"))
     }
 
-    fn folder_action(
-        app: &SetupApp,
-        index: usize,
-        id: &str,
-        doc: &AutoCommit,
-    ) -> tilo_actions::ActionSpec {
-        child_resource(&setup_resource(app, doc), "imager.setup.selection").children[index]
+    fn folder_action(app: &SetupApp, index: usize, id: &str) -> tilo_actions::ActionSpec {
+        child_resource(&setup_resource(app), "imager.setup.selection").children[index]
             .actions
             .iter()
             .find(|action| action.id == id)
@@ -4743,32 +4704,26 @@ mod tests {
             .collect()
     }
 
+    /// Invoke `action` with `arguments` as a caller does: the effect it
+    /// encodes reaches the setup.
+    fn invoke_spec(
+        app: &mut SetupApp,
+        action: &tilo_actions::ActionSpec,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let encoded = action
+            .build_json(arguments)
+            .map_err(|error| error.to_string())?;
+        invoke_encoded_setup(app, &encoded)
+    }
+
     fn invoke_setup(
         app: &mut SetupApp,
         id: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
-        let mut doc = AutoCommit::new();
-        let action = setup_action(app, id, &doc);
-        let encoded = action
-            .build_json(&arguments)
-            .map_err(|error| error.to_string())?;
-        Widget::start_operation(
-            app,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                action.kind,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
-            &mut doc,
-            &automerge::ROOT,
-        )?
-        .and_then(|started| match started {
-            ui::widget::ResourceOperationStart::Completed(output) => output.value,
-            _ => None,
-        })
-        .ok_or_else(|| "setup operation returned no state projection".to_string())
+        let action = setup_action(app, id);
+        invoke_spec(app, &action, &arguments)
     }
 
     fn invoke_folder_setup(
@@ -4777,36 +4732,15 @@ mod tests {
         id: &str,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
-        let doc = AutoCommit::new();
-        let action = folder_action(app, index, id, &doc);
-        let encoded = action
-            .build_json(&arguments)
-            .map_err(|error| error.to_string())?;
-        invoke_encoded_setup(app, &encoded)
+        let action = folder_action(app, index, id);
+        invoke_spec(app, &action, &arguments)
     }
 
     fn invoke_setup_raw(
         app: &mut SetupApp,
-        operation: super::super::actions::SetupOperation,
+        effect: SetupEffect,
     ) -> Result<serde_json::Value, String> {
-        let mut doc = AutoCommit::new();
-        let encoded = super::super::actions::encode(&operation);
-        Widget::start_operation(
-            app,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
-            &mut doc,
-            &automerge::ROOT,
-        )?
-        .and_then(|started| match started {
-            ui::widget::ResourceOperationStart::Completed(output) => output.value,
-            _ => None,
-        })
-        .ok_or_else(|| "setup operation returned no state projection".to_string())
+        app.answer(effect)
     }
 
     fn child_resource<'a>(
@@ -4824,96 +4758,8 @@ mod tests {
         app: &mut SetupApp,
         encoded: &tilo_actions::EncodedAction,
     ) -> Result<serde_json::Value, String> {
-        let mut doc = AutoCommit::new();
-        Widget::start_operation(
-            app,
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
-            &mut doc,
-            &automerge::ROOT,
-        )?
-        .and_then(|started| match started {
-            ui::widget::ResourceOperationStart::Completed(output) => output.value,
-            _ => None,
-        })
-        .ok_or_else(|| "setup operation returned no state projection".to_string())
-    }
-
-    fn retained_setup_help_before_import(
-        app: &SetupApp,
-        doc: &AutoCommit,
-    ) -> tilo_actions::EncodedAction {
-        let resource = ui::resources::resources(app, doc).pop().unwrap();
-        assert_eq!(
-            resource.id.as_str(),
-            super::super::actions::SETUP_RESOURCE_ID
-        );
-        assert_eq!(
-            resource.presentation.as_ref().unwrap().badge.as_deref(),
-            Some("Folders")
-        );
-        let selection = child_resource(&resource, "imager.setup.selection");
-        let detail = selection
-            .presentation
-            .as_ref()
-            .unwrap()
-            .detail
-            .as_deref()
-            .unwrap();
-        assert!(detail.contains("help open"), "{detail}");
-        assert!(detail.contains("imports closed"), "{detail}");
-        let toggle_help = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "toggle-help")
-            .unwrap();
-        assert!(toggle_help.contract.availability.is_available());
-        toggle_help.build_json(&serde_json::Map::new()).unwrap()
-    }
-
-    fn assert_live_import_after_activation(
-        app: &mut SetupApp,
-        doc: &mut AutoCommit,
-        retained_setup: &tilo_actions::EncodedAction,
-    ) {
-        let resource = ui::resources::resources(app, doc).pop().unwrap();
-        assert_eq!(
-            resource.id.as_str(),
-            super::super::import_actions::IMPORT_RESOURCE_ID
-        );
-        assert_eq!(resource.kind, "imager.import");
-        let read = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "read-status")
-            .unwrap()
-            .build_json(&serde_json::Map::new())
-            .unwrap();
-        assert_eq!(
-            invoke_encoded_setup(app, &read).unwrap()["operations"][0]["state"],
-            "complete"
-        );
-        assert!(
-            Widget::start_operation(
-                app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    &retained_setup.type_id,
-                    &retained_setup.payload
-                ),
-                doc,
-                &automerge::ROOT
-            )
-            .unwrap()
-            .is_none(),
-            "the retained setup action must not reach the hidden parent flow"
-        );
-        assert_eq!(ui::resources::resources(app, doc)[0].kind, "imager.import");
+        assert_eq!(encoded.type_id, SetupEffect::OPERATION);
+        app.answer(SetupEffect::from_payload(&encoded.payload)?)
     }
 
     /// Semantic operations, suggested and retained folder actions.
@@ -4934,7 +4780,7 @@ mod tests {
             .unwrap();
             assert_eq!(selected["selection"]["experience"], "desktop");
             assert_eq!(
-                invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap()["page"],
+                invoke_setup(&mut app, "continue-setup", serde_json::Map::new()).unwrap()["page"],
                 "folders"
             );
             app.apply_worker_message(WorkerMessage::ScanFinished {
@@ -4944,7 +4790,7 @@ mod tests {
             invoke_folder_setup(
                 &mut app,
                 0,
-                "set-mode",
+                "set-folder-mode",
                 setup_args(&[("mode", serde_json::json!("later"))]),
             )
             .unwrap();
@@ -4956,7 +4802,7 @@ mod tests {
             invoke_folder_setup(
                 &mut app,
                 0,
-                "set-mode",
+                "set-folder-mode",
                 setup_args(&[("mode", serde_json::json!("later"))]),
             )
             .unwrap();
@@ -4965,9 +4811,9 @@ mod tests {
                 result: Ok(scan("Pictures", 2048)),
             });
             let removed =
-                invoke_folder_setup(&mut app, 1, "remove", serde_json::Map::new()).unwrap();
+                invoke_folder_setup(&mut app, 1, "remove-folder", serde_json::Map::new()).unwrap();
             assert_eq!(removed["selection"]["folder_count"], 1);
-            let review = invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+            let review = invoke_setup(&mut app, "continue-setup", serde_json::Map::new()).unwrap();
             assert_eq!(review["page"], "review");
             assert_eq!(review["review"]["ready"], true);
             assert_eq!(review["selection"]["folder_count"], 1);
@@ -4975,13 +4821,13 @@ mod tests {
             assert!(
                 invoke_setup_raw(
                     &mut app,
-                    super::super::actions::SetupOperation::SetCommonMode {
+                    SetupEffect::SetCommonMode {
                         mode: "copy".into()
                     }
                 )
                 .is_err()
             );
-            invoke_setup(&mut app, "back", serde_json::Map::new()).unwrap();
+            invoke_setup(&mut app, "go-back-in-setup", serde_json::Map::new()).unwrap();
             let edited = invoke_setup(
                 &mut app,
                 "set-common-mode",
@@ -4991,7 +4837,7 @@ mod tests {
             assert_eq!(edited["page"], "folders");
             assert_eq!(edited["review"]["ready"], false);
             assert_eq!(edited["selection"]["folders"][0]["mode"], "later");
-            let back = invoke_setup(&mut app, "back", serde_json::Map::new()).unwrap();
+            let back = invoke_setup(&mut app, "go-back-in-setup", serde_json::Map::new()).unwrap();
             assert_eq!(back["page"], "experience");
             assert_eq!(back["selection"]["experience"], "desktop");
             assert_eq!(back["selection"]["folder_count"], 1);
@@ -5009,7 +4855,7 @@ mod tests {
             });
             let error = invoke_setup_raw(
                 &mut app,
-                super::super::actions::SetupOperation::ChooseExperience {
+                SetupEffect::ChooseExperience {
                     experience: "full_os".into(),
                 },
             )
@@ -5022,10 +4868,10 @@ mod tests {
                 setup_args(&[("experience", serde_json::json!("desktop"))]),
             )
             .unwrap();
-            invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+            invoke_setup(&mut app, "continue-setup", serde_json::Map::new()).unwrap();
             let error = invoke_setup_raw(
                 &mut app,
-                super::super::actions::SetupOperation::SetCommonMode {
+                SetupEffect::SetCommonMode {
                     mode: "connected".into(),
                 },
             )
@@ -5044,21 +4890,21 @@ mod tests {
                 setup_args(&[("experience", serde_json::json!("desktop"))]),
             )
             .unwrap();
-            invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+            invoke_setup(&mut app, "continue-setup", serde_json::Map::new()).unwrap();
             app.apply_worker_message(WorkerMessage::ScanFinished {
                 destination: None,
                 result: Ok(scan("Documents", 4096)),
             });
             let before = app.controller().folders().to_vec();
             for operation in [
-                super::super::actions::SetupOperation::SetFolderMode {
+                SetupEffect::SetFolderMode {
                     folder: "missing".into(),
                     mode: "copy".into(),
                 },
-                super::super::actions::SetupOperation::ClearFolderMode {
+                SetupEffect::UseCommonMode {
                     folder: "missing".into(),
                 },
-                super::super::actions::SetupOperation::RemoveFolder {
+                SetupEffect::RemoveFolder {
                     folder: "missing".into(),
                 },
             ] {
@@ -5069,27 +4915,12 @@ mod tests {
                 );
                 assert_eq!(app.controller().folders(), before.as_slice());
             }
-            let mut doc = AutoCommit::new();
-            let set_mode = folder_action(&app, 0, "set-mode", &doc);
+            let set_mode = folder_action(&app, 0, "set-folder-mode");
             assert!(set_mode.build_json(&serde_json::Map::new()).is_err());
             assert!(
                 set_mode
                     .build_json(&setup_args(&[("mode", serde_json::json!(7))]))
                     .is_err()
-            );
-            assert!(
-                Widget::start_operation(
-                    &mut app,
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::View,
-                        super::super::actions::SETUP_OPERATION_TYPE,
-                        b"{not-json"
-                    ),
-                    &mut doc,
-                    &automerge::ROOT
-                )
-                .is_err()
             );
             assert_eq!(app.controller().folders(), before.as_slice());
         }
@@ -5104,14 +4935,13 @@ mod tests {
                 setup_args(&[("experience", serde_json::json!("desktop"))]),
             )
             .unwrap();
-            invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+            invoke_setup(&mut app, "continue-setup", serde_json::Map::new()).unwrap();
             app.known_folders = vec![KnownFolder {
                 kind: KnownFolderKind::Documents,
                 path: Some(PathBuf::from(TEST_SOURCE_ROOT).join("Documents")),
                 unavailable_reason: None,
             }];
-            let doc = AutoCommit::new();
-            let root = setup_resource(&app, &doc);
+            let root = setup_resource(&app);
             let suggestion = child_resource(&root, "imager.setup.suggestions")
                 .children
                 .iter()
@@ -5121,7 +4951,7 @@ mod tests {
                 suggestion
                     .actions
                     .iter()
-                    .find(|action| action.id == "select")
+                    .find(|action| action.id == "add-suggested-folder")
                     .unwrap()
                     .contract
                     .availability
@@ -5130,7 +4960,7 @@ mod tests {
             let encoded = suggestion
                 .actions
                 .iter()
-                .find(|action| action.id == "select")
+                .find(|action| action.id == "add-suggested-folder")
                 .unwrap()
                 .build_json(&serde_json::Map::new())
                 .unwrap();
@@ -5148,7 +4978,7 @@ mod tests {
                 setup_args(&[("experience", serde_json::json!("desktop"))]),
             )
             .unwrap();
-            invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+            invoke_setup(&mut app, "continue-setup", serde_json::Map::new()).unwrap();
             for (name, bytes) in [("A", 1), ("B", 2), ("C", 3)] {
                 app.apply_worker_message(WorkerMessage::ScanFinished {
                     destination: None,
@@ -5156,24 +4986,22 @@ mod tests {
                 });
             }
 
-            let root = ui::resources::resources(&app, &AutoCommit::new())
-                .pop()
-                .unwrap();
+            let root = setup_resource(&app);
             let folders = &child_resource(&root, "imager.setup.selection").children;
             let remove_a = folders[0]
                 .actions
                 .iter()
-                .find(|action| action.id == "remove")
+                .find(|action| action.id == "remove-folder")
                 .unwrap()
                 .clone();
             let set_b = folders[1]
                 .actions
                 .iter()
-                .find(|action| action.id == "set-mode")
+                .find(|action| action.id == "set-folder-mode")
                 .unwrap()
                 .clone();
             let remove_a = match &remove_a.input {
-                tilo_actions::ActionInput::Immediate(encoded) => encoded.clone(),
+                tilo_actions::ActionInput::Immediate(encoded) => encoded.as_ref().clone(),
                 tilo_actions::ActionInput::Prompted { .. }
                 | tilo_actions::ActionInput::Deferred { .. } => {
                     panic!("remove must be immediate")
@@ -5208,15 +5036,14 @@ mod tests {
         // Phase `setup_actions_follow_visible_pages_and_import_takeover`.
         {
             let mut app = supported_fixture();
-            let doc = AutoCommit::new();
             assert!(
-                setup_action(&app, "choose-experience", &doc)
+                setup_action(&app, "choose-experience")
                     .contract
                     .availability
                     .is_available()
             );
             assert!(
-                setup_action(&app, "open-imports", &doc)
+                setup_action(&app, "open-imports")
                     .contract
                     .availability
                     .is_available()
@@ -5227,21 +5054,21 @@ mod tests {
                 setup_args(&[("experience", serde_json::json!("desktop"))]),
             )
             .unwrap();
-            invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+            invoke_setup(&mut app, "continue-setup", serde_json::Map::new()).unwrap();
             assert!(
-                !setup_action(&app, "choose-experience", &doc)
+                !setup_action(&app, "choose-experience")
                     .contract
                     .availability
                     .is_available()
             );
             assert!(
-                !setup_action(&app, "open-imports", &doc)
+                !setup_action(&app, "open-imports")
                     .contract
                     .availability
                     .is_available()
             );
             assert!(
-                setup_action(&app, "choose-folder", &doc)
+                setup_action(&app, "choose-folder")
                     .contract
                     .availability
                     .is_available()
@@ -5249,45 +5076,42 @@ mod tests {
             assert!(
                 invoke_setup_raw(
                     &mut app,
-                    super::super::actions::SetupOperation::ChooseExperience {
+                    SetupEffect::ChooseExperience {
                         experience: "desktop".into()
                     }
                 )
                 .is_err()
             );
-            invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
+            invoke_setup(&mut app, "continue-setup", serde_json::Map::new()).unwrap();
             assert!(
-                !setup_action(&app, "set-common-mode", &doc)
+                !setup_action(&app, "set-common-mode")
                     .contract
                     .availability
                     .is_available()
             );
             assert!(
-                !setup_action(&app, "choose-folder", &doc)
+                !setup_action(&app, "choose-folder")
                     .contract
                     .availability
                     .is_available()
             );
             assert!(
-                setup_action(&app, "open-imports", &doc)
+                setup_action(&app, "open-imports")
                     .contract
                     .availability
                     .is_available()
             );
-            invoke_setup(&mut app, "open-imports", serde_json::Map::new()).unwrap();
+            let opened = invoke_setup(&mut app, "open-imports", serde_json::Map::new()).unwrap();
+            assert_eq!(opened["selection"]["imports_open"], true);
             assert!(
-                ui::resources::resources(&app, &doc)
-                    .iter()
-                    .all(|resource| resource.kind != "imager.setup")
-            );
-            assert!(
-                invoke_setup_raw(&mut app, super::super::actions::SetupOperation::Next).is_err()
+                invoke_setup_raw(&mut app, SetupEffect::ContinueSetup).is_err(),
+                "setup is closed once imports are asked for"
             );
         }
 
         // Phase `setup_resource_projects_availability_help_and_import_navigation`.
         {
-            let mut app = SetupApp::with_capabilities(SetupCapabilities {
+            let app = SetupApp::with_capabilities(SetupCapabilities {
                 platform: Capabilities {
                     host: HostOs::Linux,
                     desktop_session: true,
@@ -5295,15 +5119,21 @@ mod tests {
                 },
                 connected_folders: false,
             });
-            app.import_launcher = || ImportApp::for_shot("import-complete");
-            let mut doc = AutoCommit::new();
-            let resource = ui::resources::resources(&app, &doc).pop().unwrap();
+            let mut window = launch(app, || ImportApp::for_shot("import-complete"));
+            let root_action = |window: &mut TestApp<SetupFlow>, id: &str| {
+                find_row(&window.harness().resources(), Imager::KIND)
+                    .expect("the imager resource")
+                    .actions
+                    .into_iter()
+                    .find(|action| action.id == id)
+                    .unwrap_or_else(|| panic!("missing {id}"))
+            };
+            let resource = find_row(&window.harness().resources(), SETUP_ROW_ID).unwrap();
             assert_eq!(resource.kind, "imager.setup");
             assert_eq!(
                 resource.presentation.as_ref().unwrap().badge.as_deref(),
                 Some("Experience")
             );
-            assert_eq!(resource.actions.len(), 7);
             let detail = resource
                 .presentation
                 .as_ref()
@@ -5311,51 +5141,108 @@ mod tests {
                 .detail
                 .as_deref()
                 .unwrap();
-            assert!(detail.contains("Full OS no"), "{detail}");
-            assert!(detail.contains("Connected no"), "{detail}");
-            let choose = resource
-                .actions
-                .iter()
-                .find(|action| action.id == "choose-experience")
+            assert!(detail.contains("Experience page"), "{detail}");
+            let status = window
+                .effect(&SetupEffect::ReadSetupStatus)
+                .unwrap()
+                .value
                 .unwrap();
             assert_eq!(
-                choose.params()[0]
-                    .choices
-                    .iter()
-                    .map(std::convert::AsRef::as_ref)
-                    .collect::<Vec<&str>>(),
-                vec!["desktop"]
+                status["availability"]["full_os"],
+                serde_json::json!(false),
+                "the published setup status refuses Full Tilo"
             );
-            assert!(resource.actions.iter().all(|action| {
-                action.operation_type.as_deref()
-                    == Some(super::super::actions::SETUP_OPERATION_TYPE)
-            }));
-            let chosen = invoke_setup(
-                &mut app,
-                "choose-experience",
-                setup_args(&[("experience", serde_json::json!("desktop"))]),
-            )
-            .unwrap();
+            assert_eq!(
+                status["availability"]["connected"],
+                serde_json::json!(false),
+                "the published setup status refuses connected folders"
+            );
+            for id in ["choose-experience", "open-imports", "read-setup-status"] {
+                let action = root_action(&mut window, id);
+                assert_eq!(
+                    action.operation_type.as_deref(),
+                    Some(SetupEffect::OPERATION)
+                );
+                assert!(action.contract.availability.is_available(), "{id}");
+            }
+            assert!(
+                !root_action(&mut window, "continue-setup")
+                    .contract
+                    .availability
+                    .is_available(),
+                "the published effects follow the setup's state"
+            );
+            assert!(
+                window
+                    .effect(&SetupEffect::ChooseExperience {
+                        experience: "full_os".into()
+                    })
+                    .is_err(),
+                "an unavailable experience is refused"
+            );
+            let chosen = window
+                .effect(&SetupEffect::ChooseExperience {
+                    experience: "desktop".into(),
+                })
+                .unwrap()
+                .value
+                .unwrap();
             assert_eq!(chosen["availability"]["desktop"], true);
             assert_eq!(chosen["availability"]["full_os"], false);
             assert_eq!(chosen["availability"]["connected"], false);
             assert_eq!(chosen["availability"]["next"], true);
-            invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
-            let folders = invoke_setup(&mut app, "toggle-help", serde_json::Map::new()).unwrap();
+            window.effect(&SetupEffect::ContinueSetup).unwrap();
+            let folders = window
+                .effect(&SetupEffect::ToggleHelp)
+                .unwrap()
+                .value
+                .unwrap();
             assert_eq!(folders["selection"]["help_open"], true);
             assert_eq!(folders["page"], "folders");
-            let retained_help = retained_setup_help_before_import(&app, &doc);
+            let resources = window.harness().resources();
+            let selection = find_row(&resources, "imager.setup.selection").unwrap();
+            let detail = selection
+                .presentation
+                .as_ref()
+                .unwrap()
+                .detail
+                .as_deref()
+                .unwrap();
+            assert!(detail.contains("help open"), "{detail}");
+            assert!(detail.contains("imports closed"), "{detail}");
             assert!(
-                !setup_action(&app, "open-imports", &doc)
+                !root_action(&mut window, "open-imports")
                     .contract
                     .availability
                     .is_available()
             );
-            invoke_setup(&mut app, "next", serde_json::Map::new()).unwrap();
-            let opened = invoke_setup(&mut app, "open-imports", serde_json::Map::new()).unwrap();
+            window.effect(&SetupEffect::ContinueSetup).unwrap();
+            let opened = window
+                .effect(&SetupEffect::OpenImports)
+                .unwrap()
+                .value
+                .unwrap();
             assert_eq!(opened["selection"]["imports_open"], true);
-            assert_eq!(app.children()[0].name(), "ImportApp");
-            assert_live_import_after_activation(&mut app, &mut doc, &retained_help);
+            window.settle();
+
+            let resources = window.harness().resources();
+            assert!(find_row(&resources, SETUP_ROW_ID).is_none());
+            assert_eq!(
+                find_row(&resources, "imager.import").unwrap().kind,
+                "imager.import"
+            );
+            assert_eq!(
+                window
+                    .effect(&ImportEffect::ReadStatus)
+                    .unwrap()
+                    .value
+                    .unwrap()["operations"][0]["state"],
+                "complete"
+            );
+            assert!(
+                window.effect(&SetupEffect::ToggleHelp).is_err(),
+                "a retained setup effect must not reach the closed setup"
+            );
         }
 
         // Phase `setup_resource_browses_complete_path_free_folder_selection`.
@@ -5371,9 +5258,7 @@ mod tests {
                 .borrow_mut()
                 .set_folder_mode(1, FolderMode::Later);
 
-            let root = ui::resources::resources(&app, &AutoCommit::new())
-                .pop()
-                .unwrap();
+            let root = setup_resource(&app);
             let selection = child_resource(&root, "imager.setup.selection");
             let detail = selection
                 .presentation
@@ -5384,7 +5269,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 detail,
-                "experience no experience selected · common copy · 2 folders · 1 active · help closed · imports closed"
+                "no experience chosen yet, copy by default, 2 folders, 1 to bring over. With help closed and imports closed."
             );
             assert_eq!(selection.children.len(), 2);
             assert_eq!(selection.children[0].kind, "imager.setup.folder");
@@ -5397,7 +5282,7 @@ mod tests {
                     .detail
                     .as_deref()
                     .unwrap()
-                    .contains("copy · common")
+                    .contains("Copy, the common choice")
             );
             assert!(
                 selection.children[1]
@@ -5407,21 +5292,20 @@ mod tests {
                     .detail
                     .as_deref()
                     .unwrap()
-                    .contains("later · override")
+                    .contains("Decide later, chosen for this folder")
             );
             for folder in &selection.children {
                 assert!(!folder.label.contains("Documents"));
                 assert!(!folder.label.contains("Pictures"));
                 assert_eq!(folder.actions.len(), 3);
                 assert!(folder.actions.iter().all(|action| {
-                    action.operation_type.as_deref()
-                        == Some(super::super::actions::SETUP_OPERATION_TYPE)
+                    action.operation_type.as_deref() == Some(SetupEffect::OPERATION)
                 }));
                 assert_eq!(
                     folder
                         .actions
                         .iter()
-                        .find(|action| action.id == "set-mode")
+                        .find(|action| action.id == "set-folder-mode")
                         .unwrap()
                         .params()
                         .len(),
@@ -5437,7 +5321,7 @@ mod tests {
                     .detail
                     .as_deref()
                     .unwrap()
-                    .contains("ready no")
+                    .contains("Review ready: No.")
             );
             let availability = child_resource(&root, "imager.setup.availability");
             assert!(
@@ -5448,7 +5332,7 @@ mod tests {
                     .detail
                     .as_deref()
                     .unwrap()
-                    .contains("Desktop yes")
+                    .contains("Available experiences: desktop Yes, full OS Yes.")
             );
         }
     }
@@ -5462,17 +5346,16 @@ mod tests {
                 .sum::<usize>()
     }
 
-    fn retained_name(root: &dyn Widget, id: &str) -> Option<String> {
-        if root.test_id() == Some(id) {
-            return root.accessibility().and_then(|node| node.name);
-        }
-        root.children()
-            .into_iter()
-            .find_map(|child| retained_name(child, id))
+    fn retained_value(root: &dyn Widget, id: &str) -> Option<String> {
+        ui::widget::find_test_id(root, id)?.accessibility()?.value
     }
 
-    fn internal_action(app: &SetupApp, id: &str, doc: &AutoCommit) -> tilo_actions::ActionSpec {
-        child_resource(&setup_resource(app, doc), "imager.setup.internal")
+    fn retained_name(root: &dyn Widget, id: &str) -> Option<String> {
+        ui::widget::find_test_id(root, id)?.accessibility()?.name
+    }
+
+    fn internal_action(app: &SetupApp, id: &str) -> tilo_actions::ActionSpec {
+        child_resource(&setup_resource(app), "imager.setup.internal")
             .actions
             .iter()
             .find(|action| action.id == id)
@@ -5481,8 +5364,7 @@ mod tests {
     }
 
     fn invoke_internal(app: &mut SetupApp, id: &str) -> Result<serde_json::Value, String> {
-        let doc = AutoCommit::new();
-        let encoded = internal_action(app, id, &doc)
+        let encoded = internal_action(app, id)
             .build_json(&serde_json::Map::new())
             .map_err(|error| error.to_string())?;
         invoke_encoded_setup(app, &encoded)
@@ -5581,12 +5463,13 @@ mod tests {
             let app = &mut fixture.app;
             assert!(!app.capabilities.platform.supports(Experience::FullOs));
             let composition = app.build_composition();
-            assert!(retained_widget_disabled(
-                composition.as_ref(),
-                "setup.experience.full"
-            ));
+            assert_eq!(
+                retained_widget_count(composition.as_ref(), "setup.experience.full"),
+                0,
+                "Full Tilo is not offered until the probe passes"
+            );
             assert!(
-                retained_name(composition.as_ref(), "setup.internal.readiness")
+                retained_value(composition.as_ref(), "setup.internal.readiness")
                     .unwrap()
                     .starts_with("Checking whether Tilo can be installed")
             );
@@ -5594,10 +5477,11 @@ mod tests {
             assert!(app.poll_background());
             assert!(app.capabilities.platform.supports(Experience::FullOs));
             let composition = app.build_composition();
-            assert!(!retained_widget_disabled(
-                composition.as_ref(),
-                "setup.experience.full"
-            ));
+            assert_eq!(
+                retained_widget_count(composition.as_ref(), "setup.experience.full"),
+                1,
+                "Full Tilo is offered once the probe passes"
+            );
             assert_eq!(fixture.fakes.probes.load(Ordering::SeqCst), 1);
 
             let mut blocked = gated_app(
@@ -5617,7 +5501,7 @@ mod tests {
             );
             let composition = blocked.app.build_composition();
             assert!(
-                retained_name(composition.as_ref(), "setup.internal.readiness")
+                retained_value(composition.as_ref(), "setup.internal.readiness")
                     .unwrap()
                     .contains("MBR")
             );
@@ -5644,15 +5528,14 @@ mod tests {
                 retained_widget_count(composition.as_ref(), "setup.internal.target-size"),
                 1
             );
-            let doc = AutoCommit::new();
             assert!(
-                !internal_action(app, "setup.internal.install", &doc)
+                !internal_action(app, "install-internal")
                     .contract
                     .availability
                     .is_available()
             );
 
-            invoke_internal(app, "setup.internal.download").unwrap();
+            invoke_internal(app, "start-internal-download").unwrap();
             wait_for_app(app, "download ready", SetupApp::internal_download_ready);
             let composition = app.build_composition();
             assert!(!retained_widget_disabled(
@@ -5660,7 +5543,7 @@ mod tests {
                 "setup.internal.install"
             ));
             let reviewed_plan = app.internal_install.plan().unwrap().clone().unwrap();
-            let projection = invoke_internal(app, "setup.internal.install").unwrap();
+            let projection = invoke_internal(app, "install-internal").unwrap();
             assert_eq!(projection["internal"]["run"], "running");
             wait_for_app(app, "staging outcome", |app| {
                 !app.internal_install.is_running()
@@ -5713,15 +5596,15 @@ mod tests {
                     .unwrap()
                     .contains("stays the startup default")
             );
-            assert!(invoke_internal(app, "setup.internal.install").is_err());
+            assert!(invoke_internal(app, "install-internal").is_err());
 
-            invoke_internal(app, "setup.internal.restart-later").unwrap();
+            invoke_internal(app, "restart-internal-later").unwrap();
             let composition = app.build_composition();
             assert_eq!(
                 retained_widget_count(composition.as_ref(), "setup.internal.restart-later"),
                 0
             );
-            invoke_internal(app, "setup.internal.restart").unwrap();
+            invoke_internal(app, "restart-internal").unwrap();
             app.poll_background();
             assert_eq!(
                 *fixture.fakes.commands.lock().unwrap(),
@@ -5735,18 +5618,17 @@ mod tests {
             let mut fixture = gated_app(install_flow::tests::Fakes::new(Vec::new()), HostOs::Linux);
             let app = &mut fixture.app;
             open_full_review(app);
-            invoke_internal(app, "setup.internal.download").unwrap();
+            invoke_internal(app, "start-internal-download").unwrap();
             wait_for_app(app, "download ready", SetupApp::internal_download_ready);
-            let doc = AutoCommit::new();
-            let stale = internal_action(app, "setup.internal.install", &doc)
+            let stale = internal_action(app, "install-internal")
                 .build_json(&serde_json::Map::new())
                 .unwrap();
-            let size = internal_action(app, "setup.internal.set-target-size", &doc)
+            let size = internal_action(app, "set-internal-target-size")
                 .build_json(&setup_args(&[("gib", serde_json::json!(100))]))
                 .unwrap();
             invoke_encoded_setup(app, &size).unwrap();
             assert_eq!(app.internal_install.target_bytes(), 100 << 30);
-            let out_of_range = internal_action(app, "setup.internal.set-target-size", &doc)
+            let out_of_range = internal_action(app, "set-internal-target-size")
                 .build_json(&setup_args(&[("gib", serde_json::json!(10))]))
                 .unwrap();
             assert!(invoke_encoded_setup(app, &out_of_range).is_err());
@@ -5756,7 +5638,7 @@ mod tests {
             assert!(error.contains("plan changed"), "{error}");
             assert!(fixture.fakes.launches.lock().unwrap().is_empty());
             assert!(app.internal_download_ready());
-            invoke_internal(app, "setup.internal.install").unwrap();
+            invoke_internal(app, "install-internal").unwrap();
             assert!(app.internal_install.is_running());
         }
 
@@ -5772,7 +5654,7 @@ mod tests {
             );
             let app = &mut fixture.app;
             open_full_review(app);
-            invoke_internal(app, "setup.internal.download").unwrap();
+            invoke_internal(app, "start-internal-download").unwrap();
             wait_for_app(app, "download ready", SetupApp::internal_download_ready);
             let composition = app.build_composition();
             assert!(retained_widget_disabled(
@@ -5787,10 +5669,10 @@ mod tests {
                 composition.as_ref(),
                 "setup.internal.disable-fast-startup"
             ));
-            assert!(invoke_internal(app, "setup.internal.install").is_err());
-            invoke_internal(app, "setup.internal.disable-fast-startup").unwrap();
+            assert!(invoke_internal(app, "install-internal").is_err());
+            invoke_internal(app, "internal-disable-fast-startup").unwrap();
             app.poll_background();
-            invoke_internal(app, "setup.internal.firmware-settings").unwrap();
+            invoke_internal(app, "internal-firmware-settings").unwrap();
             app.poll_background();
             assert_eq!(
                 *fixture.fakes.commands.lock().unwrap(),
@@ -5818,14 +5700,13 @@ mod tests {
                 retained_widget_count(composition.as_ref(), "setup.internal.firmware-settings"),
                 0
             );
-            let doc = AutoCommit::new();
             assert!(
-                !internal_action(&battery.app, "setup.internal.firmware-settings", &doc)
+                !internal_action(&battery.app, "internal-firmware-settings")
                     .contract
                     .availability
                     .is_available()
             );
-            assert!(invoke_internal(&mut battery.app, "setup.internal.firmware-settings").is_err());
+            assert!(invoke_internal(&mut battery.app, "internal-firmware-settings").is_err());
             assert!(battery.fakes.commands.lock().unwrap().is_empty());
         }
 
@@ -5845,7 +5726,7 @@ mod tests {
                 retained_widget_count(composition.as_ref(), "setup.internal.resume"),
                 1
             );
-            let stale = super::super::actions::SetupOperation::RemoveInternal {
+            let stale = SetupEffect::RemoveInternal {
                 operation_id: "op-0".into(),
             };
             assert!(
@@ -5855,7 +5736,7 @@ mod tests {
             );
             assert!(fixture.fakes.launches.lock().unwrap().is_empty());
 
-            invoke_internal(app, "setup.internal.retry").unwrap();
+            invoke_internal(app, "retry-internal").unwrap();
             app.poll_background();
             assert_eq!(
                 app.internal_install.run_state(),
@@ -5863,7 +5744,7 @@ mod tests {
                     action: HelperAction::Arm
                 }
             );
-            invoke_internal(app, "setup.internal.remove").unwrap();
+            invoke_internal(app, "remove-internal").unwrap();
             app.poll_background();
             let launches = fixture.fakes.launches.lock().unwrap();
             assert_eq!(

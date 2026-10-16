@@ -160,11 +160,14 @@ impl FilesIndex {
                     };
                     let existing = index.versions().unwrap_or_default();
                     walk_and_index(&home, &existing, &mut writer);
-                    let _ = writer.commit();
-                    // Publish the reconciled generation from the indexing
-                    // worker. `reload()` may touch disk and must never move
-                    // back onto the compositor's per-keystroke query path.
-                    let _ = index.reload();
+                    // Each commit reloads the reader on this worker, so the
+                    // reconciled generation is published here and never on
+                    // the compositor's per-keystroke query path. Closing
+                    // lets the walk's last merges finish instead of
+                    // abandoning them to the next session's writer.
+                    if let Err(error) = writer.close() {
+                        tracing::warn!(%error, "could not finish the Files body index");
+                    }
                 })
                 .ok();
             if let Ok(mut slot) = writer_handle.write() {
@@ -183,9 +186,9 @@ impl FilesIndex {
         if needle.trim().is_empty() {
             return Vec::new();
         }
-        // `OnCommitWithDelay` refreshes the reader outside this call. Never
+        // The walker's commits reload the reader on its own thread. Never
         // perform a disk-backed reader reload on the compositor's keystroke
-        // path; a just-committed generation can appear on the next poll.
+        // path.
         let generation = self.index.generation();
         if let Ok(cache) = self.cache.lock()
             && let Some(hit) = cache.get(needle, limit, generation)
@@ -218,7 +221,7 @@ fn files_index_dir() -> Result<PathBuf, tilo_search::TantivyError> {
     if let Some(explicit) = std::env::var_os("TILO_FILES_INDEX_DIR") {
         return Ok(PathBuf::from(explicit));
     }
-    let cache = xdg_paths::cache_dir().ok_or_else(|| {
+    let cache = tilo_paths::cache_dir().ok_or_else(|| {
         tilo_search::TantivyError::InvalidArgument("no XDG_CACHE_HOME".to_string())
     })?;
     Ok(cache.join("tilo").join("files-index"))

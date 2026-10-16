@@ -181,7 +181,7 @@ impl CollabHistoryStore {
     /// Returns an error when `XDG_STATE_HOME` is absent or unusable.
     #[cfg(not(test))]
     pub fn open_for_session() -> std::io::Result<Self> {
-        let state = xdg_paths::env_dir("XDG_STATE_HOME").ok_or_else(|| {
+        let state = tilo_paths::env_dir("XDG_STATE_HOME").ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "launcher did not provide XDG_STATE_HOME for collaboration history",
@@ -238,6 +238,43 @@ impl CollabHistoryStore {
         self.log(artifact)?.append_all(ops)
     }
 
+    /// Remember that `artifact`'s history belongs to the room `cluster_id`,
+    /// beside its log, so a later session still knows which room's members
+    /// may page through it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error of writing the binding.
+    pub fn bind_room(&mut self, artifact: ArtifactId, cluster_id: &str) -> std::io::Result<()> {
+        let path = self.room_path(artifact);
+        if fs::read_to_string(&path).is_ok_and(|bound| bound == cluster_id) {
+            return Ok(());
+        }
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(cluster_id.as_bytes())?;
+        file.sync_data()
+    }
+
+    /// The room `artifact`'s history was bound to, if any session bound it.
+    pub fn room_of(&self, artifact: ArtifactId) -> Option<String> {
+        fs::read_to_string(self.room_path(artifact))
+            .ok()
+            .filter(|room| !room.is_empty())
+    }
+
+    fn room_path(&self, artifact: ArtifactId) -> PathBuf {
+        self.root.join(format!("{}.room", artifact.0))
+    }
+
     /// One scrollback page from durable history.
     ///
     /// # Errors
@@ -257,7 +294,7 @@ impl CollabHistoryStore {
 mod tests {
     use super::*;
     use collab_types::{
-        AttestationId, ChannelId, ContentRetention, Ed25519PublicKey, EncryptionMetadata, OpClass,
+        AttestationId, ChannelId, ContentRetention, Ed25519PublicKey, EncryptionMetadata, OpKind,
     };
 
     fn op(artifact: ArtifactId, seq: u64, encryption: Option<EncryptionMetadata>) -> SignedOp {
@@ -266,7 +303,7 @@ mod tests {
             artifact,
             Ed25519PublicKey::from_bytes([4; 32]),
             AttestationId::new(),
-            OpClass::Splice,
+            OpKind::Change,
             std::time::SystemTime::UNIX_EPOCH,
             seq,
         );
@@ -372,7 +409,7 @@ mod tests {
         };
         for seq in 101..=130 {
             let envelope = signed(&key, artifact, seq, sealed);
-            channels.record_history(&envelope);
+            channels.record_history("room-a", &envelope);
             channels.state_for(artifact).record_validated_op(envelope);
         }
         let (page, exhausted) = channels.scrollback_page(artifact, 131, 10);

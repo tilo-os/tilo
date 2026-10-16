@@ -1,33 +1,9 @@
-//! `LinkPopover` — fuzzy-search popover for `[[Page Title]]` inline
-//! page links. Same shape as [`crate::widget::SlashMenu`] but
-//! seeded with caller-provided page titles instead of a hard-coded
-//! block-kind list.
-//!
-//! A thin sibling rather than a generic `Popover<Item>`: the slash menu's
-//! API is shaped around block-kind conversions, so folding the page-title
-//! flow into the same trait object would mean either generic-ifying every
-//! field (and paying for the boxing) or collapsing `BlockKind` and
-//! `PageEntry` behind an associated type. The duplication is ~150 LOC and
-//! a separate widget keeps the test surface small.
+//! `LinkPopover` — search popover for `[[Page Title]]` inline page links:
+//! a [`FilterMenu`] over caller-provided pages, matched by title.
 
-use std::collections::HashMap;
-
-use taffy::{NodeId, Style, TaffyTree};
 use uuid::Uuid;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
-use winit::event::{ElementState, KeyEvent, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
 
-use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
-use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::text_selection::Selection;
-use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use crate::widget::filter_menu::{FilterMenu, MenuEntry, MenuSpec};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageEntry {
@@ -35,581 +11,58 @@ pub struct PageEntry {
     pub title: String,
 }
 
-const MENU_WIDTH: f64 = 220.0;
-const ROW_HEIGHT: f64 = 26.0;
-const PADDING_Y: f64 = 6.0;
-const PADDING_X: f64 = 10.0;
-const FILTER_HEIGHT: f64 = 32.0;
-const FILTER_GAP: f64 = 4.0;
-/// Keeps the popover small for big workspaces; the user can keep typing
-/// to narrow the result.
-const MAX_VISIBLE_ROWS: usize = 8;
+pub type LinkPopover = FilterMenu<PageEntry>;
 
-pub struct LinkPopover {
-    items: Vec<PageEntry>,
-    /// Indices into `items` that survive the current filter.
-    visible: Vec<usize>,
-    /// Cursor into `visible`. Always clamped.
-    cursor: usize,
-    filter: String,
-    filter_selection: Selection,
-    filter_composition: QueryComposition,
-    visible_flag: bool,
-    anchor: Point,
-    /// One-shot: when the user picks an entry, it lands here.
-    pending: Option<PageEntry>,
-}
+static SPEC: MenuSpec = MenuSpec {
+    width: 220.0,
+    row_height: 26.0,
+    // Keeps the popover small for big workspaces; the user can keep typing
+    // to narrow the result.
+    max_rows: 8,
+    placeholder: "Find a note…",
+    access_name: "Link notes",
+    widget_name: "LinkPopover",
+    test_id: "link_popover",
+};
 
-impl Default for LinkPopover {
+impl Default for FilterMenu<PageEntry> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl LinkPopover {
+impl FilterMenu<PageEntry> {
     pub fn new() -> Self {
-        Self {
-            items: Vec::new(),
-            visible: Vec::new(),
-            cursor: 0,
-            filter: String::new(),
-            filter_selection: Selection::collapsed(0),
-            filter_composition: QueryComposition::new(),
-            visible_flag: false,
-            anchor: Point::ZERO,
-            pending: None,
-        }
+        Self::with_spec(&SPEC, Vec::new())
     }
 
     pub fn set_items(&mut self, items: Vec<PageEntry>) {
-        self.items = items;
-        self.rebuild_visible();
-    }
-
-    pub fn items(&self) -> &[PageEntry] {
-        &self.items
-    }
-
-    pub fn set_visible(&mut self, visible: bool) {
-        self.visible_flag = visible;
-        if !visible {
-            self.filter.clear();
-            self.filter_selection = Selection::collapsed(0);
-            self.filter_composition.clear();
-            self.cursor = 0;
-            self.rebuild_visible();
-        }
-    }
-
-    pub fn is_visible(&self) -> bool {
-        self.visible_flag
-    }
-
-    pub fn set_anchor(&mut self, anchor: Point) {
-        self.anchor = anchor;
-    }
-
-    pub fn set_filter(&mut self, filter: &str) {
-        self.filter = filter.to_string();
-        self.filter_selection = Selection::collapsed(self.filter.len());
-        self.filter_composition.clear();
-        self.cursor = 0;
-        self.rebuild_visible();
-    }
-
-    pub fn filter(&self) -> &str {
-        &self.filter
-    }
-
-    pub fn take_selection(&mut self) -> Option<PageEntry> {
-        self.pending.take()
-    }
-
-    pub fn highlighted(&self) -> Option<&PageEntry> {
-        self.visible
-            .get(self.cursor)
-            .and_then(|&i| self.items.get(i))
-    }
-
-    pub fn visible_len(&self) -> usize {
-        self.visible.len()
-    }
-
-    pub fn width(&self) -> f64 {
-        MENU_WIDTH
-    }
-
-    pub fn height(&self) -> f64 {
-        let rows = self.visible.len().clamp(1, MAX_VISIBLE_ROWS);
-        PADDING_Y * 2.0 + FILTER_HEIGHT + FILTER_GAP + ROW_HEIGHT * count_f64(rows)
-    }
-
-    pub fn rect(&self) -> Rect {
-        Rect::new(
-            self.anchor.x,
-            self.anchor.y,
-            self.anchor.x + self.width(),
-            self.anchor.y + self.height(),
-        )
-    }
-
-    fn rows_top(&self) -> f64 {
-        self.rect().y0 + PADDING_Y + FILTER_HEIGHT + FILTER_GAP
-    }
-
-    fn window_start(&self) -> usize {
-        self.cursor
-            .saturating_add(1)
-            .saturating_sub(MAX_VISIBLE_ROWS)
-    }
-
-    /// Painted rectangle for a result currently inside the eight-row window.
-    pub fn row_rect(&self, visible_index: usize) -> Option<Rect> {
-        let start = self.window_start();
-        if visible_index < start
-            || visible_index
-                >= self
-                    .visible
-                    .len()
-                    .min(start.saturating_add(MAX_VISIBLE_ROWS))
-        {
-            return None;
-        }
-        let slot = visible_index.saturating_sub(start);
-        let y0 = self.rows_top() + count_f64(slot) * ROW_HEIGHT;
-        let rect = self.rect();
-        Some(Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT))
-    }
-
-    /// The filtered result row under a logical point.  Keeping this in the
-    /// popover makes pointer and keyboard selection share the exact same
-    /// scrolling window and bounds checks.
-    fn row_at(&self, point: Point) -> Option<usize> {
-        if !self.visible_flag || !self.rect().contains(point) {
-            return None;
-        }
-        let relative = point.y - self.rows_top();
-        if relative < 0.0 {
-            return None;
-        }
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "relative is non-negative screen geometry and the visible result count is bounded"
-        )]
-        let slot = (relative / ROW_HEIGHT).floor() as usize;
-        let index = self.window_start().saturating_add(slot);
-        (index < self.visible.len()).then_some(index)
-    }
-
-    /// Highlight the result under the pointer. Returns whether a redraw is
-    /// needed; filtering and keyboard navigation use the same cursor.
-    pub fn hover_at(&mut self, point: Point) -> bool {
-        match self.row_at(point) {
-            Some(index) if index != self.cursor => {
-                self.cursor = index;
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// Pick a row as if Enter had been pressed.  A click outside rows remains
-    /// a parent-owned dismiss gesture, mirroring the slash menu.
-    pub fn click_at(&mut self, point: Point) -> Option<PageEntry> {
-        let index = self.row_at(point)?;
-        let entry = self
-            .visible
-            .get(index)
-            .and_then(|&item| self.items.get(item))?
-            .clone();
-        self.cursor = index;
-        self.pending = Some(entry.clone());
-        self.set_visible(false);
-        Some(entry)
-    }
-
-    fn rebuild_visible(&mut self) {
-        let needle = self.filter.to_lowercase();
-        self.visible.clear();
-        for (i, e) in self.items.iter().enumerate() {
-            let matches = needle.is_empty() || e.title.to_lowercase().contains(&needle);
-            if matches {
-                self.visible.push(i);
-            }
-        }
-        if self.cursor >= self.visible.len() {
-            self.cursor = self.visible.len().saturating_sub(1);
-        }
-    }
-
-    pub fn handle_key(&mut self, event: &WindowEvent) -> bool {
-        if !self.visible_flag {
-            return false;
-        }
-        if matches!(event, WindowEvent::Ime(_)) {
-            let change = self.filter_composition.handle_event(
-                event,
-                &mut self.filter,
-                &mut self.filter_selection,
-                false,
-                false,
-            );
-            if change == QueryEventChange::Edited {
-                self.cursor = 0;
-                self.rebuild_visible();
-            }
-            return true;
-        }
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return false;
-        };
-        match logical_key {
-            Key::Named(NamedKey::ArrowDown) => {
-                if !self.visible.is_empty() {
-                    self.cursor = self
-                        .cursor
-                        .saturating_add(1)
-                        .min(self.visible.len().saturating_sub(1));
-                }
-                true
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                self.cursor = self.cursor.saturating_sub(1);
-                true
-            }
-            Key::Named(NamedKey::Enter) => {
-                if let Some(entry) = self
-                    .visible
-                    .get(self.cursor)
-                    .and_then(|&idx| self.items.get(idx))
-                {
-                    self.pending = Some(entry.clone());
-                }
-                self.set_visible(false);
-                true
-            }
-            Key::Named(NamedKey::Escape) => {
-                self.set_visible(false);
-                true
-            }
-            Key::Named(NamedKey::Backspace)
-                if self.filter_selection.is_collapsed() && self.filter_selection.cursor == 0 =>
-            {
-                self.set_visible(false);
-                // Return false so the parent can handle the
-                // delete-of-the-`[[` glyphs.
-                false
-            }
-            _ => {
-                let change = self.filter_composition.handle_event(
-                    event,
-                    &mut self.filter,
-                    &mut self.filter_selection,
-                    false,
-                    false,
-                );
-                if change == QueryEventChange::Edited {
-                    self.cursor = 0;
-                    self.rebuild_visible();
-                }
-                change != QueryEventChange::Ignored
-            }
-        }
-    }
-
-    pub fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if !self.visible_flag {
-            return;
-        }
-        let rect = self.rect();
-        self.draw_chrome_and_filter(scene, transform, text_renderer, theme, rect);
-        self.draw_rows(scene, transform, text_renderer, theme, rect);
-    }
-
-    /// The card background/border and the filter query box. Split out of
-    /// `draw_overlay` to keep that under the line cap.
-    fn draw_chrome_and_filter(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-    ) {
-        let tokens = &theme.tokens;
-        // Panel role (HIG §9.1): panel ground + the derived panel edge as
-        // a crisp 1 px inset stroke; the declared `border_standard` vanished
-        // against `raised` on the dark preset.
-        let radius = 6.0;
-        let shape = RoundedRect::from_rect(rect, radius);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            crate::chrome::panel_ground(theme),
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            crate::chrome::panel_border(theme),
-            None,
-            &crate::surface::edge_outline(rect, radius),
-        );
-
-        let filter_rect = Rect::new(
-            rect.x0 + 6.0,
-            rect.y0 + PADDING_Y,
-            rect.x1 - 6.0,
-            rect.y0 + PADDING_Y + FILTER_HEIGHT,
-        );
-        let filter_shape = RoundedRect::from_rect(filter_rect, 4.0);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.base,
-            None,
-            &filter_shape,
-        );
-        // A field reads as a field on every preset: its rest edge derives
-        // from its own fill (HIG §9.5), painted as a crisp 1 px inset stroke;
-        // on the light preset `base` and the panel ground are a shade apart.
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            crate::surface::edge_on(tokens.colors.surfaces.base),
-            None,
-            &crate::surface::edge_outline(filter_rect, 4.0),
-        );
-        self.filter_composition.draw(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            QueryView {
-                text: &self.filter,
-                selection: &self.filter_selection,
-                placeholder: "Find a note…",
-                show_caret: true,
-            },
-            Rect::new(
-                filter_rect.x0 + 6.0,
-                filter_rect.y0,
-                filter_rect.x1 - 6.0,
-                filter_rect.y1,
-            ),
-            &TextStyle::new(tokens.typography.scale.sm),
-            QueryInk::accented(
-                tokens.colors.text_primary,
-                tokens.colors.text_dim,
-                tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-            ),
-        );
-    }
-
-    /// The "No matches" empty state or the scrolled row window. Split out of
-    /// `draw_overlay` to keep that under the line cap.
-    fn draw_rows(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-    ) {
-        let tokens = &theme.tokens;
-        let font_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
-        if self.visible.is_empty() {
-            let (_, hint_h) = text_renderer.measure("No matches", font_size, None);
-            let y = self.rows_top() + (ROW_HEIGHT - f64::from(hint_h)) / 2.0;
-            text_renderer.draw_text(
-                scene,
-                "No matches",
-                font_size,
-                tokens.colors.text_dim,
-                transform.pre_translate(Vec2::new(rect.x0 + PADDING_X, y)),
-                None,
-            );
-            return;
-        }
-        let window_start = self.window_start();
-        for (i, (visible_index, &idx)) in self
-            .visible
-            .iter()
-            .enumerate()
-            .skip(window_start)
-            .take(MAX_VISIBLE_ROWS)
-            .enumerate()
-        {
-            let Some(row) = self.items.get(idx) else {
-                continue;
-            };
-            let y0 = self.rows_top() + count_f64(i) * ROW_HEIGHT;
-            let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
-            let armed = visible_index == self.cursor;
-            if armed {
-                let hl = RoundedRect::from_rect(row_rect, f64::from(tokens.radii.sm));
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-                    None,
-                    &hl,
-                );
-            }
-            // Ink resolved against the accent fill (as `Popover` / `Dropdown`
-            // do), and centred on the measured line rather than the font size.
-            let ink = if armed {
-                tokens
-                    .colors
-                    .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
-            } else {
-                tokens.colors.text_primary
-            };
-            let (_, title_h) = text_renderer.measure(&row.title, font_size, None);
-            let text_y = row_rect.y0 + (row_rect.height() - f64::from(title_h)) / 2.0;
-            text_renderer.draw_text(
-                scene,
-                &row.title,
-                font_size,
-                ink,
-                transform.pre_translate(Vec2::new(row_rect.x0 + PADDING_X, text_y)),
-                None,
-            );
-        }
-    }
-}
-
-/// Widens a small on-screen row count/index (bounded by
-/// `MAX_VISIBLE_ROWS`, 8) to `f64`. Always far below f64's
-/// exact-integer range.
-fn count_f64(v: usize) -> f64 {
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "v is bounded by MAX_VISIBLE_ROWS (8), far below f64's exact-integer range"
-    )]
-    let out = v as f64;
-    out
-}
-
-// LinkPopover lives in overlay space so most methods no-op.
-impl Widget for LinkPopover {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy.leaf_node(Style::default());
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
-    fn draw(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-    }
-    fn name(&self) -> &'static str {
-        "LinkPopover"
-    }
-    fn test_id(&self) -> Option<&str> {
-        Some("link_popover")
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect()
-    }
-
-    fn ime_cursor_rect(&self) -> Option<Rect> {
-        self.visible_flag
-            .then(|| self.filter_composition.ime_cursor_rect())
-            .flatten()
-    }
-
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        Some(winit::window::ImePurpose::Normal)
-    }
-
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        if !self.visible_flag {
-            return Some(
-                AccessNode::new(Role::Menu)
-                    .with_name("Link notes")
-                    .with_state(AccessState {
-                        expanded: Some(false),
-                        hidden: true,
-                        ..Default::default()
-                    }),
-            );
-        }
-        let count = self.visible.len();
-        let items = self
-            .visible
-            .iter()
-            .enumerate()
-            .filter_map(|(position, &item_index)| {
-                self.items.get(item_index).map(|item| {
-                    AccessNode::new(Role::MenuItem)
-                        .with_name(item.title.clone())
-                        .with_state(AccessState {
-                            selected: position == self.cursor,
-                            ..Default::default()
-                        })
-                        .with_position(position.saturating_add(1), count)
+        self.set_entries(
+            items
+                .into_iter()
+                .map(|page| MenuEntry {
+                    label: page.title.clone(),
+                    keywords: &[],
+                    value: page,
                 })
-            })
-            .collect();
-        Some(
-            AccessNode::new(Role::Menu)
-                .with_name("Link notes")
-                .with_optional_value((!self.filter.is_empty()).then(|| self.filter.clone()))
-                .with_state(AccessState {
-                    expanded: Some(true),
-                    ..Default::default()
-                })
-                .with_children(items),
-        )
+                .collect(),
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use winit::event::{ElementState, KeyEvent};
-    use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
 
-    fn key_press(logical_key: Key, text: Option<&str>) -> WindowEvent {
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = logical_key;
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = text.map(SmolStr::new);
-        WindowEvent::KeyboardInput {
-            device_id: unsafe { std::mem::zeroed() },
-            event: ev,
-            is_synthetic: false,
-        }
-    }
+    use vello::Scene;
+    use vello::kurbo::{Affine, Point};
+    use winit::event::WindowEvent;
+    use winit::keyboard::{Key, NamedKey, SmolStr};
+
+    use crate::synthetic_input::key_press;
+    use crate::text_render::TextRenderer;
+    use crate::theme::Theme;
+    use crate::widget::Widget;
 
     fn char_press(c: &str) -> WindowEvent {
         key_press(Key::Character(SmolStr::new(c)), Some(c))
@@ -639,7 +92,7 @@ mod tests {
         fn new_starts_empty_and_hidden() {
             let p = LinkPopover::new();
             assert!(!p.is_visible());
-            assert!(p.items().is_empty());
+            assert_eq!(p.visible_len(), 0);
         }
 
         fn set_items_seeds_visible_list() {
@@ -694,8 +147,8 @@ mod tests {
             for _ in 0..9 {
                 p.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
             }
-            assert_eq!(p.cursor, 9);
-            assert_eq!(p.window_start(), 2);
+            assert!(p.row_rect(1).is_none(), "the window scrolled past row 1");
+            assert!(p.row_rect(9).is_some());
             assert_eq!(p.highlighted().unwrap().title, "Page 9");
         }
 

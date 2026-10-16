@@ -51,8 +51,20 @@ export function placePointer(pointer, focus, windows) {
   return [clamp(x0 + pointer[0], x0, x1 - 1), clamp(y0 + pointer[1], y0, y1 - 1)];
 }
 
+/**
+ * The local pointer as presence publishes it: inside the window of the
+ * record this member is focused on, relative to that window, the way
+ * {@link placePointer} reads it back; in surface pixels otherwise.
+ */
+export function publishedPointer(point, focus, windows) {
+  const window = focus && windows?.find(candidate => candidate.record === focus.record);
+  return window ? [point[0] - window.rect[0], point[1] - window.rect[1]] : point;
+}
+
 export function createLiveCursors({
   layer, surface, document: doc = globalThis.document, windows = () => undefined,
+  /** The record this member is focused on (`{app, record}`), or `null`. */
+  localFocus = () => null,
   now = () => performance.now(),
   requestFrame = callback => globalThis.requestAnimationFrame(callback),
   cancelFrame = handle => globalThis.cancelAnimationFrame(handle),
@@ -117,7 +129,8 @@ export function createLiveCursors({
   ];
   const move = event => {
     const rect = surface.getBoundingClientRect();
-    layer.publishPresence({pointer: [event.clientX - rect.left, event.clientY - rect.top]});
+    const point = [event.clientX - rect.left, event.clientY - rect.top];
+    layer.publishPresence({pointer: publishedPointer(point, localFocus(), windows())});
   };
   const leave = () => layer.publishPresence({pointer: null});
   surface.addEventListener('pointermove', move, {passive: true});

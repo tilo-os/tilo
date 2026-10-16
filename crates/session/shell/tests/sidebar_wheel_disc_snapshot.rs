@@ -8,10 +8,6 @@
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -20,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use tilo_test_env::require_capability;
 
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -31,8 +27,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
-use crate::support::offscreen::OffscreenRenderer;
-use crate::support::snapshot::SnapshotAssertion;
+use crate::support::snapshot::{SnapshotAssertion, pinned_golden_path};
+use ui::offscreen::OffscreenRenderer;
 
 fn goldens_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -97,13 +93,6 @@ fn screenshots_dir() -> PathBuf {
     root.join("tilo-screenshots")
 }
 
-fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        OffscreenRenderer::new(w, h)
-    }))
-    .ok()
-}
-
 /// Paint the three-workspace disc under `theme`, mounted as the live shell
 /// mounts it (pinned to the slot's left edge, centre off-canvas). Shared
 /// by the golden and high-contrast tests so they can only disagree about
@@ -143,10 +132,7 @@ fn render_disc_at(
     let root = taffy
         .new_with_children(
             Style {
-                size: Size {
-                    width: Dimension::length(CANVAS_W_F32),
-                    height: Dimension::length(CANVAS_H_F32),
-                },
+                size: Size::from_lengths(CANVAS_W_F32, CANVAS_H_F32),
                 // Mirrors `left: 0` on the live shell's absolute-positioned sidebar slot:
                 // the logical centre sits off-canvas, only the visible arc paints.
                 justify_content: Some(taffy::JustifyContent::Start),
@@ -190,7 +176,7 @@ fn sidebar_wheel_disc_snapshots_render_spokes_and_a_bounded_summoned_band() {
     {
         let mut renderer = require_capability!(
             Gpu,
-            try_new_renderer(CANVAS_W, CANVAS_H),
+            OffscreenRenderer::try_new(CANVAS_W, CANVAS_H).ok(),
             "no wgpu adapter available for offscreen render"
         );
         let mut tr = TextRenderer::new();
@@ -204,7 +190,11 @@ fn sidebar_wheel_disc_snapshots_render_spokes_and_a_bounded_summoned_band() {
         // Guarded on `path.exists()` to match the soft-skip-on-missing-GPU
         // convention.
         if path.exists() {
-            SnapshotAssertion::new(path, goldens_dir().join("three-spokes.png")).assert();
+            SnapshotAssertion::new(
+                path,
+                pinned_golden_path(goldens_dir().join("three-spokes.png")),
+            )
+            .assert();
         }
     }
 
@@ -219,7 +209,7 @@ fn sidebar_wheel_disc_snapshots_render_spokes_and_a_bounded_summoned_band() {
     {
         let mut renderer = require_capability!(
             Gpu,
-            try_new_renderer(CANVAS_W, CANVAS_H),
+            OffscreenRenderer::try_new(CANVAS_W, CANVAS_H).ok(),
             "no wgpu adapter available for offscreen render"
         );
         let mut tr = TextRenderer::new();

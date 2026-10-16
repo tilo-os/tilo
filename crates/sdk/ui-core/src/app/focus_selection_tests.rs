@@ -20,9 +20,7 @@ fn native_focus_and_selection_follow_only_the_semantic_target() {
     // Case `selection_adopts_focus_only_when_the_semantic_target_acquires_it`.
     {
         let root = Column::new()
-            .push(Box::new(
-                TextInput::from_document_string("body").with_id("body"),
-            ))
+            .push(Box::new(TextInput::local().with_id("body")))
             .push(Box::new(EditableLabel::new("Title").with_id("title")));
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();

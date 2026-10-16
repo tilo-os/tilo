@@ -41,8 +41,7 @@ If your host has qemu + tools natively, set `TILO_DISTROBOX=""` to skip the box.
 # 1. Build the image (≈ a few min incremental; first cargo build is long).
 TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=<published-64-hex-owner-key> ./os/dev/build-image.sh
 
-# …or skip the browser and the WPE WebKit engine stage that builds its engine
-# from source — ~45 of the ~60 minutes a cold build costs. The boot chain is
+# …or skip the Browser and its Chromium engine runtime. The boot chain is
 # untouched, so this is the build to use when the question is "does it boot?".
 TILO_WITH_BROWSER=0 TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=<published-64-hex-owner-key> ./os/dev/build-image.sh
 
@@ -58,8 +57,9 @@ TILO_SKIP_BUILD=1 ./os/dev/build-image.sh
 
 # …or drive it step by step:
 ./os/dev/vm.sh boot --gl                # GL so the DRM compositor can render
-./os/dev/vm.sh wait                     # block until greetd is up
-./os/dev/vm.sh login                    # types tester / tilo
+./os/dev/vm.sh wait                     # block until the greeter accepts input
+./os/dev/vm.sh login --passcode-only    # one-account disk: types the passcode (tilo)
+./os/dev/vm.sh login                    # two-field form: types tester / tilo
 ./os/dev/vm.sh shot desktop             # -> /tmp/tilo-vm/desktop.png
 ./os/dev/vm.sh serial 'greetd|shell|panic'   # grep the boot console
 ./os/dev/vm.sh stop
@@ -246,7 +246,8 @@ runs the graphical installer (`installer/`, binary `tilo-installer`) under `cage
 and **self-installs the booted image** onto a target disk — offline, no network
 pull.
 
-For Windows ARM64 development, dispatch `os-dev-installer.yml` with the exact
+For Windows ARM64 development, dispatch `os-dev-installer.yml` with
+`installer_rootfs=ext4` and the exact
 `registry.tilo.so/tilo/tilo-ci@sha256:<digest>` from a successful `os-dev.yml`
 ARM64 run. It layers the installer on that already-built unsigned image and
 uploads a compressed qcow2; it does not rebuild or sign the OS. Download the
@@ -255,9 +256,24 @@ qcow2 once, then run `tilo-vm scenario install --medium <qcow2> --graphics
 software` on the Windows WHPX host. Keep the medium as the immutable base for
 later throwaway install overlays. Component changes in a running dev VM use
 `tilo-vm vm deploy`; normal OS image changes use `tilo-vm vm upgrade`.
+When building that disposable medium in WSL instead, set
+`TILO_PODMAN_BUILD_NETWORK=host` only if Podman's private build namespace
+cannot reach the package mirrors while the WSL host can.
+Keep `TILO_INSTALLER_OUTPUT` on WSL's native ext4 filesystem during the
+build; the raw disk can allocate its full logical size on `/mnt/c`. Export
+only the finished qcow2 or its compressed form to Windows.
 For a running WHPX installer, `installer-console.py --socket
 tcp://127.0.0.1:<console-port> state` reads the same action protocol that the
 scenario driver uses.
+
+Alongside installs on a Windows disk have two ESPs. Stock bootc can choose the
+first ESP instead of the one mounted under the new Tilo root. The live installer
+therefore builds a pinned, installer-only bootc helper that verifies and uses
+the mounted ESP; `tilo-install` checks for it before guided partition creation.
+The helper is absent from the installed OS image. `release-imager.yml` may layer
+newer main installer code onto an earlier CI-signed OS only when that OS source
+is an ancestor of the dispatched main commit and the signed target's SLSA
+source still matches the explicit OS pin.
 
 A CI install medium can instead carry a separately signed generic or Lenovo
 ARM64 target in
@@ -309,7 +325,7 @@ TILO_INSTALLER_DEV_PASSWORD='use-a-unique-local-secret' \
 
 # 3. Boot the installer with a blank target disk attached as /dev/vdb.
 ./os/dev/vm.sh boot-installer --gl     # GL so the installer UI can render
-./os/dev/vm.sh wait                    # block until greetd brings it up
+./os/dev/vm.sh wait                    # block until the installer answers its console
 #    (drive the UI: pick /dev/vdb, set user/pass, install)
 
 # 4. Stop, then boot the installed result.
@@ -349,6 +365,96 @@ cycle on the SSH-disabled published medium; it does not replace that gate.
 The installed system's update origin defaults to
 `registry.tilo.so/tilo/tilo:latest`. `TILO_TARGET_IMGREF` may select a tag or digest
 in that same signature-required repository; the backend rejects other origins.
+
+### Separate development target on Windows ARM64
+
+`os-dev-installer.yml` can reuse a generic ARM64 CI dev image for the live UI
+and install a separate Lenovo dev image. Set `os_image` to the generic digest,
+`target_image` to the board digest, `target_ci_run_id` to the internal Forgejo
+build run ID, `target_update_origin` to its published `tilo-vm` tag, and
+`target_profile` to `lenovo-83ed`. Both images must name the same source revision.
+The workflow exports the target with `skopeo --preserve-digests` and reuses the
+existing native installer components; it does not rebuild the target OS.
+
+For a local disposable medium, prepare that same transport with
+`python3 os/dev/prepare-dev-installer-target.py --help`, then set
+`TILO_INSTALLER_OFFLINE_TARGET_DIR`, `TILO_INSTALLER_DEV_TARGET=1`, and
+`TILO_UNVERIFIED_VM_INSTALL=1` when building the installer. Normal transports
+continue to require signed release targets. The unsigned path requires a dev
+live image, the explicit VM marker, a VM proof port, and detected virtualization;
+the target must contain the dev flavour and OpenSSH. A separate target may
+provide the installed-target bundle, a sealed board UKI, or one split kernel
+and initramfs. For the latter two forms, the installer projects an unsigned
+installed UKI from the exact selected CI kernel, initramfs and pinned hardware
+DTB. The live medium carries no UKI constructor: for a split kernel,
+`prepare-dev-installer-target.py --rpms-ref` builds the UKI on the runner with
+the boot adapter's `uki-tools` stage and ships it beside the OCI layout as
+`target-uki.efi`; the installer checks its kernel, initramfs and DTB against the
+selected image and writes only the installed command line into the room
+reserved for it. It verifies the installed OCI manifest, origin, composefs and
+bootc payload digest before adding the TILO_BOOT mount. A sealed target retains its original
+origin and loader entry; a split target changes only its boot representation.
+No OS rebuild, image commit or registry upload is involved. The signed release
+promotion path continues to require its prebuilt target bundle.
+
+Run the downloaded medium through `tilo-vm scenario install` on Windows ARM64.
+The Windows backend requires WHPX and never falls back to TCG. A selected dev
+target emits proof v4: target manifest, source/run locators, deployment origin,
+composefs, UKI hash and GPT identities. This is VM evidence, not a CI signature.
+Its declared run ID must be independently checked against Forgejo before any
+physical copy; the production Windows-direct receipt guard does not accept it.
+`windows-direct-dev-provenance.py` checks a pinned child manifest and its raw
+OCI config against the live `os-dev.yml` main run, successful ARM producer,
+published cohort tag/digest and Lenovo disk job. Fetch the config with
+`skopeo inspect --config --raw`: formatted JSON is not the descriptor's bytes.
+The command records explicit developer CI evidence and never authorizes a disk
+write. It is distinct from release Cosign/SLSA verification; the physical copy
+guard still requires source/VM evidence and its separate developer admission.
+The final-source `receipt` and final-copy `execute` commands accept explicit
+`--development` admission. Supply the board/generic child manifests and raw
+configs, their internal `os-dev.yml` run IDs, the board/generic installer run
+IDs, both tested profile media and `--dev-setup-handoff`. The gate rechecks live
+CI publication and media metadata, hashes both CI backing disks, verifies that
+the overlays change only the authorized Wi-Fi/SSH tail, and requires board
+proof v4 plus complete generic encrypted first-boot proof v3 from the same CI
+cohort and installer assembly. It records developer authority without a release
+key or SLSA claim. Normal admission continues to require signed release evidence.
+All physical identity, source extent, EFI file and full readback checks still
+apply. The final copy leaves C: untouched, so its pagefile can remain active;
+partition shrinking retains the pagefile restriction.
+`python3 os/dev/forgejo-dev-installer-metadata.py INTERNAL_RUN_ID` reads the
+source and disk checksums from the successful installer run's authenticated
+artifact endpoint. It reads at most 64 KiB, checks ZIP entry lengths and CRCs,
+and binds the assembly source to the live run. This avoids a full disk download
+when rechecking provenance. The downloaded disk still needs its full SHA-256
+check; metadata verification alone does not prove its contents or bootability.
+`python3 os/dev/download-dev-installer.py INTERNAL_RUN_ID --output DISK.qcow2`
+checks that live CI authority, then streams its ZIP payload through zstd into
+a new disk file. It verifies ZIP CRC/lengths plus the complete compressed and
+decoded CI hashes, writes a verified receipt, and never caches the ZIP archive.
+It reserves 8 GiB of host free space throughout extraction. A failed partial
+disk is unverified and has no verified receipt; it cannot be used for installation.
+To recover a partial disk, pass `--resume`: the downloader compares every retained
+byte against the decoded CI stream before appending missing bytes. It still
+checks the complete ZIP payload and both full CI hashes. It rereads the network
+stream but avoids another disk copy or discarding the existing allocation.
+For generic encrypted targets, `--resume` repeats the boot check against the
+completed install without copying the OS again. A Lenovo board install can use
+`--skip-target-boot` because its hardware UKI cannot boot QEMU's generic machine;
+the generic scenario must cover full encrypted boot and the board source still
+requires an independent boot-file/root audit before physical use.
+
+To reinstall into an owned Windows raw VM source, stop its VM and run
+`prepare-windows-direct-source.py reset-template --plan PLAN --manifest MANIFEST
+--source-raw RAW --confirm-source-disk-guid GUID`. Use the original template
+manifest and its disk GUID. The command validates the reviewed geometry and
+synthetic Windows preservation samples, acquires an exclusive Windows file
+handle, clears the first and last MiB of each reviewed disposable Tilo extent
+to invalidate old filesystem headers, then restores the template GPT. Bulk
+payload bytes and allocated blocks remain for overwrite by the next install,
+avoiding a second large target. Synthetic Windows payload bytes stay unchanged.
+Previous installation proofs become obsolete for this source. This command is
+for file-backed VM sources only; it never opens a physical drive.
 
 ## Configuration (env vars)
 

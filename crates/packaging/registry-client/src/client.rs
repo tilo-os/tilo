@@ -7,7 +7,7 @@ use ed25519_dalek::SigningKey;
 use registry_types::application::PublisherApplication;
 use registry_types::{EntryAction, EntryChangeRequest, RegistryEntry, SignedRegistrySnapshot};
 
-/// The registry Tilo OS and Tilo Web install from.
+/// The registry Tilo OS installs from.
 pub const DEFAULT_REGISTRY: &str = "https://apps.tilo.so";
 
 /// The environment variable that names another registry.
@@ -41,7 +41,25 @@ impl RegistryClient {
     ///
     /// When the URL is not HTTPS or loopback HTTP.
     pub fn new(base: &str) -> Result<Self> {
-        let url = reqwest::Url::parse(base).with_context(|| format!("registry URL {base}"))?;
+        Self::validate_url(base)?;
+        let http = tilo_net::http::blocking_client()
+            .timeout(Duration::from_secs(300))
+            .build()
+            .context("build HTTP client")?;
+        Ok(Self {
+            base: base.trim_end_matches('/').to_owned(),
+            http,
+        })
+    }
+
+    /// Validate a registry address before storing it in a publisher profile.
+    /// This performs no network requests and does not construct an HTTP client.
+    ///
+    /// # Errors
+    ///
+    /// When the URL cannot be parsed or is not HTTPS or loopback HTTP.
+    pub fn validate_url(base: &str) -> Result<()> {
+        let url = reqwest::Url::parse(base).context("invalid registry URL")?;
         let loopback = url.host_str().is_some_and(|host| {
             host == "localhost"
                 || host
@@ -52,14 +70,7 @@ impl RegistryClient {
         if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
             bail!("a registry is reached over https (plain http only on this machine)");
         }
-        let http = tilo_net::http::blocking_client()
-            .timeout(Duration::from_secs(300))
-            .build()
-            .context("build HTTP client")?;
-        Ok(Self {
-            base: base.trim_end_matches('/').to_owned(),
-            http,
-        })
+        Ok(())
     }
 
     /// The registry's URL.
@@ -135,8 +146,21 @@ impl RegistryClient {
     ///
     /// When the registry refuses the upload.
     pub fn upload(&self, key: &SigningKey, tapp_bytes: &[u8]) -> Result<String> {
-        let digest = blake3::hash(tapp_bytes).to_hex().to_string();
-        let url = format!("{}/uploads/{digest}.tapp", self.base);
+        self.put_upload(key, tapp_bytes, "tapp")
+    }
+
+    /// Upload a bot program for review. Answers the URL it will be served at.
+    ///
+    /// # Errors
+    ///
+    /// When the registry refuses the upload, such as for a non-canonical program.
+    pub fn upload_program(&self, key: &SigningKey, program: &[u8]) -> Result<String> {
+        self.put_upload(key, program, "program")
+    }
+
+    fn put_upload(&self, key: &SigningKey, bytes: &[u8], extension: &str) -> Result<String> {
+        let digest = blake3::hash(bytes).to_hex().to_string();
+        let url = format!("{}/uploads/{digest}.{extension}", self.base);
         let response = self
             .http
             .put(&url)
@@ -148,7 +172,7 @@ impl RegistryClient {
                 registry_types::upload::UPLOAD_SIGNATURE_HEADER,
                 registry_types::upload::sign_upload(key, &digest),
             )
-            .body(tapp_bytes.to_vec())
+            .body(bytes.to_vec())
             .send()
             .with_context(|| url.clone())?;
         if !response.status().is_success() {
@@ -159,7 +183,7 @@ impl RegistryClient {
             .get("url")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
-            .ok_or_else(|| anyhow!("{url} answered without the package URL"))
+            .ok_or_else(|| anyhow!("{url} answered without the upload's URL"))
     }
 
     /// Ask the registry to add, update or delete `entry`.

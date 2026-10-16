@@ -6,17 +6,21 @@
 ; MAC backstop for the trusted base: if fs is ever compromised, the kernel
 ; still boxes it.
 ;
-; POSTURE: permissive-first.
-; --------------------------
-; The system runs SELinux ENFORCING and fs currently works. fs does a lot
-; (FUSE mount of /var/workspace, iroh P2P networking, blob I/O under
-; /var/cache, a unix control socket the compositor talks to), so the precise
-; enforcing allow-set can only be finalised by capturing live AVCs on a real
-; run. Shipping an incomplete ENFORCING domain would break a working daemon;
-; shipping it PERMISSIVE logs every access without blocking, so fs keeps
-; working AND we collect exactly the AVCs needed to tighten to enforcing.
-; This is the standard SELinux bring-up workflow (permissive -> audit2allow ->
-; enforcing), and is an honest improvement over unconfined_service_t.
+; POSTURE: enforcing.
+; -------------------
+; tilo_fs_t enforces. Its allow-set below was captured from live AVCs, with
+; the domain permissive and dontaudit rules disabled (`semodule -DB`), on a
+; booted dev image running fs.service under a certified device identity:
+; mount /var/workspace, create/write/append/rename/copy/truncate/chmod/
+; touch/xattr/delete through the mount as two local accounts, restart and
+; stop the unit (ExecStopPost), the storage and media sockets, the
+; Iroh endpoint waking (relays, net report, DNS), and the native data plane's
+; probes against a Btrfs store volume. It was then re-run with the domain
+; enforcing and no tilo_fs_t denial. Every rule names the type it needs; a
+; new behaviour of fs that needs another one shows up as an AVC denial for
+; scontext tilo_fs_t (`journalctl -b _TRANSPORT=audit | grep tilo_fs_t`) and
+; is added here with its reason, never by making the domain permissive again
+; (os/tests/kernel_hardening_invariants.sh fails if that line returns).
 ;
 ; HOW fs ENTERS THE DOMAIN
 ; ------------------------
@@ -29,28 +33,106 @@
 (typeattributeset domain (tilo_fs_t))
 (roletype system_r tilo_fs_t)
 
-; Permissive: log-but-allow everything tilo_fs_t does while the enforcing
-; allow-set is being established from real AVCs.
-(typepermissive tilo_fs_t)
-
 ; Let init (systemd) transition fs into the domain and entrypoint the binary
 ; (which keeps its default bin_t label — no relabel in the image).
 (allow init_t tilo_fs_t (process (transition)))
 (allow tilo_fs_t bin_t (file (entrypoint execute execute_no_trans read open getattr map ioctl)))
 (allow init_t tilo_fs_t (process (siginh rlimitinh noatsecure)))
+; fs.service also sets NoNewPrivileges=yes, and with the nnp_nosuid_transition
+; policy capability a transition under no_new_privs needs its own permission:
+; without it every exec into tilo_fs_t (fs, and the umount in ExecStopPost)
+; fails with EPERM, status 203/EXEC.
+(allow init_t tilo_fs_t (process2 (nnp_transition nosuid_transition)))
 
-; The authenticated greetd session runs tilo-session in xdm_t. That wrapper
-; starts and stops exactly one user lifecycle target before/after the native
-; compositor. Give that target its own unit-file type so this does not grant
-; xdm_t control over every systemd unit on the machine.
-(type tilo_session_unit_file_t)
-(roletype object_r tilo_session_unit_file_t)
-(typeattributeset file_type (tilo_session_unit_file_t))
-(typeattributeset non_auth_file_type (tilo_session_unit_file_t))
-(typeattributeset systemd_unit_file_type (tilo_session_unit_file_t))
-(filecon "/usr/lib/systemd/user/tilo-graphical-session.target" file
-  (system_u object_r tilo_session_unit_file_t ((s0) (s0))))
-(allow xdm_t tilo_session_unit_file_t (service (start stop status)))
+; --- what fs does, grouped by subsystem -------------------------------------
+; Types the domain attribute already grants (proc, sysfs, /dev/null and
+; urandom, shared libraries, locale, its own process signals, unix stream
+; sockets of its own) are not repeated.
+
+; Capabilities, all inside fs.service's CapabilityBoundingSet. sys_admin:
+; mount and unmount (fusermount3, which also unshares a mount namespace for
+; auto_unmount, and the umount of ExecStopPost). dac_override: fusermount3
+; opens /dev/fuse and the mount point as root regardless of their owner.
+(allow tilo_fs_t self (capability (sys_admin dac_override)))
+
+; FUSE: the device, the helper that mounts it (fs execs fusermount3 without
+; a transition, so it stays in this domain), the mount over /var/workspace (a
+; var_t directory created by tmpfiles) and the fuse file system it serves.
+; umount is what fusermount3 runs to detach, and ExecStopPost's lazy detach,
+; entered from systemd. fusermount3 makes / private in the mount namespace it
+; unshares for auto_unmount (mounton root_t). /run/mount/utab is libmount's
+; record of the mount.
+(allow tilo_fs_t fuse_device_t (chr_file (open read write ioctl getattr)))
+(allow tilo_fs_t fusermount_exec_t (file (execute execute_no_trans open read map)))
+(allow tilo_fs_t mount_exec_t (file (entrypoint execute execute_no_trans open read map)))
+(allow tilo_fs_t var_t (dir (mounton)))
+(allow tilo_fs_t root_t (dir (mounton)))
+(allow tilo_fs_t fusefs_t (filesystem (mount unmount getattr)))
+(allow tilo_fs_t mount_var_run_t (dir (getattr search open read write add_name remove_name)))
+(allow tilo_fs_t mount_var_run_t (file (getattr open read write create lock unlink)))
+
+; The workspace as fs sees it: the FUSE mount, and the native data plane's
+; store volume, which tilo-store-volume mounts with context=fusefs_t (its
+; capability probes and content area at /var/lib/tilo/store).
+(allow tilo_fs_t fusefs_t (dir (getattr search open read ioctl write add_name remove_name create)))
+(allow tilo_fs_t fusefs_t (file (getattr open read write create rename lock ioctl)))
+
+; The content store and record database under /var/cache/quick-fs (var_t,
+; created by tmpfiles): blobs, staging files, redb, history log, the
+; namespace backups and the workspace ticket, written atomically.
+(allow tilo_fs_t var_t (dir (getattr search open read write add_name remove_name create setattr)))
+(allow tilo_fs_t var_t (file (getattr open read write append create rename unlink setattr lock ioctl)))
+
+; /var/lib/tilo: the device key and certificate, the capability list it
+; enforces (re-read on every inotify change), read only.
+(allow tilo_fs_t var_lib_t (dir (read watch)))
+(allow tilo_fs_t var_lib_t (file (getattr open read)))
+; --native-owner names the local person by uid; fs resolves accounts.
+(allow tilo_fs_t passwd_file_t (file (getattr open read)))
+
+; Local sockets in /run/tilo (var_run_t, shared by the identity group):
+; the storage-accounting, document-media and workspace-content sockets.
+(allow tilo_fs_t var_run_t (dir (write add_name remove_name)))
+(allow tilo_fs_t var_run_t (sock_file (create getattr setattr unlink)))
+; stdout and stderr: the journal stream systemd hands the service.
+(allow tilo_fs_t init_t (unix_stream_socket (read write)))
+(allow tilo_fs_t init_var_run_t (dir (search)))
+
+; Iroh: QUIC over UDP (bound on an unreserved port), TCP to the relays and
+; the HTTPS net report and DNS lookups, the routing table over netlink and
+; /proc/<pid>/net/route, and interface queries on a datagram socket.
+; Port mapping's follow-up HTTP to a router's UPnP port is not granted: it
+; was not observed, and without it Iroh still connects through relays and
+; hole punching.
+(allow tilo_fs_t self (udp_socket (create bind connect getattr getopt setopt read write)))
+(allow tilo_fs_t self (tcp_socket (create connect getattr getopt setopt read write)))
+(allow tilo_fs_t self (netlink_route_socket (create bind getattr nlmsg_read read write)))
+(allow tilo_fs_t self (unix_dgram_socket (create ioctl)))
+(allow tilo_fs_t unreserved_port_t (udp_socket (name_bind)))
+(allow tilo_fs_t node_t (udp_socket (node_bind)))
+(allow tilo_fs_t http_port_t (tcp_socket (name_connect)))
+(allow tilo_fs_t proc_net_t (file (open read)))
+(allow tilo_fs_t proc_net_t (lnk_file (read)))
+(allow tilo_fs_t net_conf_t (file (getattr open read)))
+(allow tilo_fs_t net_conf_t (lnk_file (read)))
+; Network state: NetworkManager over the system bus, and its runtime
+; connection profiles, read only.
+(allow tilo_fs_t system_dbusd_var_run_t (dir (search)))
+(allow tilo_fs_t system_dbusd_var_run_t (sock_file (write)))
+(allow tilo_fs_t system_dbusd_t (unix_stream_socket (connectto)))
+(allow tilo_fs_t system_dbusd_t (dbus (send_msg)))
+(allow tilo_fs_t NetworkManager_t (dbus (send_msg)))
+(allow tilo_fs_t NetworkManager_var_run_t (dir (getattr search open read)))
+(allow tilo_fs_t NetworkManager_var_run_t (file (getattr open read)))
+
+; The async runtime sizes itself from the unit's cgroup CPU quota, and
+; statfs of / reports free space for the content store.
+(allow tilo_fs_t cgroup_t (dir (search)))
+(allow tilo_fs_t cgroup_t (file (getattr open read)))
+(allow tilo_fs_t fs_t (filesystem (getattr)))
+
+; The compositor (shell) runs in the greetd session domain; giving it its own
+; confined domain is the next base-daemon target, same workflow.
 
 ; The console channel of a VM (crates/session/console-control): the greeter
 ; and the live installer run in xdm_t and answer the tilo-control action
@@ -60,14 +142,3 @@
 ; every other virtio port stays root-only by owner and mode, so this MAC
 ; grant does not widen who can open them.
 (allow xdm_t virtio_device_t (chr_file (open read write getattr ioctl lock)))
-
-; ENFORCING HARDENING PATH (do after a VM run captures AVCs):
-; -----------------------------------------------------------
-; 1. boot, exercise fs (mount /var/workspace, read/write, peer sync),
-;    then: `ausearch -m AVC -ts boot | audit2allow -C` (or audit2allow -M).
-; 2. translate the generated allow rules into CIL allows on tilo_fs_t here
-;    (fuse, the iroh sockets, /var/workspace + /var/cache file types, the
-;    control socket, capabilities), replacing `(typepermissive tilo_fs_t)`.
-; 3. drop the permissive line so tilo_fs_t enforces.
-; The compositor (shell) runs in the greetd session domain; giving it its own
-; confined domain is the next base-daemon target, same workflow.

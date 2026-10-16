@@ -13,22 +13,16 @@
 //! The crate is pure data plus pure helpers ([`mod@retention`]); it owns no
 //! transport, runtime or state machine.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        clippy::panic,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 pub mod colorimetry;
+pub mod contribution;
 pub mod hdr_metadata;
+pub mod presence_slot;
 pub mod retention;
 
-pub use retention::{Retention, retention};
+pub use presence_slot::PresenceSlot;
+pub use retention::{
+    Retention, app_document_channel, audience, retention, standalone, steward_only,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -61,6 +55,15 @@ pub type SurfaceId = u64;
 /// Presence channel key — namespaces presence updates (e.g. cursor, selection).
 pub type PresenceKey = String;
 
+/// The colour the person at the publishing session wears for everyone in
+/// the room: one of the twelve presence hues by its stored name (`"red"` …
+/// `"pink"`, as `identity.colour` spells it) — their choice, or the one their
+/// stable identity derives, so every collaborator paints them the same. Self-
+/// asserted and cosmetic, like `user`. `None` when the sender did not say; a
+/// receiver then derives one from the sender's handle. A name the receiver
+/// does not know is treated as unsaid.
+pub type PresenceColour = Option<String>;
+
 /// Tagged envelope for everything that crosses the neighbour boundary.
 ///
 /// `f64` lives inside [`NeighbourMsg::PresenceMoved`] so we cannot derive
@@ -81,6 +84,12 @@ pub enum NeighbourMsg {
         /// the authenticated transport identity to that invite's role.
         #[serde(default)]
         invite_id: Option<[u8; 32]>,
+        /// Fresh per request. Gossip transports deduplicate by content, so
+        /// without it a repeated anti-entropy request for unchanged heads
+        /// is discarded as already seen and a room that missed its first
+        /// answer never catches up.
+        #[serde(default)]
+        nonce: u64,
     },
     /// Response: a batch of opaque Automerge change blobs for `room`. The blobs
     /// carry the room identity too; the receiver checks the two agree before
@@ -93,12 +102,15 @@ pub enum NeighbourMsg {
     /// leave the host that minted them. `user` is the session's claim of who is
     /// there (the sender's local user id), not something the
     /// receiver infers; empty falls back to showing the session handle.
+    /// `colour` is the colour the person there wears ([`PresenceColour`]).
     PresenceMoved {
         peer: PeerId,
         user: String,
         key: PresenceKey,
         point: (f64, f64),
         ts: u64,
+        #[serde(default)]
+        colour: PresenceColour,
     },
     /// Peer's presence cursor disappeared from `key`'s coordinate space.
     PresenceCleared { peer: PeerId, key: PresenceKey },
@@ -165,6 +177,12 @@ pub enum NeighbourMsg {
         /// serde default accepts pre-field postcard payloads.
         #[serde(default)]
         app_id: String,
+        /// The workspace tab holding the window, the same id on every device
+        /// of the room, so a viewer shows the stream in exactly that tab
+        /// even when several windows of one app are open. `0` when the
+        /// sender does not name one.
+        #[serde(default)]
+        tab: u64,
     },
     /// Explicit end-of-stream (owner tore down the share, or the surface
     /// unmapped). Receivers drop their `PeerView` + decoder on receipt, instead of
@@ -181,13 +199,19 @@ pub enum NeighbourMsg {
         surface: SurfaceId,
         event: Vec<u8>,
     },
-    /// `peer` would like permission `capability`.
+    /// Retired: `peer` would like permission `capability`. No build produces
+    /// it and receivers refuse it ([`NeighbourMsg::is_retired`]); it stays
+    /// only so every later Postcard discriminant keeps its value.
     PermissionRequest { peer: PeerId, capability: String },
     /// `peer` was granted permission `capability`.
     PermissionGrant { peer: PeerId, capability: String },
-    /// Periodic liveness beacon — Actor publishes one per joined workspace every
-    /// 5s; direct peers are evicted after 15s without any traffic. `peer` is the hashed Iroh
-    /// `PeerId`; `ts` is unix-millis.
+    /// Liveness beacon of builds that evict a direct peer after 15 s without
+    /// traffic and beat every 5 s on every joined workspace; `ts` is their
+    /// unix-millis. Current builds keep liveness on the transport and send
+    /// one only to a neighbour of such a build, numbering it with a `ts`
+    /// below [`Self::COMPAT_HEARTBEAT_TS_LIMIT`] so that it is not mistaken
+    /// for one (see [`Self::is_timed_heartbeat`]). `peer` is the hashed Iroh
+    /// `PeerId`.
     Heartbeat { peer: PeerId, ts: u64 },
     /// Authenticated identity chain for the transport peer on this workspace.
     ///
@@ -224,11 +248,14 @@ pub enum NeighbourMsg {
     },
     /// App-level presence crossing the host boundary. Presence is cluster scoped,
     /// so a participant remains visible while moving between apps in one room.
+    /// `colour` is the colour the person there wears ([`PresenceColour`]).
     AppPresenceV2 {
         peer: PeerId,
         app_id: String,
         cluster_id: String,
         presence: collab_types::PeerPresence,
+        #[serde(default)]
+        colour: PresenceColour,
     },
     /// Cooperative scrollback request, broadcast over gossip when a peer's
     /// local broker has no in-memory scrollback for a range an app asked for.
@@ -268,10 +295,11 @@ pub enum NeighbourMsg {
         /// Hashed Iroh peer id of the answering broker.
         responder: PeerId,
     },
-    /// Root-signed device certificate announced on one room. Appended to the
-    /// enum to preserve every existing Postcard discriminant. The receiver
-    /// binds it to the transport-authenticated sender endpoint and only the
-    /// room governor may promote it into replicated governance.
+    /// Retired first generation of [`Self::IdentityAnnouncementV2`]: a
+    /// root-signed device certificate announced on one room, without the
+    /// revocations that keep a lost device out. No build produces it and
+    /// receivers refuse it ([`NeighbourMsg::is_retired`]); it stays only so
+    /// every later Postcard discriminant keeps its value.
     IdentityAnnouncement {
         room: String,
         device_cert: Box<tilo_user_identity::DeviceCert>,
@@ -368,6 +396,170 @@ pub enum NeighbourMsg {
         /// ignore it.
         delivery: u64,
     },
+    /// The person's workspace directory as one of their devices holds it:
+    /// a device-signed Automerge snapshot of which workspaces the person
+    /// has and which room carries each. Travels only on the person's own
+    /// topic; the receiver merges it only when the authenticated transport
+    /// certificate and the update's author are devices of
+    /// `user_public_key`. Appended to preserve every existing Postcard
+    /// discriminant.
+    PersonalWorkspaces {
+        user_public_key: [u8; 32],
+        update: Box<tilo_user_identity::DirectoryUpdate>,
+    },
+    /// A device asking the room for one piece of content a record of
+    /// `app_id` in room `cluster_id` refers to, by its BLAKE3 `hash`. Rides
+    /// the room's topic, so only peers admitted to read the room see it;
+    /// any of them holding the content answers with
+    /// [`Self::RecordContentPiece`]. Appended to preserve every existing
+    /// Postcard discriminant.
+    RecordContentWant {
+        requester: PeerId,
+        app_id: String,
+        cluster_id: String,
+        hash: String,
+    },
+    /// One bounded piece of a record's content, answering `requester`'s
+    /// [`Self::RecordContentWant`]: `bytes` start at `offset` of the
+    /// `total`-byte content named by `hash`. The receiver keeps the content
+    /// only once every piece arrived and the bytes hash to `hash`. Appended
+    /// to preserve every existing Postcard discriminant.
+    RecordContentPiece {
+        responder: PeerId,
+        requester: PeerId,
+        app_id: String,
+        cluster_id: String,
+        hash: String,
+        total: u64,
+        offset: u64,
+        bytes: Vec<u8>,
+    },
+    /// [`Self::MlsAccessRequest`] with the route of the record the channel
+    /// carries, so a steward can decide Read on that record, a Deny over its
+    /// app or any pattern covering it included. The route proves itself: the
+    /// steward refuses it unless it hashes, with `room`, to the request's
+    /// channel ([`collab_types::ChannelRoute::proves`]). A device sends both
+    /// forms while a steward may predate this one. Appended to preserve every
+    /// existing Postcard discriminant.
+    MlsRoutedAccessRequest {
+        room: String,
+        request: Box<collab_types::MlsAccessRequestV1>,
+        route: Box<collab_types::ChannelRoute>,
+        /// Chosen by the sender for each delivery attempt, as for
+        /// [`Self::MlsAccessRequest`]; receivers ignore it.
+        delivery: u64,
+    },
+}
+
+impl NeighbourMsg {
+    /// Postcard variant index of [`NeighbourMsg::AppDocument`]. Variant order
+    /// is wire-frozen (peers and hosts persist and exchange these frames), and
+    /// a unit test pins this value to a real encoding.
+    pub const APP_DOCUMENT_TAG: u8 = 12;
+
+    /// Whether `bytes` encode an [`NeighbourMsg::AppDocument`], reading only
+    /// the postcard variant tag and not the variant's fields.
+    ///
+    /// Postcard writes a variant index as a varint `u32` before the fields.
+    /// An index below `0x80` is that single byte with its continuation bit
+    /// clear, so a first byte equal to [`Self::APP_DOCUMENT_TAG`] is exactly
+    /// that index and nothing longer. The fields are not checked: a frame
+    /// tagged `AppDocument` whose fields do not decode still answers `true`.
+    pub fn is_app_document(bytes: &[u8]) -> bool {
+        const _: () = assert!(NeighbourMsg::APP_DOCUMENT_TAG < 0x80);
+        bytes.first() == Some(&Self::APP_DOCUMENT_TAG)
+    }
+
+    /// Whether this is a retired wire generation that no current build
+    /// produces. Receivers refuse such a message once, where it enters,
+    /// before any handler or authorization sees it; the variant itself stays
+    /// only because removing it would shift every later Postcard
+    /// discriminant.
+    pub fn is_retired(&self) -> bool {
+        match self {
+            // Superseded by `IdentityAnnouncementV2`, whose revocations a
+            // receiver must see before trusting the certificate.
+            Self::IdentityAnnouncement { .. }
+            // Never acted on; control consent rides `PermissionGrant`.
+            | Self::PermissionRequest { .. } => true,
+            Self::SyncReq { .. }
+            | Self::SyncResp { .. }
+            | Self::PresenceMoved { .. }
+            | Self::PresenceCleared { .. }
+            | Self::SurfaceFrame { .. }
+            | Self::SurfaceStreamStart { .. }
+            | Self::SurfaceStreamEnd { .. }
+            | Self::RemoteInput { .. }
+            | Self::PermissionGrant { .. }
+            | Self::Heartbeat { .. }
+            | Self::IdentityHello { .. }
+            | Self::AppDocument { .. }
+            | Self::AppPresenceV2 { .. }
+            | Self::ScrollbackRequest { .. }
+            | Self::ScrollbackResponse { .. }
+            | Self::IdentityAnnouncementV2 { .. }
+            | Self::PersonalContinuityRequest { .. }
+            | Self::PersonalContinuityCheckpoint { .. }
+            | Self::RemoteAction { .. }
+            | Self::MediaCapabilities { .. }
+            | Self::MlsGovernance { .. }
+            | Self::MlsAccessRequest { .. }
+            | Self::MlsRoutedAccessRequest { .. }
+            | Self::MlsGovernanceAck { .. }
+            | Self::PersonalWorkspaces { .. }
+            | Self::RecordContentWant { .. }
+            | Self::RecordContentPiece { .. } => false,
+        }
+    }
+
+    /// A [`Self::Heartbeat`] `ts` below this (September 2001 in unix
+    /// milliseconds) is no time: it numbers a heartbeat a transport-liveness
+    /// build sends only for an older neighbour's sake. No build ever sent a
+    /// real time this early, and none read the field.
+    pub const COMPAT_HEARTBEAT_TS_LIMIT: u64 = 1_000_000_000_000;
+
+    /// Whether this is the timed heartbeat of a build that keeps liveness by
+    /// heartbeat and evicts a peer that stops beating: the sign that its
+    /// neighbours must keep beating too.
+    pub fn is_timed_heartbeat(&self) -> bool {
+        matches!(self, Self::Heartbeat { ts, .. } if *ts >= Self::COMPAT_HEARTBEAT_TS_LIMIT)
+    }
+
+    /// The variant's name, for diagnostics and traffic tallies. Never a
+    /// wire value: the postcard discriminant is.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::SyncReq { .. } => "SyncReq",
+            Self::SyncResp { .. } => "SyncResp",
+            Self::PresenceMoved { .. } => "PresenceMoved",
+            Self::PresenceCleared { .. } => "PresenceCleared",
+            Self::SurfaceFrame { .. } => "SurfaceFrame",
+            Self::SurfaceStreamStart { .. } => "SurfaceStreamStart",
+            Self::SurfaceStreamEnd { .. } => "SurfaceStreamEnd",
+            Self::RemoteInput { .. } => "RemoteInput",
+            Self::PermissionRequest { .. } => "PermissionRequest",
+            Self::PermissionGrant { .. } => "PermissionGrant",
+            Self::Heartbeat { .. } => "Heartbeat",
+            Self::IdentityHello { .. } => "IdentityHello",
+            Self::AppDocument { .. } => "AppDocument",
+            Self::AppPresenceV2 { .. } => "AppPresenceV2",
+            Self::ScrollbackRequest { .. } => "ScrollbackRequest",
+            Self::ScrollbackResponse { .. } => "ScrollbackResponse",
+            Self::IdentityAnnouncement { .. } => "IdentityAnnouncement",
+            Self::IdentityAnnouncementV2 { .. } => "IdentityAnnouncementV2",
+            Self::PersonalContinuityRequest { .. } => "PersonalContinuityRequest",
+            Self::PersonalContinuityCheckpoint { .. } => "PersonalContinuityCheckpoint",
+            Self::RemoteAction { .. } => "RemoteAction",
+            Self::MediaCapabilities { .. } => "MediaCapabilities",
+            Self::MlsGovernance { .. } => "MlsGovernance",
+            Self::MlsAccessRequest { .. } => "MlsAccessRequest",
+            Self::MlsGovernanceAck { .. } => "MlsGovernanceAck",
+            Self::PersonalWorkspaces { .. } => "PersonalWorkspaces",
+            Self::RecordContentWant { .. } => "RecordContentWant",
+            Self::RecordContentPiece { .. } => "RecordContentPiece",
+            Self::MlsRoutedAccessRequest { .. } => "MlsRoutedAccessRequest",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -377,14 +569,14 @@ mod tests {
     /// Syntactically valid but unsigned; only the postcard framing needs to
     /// round-trip.
     fn dummy_envelope() -> Box<collab_types::SignedOp> {
-        use collab_types::{AttestationId, Ed25519PublicKey, OpClass, SignedOp};
+        use collab_types::{AttestationId, Ed25519PublicKey, OpKind, SignedOp};
         use std::time::SystemTime;
         Box::new(SignedOp::new_unsigned(
             vec![0xDE, 0xAD, 0xBE, 0xEF],
             artifact(0x11),
             Ed25519PublicKey::from_bytes([7u8; 32]),
             AttestationId(uuid::Uuid::from_bytes([0x22; 16])),
-            OpClass::Splice,
+            OpKind::Change,
             SystemTime::UNIX_EPOCH,
             42,
         ))
@@ -487,6 +679,22 @@ mod tests {
                     delivery: 9,
                 },
             ),
+            (
+                "channel routed access request",
+                NeighbourMsg::MlsRoutedAccessRequest {
+                    room: ROOM.into(),
+                    request: Box::new(MlsAccessRequestV1 {
+                        version: 1,
+                        channel,
+                        device: Ed25519PublicKey::from_bytes([2; 32]),
+                        key_package: vec![0x4B, 0x50],
+                        issued_at: 1_700_000_000,
+                        signature: Signature::from_bytes([0xCD; 64]),
+                    }),
+                    route: Box::new(collab_types::ChannelRoute::new("so.tilo.sheets", "payroll")),
+                    delivery: 10,
+                },
+            ),
         ]
     }
 
@@ -501,6 +709,7 @@ mod tests {
                     since: vec![1, 2, 3],
                     room: ROOM.into(),
                     invite_id: Some([9; 32]),
+                    nonce: 7,
                 },
             ),
             (
@@ -518,6 +727,7 @@ mod tests {
                     key: "cursor".into(),
                     point: (12.5, -3.25),
                     ts: 1_700_000_000,
+                    colour: Some("violet".into()),
                 },
             ),
             (
@@ -550,6 +760,7 @@ mod tests {
                     colorimetry: None,
                     hdr_static_metadata: None,
                     bit_depth: 0,
+                    tab: 0,
                 },
             ),
             (
@@ -566,6 +777,7 @@ mod tests {
                     colorimetry: Some(Colorimetry::hdr10()),
                     hdr_static_metadata: Some(Hdr10Metadata::reference_bt2020()),
                     bit_depth: 10,
+                    tab: 0,
                 },
             ),
             (
@@ -648,6 +860,18 @@ mod tests {
                 },
             ),
             (
+                "personal workspaces",
+                NeighbourMsg::PersonalWorkspaces {
+                    user_public_key: [7; 32],
+                    update: Box::new(tilo_user_identity::DirectoryUpdate {
+                        author_device_public_key: [2; 32],
+                        authored_at_ns: 10,
+                        delta: vec![1, 2, 3],
+                        signature: [3; 64],
+                    }),
+                },
+            ),
+            (
                 "remote action",
                 NeighbourMsg::RemoteAction {
                     frame: b"{}".to_vec(),
@@ -690,6 +914,29 @@ mod tests {
                         key: vec![4, 5],
                         payload: PeerPresencePayload::Selection { start: 3, end: 8 },
                     },
+                    colour: Some("teal".into()),
+                },
+            ),
+            (
+                "record content want",
+                NeighbourMsg::RecordContentWant {
+                    requester: 0x00AB_CDEF,
+                    app_id: "so.tilo.slides".into(),
+                    cluster_id: "room".into(),
+                    hash: "ab".into(),
+                },
+            ),
+            (
+                "record content piece",
+                NeighbourMsg::RecordContentPiece {
+                    responder: 0x123_456,
+                    requester: 0x00AB_CDEF,
+                    app_id: "so.tilo.slides".into(),
+                    cluster_id: "room".into(),
+                    hash: "ab".into(),
+                    total: 3,
+                    offset: 0,
+                    bytes: vec![1, 2, 3],
                 },
             ),
             (
@@ -731,47 +978,66 @@ mod tests {
         }
     }
 
+    /// The tag peek agrees with a full decode on a real encoding of every
+    /// variant, and the pinned tag is the varint postcard writes for
+    /// `AppDocument`.
+    #[test]
+    fn app_document_tag_matches_encoding() {
+        let mut app_documents = 0;
+        for (case, message) in fixtures() {
+            let bytes = postcard::to_allocvec(&message).unwrap();
+            let is_app_document = matches!(message, NeighbourMsg::AppDocument { .. });
+            assert_eq!(
+                NeighbourMsg::is_app_document(&bytes),
+                is_app_document,
+                "{case}"
+            );
+            if is_app_document {
+                app_documents += 1;
+                let (tag, _) = postcard::take_from_bytes::<u32>(&bytes).unwrap();
+                assert_eq!(tag, u32::from(NeighbourMsg::APP_DOCUMENT_TAG), "{case}");
+            }
+        }
+        assert!(app_documents > 0, "no AppDocument fixture was classified");
+        assert!(!NeighbourMsg::is_app_document(&[]));
+    }
+
+    /// Exactly the two generations no build produces are retired; every
+    /// other variant, including both identity successors, stays live.
+    #[test]
+    fn only_the_unproduced_generations_are_retired() {
+        let retired: Vec<&str> = fixtures()
+            .iter()
+            .filter(|(_, message)| message.is_retired())
+            .map(|(_, message)| variant(message))
+            .collect();
+        assert_eq!(retired, ["PermissionRequest", "IdentityAnnouncement"]);
+    }
+
     /// Names every variant through an exhaustive match, so adding a variant
     /// fails to compile until it has a fixture and a golden encoding.
     fn variant(message: &NeighbourMsg) -> &'static str {
-        match message {
-            NeighbourMsg::SyncReq { .. } => "SyncReq",
-            NeighbourMsg::SyncResp { .. } => "SyncResp",
-            NeighbourMsg::PresenceMoved { .. } => "PresenceMoved",
-            NeighbourMsg::PresenceCleared { .. } => "PresenceCleared",
-            NeighbourMsg::SurfaceFrame { .. } => "SurfaceFrame",
-            NeighbourMsg::SurfaceStreamStart { .. } => "SurfaceStreamStart",
-            NeighbourMsg::SurfaceStreamEnd { .. } => "SurfaceStreamEnd",
-            NeighbourMsg::RemoteInput { .. } => "RemoteInput",
-            NeighbourMsg::PermissionRequest { .. } => "PermissionRequest",
-            NeighbourMsg::PermissionGrant { .. } => "PermissionGrant",
-            NeighbourMsg::Heartbeat { .. } => "Heartbeat",
-            NeighbourMsg::IdentityHello { .. } => "IdentityHello",
-            NeighbourMsg::AppDocument { .. } => "AppDocument",
-            NeighbourMsg::AppPresenceV2 { .. } => "AppPresenceV2",
-            NeighbourMsg::ScrollbackRequest { .. } => "ScrollbackRequest",
-            NeighbourMsg::ScrollbackResponse { .. } => "ScrollbackResponse",
-            NeighbourMsg::IdentityAnnouncement { .. } => "IdentityAnnouncement",
-            NeighbourMsg::IdentityAnnouncementV2 { .. } => "IdentityAnnouncementV2",
-            NeighbourMsg::PersonalContinuityRequest { .. } => "PersonalContinuityRequest",
-            NeighbourMsg::PersonalContinuityCheckpoint { .. } => "PersonalContinuityCheckpoint",
-            NeighbourMsg::RemoteAction { .. } => "RemoteAction",
-            NeighbourMsg::MediaCapabilities { .. } => "MediaCapabilities",
-            NeighbourMsg::MlsGovernance { .. } => "MlsGovernance",
-            NeighbourMsg::MlsAccessRequest { .. } => "MlsAccessRequest",
-            NeighbourMsg::MlsGovernanceAck { .. } => "MlsGovernanceAck",
-        }
+        message.kind()
     }
 
-    const VARIANT_COUNT: usize = 25;
-
-    fn hex(bytes: &[u8]) -> String {
-        use std::fmt::Write;
-        bytes.iter().fold(String::new(), |mut out, byte| {
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
+    #[test]
+    fn only_a_wall_clock_heartbeat_asks_its_neighbours_to_keep_beating() {
+        let beat = |ts| NeighbourMsg::Heartbeat { peer: 9, ts };
+        // What a heartbeat-keeping build sends: unix milliseconds, October 2026.
+        assert!(beat(1_791_500_000_000).is_timed_heartbeat());
+        // What a transport-liveness build sends such a neighbour: a number.
+        assert!(!beat(1).is_timed_heartbeat());
+        assert!(!beat(NeighbourMsg::COMPAT_HEARTBEAT_TS_LIMIT - 1).is_timed_heartbeat());
+        assert!(
+            !NeighbourMsg::PresenceCleared {
+                peer: 9,
+                key: String::new()
+            }
+            .is_timed_heartbeat()
+        );
     }
+
+    const VARIANT_COUNT: usize = 29;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -781,7 +1047,7 @@ mod tests {
             concat!(
                 "00030102032436623366396131302d303030302d343030302d383030302d3030",
                 "3030303030303030306301090909090909090909090909090909090909090909",
-                "0909090909090909090909",
+                "090909090909090909090907",
             ),
         ),
         (
@@ -795,7 +1061,7 @@ mod tests {
             "presence moved",
             concat!(
                 "022a03626f6206637572736f7200000000000029400000000000000ac080e2cf",
-                "aa06",
+                "aa06010676696f6c6574",
             ),
         ),
         ("presence cleared", "032a06637572736f72"),
@@ -804,7 +1070,7 @@ mod tests {
             "SDR stream start",
             concat!(
                 "0507cdd702800ad005046832363482e2cfaa0682e2cfaa06000000126f72672e",
-                "6578616d706c652e456469746f72",
+                "6578616d706c652e456469746f7200",
             ),
         ),
         (
@@ -812,7 +1078,7 @@ mod tests {
             concat!(
                 "0508cdd702800fb8080b686576632d6d61696e313083e2cfaa0683e2cfaa0601",
                 "0101010001c894028872b442aab7029633fc11937ac2800180ade204f4030000",
-                "0a156f72672e6578616d706c652e486472456469746f72",
+                "0a156f72672e6578616d706c652e486472456469746f7200",
             ),
         ),
         ("stream end", "0607cdd70284e2cfaa06"),
@@ -866,6 +1132,16 @@ mod tests {
                 "07ef9baf0503010203",
             ),
         ),
+        (
+            "personal workspaces",
+            concat!(
+                "1907070707070707070707070707070707070707070707070707070707070707",
+                "0702020202020202020202020202020202020202020202020202020202020202",
+                "020a030102034003030303030303030303030303030303030303030303030303",
+                "0303030303030303030303030303030303030303030303030303030303030303",
+                "03030303030303",
+            ),
+        ),
         ("remote action", "14027b7d"),
         (
             "media capabilities",
@@ -881,9 +1157,9 @@ mod tests {
                 "3030302d30303030303030303030306309757569643a3163326604deadbeef10",
                 "1111111111111111111111111111111107070707070707070707070707070707",
                 "0707070707070707070707070707070710222222222222222222222222222222",
-                "220000002a004000000000000000000000000000000000000000000000000000",
+                "220000002a000000400000000000000000000000000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000000000",
-                "00000000000000",
+                "000000000000000000",
             ),
         ),
         (
@@ -891,7 +1167,16 @@ mod tests {
             concat!(
                 "0def9baf05056e6f7465732436623366396131302d303030302d343030302d38",
                 "3030302d303030303030303030303063020405020308",
+                "01047465616c",
             ),
+        ),
+        (
+            "record content want",
+            "1aef9baf050e736f2e74696c6f2e736c6964657304726f6f6d026162",
+        ),
+        (
+            "record content piece",
+            "1bd6e848ef9baf050e736f2e74696c6f2e736c6964657304726f6f6d026162030003010203",
         ),
         (
             "scrollback request",
@@ -902,14 +1187,14 @@ mod tests {
             concat!(
                 "0f10444444444444444444444444444444440204deadbeef1011111111111111",
                 "1111111111111111110707070707070707070707070707070707070707070707",
-                "07070707070707070710222222222222222222222222222222220000002a0040",
+                "07070707070707070710222222222222222222222222222222220000002a0000",
+                "0040000000000000000000000000000000000000000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000000000",
+                "000004deadbeef10111111111111111111111111111111110707070707070707",
+                "0707070707070707070707070707070707070707070707071022222222222222",
+                "2222222222222222220000002a00000040000000000000000000000000000000",
                 "0000000000000000000000000000000000000000000000000000000000000000",
-                "04deadbeef101111111111111111111111111111111107070707070707070707",
-                "0707070707070707070707070707070707070707070710222222222222222222",
-                "222222222222220000002a004000000000000000000000000000000000000000",
-                "0000000000000000000000000000000000000000000000000000000000000000",
-                "00000000000000000000000000d6e848",
+                "0000000000000000000000000000000000d6e848",
             ),
         ),
         (
@@ -947,6 +1232,17 @@ mod tests {
                 "efefefefefefefefefefefefefefefefefefefefefefefefef09",
             ),
         ),
+        (
+            "channel routed access request",
+            concat!(
+                "1c2436623366396131302d303030302d343030302d383030302d303030303030",
+                "3030303030630110555555555555555555555555555555550202020202020202",
+                "020202020202020202020202020202020202020202020202024b5080e2cfaa06",
+                "40cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+                "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+                "cd0e736f2e74696c6f2e73686565747307706179726f6c6c0a",
+            ),
+        ),
     ];
 
     fn every_variant_encodes_to_its_pinned_bytes() {
@@ -963,7 +1259,7 @@ mod tests {
         let mut actual = Vec::new();
         for (case, message) in &fixtures {
             let bytes = postcard::to_allocvec(message).expect("fixture encodes");
-            actual.push((*case, hex(&bytes)));
+            actual.push((*case, hex::encode(&bytes)));
         }
         let expected: Vec<_> = GOLDEN
             .iter()

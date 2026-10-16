@@ -6,6 +6,7 @@
 //! tests can use deterministic recording implementations.  The default is
 //! always an explicit cancellation/unavailable result, never fabricated data.
 
+use super::reply::Ended;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Read;
@@ -34,6 +35,20 @@ impl<T> PortalResult<T> {
             Self::Unavailable(_) | Self::Failed(_) => 2,
         }
     }
+
+    /// The service's value, or how the request ended without one.
+    ///
+    /// # Errors
+    ///
+    /// [`Ended::Cancelled`] when the user declined, [`Ended::Failed`] when
+    /// the service is unavailable or failed.
+    pub fn into_result(self) -> Result<T, Ended> {
+        match self {
+            Self::Success(value) => Ok(value),
+            Self::Cancelled => Err(Ended::Cancelled),
+            Self::Unavailable(_) | Self::Failed(_) => Err(Ended::Failed),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,17 +63,7 @@ pub trait AccountService: Send + Sync {
     fn get(&self, app_id: &str, reason: Option<&str>) -> PortalResult<AccountInformation>;
 }
 
-#[derive(Clone)]
-pub struct AccountServiceHandle(Arc<dyn AccountService>);
-
-impl AccountServiceHandle {
-    pub fn new(service: Arc<dyn AccountService>) -> Self {
-        Self(service)
-    }
-    pub fn get(&self, app_id: &str, reason: Option<&str>) -> PortalResult<AccountInformation> {
-        self.0.get(app_id, reason)
-    }
-}
+pub type AccountServiceHandle = Arc<dyn AccountService>;
 
 struct NoAccount;
 impl AccountService for NoAccount {
@@ -137,26 +142,7 @@ pub trait AppChooserService: Send + Sync {
     fn cancel(&self, _handle: &str) {}
 }
 
-#[derive(Clone)]
-pub struct AppChooserServiceHandle(Arc<dyn AppChooserService>);
-impl AppChooserServiceHandle {
-    pub fn new(service: Arc<dyn AppChooserService>) -> Self {
-        Self(service)
-    }
-    pub fn enqueue(
-        &self,
-        request: ApplicationChoiceRequest,
-        reply: oneshot::Sender<PortalResult<ApplicationChoice>>,
-    ) -> PortalResult<()> {
-        self.0.enqueue(request, reply)
-    }
-    pub fn update_choices(&self, handle: &str, choices: &[String]) -> PortalResult<()> {
-        self.0.update_choices(handle, choices)
-    }
-    pub fn cancel(&self, handle: &str) {
-        self.0.cancel(handle);
-    }
-}
+pub type AppChooserServiceHandle = Arc<dyn AppChooserService>;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LauncherInstallRequest {
     pub app_id: String,
@@ -182,22 +168,7 @@ pub trait DynamicLauncherService: Send + Sync {
     ) -> PortalResult<LauncherInstallChoice>;
     fn request_install_token(&self, app_id: &str) -> PortalResult<()>;
 }
-#[derive(Clone)]
-pub struct DynamicLauncherServiceHandle(Arc<dyn DynamicLauncherService>);
-impl DynamicLauncherServiceHandle {
-    pub fn new(service: Arc<dyn DynamicLauncherService>) -> Self {
-        Self(service)
-    }
-    pub fn prepare_install(
-        &self,
-        request: &LauncherInstallRequest,
-    ) -> PortalResult<LauncherInstallChoice> {
-        self.0.prepare_install(request)
-    }
-    pub fn request_install_token(&self, app_id: &str) -> PortalResult<()> {
-        self.0.request_install_token(app_id)
-    }
-}
+pub type DynamicLauncherServiceHandle = Arc<dyn DynamicLauncherService>;
 struct NoDynamicLauncher;
 impl DynamicLauncherService for NoDynamicLauncher {
     fn prepare_install(&self, _: &LauncherInstallRequest) -> PortalResult<LauncherInstallChoice> {
@@ -245,7 +216,7 @@ impl ShellDynamicLauncherService {
 
     pub fn at_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
-        let records = atomic_file::json::load_or_default(&path);
+        let records = tilo_files::native::atomic::json::load_or_default(&path);
         Self {
             records: Arc::new(Mutex::new(records)),
             path: Arc::new(path),
@@ -260,7 +231,11 @@ impl ShellDynamicLauncherService {
     }
 
     fn persist(&self, records: &[DynamicLauncherRecord]) -> Result<(), String> {
-        write_private_json(self.path.as_ref(), records)
+        let written = write_private_json(self.path.as_ref(), records);
+        // Even a failed write may have replaced the file: let the palette
+        // read it again rather than trust its projection.
+        DYNAMIC_LAUNCHER_WRITES.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        written
     }
 }
 
@@ -287,11 +262,27 @@ pub fn dynamic_launcher_records() -> Vec<DynamicLauncherRecord> {
         .collect()
 }
 
-/// Cheap file generation for the reviewed launcher library.  This is used to
-/// decide whether a retained palette projection must re-read the JSON; normal
-/// query edits only stat the private file and never clone its records.
+/// Writes of a reviewed launcher library made by this process, which hosts
+/// the portal and so is the library's only writer.
+static DYNAMIC_LAUNCHER_WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Cheap generation for the reviewed launcher library.  This is used to
+/// decide whether a retained palette projection must re-read the JSON, and
+/// the palette asks on every refresh while it is open: the file is stat-ed
+/// once, and after that the generation moves with this process's writes,
+/// never another syscall.
 #[must_use]
 pub fn dynamic_launcher_generation() -> u128 {
+    static AT_START: std::sync::OnceLock<u128> = std::sync::OnceLock::new();
+    let at_start = *AT_START.get_or_init(dynamic_launcher_file_generation);
+    at_start
+        ^ (u128::from(DYNAMIC_LAUNCHER_WRITES.load(std::sync::atomic::Ordering::Acquire)) << 64)
+}
+
+/// The library file's length and modification time.
+fn dynamic_launcher_file_generation() -> u128 {
+    #[cfg(test)]
+    DYNAMIC_LAUNCHER_STATS.with(|stats| stats.set(stats.get().saturating_add(1)));
     let path = portal_state_path("dynamic-launchers.json");
     let Ok(metadata) = fs::metadata(path) else {
         return 0;
@@ -302,6 +293,12 @@ pub fn dynamic_launcher_generation() -> u128 {
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |duration| duration.as_nanos());
     modified ^ u128::from(metadata.len())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Stats of the library file made on this thread.
+    static DYNAMIC_LAUNCHER_STATS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// Pair one parsed dynamic-launcher library with the file generation that was
@@ -419,16 +416,7 @@ pub struct EmailRequest {
 pub trait EmailService: Send + Sync {
     fn compose(&self, request: &EmailRequest) -> PortalResult<()>;
 }
-#[derive(Clone)]
-pub struct EmailServiceHandle(Arc<dyn EmailService>);
-impl EmailServiceHandle {
-    pub fn new(service: Arc<dyn EmailService>) -> Self {
-        Self(service)
-    }
-    pub fn compose(&self, request: &EmailRequest) -> PortalResult<()> {
-        self.0.compose(request)
-    }
-}
+pub type EmailServiceHandle = Arc<dyn EmailService>;
 struct NoEmail;
 impl EmailService for NoEmail {
     fn compose(&self, _: &EmailRequest) -> PortalResult<()> {
@@ -462,7 +450,7 @@ impl EmailService for ShellEmailService {
                     .find(|workspace| workspace.id == request.workspace_id)?;
                 Some((
                     workspace.room,
-                    workspace.capabilities.clone(),
+                    workspace.launch_grants(tilo_clock::unix_now()),
                     workspace.default_apps.clone(),
                     crate::shell::state::local_user_id_for_room(&workspace.room),
                 ))
@@ -488,7 +476,7 @@ impl EmailService for ShellEmailService {
             );
         }
         add_mail_attachment_grants(
-            &mut capabilities,
+            &mut capabilities.sandbox,
             &handler.package_id,
             &request.attachment_paths,
         );
@@ -510,12 +498,12 @@ fn add_mail_attachment_grants(
     handler_app_id: &str,
     attachment_paths: &[PathBuf],
 ) {
-    use crate::shell::state::{CapOverride, Expiry, Scope, Subject, Verb};
+    use crate::shell::state::{Access, CapOverride, Expiry, Scope, Subject};
     capabilities.extend(attachment_paths.iter().map(|path| {
         CapOverride::grant(
             Subject::app(handler_app_id),
             Scope::FsPath(path.to_string_lossy().into_owned()),
-            Verb::Read,
+            Access::Read,
         )
         .with_id(format!("portal-email:{}", uuid::Uuid::new_v4()))
         .expiring(Expiry::AfterUse)
@@ -739,26 +727,7 @@ pub trait WallpaperService: Send + Sync {
     ) -> PortalResult<()>;
     fn discard_staged_wallpaper(&self, request: &WallpaperRequest, staged: &StagedWallpaper);
 }
-#[derive(Clone)]
-pub struct WallpaperServiceHandle(Arc<dyn WallpaperService>);
-impl WallpaperServiceHandle {
-    pub fn new(service: Arc<dyn WallpaperService>) -> Self {
-        Self(service)
-    }
-    pub fn stage_wallpaper(&self, request: &WallpaperRequest) -> PortalResult<StagedWallpaper> {
-        self.0.stage_wallpaper(request)
-    }
-    pub fn apply_staged_wallpaper(
-        &self,
-        request: &WallpaperRequest,
-        staged: &StagedWallpaper,
-    ) -> PortalResult<()> {
-        self.0.apply_staged_wallpaper(request, staged)
-    }
-    pub fn discard_staged_wallpaper(&self, request: &WallpaperRequest, staged: &StagedWallpaper) {
-        self.0.discard_staged_wallpaper(request, staged);
-    }
-}
+pub type WallpaperServiceHandle = Arc<dyn WallpaperService>;
 struct NoWallpaper;
 impl WallpaperService for NoWallpaper {
     fn stage_wallpaper(&self, _: &WallpaperRequest) -> PortalResult<StagedWallpaper> {
@@ -884,7 +853,7 @@ impl ShellWallpaperService {
         path: impl Into<PathBuf>,
     ) -> Self {
         let path = path.into();
-        let records = atomic_file::json::load_or_default(&path);
+        let records = tilo_files::native::atomic::json::load_or_default(&path);
         Self {
             tree,
             records: Arc::new(Mutex::new(records)),
@@ -1011,27 +980,7 @@ pub(crate) fn document_portal_path_from_uri(uri: &str) -> Result<PathBuf, String
 }
 
 fn document_portal_root() -> PathBuf {
-    xdg_paths::xdg::runtime_dir()
-        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", nix_uid())))
-        .join("doc")
-}
-
-fn nix_uid() -> u32 {
-    // `id -u` is intentionally not spawned. Linux exposes the effective uid
-    // through procfs; absent procfs the standard runtime-dir path below will
-    // simply fail closed during canonicalisation.
-    fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|status| {
-            status
-                .lines()
-                .find(|line| line.starts_with("Uid:"))?
-                .split_whitespace()
-                .nth(1)?
-                .parse()
-                .ok()
-        })
-        .unwrap_or(0)
+    tilo_paths::xdg::runtime_dir_or_default().join("doc")
 }
 
 fn document_portal_path_from_uri_at(uri: &str, root: &Path) -> Result<PathBuf, String> {
@@ -1204,7 +1153,7 @@ fn normalise_wallpaper(bytes: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn write_private_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    atomic_file::write_private(path, bytes).map_err(|error| error.to_string())
+    tilo_files::native::atomic::write_private(path, bytes).map_err(|error| error.to_string())
 }
 
 fn cleanup_wallpaper_cache(cache: &Path, records: &[WallpaperRecord]) {
@@ -1239,7 +1188,7 @@ pub(crate) fn wallpaper_state_path() -> PathBuf {
 }
 
 fn write_private_json(path: &Path, value: &(impl Serialize + ?Sized)) -> Result<(), String> {
-    atomic_file::json::write_private(path, value).map_err(|error| error.to_string())
+    tilo_files::native::atomic::json::write_private(path, value).map_err(|error| error.to_string())
 }
 
 /// All application-facing desktop capabilities.  This is cloneable by design:
@@ -1258,15 +1207,13 @@ pub struct DesktopPortalServices {
 impl Default for DesktopPortalServices {
     fn default() -> Self {
         Self {
-            account: AccountServiceHandle::new(Arc::new(NoAccount)),
-            app_chooser: AppChooserServiceHandle::new(Arc::new(
-                crate::shell::portal_dialog::ShellAppChooserService::global(),
-            )),
-            dynamic_launcher: DynamicLauncherServiceHandle::new(Arc::new(NoDynamicLauncher)),
-            email: EmailServiceHandle::new(Arc::new(NoEmail)),
+            account: Arc::new(NoAccount),
+            app_chooser: Arc::new(crate::shell::portal_dialog::ShellAppChooserService::global()),
+            dynamic_launcher: Arc::new(NoDynamicLauncher),
+            email: Arc::new(NoEmail),
             screenshot: ScreenshotServiceHandle::new(Arc::new(NoScreenshot)),
             settings: SettingsServiceHandle::default(),
-            wallpaper: WallpaperServiceHandle::new(Arc::new(NoWallpaper)),
+            wallpaper: Arc::new(NoWallpaper),
         }
     }
 }
@@ -1277,14 +1224,12 @@ impl DesktopPortalServices {
     /// is available.
     pub fn for_session(tree: crate::shell::state::WorkspaceTreeHandle) -> Self {
         let mut services = Self::default();
-        services.account = AccountServiceHandle::new(Arc::new(WorkspaceAccount {
+        services.account = Arc::new(WorkspaceAccount {
             grants: super::GrantStoreHandle::new(tree.clone()),
-        }));
-        services.dynamic_launcher =
-            DynamicLauncherServiceHandle::new(Arc::new(ShellDynamicLauncherService::for_session()));
-        services.email = EmailServiceHandle::new(Arc::new(ShellEmailService::new(tree.clone())));
-        services.wallpaper =
-            WallpaperServiceHandle::new(Arc::new(ShellWallpaperService::new(tree)));
+        });
+        services.dynamic_launcher = Arc::new(ShellDynamicLauncherService::for_session());
+        services.email = Arc::new(ShellEmailService::new(tree.clone()));
+        services.wallpaper = Arc::new(ShellWallpaperService::new(tree));
         services
     }
 }
@@ -1292,7 +1237,7 @@ impl DesktopPortalServices {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::state::{Expiry, Scope, Subject, Verb};
+    use crate::shell::state::{Access, Expiry, Scope, Subject};
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -1337,10 +1282,48 @@ mod tests {
                 grant.scope,
                 Scope::FsPath("/run/user/1000/doc/abc/report.pdf".into())
             );
-            assert_eq!(grant.verb, Verb::Read);
+            assert_eq!(grant.access, Access::Read);
             assert_eq!(grant.expiry, Expiry::AfterUse);
             assert!(grant.id.starts_with("portal-email:"));
         }
+    }
+
+    /// The palette asks for the launcher library's generation on every
+    /// refresh while it is open. The file is stat-ed for the first ask at
+    /// most; after that the generation costs no syscall, and an install
+    /// still moves it.
+    #[test]
+    fn the_launcher_library_generation_costs_no_syscall_per_refresh() {
+        let _ = dynamic_launcher_generation();
+        let stats = || DYNAMIC_LAUNCHER_STATS.with(std::cell::Cell::get);
+        let before = stats();
+        for _ in 0..100 {
+            let _ = dynamic_launcher_generation();
+        }
+        let generation = dynamic_launcher_generation();
+        assert_eq!(stats(), before, "a refresh stat-ed the library file");
+
+        let dir = tempfile::tempdir().expect("temporary state directory");
+        let service = ShellDynamicLauncherService::at_path(dir.path().join("launchers.json"));
+        assert!(matches!(
+            service.prepare_install(&LauncherInstallRequest {
+                app_id: "org.example.Caller".into(),
+                name: "Example site".into(),
+                launcher_type: 2,
+                target: Some("https://example.test/".into()),
+                editable_name: true,
+                editable_icon: false,
+                icon_kind: "tilo-web".into(),
+                icon_bytes: None,
+            }),
+            PortalResult::Success(_)
+        ));
+        assert_ne!(
+            dynamic_launcher_generation(),
+            generation,
+            "an install moves the generation"
+        );
+        assert_eq!(stats(), before, "without a stat");
     }
 
     #[test]
@@ -1519,51 +1502,12 @@ mod tests {
     }
 }
 
-fn jpeg_dimensions(bytes: &[u8]) -> Option<(u16, u16)> {
-    if !bytes.starts_with(&[0xff, 0xd8]) {
-        return None;
-    }
-    let mut index: usize = 2;
-    while index.saturating_add(9) <= bytes.len() {
-        if bytes[index] != 0xff {
-            return None;
-        }
-        while bytes.get(index) == Some(&0xff) {
-            index += 1;
-        }
-        let marker = *bytes.get(index)?;
-        index += 1;
-        if marker == 0xd9 || marker == 0xda {
-            return None;
-        }
-        let length = usize::from(u16::from_be_bytes([
-            *bytes.get(index)?,
-            *bytes.get(index + 1)?,
-        ]));
-        if length < 7 || index.saturating_add(length) > bytes.len() {
-            return None;
-        }
-        if matches!(marker, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf) {
-            return Some((
-                u16::from_be_bytes([bytes[index + 5], bytes[index + 6]]),
-                u16::from_be_bytes([bytes[index + 3], bytes[index + 4]]),
-            ));
-        }
-        index += length;
-    }
-    None
-}
 pub(crate) fn valid_icon_payload(bytes: &[u8]) -> bool {
     if bytes.is_empty() || bytes.len() > 2 * 1024 * 1024 {
         return false;
     }
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
-        let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
-        let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
-        return (1..=512).contains(&width) && (1..=512).contains(&height);
-    }
-    if let Some((width, height)) = jpeg_dimensions(&bytes) {
-        return (1..=512).contains(&u32::from(width)) && (1..=512).contains(&u32::from(height));
+    if let Some((format, width, height)) = tilo_content::image_size(bytes) {
+        return matches!(format.extension, "png" | "jpg") && width <= 512 && height <= 512;
     }
     if bytes.len() > 256 * 1024 {
         return false;

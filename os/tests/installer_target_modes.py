@@ -46,6 +46,7 @@ class InstallerTargetModeTests(unittest.TestCase):
                 body = body.replace('/usr/libexec/tilo-verified-boot-install-preflight', 'fixture_preflight')
                 script = '''set -euo pipefail
 LOCAL_IMG=fixture
+OFFLINE_TARGET=1
 die() { echo "$*" >&2; exit 1; }
 fixture_preflight() { return 0; }
 fixture_cmdline() {

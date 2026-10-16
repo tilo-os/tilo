@@ -1,65 +1,136 @@
-//! Path-free semantic operations for the local folder-import workflow.
+//! What folder imports offer the palette, agents and scripts: their effects
+//! and the live rows of the imports on this computer.
+//!
+//! Imports copy private folders on this device. They are effects of the
+//! imager resource, never document actions, and their published rows and
+//! receipts stay path-free.
 
-use tilo_actions::{
-    ActionSpec, EncodedAction, OperationKind, Resource, ResourcePresentation, ResultSpec,
-};
+use tilo_actions::{ActionSpec, ResourcePresentation};
+use ui::framework::{EffectStatus, LiveRow};
+use ui::tilo_resource::{self, ActionRef, Effect};
 
 use super::strings;
 
-pub const IMPORT_RESOURCE_ID: &str = "imager.import";
-pub const IMPORT_OPERATION_TYPE: &str = "imager.import.operation";
+/// The live row of the folder imports, beneath the imager resource.
+pub const IMPORT_ROW_ID: &str = "imager.import";
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "operation", rename_all = "snake_case")]
-pub enum ImportOperation {
-    Observe,
-    PickSource,
-    PickDestination,
+/// Folder imports' effects. Each answers with the imports' path-free status
+/// ([`ImportProjection`]) as it stands afterwards; a job answers when its
+/// work settled.
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "imager.import", device_only)]
+pub enum ImportEffect {
+    /// Read current import status.
+    ///
+    /// For the person at this computer it includes the chosen folders.
+    #[effect(returns, kind = "read")]
+    ReadStatus,
+    /// Open Accounts to explicitly connect providers after trusted identity setup.
+    #[effect(view, returns, kind = "read")]
+    OpenAccounts,
+    /// Open Store to choose apps; installation remains a separate action.
+    #[effect(view, returns, kind = "read")]
+    OpenStore,
+    /// Choose source folder.
+    #[effect(returns, kind = "read")]
+    ChooseSource,
+    /// Choose destination folder.
+    #[effect(returns, kind = "read")]
+    ChooseDestination,
+    /// Clear folder selection.
+    #[effect(returns, kind = "read")]
     ClearSelection,
+    /// Prepare copy review.
+    #[effect(job)]
     PrepareReview,
+    /// Check identity setup.
+    #[effect(returns, kind = "read")]
     CheckIdentity,
-    StartReviewedBatch,
+    /// Copy reviewed folders.
+    #[effect(job, cancellable)]
+    StartReviewedFolders,
+    /// Decide later for all folders.
+    #[effect(returns)]
     LaterAll,
-    Start { operation_id: String },
-    Retry { operation_id: String },
-    Cancel { operation_id: String },
-    ToggleDetails { operation_id: String },
-    NextIssues { operation_id: String },
-    FirstIssues { operation_id: String },
-    ResolveFolder { folder_id: String },
-    PickFolderDestination { folder_id: String },
-    SetFolderCopy { folder_id: String },
-    SetFolderLater { folder_id: String },
-    SetFolderConnected { folder_id: String },
+    /// Start copy.
+    #[effect(job, cancellable)]
+    StartCopy {
+        #[param("Id of the reviewed copy")]
+        operation_id: String,
+    },
+    /// Continue copy.
+    #[effect(job, cancellable)]
+    RetryCopy {
+        #[param("Id of the copy to continue")]
+        operation_id: String,
+    },
+    /// Request to stop copy.
+    #[effect(returns)]
+    CancelCopy {
+        #[param("Id of the running copy")]
+        operation_id: String,
+    },
+    /// Show or hide copy details.
+    #[effect(returns, kind = "read")]
+    ToggleDetails {
+        #[param("Id of the copy")]
+        operation_id: String,
+    },
+    /// Load next issue page.
+    #[effect(returns, kind = "read")]
+    NextIssues {
+        #[param("Id of the copy")]
+        operation_id: String,
+    },
+    /// Return to first issue page.
+    #[effect(returns, kind = "read")]
+    FirstIssues {
+        #[param("Id of the copy")]
+        operation_id: String,
+    },
+    /// Review destination.
+    #[effect(job, cancellable)]
+    ReviewFolderDestination {
+        #[param("Id of the saved folder choice")]
+        folder_id: String,
+    },
+    /// Choose another destination.
+    #[effect(job, cancellable)]
+    ChooseFolderDestination {
+        #[param("Id of the saved folder choice")]
+        folder_id: String,
+    },
+    /// Use one-time Copy.
+    #[effect(returns)]
+    SetFolderCopy {
+        #[param("Id of the saved folder choice")]
+        folder_id: String,
+    },
+    /// Decide later.
+    #[effect(returns)]
+    SetFolderLater {
+        #[param("Id of the saved folder choice")]
+        folder_id: String,
+    },
+    /// Use Connected folders.
+    #[effect(returns)]
+    SetFolderConnected {
+        #[param("Id of the saved folder choice")]
+        folder_id: String,
+    },
 }
 
-impl ImportOperation {
-    pub(super) const fn kind(&self) -> OperationKind {
-        match self {
-            Self::PrepareReview
-            | Self::StartReviewedBatch
-            | Self::LaterAll
-            | Self::Start { .. }
-            | Self::Retry { .. }
-            | Self::Cancel { .. }
-            | Self::ResolveFolder { .. }
-            | Self::PickFolderDestination { .. }
-            | Self::SetFolderCopy { .. }
-            | Self::SetFolderLater { .. }
-            | Self::SetFolderConnected { .. } => OperationKind::Effect,
-            _ => OperationKind::View,
-        }
-    }
-
+impl ImportEffect {
+    /// Whether the effect answers once its background work settled.
     pub(super) const fn background(&self) -> bool {
         matches!(
             self,
             Self::PrepareReview
-                | Self::StartReviewedBatch
-                | Self::Start { .. }
-                | Self::Retry { .. }
-                | Self::ResolveFolder { .. }
-                | Self::PickFolderDestination { .. }
+                | Self::StartReviewedFolders
+                | Self::StartCopy { .. }
+                | Self::RetryCopy { .. }
+                | Self::ReviewFolderDestination { .. }
+                | Self::ChooseFolderDestination { .. }
         )
     }
 }
@@ -173,6 +244,7 @@ pub struct ImportProjection {
     pub picker_available: bool,
     pub clear_available: bool,
     pub prepare_review_available: bool,
+    pub journey_available: bool,
 }
 
 impl ImportProjection {
@@ -182,85 +254,173 @@ impl ImportProjection {
     }
 }
 
+/// Each effect's label, as a message key.
+const LABELS: &[(&str, &str)] = &[
+    ("read-status", "imager-import-action-read-status"),
+    ("open-accounts", "imager-journey-accounts"),
+    ("open-store", "imager-journey-store"),
+    ("choose-source", "imager-import-action-choose-source"),
+    (
+        "choose-destination",
+        "imager-import-action-choose-destination",
+    ),
+    ("clear-selection", "imager-import-action-clear-selection"),
+    ("prepare-review", "imager-import-action-prepare-review"),
+    ("check-identity", "imager-import-action-check-identity"),
+    (
+        "start-reviewed-folders",
+        "imager-import-action-start-reviewed-folders",
+    ),
+    ("later-all", "imager-import-action-later-all"),
+    ("start-copy", "imager-import-action-start"),
+    ("retry-copy", "imager-import-action-retry"),
+    ("cancel-copy", "imager-import-action-cancel"),
+    ("toggle-details", "imager-import-action-toggle-details"),
+    ("next-issues", "imager-import-action-next-issues"),
+    ("first-issues", "imager-import-action-first-issues"),
+    (
+        "review-folder-destination",
+        "imager-import-action-review-destination",
+    ),
+    (
+        "choose-folder-destination",
+        "imager-import-action-choose-folder-destination",
+    ),
+    ("set-folder-copy", "imager-import-action-folder-copy"),
+    ("set-folder-later", "imager-import-action-folder-later"),
+    (
+        "set-folder-connected",
+        "imager-import-action-folder-connected",
+    ),
+];
+
+/// The label of the effect `id` in the person's language.
+fn label(id: &str) -> String {
+    LABELS
+        .iter()
+        .find(|(effect, _)| *effect == id)
+        .map_or_else(|| id.to_owned(), |(_, key)| strings::t(key))
+}
+
+/// An effect that cannot run now: `code` names why for programs, `reason`
+/// (a message key) for people.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Blocked {
+    pub id: &'static str,
+    pub code: &'static str,
+    pub reason: &'static str,
+}
+
+/// The import effects that cannot run in `state`, with why.
 #[must_use]
-pub fn encode(operation: &ImportOperation) -> EncodedAction {
-    EncodedAction::encode_operation(IMPORT_OPERATION_TYPE, operation).unwrap_or_else(|_| {
-        EncodedAction {
-            type_id: IMPORT_OPERATION_TYPE.to_string(),
-            payload: Vec::new(),
-        }
-    })
-}
-
-/// Decode one app-owned import operation without admitting a mutation.
-///
-/// # Errors
-/// Returns a localized error when an import payload is malformed.
-pub fn decode(type_id: &str, payload: &[u8]) -> Result<Option<ImportOperation>, String> {
-    if type_id != IMPORT_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload).map(Some).map_err(|error| {
-        strings::t_args(
-            "imager-import-error-invalid-operation",
-            &[("error", error.to_string().into())],
-        )
-    })
-}
-
-fn result_spec() -> ResultSpec {
-    ResultSpec::Json {
-        schema: serde_json::json!({ "type": "object" }),
-    }
-}
-
-fn immediate(id: &str, label_key: &str, operation: ImportOperation) -> ActionSpec {
-    let label = strings::t(label_key);
-    let kind = operation.kind();
-    let background = operation.background();
-    let cancellable = !matches!(&operation, ImportOperation::PrepareReview);
-    let mut action =
-        ActionSpec::operation(id, label.clone(), kind, IMPORT_OPERATION_TYPE, &operation)
-            .unwrap_or_else(|_| {
-                ActionSpec::typed_operation(
-                    id,
-                    label,
-                    "",
-                    kind,
-                    IMPORT_OPERATION_TYPE,
-                    Vec::new(),
-                    move |_| encode(&operation),
-                )
-            })
-            .returns(result_spec());
-    if kind == OperationKind::Effect {
-        action.contract.tags.push("tilo.local-device-only".into());
-    }
-    if background {
-        action = action.execution(tilo_actions::ExecutionMode::Background { cancellable });
-    }
-    action
-}
-
-fn available(action: ActionSpec, is_available: bool, code: &str, reason_key: &str) -> ActionSpec {
-    if is_available {
-        action
+pub fn blocked(state: &ImportProjection) -> Vec<Blocked> {
+    let continuation = state.continuation.as_ref();
+    let journey_reason = if continuation.is_some_and(|c| c.identity_ready) {
+        "imager-journey-navigation-pending"
     } else {
-        action.unavailable(code, strings::t(reason_key))
+        "imager-journey-identity-required"
+    };
+    [
+        (
+            ImportEffect::OPEN_ACCOUNTS.id,
+            state.journey_available,
+            "journey_unavailable",
+            journey_reason,
+        ),
+        (
+            ImportEffect::OPEN_STORE.id,
+            state.journey_available,
+            "journey_unavailable",
+            journey_reason,
+        ),
+        (
+            ImportEffect::CHOOSE_SOURCE.id,
+            state.picker_available,
+            "picker_unavailable",
+            "imager-import-error-picker-unavailable",
+        ),
+        (
+            ImportEffect::CHOOSE_DESTINATION.id,
+            state.picker_available,
+            "picker_unavailable",
+            "imager-import-error-picker-unavailable",
+        ),
+        (
+            ImportEffect::CLEAR_SELECTION.id,
+            state.clear_available,
+            "selection_empty",
+            "imager-import-error-selection-empty",
+        ),
+        (
+            ImportEffect::PREPARE_REVIEW.id,
+            state.prepare_review_available,
+            "review_unavailable",
+            "imager-import-error-review-unavailable",
+        ),
+        (
+            ImportEffect::CHECK_IDENTITY.id,
+            continuation.is_some_and(|continuation| continuation.identity_check_available),
+            "identity_check_unavailable",
+            "imager-import-error-identity-check-unavailable",
+        ),
+        (
+            ImportEffect::START_REVIEWED_FOLDERS.id,
+            continuation.is_some_and(|continuation| continuation.start_batch_available),
+            "batch_unavailable",
+            "imager-import-error-batch-unavailable",
+        ),
+        (
+            ImportEffect::LATER_ALL.id,
+            continuation.is_some_and(|continuation| continuation.later_all_available),
+            "later_all_unavailable",
+            "imager-import-error-later-all-unavailable",
+        ),
+        (
+            ImportEffect::SET_FOLDER_CONNECTED.id,
+            false,
+            "connected_unavailable",
+            "imager-import-error-connected-unavailable",
+        ),
+    ]
+    .into_iter()
+    .filter(|(_, open, ..)| !open)
+    .map(|(id, _, code, reason)| Blocked { id, code, reason })
+    .collect()
+}
+
+/// The import effects as callers see them now: in the person's language,
+/// with what cannot run.
+#[must_use]
+pub fn statuses(state: &ImportProjection) -> Vec<EffectStatus> {
+    let effect = |id| ActionRef::<ImportEffect, ()>::new(id, &[]);
+    LABELS
+        .iter()
+        .map(|(id, key)| EffectStatus::labelled(effect(id), strings::t(key)))
+        .chain(blocked(state).into_iter().map(|blocked| {
+            EffectStatus::unavailable(effect(blocked.id), blocked.code, strings::t(blocked.reason))
+        }))
+        .collect()
+}
+
+/// `effect` bound to its row, offered when `available`.
+fn offer(effect: &ImportEffect, available: bool, code: &str, reason: &str) -> ActionSpec {
+    let mut spec = effect.bound();
+    spec.label = label(effect.id());
+    if available {
+        spec
+    } else {
+        spec.unavailable(code, strings::t(reason))
     }
 }
 
-fn operation_resource(operation: &OperationProjection) -> Resource {
-    let identity = operation.identity.clone();
-    let action = |id, label, operation, allowed, code, reason| {
-        available(immediate(id, label, operation), allowed, code, reason)
-    };
-    Resource::new(
-        format!("{IMPORT_RESOURCE_ID}.operation.{identity}"),
+fn operation_row(operation: &OperationProjection) -> LiveRow {
+    let operation_id = || operation.identity.clone();
+    LiveRow::new(
+        format!("{IMPORT_ROW_ID}.operation.{}", operation.identity),
         "imager.import.operation",
         strings::t("imager-import-resource-operation"),
     )
-    .with_presentation(ResourcePresentation {
+    .presentation(ResourcePresentation {
         detail: Some(strings::t_args(
             "imager-import-detail-operation",
             &[
@@ -273,61 +433,49 @@ fn operation_resource(operation: &OperationProjection) -> Resource {
         badge: Some(strings::t("imager-import-badge-operation")),
         preview: None,
     })
-    .with_action(action(
-        "start",
-        "imager-import-action-start",
-        ImportOperation::Start {
-            operation_id: identity.clone(),
+    .operation(offer(
+        &ImportEffect::StartCopy {
+            operation_id: operation_id(),
         },
         operation.start_available,
         "start_unavailable",
         "imager-import-error-start-unavailable",
     ))
-    .with_action(action(
-        "retry",
-        "imager-import-action-retry",
-        ImportOperation::Retry {
-            operation_id: identity.clone(),
+    .operation(offer(
+        &ImportEffect::RetryCopy {
+            operation_id: operation_id(),
         },
         operation.retry_available,
         "retry_unavailable",
         "imager-import-error-retry-unavailable",
     ))
-    .with_action(action(
-        "cancel",
-        "imager-import-action-cancel",
-        ImportOperation::Cancel {
-            operation_id: identity.clone(),
+    .operation(offer(
+        &ImportEffect::CancelCopy {
+            operation_id: operation_id(),
         },
         operation.cancel_available,
         "cancel_unavailable",
         "imager-import-error-cancel-unavailable",
     ))
-    .with_action(action(
-        "toggle-details",
-        "imager-import-action-toggle-details",
-        ImportOperation::ToggleDetails {
-            operation_id: identity.clone(),
+    .operation(offer(
+        &ImportEffect::ToggleDetails {
+            operation_id: operation_id(),
         },
         operation.details_available,
         "details_unavailable",
         "imager-import-error-details-unavailable",
     ))
-    .with_action(action(
-        "next-issues",
-        "imager-import-action-next-issues",
-        ImportOperation::NextIssues {
-            operation_id: identity,
+    .operation(offer(
+        &ImportEffect::NextIssues {
+            operation_id: operation_id(),
         },
         operation.next_issues_available,
         "next_issues_unavailable",
         "imager-import-error-next-issues-unavailable",
     ))
-    .with_action(action(
-        "first-issues",
-        "imager-import-action-first-issues",
-        ImportOperation::FirstIssues {
-            operation_id: operation.identity.clone(),
+    .operation(offer(
+        &ImportEffect::FirstIssues {
+            operation_id: operation_id(),
         },
         operation.first_issues_available,
         "first_issues_unavailable",
@@ -335,17 +483,17 @@ fn operation_resource(operation: &OperationProjection) -> Resource {
     ))
 }
 
-fn folder_resource(folder: &FolderProjection) -> Resource {
-    let identity = folder.identity.clone();
-    Resource::new(
-        format!("{IMPORT_RESOURCE_ID}.folder.{identity}"),
+fn folder_row(folder: &FolderProjection) -> LiveRow {
+    let folder_id = || folder.identity.clone();
+    LiveRow::new(
+        format!("{IMPORT_ROW_ID}.folder.{}", folder.identity),
         "imager.import.folder",
         strings::t_args(
             "imager-import-resource-folder",
             &[("number", folder.number.into())],
         ),
     )
-    .with_presentation(ResourcePresentation {
+    .presentation(ResourcePresentation {
         detail: Some(strings::t_args(
             "imager-import-detail-folder",
             &[
@@ -356,77 +504,58 @@ fn folder_resource(folder: &FolderProjection) -> Resource {
         badge: Some(strings::t("imager-import-badge-folder")),
         preview: None,
     })
-    .with_action(available(
-        immediate(
-            "review-destination",
-            "imager-import-action-review-destination",
-            ImportOperation::ResolveFolder {
-                folder_id: identity.clone(),
-            },
-        ),
+    .operation(offer(
+        &ImportEffect::ReviewFolderDestination {
+            folder_id: folder_id(),
+        },
         folder.review_available,
         "folder_review_unavailable",
         "imager-import-error-folder-review-unavailable",
     ))
-    .with_action(available(
-        immediate(
-            "choose-destination",
-            "imager-import-action-choose-folder-destination",
-            ImportOperation::PickFolderDestination {
-                folder_id: identity.clone(),
-            },
-        ),
+    .operation(offer(
+        &ImportEffect::ChooseFolderDestination {
+            folder_id: folder_id(),
+        },
         folder.picker_available,
         "folder_picker_unavailable",
         "imager-import-error-picker-unavailable",
     ))
-    .with_action(available(
-        immediate(
-            "one-time-copy",
-            "imager-import-action-folder-copy",
-            ImportOperation::SetFolderCopy {
-                folder_id: identity.clone(),
-            },
-        ),
+    .operation(offer(
+        &ImportEffect::SetFolderCopy {
+            folder_id: folder_id(),
+        },
         folder.mode_available,
         "folder_mode_unavailable",
         "imager-import-error-folder-mode-unavailable",
     ))
-    .with_action(available(
-        immediate(
-            "later",
-            "imager-import-action-folder-later",
-            ImportOperation::SetFolderLater {
-                folder_id: identity.clone(),
-            },
-        ),
+    .operation(offer(
+        &ImportEffect::SetFolderLater {
+            folder_id: folder_id(),
+        },
         folder.mode_available,
         "folder_mode_unavailable",
         "imager-import-error-folder-mode-unavailable",
     ))
-    .with_action(available(
-        immediate(
-            "connected",
-            "imager-import-action-folder-connected",
-            ImportOperation::SetFolderConnected {
-                folder_id: identity,
-            },
-        ),
+    .operation(offer(
+        &ImportEffect::SetFolderConnected {
+            folder_id: folder_id(),
+        },
         false,
         "connected_unavailable",
         "imager-import-error-connected-unavailable",
     ))
 }
 
-/// Build the bounded, path-free resource projection for the import workflow.
+/// The imports on this computer as one live row beneath the imager
+/// resource: the saved folder choices, then each copy.
 #[must_use]
-pub fn resource(state: &ImportProjection) -> Resource {
-    let mut root = Resource::new(
-        IMPORT_RESOURCE_ID,
+pub fn row(state: &ImportProjection) -> LiveRow {
+    let mut row = LiveRow::new(
+        IMPORT_ROW_ID,
         "imager.import",
         strings::t("imager-import-resource-root"),
     )
-    .with_presentation(ResourcePresentation {
+    .presentation(ResourcePresentation {
         detail: Some(strings::t_args(
             "imager-import-detail-root",
             &[
@@ -437,88 +566,39 @@ pub fn resource(state: &ImportProjection) -> Resource {
         )),
         badge: Some(strings::t("imager-import-badge-root")),
         preview: None,
-    })
-    .with_action(immediate(
-        "read-status",
-        "imager-import-action-read-status",
-        ImportOperation::Observe,
-    ))
-    .with_action(available(
-        immediate(
-            "choose-source",
-            "imager-import-action-choose-source",
-            ImportOperation::PickSource,
-        ),
-        state.picker_available,
-        "picker_unavailable",
-        "imager-import-error-picker-unavailable",
-    ))
-    .with_action(available(
-        immediate(
-            "choose-destination",
-            "imager-import-action-choose-destination",
-            ImportOperation::PickDestination,
-        ),
-        state.picker_available,
-        "picker_unavailable",
-        "imager-import-error-picker-unavailable",
-    ))
-    .with_action(available(
-        immediate(
-            "clear-selection",
-            "imager-import-action-clear-selection",
-            ImportOperation::ClearSelection,
-        ),
-        state.clear_available,
-        "selection_empty",
-        "imager-import-error-selection-empty",
-    ))
-    .with_action(available(
-        immediate(
-            "prepare-review",
-            "imager-import-action-prepare-review",
-            ImportOperation::PrepareReview,
-        ),
-        state.prepare_review_available,
-        "review_unavailable",
-        "imager-import-error-review-unavailable",
-    ));
-
+    });
+    let ready = state.journey_available;
+    let reason = if state
+        .continuation
+        .as_ref()
+        .is_some_and(|c| c.identity_ready)
+    {
+        "imager-journey-navigation-pending"
+    } else {
+        "imager-journey-identity-required"
+    };
+    row = row
+        .operation(offer(
+            &ImportEffect::OpenAccounts,
+            ready,
+            "journey_unavailable",
+            reason,
+        ))
+        .operation(offer(
+            &ImportEffect::OpenStore,
+            ready,
+            "journey_unavailable",
+            reason,
+        ));
     if let Some(continuation) = &state.continuation {
-        root = root
-            .with_action(available(
-                immediate(
-                    "check-identity",
-                    "imager-import-action-check-identity",
-                    ImportOperation::CheckIdentity,
-                ),
-                continuation.identity_check_available,
-                "identity_check_unavailable",
-                "imager-import-error-identity-check-unavailable",
-            ))
-            .with_action(available(
-                immediate(
-                    "start-reviewed-folders",
-                    "imager-import-action-start-reviewed-folders",
-                    ImportOperation::StartReviewedBatch,
-                ),
-                continuation.start_batch_available,
-                "batch_unavailable",
-                "imager-import-error-batch-unavailable",
-            ))
-            .with_action(available(
-                immediate(
-                    "later-all",
-                    "imager-import-action-later-all",
-                    ImportOperation::LaterAll,
-                ),
-                continuation.later_all_available,
-                "later_all_unavailable",
-                "imager-import-error-later-all-unavailable",
-            ));
-        root = root.with_children(continuation.folders.iter().map(folder_resource));
+        for folder in &continuation.folders {
+            row = row.row(folder_row(folder));
+        }
     }
-    root.with_children(state.operations.iter().map(operation_resource))
+    for operation in &state.operations {
+        row = row.row(operation_row(operation));
+    }
+    row
 }
 
 const fn flag(value: bool) -> &'static str {
@@ -528,94 +608,52 @@ const fn flag(value: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_actions::{ExecutionMode, OperationKind};
+
+    fn declared(id: &str) -> ActionSpec {
+        ImportEffect::specs()
+            .into_iter()
+            .find(|spec| spec.id == id)
+            .unwrap_or_else(|| panic!("missing {id}"))
+    }
 
     #[test]
-    fn copy_actions_are_local_device_effects_with_background_completion() {
-        let start = immediate(
-            "start",
-            "imager-import-action-start",
-            ImportOperation::Start {
+    fn copies_and_reviews_are_background_effects_answered_when_settled() {
+        for (id, cancellable) in [
+            ("start-copy", true),
+            ("retry-copy", true),
+            ("start-reviewed-folders", true),
+            ("review-folder-destination", true),
+            ("choose-folder-destination", true),
+            ("prepare-review", false),
+        ] {
+            let spec = declared(id);
+            assert_eq!(spec.kind, OperationKind::Effect, "{id}");
+            assert_eq!(
+                spec.contract.execution,
+                ExecutionMode::Background { cancellable },
+                "{id}"
+            );
+        }
+        for effect in [
+            ImportEffect::PrepareReview,
+            ImportEffect::StartCopy {
                 operation_id: "copy-1".into(),
             },
-        );
-        assert_eq!(start.kind, OperationKind::Effect);
-        assert!(
-            start
-                .contract
-                .tags
-                .iter()
-                .any(|tag| tag == "tilo.local-device-only")
-        );
-        assert_eq!(
-            start.contract.execution,
-            tilo_actions::ExecutionMode::Background { cancellable: true }
-        );
-
-        let mode = immediate(
-            "one-time-copy",
-            "imager-import-action-folder-copy",
-            ImportOperation::SetFolderCopy {
+            ImportEffect::ReviewFolderDestination {
                 folder_id: "folder-1".into(),
             },
-        );
-        assert_eq!(mode.kind, OperationKind::Effect);
-        assert!(
-            mode.contract
-                .tags
-                .iter()
-                .any(|tag| tag == "tilo.local-device-only")
-        );
-
-        let review = immediate(
-            "prepare-review",
-            "imager-import-action-prepare-review",
-            ImportOperation::PrepareReview,
-        );
-        assert_eq!(review.kind, OperationKind::Effect);
+        ] {
+            let job = ImportEffect::declarations()
+                .into_iter()
+                .any(|decl| decl.id == effect.id() && decl.is_job());
+            assert_eq!(effect.background(), job, "{}", effect.id());
+        }
         assert_eq!(
-            review.contract.execution,
-            tilo_actions::ExecutionMode::Background { cancellable: false }
+            declared("read-status").contract.execution,
+            ExecutionMode::Immediate
         );
-        assert!(
-            review
-                .contract
-                .tags
-                .iter()
-                .any(|tag| tag == "tilo.local-device-only")
-        );
-
-        let resolve = immediate(
-            "review-destination",
-            "imager-import-action-review-destination",
-            ImportOperation::ResolveFolder {
-                folder_id: "folder-1".into(),
-            },
-        );
-        assert_eq!(resolve.kind, OperationKind::Effect);
-        assert_eq!(
-            resolve.contract.execution,
-            tilo_actions::ExecutionMode::Background { cancellable: true }
-        );
-        let destination = immediate(
-            "choose-destination",
-            "imager-import-action-choose-folder-destination",
-            ImportOperation::PickFolderDestination {
-                folder_id: "folder-1".into(),
-            },
-        );
-        assert_eq!(destination.kind, OperationKind::Effect);
-        assert!(matches!(
-            destination.contract.execution,
-            tilo_actions::ExecutionMode::Background { .. }
-        ));
-
-        let observe = immediate(
-            "read-status",
-            "imager-import-action-read-status",
-            ImportOperation::Observe,
-        );
-        assert_eq!(observe.kind, OperationKind::View);
-        assert!(observe.contract.tags.is_empty());
+        assert!(!ImportEffect::ReadStatus.background());
     }
 
     #[test]
@@ -642,7 +680,6 @@ imager-import-action-prepare-review = FR review
             ],
         )
         .unwrap();
-        super::super::strings::ensure();
         let projection = ImportProjection {
             phase: ImportStatusPhase::Ready,
             status_is_error: false,
@@ -673,31 +710,14 @@ imager-import-action-prepare-review = FR review
             picker_available: true,
             clear_available: false,
             prepare_review_available: false,
+            journey_available: false,
         };
 
-        let resource = resource(&projection);
+        let published = row(&projection).into_resource();
 
-        assert_eq!(resource.label, "FR imports");
+        assert_eq!(published.label, "FR imports");
         assert_eq!(
-            resource
-                .actions
-                .iter()
-                .find(|action| action.id == "read-status")
-                .unwrap()
-                .label,
-            "FR lire"
-        );
-        assert_eq!(
-            resource
-                .actions
-                .iter()
-                .find(|action| action.id == "choose-source")
-                .unwrap()
-                .label,
-            "FR source"
-        );
-        assert_eq!(
-            resource.children[0]
+            published.children[0]
                 .actions
                 .iter()
                 .find(|action| action.id == "first-issues")
@@ -705,6 +725,15 @@ imager-import-action-prepare-review = FR review
                 .label,
             "FR première page"
         );
+        let statuses = statuses(&projection);
+        assert!(statuses.contains(&EffectStatus::labelled(
+            ImportEffect::READ_STATUS,
+            "FR lire"
+        )));
+        assert!(statuses.contains(&EffectStatus::labelled(
+            ImportEffect::CHOOSE_SOURCE,
+            "FR source"
+        )));
         assert_eq!(ui::I18nManager::current_locale(), "fr");
     }
 }

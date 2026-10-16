@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -113,7 +113,7 @@ impl Widget for Divider {
             DividerAxis::Horizontal => (percent(1.0_f32), length(self.thickness)),
             DividerAxis::Vertical => (length(self.thickness), percent(1.0_f32)),
         };
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             // Never shrink the 1px cross-axis away under tight budgets.
             flex_shrink: 0.0,
             size: taffy::Size {
@@ -121,20 +121,11 @@ impl Widget for Divider {
                 height: h,
             },
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-    }
+    crate::rect_geometry!();
 
     fn draw(
         &mut self,
@@ -160,10 +151,6 @@ impl Widget for Divider {
     fn name(&self) -> &'static str {
         "Divider"
     }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
 }
 
 #[cfg(test)]
@@ -179,10 +166,7 @@ mod tests {
         let child = d.build_layout(&mut taffy, &theme, &mut node_map);
         let parent = taffy.parent_node(
             Style {
-                size: taffy::Size {
-                    width: length(400.0_f32),
-                    height: length(200.0_f32),
-                },
+                size: taffy::Size::from_lengths(400.0_f32, 200.0_f32),
                 ..Default::default()
             },
             &[child],
@@ -190,7 +174,7 @@ mod tests {
         taffy
             .compute_layout(parent, taffy::Size::max_content())
             .unwrap();
-        d.apply_layout(&taffy, child, Point::ZERO);
+        d.apply_layout(&taffy, child, vello::kurbo::Point::ZERO);
         let r = d.get_rect();
         (d, r)
     }
@@ -254,7 +238,7 @@ mod tests {
                     "{name}: a divider on `raised` must register against it"
                 );
 
-                let explicit = theme.tokens.colors.accent[5];
+                let explicit = theme.tokens.colors.intent.inverted;
                 assert_eq!(
                     Divider::horizontal()
                         .on(raised)

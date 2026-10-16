@@ -1,10 +1,5 @@
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -49,12 +44,12 @@ fn scrollable_offset_clamps_reveals_and_decays() {
 }
 
 use tilo_ui::State;
-use tilo_ui::headless::Driver;
+use tilo_ui::headless::FrameHarness;
 use tilo_ui::local_state::LocalState;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Button, Column, Container, Text, TextInput};
 
-fn editor_driver(text: &LocalState<String>, fill: bool, scale: f32) -> Driver {
+fn editor_driver(text: &LocalState<String>, fill: bool, scale: f32) -> FrameHarness {
     let mut scroll = Scrollable::new_vertical().fill_parent_height();
     if fill {
         scroll = scroll.with_content_min_viewport_height();
@@ -69,9 +64,9 @@ fn editor_driver(text: &LocalState<String>, fill: bool, scale: f32) -> Driver {
                     .with_id("editor"),
             )),
         ))
-        .push(Box::new(Button::new("footer", "Save", None)));
+        .push(Box::new(Button::new("footer", "Save")));
     let theme = Theme::dark().with_text_scale(scale);
-    Driver::new_with_theme(State::new(), Box::new(root), (600, 400), theme)
+    FrameHarness::new_with_theme(State::new(), Box::new(root), (600, 400), theme)
 }
 
 #[allow(
@@ -147,8 +142,15 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
                 let targets = driver.targets();
                 let editor = targets.get("editor").unwrap();
                 let footer = targets.get("footer").unwrap();
+                // The surface fills the viewport, up to the bar's gutter
+                // while the document overflows.
+                let gutter = if long {
+                    f64::from(Theme::dark().tokens.metrics.scrollbar_gutter)
+                } else {
+                    0.0
+                };
                 assert!(
-                    (editor.width() - f64::from(width)).abs() < 1.0,
+                    (editor.width() - (f64::from(width) - gutter)).abs() < 1.0,
                     "{editor:?}"
                 );
                 if long {
@@ -175,7 +177,7 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
                     .with_height(72.0)
                     .with_child(Box::new(Text::new("Fixed content").with_id("fixed"))),
             ));
-        let driver = Driver::new(State::new(), Box::new(root), (500, 300));
+        let driver = FrameHarness::new(State::new(), Box::new(root), (500, 300));
         assert!((driver.targets().get("fixed").unwrap().height() - 72.0).abs() < 1.0);
     }
 
@@ -206,7 +208,7 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
             bindings.rebuild(&scroll, &tree, root, &nodes);
         }
         let mut renderer = TextRenderer::new();
-        let mut doc = automerge::AutoCommit::new();
+        let doc = automerge::AutoCommit::new();
         for (width, height) in [(280.0, 180.0), (760.0, 420.0), (280.0, 300.0)] {
             let mut style = tree.style(root).unwrap().clone();
             style.size.height = Dimension::length(height);
@@ -218,7 +220,7 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
             ] {
                 let long = !body.is_empty();
                 text.set(body);
-                scroll.sync(&mut doc, &automerge::ROOT);
+                scroll.sync(&doc, &automerge::ROOT);
                 tree.mark_dirty(editor).unwrap();
                 // SAFETY: no widgets move or change topology during settlement.
                 unsafe {
@@ -263,10 +265,10 @@ fn scrollable_editor_routes_wheel_and_keeps_focus() {
                 TextInput::local()
                     .with_id("fractional-editor")
                     .multiline(true)
-                    .with_font_size(18.1)
+                    .with_text_role(tilo_ui::TextRole::Reading)
                     .with_initial_value(&("A line of text.\n".repeat(46) + "Final line")),
             ));
-        let mut driver = Driver::new(State::new(), Box::new(root), (416, 300));
+        let mut driver = FrameHarness::new(State::new(), Box::new(root), (416, 300));
         driver.click_at(30.0, 30.0);
         let before = *driver.targets().get("fractional-editor").unwrap();
         driver.scroll(0.0, -3.0);
@@ -302,7 +304,7 @@ fn scrollable_editor_routes_wheel_and_keeps_focus() {
                             Text::new("Tall narrow content").with_id("content"),
                         )),
                 ));
-            let mut driver = Driver::new(State::new(), Box::new(root), (400, 300));
+            let mut driver = FrameHarness::new(State::new(), Box::new(root), (400, 300));
             // x=250 hits empty pane background; x=394 hits the scrollbar thumb.
             driver.click_at(x, 20.0);
             assert_eq!(
@@ -316,7 +318,7 @@ fn scrollable_editor_routes_wheel_and_keeps_focus() {
     }
 }
 
-fn tall_scroll_driver(theme: Theme) -> Driver {
+fn tall_scroll_driver(theme: Theme) -> FrameHarness {
     let root = Scrollable::new_vertical()
         .with_height(300.0)
         .with_child(Box::new(
@@ -325,16 +327,13 @@ fn tall_scroll_driver(theme: Theme) -> Driver {
                 .with_size(100.0, 20_000.0)
                 .with_child(Box::new(Text::new("Tall content").with_id("content"))),
         ));
-    let mut driver = Driver::new_with_theme(State::new(), Box::new(root), (400, 300), theme);
-    driver.send(&winit::event::WindowEvent::CursorMoved {
-        device_id: winit::event::DeviceId::dummy(),
-        position: winit::dpi::PhysicalPosition::new(150.0, 150.0),
-    });
+    let mut driver = FrameHarness::new_with_theme(State::new(), Box::new(root), (400, 300), theme);
+    driver.send(&tilo_ui::synthetic_input::cursor_moved(150.0, 150.0));
     driver
 }
 
 /// A two-finger touchpad stroke: pixel deltas bracketed by its phases.
-fn touchpad_flick(driver: &mut Driver, strokes: usize, step: f64) {
+fn touchpad_flick(driver: &mut FrameHarness, strokes: usize, step: f64) {
     use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
     let wheel = |delta: f64, phase| WindowEvent::MouseWheel {
         device_id: winit::event::DeviceId::dummy(),
@@ -349,7 +348,7 @@ fn touchpad_flick(driver: &mut Driver, strokes: usize, step: f64) {
     driver.relayout();
 }
 
-fn content_top(driver: &Driver) -> f64 {
+fn content_top(driver: &FrameHarness) -> f64 {
     driver.targets().get("content").unwrap().y0
 }
 

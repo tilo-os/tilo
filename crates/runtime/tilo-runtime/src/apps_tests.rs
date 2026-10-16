@@ -1,7 +1,6 @@
 use super::*;
 use ed25519_dalek::{Signer as _, SigningKey};
 use package_store::{Catalog, InstalledPackage, Layout};
-use std::fmt::Write as _;
 use tilo_app_package::{BlobHash, Collection, SignedRoot};
 
 const ROOM: &str = "0b7c7a52-6f7e-4a55-9a51-1c2f4b3f7e10";
@@ -97,6 +96,8 @@ impl Store {
             cli_commands: Vec::new(),
             runtime: String::new(),
             source: String::new(),
+            held: false,
+            payload_bytes: 0,
             system: false,
         };
         self.registry.push_str(&registry_row(&package));
@@ -124,11 +125,7 @@ fn registry_row(package: &InstalledPackage) -> String {
 }
 
 fn hex_key(key: &SigningKey) -> String {
-    let mut hex = String::new();
-    for byte in key.verifying_key().to_bytes() {
-        write!(hex, "{byte:02x}").unwrap();
-    }
-    hex
+    hex::encode(key.verifying_key().to_bytes())
 }
 
 fn canonical_temp() -> (tempfile::TempDir, PathBuf) {
@@ -223,6 +220,239 @@ fn a_linux_launch_without_tilo_launcher_is_refused() {
     assert!(apps.launched.0.lock().unwrap().is_empty());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn original_launch_declarations_stay_with_the_live_process_after_upgrade() {
+    let (_temp, root) = canonical_temp();
+    let mut store = Store::new(&root);
+    let installed = store.install(
+        VIEWER,
+        &manifest(
+            VIEWER,
+            "gui",
+            "\n[resources]\nkinds = [\"viewer.document\"]\n",
+        ),
+        &[("probe", b"binary")],
+    );
+    let apps = apps(&store, &root, Vec::new());
+    let original = apps
+        .original_launch(&apps.launchable(VIEWER).unwrap())
+        .unwrap();
+    assert_eq!(original.package_hash, installed.package_id_hex);
+    let declarations = original.creation.unwrap();
+    assert!(declarations.valid());
+    assert_eq!(declarations.declared_kinds, ["viewer.document"]);
+    let pid = std::process::id();
+    assert!(
+        apps.launched
+            .record(pid, VIEWER, ROOM, Some(declarations.clone()))
+    );
+    assert_eq!(
+        apps.application_creation_evidence(pid, VIEWER, ROOM)
+            .unwrap(),
+        Some(declarations.clone())
+    );
+
+    let replacement = store.install(
+        VIEWER,
+        &manifest(
+            VIEWER,
+            "gui",
+            "\n[resources]\nkinds = [\"viewer.notebook\"]\n",
+        ),
+        &[("probe", b"upgraded binary")],
+    );
+    store.registry = registry_row(&replacement);
+    std::fs::write(Layout::new(&store.root).registry(), &store.registry).unwrap();
+    let current = apps
+        .original_launch(&apps.launchable(VIEWER).unwrap())
+        .unwrap();
+    assert_eq!(current.package_hash, replacement.package_id_hex);
+    assert_ne!(current.package_hash, declarations.package_hash);
+    assert_eq!(
+        current.creation.unwrap().declared_kinds,
+        ["viewer.notebook"]
+    );
+    assert_eq!(
+        apps.application_creation_evidence(pid, VIEWER, ROOM)
+            .unwrap(),
+        Some(declarations),
+        "an upgrade cannot rewrite the original running launch"
+    );
+    assert!(
+        apps.application_creation_evidence(pid, "so.tilo.other", ROOM)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        apps.application_creation_evidence(pid, VIEWER, "another-room")
+            .unwrap()
+            .is_none()
+    );
+    apps.launched
+        .0
+        .lock()
+        .unwrap()
+        .get_mut(&pid)
+        .unwrap()
+        .start_time += 1;
+    assert!(
+        apps.application_creation_evidence(pid, VIEWER, ROOM)
+            .unwrap()
+            .is_none(),
+        "a reused pid has no original declarations"
+    );
+    apps.launched.forget(pid);
+    assert!(
+        apps.application_creation_evidence(pid, VIEWER, ROOM)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn original_launch_declarations_refuse_a_changed_or_missing_signed_manifest() {
+    let (_temp, root) = canonical_temp();
+    let mut store = Store::new(&root);
+    let source = manifest(
+        VIEWER,
+        "gui",
+        "\n[resources]\nkinds = [\"viewer.document\"]\n",
+    );
+    let installed = store.install(VIEWER, &source, &[("probe", b"binary")]);
+    let apps = apps(&store, &root, Vec::new());
+    let app = apps.launchable(VIEWER).unwrap();
+    apps.original_launch(&app).unwrap();
+    std::fs::write(
+        &installed.manifest_path,
+        source.replace("viewer.document", "viewer.all"),
+    )
+    .unwrap();
+    let error = apps
+        .original_launch(&app)
+        .err()
+        .expect("changed declarations must be refused");
+    assert!(
+        error.contains("recorded manifest does not match the hash the signature covers"),
+        "{error}"
+    );
+    std::fs::write(&installed.manifest_path, &source).unwrap();
+    std::fs::remove_file(
+        installed
+            .manifest_path
+            .parent()
+            .unwrap()
+            .join("signed-root"),
+    )
+    .unwrap();
+    let error = apps
+        .original_launch(&app)
+        .err()
+        .expect("unsigned launch must be refused");
+    assert!(error.contains("original signed package"), "{error}");
+    assert!(apps.launched.0.lock().unwrap().is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn original_launch_hash_is_checked_by_the_actual_launcher_before_spawn() {
+    let (_temp, root) = canonical_temp();
+    let mut store = Store::new(&root);
+    let installed = store.install(
+        VIEWER,
+        &manifest(VIEWER, "gui", ""),
+        &[("probe", b"binary")],
+    );
+    let apps = apps(&store, &root, Vec::new());
+    let original = apps
+        .original_launch(&apps.launchable(VIEWER).unwrap())
+        .unwrap();
+    assert!(
+        original.creation.is_none(),
+        "a package with no resources gains no creation authority"
+    );
+    assert_eq!(original.package_hash, installed.package_id_hex);
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment
+        .remove("TILO_APPS_SYSTEM_DIR")
+        .set("TILO_APPS_DATA_DIR", &store.root);
+    let options = launcher::run::RunOptions {
+        expected_package_hash: Some(original.package_hash),
+        app_id: Some(VIEWER.into()),
+        ..Default::default()
+    };
+    let verify = |options| {
+        launcher::run::launch_manifest(&installed.manifest_path, &installed.payload_root, options)
+    };
+    assert_eq!(verify(&options).unwrap().package_id, VIEWER);
+    let mut wrong = options.clone();
+    wrong.expected_package_hash = Some("0".repeat(64));
+    assert!(
+        verify(&wrong).is_err(),
+        "a replacement root cannot use original declarations"
+    );
+    std::fs::write(installed.payload_root.join("probe"), b"tampered").unwrap();
+    assert!(
+        verify(&options).is_err(),
+        "the production launcher rejects a changed executable before spawn"
+    );
+    assert!(apps.launched.0.lock().unwrap().is_empty());
+}
+
+/// A launched package keeps the person's records it declares in its
+/// signed surface as a built-in app does: the runtime takes the surface
+/// from the signed package as it launches it and hands it to its identity
+/// service and broker. A surface changed after install declares nothing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_launched_package_declares_the_persons_records_its_signed_surface_names() {
+    use tilo_identity_host::broker::PersonRecordKinds as _;
+
+    const KEEPER: &str = "so.tilo.person-keeper";
+    const TAMPERED: &str = "so.tilo.person-tampered";
+    let surface = |kind: &str| {
+        format!(
+            "[[resources]]\nkind = \"{kind}.page\"\nlabel = \"Page\"\nversion = 1\n\n\
+             [[resources]]\nkind = \"{kind}.history\"\nlabel = \"History\"\nperson = true\nversion = 1\n"
+        )
+    };
+    let (_temp, root) = canonical_temp();
+    let mut store = Store::new(&root);
+    let keeper = surface("person-keeper");
+    store.install(
+        KEEPER,
+        &manifest(KEEPER, "gui", ""),
+        &[("probe", b"binary"), ("surface.toml", keeper.as_bytes())],
+    );
+    let tampered = store.install(
+        TAMPERED,
+        &manifest(TAMPERED, "gui", ""),
+        &[
+            ("probe", b"binary"),
+            ("surface.toml", surface("person-tampered").as_bytes()),
+        ],
+    );
+    std::fs::write(
+        tampered.payload_root.join("surface.toml"),
+        surface("person-forged"),
+    )
+    .unwrap();
+    let declared = |app: &str| tilo_action_broker::SurfacePersonRecords.person_record_kinds(app);
+    assert!(declared(KEEPER).is_empty(), "nothing before it is launched");
+
+    // This builder has no launcher: the launch stops there, after the
+    // runtime took the package's surface.
+    let apps = apps(&store, &root, vec![root.join("missing/tilo-launcher")]);
+    let _ = apps.start(KEEPER, ROOM);
+    let _ = apps.start(TAMPERED, ROOM);
+    assert_eq!(declared(KEEPER), ["person-keeper.history"]);
+    assert!(
+        declared(TAMPERED).is_empty(),
+        "a surface that is not the signed one declares nothing"
+    );
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn a_payload_that_does_not_verify_is_refused() {
@@ -280,7 +510,7 @@ fn attestation_holds_only_for_the_launched_process_itself() {
         !launched.attest(pid, VIEWER, ROOM),
         "unknown until recorded"
     );
-    assert!(launched.record(pid, VIEWER, ROOM));
+    assert!(launched.record(pid, VIEWER, ROOM, None));
     assert!(launched.attest(pid, VIEWER, ROOM));
     assert!(!launched.attest(pid, "so.tilo.other", ROOM));
     assert!(!launched.attest(pid, VIEWER, "another-room"));
@@ -291,7 +521,7 @@ fn attestation_holds_only_for_the_launched_process_itself() {
     launched.0.lock().unwrap().get_mut(&pid).unwrap().start_time += 1;
     assert!(!launched.attest(pid, VIEWER, ROOM));
     launched.forget(pid);
-    assert!(launched.record(pid, VIEWER, ROOM));
+    assert!(launched.record(pid, VIEWER, ROOM, None));
 
     child.kill().unwrap();
     child.wait().unwrap();
@@ -301,6 +531,41 @@ fn attestation_holds_only_for_the_launched_process_itself() {
     );
     launched.forget(pid);
     assert!(!launched.attest(pid, VIEWER, ROOM));
+}
+
+/// Each launch's process connects with the ticket of its own launch, so a
+/// workspace `open` learns which instance it started.
+#[test]
+fn a_connecting_process_names_the_launch_that_started_it() {
+    let root = std::env::temp_dir();
+    let apps = Apps::new(None, &root, ROOM, PathBuf::new(), Vec::new());
+    let mut child = std::process::Command::new("/bin/sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let ours = std::process::id();
+    assert!(apps.launched.record(ours, VIEWER, ROOM, None));
+    assert!(apps.launched.record(child.id(), VIEWER, ROOM, None));
+    let ticket = |pid| {
+        apps.authenticated_launch(pid, VIEWER, ROOM)
+            .unwrap()
+            .and_then(|launch| launch.launch_ticket)
+    };
+    let (first, second) = (ticket(ours), ticket(child.id()));
+    assert!(first.is_some() && second.is_some());
+    assert_ne!(
+        first, second,
+        "two launches of one app hold their own tickets"
+    );
+    assert!(
+        apps.authenticated_launch(ours, "so.tilo.other", ROOM)
+            .unwrap()
+            .is_none(),
+        "a ticket is presented only for the launch's own app"
+    );
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(ticket(child.id()), None, "a reaped process presents none");
 }
 
 #[test]

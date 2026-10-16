@@ -1,18 +1,14 @@
-use crate::permissions::PermissionScope;
-use crate::presence::{PathSegment, PresenceKey};
+use super::bool_control::{
+    BoolControl, bool_control_api, bool_control_capabilities, bool_control_widget_methods,
+};
 use crate::text_render::TextRenderer;
 use crate::text_render::TextStyle;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::binding::{BoxedBinding, Pulled};
-use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
-use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Color;
-use winit::event::{ElementState, MouseButton, WindowEvent};
 
 /// The box itself: 24 px (`spacing.s6` at 1×), centred in the interaction
 /// minimum target so the tap area stays 32/48 px while the mark reads at
@@ -43,10 +39,7 @@ pub struct CheckboxFace {
     rect: Rect,
     checked: bool,
     interact: CheckboxInteract,
-    fill_unchecked: bool,
 }
-
-type BoolChangeCallback = Box<dyn FnMut(bool)>;
 
 impl CheckboxFace {
     pub fn new(rect: Rect, checked: bool) -> Self {
@@ -54,7 +47,6 @@ impl CheckboxFace {
             rect,
             checked,
             interact: CheckboxInteract::default(),
-            fill_unchecked: true,
         }
     }
 
@@ -75,74 +67,30 @@ impl CheckboxFace {
         self.interact.disabled = disabled;
         self
     }
-
-    /// Let the surrounding canvas provide the unchecked background. Useful
-    /// for checkboxes embedded in rows and cards rather than standalone forms.
-    #[must_use]
-    pub fn transparent_unchecked(mut self) -> Self {
-        self.fill_unchecked = false;
-        self
-    }
 }
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each flag (is_hovered, is_checked, is_focused, enabled) is an independent piece of \
-              widget state — pointer hover, CRDT-synced checked value, keyboard focus, and \
-              build-time disabled config — not a combinatorial options API"
-)]
 pub struct Checkbox {
-    _id: String,
-    rect: Rect,
-    is_hovered: bool,
-    is_checked: bool,
-    is_focused: bool,
-    presence_path: Vec<PathSegment>,
-    permission_scope: Option<PermissionScope>,
-    /// When `false` the checkbox is disabled: skipped by focus, rejects
-    /// input (no toggle, no hover feedback) and renders dimmed. Default `true`.
-    enabled: bool,
-    /// Optional override for `Widget::test_id()`. Defaults to `"checkbox"`.
-    id_override: Option<String>,
-    /// Spoken name for a checkbox with no owned visible label. When unset the
-    /// checkbox relies on a sibling label resolved by the tree builder.
-    accessible_name: Option<String>,
+    control: BoolControl,
     /// Optional visible label owned by the checkbox itself. Unlike a sibling
     /// `Text`, this makes the entire rendered row one pointer, keyboard and
     /// accessibility target.
     label: Option<String>,
     label_style: TextStyle,
-    /// Where the checked value lives: a document key or process-local state.
-    binding: Option<BoxedBinding<bool>>,
-    /// Observes user intent without owning model synchronization.
-    on_change: Option<BoolChangeCallback>,
-    action: Option<ActionEmitter<bool>>,
-    interaction: crate::interaction::InteractionEnvironment,
+    /// A labelled box as wide as its content instead of its row.
+    intrinsic: bool,
+    /// What the last presented frame painted, and what the frame being drawn
+    /// paints: the checkbox needs a redraw only when they differ.
+    painted: Option<Painted>,
+    drawing: Option<Painted>,
 }
 
+/// What a checkbox's paint depends on besides its place and the theme:
+/// checked, hovered, focused, enabled, and the catalogue its label reads.
+type Painted = (bool, bool, bool, bool, u64);
+
 impl Checkbox {
-    fn effectively_enabled(&self) -> bool {
-        self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
-    }
-    pub fn new(id: &str, on_toggle_path: &str) -> Self {
-        Self {
-            _id: id.to_string(),
-            rect: Rect::ZERO,
-            is_hovered: false,
-            is_checked: false,
-            is_focused: false,
-            presence_path: Vec::new(),
-            permission_scope: None,
-            enabled: true,
-            id_override: None,
-            accessible_name: None,
-            label: None,
-            label_style: TextStyle::new(14.0),
-            binding: Some(crate::doc_binding::bool_key(on_toggle_path)),
-            on_change: None,
-            action: None,
-            interaction: crate::interaction::InteractionEnvironment::default(),
-        }
+    pub fn new(_id: &str, on_toggle_path: &str) -> Self {
+        Self::with_control(BoolControl::new(on_toggle_path, None))
     }
 
     /// Create a true two-way binding to typed process-local boolean state.
@@ -152,110 +100,37 @@ impl Checkbox {
     /// next synchronization pass. Use [`Self::on_change`] only to observe
     /// user changes, not to keep the model in sync.
     pub fn from_state(state: &crate::LocalState<bool>) -> Self {
-        let (checked, binding) = super::binding::local(state);
+        Self::with_control(BoolControl::local(state, None))
+    }
+
+    fn with_control(control: BoolControl) -> Self {
         Self {
-            is_checked: checked,
-            binding: Some(binding),
-            ..Self::new("checkbox", "")
+            control,
+            label: None,
+            label_style: crate::tokens::typography::stock().style(crate::tokens::TextRole::Body),
+            intrinsic: false,
+            painted: None,
+            drawing: None,
         }
     }
 
-    /// Observe changes produced by user interaction.
-    ///
-    /// Model synchronization and [`Self::set_checked`] do not invoke this
-    /// callback, so validation or action dispatch cannot mistake a model
-    /// refresh for new user intent.
+    fn painted_now(&self) -> Painted {
+        (
+            self.control.is_checked,
+            self.control.is_hovered,
+            self.control.is_focused,
+            self.control.effectively_enabled(),
+            crate::i18n::I18nManager::revision(),
+        )
+    }
+
+    bool_control_api!();
+
+    /// A labelled checkbox as wide as its box and label, instead of the row:
+    /// it sits beside other controls in a row.
     #[must_use]
-    pub fn on_change(mut self, callback: impl FnMut(bool) + 'static) -> Self {
-        if self.action.is_none() {
-            self.on_change = Some(Box::new(callback));
-        }
-        self
-    }
-
-    /// Route every user toggle through an exported resource action.
-    #[must_use]
-    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<bool>) -> Self {
-        self.action = Some(ActionEmitter::new(binding));
-        self.on_change = None;
-        self
-    }
-
-    /// Return the value currently presented by this checkbox.
-    pub fn is_checked(&self) -> bool {
-        self.is_checked
-    }
-
-    /// Replace the presented value and publish it to a bound local model.
-    ///
-    /// This is a programmatic model mutation and does not invoke
-    /// [`Self::on_change`]. Document-bound controls should mutate their
-    /// Automerge path instead and let [`Widget::sync`] adopt the result.
-    pub fn set_checked(&mut self, checked: bool) {
-        self.is_checked = checked;
-        if self.action.is_none() {
-            self.publish_local_state();
-        }
-    }
-
-    fn publish_local_state(&mut self) {
-        if let Some(binding) = &mut self.binding {
-            binding.publish(&self.is_checked);
-        }
-    }
-
-    fn commit_user_toggle(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let checked = !self.is_checked;
-        if let Some(action) = &mut self.action {
-            let _ = action.emit(checked);
-        } else if let Some(binding) = &mut self.binding {
-            binding.push(state, root, &checked);
-        }
-        self.is_checked = checked;
-        if self.action.is_none()
-            && let Some(callback) = self.on_change.as_mut()
-        {
-            callback(checked);
-        }
-    }
-
-    /// Opt this widget into presence tracking by binding it to a CRDT-style path.
-    #[must_use]
-    pub fn with_presence(mut self, path: Vec<PathSegment>) -> Self {
-        self.presence_path = path;
-        self
-    }
-
-    /// Gate this widget behind a permission scope.
-    #[must_use]
-    pub fn with_permission_scope(mut self, scope: PermissionScope) -> Self {
-        self.permission_scope = Some(scope);
-        self
-    }
-
-    /// Override the value returned from `Widget::test_id()`. Without a
-    /// custom id the checkbox reports `"checkbox"`; callers with multiple
-    /// checkboxes in the same surface can disambiguate them, e.g.
-    /// `with_id("remember_me")`.
-    #[must_use]
-    pub fn with_id(mut self, id: &str) -> Self {
-        self.id_override = Some(id.to_string());
-        self
-    }
-
-    /// Set the enabled state at build time. A disabled checkbox is skipped
-    /// by focus, rejects input and renders dimmed. Default `true`.
-    #[must_use]
-    pub fn with_enabled(mut self, enabled: bool) -> Self {
-        self.enabled = enabled;
-        self
-    }
-
-    /// Give a label-less checkbox a spoken name so a screen reader
-    /// announces what it controls rather than just "checkbox, checked".
-    #[must_use]
-    pub fn with_accessible_name(mut self, name: &str) -> Self {
-        self.accessible_name = Some(name.to_string());
+    pub fn intrinsic_width(mut self) -> Self {
+        self.intrinsic = true;
         self
     }
 
@@ -265,27 +140,19 @@ impl Checkbox {
     #[must_use]
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         let label = label.into();
-        self.accessible_name = Some(label.clone());
+        self.control.accessible_name = Some(label.clone());
         self.label = Some(label);
         self
     }
 
-    /// Imperatively flip the enabled state.
-    pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-    }
-
-    // Theme roles already include the requested type scale. Renderer APIs
-    // apply their own scale, so divide it out exactly as semantic Text does.
-    fn renderer_label_style(&self, renderer: &TextRenderer) -> TextStyle {
-        let mut style = self.label_style.clone();
-        style.size /= renderer.text_scale();
-        style
-    }
-
     /// Paint a checkbox without taking ownership of its state or events.
+    ///
+    /// The box is always square: the largest square centred in `face.rect`,
+    /// with the item radius.
     pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &CheckboxFace) {
-        let shape = RoundedRect::from_rect(face.rect, f64::from(theme.tokens.radii.md));
+        let rect = square_box(face.rect);
+        let radius = f64::from(theme.tokens.radii.item);
+        let shape = RoundedRect::from_rect(rect, radius);
         if face.interact.disabled {
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
@@ -297,16 +164,19 @@ impl Checkbox {
         }
 
         // HIG §9.5: unchecked is the raised control surface with an edge
-        // derived from it — `bg_active` was the pressed tier at rest, and a
-        // declared `border_standard` vanished on a raised dark card.
+        // derived from it, and hover is that surface's lift; a declared
+        // `border_standard` vanished on a raised dark card.
         let box_color = if face.checked {
-            theme.accent_primary
+            theme.tokens.colors.intent.inverted
         } else if face.interact.hovered {
-            theme.bg_hover
+            theme
+                .tokens
+                .colors
+                .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
         } else {
             theme.tokens.colors.surfaces.raised
         };
-        if face.checked || face.fill_unchecked || face.interact.hovered {
+        {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -316,48 +186,28 @@ impl Checkbox {
             );
         }
 
-        // Focus ring wins; the accent-filled checked box is self-defining
-        // (like a Primary button) and takes no rest edge.
-        let edge = if face.interact.focused {
-            Some((2.0, theme.border_focus))
-        } else if face.checked {
-            None
-        } else {
-            Some((1.0, crate::surface::edge_on(box_color)))
-        };
-        if let Some((width, color)) = edge {
-            // Rest edge and focus ring share one half-pixel-inset outline.
-            scene.stroke(
-                &Stroke::new(width),
-                transform,
-                color,
-                None,
-                &crate::surface::edge_outline(face.rect, f64::from(theme.tokens.radii.md)),
-            );
-        }
-
         if face.checked {
             let mut path = BezPath::new();
             path.move_to(Point::new(
-                face.rect.x0 + face.rect.width() * 0.25,
-                face.rect.y0 + face.rect.height() * 0.50,
+                rect.x0 + rect.width() * 0.25,
+                rect.y0 + rect.height() * 0.50,
             ));
             path.line_to(Point::new(
-                face.rect.x0 + face.rect.width() * 0.42,
-                face.rect.y0 + face.rect.height() * 0.67,
+                rect.x0 + rect.width() * 0.42,
+                rect.y0 + rect.height() * 0.67,
             ));
             path.line_to(Point::new(
-                face.rect.x0 + face.rect.width() * 0.75,
-                face.rect.y0 + face.rect.height() * 0.25,
+                rect.x0 + rect.width() * 0.75,
+                rect.y0 + rect.height() * 0.25,
             ));
             scene.stroke(
-                &Stroke::new((face.rect.width().min(face.rect.height()) * 0.105).max(1.5))
+                &Stroke::new((rect.width().min(rect.height()) * 0.105).max(1.5))
                     .with_caps(vello::kurbo::Cap::Round)
                     .with_join(vello::kurbo::Join::Round),
                 transform,
                 theme.tokens.colors.ink_on_any(
                     &[box_color],
-                    Color::WHITE,
+                    theme.tokens.colors.intent.on_inverted,
                     crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
                 ),
                 None,
@@ -368,33 +218,48 @@ impl Checkbox {
         if face.interact.disabled {
             scene.pop_layer();
         }
+
+        // Focus ring wins; the accent-filled checked box is self-defining
+        // (like a Primary button) and takes no rest edge. The edge is drawn
+        // outside the disabled layer: a disabled box keeps its bounds at full
+        // strength (HIG §9.5), or an unchecked one vanishes on a light ground.
+        // The unchecked edge is the only thing that shows the box on its
+        // ground, so it is held to the 3:1 a control's bounds need there.
+        let edge = if face.interact.focused {
+            Some((2.0, theme.tokens.colors.intent.you))
+        } else if face.checked {
+            None
+        } else {
+            Some((1.0, unchecked_edge(theme, box_color)))
+        };
+        if let Some((width, color)) = edge {
+            // Rest edge and focus ring share one half-pixel-inset outline.
+            scene.stroke(
+                &Stroke::new(width),
+                transform,
+                color,
+                None,
+                &crate::surface::edge_outline(rect, radius),
+            );
+        }
     }
 }
 
+/// The edge of an unchecked box: derived from its face and resolved until
+/// it reaches the non-text contrast floor (3:1) against the ground the box
+/// stands on. The derived edge is a translucent hairline, so it is measured
+/// as painted — over the face it is stroked on — never as its opaque base.
+fn unchecked_edge(theme: &Theme, face: vello::peniko::Color) -> vello::peniko::Color {
+    let colors = &theme.tokens.colors;
+    colors.ink_on_any(
+        &[colors.surfaces.content],
+        crate::tokens::colors::composite(crate::surface::edge_on(face), face),
+        crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+    )
+}
+
 impl Widget for Checkbox {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence
-    );
-
-    fn set_interaction_environment(
-        &mut self,
-        environment: crate::interaction::InteractionEnvironment,
-    ) {
-        self.interaction = environment;
-        self.is_hovered &= environment.supports_hover();
-    }
-
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        if let Some(binding) = &mut self.binding {
-            match binding.pull(state, root) {
-                Pulled::Value(checked) => self.is_checked = checked,
-                Pulled::Missing => self.is_checked = false,
-                Pulled::Unchanged => {}
-            }
-        }
-    }
+    bool_control_widget_methods!("checkbox");
 
     fn build_layout(
         &mut self,
@@ -404,28 +269,29 @@ impl Widget for Checkbox {
     ) -> NodeId {
         self.label_style = theme.tokens.typography.style(crate::tokens::TextRole::Body);
         let labelled = self.label.is_some();
-        let node = taffy.leaf_node(Style {
+        let style = Style {
             size: Size {
-                width: if labelled {
+                width: if labelled && !self.intrinsic {
                     Dimension::percent(1.0)
+                } else if labelled {
+                    Dimension::auto()
                 } else {
-                    Dimension::length(self.interaction.minimum_target())
+                    Dimension::length(self.control.interaction.minimum_target())
                 },
                 height: if labelled {
                     Dimension::auto()
                 } else {
-                    Dimension::length(self.interaction.minimum_target())
+                    Dimension::length(self.control.interaction.minimum_target())
                 },
             },
-            min_size: Size {
-                width: Dimension::length(self.interaction.minimum_target()),
-                height: Dimension::length(self.interaction.minimum_target()),
-            },
+            min_size: Size::from_lengths(
+                self.control.interaction.minimum_target(),
+                self.control.interaction.minimum_target(),
+            ),
             flex_shrink: 1.0,
             ..Default::default()
-        });
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        };
+        taffy.widget_leaf(style, node_map, self)
     }
 
     fn measure(
@@ -434,7 +300,7 @@ impl Widget for Checkbox {
         available_space: Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> Size<f32> {
-        let target = self.interaction.minimum_target();
+        let target = self.control.interaction.minimum_target();
         let Some(label) = self.label.as_ref() else {
             return Size {
                 width: known_dimensions.width.unwrap_or(target),
@@ -448,14 +314,19 @@ impl Widget for Checkbox {
             taffy::AvailableSpace::MaxContent => None,
         });
         let label_limit = available_width.map(|width| (width - target - gap).max(0.0));
-        let (label_width, label_height) = text_renderer.measure_style(
-            &crate::i18n!(label),
-            label_limit,
-            &self.renderer_label_style(text_renderer),
-        );
+        let (label_width, label_height) =
+            text_renderer.measure_style(&crate::i18n!(label), label_limit, &self.label_style);
+        // An intrinsic box is as wide as its label needs, within the room.
+        let hugged = self.intrinsic.then(|| {
+            let (natural, _) =
+                text_renderer.measure_style(&crate::i18n!(label), None, &self.label_style);
+            let natural = target + gap + natural.ceil();
+            available_width.map_or(natural, |room| natural.min(room))
+        });
         Size {
             width: known_dimensions
                 .width
+                .or(hugged)
                 .or(available_width)
                 .unwrap_or(target + gap + label_width),
             height: known_dimensions
@@ -465,18 +336,11 @@ impl Widget for Checkbox {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.control.rect = crate::widget::layout_rect(taffy, node, origin);
     }
 
     #[allow(
         clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
         reason = "widget rectangles are finite renderer coordinates already laid out as f32"
     )]
     fn draw(
@@ -485,33 +349,38 @@ impl Widget for Checkbox {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &crate::presence::PresenceCtx,
+        presence: &crate::presence::PresenceCtx,
     ) {
-        let target = f64::from(self.interaction.minimum_target());
+        self.drawing = Some(self.painted_now());
+        let target = f64::from(self.control.interaction.minimum_target());
         let visual_center = if self.label.is_some() {
-            Point::new(self.rect.x0 + target / 2.0, self.rect.center().y)
+            Point::new(
+                self.control.rect.x0 + target / 2.0,
+                self.control.rect.center().y,
+            )
         } else {
-            self.rect.center()
+            self.control.rect.center()
         };
         let visual = Rect::from_center_size(visual_center, (BOX_EDGE, BOX_EDGE));
         Self::paint(
             scene,
             transform,
             theme,
-            &CheckboxFace::new(visual, self.is_checked)
-                .hovered(self.is_hovered)
-                .focused(self.is_focused)
-                .disabled(!self.effectively_enabled()),
+            &CheckboxFace::new(visual, self.control.is_checked)
+                .hovered(self.control.is_hovered)
+                .focused(self.control.is_focused)
+                .disabled(!self.control.effectively_enabled()),
         );
         if let Some(label) = self.label.as_ref() {
             let label = crate::i18n!(label);
             let gap = f64::from(LABEL_GAP);
-            let x = self.rect.x0 + target + gap;
-            let max_width = (self.rect.x1 - x).max(0.0);
-            let style = self.renderer_label_style(text_renderer);
+            let x = self.control.rect.x0 + target + gap;
+            let max_width = (self.control.rect.x1 - x).max(0.0);
+            let style = self.label_style.clone();
             let (_, label_height) =
                 text_renderer.measure_style(&label, Some(max_width as f32), &style);
-            let y = self.rect.y0 + ((self.rect.height() - f64::from(label_height)) / 2.0).max(0.0);
+            let y = self.control.rect.y0
+                + ((self.control.rect.height() - f64::from(label_height)) / 2.0).max(0.0);
             text_renderer.draw_style(
                 scene,
                 &label,
@@ -521,59 +390,24 @@ impl Widget for Checkbox {
                 &style,
             );
         }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        // Disabled: reject all input — no toggle, no hover feedback.
-        if !self.effectively_enabled() {
-            return;
-        }
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let logical_pos =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                let hover = self.rect.contains(logical_pos);
-                if hover != self.is_hovered {
-                    self.is_hovered = hover;
-                    *ctx.handled = true;
-                }
-            }
-            WindowEvent::MouseInput {
-                state: element_state,
-                button: MouseButton::Left,
-                ..
-            } if self.is_hovered && *element_state == ElementState::Pressed => {
-                *ctx.handled = true;
-                *ctx.focus_target = Some(ctx.node_id);
-                self.commit_user_toggle(ctx.state, ctx.path);
-            }
-            _ => {}
-        }
+        crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }
 
     fn name(&self) -> &'static str {
         "Checkbox"
     }
 
-    fn test_id(&self) -> Option<&str> {
-        Some(self.id_override.as_deref().unwrap_or("checkbox"))
+    /// A checkbox repaints when what it paints changed since the frame on
+    /// screen, not on every frame: a long list of them does not repaint
+    /// whole for a scroll or a keystroke elsewhere.
+    fn needs_redraw(&self) -> bool {
+        self.painted != Some(self.painted_now())
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn is_focusable(&self) -> bool {
-        true
-    }
-    fn set_focus(&mut self, focused: bool) {
-        self.is_focused = focused;
-    }
-    fn is_focused(&self) -> bool {
-        self.is_focused
-    }
-    fn is_enabled(&self) -> bool {
-        self.effectively_enabled()
+    fn mark_drawn(&mut self) {
+        if let Some(drawing) = self.drawing.take() {
+            self.painted = Some(drawing);
+        }
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -582,6 +416,7 @@ impl Widget for Checkbox {
         // covers label-less uses so the control is never announced as an
         // anonymous checkbox. The checked state is the load-bearing semantic.
         let name = self
+            .control
             .accessible_name
             .as_ref()
             .map(|n| crate::i18n!(n))
@@ -589,146 +424,107 @@ impl Widget for Checkbox {
         let mut node = AccessNode::new(Role::Checkbox)
             .with_semantic_key(self.test_id().unwrap_or("checkbox"))
             .with_optional_name(name)
-            .with_state(AccessState {
-                focusable: self.is_focusable(),
-                focused: self.is_focused(),
-                disabled: !self.is_enabled(),
-                checked: Some(self.is_checked),
-                ..Default::default()
-            });
-        if self.action.is_none() && self.on_change.is_none() {
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused())
+                    .disabled(!self.is_enabled())
+                    .checked(self.control.is_checked),
+            );
+        if self.control.action.is_none() && self.control.on_change.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("checkbox"));
         }
         Some(node)
     }
-
-    /// Accessibility: an AT toggles the checkbox with
-    /// [`Action::ToggleCheck`](crate::a11y::Action::ToggleCheck) or the generic
-    /// [`Action::Activate`](crate::a11y::Action::Activate). Both flip the
-    /// checked state through the exact CRDT write a real click performs. A
-    /// disabled checkbox rejects the action.
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
-    ) -> bool {
-        use crate::a11y::Action;
-        if !self.effectively_enabled() {
-            return false;
-        }
-        match action {
-            Action::ToggleCheck | Action::Activate => {
-                self.commit_user_toggle(state, path);
-                true
-            }
-            _ => false,
-        }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        if presence.should_cull(self.get_rect()) {
-            return;
-        }
-        self.draw(scene, transform, text_renderer, theme, presence);
-
-        if let Some(scope) = crate::permissions::capability::permission_scope(self)
-            && !permissions.check(&scope)
-        {
-            let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                overlay,
-                None,
-                &self.rect,
-            );
-        }
-
-        if let Some(key) = crate::presence::capability::presence_key(self)
-            && let Some(peers) = presence.here.get(&key)
-            && let Some(user) = peers.first()
-        {
-            presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
-    }
 }
 
-impl crate::presence::capability::PublishesPresence for Checkbox {
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
-    }
-}
+bool_control_capabilities!(Checkbox, "checkbox");
 
-impl crate::permissions::capability::PermissionGated for Checkbox {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
-    }
-}
-
-impl crate::widget::controls::ActionControls for Checkbox {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let control_id = self.test_id().unwrap_or("checkbox");
-        if let Some(action) = &self.action {
-            vec![action.metadata(control_id)]
-        } else if let Some(key) = self.binding.as_ref().and_then(|b| b.document_key()) {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(key.to_owned()),
-            }]
-        } else if self.on_change.is_some() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyCallback,
-            }]
-        } else {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
-            }]
-        }
-    }
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-    }
+/// The largest square centred in `rect`: a checkbox is always square,
+/// whatever rect a canvas hands its face.
+fn square_box(rect: Rect) -> Rect {
+    let side = rect.width().min(rect.height());
+    Rect::from_center_size(rect.center(), (side, side))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::Dispatch;
     use crate::widget::Widget;
     use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
+    use winit::event::{ElementState, MouseButton, WindowEvent};
+
+    #[test]
+    fn an_unchecked_box_is_square_in_any_rect() {
+        for rect in [
+            Rect::new(0.0, 0.0, 40.0, 20.0),
+            Rect::new(10.0, 10.0, 30.0, 60.0),
+            Rect::new(0.0, 0.0, 24.0, 24.0),
+        ] {
+            let square = square_box(rect);
+            assert_eq!(square.width(), square.height(), "{rect:?}");
+            assert_eq!(square.center(), rect.center());
+            assert!(rect.contains(square.origin()));
+        }
+    }
+
+    /// The unchecked edge, as painted, holds 3:1 against every region's
+    /// ground in every preset: it is the only thing that shows the box.
+    #[test]
+    fn an_unchecked_edge_reads_on_every_ground() {
+        use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, composite};
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let s = &theme.tokens.colors.surfaces;
+            for ground in [s.content, s.sidebar, s.inspector, s.raised, s.overlay] {
+                let mut region = theme.clone();
+                region.tokens.colors.surfaces.content = ground;
+                let face = region.tokens.colors.surfaces.raised;
+                let edge = composite(unchecked_edge(&region, face), face);
+                let ratio = crate::a11y::contrast_ratio(edge, ground);
+                assert!(
+                    ratio >= NON_TEXT_MIN_CONTRAST - 0.01,
+                    "{}: the unchecked edge reaches only {ratio:.2}:1 on {ground:?}",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    /// A disabled box dims its face but keeps its edge at full strength
+    /// (HIG §9.5): an unchecked white box on a light ground would otherwise
+    /// vanish.
+    #[test]
+    fn a_disabled_box_keeps_its_edge_at_full_strength() {
+        use crate::offscreen::OffscreenRenderer;
+        let theme = Theme::light();
+        let rect = Rect::new(8.0, 8.0, 32.0, 32.0);
+        let render = |disabled: bool| {
+            let mut scene = Scene::new();
+            Checkbox::paint(
+                &mut scene,
+                Affine::IDENTITY,
+                &theme,
+                &CheckboxFace::new(rect, false).disabled(disabled),
+            );
+            OffscreenRenderer::new(40, 40).render(&scene, theme.tokens.colors.surfaces.content)
+        };
+        let (rest, disabled) = (render(false), render(true));
+        // The outermost pixel column of the box is its edge.
+        let rest_edge = OffscreenRenderer::sample(&rest, 40, 8, 20);
+        let disabled_edge = OffscreenRenderer::sample(&disabled, 40, 8, 20);
+        let ground = OffscreenRenderer::sample(&rest, 40, 2, 20);
+        let delta = |a: (u8, u8, u8, u8), b: (u8, u8, u8, u8)| {
+            a.0.abs_diff(b.0)
+                .max(a.1.abs_diff(b.1))
+                .max(a.2.abs_diff(b.2))
+        };
+        assert!(
+            delta(rest_edge, disabled_edge) <= 4,
+            "disabled edge {disabled_edge:?} vs rest edge {rest_edge:?}"
+        );
+        assert!(delta(disabled_edge, ground) >= delta(rest_edge, ground).saturating_sub(4));
+    }
 
     #[test]
     fn checkbox_identity_face_and_scaled_label_geometry() {
@@ -747,19 +543,15 @@ mod tests {
             let face = CheckboxFace::new(rect, true)
                 .hovered(true)
                 .focused(true)
-                .disabled(true)
-                .transparent_unchecked();
+                .disabled(true);
             assert_eq!(face.rect, rect);
             assert!(face.checked);
             assert!(face.interact.hovered);
             assert!(face.interact.focused);
             assert!(face.interact.disabled);
-            assert!(!face.fill_unchecked);
         }
 
         fn visible_label_is_part_of_the_checkbox_click_target() {
-            use winit::event::DeviceId;
-
             let mut checkbox = Checkbox::new("ack", "acknowledged")
                 .with_id("acknowledgement")
                 .with_label("I understand the consequence.");
@@ -782,46 +574,27 @@ mod tests {
             )
             .expect("labelled checkbox layout");
             checkbox.apply_layout(&tree, node, Point::ZERO);
-            let row_rect = checkbox.rect;
+            let row_rect = checkbox.control.rect;
             assert!(row_rect.width() > 300.0, "row={row_rect:?}");
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
-            let mut doc = AutoCommit::new();
-            let mut handled = false;
-            let mut focus = None;
-            checkbox.handle_event(
+            let device = winit::event::DeviceId::dummy();
+            let mut sender = Dispatch::new().layout(&tree, node);
+            let moved = sender.send(
+                &mut checkbox,
                 &WindowEvent::CursorMoved {
                     device_id: device,
-                    position: (320.0, checkbox.rect.center().y).into(),
-                },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut doc,
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
+                    position: (320.0, row_rect.center().y).into(),
                 },
             );
-            checkbox.handle_event(
+            let pressed = sender.send(
+                &mut checkbox,
                 &WindowEvent::MouseInput {
                     device_id: device,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: &mut doc,
-                    path: &automerge::ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
+            let focus = pressed.focus_target.or(moved.focus_target);
 
             assert!(checkbox.is_checked());
             assert_eq!(focus, Some(node));
@@ -851,13 +624,15 @@ mod tests {
                     },
                     &mut renderer,
                 );
-                let expected =
-                    (14.0_f32 * 1.4 * theme_scale).max(checkbox.interaction.minimum_target());
+                let expected = theme
+                    .text(crate::tokens::TextRole::Body)
+                    .line_height_px()
+                    .max(checkbox.control.interaction.minimum_target());
                 assert!(
                     (measured.height - expected).abs() < 0.1,
                     "theme{theme_scale} renderer{renderer_scale}: {measured:?}"
                 );
-                checkbox.rect = Rect::new(
+                checkbox.control.rect = Rect::new(
                     0.0,
                     0.0,
                     f64::from(measured.width),
@@ -922,7 +697,7 @@ mod tests {
         fn accessibility_disabled_checked_reports_checked_and_disabled() {
             use crate::a11y::Role;
             let mut c = Checkbox::new("any", "path").with_enabled(false);
-            c.is_checked = true; // same module → can set the synced state directly
+            c.control.is_checked = true; // same module → can set the synced state directly
             let node = Widget::accessibility(&c).unwrap();
             assert_eq!(node.role, Role::Checkbox);
             assert_eq!(node.state.checked, Some(true), "checked state surfaces");
@@ -934,22 +709,24 @@ mod tests {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             let mut c = Checkbox::new("any", "checked");
-            assert!(!c.is_checked);
+            assert!(!c.control.is_checked);
             assert!(Widget::perform_action(
                 &mut c,
                 &Action::ToggleCheck,
-                &mut doc,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
-            assert!(c.is_checked, "ToggleCheck flips to checked");
+            assert!(c.control.is_checked, "ToggleCheck flips to checked");
             // Activate also toggles.
             assert!(Widget::perform_action(
                 &mut c,
                 &Action::Activate,
-                &mut doc,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
-            assert!(!c.is_checked, "Activate flips back");
+            assert!(!c.control.is_checked, "Activate flips back");
         }
 
         fn disabled_checkbox_rejects_perform_action() {
@@ -960,15 +737,14 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut c,
                 &Action::ToggleCheck,
-                &mut doc,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
-            assert!(!c.is_checked, "a disabled checkbox must not toggle");
+            assert!(!c.control.is_checked, "a disabled checkbox must not toggle");
         }
 
         fn disabled_checkbox_does_not_toggle() {
-            use winit::event::DeviceId;
-
             let mut c = Checkbox::new("id", "checked").with_enabled(false);
 
             let mut tree = TaffyTree::<()>::new();
@@ -985,46 +761,27 @@ mod tests {
             .unwrap();
             c.apply_layout(&tree, node, Point::ZERO);
 
-            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let device = winit::event::DeviceId::dummy();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            let mods = winit::event::Modifiers::default();
-            let mut focus = None;
-            let mut handled = false;
-
-            c.handle_event(
+            let mut sender = Dispatch::new().doc(&mut doc).layout(&tree, node);
+            let moved = sender.send(
+                &mut c,
                 &WindowEvent::CursorMoved {
                     device_id: device,
                     position: (10.0, 10.0).into(),
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: &mut doc,
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
-            c.handle_event(
+            let pressed = sender.send(
+                &mut c,
                 &WindowEvent::MouseInput {
                     device_id: device,
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: &mut doc,
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
             );
+            let focus = pressed.focus_target.or(moved.focus_target);
+            let handled = moved.handled || pressed.handled;
 
             assert!(focus.is_none(), "disabled checkbox must not request focus");
             assert!(!handled, "disabled checkbox must not swallow input");
@@ -1047,7 +804,8 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut checkbox,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             crate::widget::controls::refresh_control_action_availability(
@@ -1061,7 +819,8 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut checkbox,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
@@ -1069,10 +828,10 @@ mod tests {
             assert_eq!(intent.arguments["value"], true);
             assert!(matches!(
                 crate::widget::controls::control_action_bindings(&checkbox)[0].kind,
-                ControlBindingKind::Action(_)
+                crate::widget::ControlBindingKind::Action(_)
             ));
             doc.put(&automerge::ROOT, "legacy", false).unwrap();
-            Widget::sync(&mut checkbox, &mut doc, &automerge::ROOT);
+            Widget::sync(&mut checkbox, &doc, &automerge::ROOT);
             assert!(
                 !checkbox.is_checked(),
                 "the document path remains the read model"
@@ -1096,15 +855,15 @@ mod tests {
             let root = automerge::ROOT;
             let mut checkbox = Checkbox::new("any", "checked");
             doc.put(&root, "checked", true).unwrap();
-            Widget::sync(&mut checkbox, &mut doc, &root);
+            Widget::sync(&mut checkbox, &doc, &root);
             assert!(checkbox.is_checked());
 
             doc.delete(&root, "checked").unwrap();
-            Widget::sync(&mut checkbox, &mut doc, &root);
+            Widget::sync(&mut checkbox, &doc, &root);
             assert!(!checkbox.is_checked(), "a removed path means unchecked");
 
             doc.put(&root, "checked", "not-a-boolean").unwrap();
-            Widget::sync(&mut checkbox, &mut doc, &root);
+            Widget::sync(&mut checkbox, &doc, &root);
             assert!(!checkbox.is_checked(), "a mistyped path cannot stay stale");
         }
 
@@ -1120,8 +879,8 @@ mod tests {
             let mut document = AutoCommit::new();
 
             state.set(true);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert!(first.is_checked());
             assert!(second.is_checked());
             assert!(changes.borrow().is_empty(), "model sync is not user intent");
@@ -1129,18 +888,19 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::ToggleCheck,
-                &mut document,
+                &[],
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert!(!state.get(), "user activation publishes typed state");
             assert_eq!(&*changes.borrow(), &[false]);
 
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert!(!second.is_checked(), "sibling follows the shared model");
 
             second.set_checked(true);
             assert!(state.get(), "programmatic mutation publishes typed state");
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
             assert!(first.is_checked());
             assert_eq!(
                 &*changes.borrow(),
@@ -1151,5 +911,27 @@ mod tests {
 
         document_binding_resets_after_the_boolean_path_disappears();
         local_state_binding_is_two_way_across_checkboxes();
+    }
+    #[test]
+    fn unchecked_edge_reaches_three_to_one_and_a_labelled_box_can_hug() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let face = theme.tokens.colors.surfaces.raised;
+            let edge = unchecked_edge(&theme, face);
+            let ratio = crate::a11y::contrast_ratio(edge, theme.tokens.colors.surfaces.content);
+            assert!(ratio >= 3.0 - 1e-6, "edge contrast {ratio}");
+        }
+        let row = crate::widget::Row::new().push(Box::new(
+            Checkbox::new("c", "c")
+                .with_id("hug")
+                .with_label("Remember me")
+                .intrinsic_width(),
+        ));
+        let app =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(row), (900, 200));
+        let rect = *app.targets().get("hug").expect("checkbox");
+        assert!(
+            rect.width() < 300.0,
+            "a hugging box is as wide as its label: {rect:?}"
+        );
     }
 }

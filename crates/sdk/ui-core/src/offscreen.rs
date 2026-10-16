@@ -34,6 +34,33 @@ use vello::kurbo::Rect;
 use vello::peniko::Color;
 use vello::{AaConfig, AaSupport, FineDamageRect, RenderParams, Renderer, RendererOptions, Scene};
 
+/// Device pixels per logical pixel a capture draws its frames at
+/// (`--device-scale`); 1 is the size people see on a standard display.
+static CAPTURE_DEVICE_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+/// The largest device scale a capture draws at: a glyph sheet enlarged
+/// from the outlines (16x); `--device-scale` itself stops at 4.
+pub const MAX_CAPTURE_DEVICE_SCALE: u32 = 16;
+
+/// Draw every following capture frame at `scale` device pixels per
+/// logical pixel, as a HiDPI display draws it: the frame is laid out at its
+/// logical size and drawn with the window scale transform the live host
+/// uses, so text is rasterised from the glyph outlines at that size rather
+/// than enlarged afterwards ([`crate::headless::FrameHarness`]). Clamped to
+/// `1..=MAX_CAPTURE_DEVICE_SCALE`.
+pub fn set_capture_device_scale(scale: u32) {
+    CAPTURE_DEVICE_SCALE.store(
+        scale.clamp(1, MAX_CAPTURE_DEVICE_SCALE),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// The device scale captures draw at ([`set_capture_device_scale`]).
+#[must_use]
+pub fn capture_device_scale() -> u32 {
+    CAPTURE_DEVICE_SCALE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Ensures only ONE `wgpu::Instance` per process — constructing several in
 /// parallel (the default `cargo test` pattern) races inside
 /// `vkCreateInstance` on at least radv + intel-iris and SIGSEGVs. `Arc` lets
@@ -41,12 +68,50 @@ use vello::{AaConfig, AaSupport, FineDamageRect, RenderParams, Renderer, Rendere
 /// `Mutex` because `RenderContext::device(...)` takes `&mut self`.
 static SHARED_RENDER_CONTEXT: OnceLock<Arc<Mutex<RenderContext>>> = OnceLock::new();
 
-/// A complex first frame can make Vello grow its bump reservation more than
-/// once before it produces pixels. Two growths plus two clean submissions
-/// covers the observed atlas warm-up path. Keeping this bounded at four is
-/// important on software Vulkan: a full-size screenshot is otherwise able to
-/// monopolize a CPU core for minutes before it can publish anything.
+/// Submissions a one-shot render may spend without growing Vello's bump
+/// reservation: two clean ones to confirm the atlas warm-up, and room for a
+/// transparent or overflowed one that taught nothing. Keeping this bounded
+/// is important on software Vulkan: a full-size screenshot is otherwise able
+/// to monopolize a CPU core for minutes before it can publish anything.
 const RESILIENT_RENDER_ATTEMPTS: usize = 4;
+
+/// Growths of the bump reservation a one-shot render may wait through on top
+/// of [`RESILIENT_RENDER_ATTEMPTS`]. Vello's stages skip their work once an
+/// earlier one has overflowed, so a cold renderer learns one stage's demand
+/// per submission: lines, then tiles and binning, then segment counts, then
+/// the command list, blend spill and segments. A dense scene (a feathered
+/// mask traced from a photograph) needs most of them in turn. Every growth
+/// at least doubles a buffer towards a finite ceiling, so each one is
+/// progress, and a reservation that has stopped growing falls back to the
+/// attempt limit above.
+const RESILIENT_RENDER_GROWTHS: usize = 8;
+
+/// The submissions a one-shot render has spent, and whether it may make
+/// another.
+#[derive(Debug, Default)]
+struct ResilientAttempts {
+    /// Submissions that did not grow the reservation.
+    stalled: usize,
+    /// Submissions that grew it.
+    growths: usize,
+}
+
+impl ResilientAttempts {
+    /// Count a submission that `grew` the bump reservation (or did not) and
+    /// answer whether another one may follow.
+    const fn another(&mut self, grew: bool) -> bool {
+        if grew && self.growths < RESILIENT_RENDER_GROWTHS {
+            self.growths += 1;
+        } else {
+            self.stalled += 1;
+        }
+        self.stalled < RESILIENT_RENDER_ATTEMPTS
+    }
+
+    const fn submissions(&self) -> usize {
+        self.stalled + self.growths
+    }
+}
 
 /// Decide whether a screenshot submission is safe to return. A non-empty
 /// scene must fit twice in succession: the first clean submission may still
@@ -496,7 +561,7 @@ pub fn shared_gpu() -> Result<SharedGpu, OffscreenError> {
     // Acquiring the device waits on it, which a browser page cannot do: the
     // caller gets the same answer as a machine without an adapter and falls
     // back, instead of the page panicking.
-    if tilo_rt::availability(tilo_rt::Feature::BlockOn) != tilo_rt::Availability::Available {
+    if !tilo_rt::available(tilo_rt::Feature::BlockOn) {
         return Err(OffscreenError::NoAdapter);
     }
     let context = shared_render_context();
@@ -581,12 +646,70 @@ pub struct OffscreenRenderer {
     area_ppt8_attempt_accounting: AreaPpt8AttemptAccounting,
     clip_single_group_attempt_accounting: ClipSingleGroupAttemptAccounting,
     target_valid: bool,
+    /// Backdrops the scenes rendered next draw floating surfaces over; see
+    /// [`Self::set_backdrop`].
+    backdrop: Option<Arc<crate::backdrop::BackdropFrame>>,
+    /// Built with the first frame that has a backdrop.
+    backdrop_blur: Option<crate::backdrop::BackdropBlur>,
+    /// Scratch space for scroll copies within the target.
+    copy_scratch: crate::scroll_copy::CopyScratch,
 }
 
 impl OffscreenRenderer {
-    /// Current opt-in per-dispatch timestamp diagnostic availability.
-    pub fn gpu_dispatch_timestamp_status(&mut self) -> vello::GpuDispatchTimestampStatus {
-        self.renderer.gpu_dispatch_timestamp_status()
+    /// This renderer's device and queue, cloned out of the shared context so
+    /// its lock (host-side bookkeeping only) is not held while rendering.
+    #[allow(
+        clippy::expect_used,
+        reason = "a poisoned shared context or a missing device entry is an environment failure the headless harness has no fallback for"
+    )]
+    fn device_queue(&self) -> (wgpu::Device, wgpu::Queue) {
+        let ctx = self.context.lock().expect("shared RenderContext poisoned");
+        let handle = ctx
+            .devices
+            .get(self.dev_id)
+            .expect("this renderer's device entry is missing from the shared RenderContext");
+        (handle.device.clone(), handle.queue.clone())
+    }
+
+    /// Render all of `scene` over `bg` into the target texture.
+    #[allow(
+        clippy::expect_used,
+        reason = "the harness cannot produce a meaningful frame after vello fails to render"
+    )]
+    fn render_full(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scene: &Scene,
+        bg: Color,
+    ) {
+        self.renderer
+            .render_to_texture(
+                device,
+                queue,
+                scene,
+                &self.view,
+                &RenderParams {
+                    base_color: bg,
+                    width: self.width,
+                    height: self.height,
+                    antialiasing_method: AaConfig::Area,
+                },
+            )
+            .expect("render_to_texture");
+    }
+
+    /// The Vello renderer underneath, for its feature and diagnostic
+    /// queries.
+    #[doc(hidden)]
+    pub fn vello(&self) -> &Renderer {
+        &self.renderer
+    }
+
+    /// The Vello renderer underneath, for the queries that take samples.
+    #[doc(hidden)]
+    pub fn vello_mut(&mut self) -> &mut Renderer {
+        &mut self.renderer
     }
 
     fn timestamp_submission_id(&self, profiled: bool) -> Option<u64> {
@@ -744,22 +867,10 @@ impl OffscreenRenderer {
         self.renderer.set_compute_pass_batching(enabled);
     }
 
-    /// Whether shared GPU compute-pass batching is active.
-    #[doc(hidden)]
-    pub fn compute_pass_batching_enabled(&self) -> bool {
-        self.renderer.compute_pass_batching_enabled()
-    }
-
     /// Whether geometric retained-damage texture capacity is enabled.
     #[doc(hidden)]
     pub fn damage_geometric_capacity_enabled(&self) -> bool {
         self.damage_geometric_capacity
-    }
-
-    /// Whether direct GPU path count/tiling dispatch is active.
-    #[doc(hidden)]
-    pub fn direct_path_dispatch_enabled(&self) -> bool {
-        self.renderer.direct_path_dispatch_enabled()
     }
 
     /// Overrides direct GPU path count/tiling dispatch for a differential oracle.
@@ -768,138 +879,10 @@ impl OffscreenRenderer {
         self.renderer.set_direct_path_dispatch_enabled(enabled);
     }
 
-    /// Whether the synchronous GPU renderer defers its existing bump readback
-    /// until after fine rasterization for the compute-batching A/B.
-    #[doc(hidden)]
-    pub fn defer_bump_readback_enabled(&self) -> bool {
-        self.renderer.defer_bump_readback_enabled()
-    }
-
     /// Overrides deferred bump-readback ordering for an independent oracle.
     #[doc(hidden)]
     pub fn set_defer_bump_readback_enabled(&mut self, enabled: bool) {
         self.renderer.set_defer_bump_readback_enabled(enabled);
-    }
-
-    /// Whether this renderer can use Vello's opt-in sparse Area-AA fine pass.
-    #[doc(hidden)]
-    pub fn sparse_fine_supported(&self) -> bool {
-        self.renderer.sparse_fine_supported()
-    }
-
-    /// Whether this renderer can select Vello's opt-in sparse coarse pass.
-    #[doc(hidden)]
-    pub fn sparse_coarse_supported(&self) -> bool {
-        self.renderer.sparse_coarse_supported()
-    }
-
-    /// Whether the opt-in native active-bin coarse shader is available for a small sparse
-    /// recording. Individual oversized selectors can still conservatively use legacy coarse.
-    #[doc(hidden)]
-    pub fn sparse_coarse_active_bins_available(&self) -> bool {
-        self.renderer.sparse_coarse_active_bins_available()
-    }
-
-    /// Whether the opt-in adaptive sparse-coarse policy is both requested and available.
-    #[doc(hidden)]
-    pub fn sparse_coarse_adaptive_enabled(&self) -> bool {
-        self.renderer.sparse_coarse_adaptive_enabled()
-    }
-
-    /// Whether Vello was configured to request sparse path-level tile bounds.
-    #[doc(hidden)]
-    pub fn sparse_tile_bounds_requested(&self) -> bool {
-        self.renderer.sparse_tile_bounds_requested()
-    }
-
-    /// Whether Vello can apply sparse path-level tile bounds for this renderer.
-    #[doc(hidden)]
-    pub fn sparse_tile_bounds_available(&self) -> bool {
-        self.renderer.sparse_tile_bounds_available()
-    }
-
-    /// Whether sparse Area fine quad skipping was requested.
-    #[doc(hidden)]
-    pub fn sparse_fine_quad_skip_requested(&self) -> bool {
-        self.renderer.sparse_fine_quad_skip_requested()
-    }
-
-    /// Whether sparse Area fine quad skipping is available.
-    #[doc(hidden)]
-    pub fn sparse_fine_quad_skip_available(&self) -> bool {
-        self.renderer.sparse_fine_quad_skip_available()
-    }
-
-    /// Whether sparse coarse opaque pruning was requested.
-    #[doc(hidden)]
-    pub fn sparse_opaque_prune_requested(&self) -> bool {
-        self.renderer.sparse_opaque_prune_requested()
-    }
-
-    /// Whether sparse coarse opaque pruning can select its shader.
-    #[doc(hidden)]
-    pub fn sparse_opaque_prune_available(&self) -> bool {
-        self.renderer.sparse_opaque_prune_available()
-    }
-
-    /// Whether sparse solid-fuse selection was requested.
-    #[doc(hidden)]
-    pub fn sparse_solid_fuse_requested(&self) -> bool {
-        self.renderer.sparse_solid_fuse_requested()
-    }
-
-    /// Whether sparse solid-fuse selection can be used by this renderer.
-    #[doc(hidden)]
-    pub fn sparse_solid_fuse_available(&self) -> bool {
-        self.renderer.sparse_solid_fuse_available()
-    }
-
-    /// Whether sparse segment-row masking was requested.
-    #[doc(hidden)]
-    pub fn sparse_segment_row_mask_requested(&self) -> bool {
-        self.renderer.sparse_segment_row_mask_requested()
-    }
-
-    /// Whether sparse segment-row masking can be selected by this renderer.
-    #[doc(hidden)]
-    pub fn sparse_segment_row_mask_available(&self) -> bool {
-        self.renderer.sparse_segment_row_mask_available()
-    }
-
-    /// Whether canonical segment ordering was requested.
-    #[doc(hidden)]
-    pub fn canonical_segment_order_requested(&self) -> bool {
-        self.renderer.canonical_segment_order_requested()
-    }
-
-    /// Whether this renderer has canonical segment ordering available.
-    #[doc(hidden)]
-    pub fn canonical_segment_order_available(&self) -> bool {
-        self.renderer.canonical_segment_order_available()
-    }
-
-    /// Whether Area PPT8 was requested.
-    #[doc(hidden)]
-    pub fn area_ppt8_requested(&self) -> bool {
-        self.renderer.area_ppt8_requested()
-    }
-
-    /// Whether Area PPT8 is available for the ordinary synchronous GPU full route.
-    #[doc(hidden)]
-    pub fn area_ppt8_available(&self) -> bool {
-        self.renderer.area_ppt8_available()
-    }
-
-    /// Whether the single-workgroup clip leaf experiment was requested.
-    #[doc(hidden)]
-    pub fn clip_single_group_requested(&self) -> bool {
-        self.renderer.clip_single_group_requested()
-    }
-
-    /// Whether the single-workgroup clip leaf permutation is available.
-    #[doc(hidden)]
-    pub fn clip_single_group_available(&self) -> bool {
-        self.renderer.clip_single_group_available()
     }
 
     /// Reset no-allocation sparse-submission accounting at a measured-workload boundary.
@@ -958,34 +941,10 @@ impl OffscreenRenderer {
         self.renderer.set_sparse_fine_enabled(enabled);
     }
 
-    /// Whether only Vello's path-tag reduce/scan stages use their opt-in CPU path.
-    #[doc(hidden)]
-    pub fn cpu_pathtag_enabled(&self) -> bool {
-        self.renderer.cpu_pathtag_enabled()
-    }
-
     /// Overrides the opt-in CPU path-tag reduce/scan path for differential tests.
     #[doc(hidden)]
     pub fn set_cpu_pathtag_enabled(&mut self, enabled: bool) {
         self.renderer.set_cpu_pathtag_enabled(enabled);
-    }
-
-    /// Whether selective CPU path-tag host-buffer reuse was configured.
-    #[doc(hidden)]
-    pub fn cpu_pathtag_reuse_enabled(&self) -> bool {
-        self.renderer.cpu_pathtag_reuse_enabled()
-    }
-
-    /// Retained selective CPU path-tag host capacity, excluded from GPU stats.
-    #[doc(hidden)]
-    pub fn cpu_pathtag_pool_retained_bytes(&self) -> u64 {
-        self.renderer.cpu_pathtag_pool_retained_bytes()
-    }
-
-    /// Whether selective CPU bbox-clear and draw-reduce metadata is active.
-    #[doc(hidden)]
-    pub fn cpu_metadata_enabled(&self) -> bool {
-        self.renderer.cpu_metadata_enabled()
     }
 
     /// Overrides selective CPU metadata for differential tests.
@@ -994,52 +953,16 @@ impl OffscreenRenderer {
         self.renderer.set_cpu_metadata_enabled(enabled);
     }
 
-    /// Retained selective CPU metadata host capacity, excluded from GPU stats.
-    #[doc(hidden)]
-    pub fn cpu_metadata_pool_retained_bytes(&self) -> u64 {
-        self.renderer.cpu_metadata_pool_retained_bytes()
-    }
-
-    /// Whether bounded selective CPU draw-prefix processing is active.
-    #[doc(hidden)]
-    pub fn cpu_draw_prefix_enabled(&self) -> bool {
-        self.renderer.cpu_draw_prefix_enabled()
-    }
-
     /// Overrides bounded selective CPU draw-prefix processing for differential tests.
     #[doc(hidden)]
     pub fn set_cpu_draw_prefix_enabled(&mut self, enabled: bool) {
         self.renderer.set_cpu_draw_prefix_enabled(enabled);
     }
 
-    /// Retained selective CPU draw-prefix host capacity, excluded from GPU stats.
-    #[doc(hidden)]
-    pub fn cpu_draw_prefix_pool_retained_bytes(&self) -> u64 {
-        self.renderer.cpu_draw_prefix_pool_retained_bytes()
-    }
-
     /// Whether a draw-prefix table fits the bounded selective CPU path.
     #[doc(hidden)]
     pub fn cpu_draw_prefix_supported(&self, bytes: u64) -> bool {
         self.renderer.cpu_draw_prefix_supported(bytes)
-    }
-
-    /// Whether this renderer was constructed with sparse tile-upload reuse.
-    #[doc(hidden)]
-    pub fn sparse_upload_reuse_enabled(&self) -> bool {
-        self.renderer.sparse_upload_reuse_enabled()
-    }
-
-    /// GPU timestamp resolve/readback buffers only (not opaque query metadata).
-    #[doc(hidden)]
-    pub fn gpu_timestamp_buffer_bytes(&self) -> u64 {
-        self.renderer.gpu_timestamp_buffer_bytes()
-    }
-
-    /// Per-dispatch GPU timestamp resolve/readback buffers only.
-    #[doc(hidden)]
-    pub fn gpu_dispatch_timestamp_buffer_bytes(&self) -> u64 {
-        self.renderer.gpu_dispatch_timestamp_buffer_bytes()
     }
 
     pub fn memory_stats(&self) -> OffscreenMemoryStats {
@@ -1112,16 +1035,25 @@ impl OffscreenRenderer {
     ///
     /// Panics if `width` or `height` is zero — that's a caller bug, not a
     /// recoverable environment failure.
-    #[allow(
-        clippy::panic_in_result_fn,
-        reason = "the width/height assert is a caller-bug panic, not a recoverable failure — every real failure mode already has its own OffscreenError variant"
-    )]
     pub fn try_new(width: u32, height: u32) -> Result<Self, OffscreenError> {
         Self::try_new_with_preprocessing(
             width,
             height,
             crate::env::var_os("TILO_UI_VELLO_CPU").is_some(),
         )
+    }
+
+    /// Use stable CPU segment ordering with Vello's production GPU fine
+    /// rasterizer. Exact pixel comparisons can select this per instance
+    /// without changing process-wide renderer settings.
+    ///
+    /// # Errors
+    /// Returns the same adapter and renderer errors as [`Self::try_new`].
+    ///
+    /// # Panics
+    /// Panics on zero dimensions, as [`Self::try_new`] does.
+    pub fn try_new_with_cpu_preprocessing(width: u32, height: u32) -> Result<Self, OffscreenError> {
+        Self::try_new_with_preprocessing(width, height, true)
     }
 
     /// Exact pixel oracles can use stable CPU segment ordering while keeping
@@ -1216,12 +1148,21 @@ impl OffscreenRenderer {
             area_ppt8_attempt_accounting: AreaPpt8AttemptAccounting::default(),
             clip_single_group_attempt_accounting: ClipSingleGroupAttemptAccounting::default(),
             target_valid: false,
+            backdrop: None,
+            backdrop_blur: None,
+            copy_scratch: crate::scroll_copy::CopyScratch::default(),
         })
+    }
+
+    /// Draw the floating surfaces of the scenes rendered from now on over
+    /// `backdrop`, the frame their host recorded with them (for the shell,
+    /// `FrameBuilder::take_backdrop`). `None` draws them opaque.
+    pub fn set_backdrop(&mut self, backdrop: Option<Arc<crate::backdrop::BackdropFrame>>) {
+        self.backdrop = backdrop;
     }
 
     #[allow(
         clippy::expect_used,
-        clippy::significant_drop_tightening,
         reason = "pixel-test readback cannot recover from a failed GPU mapping"
     )]
     fn read_target(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> Vec<u8> {
@@ -1297,45 +1238,30 @@ impl OffscreenRenderer {
     /// an environment failure this headless test/screenshot harness has no
     /// meaningful fallback for — it fails loudly rather than handing back a
     /// silently-empty buffer a comparison could misread as a real frame.
-    #[allow(
-        clippy::expect_used,
-        reason = "render() is the harness's core primitive, called only from tests/shots; every expect() here guards an environment failure (poisoned lock, missing device, GPU/readback error) with no recoverable fallback — matching render_png's existing panic-on-failure contract below"
-    )]
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "already as tight as the borrow allows: `handle` below borrows from \
-                  `ctx`, so `ctx` can't drop until the clones are taken, and the block \
-                  already ends (dropping it) right after that"
-    )]
     fn render_with_overflow(&mut self, scene: &Scene, bg: Color) -> (Vec<u8>, bool) {
         // The lock only guards host-side DeviceHandle bookkeeping, not
         // rendering — vello's kernels run GPU-side. Clone the cheap,
         // Arc-backed `Device`/`Queue` handles out and drop the guard
         // immediately, rather than holding the shared context locked for
         // every other `OffscreenRenderer` through the whole render + readback.
-        let (device, queue) = {
-            let ctx = self.context.lock().expect("shared RenderContext poisoned");
-            let handle = ctx
-                .devices
-                .get(self.dev_id)
-                .expect("this renderer's device entry is missing from the shared RenderContext");
-            (handle.device.clone(), handle.queue.clone())
-        };
+        let (device, queue) = self.device_queue();
 
-        self.renderer
-            .render_to_texture(
-                &device,
-                &queue,
-                scene,
-                &self.view,
-                &RenderParams {
-                    base_color: bg,
-                    width: self.width,
-                    height: self.height,
-                    antialiasing_method: AaConfig::Area,
-                },
-            )
-            .expect("render_to_texture");
+        if let Some(backdrop) = self.backdrop.as_deref().filter(|frame| !frame.is_empty()) {
+            self.backdrop_blur
+                .get_or_insert_with(|| crate::backdrop::BackdropBlur::new(&device))
+                .prepare(
+                    &device,
+                    &queue,
+                    &mut self.renderer,
+                    backdrop,
+                    (self.width, self.height),
+                    bg,
+                );
+        }
+        self.render_full(&device, &queue, scene, bg);
+        if let Some(blur) = self.backdrop_blur.as_mut() {
+            blur.release(&mut self.renderer);
+        }
         self.target_valid = true;
         if self
             .last_damage_region_count
@@ -1363,20 +1289,8 @@ impl OffscreenRenderer {
     /// # Panics
     ///
     /// Panics if the shared GPU context or target readback fails.
-    #[allow(
-        clippy::expect_used,
-        clippy::significant_drop_tightening,
-        reason = "pixel-test readback cannot recover from unavailable shared GPU state"
-    )]
     pub fn readback_current(&mut self) -> Vec<u8> {
-        let (device, queue) = {
-            let ctx = self.context.lock().expect("shared RenderContext poisoned");
-            let handle = ctx
-                .devices
-                .get(self.dev_id)
-                .expect("this renderer's device entry is missing from the shared RenderContext");
-            (handle.device.clone(), handle.queue.clone())
-        };
+        let (device, queue) = self.device_queue();
         self.read_target(&device, &queue)
     }
 
@@ -1389,11 +1303,6 @@ impl OffscreenRenderer {
     ///
     /// # Panics
     /// If shared GPU state is poisoned/missing or Vello rejects the render.
-    #[allow(
-        clippy::expect_used,
-        clippy::significant_drop_tightening,
-        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     pub fn render_gpu_wait(&mut self, scene: &Scene, bg: Color) {
         let mut timing = None;
         let _ = self.render_gpu_wait_count(scene, bg, &mut timing);
@@ -1448,70 +1357,30 @@ impl OffscreenRenderer {
 
     /// The same completed full render as [`Self::render_gpu_wait`], returning
     /// every full-target pass issued while Vello grows a bump allocation.
-    #[allow(
-        clippy::expect_used,
-        clippy::significant_drop_tightening,
-        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     fn render_gpu_wait_count(
         &mut self,
         scene: &Scene,
         bg: Color,
         timing: &mut Option<OffscreenRenderTiming>,
     ) -> u64 {
-        let (device, queue) = {
-            let ctx = self.context.lock().expect("shared RenderContext poisoned");
-            let handle = ctx
-                .devices
-                .get(self.dev_id)
-                .expect("this renderer's device entry is missing from the shared RenderContext");
-            (handle.device.clone(), handle.queue.clone())
-        };
+        let (device, queue) = self.device_queue();
 
-        let mut overflowed = true;
+        let mut overflowed;
         let mut attempts = 0u64;
-        for _ in 0..RESILIENT_RENDER_ATTEMPTS {
+        let mut budget = ResilientAttempts::default();
+        loop {
             attempts = attempts.saturating_add(1);
-            if timing.is_some() {
-                let start = crate::time::now();
-                self.renderer
-                    .render_to_texture(
-                        &device,
-                        &queue,
-                        scene,
-                        &self.view,
-                        &RenderParams {
-                            base_color: bg,
-                            width: self.width,
-                            height: self.height,
-                            antialiasing_method: AaConfig::Area,
-                        },
-                    )
-                    .expect("render_to_texture");
-                if let Some(profile) = timing.as_mut() {
-                    profile.vello_submit_us = profile
-                        .vello_submit_us
-                        .saturating_add(start.elapsed().as_micros());
-                    profile.full_attempts = profile.full_attempts.saturating_add(1);
-                    profile.coarse_prefix_pixels = profile.coarse_prefix_pixels.saturating_add(
-                        u64::from(self.width).saturating_mul(u64::from(self.height)),
-                    );
-                }
-            } else {
-                self.renderer
-                    .render_to_texture(
-                        &device,
-                        &queue,
-                        scene,
-                        &self.view,
-                        &RenderParams {
-                            base_color: bg,
-                            width: self.width,
-                            height: self.height,
-                            antialiasing_method: AaConfig::Area,
-                        },
-                    )
-                    .expect("render_to_texture");
+            let reserved = self.renderer.memory_stats().bump_budget_bytes;
+            let start = timing.is_some().then(crate::time::now);
+            self.render_full(&device, &queue, scene, bg);
+            if let (Some(start), Some(profile)) = (start, timing.as_mut()) {
+                profile.vello_submit_us = profile
+                    .vello_submit_us
+                    .saturating_add(start.elapsed().as_micros());
+                profile.full_attempts = profile.full_attempts.saturating_add(1);
+                profile.coarse_prefix_pixels = profile
+                    .coarse_prefix_pixels
+                    .saturating_add(u64::from(self.width).saturating_mul(u64::from(self.height)));
             }
             self.record_canonical_segment_order_full_selection(timing);
             self.record_area_ppt8_full_selection(timing);
@@ -1532,13 +1401,14 @@ impl OffscreenRenderer {
             } else {
                 overflowed = self.renderer.settle_bump_budget(&device);
             }
-            if !overflowed {
+            let grew = self.renderer.memory_stats().bump_budget_bytes > reserved;
+            if !overflowed || !budget.another(grew) {
                 break;
             }
         }
         assert!(
             !overflowed,
-            "Vello still overflowed after {RESILIENT_RENDER_ATTEMPTS} full render attempts"
+            "Vello still overflowed after {attempts} full render attempts"
         );
         self.target_valid = true;
         if self
@@ -1570,11 +1440,6 @@ impl OffscreenRenderer {
     /// Panics if the shared GPU context is unavailable or Vello rejects the
     /// render. This is a benchmark/test primitive and cannot produce a valid
     /// timing sample after either failure.
-    #[allow(
-        clippy::expect_used,
-        clippy::significant_drop_tightening,
-        reason = "the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     pub fn render_damage_gpu_wait(&mut self, scene: &Scene, bg: Color, damage: Rect) -> u64 {
         self.render_damage_regions_gpu_wait(scene, bg, std::slice::from_ref(&damage))
     }
@@ -1590,14 +1455,6 @@ impl OffscreenRenderer {
     /// # Panics
     ///
     /// Panics under the same conditions as [`Self::render_damage_gpu_wait`].
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::expect_used,
-        clippy::significant_drop_tightening,
-        clippy::too_many_lines,
-        reason = "damage bounds are clamped to non-negative u32 target dimensions before narrowing; the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
-    )]
     pub fn render_damage_regions_gpu_wait(
         &mut self,
         scene: &Scene,
@@ -1606,6 +1463,46 @@ impl OffscreenRenderer {
     ) -> u64 {
         let mut timing = None;
         self.render_damage_regions_gpu_wait_inner(scene, bg, damage, &mut timing)
+    }
+
+    /// [`Self::render_damage_regions_gpu_wait`] after moving pixels within
+    /// the retained target by `copies`, in order, as a window presents a
+    /// scroll ([`crate::scroll_copy`]). With no valid target, or a copy that
+    /// would leave it, the frame renders whole.
+    ///
+    /// # Panics
+    ///
+    /// Panics under the same conditions as [`Self::render_damage_gpu_wait`].
+    pub fn render_copies_and_damage_gpu_wait(
+        &mut self,
+        scene: &Scene,
+        bg: Color,
+        copies: &[crate::scroll_copy::DeviceCopy],
+        damage: &[Rect],
+    ) -> u64 {
+        if !copies.is_empty() {
+            let (device, queue) = self.device_queue();
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("offscreen scroll copies"),
+            });
+            if !self.target_valid
+                || !crate::scroll_copy::encode_copies(
+                    &device,
+                    &mut encoder,
+                    &self.texture,
+                    &mut self.copy_scratch,
+                    copies,
+                )
+            {
+                let mut timing = None;
+                return self.render_gpu_wait_count(scene, bg, &mut timing);
+            }
+            queue.submit([encoder.finish()]);
+        }
+        if damage.is_empty() {
+            return 0;
+        }
+        self.render_damage_regions_gpu_wait(scene, bg, damage)
     }
 
     /// Profile the existing damage render without adding GPU work or readback.
@@ -1626,7 +1523,6 @@ impl OffscreenRenderer {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::expect_used,
-        clippy::significant_drop_tightening,
         clippy::too_many_lines,
         reason = "damage bounds are clamped to non-negative u32 target dimensions before narrowing; the benchmark renderer cannot produce a meaningful sample after a GPU submission failure"
     )]
@@ -1659,14 +1555,7 @@ impl OffscreenRenderer {
             return self.render_gpu_wait_count(scene, bg, timing);
         }
 
-        let (device, queue) = {
-            let ctx = self.context.lock().expect("shared RenderContext poisoned");
-            let handle = ctx
-                .devices
-                .get(self.dev_id)
-                .expect("this renderer's device entry is missing from the shared RenderContext");
-            (handle.device.clone(), handle.queue.clone())
-        };
+        let (device, queue) = self.device_queue();
         let setup_start = timing.is_some().then(crate::time::now);
         let texture_limit = device.limits().max_texture_dimension_2d;
         let regions = coalesce_regions(
@@ -2048,9 +1937,23 @@ impl OffscreenRenderer {
         reason = "exhausting bounded screenshot retries is a fatal renderer invariant"
     )]
     pub fn render_resilient(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
+        self.try_render_resilient(scene, bg)
+            .unwrap_or_else(|problem| panic!("{problem}"))
+    }
+
+    /// [`Self::render_resilient`] for a caller that can answer a failure
+    /// instead of stopping: an app rendering a picture someone asked for.
+    ///
+    /// # Errors
+    /// Returns why no two consecutive overflow-free renders came within the
+    /// bounded retry count.
+    pub fn try_render_resilient(&mut self, scene: &Scene, bg: Color) -> Result<Vec<u8>, String> {
         let mut confirmed = false;
-        for _ in 0..RESILIENT_RENDER_ATTEMPTS {
+        let mut attempts = ResilientAttempts::default();
+        loop {
+            let reserved = self.renderer.memory_stats().bump_budget_bytes;
             let (pixels, overflowed) = self.render_with_overflow(scene, bg);
+            let grew = self.renderer.memory_stats().bump_budget_bytes > reserved;
             let unexpectedly_transparent = bg == Color::TRANSPARENT
                 && !scene.encoding().is_empty()
                 && pixels
@@ -2062,19 +1965,22 @@ impl OffscreenRenderer {
                 // plausible while still omitting the earliest paths, so do
                 // not let it count as the confirmation frame.
                 confirmed = false;
-                continue;
+            } else if resilient_submission_accepted(scene.encoding().is_empty(), confirmed) {
+                return Ok(pixels);
+            } else {
+                // A scene that just fit is still not sufficient: Vello can use
+                // that submission to populate its glyph/image atlas. Require a
+                // second consecutive clean frame before writing a screenshot.
+                confirmed = true;
             }
-            if resilient_submission_accepted(scene.encoding().is_empty(), confirmed) {
-                return pixels;
+            if !attempts.another(grew) {
+                return Err(format!(
+                    "Vello did not produce two consecutive overflow-free screenshot renders after {} attempts ({} of them growing its buffers)",
+                    attempts.submissions(),
+                    attempts.growths,
+                ));
             }
-            // A scene that just fit is still not sufficient: Vello can use
-            // that submission to populate its glyph/image atlas. Require a
-            // second consecutive clean frame before writing a screenshot.
-            confirmed = true;
         }
-        panic!(
-            "Vello did not produce two consecutive overflow-free screenshot renders after {RESILIENT_RENDER_ATTEMPTS} attempts"
-        );
     }
 
     /// Render a one-shot scene without accepting Vello's transparent
@@ -2164,11 +2070,11 @@ impl OffscreenRenderer {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use super::{
         AreaPpt8AttemptAccounting, CanonicalSegmentOrderAttemptAccounting,
         ClipSingleGroupAttemptAccounting, OffscreenRenderTiming, OffscreenRenderer,
+        RESILIENT_RENDER_ATTEMPTS, RESILIENT_RENDER_GROWTHS, ResilientAttempts,
         SparseSubmissionAccounting, damage_texture_extent,
         damage_texture_geometric_needs_replacement, damage_texture_geometric_width_extent,
         damage_texture_height_extent, damage_texture_needs_replacement, env_enabled_by_default,
@@ -2176,7 +2082,59 @@ mod tests {
     };
     use vello::Scene;
     use vello::kurbo::{Affine, BezPath, Rect};
-    use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+    use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
+
+    #[test]
+    fn an_image_after_text_and_an_empty_sub_scene_lands_where_it_is_painted() {
+        // Chat paints a line of text, appends a sub-scene that holds nothing,
+        // then an attachment. The text's glyph run leaves its own transform
+        // last in the stream; the empty append must not make the picture
+        // inherit it (that moved it off its card, so it never showed).
+        use std::sync::Arc;
+        use vello::peniko::{Blob, ImageAlphaType, ImageFormat};
+        const W: u32 = 256;
+        const H: u32 = 192;
+        let image = ImageData {
+            data: Blob::new(Arc::new(
+                [230_u8, 40, 40, 255]
+                    .into_iter()
+                    .cycle()
+                    .take(8 * 8 * 4)
+                    .collect::<Vec<u8>>(),
+            )),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 8,
+            height: 8,
+        };
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(0, 0, 1),
+            None,
+            &Rect::new(0.0, 0.0, 4.0, 4.0),
+        );
+        crate::text_render::TextRenderer::new().draw_text(
+            &mut scene,
+            "Screen recording",
+            14.0,
+            Color::from_rgb8(0, 0, 2),
+            Affine::translate((10.0, 100.0)),
+            None,
+        );
+        scene.append(&Scene::new(), None);
+        let card = Rect::new(100.0, 20.0, 160.0, 80.0);
+        crate::image_store::paint_image_cover(&mut scene, Affine::IDENTITY, card, &image, 6.0);
+        let pixels = OffscreenRenderer::new(W, H).render(&scene, Color::BLACK);
+        let (r, g, b, _) = OffscreenRenderer::sample(&pixels, W, 130, 50);
+        assert!(
+            r > 200 && g < 80 && b < 80,
+            "the picture on its card: {r},{g},{b}"
+        );
+        let (r, ..) = OffscreenRenderer::sample(&pixels, W, 150, 170);
+        assert!(r < 20, "nothing under the text's transform: {r}");
+    }
 
     #[test]
     fn offscreen_publication_is_send_resilient_and_decodable() {
@@ -2200,6 +2158,38 @@ mod tests {
             assert!(resilient_submission_accepted(true, false));
         }
 
+        // Case `resilient_render_waits_through_every_stage_growing_in_turn`.
+        {
+            // Vello's later stages skip their work once an earlier one has
+            // overflowed, so a cold renderer grows one stage per submission.
+            // Five growths in a row then two clean frames must be allowed:
+            // a flat four-attempt limit refused a feathered photo mask.
+            let mut attempts = ResilientAttempts::default();
+            for _ in 0..5 {
+                assert!(attempts.another(true), "a growth is progress");
+            }
+            assert!(attempts.another(false), "the first clean frame");
+            assert_eq!(attempts.submissions(), 6);
+
+            // A reservation that cannot grow any more still gives up after
+            // the bounded attempts, however many growths came before.
+            let mut stuck = ResilientAttempts::default();
+            let mut submissions = 0;
+            while stuck.another(true) {
+                submissions += 1;
+                assert!(submissions < 64, "growth alone must not retry forever");
+            }
+            assert_eq!(
+                stuck.submissions(),
+                RESILIENT_RENDER_GROWTHS + RESILIENT_RENDER_ATTEMPTS
+            );
+            let mut stalled = ResilientAttempts::default();
+            let allowed = (0..RESILIENT_RENDER_ATTEMPTS)
+                .filter(|_| stalled.another(false))
+                .count();
+            assert_eq!(allowed, RESILIENT_RENDER_ATTEMPTS - 1);
+        }
+
         // Case `png_publication_is_complete_and_decodable`.
         {
             let dir = tempfile::tempdir().expect("temporary screenshot directory");
@@ -2215,6 +2205,61 @@ mod tests {
             assert_eq!((decoded.width, decoded.height), (1, 1));
             assert_eq!(decoded.rgba, rgba);
         }
+    }
+
+    /// A cold renderer learns one Vello stage's demand per overflowing
+    /// submission, because every later stage skips its work once an earlier
+    /// one has overflowed: here the flattened lines, then the segment counts,
+    /// then the nested layers' blend spill. A one-shot render must wait
+    /// through every growth. A flat four-attempt limit refused Canvas's
+    /// measure of a photograph behind a feathered mask.
+    #[test]
+    fn resilient_render_grows_through_cascading_stage_overflows() {
+        let Ok(mut renderer) = OffscreenRenderer::try_new(320, 320) else {
+            eprintln!("skipping cascading overflow test: no GPU");
+            return;
+        };
+        let side = 320.0;
+        let full = Rect::new(0.0, 0.0, side, side);
+        let mut scene = Scene::new();
+        // Deeper than Vello's on-chip blend stack on every tile.
+        for _ in 0..8 {
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                0.95,
+                Affine::IDENTITY,
+                &full,
+            );
+        }
+        // Thousands of loops across the whole target: far more flattened
+        // lines, and line/tile crossings, than a fresh renderer reserves.
+        let mut loops = BezPath::new();
+        for i in 0..20_000_u32 {
+            let y = f64::from(i % 320);
+            loops.move_to((0.0, y));
+            loops.curve_to((side * 1.5, side - y), (-side * 0.5, side - y), (side, y));
+            loops.close_path();
+        }
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(200, 60, 40, 255),
+            None,
+            &loops,
+        );
+        for _ in 0..8 {
+            scene.pop_layer();
+        }
+        let pixels = renderer
+            .try_render_resilient(&scene, Color::TRANSPARENT)
+            .expect("growing through every stage's overflow, then two clean renders");
+        assert!(
+            pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel.get(3).copied().unwrap_or(0) != 0),
+            "the loops are drawn"
+        );
     }
 
     #[test]
@@ -2661,17 +2706,15 @@ mod tests {
         {
             const W: u32 = 256;
             const H: u32 = 192;
-            let image = |rgba: [u8; 4]| ImageData {
-                data: Blob::new(Arc::new(
+            let image = |rgba: [u8; 4]| {
+                crate::raster::rgba8(
                     rgba.into_iter()
                         .cycle()
                         .take(4 * 4 * 4)
                         .collect::<Vec<u8>>(),
-                )),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: 4,
-                height: 4,
+                    4,
+                    4,
+                )
             };
             let blue = image([20, 120, 255, 190]);
             let orange = image([255, 100, 30, 170]);
@@ -2709,7 +2752,7 @@ mod tests {
             let third = scene_for(&orange, replaced, overlap_b);
             let mut retained = OffscreenRenderer::new(W, H);
             retained.render_rgba_resilient(&first);
-            let sparse_supported = retained.sparse_fine_supported();
+            let sparse_supported = retained.vello().sparse_fine_supported();
             let mut reference = OffscreenRenderer::new(W, H);
             reference.set_compute_pass_batching(false);
             reference.set_direct_path_dispatch_enabled(false);
@@ -2841,7 +2884,7 @@ mod tests {
                     "these small prefix updates must not take the full fallback",
                 );
                 assert_eq!(timing.damage_target_creations, expected_creations);
-                if retained.gpu_timestamp_buffer_bytes() != 0 {
+                if retained.vello().gpu_timestamp_buffer_bytes() != 0 {
                     assert!(
                         timing.gpu_timestamp_expected_submissions > 0,
                         "timestamp-enabled partial render must record its submission",
@@ -2950,7 +2993,7 @@ mod tests {
             const W: u32 = 256;
             const H: u32 = 192;
             let mut retained = OffscreenRenderer::new(64, 64);
-            if !retained.sparse_fine_supported() {
+            if !retained.vello().sparse_fine_supported() {
                 let requested = env_enabled_by_default("VELLO_SPARSE_FINE");
                 assert!(
                     !requested || std::env::var_os("TILO_UI_VELLO_CPU").is_some(),
@@ -3002,7 +3045,7 @@ mod tests {
 
             let far = Rect::new(238.0, 174.0, 250.0, 186.0);
             let mut sparse = OffscreenRenderer::new(W, H);
-            assert!(sparse.sparse_fine_supported());
+            assert!(sparse.vello().sparse_fine_supported());
             sparse.render_rgba_resilient(&Scene::new());
             let mut changed = Scene::new();
             changed.fill(
@@ -3047,7 +3090,7 @@ mod tests {
             const W: u32 = 544;
             const H: u32 = 528;
             let mut retained = OffscreenRenderer::new(W, H);
-            if !retained.sparse_coarse_supported() {
+            if !retained.vello().sparse_coarse_supported() {
                 let sparse_fine_requested = env_enabled_by_default("VELLO_SPARSE_FINE");
                 assert!(
                     !sparse_fine_requested || std::env::var_os("TILO_UI_VELLO_CPU").is_some(),
@@ -3055,25 +3098,21 @@ mod tests {
                 );
                 break 'sparse_coarse_matches_dense_oracle_across_disjoint_masked_frames;
             }
-            assert!(retained.sparse_coarse_supported());
+            assert!(retained.vello().sparse_coarse_supported());
             let mut oracle = OffscreenRenderer::new(W, H);
             oracle.set_compute_pass_batching(false);
             oracle.set_defer_bump_readback_enabled(false);
             oracle.set_sparse_fine_enabled(false);
 
-            let image = ImageData {
-                data: Blob::new(Arc::new(
-                    [30_u8, 180, 250, 180]
-                        .into_iter()
-                        .cycle()
-                        .take(4 * 4 * 4)
-                        .collect::<Vec<_>>(),
-                )),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: 4,
-                height: 4,
-            };
+            let image = crate::raster::rgba8(
+                [30_u8, 180, 250, 180]
+                    .into_iter()
+                    .cycle()
+                    .take(4 * 4 * 4)
+                    .collect::<Vec<_>>(),
+                4,
+                4,
+            );
             let scene_for = |accent: Rect, image_rect: Rect| {
                 let mut scene = Scene::new();
                 let full = Rect::new(0.0, 0.0, f64::from(W), f64::from(H));
@@ -3167,7 +3206,7 @@ mod tests {
                 if matches!(
                     std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS").as_deref(),
                     Ok("1")
-                ) && retained.gpu_dispatch_timestamp_buffer_bytes() != 0
+                ) && retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0
                 {
                     let coarse_sparse_bit = 1_u32.checked_shl(23).unwrap_or(0);
                     let dense_coarse_bit = 1_u32.checked_shl(16).unwrap_or(0);
@@ -3192,7 +3231,7 @@ mod tests {
                         std::env::var("VELLO_COMPUTE_BATCH").as_deref(),
                         Ok("0" | "1")
                     ) && env_enabled_by_default("VELLO_SPARSE_UPLOAD_REUSE");
-                if batched_reuse_profile && retained.gpu_timestamp_buffer_bytes() != 0 {
+                if batched_reuse_profile && retained.vello().gpu_timestamp_buffer_bytes() != 0 {
                     assert_eq!(timing.sparse_submissions, 1);
                     assert_eq!(timing.full_attempts, 0);
                     assert!(timing.gpu_timestamp_pass_count > 0);
@@ -3404,7 +3443,7 @@ mod tests {
                 if matches!(
                     std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS").as_deref(),
                     Ok("1")
-                ) && retained.gpu_dispatch_timestamp_buffer_bytes() != 0
+                ) && retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0
                 {
                     let active_coarse = 1_u32.checked_shl(27).expect("stage id 28 fits mask");
                     assert!(timing.gpu_dispatch_timestamp_expected_submissions > 0);
@@ -3487,7 +3526,9 @@ mod tests {
             const W: u32 = 128;
             const H: u32 = 96;
             let mut retained = OffscreenRenderer::new(W, H);
-            if !retained.sparse_fine_supported() || !retained.sparse_upload_reuse_enabled() {
+            if !retained.vello().sparse_fine_supported()
+                || !retained.vello().sparse_upload_reuse_enabled()
+            {
                 eprintln!("skipping sparse upload reuse test: sparse GPU path is unavailable");
                 break 'sparse_upload_reuse_grows_once_and_matches_an_unbatched_dense_oracle;
             }
@@ -3525,10 +3566,10 @@ mod tests {
                 Color::TRANSPARENT,
                 &[small],
             );
-            let deferred_bump_profile = retained.defer_bump_readback_enabled()
+            let deferred_bump_profile = retained.vello().defer_bump_readback_enabled()
                 && matches!(std::env::var("VELLO_COMPUTE_BATCH").as_deref(), Ok("2"))
-                && retained.cpu_metadata_enabled()
-                && retained.gpu_timestamp_buffer_bytes() != 0;
+                && retained.vello().cpu_metadata_enabled()
+                && retained.vello().gpu_timestamp_buffer_bytes() != 0;
             if deferred_bump_profile {
                 assert_eq!(
                     timing.gpu_timestamp_pass_count, 1,
@@ -3544,7 +3585,7 @@ mod tests {
                 std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS").as_deref(),
                 Ok("1")
             );
-            if dispatch_requested && retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+            if dispatch_requested && retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                 assert!(timing.gpu_dispatch_timestamp_expected_submissions > 0);
                 assert_eq!(
                     timing.gpu_dispatch_timestamp_sampled_submissions,
@@ -3561,7 +3602,7 @@ mod tests {
                 assert!(timing.gpu_dispatch_timestamp_stage_dispatch_count[22] > 0);
             } else if dispatch_requested {
                 assert!(matches!(
-                    retained.gpu_dispatch_timestamp_status(),
+                    retained.vello_mut().gpu_dispatch_timestamp_status(),
                     vello::GpuDispatchTimestampStatus::Unsupported
                         | vello::GpuDispatchTimestampStatus::Disabled
                 ));
@@ -3632,7 +3673,7 @@ mod tests {
             return None;
         }
         let renderer = OffscreenRenderer::new(width, height);
-        if !renderer.sparse_coarse_active_bins_available() {
+        if !renderer.vello().sparse_coarse_active_bins_available() {
             eprintln!("skipping {test_name}: active native-bin coarse is unavailable");
             return None;
         }
@@ -3661,7 +3702,7 @@ mod tests {
             return None;
         }
         let renderer = OffscreenRenderer::new(width, height);
-        if !renderer.sparse_coarse_adaptive_enabled() {
+        if !renderer.vello().sparse_coarse_adaptive_enabled() {
             eprintln!("skipping {test_name}: adaptive sparse coarse is unavailable");
             return None;
         }
@@ -3708,9 +3749,9 @@ mod tests {
         ) {
             return;
         }
-        if renderer.gpu_dispatch_timestamp_buffer_bytes() == 0 {
+        if renderer.vello().gpu_dispatch_timestamp_buffer_bytes() == 0 {
             assert!(matches!(
-                renderer.gpu_dispatch_timestamp_status(),
+                renderer.vello_mut().gpu_dispatch_timestamp_status(),
                 vello::GpuDispatchTimestampStatus::Unsupported
                     | vello::GpuDispatchTimestampStatus::Disabled
             ));
@@ -3886,7 +3927,7 @@ mod tests {
             const W: u32 = 384;
             const H: u32 = 256;
             let mut retained = OffscreenRenderer::new(W, H);
-            if !retained.cpu_pathtag_enabled() {
+            if !retained.vello().cpu_pathtag_enabled() {
                 assert!(
                     std::env::var_os("TILO_UI_VELLO_CPU").is_some(),
                     "default selective CPU path tags must activate on a GPU renderer"
@@ -3897,12 +3938,12 @@ mod tests {
             let direct_path_requested = env_enabled_by_default("VELLO_DIRECT_PATH_DISPATCH");
             if direct_path_requested {
                 assert!(
-                    retained.direct_path_dispatch_enabled(),
+                    retained.vello().direct_path_dispatch_enabled(),
                     "default direct GPU path dispatch must activate"
                 );
             }
             if draw_prefix_requested {
-                assert!(retained.cpu_draw_prefix_enabled());
+                assert!(retained.vello().cpu_draw_prefix_enabled());
                 assert!(retained.cpu_draw_prefix_supported(16));
                 assert!(retained.cpu_draw_prefix_supported(1024 * 1024));
                 assert!(!retained.cpu_draw_prefix_supported(1024 * 1024 + 16));
@@ -3915,19 +3956,15 @@ mod tests {
             oracle.set_cpu_metadata_enabled(false);
             oracle.set_cpu_pathtag_enabled(false);
             oracle.set_cpu_draw_prefix_enabled(false);
-            let image = ImageData {
-                data: Blob::new(Arc::new(
-                    [30_u8, 170, 240, 180]
-                        .into_iter()
-                        .cycle()
-                        .take(64)
-                        .collect::<Vec<_>>(),
-                )),
-                format: ImageFormat::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: 4,
-                height: 4,
-            };
+            let image = crate::raster::rgba8(
+                [30_u8, 170, 240, 180]
+                    .into_iter()
+                    .cycle()
+                    .take(64)
+                    .collect::<Vec<_>>(),
+                4,
+                4,
+            );
             let scene_for = |offset: f64, add_tag: bool| {
                 let mut scene = Scene::new();
                 let clip = Rect::new(12.0, 10.0, 180.0, 150.0);
@@ -3971,10 +4008,10 @@ mod tests {
             retained.render_rgba_resilient(&initial);
             let bounded_damage = Rect::new(12.0, 12.0, 184.0, 150.0);
             let reuse_requested = env_enabled_by_default("VELLO_CPU_PATHTAG_REUSE");
-            let deferred_bump_profile = retained.defer_bump_readback_enabled()
+            let deferred_bump_profile = retained.vello().defer_bump_readback_enabled()
                 && matches!(std::env::var("VELLO_COMPUTE_BATCH").as_deref(), Ok("2"))
-                && !retained.sparse_fine_supported()
-                && retained.gpu_timestamp_buffer_bytes() != 0;
+                && !retained.vello().sparse_fine_supported()
+                && retained.vello().gpu_timestamp_buffer_bytes() != 0;
             let mut retained_pool_bytes = 0;
             for next in [scene_for(9.0, false), scene_for(9.0, true)] {
                 let (_, timing) = retained.render_damage_regions_gpu_wait_profiled(
@@ -3990,13 +4027,13 @@ mod tests {
                     0
                 );
                 if reuse_requested {
-                    assert!(retained.cpu_pathtag_reuse_enabled());
-                    let current_pool_bytes = retained.cpu_pathtag_pool_retained_bytes();
+                    assert!(retained.vello().cpu_pathtag_reuse_enabled());
+                    let current_pool_bytes = retained.vello().cpu_pathtag_pool_retained_bytes();
                     assert!(current_pool_bytes > 0);
                     assert!(current_pool_bytes >= retained_pool_bytes);
                     retained_pool_bytes = current_pool_bytes;
                 }
-                if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+                if retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                     assert!(timing.gpu_dispatch_timestamp_expected_submissions > 0);
                     assert_eq!(
                         timing.gpu_dispatch_timestamp_sampled_submissions,
@@ -4013,7 +4050,7 @@ mod tests {
                         .unwrap_or(0);
                     assert_eq!(timing.gpu_dispatch_timestamp_present_stages & reduce, 0);
                     assert_eq!(timing.gpu_dispatch_timestamp_present_stages & scan_small, 0);
-                    if retained.cpu_metadata_enabled() {
+                    if retained.vello().cpu_metadata_enabled() {
                         let bbox_clear = 1_u32.checked_shl(5).unwrap_or(0);
                         let draw_reduce = 1_u32.checked_shl(7).unwrap_or(0);
                         assert_eq!(timing.gpu_dispatch_timestamp_present_stages & bbox_clear, 0);
@@ -4022,7 +4059,7 @@ mod tests {
                             0
                         );
                     }
-                    if retained.cpu_draw_prefix_enabled() {
+                    if retained.vello().cpu_draw_prefix_enabled() {
                         let prefix_leaf = 1_u32.checked_shl(24).unwrap_or(0);
                         let draw_leaf = 1_u32.checked_shl(8).unwrap_or(0);
                         assert_ne!(
@@ -4039,7 +4076,7 @@ mod tests {
                     let path_count = 1_u32.checked_shl(14).unwrap_or(0);
                     let path_tiling_setup = 1_u32.checked_shl(17).unwrap_or(0);
                     let path_tiling = 1_u32.checked_shl(18).unwrap_or(0);
-                    if retained.direct_path_dispatch_enabled() {
+                    if retained.vello().direct_path_dispatch_enabled() {
                         assert_ne!(
                             timing.gpu_dispatch_timestamp_present_stages & path_count_direct,
                             0
@@ -4056,7 +4093,7 @@ mod tests {
                     }
                 }
                 if deferred_bump_profile {
-                    let expected_pass_count = if retained.cpu_metadata_enabled() {
+                    let expected_pass_count = if retained.vello().cpu_metadata_enabled() {
                         1
                     } else {
                         // GPU bbox-clear precedes the bump clear and remains
@@ -4082,7 +4119,7 @@ mod tests {
                     Color::TRANSPARENT,
                     &[bounded_damage],
                 );
-                assert!(!retained.direct_path_dispatch_enabled());
+                assert!(!retained.vello().direct_path_dispatch_enabled());
                 assert_eq!(
                     OffscreenRenderer::pixels_differing_beyond_aa(
                         &retained.readback_current(),
@@ -4090,7 +4127,7 @@ mod tests {
                     ),
                     0
                 );
-                if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+                if retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                     let path_count_direct = 1_u32.checked_shl(25).unwrap_or(0);
                     let path_tiling_direct = 1_u32.checked_shl(26).unwrap_or(0);
                     let path_count_setup = 1_u32.checked_shl(13).unwrap_or(0);
@@ -4120,7 +4157,7 @@ mod tests {
                     Color::TRANSPARENT,
                     &[bounded_damage],
                 );
-                assert!(!retained.defer_bump_readback_enabled());
+                assert!(!retained.vello().defer_bump_readback_enabled());
                 assert_eq!(
                     OffscreenRenderer::pixels_differing_beyond_aa(
                         &retained.readback_current(),
@@ -4140,7 +4177,7 @@ mod tests {
                 retained.set_defer_bump_readback_enabled(true);
             }
             if draw_prefix_requested {
-                let prefix_pool = retained.cpu_draw_prefix_pool_retained_bytes();
+                let prefix_pool = retained.vello().cpu_draw_prefix_pool_retained_bytes();
                 assert!(prefix_pool > 0 && retained.cpu_draw_prefix_supported(prefix_pool));
                 retained.set_cpu_draw_prefix_enabled(false);
                 let prefix_gpu_scene = scene_for(11.0, true);
@@ -4149,9 +4186,9 @@ mod tests {
                     Color::TRANSPARENT,
                     &[bounded_damage],
                 );
-                assert!(retained.cpu_pathtag_enabled());
-                assert!(!retained.cpu_draw_prefix_enabled());
-                assert_eq!(retained.cpu_draw_prefix_pool_retained_bytes(), 0);
+                assert!(retained.vello().cpu_pathtag_enabled());
+                assert!(!retained.vello().cpu_draw_prefix_enabled());
+                assert_eq!(retained.vello().cpu_draw_prefix_pool_retained_bytes(), 0);
                 assert_eq!(
                     OffscreenRenderer::pixels_differing_beyond_aa(
                         &retained.readback_current(),
@@ -4159,7 +4196,7 @@ mod tests {
                     ),
                     0
                 );
-                if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+                if retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                     let prefix_leaf = 1_u32.checked_shl(24).unwrap_or(0);
                     let draw_leaf = 1_u32.checked_shl(8).unwrap_or(0);
                     assert_eq!(
@@ -4172,7 +4209,7 @@ mod tests {
                 }
             }
             if env_enabled_by_default("VELLO_CPU_METADATA") {
-                assert!(retained.cpu_metadata_enabled());
+                assert!(retained.vello().cpu_metadata_enabled());
                 retained.set_cpu_metadata_enabled(false);
                 let metadata_gpu_scene = scene_for(12.0, true);
                 let (_, timing) = retained.render_damage_regions_gpu_wait_profiled(
@@ -4180,9 +4217,9 @@ mod tests {
                     Color::TRANSPARENT,
                     &[bounded_damage],
                 );
-                assert!(retained.cpu_pathtag_enabled());
-                assert!(!retained.cpu_metadata_enabled());
-                assert_eq!(retained.cpu_metadata_pool_retained_bytes(), 0);
+                assert!(retained.vello().cpu_pathtag_enabled());
+                assert!(!retained.vello().cpu_metadata_enabled());
+                assert_eq!(retained.vello().cpu_metadata_pool_retained_bytes(), 0);
                 assert_eq!(
                     OffscreenRenderer::pixels_differing_beyond_aa(
                         &retained.readback_current(),
@@ -4190,7 +4227,7 @@ mod tests {
                     ),
                     0
                 );
-                if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+                if retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                     let bbox_clear = 1_u32.checked_shl(5).unwrap_or(0);
                     let draw_reduce = 1_u32.checked_shl(7).unwrap_or(0);
                     assert_ne!(timing.gpu_dispatch_timestamp_present_stages & bbox_clear, 0);
@@ -4209,9 +4246,9 @@ mod tests {
                 Color::TRANSPARENT,
                 &[bounded_damage],
             );
-            assert!(!retained.cpu_pathtag_enabled());
+            assert!(!retained.vello().cpu_pathtag_enabled());
             if reuse_requested {
-                assert_eq!(retained.cpu_pathtag_pool_retained_bytes(), 0);
+                assert_eq!(retained.vello().cpu_pathtag_pool_retained_bytes(), 0);
             }
             assert_eq!(
                 OffscreenRenderer::pixels_differing_beyond_aa(
@@ -4220,7 +4257,7 @@ mod tests {
                 ),
                 0
             );
-            if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+            if retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                 assert!(timing.gpu_dispatch_timestamp_expected_submissions > 0);
                 assert_eq!(
                     timing.gpu_dispatch_timestamp_sampled_submissions,
@@ -4248,7 +4285,7 @@ mod tests {
             const W: u32 = 384;
             const H: u32 = 256;
             let mut retained = OffscreenRenderer::new(W, H);
-            if !retained.direct_path_dispatch_enabled() {
+            if !retained.vello().direct_path_dispatch_enabled() {
                 assert!(
                     std::env::var_os("TILO_UI_VELLO_CPU").is_some(),
                     "default direct GPU path dispatch must activate"
@@ -4335,7 +4372,7 @@ mod tests {
                 ),
                 0
             );
-            if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+            if retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                 let direct =
                     (1_u32.checked_shl(25).unwrap_or(0)) | (1_u32.checked_shl(26).unwrap_or(0));
                 let indirect = (1_u32.checked_shl(13).unwrap_or(0))
@@ -4362,7 +4399,7 @@ mod tests {
                 Color::TRANSPARENT,
                 &[damage],
             );
-            assert!(!retained.direct_path_dispatch_enabled());
+            assert!(!retained.vello().direct_path_dispatch_enabled());
             assert_eq!(
                 OffscreenRenderer::pixels_differing_beyond_aa(
                     &retained.readback_current(),
@@ -4370,7 +4407,7 @@ mod tests {
                 ),
                 0
             );
-            if retained.gpu_dispatch_timestamp_buffer_bytes() != 0 {
+            if retained.vello().gpu_dispatch_timestamp_buffer_bytes() != 0 {
                 let direct =
                     (1_u32.checked_shl(25).unwrap_or(0)) | (1_u32.checked_shl(26).unwrap_or(0));
                 let indirect = (1_u32.checked_shl(13).unwrap_or(0))
@@ -4403,16 +4440,18 @@ mod tests {
             const W: u32 = 384;
             const H: u32 = 256;
             let mut retained = OffscreenRenderer::new(W, H);
-            if !retained.defer_bump_readback_enabled() && !retained.direct_path_dispatch_enabled() {
+            if !retained.vello().defer_bump_readback_enabled()
+                && !retained.vello().direct_path_dispatch_enabled()
+            {
                 assert!(std::env::var_os("TILO_UI_VELLO_CPU").is_some());
                 eprintln!("skipping GPU path recovery test: global CPU rendering is active");
                 break 'gpu_path_experiments_keep_overflow_recovery_complete;
             }
             if deferred_bump_requested {
-                assert!(retained.defer_bump_readback_enabled());
+                assert!(retained.vello().defer_bump_readback_enabled());
             }
             if direct_path_requested {
-                assert!(retained.direct_path_dispatch_enabled());
+                assert!(retained.vello().direct_path_dispatch_enabled());
             }
             let mut oracle = OffscreenRenderer::new(W, H);
             oracle.set_compute_pass_batching(false);

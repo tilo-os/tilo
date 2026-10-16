@@ -25,8 +25,8 @@ use crate::shell::speaker_calibration::{
     RunMicrophone,
 };
 use crate::shell::speaker_group::{
-    AudioEndpointKind, EndpointSelector, RoomPoint, SpeakerGroupId, SpeakerMemberState,
-    SpeakerRole, SpeakerTrim, StereoSide, SurroundChannel,
+    AudioEndpointKind, EndpointSelector, RoomPoint, SpeakerGroupId, SpeakerRole, SpeakerTrim,
+    StereoSide, SurroundChannel,
 };
 use crate::shell::speaker_group_runtime::{
     ListenerCandidate, ListenerState, MemberSpec, SpeakerGroupsView, SpeakerSessionStatus,
@@ -64,17 +64,6 @@ pub fn role_to_spec(role: SpeakerRole) -> SpeakerRoleSpec {
             y_mm: point.y_mm,
             z_mm: point.z_mm,
         },
-    }
-}
-
-const fn status(state: SpeakerMemberState) -> SpeakerMemberStatus {
-    match state {
-        SpeakerMemberState::Ready => SpeakerMemberStatus::Ready,
-        SpeakerMemberState::AwaitingConsent => SpeakerMemberStatus::AwaitingConsent,
-        SpeakerMemberState::Offline => SpeakerMemberStatus::Offline,
-        SpeakerMemberState::OutputMissing => SpeakerMemberStatus::OutputMissing,
-        SpeakerMemberState::Unavailable => SpeakerMemberStatus::Unavailable,
-        SpeakerMemberState::NotCertified => SpeakerMemberStatus::NotCertified,
     }
 }
 
@@ -429,7 +418,7 @@ fn snapshot(network: &crate::shell::network::ShellNetwork) -> SpeakerSnapshot {
                     output: member.output.to_hex(),
                     output_label: member.output_label.clone(),
                     role: role_to_spec(member.role),
-                    status: status(member.state),
+                    status: member.state,
                     trim: trim_info(&member.trim),
                 })
                 .collect(),
@@ -702,7 +691,7 @@ fn start_calibration(
     if fabric
         .speaker_member_states(published)
         .iter()
-        .any(|state| *state != SpeakerMemberState::Ready)
+        .any(|state| *state != SpeakerMemberStatus::Ready)
     {
         return Err(crate::shell::i18n::t("speaker-error-not-all-ready"));
     }
@@ -740,7 +729,7 @@ fn start_calibration(
         microphones,
         listening,
         timed_source(network, local, &peers),
-        Box::new(crate::shell::speaker_group_runtime::random_nonzero_16),
+        Box::new(crate::random::nonzero::<16>),
         Instant::now(),
     )?;
     state()

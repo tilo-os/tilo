@@ -9,12 +9,13 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::io::{self, Write as _};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 
 use crate::DeviceKind;
 use crate::broker::Policy;
+use tilo_lock::MutexRecover as _;
 
 /// What the person decided.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,7 +93,7 @@ impl DeviceGrants {
     /// The decisions as the file holds them now: read again when another
     /// process changed it; none when it no longer reads.
     fn current(&self) -> std::sync::MutexGuard<'_, Loaded> {
-        let mut loaded = self.loaded.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut loaded = self.loaded.lock_recover();
         if modified(&self.path) != loaded.modified {
             *loaded = read(&self.path).unwrap_or(Loaded {
                 modified: None,
@@ -173,7 +174,7 @@ impl DeviceGrants {
     }
 
     fn update(&self, change: impl FnOnce(&mut BTreeMap<Key, Decision>)) -> io::Result<()> {
-        let mut loaded = self.loaded.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut loaded = self.loaded.lock_recover();
         let mut next = read(&self.path)?.decisions;
         change(&mut next);
         self.persist(&next)?;
@@ -186,7 +187,6 @@ impl DeviceGrants {
     }
 
     fn persist(&self, decisions: &BTreeMap<Key, Decision>) -> io::Result<()> {
-        use std::os::unix::fs::OpenOptionsExt as _;
         let mut text = String::new();
         for ((room, app, device), decision) in decisions {
             let decision = match decision {
@@ -195,19 +195,11 @@ impl DeviceGrants {
             };
             let _ = writeln!(text, "{room}\t{app}\t{device}\t{decision}");
         }
-        let temp = self.path.with_extension("tmp");
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temp)?;
-        file.write_all(text.as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&temp, &self.path)
+        tilo_files::native::atomic::write_creating_parent_with_mode(
+            &self.path,
+            text.as_bytes(),
+            0o600,
+        )
     }
 }
 

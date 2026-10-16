@@ -8,6 +8,8 @@ use sha_crypt::{PasswordHasher, ShaCrypt};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
+#[cfg(feature = "srp")]
+pub mod srp_apple;
 #[cfg(feature = "tls-fixture")]
 mod tls_fixture;
 #[cfg(feature = "tls-fixture")]
@@ -697,6 +699,42 @@ pub fn p256_public_key_sha256(public_key_pem: &str) -> Result<String, String> {
         .to_public_key_der()
         .map_err(|_| "cannot canonicalize P-256 public key")?;
     Ok(hex::encode(Sha256::digest(der.as_bytes())))
+}
+
+/// Verify a detached ECDSA P-256 / SHA-256 signature over `message`, in the
+/// form `cosign sign-blob` writes: base64 of the DER signature, surrounding
+/// whitespace allowed.
+///
+/// A signature with a high `s` is accepted in its normalized form: a KMS may
+/// produce either, and both prove the same signer over the same bytes.
+///
+/// # Errors
+///
+/// Returns an error if the key is not a P-256 `SubjectPublicKeyInfo` PEM, the
+/// signature is not base64 DER, or the signature does not verify.
+pub fn verify_p256_sha256(
+    public_key_pem: &str,
+    message: &[u8],
+    signature_base64: &[u8],
+) -> Result<(), String> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use p256::{
+        ecdsa::{Signature, VerifyingKey, signature::Verifier as _},
+        pkcs8::DecodePublicKey,
+    };
+
+    let key = VerifyingKey::from_public_key_pem(public_key_pem)
+        .map_err(|_| "invalid P-256 SubjectPublicKeyInfo")?;
+    let text = std::str::from_utf8(signature_base64)
+        .map_err(|_| "P-256 signature is not base64 text")?
+        .trim();
+    let der = STANDARD
+        .decode(text)
+        .map_err(|_| "P-256 signature is not base64 text")?;
+    let signature = Signature::from_der(&der).map_err(|_| "invalid P-256 DER signature")?;
+    let signature = signature.normalize_s();
+    key.verify(message, &signature)
+        .map_err(|_| "P-256 signature verification failed".into())
 }
 
 /// Append a Linux kernel PKCS#7 module signature made with RSA/SHA-512.
@@ -1841,6 +1879,44 @@ mod tests {
     }
 
     #[test]
+    fn p256_detached_signatures_verify_only_the_signed_bytes_and_key() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use p256::ecdsa::{Signature, SigningKey, signature::Signer as _};
+        use p256::pkcs8::{EncodePublicKey as _, LineEnding};
+
+        let signing = SigningKey::from_slice(&[7_u8; 32]).expect("P-256 key");
+        let public = signing
+            .verifying_key()
+            .to_public_key_pem(LineEnding::LF)
+            .expect("public PEM");
+        let message = br#"{"type":"tilo.system-extension.sysext-manifest"}"#;
+        let signature: Signature = signing.sign(message);
+        let encoded = format!("{}\n", STANDARD.encode(signature.to_der().as_bytes()));
+
+        verify_p256_sha256(&public, message, encoded.as_bytes()).expect("valid signature");
+
+        let mut tampered = message.to_vec();
+        tampered[3] ^= 1;
+        assert!(verify_p256_sha256(&public, &tampered, encoded.as_bytes()).is_err());
+
+        let other = SigningKey::from_slice(&[9_u8; 32])
+            .expect("P-256 key")
+            .verifying_key()
+            .to_public_key_pem(LineEnding::LF)
+            .expect("public PEM");
+        assert!(verify_p256_sha256(&other, message, encoded.as_bytes()).is_err());
+
+        // The same signature with s replaced by n - s still proves the signer.
+        let (r, s) = (signature.r(), signature.s());
+        let high = Signature::from_scalars(r, -*s).expect("high-s signature");
+        let high = STANDARD.encode(high.to_der().as_bytes());
+        verify_p256_sha256(&public, message, high.as_bytes()).expect("high-s signature");
+
+        assert!(verify_p256_sha256(&public, message, b"not base64!").is_err());
+        assert!(verify_p256_sha256(&public, message, STANDARD.encode(b"junk").as_bytes()).is_err());
+    }
+
+    #[test]
     fn pure_rust_kernel_module_signature_round_trips() {
         let certificate = generate_secure_boot_certificate("Tilo kernel test").expect("signer");
         let module = b"synthetic kernel module bytes";
@@ -1868,7 +1944,6 @@ mod tests {
 
     #[allow(
         clippy::arithmetic_side_effects,
-        clippy::indexing_slicing,
         reason = "fixed offsets construct a bounded synthetic PE fixture"
     )]
     fn minimal_efi_image() -> Vec<u8> {
@@ -1958,7 +2033,6 @@ mod tests {
     /// encoding habits (or a forger holding the key) would.
     #[allow(
         clippy::arithmetic_side_effects,
-        clippy::indexing_slicing,
         reason = "offsets come from locating the envelope's own fields"
     )]
     fn resign_attributes(
@@ -2019,11 +2093,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::arithmetic_side_effects,
-        clippy::indexing_slicing,
-        reason = "offsets come from locating the envelope's own fields"
-    )]
     fn efi_verification_checks_every_signed_field() {
         let signer = generate_secure_boot_certificate("Tilo EFI signer").expect("signer");
         let image = minimal_efi_image();

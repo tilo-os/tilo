@@ -11,7 +11,6 @@ use agent_provider_config::{ModelDescriptor, ProviderConfig, ProviderProfile, Se
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderSelection {
     pub profile_id: String,
-    pub profile_label: String,
     pub endpoint: String,
     pub protocol: agent_provider_config::ProviderProtocol,
     pub model: ModelDescriptor,
@@ -36,7 +35,6 @@ impl ProviderSelection {
     pub fn from_profile(profile: &ProviderProfile, model: ModelDescriptor) -> Self {
         Self {
             profile_id: profile.id.clone(),
-            profile_label: profile.display_label().to_string(),
             endpoint: profile.endpoint.clone(),
             protocol: profile.protocol,
             model,

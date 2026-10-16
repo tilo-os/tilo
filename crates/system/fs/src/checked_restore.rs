@@ -6,21 +6,45 @@ use super::{
 // The test module reaches the whole filesystem scope through this module.
 #[cfg(test)]
 use super::*;
+use crate::content_kind::RecordContentKind;
 use crate::record_repository::{RecordRepositoryKey, RepositoryLease};
 #[cfg(test)]
 use crate::record_transaction::RecordTransactionJournalEntry;
 use crate::record_transaction::RecordTransactionPhase as Phase;
-use collab_types::files::{
+use fs_protocol::files::{
     CheckedHistoryOperationV1 as Operation, CheckedHistoryOutcomeV1 as Outcome,
     CheckedHistoryRequestV1 as CheckedRequest, FileRestoreReceiptV1 as Receipt,
     FileRestoreReviewV1 as Review,
 };
-use collab_types::{
+use fs_protocol::{
     ContentHash, ContentRevisionV1, FileMutationOperation, FileMutationParticipant,
     FileMutationParticipantRole, FileMutationTransactionManifest, FileProvenance, FileVersionV1,
 };
 
 type Request = CheckedRequest;
+
+/// Why a serialized document version could not be restored.
+#[derive(Debug)]
+pub(super) enum DocumentRestoreError {
+    /// The current version's bytes could not be read.
+    Unavailable,
+    /// One side is not a document of the record's schema.
+    NotADocument(String),
+}
+
+impl DocumentRestoreError {
+    fn outcome(self) -> Outcome {
+        match self {
+            Self::Unavailable => Outcome::Unavailable,
+            Self::NotADocument(reason) => Outcome::UnsupportedOwner {
+                mapping: format!(
+                    "serialized document: {}",
+                    reason.chars().take(96).collect::<String>()
+                ),
+            },
+        }
+    }
+}
 
 #[expect(
     clippy::result_large_err,
@@ -64,7 +88,6 @@ fn receipt(entry: &RecordTransactionJournalEntry) -> Option<Receipt> {
         record_id: request.review.record_id,
         selected_version: *selected_version,
         prior_revision: *prior_revision,
-        prior_reference: collab_types::files::FileRestorePriorReferenceV1::ObservedRevision,
         restored_revision: entry
             .transaction
             .manifest
@@ -104,24 +127,50 @@ impl QuickFS {
         Ok(workspace)
     }
 
-    pub(super) fn restore_codec(namespace: &Namespace, ino: u64) -> Result<(), Outcome> {
-        if let Some(codec) = namespace.document_codec(ino) {
-            return Err(Outcome::UnsupportedOwner {
+    /// How `ino`'s content is restored, from record metadata alone. A
+    /// namespace-held document has no checked restore route yet: restoring it
+    /// needs its CRDT heads recorded with each version.
+    pub(super) fn restore_kind(
+        namespace: &Namespace,
+        ino: u64,
+    ) -> Result<RecordContentKind, Outcome> {
+        match RecordContentKind::of(namespace, ino).ok_or(Outcome::NotVisible)? {
+            RecordContentKind::NamespaceDocument { codec } => Err(Outcome::UnsupportedOwner {
                 mapping: format!(
                     "document codec {}: no checked content-owner restore route",
                     codec.chars().take(64).collect::<String>()
                 ),
-            });
+            }),
+            kind => Ok(kind),
         }
-        if namespace
-            .path_for(ino)
-            .is_some_and(|path| path.to_ascii_lowercase().ends_with(".qdoc"))
-        {
-            return Err(Outcome::UnsupportedOwner {
-                mapping: "qdoc: no checked content-owner restore route".into(),
-            });
+    }
+
+    /// The bytes that restore a serialized document to `selected`, whose
+    /// bytes are `data`: the current document plus one change that reaches
+    /// the selected state, so its history continues instead of forking. With
+    /// no document on one side there is nothing to merge, and the selected
+    /// bytes are the result. The current document's bytes must already be
+    /// local; this never fetches them.
+    pub(super) fn restored_document(
+        &self,
+        current_hash: Option<Hash>,
+        selected: Option<ContentHash>,
+        data: &[u8],
+    ) -> Result<Vec<u8>, DocumentRestoreError> {
+        let Some(current_hash) = current_hash else {
+            return Ok(data.to_vec());
+        };
+        if data.is_empty() || Some(ContentHash(*current_hash.as_bytes())) == selected {
+            return Ok(data.to_vec());
         }
-        Ok(())
+        let current = self
+            .local_version_bytes(Some(ContentHash(*current_hash.as_bytes())))
+            .ok_or(DocumentRestoreError::Unavailable)?;
+        match tilo_doc::restore::restore_serialized(&current, data, None) {
+            Ok(Some(restored)) => Ok(restored),
+            Ok(None) => Ok(current),
+            Err(error) => Err(DocumentRestoreError::NotADocument(error.to_string())),
+        }
     }
 
     fn review_locked(
@@ -129,38 +178,13 @@ impl QuickFS {
         ino: u64,
         namespace: &Namespace,
         history: &crate::history::HistoryLease<'_>,
-        repository: Option<&RepositoryLease<'_>>,
+        repository: &RepositoryLease<'_>,
     ) -> Result<Review, Outcome> {
         let workspace_id = self.restore_workspace()?;
         let record_id = namespace.record_id_for(ino).ok_or(Outcome::NotVisible)?;
         let key = RecordRepositoryKey {
             workspace_id,
             record_id,
-        };
-        let Some(repository) = repository else {
-            let stored = history.snapshot(record_id).ok_or(Outcome::Unavailable)?;
-            let revision = Self::legacy_revision(namespace, ino, &stored)?;
-            let registers = namespace
-                .checked_record_frontier(ino)
-                .ok_or(Outcome::Unavailable)?;
-            let bytes = serde_json::to_vec(&(
-                "tilo.checked-files-review.legacy.v1",
-                workspace_id,
-                self.mount_lifetime,
-                record_id,
-                &stored,
-                revision,
-                namespace.path_for(ino),
-                registers,
-            ))
-            .map_err(|_| Outcome::Unavailable)?;
-            return Ok(Review {
-                schema_version: 1,
-                workspace_id,
-                mount_lifetime: self.mount_lifetime,
-                record_id,
-                frontier: *blake3::hash(&bytes).as_bytes(),
-            });
         };
         let signed = repository.snapshot(key).map_err(|_| Outcome::Unavailable)?;
         let stored = history.snapshot(record_id).ok_or(Outcome::Unavailable)?;
@@ -212,164 +236,30 @@ impl QuickFS {
         })
     }
 
+    /// The content revision `ino` currently points at, which must be one of the
+    /// record's history versions.
     #[expect(
         clippy::suspicious_operation_groupings,
         reason = "a history version's `id` is the version id the content revision points at"
     )]
-    fn legacy_revision(
+    fn observed_revision(
         namespace: &Namespace,
         ino: u64,
         history: &crate::history::RecordHistorySnapshot,
     ) -> Result<ContentRevisionV1, Outcome> {
-        if let Some(revision) = namespace.content_revision_for(ino) {
-            if history.versions.iter().any(|value| {
+        let revision = namespace
+            .content_revision_for(ino)
+            .ok_or(Outcome::Unavailable)?;
+        history
+            .versions
+            .iter()
+            .any(|value| {
                 value.id == revision.version_id
                     && value.content_hash == revision.content_hash
                     && value.metadata_hash == revision.metadata_hash
-            }) {
-                return Ok(revision);
-            }
-            return Err(Outcome::Unavailable);
-        }
-        let hash = namespace
-            .hash_for(ino)
-            .map(|hash| ContentHash(*hash.as_bytes()));
-        // Old namespaces have no atomic version pointer. Pick a stable
-        // content-equivalent reference for undo, never prior authorship. The
-        // full head set remains in the review and every new version's parents.
-        let version = history
-            .versions
-            .iter()
-            .filter(|version| history.heads.contains(&version.id) && version.content_hash == hash)
-            .max_by_key(|version| (version.timestamp_ms, version.id))
-            .ok_or(Outcome::Unavailable)?;
-        let head = version.id;
-        Ok(ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
-            record_id: history.record_id,
-            version_id: head,
-            content_hash: hash,
-            byte_len: namespace.getattr(ino).ok_or(Outcome::NotVisible)?.size,
-            metadata_hash: version.metadata_hash,
-        })
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "replays one journal entry phase by phase under a single buffers/namespace/history \
-                  lock set; splitting it would spread that guard ordering across functions"
-    )]
-    pub(super) fn recover_legacy_restores(
-        &self,
-        journal: &mut crate::record_transaction::RecordTransactionJournal,
-        namespace_path: &std::path::Path,
-    ) -> Result<(), crate::record_publisher::RecordPublisherError> {
-        let entries = journal.legacy_entries().cloned().collect::<Vec<_>>();
-        for entry in entries {
-            if entry.phase == Phase::BroadcastCommitted {
-                continue;
-            }
-            let failure = || {
-                crate::record_publisher::RecordPublisherError::ProjectionRejected(
-                    entry.receipt.record_id,
-                )
-            };
-            if self.restore_workspace().map_err(|_| failure())? != entry.receipt.workspace_id {
-                return Err(failure());
-            }
-            journal
-                .ensure_checked_intent_durable(entry.request.intent_id)
-                .map_err(|_| failure())?;
-            let (history_store, _) = self.history.as_ref().ok_or_else(failure)?;
-            let buffers = self.write_buffers.lock().map_err(|_| failure())?;
-            let mut namespace = self.namespace.lock().map_err(|_| failure())?;
-            let mut history = history_store.lease().map_err(|_| failure())?;
-            let ino = namespace.ensure_ino_for_record_id(entry.receipt.record_id);
-            if ino.is_some_and(|ino| buffers.contains_key(&ino)) {
-                return Err(failure());
-            }
-            let current = ino.and_then(|ino| {
-                history
-                    .snapshot(entry.receipt.record_id)
-                    .and_then(|state| Self::legacy_revision(&namespace, ino, &state).ok())
-            });
-            if journal.checked_phase(entry.request.intent_id) == Some(Phase::Prepared) {
-                journal
-                    .advance(
-                        entry.request.intent_id,
-                        Phase::ParticipantRecordsCommitted,
-                        None,
-                    )
-                    .map_err(|_| failure())?;
-            }
-            history
-                .append_batch(std::slice::from_ref(&entry.version))
-                .map_err(|_| failure())?;
-            if journal.checked_phase(entry.request.intent_id)
-                == Some(Phase::ParticipantRecordsCommitted)
-            {
-                journal
-                    .advance(entry.request.intent_id, Phase::HistoryCommitted, None)
-                    .map_err(|_| failure())?;
-            }
-            if journal.checked_phase(entry.request.intent_id) == Some(Phase::HistoryCommitted) {
-                let mut candidate = namespace.clone();
-                if let Some(ino) = ino {
-                    candidate
-                        .apply_incremental(&entry.namespace_delta)
-                        .map_err(|_| failure())?;
-                    let revision = current
-                        .filter(|revision| {
-                            *revision != entry.receipt.prior_revision
-                                && *revision != entry.receipt.restored_revision
-                        })
-                        .unwrap_or(entry.receipt.restored_revision);
-                    if candidate.content_revision_for(ino) != Some(revision)
-                        && !candidate.set_content_revision(
-                            ino,
-                            &revision,
-                            history
-                                .snapshot(entry.receipt.record_id)
-                                .and_then(|state| {
-                                    state
-                                        .versions
-                                        .into_iter()
-                                        .find(|v| v.id == revision.version_id)
-                                })
-                                .map_or(entry.version.timestamp_ms, |v| v.timestamp_ms),
-                        )
-                    {
-                        return Err(failure());
-                    }
-                }
-                crate::durable_backup::write(namespace_path, &candidate.save(), |bytes| {
-                    Namespace::from_bytes("legacy-restore-recovery", bytes).is_ok()
-                })
-                .map_err(|_| failure())?;
-                *namespace = candidate;
-                journal
-                    .advance(
-                        entry.request.intent_id,
-                        Phase::NamespaceCommitted,
-                        Some(entry.namespace_delta.clone()),
-                    )
-                    .map_err(|_| failure())?;
-            }
-            drop(history);
-            drop(namespace);
-            drop(buffers);
-            if journal.checked_phase(entry.request.intent_id) == Some(Phase::NamespaceCommitted) {
-                self.publish(entry.namespace_delta.clone());
-                journal
-                    .advance(
-                        entry.request.intent_id,
-                        Phase::BroadcastCommitted,
-                        Some(entry.namespace_delta),
-                    )
-                    .map_err(|_| failure())?;
-            }
-        }
-        Ok(())
+            })
+            .then_some(revision)
+            .ok_or(Outcome::Unavailable)
     }
 
     /// Review the current checked-history frontier of `ino` for a later restore.
@@ -388,7 +278,7 @@ impl QuickFS {
         self.replacement_transactions
             .as_ref()
             .ok_or(Outcome::Unavailable)?;
-        let publisher = self.record_publisher.as_ref();
+        let publisher = self.record_publisher.as_ref().ok_or(Outcome::Unavailable)?;
         let (history, _) = self.history.as_ref().ok_or(Outcome::Unavailable)?;
         let buffers = self
             .write_buffers
@@ -397,8 +287,8 @@ impl QuickFS {
         let namespace = self.namespace.lock().map_err(|_| Outcome::Unavailable)?;
         let history = history.lease().map_err(|_| Outcome::Unavailable)?;
         let repository = publisher
-            .map(|publisher| publisher.repository().lease())
-            .transpose()
+            .repository()
+            .lease()
             .map_err(|_| Outcome::Unavailable)?;
         let acl = self
             .enforcement
@@ -416,13 +306,19 @@ impl QuickFS {
         if buffers.contains_key(&ino) {
             return Err(Outcome::PendingWrites);
         }
-        Self::restore_codec(&namespace, ino)?;
-        self.review_locked(ino, &namespace, &history, repository.as_ref())
+        Self::restore_kind(&namespace, ino)?;
+        self.review_locked(ino, &namespace, &history, &repository)
     }
 
+    /// Restore `ino` as `request` asks. Content that is not local yet is
+    /// hydrated by a history job and the answer is `RecoveryPending`; the
+    /// same request, repeated once the job is ready, commits.
     pub fn checked_history_restore(&self, ino: u64, request: Request) -> Outcome {
         match self.restore_checked_inner(ino, request) {
-            Ok(value) | Err(value) => value,
+            Ok(Step::Settled(value)) | Err(value) => value,
+            Ok(Step::Hydrating) => Outcome::RecoveryPending {
+                intent_id: request.intent_id,
+            },
         }
     }
 
@@ -452,9 +348,19 @@ impl QuickFS {
                 &path,
                 Access::Read,
             )?;
-            let receipt = journal
-                .checked_receipt(intent_id)
-                .ok_or(Outcome::Unavailable)?;
+            let Some(receipt) = journal.checked_receipt(intent_id) else {
+                // Not admitted yet: its content may still be hydrating.
+                return Err(
+                    if matches!(
+                        self.history_job(ino, intent_id),
+                        Some(fs_protocol::files::HistoryJobStateV1::Hydrating { .. })
+                    ) {
+                        Outcome::RecoveryPending { intent_id }
+                    } else {
+                        Outcome::Unavailable
+                    },
+                );
+            };
             if namespace.record_id_for(ino) != Some(receipt.record_id)
                 || self.restore_workspace()? != receipt.workspace_id
             {
@@ -474,13 +380,19 @@ impl QuickFS {
     }
 
     pub(super) fn checked_restore_xattr(&self, ino: u64, value: &[u8]) -> Result<(), i32> {
-        if value.len() > collab_types::files::MAX_CHECKED_HISTORY_REQUEST_BYTES {
+        if value.len() > fs_protocol::files::MAX_CHECKED_HISTORY_REQUEST_BYTES {
             return Err(EINVAL);
         }
         let request: Request = serde_json::from_slice(value).map_err(|_| EINVAL)?;
         // EALREADY is the explicit successful no-op receipt for this transport;
         // applied/pending use the durable exact-ID result xattr. Never downgrade.
-        match self.checked_history_restore(ino, request) {
+        // EINPROGRESS: the selected content is hydrating in a history job;
+        // repeat the request once it is ready.
+        let outcome = match self.restore_checked_inner(ino, request) {
+            Ok(Step::Hydrating) => return Err(libc::EINPROGRESS),
+            Ok(Step::Settled(value)) | Err(value) => value,
+        };
+        match outcome {
             Outcome::Applied { .. } | Outcome::RecoveryPending { .. } => Ok(()),
             Outcome::Unchanged { .. } => Err(libc::EALREADY),
             Outcome::NotVisible => Err(ENOENT),
@@ -536,23 +448,22 @@ impl QuickFS {
             Ok(())
         };
         authorize()?;
-        if journal.checked_phase(request.intent_id) != Some(Phase::BroadcastCommitted) {
-            if let (Some(publisher), Some((history, _))) = (&self.record_publisher, &self.history) {
-                let sync = self.sync.clone();
-                let _ = publisher.recover_replacement_transactions(
-                    &mut journal,
-                    history,
-                    &self.namespace,
-                    &runtime.namespace_path,
-                    move |delta| {
-                        if let Some(sync) = &sync {
-                            sync.broadcast_delta(delta);
-                        }
-                        Ok(())
-                    },
-                );
-            }
-            let _ = self.recover_legacy_restores(&mut journal, &runtime.namespace_path);
+        if journal.checked_phase(request.intent_id) != Some(Phase::BroadcastCommitted)
+            && let (Some(publisher), Some((history, _))) = (&self.record_publisher, &self.history)
+        {
+            let sync = self.sync.clone();
+            let _ = publisher.recover_replacement_transactions(
+                &mut journal,
+                history,
+                &self.namespace,
+                &runtime.namespace_path,
+                move |delta| {
+                    if let Some(sync) = &sync {
+                        sync.broadcast_delta(delta);
+                    }
+                    Ok(())
+                },
+            );
         }
         authorize()?;
         Ok(Some(
@@ -570,7 +481,7 @@ impl QuickFS {
         ))
     }
 
-    fn project_checked_availability(&self, record_id: collab_types::FileRecordId) {
+    fn project_checked_availability(&self, record_id: fs_protocol::FileRecordId) {
         let Some(registry) = &self.availability else {
             return;
         };
@@ -610,7 +521,7 @@ impl QuickFS {
         runtime: &super::ReplacementTransactionRuntime,
         ino: u64,
         request: Request,
-    ) -> Result<(collab_types::FileVersionId, Option<uuid::Uuid>), Outcome> {
+    ) -> Result<(fs_protocol::FileVersionId, Option<uuid::Uuid>), Outcome> {
         let journal = runtime.journal.lock().map_err(|_| Outcome::Unavailable)?;
         Ok(match request.operation {
             Operation::Restore { version_id } => (version_id, None),
@@ -655,7 +566,7 @@ impl QuickFS {
                   namespace, history, repository, ACL) are acquired and released in a fixed order; \
                   splitting it would scatter that ordering"
     )]
-    fn restore_checked_inner(&self, ino: u64, request: Request) -> Result<Outcome, Outcome> {
+    fn restore_checked_inner(&self, ino: u64, request: Request) -> Result<Step, Outcome> {
         request.validate().map_err(|_| Outcome::InvalidRequest)?;
         self.check_access(ino, Access::Write).map_err(|errno| {
             if errno == EROFS {
@@ -668,7 +579,7 @@ impl QuickFS {
             .replacement_transactions
             .as_ref()
             .ok_or(Outcome::Unavailable)?;
-        let publisher = self.record_publisher.as_ref();
+        let publisher = self.record_publisher.as_ref().ok_or(Outcome::Unavailable)?;
         let (history_store, actor) = self.history.as_ref().ok_or(Outcome::Unavailable)?;
         if self.ns().record_id_for(ino) != Some(request.review.record_id)
             || self.restore_workspace()? != request.review.workspace_id
@@ -682,7 +593,7 @@ impl QuickFS {
             if matches!(outcome, Outcome::Applied { .. }) {
                 self.project_checked_availability(request.review.record_id);
             }
-            return Ok(outcome);
+            return Ok(Step::Settled(outcome));
         }
         let (selected_id, compensates) = self.restore_selection(runtime, ino, request)?;
         if request.review.mount_lifetime != self.mount_lifetime {
@@ -697,43 +608,66 @@ impl QuickFS {
                     .find(|value| value.id == selected_id)
             })
             .ok_or(Outcome::InvalidRequest)?;
-        let data = if let Some(hash) = selected.content_hash {
-            let hydrator = self.hydrator.clone();
-            let handle = hydrator.runtime_handle.clone();
-            tokio::task::block_in_place(|| {
-                handle.block_on(hydrator.read(Hash::from(hash.0), 0, u64::MAX))
-            })
-            .map_err(|_| Outcome::Unavailable)?
-        } else {
-            Vec::new()
-        };
+        let kind = Self::restore_kind(&self.ns(), ino)?;
+        // The selected version must be local before anything commits; a
+        // serialized document also merges into the current one. What is
+        // missing hydrates in a history job, never on this FUSE worker.
+        let mut needed = vec![selected.content_hash];
+        if kind.is_serialized_document() {
+            needed.push(
+                self.ns()
+                    .hash_for(ino)
+                    .map(|hash| ContentHash(*hash.as_bytes())),
+            );
+        }
+        match self.history_content_local(ino, request.intent_id, &needed) {
+            Ok(()) => {}
+            Err(libc::EINPROGRESS) => return Ok(Step::Hydrating),
+            // A job for this intent is still fetching other content: the
+            // current document changed under it.
+            Err(EBUSY) => return Err(Outcome::ReviewRequired),
+            Err(_) => return Err(Outcome::Unavailable),
+        }
         #[cfg(test)]
         test_pause(request.intent_id, TestPause::Hydrated);
-        let current_hash = self.ns().hash_for(ino);
-        let (current_document, current_len) = if let Some(hash) =
-            current_hash.filter(|hash| Some(ContentHash(*hash.as_bytes())) != selected.content_hash)
-        {
-            let hydrator = self.hydrator.clone();
-            let handle = hydrator.runtime_handle.clone();
-            let bytes =
-                tokio::task::block_in_place(|| handle.block_on(hydrator.read(hash, 0, u64::MAX)))
-                    .map_err(|_| Outcome::Unavailable)?;
-            (qdoc::Document::load(&bytes).is_ok(), bytes.len() as u64)
-        } else {
+        let (current_hash, current_size) = {
+            let namespace = self.ns();
             (
-                false,
-                if current_hash.is_some() {
-                    data.len() as u64
-                } else {
-                    0
-                },
+                namespace.hash_for(ino),
+                namespace.getattr(ino).map(|attr| attr.size),
             )
         };
-        let serialized_document = current_document || qdoc::Document::load(&data).is_ok();
+        let current_len = match current_hash {
+            Some(_) => current_size.ok_or(Outcome::NotVisible)?,
+            None => 0,
+        };
+        // The bytes the restore makes current. Opaque content is the selected
+        // version's own, already in the store: it is committed by hash and
+        // never read. A serialized document is the current document plus a
+        // change reaching the selected state, written to the store before
+        // any lock is taken.
+        let (restored_hash, restored_len) = if kind.is_serialized_document() {
+            let data = self
+                .local_version_bytes(selected.content_hash)
+                .ok_or(Outcome::Unavailable)?;
+            let restored = self
+                .restored_document(current_hash, selected.content_hash, &data)
+                .map_err(DocumentRestoreError::outcome)?;
+            let hash = self
+                .write_content_blocking(&restored)
+                .map_err(|_| Outcome::Unavailable)?
+                .map(|hash| ContentHash(*hash.as_bytes()));
+            (hash, restored.len() as u64)
+        } else {
+            (
+                selected.content_hash,
+                self.local_version_len(selected.content_hash)
+                    .ok_or(Outcome::Unavailable)?,
+            )
+        };
         let mut journal = runtime.journal.lock().map_err(|_| Outcome::Unavailable)?;
         let _publication = publisher
-            .map(|publisher| publisher.publication_lease())
-            .transpose()
+            .publication_lease()
             .map_err(|_| Outcome::Unavailable)?;
         #[cfg(test)]
         test_pause(request.intent_id, TestPause::BeforeBuffers);
@@ -744,8 +678,8 @@ impl QuickFS {
         let mut namespace = self.namespace.lock().map_err(|_| Outcome::Unavailable)?;
         let mut history = history_store.lease().map_err(|_| Outcome::Unavailable)?;
         let mut repository = publisher
-            .map(|publisher| publisher.repository().lease())
-            .transpose()
+            .repository()
+            .lease()
             .map_err(|_| Outcome::Unavailable)?;
         let acl = self
             .enforcement
@@ -763,7 +697,7 @@ impl QuickFS {
             if admitted != request {
                 return Err(Outcome::InvalidRequest);
             }
-            return Ok(
+            return Ok(Step::Settled(
                 if journal.checked_phase(request.intent_id) == Some(Phase::BroadcastCommitted) {
                     Outcome::Applied {
                         receipt: journal
@@ -775,7 +709,7 @@ impl QuickFS {
                         intent_id: request.intent_id,
                     }
                 },
-            );
+            ));
         }
         if journal.get(request.intent_id).is_some() {
             return Err(Outcome::InvalidRequest);
@@ -783,13 +717,10 @@ impl QuickFS {
         if buffers.contains_key(&ino) {
             return Err(Outcome::PendingWrites);
         }
-        Self::restore_codec(&namespace, ino)?;
-        if serialized_document {
-            return Err(Outcome::UnsupportedOwner {
-                mapping: "serialized qdoc content: no checked content-owner restore route".into(),
-            });
+        if Self::restore_kind(&namespace, ino)? != kind {
+            return Err(Outcome::ReviewRequired);
         }
-        let current_review = self.review_locked(ino, &namespace, &history, repository.as_ref())?;
+        let current_review = self.review_locked(ino, &namespace, &history, &repository)?;
         if current_review != request.review {
             return Err(Outcome::ReviewRequired);
         }
@@ -799,20 +730,20 @@ impl QuickFS {
         if !state.versions.iter().any(|value| value == &selected) {
             return Err(Outcome::ReviewRequired);
         }
-        let prior = Self::legacy_revision(&namespace, ino, &state)?;
+        let prior = Self::observed_revision(&namespace, ino, &state)?;
         if namespace.hash_for(ino) != current_hash {
             return Err(Outcome::ReviewRequired);
         }
         if prior.byte_len != current_len {
             return Err(Outcome::Unavailable);
         }
-        if prior.content_hash == selected.content_hash && prior.byte_len == data.len() as u64 {
-            return Ok(Outcome::Unchanged {
+        if prior.content_hash == restored_hash && prior.byte_len == restored_len {
+            return Ok(Step::Settled(Outcome::Unchanged {
                 intent_id: request.intent_id,
                 review: current_review,
-            });
+            }));
         }
-        if state.heads.len() > collab_types::files::MAX_VERSION_PARENTS {
+        if state.heads.len() > fs_protocol::files::MAX_VERSION_PARENTS {
             return Err(Outcome::Unavailable);
         }
         if journal.retained_count() >= crate::record_transaction::MAX_RECORD_TRANSACTION_ENTRIES {
@@ -831,7 +762,7 @@ impl QuickFS {
         let metadata = VersionMetadataDigest {
             path: Some(path.clone()),
             kind: 2,
-            byte_len: data.len() as u64,
+            byte_len: restored_len,
             deleted: false,
         };
         let metadata_hash = ContentHash(
@@ -839,21 +770,21 @@ impl QuickFS {
                 .as_bytes(),
         );
         let proposed = FileVersionV1 {
-            id: collab_types::FileVersionId::new(),
+            id: fs_protocol::FileVersionId::new(),
             record_id: request.review.record_id,
             parents: state.heads,
             actor: *actor,
             timestamp_ms: timestamp,
-            content_hash: selected.content_hash,
+            content_hash: restored_hash,
             metadata_hash,
             provenance: FileProvenance::Restore { from: selected_id },
         };
         let revision = ContentRevisionV1 {
-            schema_version: collab_types::CONTENT_REVISION_VERSION,
+            schema_version: fs_protocol::CONTENT_REVISION_VERSION,
             record_id: proposed.record_id,
             version_id: proposed.id,
             content_hash: proposed.content_hash,
-            byte_len: data.len() as u64,
+            byte_len: restored_len,
             metadata_hash,
         };
         let mut participant = FileMutationParticipant {
@@ -885,38 +816,26 @@ impl QuickFS {
             record_id: proposed.record_id,
             selected_version: selected_id,
             prior_revision: prior,
-            prior_reference: if namespace.content_revision_for(ino).is_some() {
-                collab_types::files::FileRestorePriorReferenceV1::ObservedRevision
-            } else {
-                collab_types::files::FileRestorePriorReferenceV1::LegacyContentRepresentative
-            },
             restored_revision: revision,
             compensates,
         };
-        let mut entry =
-            if let (Some(publisher), Some(repository)) = (publisher, repository.as_ref()) {
-                let manifest = FileMutationTransactionManifest {
-                    schema_version: collab_types::files::FILE_MUTATION_TRANSACTION_VERSION_V3,
-                    transaction_id: request.intent_id,
-                    workspace_id: key.workspace_id,
-                    actor: *actor,
-                    timestamp_ms: timestamp,
-                    operation: FileMutationOperation::RestoreContent {
-                        request,
-                        selected_version: selected_id,
-                        prior_revision: prior,
-                        compensates,
-                    },
-                    participants: vec![participant],
-                };
-                Some(
-                    publisher
-                        .sign_checked_restore(manifest, repository.highest_sequence(key, actor))
-                        .map_err(|_| Outcome::Unavailable)?,
-                )
-            } else {
-                None
-            };
+        let manifest = FileMutationTransactionManifest {
+            schema_version: fs_protocol::files::FILE_MUTATION_TRANSACTION_VERSION_V3,
+            transaction_id: request.intent_id,
+            workspace_id: key.workspace_id,
+            actor: *actor,
+            timestamp_ms: timestamp,
+            operation: FileMutationOperation::RestoreContent {
+                request,
+                selected_version: selected_id,
+                prior_revision: prior,
+                compensates,
+            },
+            participants: vec![participant],
+        };
+        let mut entry = publisher
+            .sign_checked_restore(manifest, repository.highest_sequence(key, actor))
+            .map_err(|_| Outcome::Unavailable)?;
         let mut namespace_candidate = namespace.clone();
         let _ = namespace_candidate.save_incremental();
         let projection_actor = namespace_candidate.begin_restore_projection(
@@ -924,59 +843,28 @@ impl QuickFS {
             request.review.record_id,
             request.intent_id,
         );
-        let delta = if let Some(entry) = &entry {
-            namespace_candidate
-                .apply_mutation_transaction(&entry.transaction)
-                .map_err(|_| Outcome::Unavailable)?
-                .ok_or(Outcome::Unavailable)?
-        } else {
-            if !namespace_candidate.set_content_revision(ino, &revision, timestamp) {
-                return Err(Outcome::Unavailable);
-            }
-            namespace_candidate.save_incremental()
-        };
+        let delta = namespace_candidate
+            .apply_mutation_transaction(&entry.transaction)
+            .map_err(|_| Outcome::Unavailable)?
+            .ok_or(Outcome::Unavailable)?;
         namespace_candidate.end_restore_projection(projection_actor);
-        let legacy = crate::record_transaction::LegacyRestoreEntry {
-            schema_version: 2,
-            request,
-            receipt: result_receipt.clone(),
-            version: proposed,
-            phase: Phase::Prepared,
-            namespace_delta: delta.clone(),
-        };
-        if entry.is_none() {
-            legacy.validate().map_err(|_| Outcome::Unavailable)?;
-        }
-        if let Some(entry) = entry.as_mut() {
-            entry.namespace_delta = Some(delta.clone());
-        }
-        let encoded_len = match entry.as_ref() {
-            Some(value) => serde_json::to_vec(value),
-            None => serde_json::to_vec(&legacy),
-        }
-        .map_err(|_| Outcome::Unavailable)?
-        .len();
+        entry.namespace_delta = Some(delta.clone());
+        let encoded_len = serde_json::to_vec(&entry)
+            .map_err(|_| Outcome::Unavailable)?
+            .len();
         // Reserve enough serialized space for the longest subsequent phase name.
         if encoded_len.saturating_add(64)
             > crate::record_transaction::MAX_RECORD_TRANSACTION_ENTRY_BYTES
         {
             return Err(Outcome::Unavailable);
         }
-        let candidate = if let (Some(repository), Some(entry), Some(publisher)) =
-            (repository.as_ref(), entry.as_ref(), publisher)
-        {
-            Some(
-                repository
-                    .prepare(
-                        &journal,
-                        entry,
-                        &publisher.local_authorizer(request.review.record_id),
-                    )
-                    .map_err(|_| Outcome::Unavailable)?,
+        let candidate = repository
+            .prepare(
+                &journal,
+                &entry,
+                &publisher.local_authorizer(request.review.record_id),
             )
-        } else {
-            None
-        };
+            .map_err(|_| Outcome::Unavailable)?;
         #[cfg(test)]
         test_pause(request.intent_id, TestPause::Admission);
         // Last authority decision, including grant expiry, precedes the first
@@ -985,26 +873,15 @@ impl QuickFS {
         let pending = || Outcome::RecoveryPending {
             intent_id: request.intent_id,
         };
-        if let (Some(repository), Some(candidate)) = (repository.as_mut(), candidate) {
-            repository.commit(&mut journal, candidate, |point| {
-                #[cfg(test)]
-                match point {
-                    crate::record_repository::RecordTransactionCheckpoint::PreparedJournalDurable => test_fault(request.intent_id, TestFault::Prepared)?,
-                    crate::record_repository::RecordTransactionCheckpoint::ParticipantRecordDurable { .. } => test_fault(request.intent_id, TestFault::Participant)?,
-                    crate::record_repository::RecordTransactionCheckpoint::ParticipantPhaseDurable => {}
-                }
-                let _ = point; Ok(())
-            }).map_err(|_| pending())?;
-        } else {
-            journal
-                .insert_legacy_restore(legacy)
-                .map_err(|_| pending())?;
+        repository.commit(&mut journal, candidate, |point| {
             #[cfg(test)]
-            test_fault(request.intent_id, TestFault::Prepared).map_err(|_| pending())?;
-            journal
-                .advance(request.intent_id, Phase::ParticipantRecordsCommitted, None)
-                .map_err(|_| pending())?;
-        }
+            match point {
+                crate::record_repository::RecordTransactionCheckpoint::PreparedJournalDurable => test_fault(request.intent_id, TestFault::Prepared)?,
+                crate::record_repository::RecordTransactionCheckpoint::ParticipantRecordDurable { .. } => test_fault(request.intent_id, TestFault::Participant)?,
+                crate::record_repository::RecordTransactionCheckpoint::ParticipantPhaseDurable => {}
+            }
+            let _ = point; Ok(())
+        }).map_err(|_| pending())?;
         drop(acl);
         drop(repository);
         #[cfg(test)]
@@ -1047,10 +924,23 @@ impl QuickFS {
             .advance(request.intent_id, Phase::BroadcastCommitted, Some(delta))
             .map_err(|_| pending())?;
         drop(journal);
-        Ok(Outcome::Applied {
+        Ok(Step::Settled(Outcome::Applied {
             receipt: result_receipt,
-        })
+        }))
     }
+}
+
+/// How far one pass of a checked restore got.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "lives only on the stack of one restore call, beside the same wire answer the \
+              error side already returns by value"
+)]
+enum Step {
+    /// The final answer for this pass.
+    Settled(Outcome),
+    /// The content is hydrating in a history job; nothing was admitted.
+    Hydrating,
 }
 
 #[cfg(test)]

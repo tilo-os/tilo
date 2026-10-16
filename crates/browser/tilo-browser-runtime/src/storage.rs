@@ -49,6 +49,57 @@ enum DiskKey {
     },
 }
 
+/// The exact Settings personal-record key for a public root identity.
+/// Does not open or create a record, storage lease, or certificate.
+///
+/// # Errors
+/// Refuses an invalid root identity or unencodable storage key.
+#[wasm_bindgen]
+pub fn browser_accounts_key(root: &str) -> Result<String, JsValue> {
+    let person_room =
+        collab_types::person_room_of(root).ok_or_else(|| error("invalid root identity"))?;
+    let kind = ui::record::RecordKind::new("tilo.accounts");
+    let key = DiskKey::Record {
+        package: accounts::person::ACCOUNTS_OWNER.into(),
+        workspace: person_room.to_string(),
+        record: ui::record::person::record_id(&kind).storage_key(),
+    };
+    serde_json::to_string(&key).map_err(error)
+}
+
+/// Read public picker metadata from an existing Settings account document.
+/// The caller reads only the key returned by `browser_accounts_key`; no
+/// record initialization, key custody, or credential store is involved.
+///
+/// # Errors
+/// Refuses invalid identity, oversized or malformed documents, and failed projection.
+#[wasm_bindgen]
+pub fn project_browser_accounts(root: &str, origin: &str, bytes: &[u8]) -> Result<String, JsValue> {
+    if bytes.len() > 1024 * 1024 {
+        return Err(error("account projection exceeds its read budget"));
+    }
+    browser_accounts_key(root)?;
+    let doc = ui::automerge::AutoCommit::load_with_options(
+        bytes,
+        ui::automerge::LoadOptions::new().on_partial_load(ui::automerge::OnPartialLoad::Error),
+    )
+    .map_err(error)?;
+    let person_room =
+        collab_types::person_room_of(root).ok_or_else(|| error("invalid root identity"))?;
+    let kind = ui::record::RecordKind::new("tilo.accounts");
+    let id = ui::record::person::record_id(&kind);
+    if ui::record::identity(&doc).is_none_or(|found| found.id != id || found.kind != kind)
+        || ui::record::home(&doc).as_deref() != Some(person_room.to_string().as_str())
+    {
+        return Err(error(
+            "account document belongs to another identity or record",
+        ));
+    }
+    let accounts = accounts::person::PersonAccounts::browser_accounts_from_doc(&doc, root, origin)
+        .map_err(error)?;
+    serde_json::to_string(&accounts).map_err(error)
+}
+
 impl From<&StorageKey> for DiskKey {
     fn from(key: &StorageKey) -> Self {
         match key.clone() {

@@ -20,6 +20,9 @@ mod common;
 mod anti_entropy_recovers_lost_delta;
 #[path = "auth_reject.rs"]
 mod auth_reject;
+#[cfg(feature = "agents")]
+#[path = "bridged_avatar.rs"]
+mod bridged_avatar;
 #[path = "browser_transport.rs"]
 mod browser_transport;
 #[path = "client_owns_its_endpoint.rs"]
@@ -28,6 +31,8 @@ mod client_owns_its_endpoint;
 mod coedit_through_host;
 #[path = "commit_dedup.rs"]
 mod commit_dedup;
+#[path = "compute_content.rs"]
+mod compute_content;
 #[path = "compute_session.rs"]
 mod compute_session;
 #[path = "cross_user_workspace_host.rs"]
@@ -38,6 +43,11 @@ mod device_certification;
 mod durable_host_restart;
 #[path = "end_to_end_sync.rs"]
 mod end_to_end_sync;
+#[cfg(target_os = "linux")]
+#[path = "environment_from_a_device.rs"]
+mod environment_from_a_device;
+#[path = "environment_sessions.rs"]
+mod environment_sessions;
 #[path = "federation_cross_user_reject.rs"]
 mod federation_cross_user_reject;
 #[path = "federation_echo_suppression.rs"]
@@ -54,20 +64,41 @@ mod federation_workspace_shard;
 mod governed_rooms;
 #[path = "governed_workspace_access.rs"]
 mod governed_workspace_access;
+#[path = "hosting_cost.rs"]
+mod hosting_cost;
 #[path = "interactive_workspace_owner.rs"]
 mod interactive_workspace_owner;
+#[cfg(target_os = "linux")]
+#[path = "legacy_on_kvm.rs"]
+mod legacy_on_kvm;
 #[path = "live_plane.rs"]
 mod live_plane;
 #[path = "multi_host.rs"]
 mod multi_host;
+#[path = "offloadable_action.rs"]
+mod offloadable_action;
+#[cfg(unix)]
+#[path = "out_of_band_join_modes.rs"]
+mod out_of_band_join_modes;
+#[cfg(feature = "agents")]
+#[path = "persistent_room.rs"]
+mod persistent_room;
 #[path = "personal_device_process.rs"]
 mod personal_device_process;
+#[path = "presence_coalescing.rs"]
+mod presence_coalescing;
+#[path = "record_content_routing.rs"]
+mod record_content_routing;
 #[path = "relay_daemon.rs"]
 mod relay_daemon;
 #[path = "remote_action_routing.rs"]
 mod remote_action_routing;
+#[path = "room_admission.rs"]
+mod room_admission;
 #[path = "store_and_forward.rs"]
 mod store_and_forward;
+#[path = "tenant_isolation.rs"]
+mod tenant_isolation;
 
 #[path = "additional_protocol.rs"]
 mod additional_protocol;

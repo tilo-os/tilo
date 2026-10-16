@@ -1,0 +1,74 @@
+# Written by `tilo-app surface`; review changes like an API change.
+
+[[resources]]
+kind = "diffmerge.session"
+label = "Diff & Merge"
+version = 1
+fields = [
+  { path = "comparison", type = "Option<Comparison>", readonly = true, stored = "record" },
+  { path = "comparison.left_label", type = "Atom" },
+  { path = "comparison.left", type = "Atom" },
+  { path = "comparison.right_label", type = "Atom" },
+  { path = "comparison.right", type = "Atom" },
+  { path = "merge", type = "Option<MergeInputs>", readonly = true, stored = "record" },
+  { path = "merge.base_label", type = "Atom" },
+  { path = "merge.base", type = "Atom" },
+  { path = "merge.ours_label", type = "Atom" },
+  { path = "merge.ours", type = "Atom" },
+  { path = "merge.theirs_label", type = "Atom" },
+  { path = "merge.theirs", type = "Atom" },
+  { path = "merged", type = "String" },
+  { path = "resolutions", type = "BTreeMap<String, HunkChoice>", readonly = true },
+]
+
+[[resources.verbs]]
+id = "open-comparison"
+kind = "undoable"
+params = [
+  { name = "left_label", required = true, schema = { type = "string" } },
+  { name = "left", required = true, schema = { type = "string" } },
+  { name = "right_label", required = true, schema = { type = "string" } },
+  { name = "right", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "open-merge"
+kind = "undoable"
+params = [
+  { name = "base_label", required = true, schema = { type = "string" } },
+  { name = "base", required = true, schema = { type = "string" } },
+  { name = "ours_label", required = true, schema = { type = "string" } },
+  { name = "ours", required = true, schema = { type = "string" } },
+  { name = "theirs_label", required = true, schema = { type = "string" } },
+  { name = "theirs", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
+id = "take-ours"
+kind = "undoable"
+params = [
+  { name = "hunk", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "take-theirs"
+kind = "undoable"
+params = [
+  { name = "hunk", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "take-both"
+kind = "undoable"
+params = [
+  { name = "hunk", required = true, schema = { type = "integer", minimum = 0 } },
+]
+
+[[resources.verbs]]
+id = "resolve"
+kind = "undoable"
+params = [
+  { name = "hunk", required = true, schema = { type = "integer", minimum = 0 } },
+  { name = "text", required = true, schema = { type = "string" } },
+]
+

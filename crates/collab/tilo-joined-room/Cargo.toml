@@ -8,12 +8,18 @@ description = "A device's enrolled replicas of rooms governed by a remote durabl
 
 [features]
 # Fixtures and internals the desktop session's own owner tests assert on.
-test-support = ["dep:iroh-base", "dep:uuid"]
+test-support = ["dep:iroh-base"]
 
 [dependencies]
+tilo-action-policy = { path = "../action-policy" }
 # Writes the file-backed store: owner-only, crash-safe replacement.
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-content = { path = "../../system/content" }
 automerge.workspace = true
+# Byte fields of the owner record are base64 text in its JSON file.
+base64.workspace = true
+# Scoped owner admission decodes untrusted app mutations only in workers.
+tilo-automerge-isolate.workspace = true
 blake3.workspace = true
 collab-types = { path = "../collab-types" }
 ed25519-dalek.workspace = true
@@ -31,22 +37,37 @@ tilo-desktop-model = { path = "../../session/desktop-model" }
 # The device custody an enrollment presents to the issuing host.
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-peer-state = { path = "../tilo-peer-state" }
-# The join client an enrollment redeems its invitation over.
-tilo-relay = { path = "../../hosting/tilo-relay" }
+# The neighbour wire messages sessions publish and receive.
+neighbour-wire = { path = "../neighbour-wire" }
+# The owner commit requests a joined replica commits through its owner.
+tilo-owner-commit = { path = "../owner-commit" }
+tilo-actions = { path = "../actions" }
+# The join client an enrollment redeems its invitation over, and the relay
+# session a joined room syncs through.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../tilo-user-identity" }
-tokio = { workspace = true, features = ["time"] }
+# The relay voice carrier a call participation authorizes.
+tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
 iroh-base = { workspace = true, features = ["key"], optional = true }
-uuid = { workspace = true, optional = true }
+uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-# Admits untrusted automerge bytes in isolated workers, as in production.
-tilo-automerge-isolate.workspace = true
-tilo-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
+# The governed-room acceptance test runs against a real relay.
+tilo-relay = { path = "../../hosting/tilo-relay" }
+tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+# Seals the writes a keyless owner keeps, as an SDK app and its key holder do.
+channel-crypto = { path = "../channel-crypto" }
 iroh-base = { workspace = true, features = ["key"] }
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
+# Readers in the tests take committed changes in as the SDK's do.
+tilo-automerge.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid.workspace = true
 
 [lints]

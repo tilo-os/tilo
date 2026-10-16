@@ -18,9 +18,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -34,10 +32,12 @@ use shell::compositor::state::{ClientState, State};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 
-use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, protocol::wl_registry};
+use wayland_client::{
+    Connection, Dispatch, Proxy, QueueHandle, delegate_noop, protocol::wl_registry,
+};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_dmabuf_feedback_v1::{self, ZwpLinuxDmabufFeedbackV1},
-    zwp_linux_dmabuf_v1::{self, ZwpLinuxDmabufV1},
+    zwp_linux_dmabuf_v1::ZwpLinuxDmabufV1,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,17 +84,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
     }
 }
 
-impl Dispatch<ZwpLinuxDmabufV1, ()> for ClientAppState {
-    fn event(
-        _: &mut Self,
-        _: &ZwpLinuxDmabufV1,
-        _: zwp_linux_dmabuf_v1::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-    }
-}
+delegate_noop!(ClientAppState: ignore ZwpLinuxDmabufV1);
 
 impl Dispatch<ZwpLinuxDmabufFeedbackV1, ()> for ClientAppState {
     fn event(
@@ -233,10 +223,6 @@ fn walk() -> Option<(ClientAppState, std::path::PathBuf)> {
 }
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
 fn dmabuf_feedback_advertises_the_render_node_and_compositable_formats() {
     // Phase `dmabuf_global_is_advertised_with_feedback`.
     // Version 3 carries no feedback and therefore no device, and Mesa
@@ -319,21 +305,16 @@ fn dmabuf_feedback_advertises_the_render_node_and_compositable_formats() {
                 let fourcc = Fourcc::try_from(entry.fourcc).unwrap_or_else(|_| {
                     panic!("advertised an unrecognised FourCC 0x{:08x}", entry.fourcc)
                 });
-                // Single-plane RGBA under LINEAR is the whole importable set — see
-                // `foreign::validate_importable`, the gate a client buffer passes.
+                // A buffer in an advertised layout must be one the compositor
+                // draws: the CPU reads it linear, or the presenting GPU was
+                // confirmed to sample it (the probe the advertised tiled
+                // layouts come from).
+                let modifier = Modifier::from(entry.modifier);
                 assert!(
-                    matches!(
-                        fourcc,
-                        Fourcc::Argb8888 | Fourcc::Xrgb8888 | Fourcc::Abgr8888 | Fourcc::Xbgr8888
-                    ),
-                    "advertised {fourcc:?}, which the tile importer cannot composite; \
-                     a client that picks it renders into an error tile"
-                );
-                assert_eq!(
-                    Modifier::from(entry.modifier),
-                    Modifier::Linear,
-                    "advertised modifier 0x{:x} for {fourcc:?}; the importer only handles \
-                     LINEAR, so a client using this would produce unreadable buffers",
+                    shell::shell::foreign::composites(fourcc, modifier)
+                        || shell::shell::gpu_frames::sampleable(fourcc, modifier),
+                    "advertised {fourcc:?} with modifier 0x{:x}, which the tile importer \
+                     cannot composite; a client that picks it renders into an error tile",
                     entry.modifier
                 );
             }

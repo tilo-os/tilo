@@ -1,18 +1,8 @@
 //! The perf harness runs a scripted scenario against an app's **real** five
 //! passes and produces per-pass frame-time statistics — the production path,
 //! not a mock. These tests drive [`tilo_ui::profiling::run_scenario_on`], which
-//! stands up the same headless [`tilo_ui::headless::Driver`] the persistence
+//! stands up the same headless [`tilo_ui::headless::FrameHarness`] the persistence
 //! harness uses.
-
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
 
 use tilo_ui::profiling::{FRAME_BUDGET_US, PerfScenario, PerfStep, run_scenario_on};
 use tilo_ui::state::State;
@@ -36,7 +26,7 @@ fn list_app(rows: usize) -> (State, Box<dyn Widget>) {
 fn profiling_collects_per_pass_stats_and_reports_them() {
     // Case `scroll_scenario_produces_per_pass_stats`.
     // A scroll scenario collects one per-pass timing per frame and aggregates
-    // them into a stats report on the real Driver path.
+    // them into a stats report on the real FrameHarness path.
     {
         let count = 40;
         let (state, root) = list_app(150);

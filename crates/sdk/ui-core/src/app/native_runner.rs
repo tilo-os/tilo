@@ -8,14 +8,44 @@
 
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tilo_lock::MutexRecover as _;
 
 #[cfg(target_os = "linux")]
 mod linux_header;
+mod private_text_input;
+#[cfg(any(windows, target_os = "linux"))]
+pub(super) mod startup;
 
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
 #[cfg(target_os = "android")]
 type PrimaryA11yAdapter = crate::accesskit_android_adapter::Adapter;
+
+#[cfg(not(target_os = "android"))]
+fn create_accessibility_adapter(
+    event_loop: &ActiveEventLoop,
+    window: &Window,
+    proxy: EventLoopProxy<UserEvent>,
+) -> Option<PrimaryA11yAdapter> {
+    Some(PrimaryA11yAdapter::with_event_loop_proxy(
+        event_loop, window, proxy,
+    ))
+}
+
+#[cfg(target_os = "android")]
+fn create_accessibility_adapter(
+    event_loop: &ActiveEventLoop,
+    window: &Window,
+    proxy: EventLoopProxy<UserEvent>,
+) -> Option<PrimaryA11yAdapter> {
+    match PrimaryA11yAdapter::new(event_loop, window, proxy) {
+        Ok(adapter) => Some(adapter),
+        Err(error) => {
+            crate::diag!("tilo: no TalkBack access: {error}");
+            None
+        }
+    }
+}
 
 /// wgpu `RenderContext`, `RenderSurface`, and `vello::Renderer` live on a
 /// dedicated worker thread (see [`crate::render_thread`]) — this struct
@@ -25,6 +55,7 @@ struct AppHandler {
     animation_schedule: animation_schedule::AnimationSchedule,
     native_scenario: Option<crate::native_scenario::Scenario>,
     native_input_ids: Vec<usize>,
+    physical_input_trace: Option<crate::physical_input_trace::Trace>,
     native_input_origin: Option<Instant>,
     native_input_pointer_passthrough: bool,
     native_input_route_isolation: bool,
@@ -54,7 +85,21 @@ struct AppHandler {
     a11y_proxy: EventLoopProxy<UserEvent>,
     /// Last text-input-v3 state applied to winit. Edge-triggering this avoids
     /// emitting a protocol commit on every idle loop.
-    ime_state: Option<ImeWindowState>,
+    ime_state: Option<NativeImeWindowState>,
+    /// A real preedit belongs to the primary Wayland text-input resource.
+    /// During an exact compositor-authorised Float handoff, keep that
+    /// protocol resource active and route only its keyboard/IME events to the
+    /// same retained editor now painted in the secondary surface.
+    primary_preedit_active: bool,
+    /// Winit emits an empty preedit before a commit from the same Wayland
+    /// `done` batch. Retire at loop idle only if no commit followed it.
+    primary_preedit_clear_pending: bool,
+    floating_ime_continuation: Option<String>,
+    /// Reverse counterpart: an exact suspended child keeps the real
+    /// text-input protocol until its live composition commits, while its
+    /// keyboard/IME events reach the reattached primary editor.
+    floating_ime_return_continuation: Option<String>,
+    private_input: private_text_input::Bridge,
     #[cfg(target_os = "android")]
     text_input: super::android_text_input::TextInputSession,
     /// The field with the keyboard was touched since the last IME sync.
@@ -62,6 +107,15 @@ struct AppHandler {
     text_input_touched: bool,
     primary_frames_sent: u64,
     primary_frames_completed: u64,
+    /// The last submitted frame painted something over the widgets that
+    /// their damage does not describe; the next frame must erase it.
+    top_layer_drawn: bool,
+    /// The collaborators' marks painted over the widgets, as last submitted,
+    /// so a frame damages only the marks that changed.
+    presence_layer: crate::presence::PresenceLayer,
+    /// Bounds what the presence layer draws outside its parts, so scrolls
+    /// beneath peer marks still copy ([`peer_marks`]).
+    mark_bounds: crate::scene_parts::DrawBounds,
     last_primary_frame_presented: u64,
     primary_retry: crate::render_thread::retry::RenderRetryState,
     /// `None` waits for the next primary submission; `Some(sequence)` waits
@@ -105,6 +159,347 @@ struct AppHandler {
     /// Lives for the event loop so an idle app still hears Theme Studio
     /// and compositor appearance writes.
     _settings_watch: Option<settings_store::watch::SettingsWatch>,
+}
+
+#[cfg(test)]
+mod floating_source_focus_tests {
+    use super::*;
+
+    type FocusEvents = std::rc::Rc<std::cell::RefCell<Vec<(Option<String>, bool)>>>;
+
+    #[derive(Default)]
+    struct FocusProbe {
+        events: FocusEvents,
+        drawable_ids: Vec<&'static str>,
+        request: Option<crate::floating_surface::FloatingSurfaceRequest>,
+    }
+
+    impl crate::widget::AppWidget for FocusProbe {
+        fn app_kind(&self) -> crate::widget::AppKind {
+            crate::widget::AppKind::Editor
+        }
+        fn app_title(&self) -> &str {
+            "Focus probe"
+        }
+        fn app_icon(&self) -> crate::widget::IconDescriptor {
+            crate::widget::IconDescriptor::Named("chat".into())
+        }
+    }
+
+    impl crate::widget::FloatingSurfaceProvider for FocusProbe {
+        fn take_floating_surface_request(
+            &mut self,
+        ) -> Option<crate::floating_surface::FloatingSurfaceRequest> {
+            self.request.take()
+        }
+
+        fn on_floating_surface_ime_source_changed(&mut self, id: Option<&str>) {
+            self.events
+                .borrow_mut()
+                .push((id.map(|id| format!("ime:{id}")), false));
+        }
+
+        fn draw_floating_surface(
+            &mut self,
+            id: &str,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &crate::PresenceCtx,
+        ) -> bool {
+            if !self.drawable_ids.contains(&id) {
+                return false;
+            }
+            self.events
+                .borrow_mut()
+                .push((Some(format!("draw:{id}")), false));
+            true
+        }
+
+        fn on_floating_surface_event_source(&mut self, id: Option<&str>) {
+            self.events
+                .borrow_mut()
+                .push((id.map(|id| format!("input:{id}")), false));
+        }
+        fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+            (id == "a").then(|| {
+                crate::a11y::AccessNode::new(crate::a11y::Role::Button)
+                    .with_hashed_key("source-a-send")
+                    .with_action_target("source-a-send")
+            })
+        }
+        fn perform_floating_surface_accessibility_action(
+            &mut self,
+            id: &str,
+            target: &str,
+            action: &crate::a11y::Action,
+            _state: &mut crate::widget::Edits<'_>,
+            _path: &automerge::ObjId,
+        ) -> bool {
+            let accepted = id == "a"
+                && target == "source-a-send"
+                && matches!(action, crate::a11y::Action::Activate);
+            if accepted {
+                self.events.borrow_mut().push((Some(target.into()), true));
+            }
+            accepted
+        }
+        fn floating_surface_ime(&self, id: &str) -> Option<(winit::window::ImePurpose, KurboRect)> {
+            (id == "a").then_some((
+                winit::window::ImePurpose::Normal,
+                KurboRect::new(-700.0, 500.0, -699.0, 520.0),
+            ))
+        }
+        fn on_floating_surface_focus_changed(&mut self, id: Option<&str>, focused: bool) {
+            self.events
+                .borrow_mut()
+                .push((id.map(str::to_owned), focused));
+        }
+    }
+
+    impl Widget for FocusProbe {
+        crate::provides!(dyn crate::widget::FloatingSurfaceProvider);
+
+        fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _: &Theme,
+            _: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            use crate::widget::TaffyTreeExt as _;
+            taffy.leaf_node(taffy::Style::default())
+        }
+
+        fn name(&self) -> &'static str {
+            "FocusProbe"
+        }
+    }
+
+    #[test]
+    fn retained_inactive_tab_forwards_exact_draw_and_ime_source_through_the_host_chain() {
+        use crate::widget::{GroupRow, TabDescriptor, TileContent, WindowGroup, WindowWidth};
+        let probe = FocusProbe {
+            drawable_ids: vec!["a", "b"],
+            request: Some(crate::floating_surface::FloatingSurfaceRequest {
+                id: "b".into(),
+                title: "Conversation".into(),
+                role: crate::floating_surface::FloatingRole::Conversation,
+                source: crate::floating_surface::FloatingSource::AppRegion {
+                    app_id: "chat".into(),
+                    region: KurboRect::new(0.0, 0.0, 500.0, 500.0),
+                },
+                preferred_size: vello::kurbo::Size::new(500.0, 500.0),
+                aspect_ratio: None,
+                initial_rect: None,
+                presentation_rect: None,
+                tracking_source: None,
+            }),
+            ..Default::default()
+        };
+        let events = std::rc::Rc::clone(&probe.events);
+        let group = WindowGroup::new(
+            1,
+            vec![
+                (
+                    TabDescriptor::new(1, "Primary"),
+                    TileContent::App(Box::new(FocusProbe::default())),
+                ),
+                (
+                    TabDescriptor::new(2, "Conversation"),
+                    TileContent::App(Box::new(probe)),
+                ),
+            ],
+            1,
+            WindowWidth::Normal,
+        );
+        let mut root = GroupRow::new(vec![group]);
+        assert_eq!(root.take_floating_surface_request().unwrap().id, "b");
+        assert!(root.take_floating_surface_request().is_none());
+        root.on_floating_surface_ime_source_changed(Some("b"));
+        forward_native_surface_focus(&mut root, Some("b"), &WindowEvent::Focused(true));
+        // The selected tab does not own either floating presentation. The
+        // exact pass must reach the retained app through its AppWidget loan.
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        assert!(root.draw_floating_surface(
+            "b",
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::default(),
+            &crate::PresenceCtx::empty()
+        ));
+        assert!(!root.draw_floating_surface(
+            "missing",
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::default(),
+            &crate::PresenceCtx::empty()
+        ));
+        root.on_floating_surface_ime_source_changed(None);
+        assert_eq!(
+            *events.borrow(),
+            vec![
+                (Some("ime:b".into()), false),
+                (Some("b".into()), true),
+                (Some("draw:b".into()), false),
+                (None, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn secondary_accessibility_dispatch_reaches_only_the_declared_source_control() {
+        let mut root = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
+            FocusProbe::default(),
+        )));
+        let access = root.floating_surface_accessibility("a").unwrap();
+        let tree = crate::accesskit_bridge::surface_tree_update(
+            Some(&access),
+            vello::kurbo::Point::ZERO,
+            1.0,
+        );
+        let target_node = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.role() == accesskit::Role::Button)
+            .map(|(id, _)| *id)
+            .unwrap();
+        let request = accesskit::ActionRequest {
+            action: accesskit::Action::Click,
+            target_node,
+            target_tree: accesskit::TreeId::ROOT,
+            data: None,
+        };
+        let mut state = automerge::AutoCommit::new();
+        assert!(!dispatch_native_surface_accessibility(
+            &mut root,
+            "b",
+            &request,
+            &mut crate::widget::Edits::lend(&mut state),
+            &automerge::ROOT,
+        ));
+        assert!(dispatch_native_surface_accessibility(
+            &mut root,
+            "a",
+            &request,
+            &mut crate::widget::Edits::lend(&mut state),
+            &automerge::ROOT,
+        ));
+    }
+
+    #[test]
+    fn reused_native_surface_restores_focus_without_a_new_focus_event() {
+        let probe = FocusProbe::default();
+        let events = std::rc::Rc::clone(&probe.events);
+        let mut root =
+            crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(probe)));
+        let mut lifecycle = NativeFloatingSurfaceLifecycle {
+            adopted: true,
+            suspended: false,
+            focused: true,
+        };
+        forward_native_surface_focus(&mut root, Some("a"), &WindowEvent::Focused(true));
+
+        for cycle in 1..=2 {
+            lifecycle.suspend(&mut root, "a");
+            assert!(lifecycle.suspended);
+            assert!(!lifecycle.focused);
+            assert!(!lifecycle.adopted);
+            assert_eq!(events.borrow().last(), Some(&(Some("a".into()), false)));
+
+            // The retained native window is still the seat's focus owner.
+            // There is no second Focused(true) edge for the runner to receive.
+            lifecycle.resume(&mut root, "a", true);
+            assert!(
+                lifecycle.focused,
+                "Float cycle {cycle} must reconcile the retained window's actual focus"
+            );
+            assert!(!lifecycle.suspended);
+            assert!(!lifecycle.adopted);
+            assert_eq!(
+                events.borrow().last(),
+                Some(&(Some("a".into()), true)),
+                "the retained editor must receive the same focus as its native window"
+            );
+            lifecycle.adopted = true;
+        }
+    }
+
+    #[test]
+    fn reused_native_surface_does_not_restore_focus_after_the_host_moves_it() {
+        let probe = FocusProbe::default();
+        let events = std::rc::Rc::clone(&probe.events);
+        let mut root =
+            crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(probe)));
+        let mut lifecycle = NativeFloatingSurfaceLifecycle {
+            focused: true,
+            ..Default::default()
+        };
+        lifecycle.suspend(&mut root, "a");
+        events.borrow_mut().clear();
+
+        lifecycle.resume(&mut root, "a", false);
+
+        assert!(!lifecycle.focused);
+        assert!(!lifecycle.suspended);
+        assert_eq!(
+            *events.borrow(),
+            vec![(Some("a".into()), false)],
+            "resume must report the host's current focus, even if the editor was previously focused"
+        );
+    }
+
+    #[test]
+    fn secondary_window_ime_uses_source_focus_and_local_coordinates() {
+        let probe = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
+            FocusProbe::default(),
+        )));
+        let source = KurboRect::new(-800.0, 200.0, -300.0, 700.0);
+        let state = secondary_ime_state(&probe, "a", source, true).unwrap();
+        assert_eq!(
+            (state.x, state.y, state.width, state.height),
+            (100, 300, 1, 20)
+        );
+        assert!(secondary_ime_state(&probe, "a", source, false).is_none());
+        assert!(secondary_ime_state(&probe, "b", source, true).is_none());
+    }
+
+    #[test]
+    fn secondary_accesskit_event_keeps_originating_native_window() {
+        let window_id = winit::window::WindowId::dummy();
+        let event: UserEvent = accesskit_winit::Event {
+            window_id,
+            window_event: accesskit_winit::WindowEvent::InitialTreeRequested,
+        }
+        .into();
+        assert!(
+            matches!(event, UserEvent::AccessKit { window_id: source, event: accesskit_winit::WindowEvent::InitialTreeRequested } if source == window_id)
+        );
+    }
+
+    #[test]
+    fn native_focus_forwarding_preserves_surface_identity() {
+        let probe = FocusProbe::default();
+        let events = std::rc::Rc::clone(&probe.events);
+        let mut root =
+            crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(probe)));
+        forward_native_surface_focus(&mut root, Some("agent-a"), &WindowEvent::Focused(true));
+        forward_native_surface_focus(&mut root, Some("agent-b"), &WindowEvent::Focused(true));
+        forward_native_surface_focus(&mut root, Some("agent-a"), &WindowEvent::Focused(false));
+        assert_eq!(
+            *events.borrow(),
+            vec![
+                (Some("agent-a".into()), true),
+                (Some("agent-b".into()), true),
+                (Some("agent-a".into()), false),
+            ]
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -240,6 +635,7 @@ struct NativeFloatingWindow {
     id: String,
     token: String,
     desktop_rect: KurboRect,
+    coordinate_offset: Vec2,
     window: Arc<Window>,
     render: Option<RenderThreadHandle>,
     /// Device/surface creation is much slower than a frame on software and
@@ -247,8 +643,391 @@ struct NativeFloatingWindow {
     /// compositor proxy continue following the pointer during handoff.
     render_init: Option<mpsc::Receiver<Result<RenderThreadHandle, String>>>,
     prepared_at: Instant,
+    lifecycle: NativeFloatingSurfaceLifecycle,
+    a11y_adapter: Option<PrimaryA11yAdapter>,
+    ime_state: Option<NativeImeWindowState>,
+    preedit_active: bool,
+    preedit_clear_pending: bool,
+}
+
+#[derive(Default)]
+struct NativeFloatingSurfaceLifecycle {
     adopted: bool,
     suspended: bool,
+    focused: bool,
+}
+
+impl NativeFloatingSurfaceLifecycle {
+    fn suspend(&mut self, root: &mut dyn Widget, id: &str) {
+        self.focused = false;
+        self.suspended = true;
+        self.adopted = false;
+        root.on_floating_surface_focus_changed(Some(id), false);
+    }
+
+    fn resume(&mut self, root: &mut dyn Widget, id: &str, native_focused: bool) {
+        self.adopted = false;
+        self.suspended = false;
+        // Hiding the retained surface clears its editor's focus, but the
+        // native seat may still own this exact window. Reconcile its current
+        // focus: resuming does not necessarily produce another focus edge.
+        self.focused = native_focused;
+        root.on_floating_surface_focus_changed(Some(id), native_focused);
+    }
+}
+
+/// Resolve the drawable presentation region inside a transparent native
+/// floating allocation. The intersection is deliberate: a presentation
+/// update and a platform resize can cross for one frame, but neither may paint
+/// outside the buffer that is actually being submitted.
+fn native_floating_window_clip(window: KurboRect, presentation: KurboRect) -> Option<KurboRect> {
+    if !window.x0.is_finite()
+        || !window.y0.is_finite()
+        || !window.x1.is_finite()
+        || !window.y1.is_finite()
+        || !presentation.x0.is_finite()
+        || !presentation.y0.is_finite()
+        || !presentation.x1.is_finite()
+        || !presentation.y1.is_finite()
+        || window.width() <= 0.0
+        || window.height() <= 0.0
+        || presentation.width() <= 0.0
+        || presentation.height() <= 0.0
+    {
+        return None;
+    }
+    let clipped = window.intersect(presentation);
+    (clipped.width() > 0.0 && clipped.height() > 0.0).then_some(clipped)
+}
+
+#[cfg(test)]
+mod native_floating_paint_tests {
+    use super::native_floating_window_clip;
+    use vello::kurbo::Rect;
+
+    #[test]
+    fn content_ground_is_clipped_to_the_submitted_native_window() {
+        let window = Rect::new(-16.0, 120.0, 544.0, 480.0);
+        assert_eq!(
+            native_floating_window_clip(window, Rect::new(0.0, 120.0, 520.0, 480.0)),
+            Some(Rect::new(0.0, 120.0, 520.0, 480.0))
+        );
+        assert_eq!(
+            native_floating_window_clip(window, Rect::new(-32.0, 100.0, 560.0, 500.0)),
+            Some(window),
+            "a crossing presentation update cannot paint beyond this buffer"
+        );
+        assert_eq!(
+            native_floating_window_clip(window, Rect::new(600.0, 120.0, 700.0, 220.0)),
+            None
+        );
+    }
+
+    #[test]
+    fn malformed_content_never_becomes_an_opaque_desktop_spill() {
+        let window = Rect::new(0.0, 0.0, 560.0, 360.0);
+        assert_eq!(
+            native_floating_window_clip(window, Rect::new(0.0, 0.0, f64::NAN, 360.0)),
+            None
+        );
+        assert_eq!(
+            native_floating_window_clip(window, Rect::new(0.0, 0.0, 0.0, 360.0)),
+            None
+        );
+    }
+}
+
+fn forward_native_surface_focus(root: &mut dyn Widget, surface: Option<&str>, event: &WindowEvent) {
+    if let WindowEvent::Focused(focused) = event {
+        root.on_floating_surface_focus_changed(surface, *focused);
+    }
+}
+
+fn dispatch_native_surface_accessibility(
+    root: &mut dyn Widget,
+    id: &str,
+    request: &accesskit::ActionRequest,
+    state: &mut crate::widget::Edits<'_>,
+    path: &automerge::ObjId,
+) -> bool {
+    if request.target_tree != accesskit::TreeId::ROOT {
+        return false;
+    }
+    let Some(action) =
+        crate::accesskit_bridge::accesskit_action_to_ours(request.action, request.data.as_ref())
+    else {
+        return false;
+    };
+    let Some(access) = root.floating_surface_accessibility(id) else {
+        return false;
+    };
+    let Some(target) = crate::accesskit_bridge::surface_action_target(&access, request.target_node)
+    else {
+        return false;
+    };
+    root.perform_floating_surface_accessibility_action(id, target, &action, state, path)
+}
+
+/// A held protocol resource can anchor an editor outside its native window.
+/// Wayland cursor positions are signed; the shared widget/browser contract
+/// stays unchanged, while native handoff translations must not clamp to zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NativeImeWindowState {
+    purpose: winit::window::ImePurpose,
+    multiline: bool,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+}
+
+impl NativeImeWindowState {
+    fn from_rect(purpose: winit::window::ImePurpose, rect: KurboRect) -> Self {
+        let shared = ImeWindowState::from_rect(purpose, rect);
+        let signed = |value: f64| {
+            if value.is_finite() {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "rounded coordinate is bounded to the signed Wayland position range"
+                )]
+                {
+                    value
+                        .round()
+                        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+                }
+            } else {
+                0
+            }
+        };
+        Self {
+            purpose,
+            multiline: shared.multiline,
+            x: signed(rect.x0),
+            y: signed(rect.y0),
+            width: shared.width,
+            height: shared.height,
+        }
+    }
+}
+
+impl From<NativeImeWindowState> for ImeWindowState {
+    fn from(native: NativeImeWindowState) -> Self {
+        let mut shared = Self::from_rect(
+            native.purpose,
+            KurboRect::from_origin_size(
+                (f64::from(native.x), f64::from(native.y)),
+                (f64::from(native.width), f64::from(native.height)),
+            ),
+        );
+        shared.multiline = native.multiline;
+        shared
+    }
+}
+
+impl From<ImeWindowState> for NativeImeWindowState {
+    fn from(shared: ImeWindowState) -> Self {
+        let mut native = Self::from_rect(
+            shared.purpose,
+            KurboRect::from_origin_size(
+                (f64::from(shared.x), f64::from(shared.y)),
+                (f64::from(shared.width), f64::from(shared.height)),
+            ),
+        );
+        native.multiline = shared.multiline;
+        native
+    }
+}
+
+fn apply_native_ime(
+    window: &Window,
+    next: Option<NativeImeWindowState>,
+    previous: &mut Option<NativeImeWindowState>,
+) {
+    if next == *previous {
+        return;
+    }
+    match next {
+        Some(intent) => {
+            apply_native_ime_content(window, intent);
+            window.set_ime_allowed(true);
+            window.set_ime_cursor_area(
+                winit::dpi::LogicalPosition::new(intent.x, intent.y),
+                winit::dpi::LogicalSize::new(intent.width, intent.height),
+            );
+        }
+        None => window.set_ime_allowed(false),
+    }
+    *previous = next;
+}
+
+/// App-owned surfaces remain fixed to their live presentation rectangle.
+/// Winit's non-resizable Wayland window captures min/max at creation; a
+/// later request_inner_size does not advance those hints. Keep them aligned
+/// so the next activation configure cannot restore the transfer-frame size.
+fn resize_native_floating_window(window: &Window, rect: KurboRect) {
+    let size = native_floating_logical_size(rect);
+    window.set_min_inner_size(Some(size));
+    window.set_max_inner_size(Some(size));
+    let _ = window.request_inner_size(size);
+}
+
+fn apply_native_ime_content(window: &Window, intent: NativeImeWindowState) {
+    tilo_presentation::text_input::set_multiline(window, intent.multiline);
+    window.set_ime_purpose(intent.purpose);
+}
+
+fn secondary_ime_state(
+    root: &dyn Widget,
+    id: &str,
+    desktop_rect: KurboRect,
+    focused: bool,
+) -> Option<NativeImeWindowState> {
+    if !focused {
+        return None;
+    }
+    let (purpose, rect) = root.floating_surface_ime(id)?;
+    Some(NativeImeWindowState::from_rect(
+        purpose,
+        rect - desktop_rect.origin().to_vec2(),
+    ))
+}
+
+fn primary_floating_ime_state(
+    root: &dyn Widget,
+    id: &str,
+    coordinate_offset: Vec2,
+) -> Option<NativeImeWindowState> {
+    let (purpose, rect) = root.floating_surface_ime(id)?;
+    Some(NativeImeWindowState::from_rect(
+        purpose,
+        rect - coordinate_offset,
+    ))
+}
+
+fn pending_floating_ime_state(
+    app: &App,
+    preedit_active: bool,
+    previous: Option<NativeImeWindowState>,
+) -> Option<NativeImeWindowState> {
+    preedit_active.then_some(())?;
+    app.pending_floating_ime_source()?;
+    previous
+}
+
+fn primary_ime_state_for_held_child(
+    primary: Option<ImeWindowState>,
+    primary_origin: Vec2,
+    child_origin: Vec2,
+) -> Option<NativeImeWindowState> {
+    let primary = primary?;
+    let rect = KurboRect::new(
+        f64::from(primary.x),
+        f64::from(primary.y),
+        f64::from(primary.x.saturating_add(primary.width)),
+        f64::from(primary.y.saturating_add(primary.height)),
+    ) + primary_origin
+        - child_origin;
+    let mut intent = NativeImeWindowState::from_rect(primary.purpose, rect);
+    intent.multiline = primary.multiline;
+    Some(intent)
+}
+
+/// Refresh a held child's caret when the returned editor projects one, while
+/// keeping its real protocol alive across a transient missing projection.
+/// Only the exact retained, still-composing source may preserve prior state;
+/// every definitive lifecycle end returns the projected `None` and disables.
+fn retained_return_ime_state(
+    projected: Option<NativeImeWindowState>,
+    retained: Option<NativeImeWindowState>,
+    exact_source_active: bool,
+) -> Option<NativeImeWindowState> {
+    if exact_source_active {
+        projected.or(retained)
+    } else {
+        projected
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PrimaryPreeditUpdate {
+    Active,
+    PendingClear,
+    Finished,
+}
+
+fn preedit_after_event(event: &WindowEvent) -> Option<PrimaryPreeditUpdate> {
+    match event {
+        WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) if text.is_empty() => {
+            Some(PrimaryPreeditUpdate::PendingClear)
+        }
+        WindowEvent::Ime(winit::event::Ime::Preedit(_, _)) => Some(PrimaryPreeditUpdate::Active),
+        WindowEvent::Ime(winit::event::Ime::Commit(_) | winit::event::Ime::Disabled) => {
+            Some(PrimaryPreeditUpdate::Finished)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod floating_ime_continuation_tests {
+    use super::*;
+
+    #[test]
+    fn returned_caret_keeps_signed_child_coordinates_and_content_type() {
+        let primary = ImeWindowState {
+            purpose: winit::window::ImePurpose::Password,
+            multiline: true,
+            x: 20,
+            y: 30,
+            width: 2,
+            height: 24,
+        };
+        let projected = primary_ime_state_for_held_child(
+            Some(primary),
+            Vec2::new(100.0, 80.0),
+            Vec2::new(300.0, 200.0),
+        )
+        .unwrap();
+        assert_eq!((projected.x, projected.y), (-180, -90));
+        assert_eq!((projected.width, projected.height), (2, 24));
+        assert_eq!(projected.purpose, winit::window::ImePurpose::Password);
+        assert!(projected.multiline);
+        assert_eq!(
+            retained_return_ime_state(None, Some(projected), true),
+            Some(projected)
+        );
+        assert_eq!(
+            retained_return_ime_state(None, Some(projected), false),
+            None
+        );
+    }
+
+    #[test]
+    fn empty_preedit_does_not_retire_custody_before_the_commit_in_the_same_batch() {
+        assert_eq!(
+            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Preedit(
+                String::new(),
+                None
+            ))),
+            Some(PrimaryPreeditUpdate::PendingClear)
+        );
+        assert_eq!(
+            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Commit("文字".into()))),
+            Some(PrimaryPreeditUpdate::Finished)
+        );
+        assert_eq!(
+            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Disabled)),
+            Some(PrimaryPreeditUpdate::Finished)
+        );
+        assert!(!routes_to_floating_ime(&WindowEvent::Focused(false)));
+    }
+}
+
+fn routes_to_floating_ime(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+    )
 }
 
 fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
@@ -335,79 +1114,146 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
     );
 }
 
+/// Whether this windowing system shows a window icon the app sets. winit's
+/// Wayland backend drops it (`set_window_icon` is empty there; compositors
+/// take the icon from the app id), so reading and decoding one before the
+/// first frame would be wasted.
+fn takes_window_icon(event_loop: &ActiveEventLoop) -> bool {
+    use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+    !event_loop
+        .display_handle()
+        .is_ok_and(|display| matches!(display.as_raw(), RawDisplayHandle::Wayland(_)))
+}
+
+/// The slow-event reporting threshold in milliseconds, when the developer
+/// overrides it with `TILO_SLOW_EVENT_MS`; see `slow_event`.
+pub(super) fn slow_event_threshold_ms() -> Option<u64> {
+    std::env::var("TILO_SLOW_EVENT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+/// The Wayland application id (X11 `WM_CLASS`) of the primary window: the
+/// app's own (`explicit`, an input surface's), else its package's. See
+/// `resolve_app_id`: a shared id collapses per-app compositor lookups.
+fn primary_window_app_id(explicit: Option<&str>) -> String {
+    let package_id = std::env::var("TILO_PACKAGE_ID").ok();
+    resolve_app_id(
+        explicit.or(package_id.as_deref()),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .as_deref(),
+    )
+}
+
+/// How the primary window is made, whether by `resumed` or before the app
+/// is constructed (`startup`).
+fn primary_window_attributes(
+    title: String,
+    icon: Option<winit::window::Icon>,
+    app_id: &str,
+) -> winit::window::WindowAttributes {
+    let window_attributes = Window::default_attributes()
+        .with_title(title)
+        .with_window_icon(icon)
+        // Draggable title bar on compositors with no server-side
+        // decorations (e.g. GNOME/mutter); explicit though it's the
+        // winit default, so the intent is unmistakable.
+        .with_decorations(true)
+        .with_visible(false)
+        .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
+    // Optional profiling placement keeps concurrent benchmark windows from
+    // completely occluding one another. Platform window managers may ignore it.
+    let window_attributes = match std::env::var("TILO_PROFILE_WINDOW_POSITION")
+        .ok()
+        .and_then(|value| crate::profiling::profile_window_position(&value))
+    {
+        Some((x, y)) => window_attributes.with_position(winit::dpi::LogicalPosition::new(x, y)),
+        None => window_attributes,
+    };
+    // Benchmarks can keep their own windows above unrelated desktop apps.
+    // This does not change normal application window ordering.
+    let window_attributes = if std::env::var("TILO_PROFILE_WINDOW_FRONT").as_deref() == Ok("1") {
+        window_attributes.with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+    } else {
+        window_attributes
+    };
+    #[cfg(target_os = "linux")]
+    let window_attributes = {
+        use winit::platform::wayland::WindowAttributesExtWayland;
+        window_attributes.with_name(app_id, "")
+    };
+    // `resolve_app_id` falls back to a generic id rather than none; Linux
+    // announces it, other platforms name windows by their process.
+    debug_assert!(
+        !app_id.is_empty(),
+        "the primary window always has an app id"
+    );
+    window_attributes
+}
+
 fn create_window_render(
     window: &Arc<Window>,
     transparent: bool,
     proxy: EventLoopProxy<UserEvent>,
 ) -> Result<RenderThreadHandle, String> {
-    create_window_render_prepared(window, transparent, None, proxy)
+    create_window_render_prepared(window, transparent, None, None, proxy)
 }
 
 pub(crate) use crate::render_thread::PreparedRenderer;
 
-#[cfg(windows)]
-pub(crate) type RendererPreparation = mpsc::Receiver<Result<PreparedRenderer, String>>;
+/// Something the launch made for the primary window before the app was
+/// constructed (`startup`), judged against what the app wants.
+#[derive(Debug, PartialEq, Eq)]
+enum Early<T> {
+    /// It was made for exactly this: use it.
+    Kept(T),
+    /// It was made for another window (an input surface announces its own
+    /// app id): never use it, make the real one.
+    Discarded,
+    /// Nothing was made early.
+    Absent,
+}
 
-/// Start only for a real native launch, before loading app state and fonts.
-/// This owns no window/surface and can safely finish if construction fails:
-/// dropping the receiving end drops the prepared GPU resources at send.
-#[cfg(windows)]
-#[allow(
-    clippy::disallowed_methods,
-    reason = "native host runner: GPU preparation overlaps app start on its own thread"
-)]
-pub(crate) fn prepare_native_renderer() -> Option<RendererPreparation> {
-    if std::env::var_os("TILO_SERIAL_RENDER_INIT").is_some() {
-        return None;
-    }
-    let (sender, receiver) = mpsc::channel();
-    match std::thread::Builder::new()
-        .name("native-render-prepare".into())
-        .spawn(move || {
-            let prepare = || {
-                tilo_startup_metrics::mark("native-render-prepare-start");
-                let mut context = RenderContext::new();
-                let device_id = pollster::block_on(context.device(None))
-                    .ok_or_else(|| "could not prepare a drawing device".to_string())?;
-                let device = context
-                    .devices
-                    .get(device_id)
-                    .ok_or_else(|| "prepared drawing device index out of range".to_string())?;
-                let renderer = create_native_renderer(device)?;
-                tilo_startup_metrics::mark("native-render-prepare-done");
-                Ok(PreparedRenderer {
-                    context,
-                    device_id,
-                    renderer,
-                })
-            };
-            let _ = sender.send(prepare());
-        }) {
-        Ok(_) => Some(receiver),
-        Err(error) => {
-            tracing::warn!(%error, "could not prepare renderer in parallel");
-            None
-        }
+/// `early` made under `made_for`, kept only when that is `wanted`.
+fn early_for<K: PartialEq, T>(early: Option<(K, T)>, wanted: &K) -> Early<T> {
+    match early {
+        Some((made_for, thing)) if made_for == *wanted => Early::Kept(thing),
+        Some(_) => Early::Discarded,
+        None => Early::Absent,
     }
 }
 
-fn create_window_render_prepared(
-    window: &Arc<Window>,
+thread_local! {
+    /// The event loop the launch built before constructing the app
+    /// (`startup`), until `App::run_with_setup` takes it.
+    static EARLY_EVENT_LOOP: std::cell::RefCell<Option<EventLoop<UserEvent>>> =
+        const { std::cell::RefCell::new(None) };
+    /// The primary window made with it and the app id it announces, until
+    /// `resumed` takes it.
+    static EARLY_WINDOW: std::cell::RefCell<Option<(String, Arc<Window>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn take_early_event_loop() -> Option<EventLoop<UserEvent>> {
+    EARLY_EVENT_LOOP.with(|slot| slot.borrow_mut().take())
+}
+
+fn take_early_window() -> Option<(String, Arc<Window>)> {
+    EARLY_WINDOW.with(|slot| slot.borrow_mut().take())
+}
+
+/// A configured surface for `window` on a device of `render_cx` that can
+/// present to it, sized to the window now.
+fn window_surface(
+    render_cx: &mut RenderContext,
+    window: Arc<Window>,
     transparent: bool,
-    prepared: Option<PreparedRenderer>,
-    proxy: EventLoopProxy<UserEvent>,
-) -> Result<RenderThreadHandle, String> {
-    tilo_startup_metrics::mark("window-render-context-start");
+) -> Result<vello::util::RenderSurface<'static>, String> {
     let size = window.inner_size();
-    let (mut render_cx, prepared_renderer) = match prepared {
-        Some(prepared) => (
-            prepared.context,
-            Some((prepared.device_id, prepared.renderer)),
-        ),
-        None => (RenderContext::new(), None),
-    };
-    let mut surface = pollster::block_on(render_cx.create_surface(
-        window.clone(),
+    let mut surface = pollster::block_on(render_cx.create_surface_unconfigured(
+        window,
         size.width.max(1),
         size.height.max(1),
         vello::wgpu::PresentMode::AutoVsync,
@@ -442,15 +1288,56 @@ fn create_window_render_prepared(
         return Err(format!("could not configure the drawing surface: {err}"));
     }
     tilo_startup_metrics::mark("window-surface-validation-scope-done");
+    Ok(surface)
+}
+
+fn create_window_render_prepared(
+    window: &Arc<Window>,
+    transparent: bool,
+    prepared: Option<PreparedRenderer>,
+    prepared_surface: Option<(WindowId, vello::util::RenderSurface<'static>)>,
+    proxy: EventLoopProxy<UserEvent>,
+) -> Result<RenderThreadHandle, String> {
+    tilo_startup_metrics::mark("window-render-context-start");
+    let (mut render_cx, prepared_renderer) = match prepared {
+        Some(prepared) => (
+            prepared.context,
+            Some((prepared.device_id, prepared.renderer)),
+        ),
+        None => (RenderContext::new(), None),
+    };
+    let surface = match early_for(prepared_surface, &window.id()) {
+        Early::Kept(surface) => {
+            tilo_startup_metrics::mark("window-surface-prepared");
+            surface
+        }
+        early => {
+            if matches!(early, Early::Discarded) {
+                // Made for an early window this app did not keep; already
+                // dropped, before a surface is made for this one.
+                tilo_startup_metrics::mark("window-surface-prepared-discarded");
+            }
+            window_surface(&mut render_cx, window.clone(), transparent)?
+        }
+    };
+    let device_handle = render_cx
+        .devices
+        .get(surface.dev_id)
+        .ok_or_else(|| "render device index out of range".to_string())?;
     // create_surface checks presentation support and selects another device
     // if necessary. Never use pipelines built for a different device.
     let renderer = match prepared_renderer {
         Some((device_id, renderer)) if device_id == surface.dev_id => renderer,
-        _ => create_native_renderer(device_handle)?,
+        Some(_) => {
+            // The preparation's work is wasted; the startup file says so.
+            tilo_startup_metrics::mark("native-render-prepare-discarded");
+            create_native_renderer(device_handle)?
+        }
+        None => create_native_renderer(device_handle)?,
     };
     // After this, every GPU call happens on its render worker.
     let window_id = window.id();
-    let render = spawn_render_thread(
+    let render = crate::render_thread::spawn_render_thread_for_window(
         render_cx,
         surface,
         renderer,
@@ -458,6 +1345,7 @@ fn create_window_render_prepared(
             // Avoid synchronous macOS main-thread dispatch while the UI waits on submission.
             let _ = proxy.send_event(UserEvent::RenderReady(window_id));
         }),
+        Some(window.clone()),
     )?;
     tilo_startup_metrics::mark("window-render-context-done");
     Ok(render)
@@ -476,7 +1364,19 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
         .and_then(std::num::NonZeroUsize::new)
         .unwrap_or(std::num::NonZeroUsize::MIN.saturating_add(1));
     tilo_startup_metrics::mark("window-vello-init-start");
-    let renderer = Renderer::new(
+    // This app's own pipelines from its last launch, else the session's.
+    let pipelines = crate::pipeline_cache::AppPipelineCache::open(device_handle);
+    // The first frame waits for this. Build only what it dispatches; the
+    // render worker starts the rest once that frame is presented. On a
+    // software adapter the worker rasterizes frames on the CPU and vello draws
+    // only backdrop blurs, so none of its pipelines are on the way there.
+    let software = crate::render_thread::rasterizes_on_cpu(&device_handle.adapter.get_info());
+    let deferral = if software {
+        vello::PipelineDeferral::All
+    } else {
+        vello::PipelineDeferral::Unused
+    };
+    let mut renderer = Renderer::new_deferring(
         device,
         RendererOptions {
             // Diagnostic/low-end fallback: CPU coarse stages with the same
@@ -489,11 +1389,31 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
             // memory pressure on exactly the low-end devices we target.
             antialiasing_support: vello::AaSupport::area_only(),
             num_init_threads: Some(shader_threads),
-            pipeline_cache: None,
+            // Pipelines already compiled, so a launch does not compile vello
+            // again for its own empty shader cache.
+            pipeline_cache: pipelines
+                .as_ref()
+                .map(|pipelines| pipelines.cache().clone()),
         },
+        deferral,
     )
     .map_err(|e| format!("could not create the renderer: {e}"))?;
     tilo_startup_metrics::mark("window-vello-init-done");
+    // Kept once the deferred pipelines are built too.
+    if let Some(pipelines) = pipelines {
+        pipelines.keep_until_built();
+    }
+    // A frame that draws a backdrop blur renders with vello even on a
+    // software adapter. When this app's first frame did last time, build at
+    // once, on the init threads and default-path pipelines first, so that
+    // frame waits on a build well under way instead of compiling each
+    // pipeline it dispatches alone. A first frame the CPU rasterizes waits on
+    // nothing, so its app constructs without LLVM compiling beside it; its
+    // render worker starts the build with the first frame that draws a
+    // backdrop, or after the first present.
+    if software && crate::pipeline_cache::first_frame_backdrop::expected() {
+        renderer.start_deferred_pipelines(device, crate::pipeline_cache::persist_unsaved);
+    }
     #[cfg(all(windows, feature = "dx12-shader-cache"))]
     device_handle.finish_shader_cache();
     Ok(renderer)
@@ -526,49 +1446,12 @@ fn begin_window_render_init(
     Ok(result_rx)
 }
 
-fn draw_legacy_cursors(app: &mut App, scene: &mut Scene, transform: Affine) {
-    for cursor in app.state.collab.cursors.values() {
-        let mut path = vello::kurbo::BezPath::new();
-        path.move_to(Point::new(0.0, 0.0));
-        path.line_to(Point::new(14.0, 14.0));
-        path.line_to(Point::new(6.0, 16.0));
-        path.line_to(Point::new(0.0, 22.0));
-        path.close_path();
-
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
-        )]
-        let cursor_transform =
-            transform * Affine::translate((f64::from(cursor.x), f64::from(cursor.y)));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            cursor_transform,
-            cursor.color,
-            None,
-            &path,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.5),
-            cursor_transform,
-            app.theme.tokens.colors.on_surface(cursor.color).ink,
-            None,
-            &path,
-        );
-
-        app.text_renderer.draw_text(
-            scene,
-            &cursor.name,
-            10.0,
-            app.theme.tokens.colors.on_surface(cursor.color).ink,
-            {
-                #[allow(clippy::arithmetic_side_effects, reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow")]
-                let name_transform = cursor_transform * Affine::translate((10.0, 20.0));
-                name_transform
-            },
-            None,
-        );
-    }
+/// A frame goes to the render thread, which presents it while this thread
+/// reads on: tell the compositor the frame is coming, so one that waits for
+/// this window to answer input (an agent's screenshot) waits for the frame
+/// rather than taking the window's quiet event loop for an answer.
+fn announce_frame(window: &Window) {
+    window.announce_frame();
 }
 
 impl AppHandler {
@@ -579,6 +1462,11 @@ impl AppHandler {
         event: WindowEvent,
     ) {
         let _entry = self.app.enter_wake_scope();
+        // A pen's sample is no event of its own: widgets read it while they
+        // handle the pointer event it precedes.
+        let Some(_pen) = self.app.input.pen.route(&event) else {
+            return;
+        };
         if render_probe_event(&event) {
             let auxiliary_event = self
                 .floating_windows
@@ -641,7 +1529,7 @@ impl AppHandler {
             .iter()
             .position(|surface| surface.window.id() == window_id)
         {
-            self.handle_native_floating_window_event(index, event);
+            self.handle_native_floating_window_event(event_loop, index, event);
             return;
         }
         let Some(window) = self.window.clone() else {
@@ -653,7 +1541,7 @@ impl AppHandler {
     }
     fn visible_auxiliary_needs_shared_root(&self) -> bool {
         self.floating_windows.iter().any(|surface| {
-            !surface.suspended
+            !surface.lifecycle.suspended
                 && surface
                     .render
                     .as_ref()
@@ -671,7 +1559,7 @@ impl AppHandler {
         window_id: WindowId,
         event: WindowEvent,
         origin: native_input_isolation::EventOrigin,
-    ) {
+    ) -> bool {
         native_input_isolation::dispatch(
             self.native_input_route_isolation,
             origin,
@@ -679,7 +1567,7 @@ impl AppHandler {
             |event| {
                 self.handle_routed_window_event(event_loop, window_id, event);
             },
-        );
+        )
     }
     /// Called before showing the window on Windows, and from the first
     /// `RedrawRequested` elsewhere so GPU init doesn't starve Wayland's
@@ -693,6 +1581,7 @@ impl AppHandler {
                 window,
                 false,
                 Some(retained),
+                None,
                 self.a11y_proxy.clone(),
             ) {
                 Ok(render) => {
@@ -704,14 +1593,16 @@ impl AppHandler {
                 }
             }
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         if let Some(preparation) = self.app.startup_renderer.take() {
-            match preparation.recv() {
-                Ok(Ok(prepared)) => {
+            // How long the first redraw still waits on the preparation.
+            match tilo_startup_metrics::span("native-render-prepare-wait", || preparation.wait()) {
+                Ok(Ok(startup)) => {
                     self.render = Some(create_window_render_prepared(
                         window,
                         false,
-                        Some(prepared),
+                        Some(startup.prepared),
+                        startup.surface,
                         self.a11y_proxy.clone(),
                     )?);
                     return Ok(());
@@ -887,6 +1778,8 @@ impl AppHandler {
             return false;
         };
         while let Ok(outcome) = render.frame_complete.try_recv() {
+            self.app
+                .capture_auxiliary_completed("audience", outcome == FrameOutcome::Presented);
             match outcome {
                 FrameOutcome::Presented
                 | FrameOutcome::Reconfigured
@@ -925,6 +1818,7 @@ impl AppHandler {
             f64::from(size.width) / scale,
             f64::from(size.height) / scale,
         );
+        let secrets = crate::secret_paint::SecretPaint::begin();
         let drawn = self.app.root_widget.draw_audience_presentation(
             &mut scene,
             Affine::scale(scale),
@@ -932,9 +1826,17 @@ impl AppHandler {
             &self.app.theme,
             rect,
         );
+        self.app
+            .capture_auxiliary_drawn("audience", secrets.finish());
+        if !self.app.capture_frame_ready() {
+            scene.reset();
+            render.buffers.unprepare((scene, damage_regions));
+            return true;
+        }
         if !drawn {
             return false;
         }
+        announce_frame(&audience.window);
         if render
             .render_tx
             .send(RenderRequest::Frame {
@@ -943,9 +1845,11 @@ impl AppHandler {
                 scene,
                 width: size.width.max(1),
                 height: size.height.max(1),
-                base_color: self.app.theme.bg_app,
+                base_color: self.app.theme.tokens.colors.surfaces.content,
                 damage_regions,
+                scroll_copies: Vec::new(),
                 full_redraw: true,
+                backdrop: crate::backdrop::BackdropFrame::default(),
             })
             .is_err()
         {
@@ -954,13 +1858,18 @@ impl AppHandler {
             );
             return false;
         }
+        self.app.capture_auxiliary_submitted("audience");
         true
     }
 
     /// A touch on the field that has the keyboard, which Android answers by
     /// settling the composition and bringing a dismissed keyboard back.
     #[cfg(target_os = "android")]
-    fn touches_focused_field(&self, window_id: WindowId, location: PhysicalPosition<f64>) -> bool {
+    fn touches_focused_field(
+        &self,
+        window_id: WindowId,
+        location: winit::dpi::PhysicalPosition<f64>,
+    ) -> bool {
         let Some(window) = self
             .window
             .as_ref()
@@ -978,9 +1887,87 @@ impl AppHandler {
             .unwrap_or(false)
     }
 
+    fn set_floating_ime_continuation(&mut self, next: Option<String>) {
+        if self.floating_ime_continuation == next {
+            return;
+        }
+        self.floating_ime_continuation = next;
+        let id = self.floating_ime_continuation.clone();
+        self.app
+            .root_widget
+            .on_floating_surface_ime_source_changed(id.as_deref());
+    }
+
     fn sync_ime(&mut self, window: &Window) {
+        if self.primary_preedit_active {
+            self.app.flush_floating_present_requests_before_ime();
+        }
         let _entry = self.app.enter_wake_scope();
-        let next = self.app.ime_window_state();
+        self.private_input.service(
+            &self.app,
+            window,
+            !self
+                .floating_windows
+                .iter()
+                .any(|surface| surface.lifecycle.focused),
+        );
+        // Return keeps the real composer on its exact suspended child until
+        // the input method finishes. The primary redraw has moved the editor's
+        // caret, so update that still-active protocol without waiting for
+        // another keyboard/IME event on the hidden child.
+        if let Some(id) = self.floating_ime_return_continuation.as_deref()
+            // The initial Suspended message precedes primary relayout. Its
+            // gate becomes Some only after that returned frame is submitted.
+            && self
+                .floating_destination_present_frames
+                .get(id)
+                .is_none_or(Option::is_some)
+            && let Some(surface) = self
+                .floating_windows
+                .iter_mut()
+                .find(|surface| surface.id == id && surface.lifecycle.suspended && surface.preedit_active)
+        {
+            let next = primary_ime_state_for_held_child(
+                self.app.ime_window_state(),
+                surface.coordinate_offset,
+                surface.desktop_rect.origin().to_vec2(),
+            );
+            let next = retained_return_ime_state(next, surface.ime_state, true);
+            apply_native_ime(&surface.window, next, &mut surface.ime_state);
+        }
+        let continued = self.floating_ime_continuation.as_deref().and_then(|id| {
+            let offset = *self.app.floating.coordinate_offsets.get(id)?;
+            primary_floating_ime_state(self.app.root_widget.as_ref(), id, offset)
+        });
+        if self.floating_ime_continuation.is_some() && continued.is_none() {
+            // The exact editor or host-provided coordinate binding retired.
+            // Never route subsequent source events by a stale surface id.
+            self.set_floating_ime_continuation(None);
+        }
+        let pending =
+            pending_floating_ime_state(&self.app, self.primary_preedit_active, self.ime_state);
+        let next = if continued.is_some() {
+            continued
+        } else if pending.is_some() {
+            // Present was accepted on the live host connection, but Prepare
+            // has not arrived yet. Keep the real source protocol's existing
+            // caret while the exact retained editor still exports IME intent.
+            // Destination routing starts only after the host authorises it.
+            pending
+        } else if self
+            .floating_windows
+            .iter()
+            .any(|surface| surface.lifecycle.focused)
+        {
+            None
+        } else {
+            self.app
+                .ime_window_state()
+                .filter(|_| {
+                    !self.app.focused_ime_requires_deferred_ack() || self.private_input.admitted()
+                })
+                .map(NativeImeWindowState::from)
+        };
         #[cfg(target_os = "android")]
         if super::android_text_input::bridge::installed() {
             let field = next.and(self.app.focused_node);
@@ -994,7 +1981,7 @@ impl AppHandler {
                         .flatten()
                 });
                 super::android_text_input::bridge::update(
-                    next.as_ref(),
+                    next.map(ImeWindowState::from).as_ref(),
                     surrounding.as_ref(),
                     window.scale_factor(),
                     restart,
@@ -1011,21 +1998,20 @@ impl AppHandler {
         if next == self.ime_state {
             return;
         }
-        match next {
-            Some(intent) => {
-                // Apply purpose before enabling: winit's Wayland backend
-                // commits the enable immediately, so the first activation
-                // must already carry the right content type. Cursor geometry
-                // follows enable because winit intentionally ignores cursor
-                // updates while IME is disabled.
-                window.set_ime_purpose(intent.purpose);
-                window.set_ime_allowed(true);
-                window.set_ime_cursor_area(
-                    winit::dpi::LogicalPosition::new(intent.x, intent.y),
-                    winit::dpi::LogicalSize::new(intent.width, intent.height),
-                );
-            }
-            None => window.set_ime_allowed(false),
+        if let Some(intent) = next {
+            // Apply purpose before enabling: winit's Wayland backend
+            // commits the enable immediately, so the first activation
+            // must already carry the right content type. Cursor geometry
+            // follows enable because winit intentionally ignores cursor
+            // updates while IME is disabled.
+            apply_native_ime_content(window, intent);
+            window.set_ime_allowed(true);
+            window.set_ime_cursor_area(
+                winit::dpi::LogicalPosition::new(intent.x, intent.y),
+                winit::dpi::LogicalSize::new(intent.width, intent.height),
+            );
+        } else {
+            window.set_ime_allowed(false);
         }
         self.ime_state = next;
     }
@@ -1036,6 +2022,7 @@ impl AppHandler {
         id: String,
         token: String,
         rect: KurboRect,
+        coordinate_offset: Vec2,
     ) -> Result<(), String> {
         let _entry = self.app.enter_wake_scope();
         if let Some(existing) = self
@@ -1047,14 +2034,16 @@ impl AppHandler {
                 return Err("shell changed the token of a live floating surface".into());
             }
             if existing.desktop_rect.size() != rect.size() {
-                let _ = existing
-                    .window
-                    .request_inner_size(native_floating_logical_size(rect));
+                resize_native_floating_window(&existing.window, rect);
             }
             existing.desktop_rect = rect;
+            existing.coordinate_offset = coordinate_offset;
             existing.prepared_at = crate::time::now();
-            existing.adopted = false;
-            existing.suspended = false;
+            existing.lifecycle.resume(
+                self.app.root_widget.as_mut(),
+                &existing.id,
+                existing.window.has_focus(),
+            );
             existing.window.set_visible(true);
             existing.window.request_redraw();
             return Ok(());
@@ -1084,24 +2073,31 @@ impl AppHandler {
                 .create_window(attributes)
                 .map_err(|error| format!("create floating surface window: {error}"))?,
         );
+        let a11y_adapter =
+            create_accessibility_adapter(event_loop, &window, self.a11y_proxy.clone());
         window.set_visible(true);
         window.request_redraw();
         self.floating_windows.push(NativeFloatingWindow {
             id,
             token,
             desktop_rect: rect,
+            coordinate_offset,
             window,
             render: None,
             render_init: None,
             prepared_at: crate::time::now(),
-            adopted: false,
-            suspended: false,
+            lifecycle: NativeFloatingSurfaceLifecycle::default(),
+            a11y_adapter,
+            ime_state: None,
+            preedit_active: false,
+            preedit_clear_pending: false,
         });
         Ok(())
     }
 
     fn suspend_native_floating_window(&mut self, id: &str) -> bool {
         let _entry = self.app.enter_wake_scope();
+        let preserve_ime = self.floating_ime_return_continuation.as_deref() == Some(id);
         let Some(surface) = self
             .floating_windows
             .iter_mut()
@@ -1110,8 +2106,10 @@ impl AppHandler {
             return false;
         };
         surface.window.set_visible(false);
-        surface.suspended = true;
-        surface.adopted = false;
+        if !preserve_ime {
+            apply_native_ime(&surface.window, None, &mut surface.ime_state);
+        }
+        surface.lifecycle.suspend(self.app.root_widget.as_mut(), id);
         true
     }
 
@@ -1126,6 +2124,10 @@ impl AppHandler {
         };
         let mut surface = self.floating_windows.remove(index);
         surface.window.set_visible(false);
+        apply_native_ime(&surface.window, None, &mut surface.ime_state);
+        self.app
+            .root_widget
+            .on_floating_surface_focus_changed(Some(id), false);
         if let Some(mut render) = surface.render.take() {
             render.shutdown_and_join();
         }
@@ -1143,7 +2145,7 @@ impl AppHandler {
                     rect,
                     content_rect: _,
                     transfer_covered,
-                    coordinate_offset: _,
+                    coordinate_offset,
                 } => match crate::floating_surface::protocol_rect(rect) {
                     Ok(rect) => {
                         if transfer_covered {
@@ -1152,8 +2154,26 @@ impl AppHandler {
                                 primary.request_redraw();
                             }
                         }
-                        match self.create_native_floating_window(event_loop, id, token, rect) {
-                            Ok(()) => changed = true,
+                        let continue_ime = self.primary_preedit_active
+                            && primary_floating_ime_state(
+                                self.app.root_widget.as_ref(),
+                                &id,
+                                Vec2::new(coordinate_offset[0], coordinate_offset[1]),
+                            )
+                            .is_some();
+                        match self.create_native_floating_window(
+                            event_loop,
+                            id.clone(),
+                            token,
+                            rect,
+                            Vec2::new(coordinate_offset[0], coordinate_offset[1]),
+                        ) {
+                            Ok(()) => {
+                                if continue_ime {
+                                    self.set_floating_ime_continuation(Some(id));
+                                }
+                                changed = true;
+                            }
                             Err(error) => {
                                 tracing::warn!(%error, "could not prepare native floating surface");
                             }
@@ -1170,18 +2190,34 @@ impl AppHandler {
                             .iter_mut()
                             .find(|surface| surface.id == id)
                     {
-                        surface.adopted = true;
+                        surface.lifecycle.adopted = true;
                         surface.window.request_redraw();
                         changed = true;
                     }
                 }
                 crate::floating_surface::FloatingSurfaceHostMessage::Reattach { id }
                 | crate::floating_surface::FloatingSurfaceHostMessage::Closed { id } => {
+                    if self.floating_ime_continuation.as_deref() == Some(id.as_str()) {
+                        self.set_floating_ime_continuation(None);
+                    }
+                    if self.floating_ime_return_continuation.as_deref() == Some(id.as_str()) {
+                        self.floating_ime_return_continuation = None;
+                    }
                     self.floating_source_clear_frames.remove(&id);
                     self.floating_destination_present_frames.remove(&id);
                     changed |= self.close_native_floating_window(&id);
                 }
                 crate::floating_surface::FloatingSurfaceHostMessage::Suspended { id } => {
+                    if self.floating_ime_continuation.as_deref() == Some(id.as_str()) {
+                        self.set_floating_ime_continuation(None);
+                    }
+                    if self
+                        .floating_windows
+                        .iter()
+                        .any(|surface| surface.id == id && surface.preedit_active)
+                    {
+                        self.floating_ime_return_continuation = Some(id.clone());
+                    }
                     self.floating_source_clear_frames.remove(&id);
                     self.floating_destination_present_frames
                         .insert(id.clone(), None);
@@ -1190,7 +2226,30 @@ impl AppHandler {
                         primary.request_redraw();
                     }
                 }
-                crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. } => {}
+                crate::floating_surface::FloatingSurfaceHostMessage::CaptureProtectionApplied {
+                    ..
+                } => {
+                    for surface in &self.floating_windows {
+                        surface.window.request_redraw();
+                    }
+                    if let Some(audience) = &self.audience_presentation {
+                        audience.window.request_redraw();
+                    }
+                    changed = true;
+                }
+                crate::floating_surface::FloatingSurfaceHostMessage::DeviceShellOperation {
+                    ..
+                }
+                | crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::Appearance { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
+                | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
+                | crate::floating_surface::FloatingSurfaceHostMessage::DeviceDisplayMoveResult {
+                    ..
+                }
+                | crate::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
+                    ..
+                } => {}
             }
         }
         changed
@@ -1217,8 +2276,8 @@ impl AppHandler {
             .floating_windows
             .iter()
             .filter(|surface| {
-                !surface.suspended
-                    && !surface.adopted
+                !surface.lifecycle.suspended
+                    && !surface.lifecycle.adopted
                     && surface.prepared_at.elapsed() >= FIRST_BUFFER_DEADLINE
             })
             .map(|surface| surface.id.clone())
@@ -1257,9 +2316,7 @@ impl AppHandler {
                     // grows. Resize the real transparent buffer with the
                     // shared presentation rect so its soft chrome is never
                     // clipped inside the old native allocation.
-                    let _ = surface
-                        .window
-                        .request_inner_size(native_floating_logical_size(presentation.window_rect));
+                    resize_native_floating_window(&surface.window, presentation.window_rect);
                 }
                 surface.desktop_rect = presentation.window_rect;
                 surface.window.request_redraw();
@@ -1275,7 +2332,8 @@ impl AppHandler {
         let Some(surface) = surfaces.get_mut(index) else {
             return false;
         };
-        if surface.suspended {
+        let capture_id = format!("floating:{}", surface.id);
+        if surface.lifecycle.suspended {
             return true;
         }
         if surface.render.is_none() {
@@ -1317,6 +2375,7 @@ impl AppHandler {
             return false;
         };
         while let Ok(outcome) = render.frame_complete.try_recv() {
+            app.capture_auxiliary_completed(&capture_id, outcome == FrameOutcome::Presented);
             match outcome {
                 FrameOutcome::Presented
                 | FrameOutcome::Reconfigured
@@ -1349,13 +2408,65 @@ impl AppHandler {
         let scale = surface.window.scale_factor();
         let transform = crate::scale::composite_transform(scale)
             .pre_translate((-surface.desktop_rect.x0, -surface.desktop_rect.y0).into());
-        app.root_widget.draw_floating_surfaces(
+        let presentation = app
+            .root_widget
+            .floating_surface_presentations()
+            .into_iter()
+            .find(|presentation| presentation.id == surface.id);
+        let Some(window_clip) = presentation.and_then(|presentation| {
+            native_floating_window_clip(surface.desktop_rect, presentation.window_rect)
+        }) else {
+            tracing::warn!(id = %surface.id, "floating surface has no valid content region");
+            return false;
+        };
+        let secrets = crate::secret_paint::SecretPaint::begin();
+        use vello::peniko::{BlendMode, Fill};
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            transform,
+            &window_clip,
+        );
+        let drawn = app.root_widget.draw_floating_surface(
+            &surface.id,
             &mut scene,
             transform,
             &mut app.text_renderer,
             &app.theme,
             &app.presence_ctx,
         );
+        scene.pop_layer();
+        if !drawn {
+            tracing::warn!(id = %surface.id, "floating surface content is no longer available");
+            return false;
+        }
+        if let Some(adapter) = surface.a11y_adapter.as_mut() {
+            adapter.update_if_active(|| {
+                let access = app.root_widget.floating_surface_accessibility(&surface.id);
+                crate::accesskit_bridge::native_tree_update(
+                    crate::accesskit_bridge::surface_tree_update(
+                        access.as_ref(),
+                        surface.desktop_rect.origin(),
+                        scale,
+                    ),
+                )
+            });
+        }
+        let next = secondary_ime_state(
+            app.root_widget.as_ref(),
+            &surface.id,
+            surface.desktop_rect,
+            surface.lifecycle.focused,
+        );
+        apply_native_ime(&surface.window, next, &mut surface.ime_state);
+        app.capture_auxiliary_drawn(&capture_id, secrets.finish());
+        if !app.capture_frame_ready() {
+            scene.reset();
+            render.buffers.unprepare((scene, damage_regions));
+            return true;
+        }
+        announce_frame(&surface.window);
         if render
             .render_tx
             .send(RenderRequest::Frame {
@@ -1366,12 +2477,17 @@ impl AppHandler {
                 height: inner.height.max(1),
                 base_color: Color::TRANSPARENT,
                 damage_regions,
+                scroll_copies: Vec::new(),
                 full_redraw: true,
+                // The compositor puts this window over the desktop; nothing
+                // under its surfaces is in this scene to blur.
+                backdrop: crate::backdrop::BackdropFrame::default(),
             })
             .is_err()
         {
             return false;
         }
+        app.capture_auxiliary_submitted(&capture_id);
         true
     }
 
@@ -1389,13 +2505,13 @@ impl AppHandler {
                 position,
             } => WindowEvent::CursorMoved {
                 device_id,
-                position: PhysicalPosition::new(
+                position: winit::dpi::PhysicalPosition::new(
                     position.x + desktop_rect.x0 * scale,
                     position.y + desktop_rect.y0 * scale,
                 ),
             },
             WindowEvent::Touch(mut touch) => {
-                touch.location = PhysicalPosition::new(
+                touch.location = winit::dpi::PhysicalPosition::new(
                     touch.location.x + desktop_rect.x0 * scale,
                     touch.location.y + desktop_rect.y0 * scale,
                 );
@@ -1413,13 +2529,16 @@ impl AppHandler {
         };
         let mut handled = false;
         let mut focus_target = None;
-        app.refresh_control_action_availability();
+        app.mark_semantic_tree_stale();
+        app.track_pointer_buttons(&event);
+        app.refresh_controls_before_input(&event);
+        let resources_before = app.resource_input_mark(&event);
         app.root_widget.handle_event(
             &event,
             &mut crate::widget::EventCtx {
                 scale_factor: scale,
                 modifiers: &app.input.modifiers,
-                state: &mut app.state.doc,
+                state: crate::widget::Edits::lend(&mut app.state.doc),
                 path: &app.state.root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1428,8 +2547,14 @@ impl AppHandler {
             },
         );
         // `handle_event` may change presentation-only resource declarations
-        // without touching the CRDT (selected tab, open media, local mode).
-        app.invalidate_widget_resource_cache();
+        // without touching the CRDT (selected tab, open media, local mode);
+        // only bare hover that changed nothing keeps the published tree.
+        app.invalidate_resources_after_input(
+            &event,
+            handled || focus_target.is_some(),
+            &resources_before,
+            false,
+        );
         if let Some(id) = focus_target {
             app.set_focused_node(Some(id));
         }
@@ -1485,7 +2610,10 @@ impl AppHandler {
             if let Err(reason) = self.init_render(window) {
                 // Retrying every redraw would only spin.
                 crate::diag!("tilo: {reason}");
-                event_loop.exit();
+                stop_abnormally(
+                    event_loop,
+                    format!("its renderer could not start: {reason}"),
+                );
                 return;
             }
             tilo_startup_metrics::mark("first-redraw-init-render-done");
@@ -1503,9 +2631,22 @@ impl AppHandler {
         let mut surface_gone = false;
         while let Ok(outcome) = render.frame_complete.try_recv() {
             self.primary_frames_completed = self.primary_frames_completed.saturating_add(1);
+            if let Some(markers) = self.app.floating.complete_action_marker_frame(
+                self.primary_frames_completed,
+                outcome == FrameOutcome::Presented,
+            ) && let Some(client) = self.app.floating.client.as_mut()
+            {
+                let _ = client.send(
+                    &crate::floating_surface::FloatingSurfaceClientMessage::ActionMarkers {
+                        markers,
+                    },
+                );
+            }
             match outcome {
                 FrameOutcome::Presented => {
                     self.last_primary_frame_presented = self.primary_frames_completed;
+                    self.app
+                        .capture_frame_presented(self.primary_frames_completed);
                     self.primary_retry.observe_for_shared_root(
                         outcome,
                         crate::time::now(),
@@ -1566,8 +2707,9 @@ impl AppHandler {
             }
         }
         if surface_gone {
-            tracing::info!("drawing surface is gone; closing the window");
-            event_loop.exit();
+            let reason = crate::render_thread::take_surface_loss()
+                .unwrap_or_else(|| "its drawing surface was lost".to_owned());
+            stop_abnormally(event_loop, reason);
             return;
         }
         // Do not consume sync/layout/dirty state unless a finite render buffer
@@ -1580,8 +2722,7 @@ impl AppHandler {
             Ok(true) => {}
             Ok(false) => return,
             Err(_) => {
-                tracing::error!("ui-render thread died; closing window");
-                event_loop.exit();
+                stop_abnormally(event_loop, "its render thread stopped".to_owned());
                 return;
             }
         }
@@ -1620,15 +2761,24 @@ impl AppHandler {
         app.layout.last_frame_size = Some(inner);
         let mut floating_content_changed =
             app.layout.layout_dirty || app.layout.structure_dirty || app.needs_sync;
-        let mut full_redraw_required = floating_content_changed;
+        // Model and input changes reach the pixels through the widgets they
+        // dirty, whose damage the frame collects below. Only what damage
+        // cannot describe repaints the whole window: a rebuilt tree, moved
+        // geometry, a resized surface, and layers drawn over the widgets.
+        let mut full_redraw_required = app.layout.structure_dirty;
+        // Armed for this frame: each rebuild it does clears it unless the
+        // widgets behind it described the change (a long list mounting the
+        // rows a scroll brought near).
+        app.layout.frame_rebuilds_described = true;
 
         // Records first: if the root widget opened a different
         // record, sync against that record's document, not the
         // outgoing one's.
         mark_first_frame("first-frame-record-start");
-        let record_changed = app.record_tick();
+        let record_changed = app.swap_requested_component() | app.record_tick();
         mark_first_frame("first-frame-record-done");
         floating_content_changed |= record_changed;
+        // A different record is a different document under the same tree.
         full_redraw_required |= record_changed;
 
         let __prof_frame_start = app.profiler.as_ref().map(|_| crate::time::now());
@@ -1636,17 +2786,23 @@ impl AppHandler {
         // synchronization. A worker's `Wake` event reaches this pass without
         // requiring the app to own a proxy or poll inside its model.
         mark_first_frame("first-frame-update-start");
-        if app.update_model() {
+        let sync_phase = slow_event::phase("sync");
+        if app.update_native_model() {
             floating_content_changed = true;
-            full_redraw_required = true;
         }
         mark_first_frame("first-frame-update-done");
         mark_first_frame("first-frame-sync-start");
         if app.sync_model(false) {
             floating_content_changed = true;
-            full_redraw_required = true;
         }
-        if crate::component_lifecycle::take_window_close_intent(app.root_widget.as_mut()) {
+        // A control may have asked for larger text or high contrast; both
+        // rebuild the tree, so this frame repaints everything in the new look.
+        if app.apply_accessibility_request() {
+            floating_content_changed = true;
+        }
+        if crate::component_lifecycle::take_window_close_intent(app.root_widget.as_mut())
+            || app.take_close_window_request()
+        {
             if app.admit_native_close_request() {
                 event_loop.exit();
                 return;
@@ -1655,6 +2811,7 @@ impl AppHandler {
                 window.request_redraw();
             }
         }
+        drop(sync_phase);
         mark_first_frame("first-frame-sync-done");
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, __prof_frame_start);
@@ -1668,7 +2825,7 @@ impl AppHandler {
         // taffy tree from scratch so new widgets get node ids the
         // layout pass below can see.
         mark_first_frame("first-frame-build-layout-start");
-        app.layout.structure_dirty |= app.root_widget.take_structure_dirty();
+        app.layout.structure_dirty |= app.take_root_structure_dirty();
         // Captured BEFORE `rebuild_structure` clears it — a fresh
         // taffy tree always needs a full solve regardless of the
         // scroll fast path below.
@@ -1691,7 +2848,21 @@ impl AppHandler {
             return;
         };
         mark_first_frame("first-frame-layout-start");
-        let Some((t_relayout_branch, t_compute_us, t_apply_us)) = run_layout_pass(
+        // Every widget's box before a relayout that rebuilds nothing, and
+        // what says whether the layout pass rebuilt or resized: a frame
+        // whose only moves are scrolls this window copies stays sparse.
+        let boxes_before = (!structure_rebuilt
+            && app.layout.layout_dirty
+            && app
+                .history
+                .as_ref()
+                .is_none_or(|history| history.live_interactive())
+            && app.history_layout.is_none()
+            && app.close_admission.dialog.is_none())
+        .then(|| crate::scroll_copy::placed(app.root_widget.as_ref()));
+        let layout_before = (app.layout.rebuilds, app.layout.last_layout_logical);
+        let layout_phase = slow_event::phase("layout");
+        let Some((geometry_changed, t_compute_us, t_apply_us)) = run_layout_pass(
             app,
             root_node,
             width,
@@ -1705,8 +2876,21 @@ impl AppHandler {
         ) else {
             return;
         };
+        drop(layout_phase);
         mark_first_frame("first-frame-layout-done");
-        full_redraw_required |= structure_rebuilt || t_relayout_branch;
+        // A relayout that moved widgets and rebuilt or resized nothing may be
+        // scrolls this window copies; that is decided with the frame's damage.
+        let moved_from = boxes_before.filter(|_| {
+            geometry_changed
+                && app.layout.last_layout_logical == layout_before.1
+                && (app.layout.rebuilds == layout_before.0 || app.layout.frame_rebuilds_described)
+        });
+        full_redraw_required |= structure_rebuilt || (geometry_changed && moved_from.is_none());
+        if geometry_changed {
+            // A rebuild marks it in `rebuild_structure`; a moved control
+            // under a still pointer has not seen it either.
+            app.input.pointer_replay.mark_unsettled();
+        }
         // Read before `draw_frame_content` drains widget dirty flags via
         // `mark_drawn`. Clean compositor/exposure redraws do not invalidate
         // independent native floating surfaces.
@@ -1716,19 +2900,20 @@ impl AppHandler {
         // wait on GPU work; aborted layouts retain it in the handle for retry.
         let __prof_pool_wait = app.profiler.as_ref().map(|_| crate::time::now());
         let Ok((mut scene, mut damage_regions)) = render.buffers.recv() else {
-            tracing::error!("ui-render thread died; closing window");
-            event_loop.exit();
+            stop_abnormally(event_loop, "its render thread stopped".to_owned());
             return;
         };
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::ScenePoolWait, __prof_pool_wait);
         }
         damage_regions.clear();
+        // Presented pixels lost geometry to a GPU scratch overflow; damage
+        // cannot describe where.
+        full_redraw_required |= render.take_full_repaint();
         full_redraw_required |= app.debug_mode
             || app.actions.action_palette.is_some()
             || app.input.tooltip_host.needs_frame()
             || app.input.tooltip_host.visible().is_some()
-            || !app.presence_ctx.remote_cursors.is_empty()
             || app
                 .profiler
                 .as_ref()
@@ -1738,100 +2923,53 @@ impl AppHandler {
 
         let t_draw_start = if perf { Some(crate::time::now()) } else { None };
         crate::webview::frame_trace::begin_scene();
+        // Floating chrome (menus, popovers, sheets, the palette, tooltips)
+        // records what lies below it, and the render worker blurs that
+        // backdrop under the material before the frame renders.
+        let backdrop_recording = crate::backdrop::BackdropRecording::begin();
+        crate::backdrop::layer_scene(&scene, 0);
+        let draw_phase = slow_event::phase("draw");
+        let drawn = draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
+        drop(draw_phase);
         let (transform, window_rect, t_draw_us) =
-            draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
+            (drawn.transform, drawn.window_rect, drawn.draw_us);
+        // The tooltip's material blurs what is under it, which repaints this
+        // window in full on the render worker whatever damage says; until it
+        // takes damage there too, a tooltip is a layer like the others here.
+        let mut top_layer = drawn.top_layer.is_some() || drawn.tooltip.is_some();
+        // What paints over the widgets without moving with a scroll and is no
+        // widget the copy planner sees: the header bar another desktop gets.
+        let before_decorations = scene.encoding().draw_tags.len();
         #[cfg(target_os = "linux")]
         {
             self.decorations.draw(app, &mut scene, transform);
             full_redraw_required |= self.decorations.take_repaint();
         }
-
+        let decorated = scene.encoding().draw_tags.len() != before_decorations;
+        let backdrop =
+            crate::backdrop::BackdropFrame::from_single_scene(backdrop_recording.finish());
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
-        draw_legacy_cursors(app, &mut scene, transform);
-
-        // A pointer that arrived on a desktop scope is the
-        // compositor's to draw, and the helper skips it — see
-        // `presence::PointerOwner`. Only the *painting* has one
-        // owner; the shell threads this same context into its own
-        // overlay too.
-        let interaction_now = crate::time::now();
-        app.presence_ctx.prune_interactions(interaction_now);
-        crate::presence::draw_remote_presence(
-            &mut scene,
+        // Peer pointers, names and activity paint over the widgets and damage
+        // only the marks that changed. Carets, selections and marks widgets
+        // paint from presence carry no widget damage: a change to them (or
+        // unprovable layer damage) repaints the window.
+        let presence_damage = draw_presence_layer(
+            app,
+            &mut self.presence_layer,
             transform,
             window_rect,
-            &mut app.text_renderer,
-            &app.theme,
-            &app.presence_ctx,
+            crate::time::now(),
         );
-        // Controls and named rows already publish their real accessibility
-        // geometry. Reuse that exact focus/selection outline for semantic
-        // action presence; this decorates the target without changing local
-        // focus, selection, active tab, or scroll position.
-        let visible_interactions = app.presence_ctx.visible_interactions(interaction_now);
-        if !visible_interactions.is_empty() {
-            app.refresh_semantic_tree();
-        }
-        let native_targets = visible_interactions
-            .iter()
-            .filter_map(|interaction| {
-                let exact = match &interaction.anchor {
-                    tilo_actions::InteractionAnchor::SemanticControl { id } => app
-                        .semantic_tree()
-                        .node(&crate::a11y_tree::SemanticId(id.clone()))
-                        .and_then(|node| node.bounds),
-                    tilo_actions::InteractionAnchor::ListItems { .. }
-                    | tilo_actions::InteractionAnchor::Resource => {
-                        let mut matches = app
-                            .semantic_tree()
-                            .iter()
-                            .filter(|node| {
-                                node.name.as_deref() == Some(interaction.resource.label.as_str())
-                            })
-                            .filter_map(|node| node.bounds);
-                        let only = matches.next();
-                        only.filter(|_| matches.next().is_none())
-                    }
-                    _ => None,
-                }?;
-                Some((interaction.clone(), exact))
-            })
-            .collect::<Vec<_>>();
-        for (interaction, rect) in native_targets {
-            let user = crate::permissions::UserId(interaction.actor.id);
-            let label = app.presence_ctx.display_name(&user);
-            app.presence_ctx.draw_peer_outline_labeled(
-                &mut crate::paint::PaintCtx::new(
-                    &mut scene,
-                    transform,
-                    &mut app.text_renderer,
-                    &app.theme,
-                ),
-                &user,
-                &label,
-                rect,
-                f64::from(app.theme.tokens.radii.sm),
-            );
-        }
-        // Action/resource callers have no synthetic pointer. Their truthful
-        // semantic lifecycle is painted as an app-level activity rail until a
-        // domain widget projects the stable anchor into native geometry.
-        app.presence_ctx.draw_interactions(
-            &mut scene,
-            transform,
-            window_rect,
-            &mut app.text_renderer,
-            &app.theme,
-            interaction_now,
-        );
+        scene.append(self.presence_layer.scene(), None);
+        full_redraw_required |= presence_damage.is_none();
+        let content_draw_tags = scene.encoding().draw_tags.len();
 
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::PresenceOverlay, __prof_presence);
         }
 
-        let mut native_main_stages = (self.native_input_origin.is_some()
-            && crate::render_thread::timing::enabled())
-        .then(MainStages::default);
+        let mut native_main_stages =
+            crate::render_thread::timing::enabled().then(MainStages::default);
         record_main_stage(&mut native_main_stages, MainStage::BeforeProfilerCommit);
 
         // Folds in any `handle_event` time banked since last frame.
@@ -1868,27 +3006,105 @@ impl AppHandler {
         }
         record_main_stage(&mut native_main_stages, MainStage::AfterDebugOutlines);
 
+        // Debug outlines paint over the widgets too. A layer drawn this
+        // frame, or one erased since the last, covers pixels no widget's
+        // damage reports. (The presence layer reports its own.)
+        top_layer |= scene.encoding().draw_tags.len() != content_draw_tags;
+        full_redraw_required |=
+            top_layer || std::mem::replace(&mut self.top_layer_drawn, top_layer);
+
         // Animated widgets update their visual bounds while drawing (for
         // example, an indeterminate progress segment records its old and new
         // positions there). Capture damage only after that work, but before
         // `mark_drawn` clears regular dirty flags. This makes the submitted
         // scene and its damage describe the same frame rather than trailing
         // animation by one frame.
+        let mut scroll_copies = Vec::new();
         if !full_redraw_required {
-            collect_submitted_widget_damage(app.root_widget.as_ref(), &mut damage_regions);
-            let physical_viewport = KurboRect::new(0.0, 0.0, f64::from(width), f64::from(height));
-            let scale = f64::from(scale_factor);
-            for rect in &mut damage_regions {
-                *rect = KurboRect::new(
-                    rect.x0 * scale,
-                    rect.y0 * scale,
-                    rect.x1 * scale,
-                    rect.y1 * scale,
-                )
-                .inflate(16.0 * scale, 16.0 * scale)
-                .intersect(physical_viewport);
+            let root = app.root_widget.as_ref();
+            // The retained target holds the last presented frame, so a scroll
+            // copies what stays on screen (`crate::scroll_copy`).
+            let mut offers = crate::scroll_copy::accepting(|| {
+                collect_submitted_widget_damage(root, &mut damage_regions);
+            });
+            // Moved geometry repaints the window unless every move is a
+            // scroll's content moving with it; rows a long list mounted or
+            // let go of in it are damage beside the copy.
+            if let Some(before) = &moved_from {
+                let moves = (!offers.is_empty()).then(|| {
+                    crate::scroll_copy::moves_besides(
+                        before,
+                        &crate::scroll_copy::placed(root),
+                        &offers,
+                    )
+                });
+                match moves {
+                    Some(moves) if moves.besides.is_empty() => {
+                        damage_regions.extend(moves.carried);
+                    }
+                    _ => full_redraw_required = true,
+                }
             }
-            damage_regions.retain(|rect| !rect.is_zero_area());
+            // Peer marks and a header bar paint over the content without
+            // moving with it, where the planner cannot see them. The marks
+            // are damage around the copies where they can be bounded; the
+            // header bar, or marks that cannot, repaint the scrollers.
+            let window = KurboRect::new(0.0, 0.0, f64::from(width), f64::from(height));
+            let marks = if offers.is_empty() {
+                None
+            } else {
+                peer_marks(&self.presence_layer, &mut self.mark_bounds, window)
+            };
+            if !offers.is_empty() && (decorated || marks.is_none()) {
+                damage_regions.extend(offers.iter().map(crate::scroll_copy::ScrollOffer::viewport));
+                offers.clear();
+            }
+            if full_redraw_required {
+                offers.clear();
+            }
+            let history = app.history.as_deref().map(|history| history as &dyn Widget);
+            let planned = crate::scroll_copy::plan(
+                &offers,
+                &std::iter::once(root).chain(history).collect::<Vec<_>>(),
+                f64::from(scale_factor),
+                (width, height),
+            );
+            if full_redraw_required
+                || !submit_presence_damage(
+                    &mut damage_regions,
+                    presence_damage.as_deref().unwrap_or_default(),
+                    self.presence_layer.widgets_place_content_marks(),
+                    f64::from(scale_factor),
+                    window,
+                )
+            {
+                full_redraw_required = true;
+                damage_regions.clear();
+            } else {
+                // Already in device pixels, and exact: no effect margin. What
+                // changed in place where a copy reads it lands one delta
+                // away, as do the peer marks the copies took; what the
+                // copies exposed is repainted as it is.
+                damage_regions.extend(planned.damage);
+                crate::scroll_copy::carry(&planned.copies, &mut damage_regions);
+                if let Some(marks) = &marks {
+                    crate::scroll_copy::marks_over_copies(
+                        &planned.copies,
+                        &marks.shown,
+                        &marks.painted,
+                        &mut damage_regions,
+                    );
+                }
+                damage_regions.extend(planned.exposed);
+                scroll_copies = planned.copies;
+            }
+        }
+        if !app.capture_frame_ready() {
+            scene.reset();
+            render.buffers.unprepare((scene, damage_regions));
+            // The service socket wakes the event loop when its acknowledgement
+            // arrives. Keep dirty flags until that frame can actually be sent.
+            return;
         }
         // This must follow damage collection: widget `draw` may update
         // damage geometry and `mark_drawn` consumes persistent dirty flags.
@@ -1898,6 +3114,7 @@ impl AppHandler {
             // `update_if_active` only builds + sends when an AT is
             // attached, so this is free on the common no-reader path.
             if let Some(adapter) = self.a11y_adapter.as_mut() {
+                let _a11y = slow_event::phase("a11y");
                 let app_ref: &mut App = app;
                 let scale = f64::from(scale_factor);
                 adapter.update_if_active(|| {
@@ -1928,102 +3145,136 @@ impl AppHandler {
                 );
             }
         }
-        let req = RenderRequest::Frame {
-            cpu_frame_id: app
+        if crate::render_thread::retry::submit_redraw_frame(
+            full_redraw_required,
+            !damage_regions.is_empty() || !scroll_copies.is_empty(),
+        ) {
+            let cpu_frame_id = app
                 .profiler
                 .as_ref()
                 .and_then(|profiler| profiler.history().back())
-                .map(|sample| sample.frame),
-            scene,
-            width,
-            height,
-            base_color: app.theme.bg_app,
-            damage_regions,
-            full_redraw: full_redraw_required,
-            on_present: self.dev_reload_timing.take().map(|timing| {
-                let submitted = crate::time::wall();
-                Box::new(move |presented| timing.record(submitted, presented))
-                    as crate::render_thread::PresentHook
-            }),
-        };
-        record_main_stage(&mut native_main_stages, MainStage::AfterHudRequest);
-        if let Some((origin, entered)) = native_redraw_entry {
-            // All three values use the input timeline's monotonic origin.
-            // This is a CPU submit attempt, not GPU/display completion.
-            crate::native_scenario::log::emit_json(
-                "tilo-native-redraw",
-                serde_json::json!({
-                    "cpu_frame_id": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
-                    "redraw_enter_us": entered.duration_since(origin).as_micros(),
-                    "timed_build_start_us": __prof_frame_start.map(|start| start.duration_since(origin).as_micros()),
-                    "submit_attempt_us": origin.elapsed().as_micros(),
-                }),
-            );
-        }
-        record_main_stage(&mut native_main_stages, MainStage::AfterNativeRedrawLog);
-        let send_cpu_frame_id = match &req {
-            RenderRequest::Frame { cpu_frame_id, .. } => *cpu_frame_id,
-            RenderRequest::Shutdown { .. } => None,
-        };
-        let (send_result, send_bounds) = crate::render_thread::timing::around(
-            self.native_input_origin.is_some() && crate::render_thread::timing::enabled(),
-            || render.render_tx.send(req),
-        );
-        if let Some(bounds) = send_bounds {
-            crate::native_scenario::log::emit_json(
-                "tilo-native-send",
-                serde_json::json!({
-                    "cpu_frame_id": send_cpu_frame_id,
-                    "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
-                    "before_host_lo_s": bounds.before.map(|b| b.lo_s),
-                    "before_host_hi_s": bounds.before.map(|b| b.hi_s),
-                    "after_host_lo_s": bounds.after.map(|b| b.lo_s),
-                    "after_host_hi_s": bounds.after.map(|b| b.hi_s),
-                    "send_ok": send_result.is_ok(),
-                }),
-            );
-        }
-        if let Some(stages) = native_main_stages {
-            crate::native_scenario::log::emit_json(
-                "tilo-native-main-stages",
-                stages.row(send_cpu_frame_id),
-            );
-        }
-        if send_result.is_err() {
-            tracing::error!("ui-render thread receiver closed; exiting");
-            event_loop.exit();
-            return;
-        }
-        mark_first_frame("first-frame-submitted");
-        self.primary_frames_sent = self.primary_frames_sent.saturating_add(1);
-        let submitted = self.primary_frames_sent;
-        for required in self.floating_source_clear_frames.values_mut() {
-            if required.is_none() {
-                *required = Some(submitted);
-            }
-        }
-        for required in self.floating_destination_present_frames.values_mut() {
-            if required.is_none() {
-                *required = Some(submitted);
-            }
-        }
+                .map(|sample| sample.frame)
+                .or_else(|| {
+                    self.physical_input_trace
+                        .as_ref()
+                        .map(|_| self.primary_frames_sent.saturating_add(1))
+                });
 
-        let t_send_us = t_frame_start.map_or(0, |t| t.elapsed().as_micros());
-        if let Some(_start) = t_frame_start {
-            // On a static frame this reads `shape=0us hit=N miss=0`.
-            let (shape_hits, shape_misses, shape_ns) = app.text_renderer.take_shape_stats();
-            crate::diag!(
-                "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us (shape={:>4}us hit={} miss={}) send_to_worker={:>5}us",
-                t_send_us,
-                if t_relayout_branch { "Y" } else { "n" },
-                t_compute_us,
-                t_apply_us,
-                t_draw_us,
-                shape_ns.checked_div(1000).unwrap_or(0),
-                shape_hits,
-                shape_misses,
-                t_send_us,
+            if let Some(trace) = self.physical_input_trace.as_mut()
+                && trace.has_pending()
+                && let Some(row) = trace.drawn(cpu_frame_id, app.native_input_snapshot())
+            {
+                crate::native_scenario::log::emit_json("tilo-physical-frame", row);
+            }
+
+            let req = RenderRequest::Frame {
+                cpu_frame_id,
+                scene,
+                width,
+                height,
+                base_color: app.theme.tokens.colors.surfaces.content,
+                damage_regions,
+                scroll_copies,
+                full_redraw: full_redraw_required,
+                backdrop,
+                on_present: self.dev_reload_timing.take().map(|timing| {
+                    let submitted = crate::time::wall();
+                    Box::new(move |presented| timing.record(submitted, presented))
+                        as crate::render_thread::PresentHook
+                }),
+            };
+            record_main_stage(&mut native_main_stages, MainStage::AfterHudRequest);
+            if let Some((origin, entered)) = native_redraw_entry {
+                // All three values use the input timeline's monotonic origin.
+                // This is a CPU submit attempt, not GPU/display completion.
+                crate::native_scenario::log::emit_json(
+                    "tilo-native-redraw",
+                    serde_json::json!({
+                        "cpu_frame_id": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
+                        "redraw_enter_us": entered.duration_since(origin).as_micros(),
+                        "timed_build_start_us": __prof_frame_start.map(|start| start.duration_since(origin).as_micros()),
+                        "submit_attempt_us": origin.elapsed().as_micros(),
+                    }),
+                );
+            }
+            record_main_stage(&mut native_main_stages, MainStage::AfterNativeRedrawLog);
+            let send_cpu_frame_id = match &req {
+                RenderRequest::Frame { cpu_frame_id, .. } => *cpu_frame_id,
+                RenderRequest::Shutdown { .. } => None,
+            };
+            announce_frame(window);
+            let (send_result, send_bounds) = crate::render_thread::timing::around(
+                crate::render_thread::timing::enabled(),
+                || render.render_tx.send(req),
             );
+            if let Some(bounds) = send_bounds {
+                crate::native_scenario::log::emit_timing_json(
+                    "tilo-native-send",
+                    serde_json::json!({
+                        "cpu_frame_id": send_cpu_frame_id,
+                        "host_clock": crate::native_scenario::host_clock::CLOCK_NAME,
+                        "before_host_lo_s": bounds.before.map(|b| b.lo_s),
+                        "before_host_hi_s": bounds.before.map(|b| b.hi_s),
+                        "after_host_lo_s": bounds.after.map(|b| b.lo_s),
+                        "after_host_hi_s": bounds.after.map(|b| b.hi_s),
+                        "send_ok": send_result.is_ok(),
+                    }),
+                );
+            }
+            if let Some(stages) = native_main_stages {
+                crate::native_scenario::log::emit_timing_json(
+                    "tilo-native-main-stages",
+                    stages.row(send_cpu_frame_id),
+                );
+            }
+            if send_result.is_err() {
+                let reason = crate::render_thread::take_surface_loss()
+                    .unwrap_or_else(|| "its render thread stopped".to_owned());
+                stop_abnormally(event_loop, reason);
+                return;
+            }
+            mark_first_frame("first-frame-submitted");
+            self.presence_layer.presented();
+            self.primary_frames_sent = self.primary_frames_sent.saturating_add(1);
+            let submitted = self.primary_frames_sent;
+            app.capture_frame_submitted(submitted);
+            app.floating
+                .submitted_action_markers
+                .push_back((submitted, app.floating.drawn_action_markers.clone()));
+            for required in self.floating_source_clear_frames.values_mut() {
+                if required.is_none() {
+                    *required = Some(submitted);
+                }
+            }
+            for required in self.floating_destination_present_frames.values_mut() {
+                if required.is_none() {
+                    *required = Some(submitted);
+                }
+            }
+
+            let t_send_us = t_frame_start.map_or(0, |t| t.elapsed().as_micros());
+            if let Some(_start) = t_frame_start {
+                // On a static frame this reads `shape=0us hit=N miss=0`.
+                let (shape_hits, shape_misses, shape_ns) = app.text_renderer.take_shape_stats();
+                crate::diag!(
+                    "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us (shape={:>4}us hit={} miss={}) send_to_worker={:>5}us",
+                    t_send_us,
+                    if geometry_changed { "Y" } else { "n" },
+                    t_compute_us,
+                    t_apply_us,
+                    t_draw_us,
+                    shape_ns.checked_div(1000).unwrap_or(0),
+                    shape_hits,
+                    shape_misses,
+                    t_send_us,
+                );
+            }
+        } else {
+            // The callback that woke this redraw changed no pixels. Presenting
+            // would commit a new buffer and a new frame callback, and the
+            // shell would paint that echo while the desktop sat still.
+            scene.reset();
+            render.buffers.unprepare((scene, damage_regions));
         }
 
         if needs_followup_redraw {
@@ -2042,551 +3293,12 @@ impl AppHandler {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "input routing shares mutable state and must retain fixed precedence"
-    )]
     /// Whether something consumed the event.
     fn handle_other_window_event(&mut self, window: &Arc<Window>, other: WindowEvent) -> bool {
-        let _entry = self.app.enter_wake_scope();
-        let event = other;
-        if self.app.close_handle_event(&event, window.scale_factor()) {
-            window.request_redraw();
-            return true;
-        }
-        let app = &mut self.app;
-        let history_input = app.history_controls_event(&event, window.scale_factor());
-        let _history_frame = crate::history_mode::frame::FrameworkInputFrame::new(
-            &app.framework_input,
-            history_input,
-        );
-        let detected_interaction = if self.dispatching_touch_pointer {
-            None
-        } else {
-            match &event {
-                WindowEvent::Touch(_) => Some(app.input.interaction.with_touch_modality()),
-                WindowEvent::CursorMoved { .. }
-                | WindowEvent::MouseInput { .. }
-                | WindowEvent::MouseWheel { .. } => {
-                    Some(app.input.interaction.with_pointer_modality())
-                }
-                WindowEvent::KeyboardInput {
-                    event:
-                        winit::event::KeyEvent {
-                            state: ElementState::Pressed,
-                            ..
-                        },
-                    ..
-                } => Some(app.input.interaction.with_keyboard_modality()),
-                _ => None,
-            }
-        };
-        if let Some(environment) = detected_interaction {
-            app.set_interaction_environment(environment);
-        }
-        if history_input {
-            app.dispatch_framework_history_event(&event, window.scale_factor());
-            window.request_redraw();
-            return true;
-        }
-        let __prof_input = app.profiler.as_ref().map(|_| crate::time::now());
-        // RUST_LOG=tilo_ui::app=debug: pointer-move spam is intentionally
-        // not throttled here — when the bug is "no clicks work", you
-        // want to see whether moves arrive at all.
-        match &event {
-            WindowEvent::MouseInput { state, button, .. } => {
-                tracing::debug!(?state, ?button, "App::window_event MouseInput");
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                tracing::trace!(
-                    x = position.x,
-                    y = position.y,
-                    "App::window_event CursorMoved"
-                );
-            }
-            WindowEvent::KeyboardInput { event: ke, .. } => {
-                tracing::debug!(key = ?ke.logical_key, state = ?ke.state, "App::window_event KeyboardInput");
-            }
-            _ => {}
-        }
-        // `CursorMoved` is measured in this window's own content,
-        // never the desktop — see the `pointer_space` field.
-        if app.presence.broadcast_scope.is_some() {
-            match &event {
-                WindowEvent::CursorMoved { position, .. } => {
-                    let now = crate::time::now();
-                    if pointer_broadcast_allowed(
-                        app.presence.last_pointer_broadcast,
-                        now,
-                        Duration::from_millis(POINTER_BROADCAST_MIN_GAP_MS),
-                    ) {
-                        app.presence.last_pointer_broadcast = Some(now);
-                        let where_it_is = app.local_pointer_key();
-                        #[allow(
-                            clippy::cast_possible_truncation,
-                            reason = "presence coordinates are intentionally narrowed to f32 on the wire; identical to today's output"
-                        )]
-                        app.broadcast_presence(
-                            where_it_is,
-                            PresencePayload::Pointer {
-                                x: position.x as f32,
-                                y: position.y as f32,
-                            },
-                        );
-                    }
-                }
-                WindowEvent::CursorLeft { .. } => {
-                    let where_it_was = app.local_pointer_key();
-                    app.broadcast_presence(where_it_was, PresencePayload::Left);
-                    app.presence.last_pointer_broadcast = None;
-                }
-                _ => {}
-            }
-        }
-
-        let mut handled = false;
-        let mut history_handled = matches!(event, WindowEvent::KeyboardInput { .. })
-            && app
-                .focused_node
-                .is_some_and(|node| app.is_history_node(node));
-        let mut focus_target = None;
-        // A synthesized hover-clear may be handled by a control, but it is
-        // presentation state and must not create an empty undo boundary.
-        let mut is_undo_redo =
-            self.dispatching_touch_pointer && matches!(event, WindowEvent::CursorMoved { .. });
-        let mut floating_pointer_needs_redraw = false;
-
-        // The palette owns the keyboard while open; Ctrl+K itself is
-        // handled below, so let it through.
-        if app.actions.action_palette.is_some() {
-            let is_ctrl_k = matches!(
-                &event,
-                WindowEvent::KeyboardInput {
-                    event: winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Character(c),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                    ..
-                } if app
-                    .input
-                    .platform
-                    .command_modifier_down(app.input.modifiers.state())
-                    && crate::platform::HostShortcut::resolve(
-                        app.input.platform,
-                        c,
-                        app.input.modifiers.state().shift_key(),
-                    ) == Some(crate::platform::HostShortcut::Search)
-            );
-            if !is_ctrl_k
-                && matches!(
-                    event,
-                    WindowEvent::KeyboardInput { .. }
-                        | WindowEvent::Ime(_)
-                        | WindowEvent::CursorMoved { .. }
-                        | WindowEvent::CursorLeft { .. }
-                        | WindowEvent::MouseInput { .. }
-                        | WindowEvent::MouseWheel { .. }
-                )
-                && app.action_palette_handle_event(&event, window.scale_factor())
-            {
-                handled = true;
-            }
-        }
-
-        // Runs FIRST so it wins over Tab/arrow handling.
-        if app.handle_screen_reader_key(&event) {
-            handled = true;
-            is_undo_redo = true; // suppress an undo commit for a read cmd
-        }
-
-        let state_pre = if matches!(
-            event,
-            WindowEvent::KeyboardInput { .. }
-                | WindowEvent::MouseInput {
-                    state: winit::event::ElementState::Pressed,
-                    ..
-                }
-        ) {
-            app.focused_state_snapshot()
-        } else {
-            None
-        };
-
-        let review_pre = if matches!(event, WindowEvent::KeyboardInput { .. }) {
-            app.text_review_snapshot()
-        } else {
-            None
-        };
-
-        // Governs pointer click-through only; keyboard focus
-        // containment is the separate `traps_focus()` concern (see
-        // `keyboard_nav_allowed`).
-        let modal_rect = app.root_widget.modal_capture();
-
-        if !handled
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::F12),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            app.debug_mode = !app.debug_mode;
-            handled = true;
-        }
-
-        if !handled
-            && app
-                .input
-                .platform
-                .command_modifier_down(app.input.modifiers.state())
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Character(ref c),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            let shift = app.input.modifiers.state().shift_key();
-            match crate::platform::HostShortcut::resolve(app.input.platform, c, shift) {
-                Some(crate::platform::HostShortcut::Undo) => {
-                    app.perform_undo_request(crate::undo::UndoRequest::Undo);
-                    is_undo_redo = true;
-                    handled = true;
-                }
-                Some(crate::platform::HostShortcut::Redo) => {
-                    app.perform_undo_request(crate::undo::UndoRequest::Redo);
-                    is_undo_redo = true;
-                    handled = true;
-                }
-                // A second press closes the palette.
-                Some(crate::platform::HostShortcut::Search) => {
-                    if app.actions.action_palette.is_some() {
-                        app.close_action_palette();
-                    } else {
-                        app.open_action_palette();
-                    }
-                    handled = true;
-                }
-                Some(crate::platform::HostShortcut::History) => {
-                    handled = app.invoke_host_shortcut(crate::platform::HostShortcut::History);
-                }
-                None => {}
-            }
-            if handled {
-                window.request_redraw();
-            }
-        }
-
-        if !handled && app.handle_tab_navigation(&event, modal_rect) {
-            handled = true;
-        }
-
-        if !handled
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(logical_key),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            let dir = match logical_key {
-                winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
-                winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
-                winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
-                winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
-                _ => None,
-            };
-            if let (Some(d), true, true) = (
-                dir,
-                app.input.modifiers.state().alt_key(),
-                app.keyboard_nav_allowed(modal_rect),
-            ) {
-                app.navigate_focus(d);
-                handled = true;
-            }
-        }
-
-        // Two-finger swipe, edge pull or mouse side button; delivered via
-        // `on_nav_gesture`.
-        if !handled && !self.dispatching_touch_pointer {
-            use crate::gesture::GesturePhase;
-            let map_phase = |p: winit::event::TouchPhase| match p {
-                winit::event::TouchPhase::Started => GesturePhase::Begin,
-                winit::event::TouchPhase::Moved => GesturePhase::Update,
-                winit::event::TouchPhase::Ended => GesturePhase::End,
-                winit::event::TouchPhase::Cancelled => GesturePhase::Cancel,
-            };
-            let nav = match &event {
-                WindowEvent::MouseWheel { delta, phase, .. } => {
-                    let (dx, dy, precise) = match delta {
-                        winit::event::MouseScrollDelta::PixelDelta(p) => (p.x, p.y, true),
-                        winit::event::MouseScrollDelta::LineDelta(x, y) => {
-                            (f64::from(*x), f64::from(*y), false)
-                        }
-                    };
-                    app.input
-                        .nav_gestures
-                        .on_scroll(dx, dy, map_phase(*phase), precise)
-                }
-                WindowEvent::PanGesture { delta, phase, .. } => app.input.nav_gestures.on_scroll(
-                    f64::from(delta.x),
-                    f64::from(delta.y),
-                    map_phase(*phase),
-                    true,
-                ),
-                WindowEvent::MouseInput { .. } => crate::interaction::mouse_nav_direction(&event),
-                WindowEvent::Touch(t) => {
-                    let width = f64::from(window.inner_size().width);
-                    app.input.nav_gestures.on_touch(
-                        t.id,
-                        t.location.x,
-                        t.location.y,
-                        map_phase(t.phase),
-                        width,
-                    )
-                }
-                _ => None,
-            };
-            if let Some(dir) = nav {
-                let consumed =
-                    app.root_widget
-                        .on_nav_gesture(dir, &mut app.state.doc, &app.state.root);
-                if consumed {
-                    app.needs_sync = true;
-                    window.request_redraw();
-                    handled = true;
-                }
-            }
-        }
-
-        if !handled && app.layout.root_node.is_some() {
-            app.refresh_control_action_availability();
-            let scale_factor = window.scale_factor();
-            let presentation_was_floating =
-                !app.root_widget.floating_surface_presentations().is_empty();
-            let floating_pointer_event = app.primary_floating_pointer_event(&event, scale_factor);
-            let used_desktop_pointer_space = floating_pointer_event.is_some();
-            let event_for_root = floating_pointer_event.as_ref().unwrap_or(&event);
-            let was_mouse_click = matches!(
-                event,
-                WindowEvent::MouseInput {
-                    state: winit::event::ElementState::Pressed,
-                    ..
-                }
-            );
-            history_handled |= app.presentation_handle_event(
-                event_for_root,
-                scale_factor,
-                &mut handled,
-                &mut focus_target,
-            );
-            // Even a document-free interaction may switch which resources a
-            // widget presents. Invalidate once at the mutable tree boundary;
-            // all later consumers in this event/frame share the rebuilt cache.
-            app.invalidate_widget_resource_cache();
-            let presentation_is_floating =
-                !app.root_widget.floating_surface_presentations().is_empty();
-            floating_pointer_needs_redraw = matches!(event, WindowEvent::CursorMoved { .. })
-                && (used_desktop_pointer_space
-                    || presentation_was_floating != presentation_is_floating);
-            if was_mouse_click {
-                tracing::debug!(
-                    handled,
-                    needs_redraw = app.root_widget.needs_redraw(),
-                    is_layout_dirty = app.root_widget.is_layout_dirty(),
-                    "root_widget.handle_event(MouseInput Pressed) returned"
-                );
-            }
-            // A press the modal didn't consume (the dimmed backdrop)
-            // is still marked handled so it can't reach widgets
-            // behind the scrim.
-            if modal_rect.is_some()
-                && matches!(
-                    event,
-                    WindowEvent::MouseInput {
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    } | WindowEvent::MouseInput {
-                        state: winit::event::ElementState::Released,
-                        ..
-                    }
-                )
-            {
-                handled = true;
-            }
-        }
-
-        // Alt+Arrow remains host directional navigation when the focused
-        // widget leaves it unhandled. Running this after widget dispatch lets
-        // editors consume platform word/selection shortcuts first, while
-        // keeping Alt navigation ahead of the plain range-control fallback.
-        app.handle_unconsumed_directional_key(&event, modal_rect, true, &mut handled);
-
-        // If no widget consumed Enter/Space (text inputs do), activate
-        // the focused control the same way a mouse click would.
-        app.handle_unconsumed_activation_key(&event, &mut handled);
-
-        // A focused range control consumes Left/Right; Up/Down and Tab
-        // still move focus. Modifiers scale the step:
-        //   plain  → one step       Shift → four steps (coarse)
-        //   Ctrl   → jump to min/max (Left = min, Right = max)
-        // Other widgets ignore the action, falling through to
-        // directional navigation below.
-        if !handled
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(named),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            use crate::a11y::Action;
-            let ctrl = app
-                .input
-                .platform
-                .command_modifier_down(app.input.modifiers.state());
-            let shift = app.input.modifiers.state().shift_key();
-            // (action to repeat, how many times)
-            let (action, times) = match named {
-                winit::keyboard::NamedKey::ArrowLeft if ctrl => {
-                    (Some(Action::SetValue("0".into())), 1)
-                }
-                winit::keyboard::NamedKey::ArrowRight if ctrl => {
-                    (Some(Action::SetValue("100".into())), 1)
-                }
-                winit::keyboard::NamedKey::ArrowLeft => {
-                    (Some(Action::Decrement), if shift { 4 } else { 1 })
-                }
-                winit::keyboard::NamedKey::ArrowRight => {
-                    (Some(Action::Increment), if shift { 4 } else { 1 })
-                }
-                _ => (None, 0),
-            };
-            if let (Some(act), Some(fid)) = (action, app.focused_node) {
-                let mut any = false;
-                for _ in 0..times {
-                    any |= app
-                        .dispatch_node(fid, |widget, doc, root| {
-                            widget.perform_action(&act, doc, root)
-                        })
-                        .unwrap_or(false);
-                }
-                if any {
-                    handled = true;
-                    app.needs_sync = true;
-                    app.layout.layout_dirty = true;
-                }
-            }
-        }
-
-        app.handle_unconsumed_directional_key(&event, modal_rect, false, &mut handled);
-
-        if app.dispatch_control_invocations() != 0 {
-            handled = true;
-            app.needs_sync = true;
-            app.layout.layout_dirty = true;
-            window.request_redraw();
-        }
-
-        if let Some(address) = app.root_widget.take_action_palette_request()
-            && app.open_action_palette_at(&address)
-        {
-            app.layout.layout_dirty = true;
-            window.request_redraw();
-        }
-
-        app.broadcast_focus_presence();
-        app.broadcast_location_presence();
-        app.broadcast_view_presence();
-        app.publish_action_surface();
-        app.publish_continuation_metadata();
-        app.publish_playback_handoff();
-
-        if let Some(id) = focus_target {
-            app.set_focused_node(Some(id));
-            handled = true;
-        }
-
-        app.announce_state_change(state_pre);
-        app.announce_text_review(review_pre);
-
-        if handled {
-            app.finalize_handled_native_event(&event, is_undo_redo, history_handled);
-            app.needs_sync = true;
-            // Gating every handled event on `needs_redraw()` is
-            // wrong: container widgets can mutate their own
-            // active-index state without setting a descendant leaf's
-            // `dirty` flag, so recursive `needs_redraw` misses it.
-            // Only pointer MOVES (the hot 60+ Hz stream) skip a
-            // redraw when nothing's dirty.
-            let is_pointer_move = matches!(&event, WindowEvent::CursorMoved { .. });
-            if !is_pointer_move || app.root_widget.is_layout_dirty() {
-                app.layout.layout_dirty = true;
-            }
-            if !is_pointer_move
-                || floating_pointer_needs_redraw
-                || app.root_widget.needs_redraw()
-                || app.history_needs_redraw()
-            {
-                window.request_redraw();
-            }
-        }
-
-        // Resolved on every `CursorMoved`, not just handled ones, so
-        // the shape stays correct crossing into a widget that
-        // doesn't flip its own hover.
-        if let WindowEvent::CursorMoved { position, .. } = &event {
-            let scale = window.scale_factor();
-            let logical = Point::new(position.x / scale, position.y / scale);
-            let desired = app.resolve_cursor(logical).unwrap_or(CursorIcon::Default);
-            if app.input.current_cursor != desired {
-                app.input.current_cursor = desired;
-                window.set_cursor(desired);
-            }
-            // `on_pointer` keeps the dwell running over the same
-            // region and restarts it on a new one.
-            let target = app.tooltip_target_at(logical);
-            if app
-                .input
-                .tooltip_host
-                .on_pointer(target, crate::time::now())
-            {
-                window.request_redraw();
-            }
-        }
-
-        if matches!(
-            &event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            } | WindowEvent::MouseWheel { .. }
-                | WindowEvent::KeyboardInput { .. }
-                | WindowEvent::Touch(_)
-                | WindowEvent::CursorLeft { .. }
-        ) && app.input.tooltip_host.dismiss()
-        {
-            window.request_redraw();
-        }
-
-        if let (Some(start), Some(p)) = (__prof_input, app.profiler.as_mut()) {
-            p.record(crate::profiling::Pass::HandleEvent, start.elapsed());
-        }
-        handled
+        let synthesized_touch = self.dispatching_touch_pointer;
+        let _dispatch = slow_event::phase("dispatch");
+        self.app
+            .surface_input(window.as_ref(), other, synthesized_touch)
     }
 }
 
@@ -2618,7 +3330,7 @@ impl AppHandler {
             windows.push(("primary".to_owned(), window.clone()));
         }
         for surface in &self.floating_windows {
-            if !surface.suspended {
+            if !surface.lifecycle.suspended {
                 windows.push((surface.id.clone(), surface.window.clone()));
             }
         }
@@ -2703,16 +3415,40 @@ impl AppHandler {
 }
 
 impl ApplicationHandler<UserEvent> for AppHandler {
-    // SAFETY: the zeroed-DeviceId transmutes below are safe because winit's
-    // DeviceId is opaque and the dispatch chain never inspects it (same
-    // trick `shell::compositor::native` uses headless).
     #[allow(
         clippy::too_many_lines,
         reason = "winit requires the complete synthetic event dispatch at this callback boundary"
     )]
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        let _slow = slow_event::Span::begin(
+            "user_event",
+            match &event {
+                UserEvent::AccessKit { .. } => "AccessKit",
+                UserEvent::RenderReady(_) => "RenderReady",
+                _ => "other",
+            },
+        );
         let _entry = self.app.enter_wake_scope();
         let event = match event {
+            UserEvent::AccessKit { window_id, event }
+                if self
+                    .floating_windows
+                    .iter()
+                    .any(|surface| surface.window.id() == window_id) =>
+            {
+                self.handle_secondary_accessibility_event(window_id, event);
+                return;
+            }
+            UserEvent::AccessKit { window_id, .. }
+                if self
+                    .window
+                    .as_ref()
+                    .is_none_or(|window| window.id() != window_id) =>
+            {
+                // A queued request from a surface that has already closed
+                // must not be reinterpreted against the primary tree.
+                return;
+            }
             UserEvent::RenderReady(id) => {
                 if let Some(window) = self.window.as_ref().filter(|window| window.id() == id) {
                     window.request_redraw();
@@ -2755,7 +3491,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             return;
         };
         let window_id = window.id();
-        let mut effect_before = None;
         let event = match event {
             UserEvent::NativeScenarioInput(packet) => {
                 if self.native_input_origin.is_none() {
@@ -2790,48 +3525,36 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         "lateness_us": now.saturating_duration_since(packet.scheduled_at).as_micros(),
                     }),
                 );
-                effect_before = self
-                    .app
-                    .native_input_snapshot()
-                    .map(|value| (packet.id, value));
+                let before = self.app.native_input_snapshot();
                 self.native_input_ids.push(packet.id);
-                match packet.input {
-                    crate::native_scenario::Input::Hover { x, y } => UserEvent::Hover { x, y },
-                    crate::native_scenario::Input::Click { x, y } => UserEvent::Click { x, y },
-                    crate::native_scenario::Input::Wheel { dx, dy } => UserEvent::Wheel { dx, dy },
-                    crate::native_scenario::Input::Character { value } => {
-                        UserEvent::Key(winit::keyboard::Key::Character(value.to_string().into()))
-                    }
-                    crate::native_scenario::Input::Key { key } => UserEvent::Key(key.into()),
+                // Pen steps carry their samples ahead of each pointer event,
+                // so a paced stroke reaches widgets as a tablet's would.
+                for event in packet.input.window_events() {
+                    self.injected_window_event(event_loop, window_id, event);
                 }
+                if let Some(before) = before {
+                    crate::native_scenario::log::emit_json(
+                        "tilo-native-effect",
+                        serde_json::json!({
+                            "id": packet.id, "before": before, "after": self.app.native_input_snapshot(),
+                        }),
+                    );
+                }
+                return;
             }
             other => other,
         };
         match event {
             UserEvent::Hover { x, y } => {
-                let ev = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: PhysicalPosition::new(x, y),
-                };
+                let ev = crate::synthetic_input::cursor_moved(x, y);
                 self.injected_window_event(event_loop, window_id, ev);
             }
             UserEvent::Click { x, y } => {
-                let moved = WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: PhysicalPosition::new(x, y),
-                };
+                let moved = crate::synthetic_input::cursor_moved(x, y);
                 self.injected_window_event(event_loop, window_id, moved);
-                let press = WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                };
+                let press = crate::synthetic_input::mouse_press();
                 self.injected_window_event(event_loop, window_id, press);
-                let release = WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                };
+                let release = crate::synthetic_input::mouse_release();
                 self.injected_window_event(event_loop, window_id, release);
             }
             UserEvent::Key(key) => {
@@ -2839,22 +3562,21 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     self.injected_window_event(
                         event_loop,
                         window_id,
-                        crate::synthetic_input::key_event(&key, state),
+                        crate::synthetic_input::key_input(&key, state),
                     );
                 }
             }
             UserEvent::Wheel { dx, dy } => {
-                let ev = WindowEvent::MouseWheel {
-                    device_id: unsafe { std::mem::zeroed() },
-                    delta: winit::event::MouseScrollDelta::LineDelta(dx, dy),
-                    phase: winit::event::TouchPhase::Moved,
-                };
+                let ev = crate::synthetic_input::mouse_wheel(dx, dy);
                 self.injected_window_event(event_loop, window_id, ev);
             }
             UserEvent::External(payload) => {
                 let app = &mut self.app;
-                app.root_widget
-                    .on_external_event(&payload, &mut app.state.doc, &app.state.root);
+                app.root_widget.on_external_event(
+                    &payload,
+                    &mut crate::widget::Edits::lend(&mut app.state.doc),
+                    &app.state.root,
+                );
                 app.needs_sync = true;
                 window.request_redraw();
             }
@@ -2894,7 +3616,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             | UserEvent::RenderReady(_)
             | UserEvent::DevSessionStop
             | UserEvent::DevSessionReload => {}
-            UserEvent::AccessKit(ak_event) => {
+            UserEvent::AccessKit {
+                event: ak_event, ..
+            } => {
                 use accesskit_winit::WindowEvent as AkWindowEvent;
                 match ak_event {
                     AkWindowEvent::InitialTreeRequested => {
@@ -2919,22 +3643,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             if let Some((x, y)) = click {
                                 let scale = window.scale_factor();
                                 let (px, py) = (x * scale, y * scale);
-                                let moved = WindowEvent::CursorMoved {
-                                    device_id: unsafe { std::mem::zeroed() },
-                                    position: PhysicalPosition::new(px, py),
-                                };
+                                let moved = crate::synthetic_input::cursor_moved(px, py);
                                 self.injected_window_event(event_loop, window_id, moved);
-                                let press = WindowEvent::MouseInput {
-                                    device_id: unsafe { std::mem::zeroed() },
-                                    state: ElementState::Pressed,
-                                    button: MouseButton::Left,
-                                };
+                                let press = crate::synthetic_input::mouse_press();
                                 self.injected_window_event(event_loop, window_id, press);
-                                let release = WindowEvent::MouseInput {
-                                    device_id: unsafe { std::mem::zeroed() },
-                                    state: ElementState::Released,
-                                    button: MouseButton::Left,
-                                };
+                                let release = crate::synthetic_input::mouse_release();
                                 self.injected_window_event(event_loop, window_id, release);
                             }
                             window.request_redraw();
@@ -2943,14 +3656,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     AkWindowEvent::AccessibilityDeactivated => {}
                 }
             }
-        }
-        if let Some((id, before)) = effect_before {
-            crate::native_scenario::log::emit_json(
-                "tilo-native-effect",
-                serde_json::json!({
-                    "id": id, "before": before, "after": self.app.native_input_snapshot(),
-                }),
-            );
         }
     }
 
@@ -2971,56 +3676,40 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // AccessKit's adapter asserts it's created while the window is
         // hidden, so build invisible, create the adapter, show.
         let title = resolve_window_title(self.app.window.title.as_deref());
-        let icon = crate::window_icon::resolve();
-        let window_attributes = Window::default_attributes()
-            .with_title(title)
-            .with_window_icon(icon.clone())
-            // Draggable title bar on compositors with no server-side
-            // decorations (e.g. GNOME/mutter); explicit though it's the
-            // winit default, so the intent is unmistakable.
-            .with_decorations(true)
-            .with_visible(false)
-            .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
-        // Optional profiling placement keeps concurrent benchmark windows from
-        // completely occluding one another. Platform window managers may ignore it.
-        let window_attributes = match std::env::var("TILO_PROFILE_WINDOW_POSITION")
-            .ok()
-            .and_then(|value| crate::profiling::profile_window_position(&value))
-        {
-            Some((x, y)) => window_attributes.with_position(winit::dpi::LogicalPosition::new(x, y)),
-            None => window_attributes,
-        };
-        // Benchmarks can keep their own windows above unrelated desktop apps.
-        // This does not change normal application window ordering.
-        let window_attributes = if std::env::var("TILO_PROFILE_WINDOW_FRONT").as_deref() == Ok("1")
-        {
-            window_attributes.with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+        let icon = if takes_window_icon(event_loop) {
+            crate::window_icon::resolve()
         } else {
-            window_attributes
+            None
         };
-        // See `resolve_app_id`: a shared id collapses per-app compositor
-        // lookups.
-        #[cfg(target_os = "linux")]
-        let window_attributes = {
-            use winit::platform::wayland::WindowAttributesExtWayland;
-            let package_id = std::env::var("TILO_PACKAGE_ID").ok();
-            let app_id = resolve_app_id(
-                self.app.window.app_id.as_deref().or(package_id.as_deref()),
-                std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                    .as_deref(),
-            );
-            window_attributes.with_name(app_id, "")
+        let app_id = primary_window_app_id(self.app.window.app_id.as_deref());
+        // The window the launch made before constructing the app, when it
+        // announces the id this app's window must have. Its surface may
+        // already be configured on the renderer-preparation thread.
+        let early = match early_for(take_early_window(), &app_id) {
+            Early::Kept(window) => {
+                tilo_startup_metrics::mark("startup-window-adopted");
+                window.set_title(&title);
+                Some(window)
+            }
+            Early::Discarded => {
+                // An input surface announces its own id: its window is made
+                // below, and `init_render` discards the early surface.
+                tilo_startup_metrics::mark("startup-window-discarded");
+                None
+            }
+            Early::Absent => None,
         };
-        // `resumed` is a winit `ApplicationHandler` callback returning `()`,
-        // so a `create_window` failure (compositor gone) has nowhere to
-        // propagate to; there is no window to run without it either way.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "fixed () trait signature; window-creation failure at startup is unrecoverable"
-        )]
-        let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+        let window = early.unwrap_or_else(|| {
+            let window_attributes = primary_window_attributes(title, icon.clone(), &app_id);
+            // `resumed` is a winit `ApplicationHandler` callback returning `()`,
+            // so a `create_window` failure (compositor gone) has nowhere to
+            // propagate to; there is no window to run without it either way.
+            #[allow(
+                clippy::unwrap_used,
+                reason = "fixed () trait signature; window-creation failure at startup is unrecoverable"
+            )]
+            Arc::new(event_loop.create_window(window_attributes).unwrap())
+        });
         #[cfg(target_os = "macos")]
         {
             use winit::platform::macos::ActiveEventLoopExtMacOS;
@@ -3052,23 +3741,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window.set_window_icon(icon);
 
         // Must be created before the window is shown.
-        #[cfg(not(target_os = "android"))]
-        {
-            self.a11y_adapter = Some(accesskit_winit::Adapter::with_event_loop_proxy(
-                event_loop,
-                &window,
-                self.a11y_proxy.clone(),
-            ));
-        }
         // One provider per view: the previous one must be withdrawn first.
-        #[cfg(target_os = "android")]
-        {
-            self.a11y_adapter = None;
-            match PrimaryA11yAdapter::new(event_loop, &window, self.a11y_proxy.clone()) {
-                Ok(adapter) => self.a11y_adapter = Some(adapter),
-                Err(error) => crate::diag!("tilo: no TalkBack access: {error}"),
-            }
-        }
+        self.a11y_adapter = None;
+        self.a11y_adapter =
+            create_accessibility_adapter(event_loop, &window, self.a11y_proxy.clone());
         crate::widget::mount_native_views(
             self.app.root_widget.as_mut(),
             &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
@@ -3154,6 +3830,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        let _slow = slow_event::Span::begin("window_event", slow_event::window_event_name(&event));
+        if let Some(window) = self
+            .window
+            .clone()
+            .filter(|window| window.id() == window_id)
+            && self
+                .private_input
+                .event(&mut self.app, window.as_ref(), &event)
+        {
+            self.sync_ime(&window);
+            return;
+        }
         #[cfg(target_os = "android")]
         if let WindowEvent::Touch(touch) = &event
             && touch.phase == winit::event::TouchPhase::Started
@@ -3170,16 +3858,44 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
             self.text_input_touched = true;
         }
+        let physical_input = if crate::physical_input_trace::Trace::observes(&event)
+            && self
+                .window
+                .as_ref()
+                .is_some_and(|window| window.id() == window_id)
+        {
+            let state = self
+                .physical_input_trace
+                .as_ref()
+                .and_then(|_| self.app.native_input_snapshot());
+            self.physical_input_trace
+                .as_mut()
+                .and_then(|trace| trace.begin(&event, state))
+        } else {
+            None
+        };
         self.note_host_appearance_event(&event);
-        self.route_window_event(
+        let admitted = self.route_window_event(
             event_loop,
             window_id,
             event,
             native_input_isolation::EventOrigin::Platform,
         );
+        if let Some(input) = physical_input {
+            let mut row =
+                crate::physical_input_trace::Trace::effect(input, self.app.native_input_snapshot());
+            let modifiers = self.app.input.modifiers.state();
+            row["input_route_admitted"] = serde_json::json!(admitted);
+            row["modifiers"] = serde_json::json!({
+                "shift": modifiers.shift_key(), "control": modifiers.control_key(),
+                "alt": modifiers.alt_key(), "super": modifiers.super_key(),
+            });
+            crate::native_scenario::log::emit_json("tilo-physical-input", row);
+        }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let _slow = slow_event::Span::begin("about_to_wait", "");
         self.app.service_close_admission();
         if self.app.finish_close_if_ready() {
             event_loop.exit();
@@ -3189,6 +3905,24 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let Some(window) = self.window.clone() else {
             return;
         };
+        if std::mem::take(&mut self.primary_preedit_clear_pending) {
+            self.primary_preedit_active = false;
+            self.app.floating.pending_ime_ids.clear();
+            self.set_floating_ime_continuation(None);
+        }
+        let mut cleared_return = false;
+        for surface in &mut self.floating_windows {
+            if std::mem::take(&mut surface.preedit_clear_pending) {
+                surface.preedit_active = false;
+                if self.floating_ime_return_continuation.as_deref() == Some(surface.id.as_str()) {
+                    apply_native_ime(&surface.window, None, &mut surface.ime_state);
+                    cleared_return = true;
+                }
+            }
+        }
+        if cleared_return {
+            self.floating_ime_return_continuation = None;
+        }
         #[cfg(any(target_os = "macos", windows))]
         self.refresh_host_chrome();
         sync_safe_area(&mut self.app, &window);
@@ -3206,7 +3940,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         for (aux_window, render) in self
             .floating_windows
             .iter()
-            .filter(|surface| !surface.suspended)
+            .filter(|surface| !surface.lifecycle.suspended)
             .map(|surface| (&surface.window, surface.render.as_ref()))
             .chain(
                 self.audience_presentation
@@ -3232,7 +3966,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             .flatten();
         let any_render_available = primary_blocked_until.is_none()
             || self.floating_windows.iter().any(|surface| {
-                !surface.suspended
+                !surface.lifecycle.suspended
                     && surface
                         .render
                         .as_ref()
@@ -3259,7 +3993,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if retry_due {
             request_primary_redraw();
         }
-        self.sync_ime(&window);
         if self.last_primary_frame_presented > 0
             && let Some(scenario) = self.native_scenario.take()
         {
@@ -3285,6 +4018,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
         }
 
+        if self.app.open_requested_palette() {
+            request_primary_redraw();
+        }
         if self.app.pump_floating_surface_service() {
             self.app.invalidate_widget_resource_cache();
             self.app.layout.layout_dirty = true;
@@ -3292,6 +4028,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         if self.apply_floating_host_messages(event_loop) {
             self.app.invalidate_widget_resource_cache();
+            request_primary_redraw();
+        }
+        // PrepareSurface moves the same editor's IME intent into its exact
+        // source continuation. Apply that host lifecycle before comparing the
+        // primary window's intent, so an already-received handoff cannot emit
+        // a disable for the intermediate attached-widget projection.
+        self.sync_ime(&window);
+        if self.private_input.pending() {
             request_primary_redraw();
         }
         self.sync_native_floating_geometry();
@@ -3303,8 +4047,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // frames are cheap but essential: the first real buffer should take
         // ownership as soon as it is ready, without waiting for fresh input.
         for surface in &self.floating_windows {
-            if !surface.suspended
-                && !surface.adopted
+            if !surface.lifecycle.suspended
+                && !surface.lifecycle.adopted
                 && auxiliary_redraw_allowed(surface.render.as_ref())
             {
                 surface.window.request_redraw();
@@ -3349,8 +4093,19 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if app.pump_collab_presence() {
             request_primary_redraw();
         }
+        if app.presence_ctx.prune_interactions(crate::time::now()) {
+            request_primary_redraw();
+        }
         if app.poll_model_invocations() {
             request_primary_redraw();
+        }
+        // Reveal requests must not wait on rendering an occluded/minimized
+        // window: consume them as soon as its admitted actions are polled.
+        if crate::component_lifecycle::take_window_activation_intent(app.root_widget.as_ref()) {
+            window.set_minimized(false);
+            window.focus_window();
+            window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
+            tracing::debug!(target: "tilo.app.activation", "existing native window activation requested");
         }
         app.publish_playback_handoff();
 
@@ -3363,21 +4118,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             request_primary_redraw();
         }
 
-        let idle_model = app.service_idle_model();
+        let idle_model = app.service_native_idle_model();
         if idle_model.changed {
             request_primary_redraw();
-        }
-
-        if idle_model.local_commit {
-            if let Some(origin) = self.native_input_origin {
-                crate::native_scenario::log::emit_json(
-                    "tilo-native-commit-redraw",
-                    serde_json::json!({
-                        "after_cpu_frame": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
-                        "at_us": origin.elapsed().as_micros(),
-                    }),
-                );
-            }
         }
 
         if app.reconcile_fullscreen(&window) {
@@ -3421,9 +4164,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         app.broadcast_doc_delta();
 
-        // Flag drained by the draw handler, not here — just pump a redraw.
-        if app.root_widget.take_structure_dirty() {
-            app.layout.structure_dirty = true;
+        // Polling a view's topology can itself replace its widgets (Switch
+        // reconciles here). Retire the old node pointers before another
+        // input event can query a cursor or tooltip, even before drawing.
+        if app.forget_replaced_widgets() {
             request_primary_redraw();
         }
 
@@ -3432,6 +4176,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .next_wake_deadline()
                 .into_iter()
                 .chain(self.touch_pointer.long_press_deadline())
+                .chain(
+                    app.presence_ctx
+                        .interaction_next_wake_deadline(crate::time::now()),
+                )
                 .min(),
             app.close_admission.save_waiting,
             crate::time::now(),
@@ -3443,12 +4191,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             // spellcheck), not "commit a buffer". Files' 750ms metadata
             // poll found nothing and still presented at ~2 Hz because
             // `needs_sync` forced a full redraw.
-            let updated = app.update_model();
+            let updated = app.update_native_model();
             let _ = app.sync_model(true);
-            let structure = app.root_widget.take_structure_dirty();
-            if structure {
-                app.layout.structure_dirty = true;
-            }
+            let structure = app.forget_replaced_widgets();
             if present_after_deadline_sync(
                 updated || structure || app.layout.layout_dirty,
                 app.root_widget.needs_animation_frame(),
@@ -3456,6 +4201,24 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 request_primary_redraw();
             }
         }
+
+        // The poll above already ran. Re-read what it published so a deadline
+        // that is still in the past does not schedule a frame-rate follow-up.
+        let scheduled_deadline = crate::close_admission::wake_deadline(
+            app.root_widget
+                .next_wake_deadline()
+                .into_iter()
+                .chain(self.touch_pointer.long_press_deadline())
+                .chain(
+                    app.presence_ctx
+                        .interaction_next_wake_deadline(crate::time::now()),
+                )
+                .min(),
+            app.close_admission.save_waiting,
+            crate::time::now(),
+        );
+        let widget_still_due = !scheduled_due
+            && scheduled_deadline.is_some_and(|deadline| deadline <= crate::time::now());
 
         // A hover tooltip is not motion, so it reveals even under
         // reduce-motion — requested independently of the animation pump.
@@ -3466,16 +4229,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // Reduced motion lets the loop go idle since animated widgets
         // already paint their resting state.
-        let needs_frame = app.root_widget.needs_animation_frame();
+        let widget_animation = app.root_widget.needs_animation_frame();
+        let needs_frame = widget_animation
+            || app
+                .presence_ctx
+                .interaction_animation_demand(crate::time::now(), &app.theme);
         let (animation_due, animation_deadline) = self.animation_schedule.poll(
             crate::time::now(),
             any_render_available && animation_pump_needed(needs_frame, app.theme.reduce_motion),
         );
         if animation_due {
-            app.needs_sync = true;
+            app.needs_sync |= widget_animation;
             // Forces `apply_layout` since an animation tick (e.g. momentum
             // fling) can reposition content without an input event.
-            app.layout.layout_dirty = true;
+            app.layout.layout_dirty |= widget_animation;
             request_primary_redraw();
             for surface in &self.floating_windows {
                 if auxiliary_redraw_allowed(surface.render.as_ref()) {
@@ -3504,8 +4271,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // this loop for each inbound event, directory request and freed
         // outbound slot.
         let awaiting_floating_pixels = self.floating_windows.iter().any(|surface| {
-            !surface.suspended
-                && !surface.adopted
+            !surface.lifecycle.suspended
+                && !surface.lifecycle.adopted
                 && surface
                     .render
                     .as_ref()
@@ -3519,12 +4286,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             typing: typing_active,
             primary_startup: awaiting_primary_first_present,
             tooltip: tooltip_pending,
-            widget_due: scheduled_due,
+            widget_due: widget_still_due,
             animation: animation_pump_needed(needs_frame, app.theme.reduce_motion),
             auxiliary_startup: awaiting_floating_pixels,
             retry_due: retry_due || auxiliary_retry_due,
         };
-        match crate::render_thread::retry::next_wake(
+        let deadline = crate::render_thread::retry::next_wake(
             crate::time::now(),
             primary_blocked_until,
             any_render_available,
@@ -3532,7 +4299,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             scheduled_deadline,
             retry_at,
             animation_deadline,
-        ) {
+        );
+        // A native field lease can retire and become ready during an idle sync.
+        // Republish its admission even when no model/layout change needs paint;
+        // otherwise a canceled recording's successor waits on a stale stamp.
+        if scheduled_due {
+            self.sync_ime(&window);
+        }
+        let deadline = deadline
+            .into_iter()
+            .chain(
+                self.private_input
+                    .busy()
+                    .then(|| crate::time::now() + Duration::from_millis(50)),
+            )
+            .min();
+        match deadline {
             Some(deadline) => event_loop.set_control_flow(ControlFlow::WaitUntil(deadline)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
@@ -3571,7 +4353,7 @@ impl AppHandler {
             other => {
                 let handled = self.app.root_widget.handle_audience_presentation_event(
                     &other,
-                    &mut self.app.state.doc,
+                    &mut crate::widget::Edits::lend(&mut self.app.state.doc),
                     &self.app.state.root,
                 );
                 if handled {
@@ -3587,13 +4369,169 @@ impl AppHandler {
         }
     }
 
-    fn handle_native_floating_window_event(&mut self, index: usize, event: WindowEvent) {
+    fn handle_secondary_accessibility_event(
+        &mut self,
+        window_id: winit::window::WindowId,
+        event: accesskit_winit::WindowEvent,
+    ) {
+        let Some(index) = self
+            .floating_windows
+            .iter()
+            .position(|surface| surface.window.id() == window_id)
+        else {
+            return;
+        };
         let Some(surface) = self.floating_windows.get(index) else {
             return;
         };
+        if surface.lifecycle.suspended {
+            return;
+        }
+        let id = surface.id.clone();
+        let origin = surface.desktop_rect.origin();
+        let scale = surface.window.scale_factor();
+        let access = self.app.root_widget.floating_surface_accessibility(&id);
+        match event {
+            accesskit_winit::WindowEvent::InitialTreeRequested => {
+                if let Some(surface) = self.floating_windows.get_mut(index) {
+                    if let Some(adapter) = surface.a11y_adapter.as_mut() {
+                        adapter.update_if_active(|| {
+                            crate::accesskit_bridge::native_tree_update(
+                                crate::accesskit_bridge::surface_tree_update(
+                                    access.as_ref(),
+                                    origin,
+                                    scale,
+                                ),
+                            )
+                        });
+                    }
+                    surface.window.request_redraw();
+                }
+            }
+            accesskit_winit::WindowEvent::ActionRequested(request) => {
+                if dispatch_native_surface_accessibility(
+                    self.app.root_widget.as_mut(),
+                    &id,
+                    &request,
+                    &mut crate::widget::Edits::lend(&mut self.app.state.doc),
+                    &self.app.state.root,
+                ) {
+                    self.app.invalidate_widget_resource_cache();
+                    self.app.commit_action();
+                    self.app.needs_sync = true;
+                    if let Some(primary) = self.window.as_ref() {
+                        primary.request_redraw();
+                    }
+                    if let Some(surface) = self.floating_windows.get(index) {
+                        surface.window.request_redraw();
+                    }
+                }
+            }
+            accesskit_winit::WindowEvent::AccessibilityDeactivated => {}
+        }
+    }
+
+    fn update_floating_preedit(&mut self, index: usize, update: PrimaryPreeditUpdate) {
+        let Some(surface) = self.floating_windows.get_mut(index) else {
+            return;
+        };
+        match update {
+            PrimaryPreeditUpdate::Active => {
+                surface.preedit_active = true;
+                surface.preedit_clear_pending = false;
+            }
+            PrimaryPreeditUpdate::PendingClear => surface.preedit_clear_pending = true,
+            PrimaryPreeditUpdate::Finished => {
+                surface.preedit_active = false;
+                surface.preedit_clear_pending = false;
+            }
+        }
+    }
+
+    fn handle_native_floating_window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        index: usize,
+        event: WindowEvent,
+    ) {
+        self.app.root_widget.on_floating_surface_event_source(None);
+        let Some(surface) = self.floating_windows.get(index) else {
+            return;
+        };
+        let surface_id = surface.id.clone();
+        let reverse = surface.lifecycle.suspended
+            && self.floating_ime_return_continuation.as_deref() == Some(surface_id.as_str());
+        if surface.lifecycle.suspended && !reverse {
+            return;
+        }
+        if reverse {
+            if matches!(event, WindowEvent::Focused(false)) {
+                self.floating_ime_return_continuation = None;
+                if let Some(surface) = self.floating_windows.get_mut(index) {
+                    surface.preedit_active = false;
+                    surface.preedit_clear_pending = false;
+                    apply_native_ime(&surface.window, None, &mut surface.ime_state);
+                }
+                return;
+            }
+            if !matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::Ime(_)
+                    | WindowEvent::ModifiersChanged(_)
+            ) {
+                return;
+            }
+            let preedit = preedit_after_event(&event);
+            if let Some(primary) = self.window.clone() {
+                self.handle_primary_window_event_routed(event_loop, &primary, event);
+            }
+            if let Some(update) = preedit {
+                self.update_floating_preedit(index, update);
+                if matches!(update, PrimaryPreeditUpdate::Finished) {
+                    self.floating_ime_return_continuation = None;
+                }
+            }
+            let exact_source_active =
+                self.floating_ime_return_continuation
+                    .as_deref()
+                    .is_some_and(|id| id == surface_id.as_str())
+                    && self.floating_windows.get(index).is_some_and(|surface| {
+                        surface.lifecycle.suspended && surface.preedit_active
+                    });
+            let projected = if exact_source_active {
+                self.floating_windows.get(index).and_then(|surface| {
+                    primary_ime_state_for_held_child(
+                        self.app.ime_window_state(),
+                        surface.coordinate_offset,
+                        surface.desktop_rect.origin().to_vec2(),
+                    )
+                })
+            } else {
+                None
+            };
+            if let Some(surface) = self.floating_windows.get_mut(index) {
+                let next =
+                    retained_return_ime_state(projected, surface.ime_state, exact_source_active);
+                apply_native_ime(&surface.window, next, &mut surface.ime_state);
+            }
+            return;
+        }
         let window = surface.window.clone();
         let desktop_rect = surface.desktop_rect;
-        let surface_id = surface.id.clone();
+        self.app
+            .root_widget
+            .on_floating_surface_event_source(Some(&surface_id));
+        if let Some(surface) = self.floating_windows.get_mut(index) {
+            if let WindowEvent::Focused(focused) = &event {
+                surface.lifecycle.focused = *focused;
+            }
+            if let Some(adapter) = surface.a11y_adapter.as_mut() {
+                adapter.process_event(&window, &event);
+            }
+        }
+        forward_native_surface_focus(self.app.root_widget.as_mut(), Some(&surface_id), &event);
+        let preedit = preedit_after_event(&event);
         match event {
             WindowEvent::CloseRequested => {
                 if let Some(client) = self.app.floating.client.as_mut() {
@@ -3621,6 +4559,23 @@ impl AppHandler {
             WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
             other => self.dispatch_floating_event(&window, desktop_rect, other),
         }
+        if let Some(update) = preedit {
+            self.update_floating_preedit(index, update);
+        }
+        self.app.root_widget.on_floating_surface_event_source(None);
+        if let Some(surface) = self
+            .floating_windows
+            .iter_mut()
+            .find(|surface| surface.id == surface_id)
+        {
+            let next = secondary_ime_state(
+                self.app.root_widget.as_ref(),
+                &surface.id,
+                surface.desktop_rect,
+                surface.lifecycle.focused,
+            );
+            apply_native_ime(&surface.window, next, &mut surface.ime_state);
+        }
     }
 
     fn handle_primary_window_event(
@@ -3629,6 +4584,63 @@ impl AppHandler {
         window: &Arc<Window>,
         event: WindowEvent,
     ) {
+        if matches!(event, WindowEvent::Focused(false)) {
+            self.app.floating.pending_ime_ids.clear();
+            // The compositor deliberately keeps the source protocol focus
+            // only across the exact Float handoff. A real unrelated focus
+            // loss retires the local routing proxy immediately; a later IME
+            // event must not reach the detached editor by stale surface id.
+            self.set_floating_ime_continuation(None);
+            self.primary_preedit_active = false;
+            self.primary_preedit_clear_pending = false;
+        }
+        let routed_surface = self
+            .floating_ime_continuation
+            .as_deref()
+            .filter(|_| routes_to_floating_ime(&event))
+            .map(str::to_owned);
+        self.app
+            .root_widget
+            .on_floating_surface_event_source(routed_surface.as_deref());
+        let preedit = preedit_after_event(&event);
+        self.handle_primary_window_event_routed(event_loop, window, event);
+        self.app.root_widget.on_floating_surface_event_source(None);
+        if let Some(update) = preedit {
+            match update {
+                PrimaryPreeditUpdate::Active => {
+                    self.primary_preedit_active = true;
+                    self.primary_preedit_clear_pending = false;
+                }
+                PrimaryPreeditUpdate::PendingClear => {
+                    self.primary_preedit_clear_pending = true;
+                }
+                PrimaryPreeditUpdate::Finished => {
+                    self.primary_preedit_active = false;
+                    self.primary_preedit_clear_pending = false;
+                }
+            }
+            if matches!(update, PrimaryPreeditUpdate::Finished) {
+                self.app.floating.pending_ime_ids.clear();
+                self.set_floating_ime_continuation(None);
+            }
+        }
+        if let Some(id) = routed_surface
+            && let Some(surface) = self
+                .floating_windows
+                .iter()
+                .find(|surface| surface.id == id)
+        {
+            surface.window.request_redraw();
+        }
+    }
+
+    fn handle_primary_window_event_routed(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window: &Arc<Window>,
+        event: WindowEvent,
+    ) {
+        forward_native_surface_focus(self.app.root_widget.as_mut(), None, &event);
         if let Some(adapter) = self.a11y_adapter.as_mut() {
             adapter.process_event(window, &event);
         }
@@ -3707,7 +4719,7 @@ impl AppHandler {
         let app = &mut self.app;
         if app.root_widget.on_nav_gesture(
             crate::gesture::NavDirection::Back,
-            &mut app.state.doc,
+            &app.state.doc,
             &app.state.root,
         ) {
             app.needs_sync = true;
@@ -3763,8 +4775,11 @@ impl App {
         self.run_with_setup(|_| {});
     }
 
-    #[cfg(windows)]
-    pub(crate) fn with_startup_renderer(mut self, renderer: Option<RendererPreparation>) -> Self {
+    #[cfg(any(windows, target_os = "linux"))]
+    pub(crate) fn with_startup_renderer(
+        mut self,
+        renderer: Option<startup::RendererPreparation>,
+    ) -> Self {
         self.startup_renderer = renderer;
         self
     }
@@ -3791,9 +4806,14 @@ impl App {
             self.wake_scope.is_some(),
             "live App requires from_factory, try_from_factory, or from_scoped_parts"
         );
+        // Everything from here to the window's creation is marked: Notes spent
+        // 259 ms between `app-construct-end` and `primary-window-created`
+        // with nothing in the startup file to say where.
+        tilo_startup_metrics::mark("run-start");
         self.prepare_native_presentation(crate::host_chrome::HostChrome::current(
             self.input.platform,
         ));
+        tilo_startup_metrics::mark("run-presentation-prepared");
         crate::host::native::install_default_if_unset(self.window.app_id.as_deref());
         // The event loop never waits on async work: anything that must is
         // spawned onto the app runtime and handed back through the wake scope.
@@ -3815,7 +4835,11 @@ impl App {
                     .clone(),
             );
         }
-        let event_loop = event_loop_builder.build().unwrap();
+        tilo_startup_metrics::mark("run-event-loop-build");
+        // The launch may have built it already, to make the window early.
+        let event_loop =
+            take_early_event_loop().unwrap_or_else(|| event_loop_builder.build().unwrap());
+        tilo_startup_metrics::mark("run-event-loop-built");
         tilo_host_search::forward_to_runtime();
         let proxy = event_loop.create_proxy();
         super::install_dev_session_stop(proxy.clone());
@@ -3857,14 +4881,18 @@ impl App {
                 })
                 .flatten()
         };
+        tilo_startup_metrics::mark("run-settings-watched");
         let host_appearance = {
             let _entry = self.enter_wake_scope();
             setup(proxy);
+            tilo_startup_metrics::mark("run-setup-done");
             self.init_layout();
+            tilo_startup_metrics::mark("run-init-layout-done");
             self.watch_system_settings
                 .then(crate::host_appearance::Source::start)
                 .flatten()
         };
+        tilo_startup_metrics::mark("run-host-appearance-started");
 
         let mut handler = AppHandler {
             app: self,
@@ -3877,12 +4905,20 @@ impl App {
             a11y_adapter: None,
             a11y_proxy,
             ime_state: None,
+            primary_preedit_active: false,
+            primary_preedit_clear_pending: false,
+            floating_ime_continuation: None,
+            floating_ime_return_continuation: None,
+            private_input: private_text_input::Bridge::default(),
             #[cfg(target_os = "android")]
             text_input: super::android_text_input::TextInputSession::default(),
             #[cfg(target_os = "android")]
             text_input_touched: false,
             primary_frames_sent: 0,
             primary_frames_completed: 0,
+            top_layer_drawn: false,
+            presence_layer: crate::presence::PresenceLayer::new(),
+            mark_bounds: crate::scene_parts::DrawBounds::default(),
             last_primary_frame_presented: 0,
             primary_retry: crate::render_thread::retry::RenderRetryState::default(),
             floating_source_clear_frames: std::collections::HashMap::new(),
@@ -3891,6 +4927,9 @@ impl App {
             dispatching_touch_pointer: false,
             native_scenario,
             native_input_ids: Vec::new(),
+            physical_input_trace: crate::physical_input_trace::Trace::when_enabled(
+                std::env::var("TILO_PROFILE_PRESENTATION").ok().as_deref(),
+            ),
             native_input_origin: None,
             native_input_pointer_passthrough: false,
             native_input_route_isolation: false,
@@ -3920,7 +4959,39 @@ impl App {
                 tracing::error!(%error, "application event loop failed; application exiting");
             }
         }
+        // The app and its state are dropped (and saved) before the process
+        // reports how its window ended, and so are the settings it changed.
+        drop(handler);
+        crate::storage::flush_settings_writes();
+        if let Some(reason) = take_abnormal_stop() {
+            report_window_lost_and_exit(&reason);
+        }
     }
+}
+
+/// Why the window is stopping, when no one asked it to close.
+static ABNORMAL_STOP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Stop the event loop because the window cannot go on, keeping why. The
+/// process then exits non-zero instead of looking like a deliberate quit.
+fn stop_abnormally(event_loop: &ActiveEventLoop, reason: String) {
+    tracing::error!(%reason, "{}", super::WINDOW_LOST);
+    ABNORMAL_STOP.lock_recover().get_or_insert(reason);
+    event_loop.exit();
+}
+
+fn take_abnormal_stop() -> Option<String> {
+    ABNORMAL_STOP.lock_recover().take()
+}
+
+#[allow(
+    clippy::exit,
+    reason = "the native app's lifecycle ends here; a window that stopped on \
+              its own must not report the clean exit a deliberate quit does"
+)]
+fn report_window_lost_and_exit(reason: &str) -> ! {
+    eprintln!("error: {}: {reason}", super::WINDOW_LOST);
+    std::process::exit(super::WINDOW_LOST_EXIT_CODE);
 }
 
 impl AppHandler {
@@ -3989,5 +5060,38 @@ mod deadline_present_tests {
         // the first flag at the call site (keeps clippy's bool limit).
         assert!(present_after_deadline_sync(false, true));
         assert!(present_after_deadline_sync(true, false));
+    }
+}
+
+#[cfg(test)]
+mod early_window_tests {
+    use super::{Early, early_for};
+
+    #[test]
+    fn an_early_window_is_kept_only_for_the_app_id_it_announces() {
+        let made = Some(("so.tilo.notes".to_string(), "window"));
+        assert_eq!(
+            early_for(made.clone(), &"so.tilo.notes".to_string()),
+            Early::Kept("window")
+        );
+        // An input surface announces its own id, never the package's: the
+        // early window must not become its window.
+        assert_eq!(
+            early_for(made, &"so.tilo.keyboard".to_string()),
+            Early::Discarded
+        );
+        assert_eq!(
+            early_for(None::<(String, &str)>, &"so.tilo.notes".to_string()),
+            Early::Absent
+        );
+    }
+
+    #[test]
+    fn a_prepared_surface_is_used_only_by_the_window_it_was_made_for() {
+        assert_eq!(
+            early_for(Some((7_u64, "surface")), &7),
+            Early::Kept("surface")
+        );
+        assert_eq!(early_for(Some((7_u64, "surface")), &8), Early::Discarded);
     }
 }

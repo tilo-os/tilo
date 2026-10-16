@@ -26,9 +26,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
+use tilo_lock::MutexRecover as _;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, IdentityPaths, adopt_device_key,
     persist::{write_device_cert, write_public_key, write_signing_key},
@@ -76,15 +77,6 @@ fn stores(test: &str) -> Option<(PathBuf, PathBuf)> {
     Some((PathBuf::from(a), PathBuf::from(b)))
 }
 
-fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
 fn install_identity(root: &Path, person_seed: [u8; 32], device_seed: [u8; 32], primary: bool) {
     let paths = IdentityPaths::under(root);
     paths.ensure_directories().unwrap();
@@ -103,7 +95,9 @@ fn install_identity(root: &Path, person_seed: [u8; 32], device_seed: [u8; 32], p
         } else {
             DeviceCapabilities::member()
         },
-        issued_at_ns: now_ns().saturating_sub(1_000_000_000),
+        issued_at_ns: tilo_clock::try_unix_now_ns()
+            .unwrap()
+            .saturating_sub(1_000_000_000),
         expires_at_ns: None,
         signature: [0; 64],
     };
@@ -115,19 +109,25 @@ fn full_access_acl(path: &Path, person_seed: [u8; 32]) {
     let person = SigningKey::from_bytes(&person_seed)
         .verifying_key()
         .to_bytes();
-    let caps: Vec<collab_types::CapOverride> =
-        [collab_types::Verb::Read, collab_types::Verb::Write]
-            .into_iter()
-            .map(|verb| {
-                collab_types::CapOverride::new(
-                    collab_types::Subject::User(collab_types::Ed25519PublicKey(person)),
-                    collab_types::Scope::FsPath("/".into()),
-                    collab_types::Effect::Grant,
-                    verb,
-                )
-            })
-            .collect();
-    std::fs::write(path, serde_json::to_vec(&caps).unwrap()).unwrap();
+    let caps: Vec<collab_types::CapOverride> = [
+        collab_types::caps::Access::Read,
+        collab_types::caps::Access::Write,
+    ]
+    .into_iter()
+    .map(|verb| {
+        collab_types::CapOverride::new(
+            collab_types::Subject::User(collab_types::Ed25519PublicKey(person)),
+            collab_types::Scope::FsPath("/".into()),
+            collab_types::Effect::Grant,
+            verb,
+        )
+    })
+    .collect();
+    std::fs::write(
+        path,
+        serde_json::to_vec(&collab_types::FsAuthority::from(caps)).unwrap(),
+    )
+    .unwrap();
 }
 
 struct Daemon {
@@ -211,9 +211,7 @@ impl Daemon {
                 for line in BufReader::new(stream).lines() {
                     let Ok(line) = line else { break };
                     eprintln!("{name}: {line}");
-                    logs.lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .push(line.clone());
+                    logs.lock_recover().push(line.clone());
                     let _ = tx.send(line);
                 }
             });
@@ -233,10 +231,7 @@ impl Daemon {
             panic!(
                 "{} exited {status}; logs:\n{}",
                 self.name,
-                self.logs
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .join("\n")
+                self.logs.lock_recover().join("\n")
             );
         }
     }
@@ -257,10 +252,7 @@ impl Daemon {
                 panic!(
                     "{}: no line containing {expected:?}; logs:\n{}",
                     self.name,
-                    self.logs
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .join("\n")
+                    self.logs.lock_recover().join("\n")
                 );
             }
         }
@@ -688,8 +680,8 @@ fn assert_records_follow_writer_order(pair: &mut Pair, m1: &Path, m2: &Path) {
     // runs from that creation through the rename.
     let history = provenance(&pair.dir.join("host-cache"), "objects/3");
     assert!(
-        history.first() == Some(&collab_types::FileProvenance::Create)
-            && history.contains(&collab_types::FileProvenance::Rename),
+        history.first() == Some(&fs_protocol::FileProvenance::Create)
+            && history.contains(&fs_protocol::FileProvenance::Rename),
         "history follows the renamed record: {history:?}"
     );
     assert!(pair.host.log_count("epoch ") >= 1);
@@ -709,7 +701,7 @@ fn persisted_namespace(cache: &Path) -> fs::Namespace {
 }
 
 /// The provenance of every version of the record at `path`, oldest first.
-fn provenance(cache: &Path, path: &str) -> Vec<collab_types::FileProvenance> {
+fn provenance(cache: &Path, path: &str) -> Vec<fs_protocol::FileProvenance> {
     let ns = persisted_namespace(cache);
     let history = fs::FileHistoryStore::open(cache.join("file-history.json")).unwrap();
     let entry = ns

@@ -29,6 +29,9 @@ aarch64 = "aarch64"
 required = ["processes"]
 optional = ["files.paths", "threads"]
 
+[resources]
+kinds = ["containers.engine"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""
@@ -59,6 +62,7 @@ mode = "off"
 [sandbox.services]
 collab = "optional@1"
 tilo-fs = "optional@1"
+tools = "optional@1"
 
 [entrypoint]
 bin             = "bin/containers"

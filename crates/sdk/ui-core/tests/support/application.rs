@@ -2,13 +2,14 @@
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use tilo_ui::TextRole;
 use tilo_ui::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
 use tilo_ui::application_view::InstanceViewStore;
 use tilo_ui::launch::LaunchError;
 use tilo_ui::local_state::LocalState;
-use tilo_ui::permissions::{Actor, PermissionContext, PermissionScope, UserId, Verb};
+use tilo_ui::permissions::{ActionKind, PermissionContext, PermissionScope, UserId};
 use tilo_ui::record::{RecordCheckout, RecordKind, RecordOwners, RecordStore};
 use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
@@ -58,8 +59,8 @@ pub fn configure_presentation(
     theme_scale: f32,
 ) -> tilo_ui::application::ComponentRunnerInputs {
     inputs.theme.name = "explicit presentation".into();
-    inputs.theme.tokens.font_size_base = 19.0;
-    inputs.theme.accent_primary = inputs.theme.status_success;
+    inputs.theme.tokens.typography = inputs.theme.tokens.typography.clone().with_base_size(19.0);
+    inputs.theme.tokens.colors.intent.inverted = inputs.theme.status_success;
     inputs.theme = inputs
         .theme
         .with_ui_scale(1.25)
@@ -76,33 +77,39 @@ pub fn assert_presentation(theme: &tilo_ui::Theme, scale: f32, ui_scale: f32) {
     assert_eq!(theme.ui_scale, ui_scale);
     assert_eq!(theme.name, "explicit presentation");
     assert!(theme.reduce_motion);
-    assert_eq!(theme.accent_primary, theme.status_success);
-    assert!((theme.tokens.font_size_base - 19.0 * ui_scale * scale).abs() < 0.0001);
+    assert_eq!(theme.tokens.colors.intent.inverted, theme.status_success);
+    assert!(
+        (theme.tokens.typography.size(TextRole::Body) - 19.0 * ui_scale * scale).abs() < 0.0001
+    );
     let base = tilo_ui::Theme::dark();
     assert!(
-        (theme.tokens.typography.scale.sm - base.tokens.typography.scale.sm * ui_scale * scale)
+        (theme.tokens.typography.size(TextRole::Caption)
+            - base.tokens.typography.size(TextRole::Caption) * 19.0 / 14.0 * ui_scale * scale)
             .abs()
             < 0.0001
     );
     assert!(
-        (theme.tokens.typography.scale.x4l - base.tokens.typography.scale.x4l * ui_scale * scale)
+        (theme.tokens.typography.size(TextRole::Display)
+            - base.tokens.typography.size(TextRole::Display) * 19.0 / 14.0 * ui_scale * scale)
             .abs()
-            < 0.0001
+            < 0.001
     );
     assert!((theme.tokens.spacing.s3 - base.tokens.spacing.s3 * ui_scale).abs() < 0.0001);
-    assert!((theme.tokens.radii.md - base.tokens.radii.md * ui_scale).abs() < 0.0001);
+    assert!((theme.tokens.radii.control - base.tokens.radii.control * ui_scale).abs() < 0.0001);
     assert!((theme.padding_standard - 17.0 * ui_scale).abs() < 0.0001);
     assert!((theme.gap_standard - 7.0 * ui_scale).abs() < 0.0001);
     assert!((theme.radius_standard - 14.0 * f64::from(ui_scale)).abs() < 0.0001);
 }
 
 thread_local! {
-    static COMMIT_REQUEST: Cell<bool> = const { Cell::new(false) };
+    static COMMITTED_ACTION: RefCell<Option<Vec<automerge::ChangeHash>>> = const { RefCell::new(None) };
     static COMMIT_DRAINS: Cell<usize> = const { Cell::new(0) };
 }
-pub fn request_probe_commit() {
-    COMMIT_REQUEST.set(true);
+/// The probe's next committed action: the heads captured before its writes.
+pub fn report_probe_action(before: Vec<automerge::ChangeHash>) {
+    COMMITTED_ACTION.set(Some(before));
 }
+/// How many committed actions the host has taken from the probe.
 pub fn probe_commit_drains() -> usize {
     COMMIT_DRAINS.get()
 }
@@ -160,7 +167,7 @@ impl tilo_ui::search::SearchProvider for ProbeProvider {
     }
     fn search_page(
         &self,
-        _: &str,
+        _: &tilo_ui::search::SearchQuery,
         _: Option<&tilo_ui::search::SearchCursor>,
         work: usize,
         limit: usize,
@@ -173,6 +180,7 @@ impl tilo_ui::search::SearchProvider for ProbeProvider {
                 vec![]
             },
             next: Some(tilo_ui::search::SearchCursor::default()),
+            pending: None,
             inspected: work.min(limit).min(1),
         }
     }
@@ -217,7 +225,13 @@ pub fn local_state() -> LocalState<String> {
 }
 pub fn permissions() -> Rc<RefCell<PermissionContext>> {
     Rc::new(RefCell::new(
-        PermissionContext::from_capabilities(Actor::person(None, "probe-author"), vec![])
+        PermissionContext::stranger("probe-author").at_unix_time(100),
+    ))
+}
+/// The author as an Editor of the room: may make undoable changes.
+pub fn editor_permissions() -> Rc<RefCell<PermissionContext>> {
+    Rc::new(RefCell::new(
+        PermissionContext::member("probe-author", tilo_ui::permissions::Role::Editor)
             .at_unix_time(100),
     ))
 }
@@ -228,7 +242,7 @@ pub fn provenance() -> tilo_actions::ActionContext {
     tilo_actions::ActionContext::default().with_app(APP, "Probe")
 }
 pub fn denied_scope() -> PermissionScope {
-    PermissionScope::workspace(Verb::Write)
+    PermissionScope::workspace(ActionKind::Undoable)
 }
 pub fn definition(create: tilo_ui::application::ComponentFactory) -> ApplicationDefinition {
     ApplicationDefinition {
@@ -239,6 +253,7 @@ pub fn definition(create: tilo_ui::application::ComponentFactory) -> Application
         required: vec![],
         optional: vec![],
         opens: &[],
+        room_record: false,
         create,
     }
 }
@@ -253,7 +268,7 @@ pub fn runner_probe_definition() -> &'static ApplicationDefinition {
 }
 pub fn runner_inputs() -> tilo_ui::application::ComponentRunnerInputs {
     let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"),
+        tilo_ui::font_catalog::checkout_root(),
         "en-US",
     );
     tilo_ui::application::ComponentRunnerInputs {
@@ -263,11 +278,8 @@ pub fn runner_inputs() -> tilo_ui::application::ComponentRunnerInputs {
 }
 pub fn runner_permissions() -> Rc<RefCell<PermissionContext>> {
     Rc::new(RefCell::new(
-        PermissionContext::from_capabilities(
-            Actor::person(Some(tilo_ui::permissions::Role::Owner), "probe-author"),
-            vec![],
-        )
-        .at_unix_time(100),
+        PermissionContext::member("probe-author", tilo_ui::permissions::Role::Owner)
+            .at_unix_time(100),
     ))
 }
 pub struct ProbeHost {
@@ -281,7 +293,7 @@ impl ProbeHost {
     pub fn new() -> Self {
         CALLS.set(0);
         OPERATIONS.with_borrow_mut(Vec::clear);
-        COMMIT_REQUEST.set(false);
+        COMMITTED_ACTION.set(None);
         COMMIT_DRAINS.set(0);
         INITIALIZATIONS.set(0);
         HANDLES.with_borrow_mut(Vec::clear);
@@ -526,7 +538,8 @@ impl Widget for ProbeRoot {
         dyn tilo_ui::resources::PublishesResources,
         dyn tilo_ui::search::capability::SearchSource,
         dyn tilo_ui::view::capability::ViewState,
-        dyn tilo_ui::undo::UndoPoints
+        dyn tilo_ui::undo::UndoPoints,
+        dyn tilo_ui::undo::CommittedActions
     );
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -542,11 +555,12 @@ impl Widget for ProbeRoot {
     }
     fn start_operation(
         &mut self,
-        op: &tilo_ui::widget::ResourceOperation<'_>,
-        _: &mut AutoCommit,
+        op: &tilo_ui::host_operation::ResourceOperation<'_>,
+        _: &mut tilo_ui::widget::Edits<'_>,
         _: &ObjId,
-    ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
-        let Some(tilo_ui::widget::OperationRequest { kind, type_id, .. }) = op.unscoped() else {
+    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
+        let Some(tilo_ui::host_operation::OperationRequest { kind, type_id, .. }) = op.unscoped()
+        else {
             return Ok(None);
         };
         if !self.local_resource_operation_handlers().contains(&type_id) {
@@ -554,12 +568,16 @@ impl Widget for ProbeRoot {
         }
         if type_id == "probe.pending" {
             self.operations.borrow_mut().push("pending".into());
-            return Ok(Some(tilo_ui::widget::ResourceOperationStart::Accepted));
+            return Ok(Some(
+                tilo_ui::host_operation::ResourceOperationStart::Accepted,
+            ));
         }
         self.operations.borrow_mut().push(format!("{kind:?}"));
-        Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
     fn poll_resource_operation(
         &mut self,
@@ -578,7 +596,7 @@ impl Widget for ProbeRoot {
             message: None,
         })
     }
-    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {
         assert!(self.operational, "construction must project read-only");
         self.local_snapshot = self.local.with(Clone::clone);
     }
@@ -594,32 +612,14 @@ impl Widget for ProbeRoot {
             }
         });
         let style = taffy::Style {
-            size: taffy::Size {
-                width: taffy::Dimension::length(80.0),
-                height: taffy::Dimension::length(30.0),
-            },
+            size: taffy::Size::from_lengths(80.0, 30.0),
             ..Default::default()
         };
         let node = tree.new_leaf(style).unwrap();
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn apply_layout(
-        &mut self,
-        tree: &taffy::TaffyTree<()>,
-        node: taffy::NodeId,
-        origin: vello::kurbo::Point,
-    ) {
-        let layout = tree.layout(node).unwrap();
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        self.rect = vello::kurbo::Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
-    }
+    tilo_ui::rect_geometry!();
     fn draw(
         &mut self,
         _: &mut vello::Scene,
@@ -639,9 +639,6 @@ impl Widget for ProbeRoot {
     fn name(&self) -> &'static str {
         "application-probe"
     }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        self.rect
-    }
     fn is_focusable(&self) -> bool {
         true
     }
@@ -653,22 +650,15 @@ impl Widget for ProbeRoot {
     }
 }
 
-impl tilo_ui::undo::UndoPoints for ProbeRoot {
-    fn needs_commit(&self) -> bool {
-        COMMIT_REQUEST.get()
-    }
-    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-        Some(tilo_actions::ActionContext::for_resource(
-            &self.caret,
-            "probe:shared",
-            "probe",
-            &self.caret,
-        ))
-    }
-    fn on_commit(&mut self) {
-        COMMIT_REQUEST.set(false);
+impl tilo_ui::undo::CommittedActions for ProbeRoot {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        let before = COMMITTED_ACTION.take()?;
         COMMIT_DRAINS.set(COMMIT_DRAINS.get().saturating_add(1));
+        Some(before)
     }
+}
+
+impl tilo_ui::undo::UndoPoints for ProbeRoot {
     fn get_state(&self) -> Option<String> {
         Some(self.caret.clone())
     }
@@ -733,8 +723,7 @@ impl tilo_ui::resources::PublishesResources for ProbeRoot {
                         &ProbeAction("edited".into()),
                     )
                     .unwrap()
-                    .with_description(self.local_snapshot.clone())
-                    .requiring(tilo_actions::PermissionRequirement::Write),
+                    .with_description(self.local_snapshot.clone()),
                 )
                 .with_action(
                     tilo_actions::ActionSpec::operation(
@@ -773,52 +762,50 @@ impl tilo_ui::resources::PublishesResources for ProbeRoot {
                         ..tilo_actions::ActionContract::view()
                     }),
                 )
-                .with_action(
-                    tilo_actions::ActionSpec::prompted(
-                        "prompt",
-                        "Prompt",
+                .with_action(tilo_actions::ActionSpec::prompted_param(
+                    "prompt",
+                    "Prompt",
+                    tilo_actions::ActionParam::required(
+                        "value",
+                        tilo_actions::ParamType::Text,
                         "Value",
-                        "Value",
-                        tilo_actions::ExecutionLocus::ClientLocal,
-                        |value| {
-                            tilo_actions::EncodedAction::encode(
-                                "probe.edit",
-                                &ProbeAction(value.into()),
-                            )
-                            .unwrap()
-                        },
-                    )
-                    .requiring(tilo_actions::PermissionRequirement::Write),
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::typed(
-                        "typed",
-                        "Typed",
-                        "Value",
-                        tilo_actions::ExecutionLocus::ClientLocal,
-                        vec![
-                            tilo_actions::ActionParam::required(
-                                "value",
-                                tilo_actions::ParamType::Text,
-                                "Value",
-                            ),
-                            tilo_actions::ActionParam::required(
-                                "enabled",
-                                tilo_actions::ParamType::Boolean,
-                                "Enabled",
-                            ),
-                        ],
-                        |args| {
-                            assert_eq!(args.boolean("enabled"), Some(true));
-                            tilo_actions::EncodedAction::encode(
-                                "probe.edit",
-                                &ProbeAction(args.text("value").unwrap().into()),
-                            )
-                            .unwrap()
-                        },
-                    )
-                    .requiring(tilo_actions::PermissionRequirement::Write),
-                )
+                    ),
+                    "Value",
+                    tilo_actions::ExecutionLocus::ClientLocal,
+                    |value| {
+                        tilo_actions::EncodedAction::encode(
+                            "probe.edit",
+                            &ProbeAction(value.into()),
+                        )
+                        .unwrap()
+                    },
+                ))
+                .with_action(tilo_actions::ActionSpec::typed(
+                    "typed",
+                    "Typed",
+                    "Value",
+                    tilo_actions::ExecutionLocus::ClientLocal,
+                    vec![
+                        tilo_actions::ActionParam::required(
+                            "value",
+                            tilo_actions::ParamType::Text,
+                            "Value",
+                        ),
+                        tilo_actions::ActionParam::required(
+                            "enabled",
+                            tilo_actions::ParamType::Boolean,
+                            "Enabled",
+                        ),
+                    ],
+                    |args| {
+                        assert_eq!(args.boolean("enabled"), Some(true));
+                        tilo_actions::EncodedAction::encode(
+                            "probe.edit",
+                            &ProbeAction(args.text("value").unwrap().into()),
+                        )
+                        .unwrap()
+                    },
+                ))
                 .with_action(
                     tilo_actions::ActionSpec::immediate(
                         "confirm",
@@ -866,9 +853,6 @@ impl AppWidget for ProbeRoot {
     }
     fn app_icon(&self) -> IconDescriptor {
         IconDescriptor::Glyph("P")
-    }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
     }
 }
 
@@ -981,4 +965,53 @@ pub fn initializer_failure(
     Err(LaunchError::Operation(
         "initializer unexpectedly succeeded".into(),
     ))
+}
+
+/// A fixture owner publishes a string through the same typed action loan as an app.
+pub fn write_fixture_string(edits: &mut tilo_ui::widget::Edits<'_>, key: &str, value: &str) {
+    #[derive(Debug, serde::Serialize)]
+    struct Write {
+        key: String,
+        value: String,
+    }
+    impl tilo_actions::Action for Write {
+        fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+            use automerge::transaction::Transactable;
+            doc.put(automerge::ROOT, self.key.as_str(), self.value.as_str())?;
+            Ok(())
+        }
+    }
+    edits
+        .apply(
+            &mut tilo_ui::action_host::ActionHost::new(),
+            "test.fixture.write",
+            &Write {
+                key: key.into(),
+                value: value.into(),
+            },
+            tilo_actions::ActionContext::default(),
+        )
+        .unwrap();
+}
+
+pub fn write_fixture_flag(edits: &mut tilo_ui::widget::Edits<'_>, key: &str) {
+    #[derive(Debug, serde::Serialize)]
+    struct Flag {
+        key: String,
+    }
+    impl tilo_actions::Action for Flag {
+        fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+            use automerge::transaction::Transactable;
+            doc.put(automerge::ROOT, self.key.as_str(), true)?;
+            Ok(())
+        }
+    }
+    edits
+        .apply(
+            &mut tilo_ui::action_host::ActionHost::new(),
+            "test.fixture.flag",
+            &Flag { key: key.into() },
+            tilo_actions::ActionContext::default(),
+        )
+        .unwrap();
 }

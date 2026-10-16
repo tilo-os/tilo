@@ -1,73 +1,157 @@
-//! Process-local semantic operations for the guided setup workflow.
+//! What guided setup offers the palette, agents and scripts: its effects and
+//! the live rows of the setup in progress.
 //!
-//! Setup choices describe local navigation and a reviewable plan. They are not
-//! replayable document actions and never carry folder paths or installation
-//! authority into the shared Automerge document.
+//! Setup choices describe local navigation and a reviewable plan on this
+//! computer. They are effects of the imager resource, never document
+//! actions, and never carry folder paths or installation authority into the
+//! shared document.
 
-use tilo_actions::{
-    ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, Resource,
-    ResourcePresentation, ResultSpec,
-};
+use tilo_actions::{ActionParam, ActionSpec, ParamType, ResourcePresentation};
+use ui::framework::{EffectStatus, LiveRow};
+use ui::tilo_resource::{self, ActionRef, Effect};
 
 use super::controller::SetupPage;
 use super::model::{Experience, FolderMode};
 
-pub const SETUP_RESOURCE_ID: &str = "imager.setup";
-pub const SETUP_OPERATION_TYPE: &str = "imager.setup.operation";
+/// The live row of the setup in progress, beneath the imager resource.
+pub const SETUP_ROW_ID: &str = "imager.setup";
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "operation", rename_all = "snake_case")]
-pub enum SetupOperation {
+/// Guided setup's effects. Each answers with the setup's path-free status
+/// ([`SetupProjection`]) as it stands afterwards.
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "imager.setup", device_only)]
+pub enum SetupEffect {
+    /// Read setup status.
+    #[effect(returns, kind = "read")]
+    ReadSetupStatus,
+    /// Read this computer's Desktop readiness and current installation phase.
+    #[effect(returns, kind = "read")]
+    ReadDesktopStatus,
+    /// Install the exact reviewed Desktop release after a fresh host probe.
+    #[effect(returns)]
+    InstallDesktop,
+    /// Cancel the current package download; no native transaction is cancelled.
+    #[effect(returns)]
+    CancelDesktopDownload,
+    /// Recheck Desktop availability without installing anything.
+    #[effect(returns, kind = "read")]
+    RecheckDesktop,
+    /// Open the existing USB image writer; writing remains a separate review.
+    #[effect(view, returns, kind = "read")]
+    OpenUsbWizard,
+    /// Choose setup experience.
+    #[effect(returns, kind = "read")]
     ChooseExperience {
+        #[param("Available setup experience: desktop or full_os")]
         experience: String,
     },
+    /// Set common folder mode.
+    #[effect(returns, kind = "read")]
     SetCommonMode {
+        #[param(
+            "Folder behavior applied to folders without an override: copy, connected or later"
+        )]
         mode: String,
     },
+    /// Set folder mode.
+    #[effect(returns, kind = "read")]
     SetFolderMode {
+        #[param("Identity of a selected folder")]
         folder: String,
+        #[param("Folder behavior: copy, connected or later")]
         mode: String,
     },
-    ClearFolderMode {
+    /// Use the common folder mode.
+    #[effect(returns, kind = "read")]
+    UseCommonMode {
+        #[param("Identity of a selected folder")]
         folder: String,
     },
+    /// Remove folder from setup.
+    #[effect(returns, kind = "read")]
     RemoveFolder {
+        #[param("Identity of a selected folder")]
         folder: String,
     },
-    SelectSuggestion {
+    /// Add suggested folder.
+    #[effect(returns, kind = "read")]
+    AddSuggestedFolder {
+        #[param("Identity of a suggested folder, e.g. documents")]
         suggestion: String,
     },
+    /// Choose a folder.
+    #[effect(returns, kind = "read")]
     ChooseFolder,
+    /// Show or hide folder help.
+    #[effect(returns, kind = "read")]
     ToggleHelp,
-    Next,
-    Back,
+    /// Continue setup.
+    #[effect(returns, kind = "read")]
+    ContinueSetup,
+    /// Go back in setup.
+    #[effect(returns, kind = "read")]
+    GoBackInSetup,
+    /// Open folder imports.
+    #[effect(returns, kind = "read")]
     OpenImports,
+    /// Download Tilo.
+    #[effect(returns)]
     StartInternalDownload,
+    /// Pause download.
+    #[effect(returns)]
     PauseInternalDownload,
+    /// Resume download.
+    #[effect(returns)]
     ResumeInternalDownload,
+    /// Cancel download.
+    #[effect(returns)]
     CancelInternalDownload,
+    /// Discard unfinished download data.
+    #[effect(returns)]
     DiscardInternalDownload,
+    /// Keep download for later.
+    #[effect(returns)]
     ReleaseInternalDownload,
-    /// Tilo size in whole GiB, within the reviewed bounds.
+    /// Set Tilo size.
+    #[effect(returns)]
     SetInternalTargetSize {
+        #[param("Tilo size in GiB")]
         gib: i64,
     },
-    /// Install (or continue) exactly the plan with this digest.
+    /// Install Tilo alongside the current system.
+    ///
+    /// Installs (or continues) exactly the reviewed plan with this digest.
+    #[effect(returns)]
     InstallInternal {
+        #[param("Digest of the reviewed installation plan")]
         reviewed: String,
     },
+    /// Restart into the Tilo installer.
+    #[effect(returns)]
     RestartInternal,
+    /// Restart later.
+    #[effect(returns)]
     RestartInternalLater,
-    /// Arm the unfinished operation with this ID again.
+    /// Start the Tilo installer on the next restart.
+    #[effect(returns)]
     RetryInternal {
+        #[param("Id of the unfinished installer operation")]
         operation_id: String,
     },
-    /// Remove the unfinished operation with this ID.
+    /// Remove the Tilo installer.
+    #[effect(returns)]
     RemoveInternal {
+        #[param("Id of the unfinished installer operation")]
         operation_id: String,
     },
+    /// Restart to firmware settings.
+    #[effect(returns)]
     InternalFirmwareSettings,
+    /// Turn off Fast Startup.
+    #[effect(returns)]
     InternalDisableFastStartup,
+    /// Check this computer again.
+    #[effect(returns, kind = "read")]
     RecheckInternal,
 }
 
@@ -176,6 +260,8 @@ pub struct SetupProjection {
     pub review: ReviewProjection,
     pub availability: AvailabilityProjection,
     pub internal: InternalProjection,
+    pub desktop: super::desktop_journey::DesktopProjection,
+    pub methods: super::desktop_journey::MethodProjection,
 }
 
 impl SetupProjection {
@@ -228,185 +314,378 @@ pub fn parse_mode(value: &str) -> Result<FolderMode, String> {
     }
 }
 
-#[must_use]
-pub fn encode(operation: &SetupOperation) -> EncodedAction {
-    EncodedAction::encode_operation(SETUP_OPERATION_TYPE, operation).unwrap_or_else(|_| {
-        EncodedAction {
-            type_id: SETUP_OPERATION_TYPE.to_string(),
-            payload: Vec::new(),
-        }
-    })
+/// An effect that cannot run now: `code` names why for programs, `reason`
+/// for people.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Blocked {
+    pub id: &'static str,
+    pub code: &'static str,
+    pub reason: String,
 }
 
-/// Decode an app-owned setup operation without admitting a document mutation.
-///
-/// # Errors
-///
-/// Returns the JSON error when this is the setup operation type but the
-/// payload is malformed.
-pub fn decode(type_id: &str, payload: &[u8]) -> Result<Option<SetupOperation>, String> {
-    if type_id != SETUP_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|error| format!("invalid setup operation: {error}"))
-}
-
-fn result_spec() -> ResultSpec {
-    ResultSpec::Json {
-        schema: serde_json::json!({ "type": "object" }),
+fn block(
+    blocked: &mut Vec<Blocked>,
+    open: bool,
+    id: &'static str,
+    code: &'static str,
+    reason: String,
+) {
+    if !open {
+        blocked.push(Blocked { id, code, reason });
     }
 }
 
-fn immediate(id: &str, label: &str, operation: SetupOperation) -> ActionSpec {
-    ActionSpec::operation(
-        id,
-        label,
-        OperationKind::View,
-        SETUP_OPERATION_TYPE,
-        &operation,
-    )
-    .unwrap_or_else(|_| {
-        ActionSpec::typed_operation(
-            id,
-            label,
-            "",
-            OperationKind::View,
-            SETUP_OPERATION_TYPE,
-            Vec::new(),
-            move |_| encode(&operation),
+/// Why the Full Tilo commands that need the review are unavailable.
+fn review_gate(state: &InternalProjection) -> (&'static str, &'static str) {
+    if state.on_review {
+        (
+            "internal_unavailable",
+            "imager-setup-internal-error-command-unavailable",
         )
-    })
-    .returns(result_spec())
-}
-
-fn with_availability(action: ActionSpec, available: bool, code: &str, reason: &str) -> ActionSpec {
-    if available {
-        action
     } else {
-        action.unavailable(code, reason)
+        (
+            "full_os_review_only",
+            "imager-setup-internal-error-not-review",
+        )
     }
 }
 
-fn folder_resource(
-    folder: &FolderProjection,
-    mode_choices: &[&'static str],
-    edits_available: bool,
-) -> Resource {
-    let identity = folder.identity.clone();
-    let set_identity = identity.clone();
-    let set_mode = ActionSpec::typed_operation(
-        "set-mode",
-        "Set folder mode",
-        "copy",
-        OperationKind::View,
-        SETUP_OPERATION_TYPE,
-        vec![
-            ActionParam::required_owned("mode", ParamType::Text, "Folder behavior")
-                .with_choices(mode_choices.iter().copied()),
-        ],
-        move |args| {
-            encode(&SetupOperation::SetFolderMode {
-                folder: set_identity.clone(),
-                mode: args.text("mode").unwrap_or("").to_string(),
-            })
-        },
-    )
-    .returns(result_spec());
-    let set_mode = with_availability(
-        set_mode,
-        edits_available,
-        "folder_choices_not_open",
-        "Folder choices are not open on the current setup page",
-    );
-    let clear_mode = with_availability(
-        immediate(
-            "use-common-mode",
-            "Use the common folder mode",
-            SetupOperation::ClearFolderMode {
-                folder: identity.clone(),
-            },
+/// Each Full Tilo command: its effect id, its label, whether it may run now,
+/// and the code and reason (a message key) when it may not.
+fn internal_commands(
+    state: &InternalProjection,
+) -> [(&'static str, &'static str, bool, &'static str, &'static str); 15] {
+    let a = state.availability;
+    let (review_code, review_reason) = review_gate(state);
+    [
+        (
+            SetupEffect::START_INTERNAL_DOWNLOAD.id,
+            "imager-setup-action-start-download",
+            a.start_download,
+            review_code,
+            review_reason,
         ),
-        edits_available && folder.overridden,
-        if edits_available {
-            "folder_mode_inherited"
-        } else {
-            "folder_choices_not_open"
-        },
-        if edits_available {
-            "This folder already follows the common choice"
-        } else {
-            "Folder choices are not open on the current setup page"
-        },
-    );
-    let remove = with_availability(
-        immediate(
-            "remove",
-            "Remove folder from setup",
-            SetupOperation::RemoveFolder {
-                folder: identity.clone(),
-            },
+        (
+            SetupEffect::PAUSE_INTERNAL_DOWNLOAD.id,
+            "imager-setup-action-pause-download",
+            a.pause_download,
+            review_code,
+            review_reason,
         ),
-        edits_available,
-        "folder_choices_not_open",
-        "Folder choices are not open on the current setup page",
-    );
+        (
+            SetupEffect::RESUME_INTERNAL_DOWNLOAD.id,
+            "imager-setup-action-resume-download",
+            a.resume_download,
+            review_code,
+            review_reason,
+        ),
+        (
+            SetupEffect::CANCEL_INTERNAL_DOWNLOAD.id,
+            "imager-setup-action-cancel-download",
+            a.cancel_download,
+            review_code,
+            review_reason,
+        ),
+        (
+            SetupEffect::DISCARD_INTERNAL_DOWNLOAD.id,
+            "imager-setup-action-discard-download",
+            a.discard_download,
+            review_code,
+            review_reason,
+        ),
+        (
+            SetupEffect::RELEASE_INTERNAL_DOWNLOAD.id,
+            "imager-setup-action-release-download",
+            a.release_download,
+            review_code,
+            review_reason,
+        ),
+        (
+            SetupEffect::SET_INTERNAL_TARGET_SIZE.id,
+            "imager-setup-action-internal-set-target-size",
+            a.set_target_size,
+            review_code,
+            review_reason,
+        ),
+        (
+            SetupEffect::INSTALL_INTERNAL.id,
+            "imager-setup-action-internal-install",
+            a.install,
+            review_code,
+            review_reason,
+        ),
+        (
+            SetupEffect::RESTART_INTERNAL.id,
+            "imager-setup-action-internal-restart",
+            a.restart,
+            "internal_not_staged",
+            "imager-setup-internal-error-no-restart",
+        ),
+        (
+            SetupEffect::RESTART_INTERNAL_LATER.id,
+            "imager-setup-action-internal-restart-later",
+            a.restart_later,
+            "internal_not_staged",
+            "imager-setup-internal-error-no-restart",
+        ),
+        (
+            SetupEffect::RETRY_INTERNAL.id,
+            "imager-setup-action-internal-retry",
+            a.retry,
+            "internal_no_pending",
+            "imager-setup-internal-error-no-pending",
+        ),
+        (
+            SetupEffect::REMOVE_INTERNAL.id,
+            "imager-setup-action-internal-remove",
+            a.remove,
+            "internal_no_pending",
+            "imager-setup-internal-error-no-pending",
+        ),
+        (
+            SetupEffect::INTERNAL_FIRMWARE_SETTINGS.id,
+            "imager-setup-action-internal-firmware-settings",
+            a.firmware_settings,
+            "remedy_unavailable",
+            "imager-setup-internal-error-remedy-unavailable",
+        ),
+        (
+            SetupEffect::INTERNAL_DISABLE_FAST_STARTUP.id,
+            "imager-setup-action-internal-disable-fast-startup",
+            a.disable_fast_startup,
+            "remedy_unavailable",
+            "imager-setup-internal-error-remedy-unavailable",
+        ),
+        (
+            SetupEffect::RECHECK_INTERNAL.id,
+            "imager-setup-action-internal-recheck",
+            a.recheck,
+            "internal_unavailable",
+            "imager-setup-internal-error-unavailable",
+        ),
+    ]
+}
 
-    Resource::new(
-        format!("{SETUP_RESOURCE_ID}.folder.{identity}"),
+/// The setup effects that cannot run in `state`, with why.
+#[must_use]
+pub fn blocked(state: &SetupProjection) -> Vec<Blocked> {
+    let a = state.availability;
+    let folders_closed = || "Folder choices are not open on the current setup page".to_owned();
+    let mut blocked = Vec::new();
+    block(
+        &mut blocked,
+        a.desktop || a.full_os,
+        SetupEffect::CHOOSE_EXPERIENCE.id,
+        "no_setup_experience",
+        "No setup experience is available on this computer".into(),
+    );
+    block(
+        &mut blocked,
+        a.folder_policies,
+        SetupEffect::SET_COMMON_MODE.id,
+        "folder_choices_not_open",
+        folders_closed(),
+    );
+    for id in [
+        SetupEffect::SET_FOLDER_MODE.id,
+        SetupEffect::USE_COMMON_MODE.id,
+        SetupEffect::REMOVE_FOLDER.id,
+    ] {
+        block(
+            &mut blocked,
+            a.folder_edits,
+            id,
+            "folder_choices_not_open",
+            folders_closed(),
+        );
+    }
+    block(
+        &mut blocked,
+        a.choose_folder,
+        SetupEffect::ADD_SUGGESTED_FOLDER.id,
+        "folder_choices_not_open",
+        folders_closed(),
+    );
+    block(
+        &mut blocked,
+        a.choose_folder,
+        SetupEffect::CHOOSE_FOLDER.id,
+        "folder_picker_unavailable",
+        "The folder picker is not available on this setup page".into(),
+    );
+    block(
+        &mut blocked,
+        a.help,
+        SetupEffect::TOGGLE_HELP.id,
+        "help_not_on_page",
+        "Folder help is available on the folder page".into(),
+    );
+    block(
+        &mut blocked,
+        a.next,
+        SetupEffect::CONTINUE_SETUP.id,
+        "setup_cannot_continue",
+        "Complete the current setup choice before continuing".into(),
+    );
+    block(
+        &mut blocked,
+        a.back,
+        SetupEffect::GO_BACK_IN_SETUP.id,
+        "setup_at_start",
+        "Setup is already on its first page".into(),
+    );
+    block(
+        &mut blocked,
+        a.open_imports,
+        SetupEffect::OPEN_IMPORTS.id,
+        "imports_not_on_page",
+        "Folder imports are available on the experience and review pages".into(),
+    );
+    for (id, _, open) in super::desktop_journey::commands(&state.desktop, &state.methods) {
+        block(
+            &mut blocked,
+            open,
+            id,
+            "desktop_command_unavailable",
+            super::strings::t("imager-setup-desktop-command-unavailable"),
+        );
+    }
+    for (id, _, open, code, reason) in internal_commands(&state.internal) {
+        block(&mut blocked, open, id, code, super::strings::t(reason));
+    }
+    blocked
+}
+
+/// The setup effects as callers see them now: what is unavailable, and the
+/// Full Tilo commands in the person's language.
+#[must_use]
+pub fn statuses(state: &SetupProjection) -> Vec<EffectStatus> {
+    let effect = |id| ActionRef::<SetupEffect, ()>::new(id, &[]);
+    blocked(state)
+        .into_iter()
+        .map(|blocked| EffectStatus::unavailable(effect(blocked.id), blocked.code, blocked.reason))
+        .chain(
+            internal_commands(&state.internal)
+                .into_iter()
+                .map(|(id, label, ..)| {
+                    EffectStatus::labelled(effect(id), super::strings::t(label))
+                }),
+        )
+        .chain(
+            super::desktop_journey::commands(&state.desktop, &state.methods)
+                .into_iter()
+                .map(|(id, label, _)| EffectStatus::labelled(effect(id), super::strings::t(label))),
+        )
+        .collect()
+}
+
+fn gated(spec: ActionSpec, available: bool, code: &str, reason: &str) -> ActionSpec {
+    if available {
+        spec
+    } else {
+        spec.unavailable(code, reason)
+    }
+}
+
+/// `effect` bound to the row it is offered on, as `label`.
+fn bound(effect: &SetupEffect, label: impl Into<String>) -> ActionSpec {
+    let mut spec = effect.bound();
+    spec.label = label.into();
+    spec
+}
+
+/// `effect` offered on a row as `label`, with what the row knows already
+/// bound and `param` asked of the caller.
+fn asking(effect: &SetupEffect, label: impl Into<String>, param: ActionParam) -> ActionSpec {
+    let mut spec = effect.bound_asking_params(vec![param]);
+    spec.label = label.into();
+    spec
+}
+
+fn folder_row(folder: &FolderProjection, mode_choices: &[&'static str], edits: bool) -> LiveRow {
+    let closed = "Folder choices are not open on the current setup page";
+    let identity = folder.identity.clone();
+    let set_mode = asking(
+        &SetupEffect::SetFolderMode {
+            folder: identity,
+            mode: String::new(),
+        },
+        "Set folder mode",
+        ActionParam::required_owned("mode", ParamType::Text, "Folder behavior")
+            .with_choices(mode_choices.iter().copied()),
+    );
+    let (inherit_code, inherit_reason) = if edits {
+        (
+            "folder_mode_inherited",
+            "This folder already follows the common choice",
+        )
+    } else {
+        ("folder_choices_not_open", closed)
+    };
+    LiveRow::new(
+        format!("{SETUP_ROW_ID}.folder.{}", folder.identity),
         "imager.setup.folder",
         format!("Selected folder {}", folder.index + 1),
     )
-    .with_presentation(ResourcePresentation {
+    .presentation(ResourcePresentation {
         detail: Some(format!(
-            "{} · {}",
-            folder.mode,
+            "{}, {}",
+            mode_phrase(folder.mode),
             if folder.overridden {
-                "override"
+                "chosen for this folder"
             } else {
-                "common"
+                "the common choice"
             }
         )),
         badge: Some(format!("Folder {}", folder.index + 1)),
         preview: None,
     })
-    .with_action(set_mode)
-    .with_action(clear_mode)
-    .with_action(remove)
+    .operation(gated(set_mode, edits, "folder_choices_not_open", closed))
+    .operation(gated(
+        bound(
+            &SetupEffect::UseCommonMode {
+                folder: folder.identity.clone(),
+            },
+            "Use the common folder mode",
+        ),
+        edits && folder.overridden,
+        inherit_code,
+        inherit_reason,
+    ))
+    .operation(gated(
+        bound(
+            &SetupEffect::RemoveFolder {
+                folder: folder.identity.clone(),
+            },
+            "Remove folder from setup",
+        ),
+        edits,
+        "folder_choices_not_open",
+        closed,
+    ))
 }
 
-fn suggestion_resource(suggestion: &SuggestionProjection, choices_open: bool) -> Resource {
-    let available = choices_open && suggestion.available;
-    let select = with_availability(
-        immediate(
-            "select",
-            "Add suggested folder",
-            SetupOperation::SelectSuggestion {
-                suggestion: suggestion.identity.clone(),
-            },
-        ),
-        available,
-        if choices_open {
-            "suggestion_unavailable"
-        } else {
-            "folder_choices_not_open"
-        },
-        if choices_open {
+fn suggestion_row(suggestion: &SuggestionProjection, choices_open: bool) -> LiveRow {
+    let (code, reason) = if choices_open {
+        (
+            "suggestion_unavailable",
             suggestion
                 .unavailable_reason
                 .as_deref()
-                .unwrap_or("This suggested folder is unavailable")
-        } else {
-            "Folder choices are not open on the current setup page"
-        },
-    );
-    Resource::new(
-        format!("{SETUP_RESOURCE_ID}.suggestion.{}", suggestion.identity),
+                .unwrap_or("This suggested folder is unavailable"),
+        )
+    } else {
+        (
+            "folder_choices_not_open",
+            "Folder choices are not open on the current setup page",
+        )
+    };
+    LiveRow::new(
+        format!("{SETUP_ROW_ID}.suggestion.{}", suggestion.identity),
         "imager.setup.suggestion",
         format!("Suggested {} folder", suggestion.name),
     )
-    .with_presentation(ResourcePresentation {
+    .presentation(ResourcePresentation {
         detail: Some(
             if suggestion.available {
                 "Available"
@@ -418,77 +697,29 @@ fn suggestion_resource(suggestion: &SuggestionProjection, choices_open: bool) ->
         badge: Some("Suggestion".into()),
         preview: None,
     })
-    .with_action(select)
-}
-
-fn internal_action(
-    id: &str,
-    label_key: &str,
-    operation: SetupOperation,
-    available: bool,
-    code: &str,
-    reason_key: &str,
-) -> ActionSpec {
-    with_availability(
-        immediate(id, &super::strings::t(label_key), operation),
-        available,
+    .operation(gated(
+        bound(
+            &SetupEffect::AddSuggestedFolder {
+                suggestion: suggestion.identity.clone(),
+            },
+            "Add suggested folder",
+        ),
+        choices_open && suggestion.available,
         code,
-        &super::strings::t(reason_key),
-    )
+        reason,
+    ))
 }
 
-/// Full Tilo installation resource: one action per visible command.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one declarative list keeps every published command beside its gate"
-)]
-fn internal_resource(state: &InternalProjection) -> Resource {
-    let a = state.availability;
-    let (review_code, review_reason) = if state.on_review {
-        (
-            "internal_unavailable",
-            "imager-setup-internal-error-command-unavailable",
-        )
-    } else {
-        (
-            "full_os_review_only",
-            "imager-setup-internal-error-not-review",
-        )
-    };
-    let download = |id: &str, label: &str, operation: SetupOperation, available: bool| {
-        internal_action(id, label, operation, available, review_code, review_reason)
-    };
-    let set_size = ActionSpec::typed_operation(
-        "setup.internal.set-target-size",
-        super::strings::t("imager-setup-action-internal-set-target-size"),
-        "64",
-        OperationKind::View,
-        SETUP_OPERATION_TYPE,
-        vec![ActionParam::required_owned(
-            "gib",
-            ParamType::Integer,
-            super::strings::t("imager-setup-param-internal-target-gib"),
-        )],
-        |args| {
-            encode(&SetupOperation::SetInternalTargetSize {
-                gib: args.integer("gib").unwrap_or(-1),
-            })
-        },
-    )
-    .returns(result_spec());
-    let set_size = with_availability(
-        set_size,
-        a.set_target_size,
-        review_code,
-        &super::strings::t(review_reason),
-    );
+/// The Full Tilo installation on this computer: one operation per visible
+/// command, bound to the plan and the unfinished operation shown.
+fn internal_row(state: &InternalProjection) -> LiveRow {
     let operation = state.pending_operation.clone().unwrap_or_default();
-    Resource::new(
-        "imager.setup.internal",
+    let mut row = LiveRow::new(
+        format!("{SETUP_ROW_ID}.internal"),
         "imager.setup.internal",
         super::strings::t("imager-setup-resource-internal"),
     )
-    .with_presentation(ResourcePresentation {
+    .presentation(ResourcePresentation {
         detail: Some(super::strings::t_args(
             "imager-setup-detail-internal",
             &[
@@ -508,164 +739,52 @@ fn internal_resource(state: &InternalProjection) -> Resource {
         )),
         badge: Some(super::strings::t("imager-setup-badge-internal")),
         preview: None,
-    })
-    .with_action(download(
-        "setup.internal.download",
-        "imager-setup-action-start-download",
-        SetupOperation::StartInternalDownload,
-        a.start_download,
-    ))
-    .with_action(download(
-        "setup.internal.pause-download",
-        "imager-setup-action-pause-download",
-        SetupOperation::PauseInternalDownload,
-        a.pause_download,
-    ))
-    .with_action(download(
-        "setup.internal.resume-download",
-        "imager-setup-action-resume-download",
-        SetupOperation::ResumeInternalDownload,
-        a.resume_download,
-    ))
-    .with_action(download(
-        "setup.internal.cancel-download",
-        "imager-setup-action-cancel-download",
-        SetupOperation::CancelInternalDownload,
-        a.cancel_download,
-    ))
-    .with_action(download(
-        "setup.internal.discard-download",
-        "imager-setup-action-discard-download",
-        SetupOperation::DiscardInternalDownload,
-        a.discard_download,
-    ))
-    .with_action(download(
-        "setup.internal.release-download",
-        "imager-setup-action-release-download",
-        SetupOperation::ReleaseInternalDownload,
-        a.release_download,
-    ))
-    .with_action(set_size)
-    .with_action(internal_action(
-        "setup.internal.install",
-        "imager-setup-action-internal-install",
-        SetupOperation::InstallInternal {
-            reviewed: state.reviewed.clone().unwrap_or_default(),
-        },
-        a.install,
-        review_code,
-        review_reason,
-    ))
-    .with_action(internal_action(
-        "setup.internal.restart",
-        "imager-setup-action-internal-restart",
-        SetupOperation::RestartInternal,
-        a.restart,
-        "internal_not_staged",
-        "imager-setup-internal-error-no-restart",
-    ))
-    .with_action(internal_action(
-        "setup.internal.restart-later",
-        "imager-setup-action-internal-restart-later",
-        SetupOperation::RestartInternalLater,
-        a.restart_later,
-        "internal_not_staged",
-        "imager-setup-internal-error-no-restart",
-    ))
-    .with_action(internal_action(
-        "setup.internal.retry",
-        "imager-setup-action-internal-retry",
-        SetupOperation::RetryInternal {
-            operation_id: operation.clone(),
-        },
-        a.retry,
-        "internal_no_pending",
-        "imager-setup-internal-error-no-pending",
-    ))
-    .with_action(internal_action(
-        "setup.internal.remove",
-        "imager-setup-action-internal-remove",
-        SetupOperation::RemoveInternal {
-            operation_id: operation,
-        },
-        a.remove,
-        "internal_no_pending",
-        "imager-setup-internal-error-no-pending",
-    ))
-    .with_action(internal_action(
-        "setup.internal.firmware-settings",
-        "imager-setup-action-internal-firmware-settings",
-        SetupOperation::InternalFirmwareSettings,
-        a.firmware_settings,
-        "remedy_unavailable",
-        "imager-setup-internal-error-remedy-unavailable",
-    ))
-    .with_action(internal_action(
-        "setup.internal.disable-fast-startup",
-        "imager-setup-action-internal-disable-fast-startup",
-        SetupOperation::InternalDisableFastStartup,
-        a.disable_fast_startup,
-        "remedy_unavailable",
-        "imager-setup-internal-error-remedy-unavailable",
-    ))
-    .with_action(internal_action(
-        "setup.internal.recheck",
-        "imager-setup-action-internal-recheck",
-        SetupOperation::RecheckInternal,
-        a.recheck,
-        "internal_unavailable",
-        "imager-setup-internal-error-unavailable",
-    ))
+    });
+    for (id, label, open, code, reason) in internal_commands(state) {
+        let label = super::strings::t(label);
+        let spec = match id {
+            id if id == SetupEffect::SET_INTERNAL_TARGET_SIZE.id => asking(
+                &SetupEffect::SetInternalTargetSize { gib: -1 },
+                label,
+                ActionParam::required_owned(
+                    "gib",
+                    ParamType::Integer,
+                    super::strings::t("imager-setup-param-internal-target-gib"),
+                ),
+            ),
+            id if id == SetupEffect::INSTALL_INTERNAL.id => bound(
+                &SetupEffect::InstallInternal {
+                    reviewed: state.reviewed.clone().unwrap_or_default(),
+                },
+                label,
+            ),
+            id if id == SetupEffect::RETRY_INTERNAL.id => bound(
+                &SetupEffect::RetryInternal {
+                    operation_id: operation.clone(),
+                },
+                label,
+            ),
+            id if id == SetupEffect::REMOVE_INTERNAL.id => bound(
+                &SetupEffect::RemoveInternal {
+                    operation_id: operation.clone(),
+                },
+                label,
+            ),
+            id => match SetupEffect::decode(id, &serde_json::Map::new()) {
+                Ok(effect) => bound(&effect, label),
+                Err(_) => continue,
+            },
+        };
+        row = row.operation(gated(spec, open, code, &super::strings::t(reason)));
+    }
+    row
 }
 
-/// Build the path-free, live resource projection for the setup root.
+/// The setup in progress as one live row beneath the imager resource: the
+/// selection with its folders, the suggested folders, the review, what may
+/// run now, and the Full Tilo installation.
 #[must_use]
-pub fn resource(state: &SetupProjection) -> Resource {
-    let experience_choices = [
-        state.availability.desktop.then_some("desktop"),
-        state.availability.full_os.then_some("full_os"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
-    let choose_experience = ActionSpec::typed_operation(
-        "choose-experience",
-        "Choose setup experience",
-        "desktop",
-        OperationKind::View,
-        SETUP_OPERATION_TYPE,
-        vec![
-            ActionParam::required_owned(
-                "experience",
-                ParamType::Text,
-                "Available setup experience",
-            )
-            .with_choices(experience_choices),
-        ],
-        |args| {
-            encode(&SetupOperation::ChooseExperience {
-                experience: args.text("experience").unwrap_or("").to_string(),
-            })
-        },
-    )
-    .returns(result_spec());
-    let choose_experience = with_availability(
-        choose_experience,
-        state.availability.desktop || state.availability.full_os,
-        "no_setup_experience",
-        "No setup experience is available on this computer",
-    );
-    let choose_folder = with_availability(
-        immediate(
-            "choose-folder",
-            "Choose a folder",
-            SetupOperation::ChooseFolder,
-        ),
-        state.availability.choose_folder,
-        "folder_picker_unavailable",
-        "The folder picker is not available on this setup page",
-    );
-
+pub fn row(state: &SetupProjection) -> LiveRow {
     let mode_choices = [
         Some("copy"),
         state.availability.connected.then_some("connected"),
@@ -674,118 +793,73 @@ pub fn resource(state: &SetupProjection) -> Resource {
     .into_iter()
     .flatten()
     .collect::<Vec<_>>();
-    let common_mode = ActionSpec::typed_operation(
-        "set-common-mode",
-        "Set common folder mode",
-        "copy",
-        OperationKind::View,
-        SETUP_OPERATION_TYPE,
-        vec![
-            ActionParam::required_owned(
-                "mode",
-                ParamType::Text,
-                "Folder behavior applied to folders without an override",
-            )
-            .with_choices(mode_choices.clone()),
-        ],
-        |args| {
-            encode(&SetupOperation::SetCommonMode {
-                mode: args.text("mode").unwrap_or("").to_string(),
-            })
-        },
-    )
-    .returns(result_spec());
-    let common_mode = with_availability(
-        common_mode,
-        state.availability.folder_policies,
-        "folder_choices_not_open",
-        "Folder choices are not open on the current setup page",
-    );
-
-    let help = with_availability(
-        immediate(
-            "toggle-help",
-            "Show or hide folder help",
-            SetupOperation::ToggleHelp,
-        ),
-        state.availability.help,
-        "help_not_on_page",
-        "Folder help is available on the folder page",
-    );
-    let next = with_availability(
-        immediate("next", "Continue setup", SetupOperation::Next),
-        state.availability.next,
-        "setup_cannot_continue",
-        "Complete the current setup choice before continuing",
-    );
-    let back = with_availability(
-        immediate("back", "Go back in setup", SetupOperation::Back),
-        state.availability.back,
-        "setup_at_start",
-        "Setup is already on its first page",
-    );
-
-    let folder_resources = state
-        .selection
-        .folders
-        .iter()
-        .map(|folder| folder_resource(folder, &mode_choices, state.availability.folder_edits))
-        .collect::<Vec<_>>();
-    let selection = Resource::new(
-        "imager.setup.selection",
+    let mut selection = LiveRow::new(
+        format!("{SETUP_ROW_ID}.selection"),
         "imager.setup.selection",
         "Current setup selection",
     )
-    .with_presentation(ResourcePresentation {
+    .presentation(ResourcePresentation {
         detail: Some(format!(
-            "experience {} · common {} · {} folders · {} active · help {} · imports {}",
-            state
-                .selection
-                .experience
-                .unwrap_or("no experience selected"),
-            state.selection.common_mode,
-            state.selection.folder_count,
-            state.selection.active_folder_count,
-            open_closed(state.selection.help_open),
-            open_closed(state.selection.imports_open),
+            "{}, {} by default, {}{}. With help {} and imports {}.",
+            experience_phrase(state.selection.experience),
+            mode_phrase(state.selection.common_mode).to_lowercase(),
+            folders_phrase(state.selection.folder_count),
+            if state.selection.folder_count == 0 {
+                String::new()
+            } else {
+                format!(", {} to bring over", state.selection.active_folder_count)
+            },
+            if state.selection.help_open {
+                "open"
+            } else {
+                "closed"
+            },
+            if state.selection.imports_open {
+                "open"
+            } else {
+                "closed"
+            },
         )),
         badge: Some("Selection".into()),
         preview: None,
-    })
-    .with_children(folder_resources);
-    let suggestions =
-        Resource::new(
-            "imager.setup.suggestions",
-            "imager.setup.suggestions",
-            "Suggested folders",
-        )
-        .with_children(
-            state.selection.suggestions.iter().map(|suggestion| {
-                suggestion_resource(suggestion, state.availability.choose_folder)
-            }),
-        );
-    let review = Resource::new(
-        "imager.setup.review",
+    });
+    for folder in &state.selection.folders {
+        selection = selection.row(folder_row(
+            folder,
+            &mode_choices,
+            state.availability.folder_edits,
+        ));
+    }
+    let mut suggestions = LiveRow::new(
+        format!("{SETUP_ROW_ID}.suggestions"),
+        "imager.setup.suggestions",
+        "Suggested folders",
+    );
+    for suggestion in &state.selection.suggestions {
+        suggestions = suggestions.row(suggestion_row(suggestion, state.availability.choose_folder));
+    }
+    let review = LiveRow::new(
+        format!("{SETUP_ROW_ID}.review"),
         "imager.setup.review",
         "Setup review state",
     )
-    .with_presentation(ResourcePresentation {
+    .presentation(ResourcePresentation {
         detail: Some(format!(
-            "ready {} · current page {}",
+            "Review ready: {}. Current page: {}.",
             yes_no(state.review.ready),
             state.page
         )),
         badge: Some("Review".into()),
         preview: None,
     });
-    let availability = Resource::new(
-        "imager.setup.availability",
+    let availability = LiveRow::new(
+        format!("{SETUP_ROW_ID}.availability"),
         "imager.setup.availability",
         "Current setup availability",
     )
-    .with_presentation(ResourcePresentation {
+    .presentation(ResourcePresentation {
         detail: Some(format!(
-            "Desktop {} · Full OS {} · Connected {} · Next {} · Back {} · Folder policies {} · Folder edits {} · Help {} · Imports {}",
+            "Available experiences: desktop {0}, full OS {1}. Connected: {2}. Navigation: next {3}, back {4}. Folder permissions: policies {5}, edits {6}. Help: {7}. Imports: {8}.",
             yes_no(state.availability.desktop),
             yes_no(state.availability.full_os),
             yes_no(state.availability.connected),
@@ -799,24 +873,18 @@ pub fn resource(state: &SetupProjection) -> Resource {
         badge: Some("Availability".into()),
         preview: None,
     });
-
-    Resource::new(SETUP_RESOURCE_ID, "imager.setup", "Guided Tilo setup")
-        .with_presentation(ResourcePresentation {
+    LiveRow::new(SETUP_ROW_ID, "imager.setup", "Guided Tilo setup")
+        .presentation(ResourcePresentation {
             detail: Some(format!(
-                "{} · {} · {} · {} folder(s) · review {} · Desktop {} · Full OS {} · Connected {} · Next {} · Back {}",
-                state.page,
-                state
-                    .selection
-                    .experience
-                    .unwrap_or("no experience selected"),
-                state.selection.common_mode,
-                state.selection.folder_count,
-                yes_no(state.review.ready),
-                yes_no(state.availability.desktop),
-                yes_no(state.availability.full_os),
-                yes_no(state.availability.connected),
-                yes_no(state.availability.next),
-                yes_no(state.availability.back),
+                "{} page, {}, {}",
+                match state.page {
+                    "experience" => "Experience",
+                    "folders" => "Folders",
+                    "review" => "Review",
+                    _ => "Setup",
+                },
+                experience_phrase(state.selection.experience),
+                folders_phrase(state.selection.folder_count),
             )),
             badge: Some(
                 match state.page {
@@ -829,38 +897,49 @@ pub fn resource(state: &SetupProjection) -> Resource {
             ),
             preview: None,
         })
-        .with_action(choose_experience)
-        .with_action(common_mode)
-        .with_action(choose_folder)
-        .with_action(help)
-        .with_action(next)
-        .with_action(back)
-        .with_action(with_availability(
-            immediate("open-imports", "Open folder imports", SetupOperation::OpenImports),
-            state.availability.open_imports,
-            "imports_not_on_page",
-            "Folder imports are available on the experience and review pages",
-        ))
-        .with_children([
-            selection,
-            suggestions,
-            review,
-            availability,
-            internal_resource(&state.internal),
-        ])
+        .row(selection)
+        .row(suggestions)
+        .row(review)
+        .row(availability)
+        .row(internal_row(&state.internal))
+        .row(super::desktop_journey::row(&state.desktop, &state.methods))
 }
 
-const fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+/// A folder mode as people read it.
+fn mode_phrase(mode: &str) -> &'static str {
+    match mode {
+        "connected" => "Connected",
+        "later" => "Decide later",
+        _ => "Copy",
+    }
 }
 
-const fn open_closed(value: bool) -> &'static str {
-    if value { "open" } else { "closed" }
+/// The chosen experience as people read it.
+fn experience_phrase(experience: Option<&str>) -> &'static str {
+    match experience {
+        Some("desktop") => "Tilo Desktop",
+        Some(_) => "Full Tilo",
+        None => "no experience chosen yet",
+    }
+}
+
+/// "1 folder", "3 folders", "no folders".
+fn folders_phrase(count: usize) -> String {
+    match count {
+        0 => "no folders".into(),
+        1 => "1 folder".into(),
+        count => format!("{count} folders"),
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "Yes" } else { "No" }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_actions::OperationKind;
 
     fn projection(internal: InternalProjection) -> SetupProjection {
         SetupProjection {
@@ -889,15 +968,18 @@ mod tests {
                 choose_folder: false,
             },
             internal,
+            desktop: crate::setup::desktop_journey::DesktopProjection::default(),
+            methods: crate::setup::desktop_journey::MethodProjection::default(),
         }
     }
 
     fn internal_actions(state: &SetupProjection) -> Vec<ActionSpec> {
-        resource(state)
+        row(state)
+            .into_resource()
             .children
             .into_iter()
             .find(|child| child.kind == "imager.setup.internal")
-            .expect("internal resource")
+            .expect("internal row")
             .actions
     }
 
@@ -908,123 +990,153 @@ mod tests {
         }
     }
 
-    /// Internal install resource commands, availability and payload.
+    fn decoded(
+        action: &ActionSpec,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> SetupEffect {
+        let encoded = action.build_json(arguments).unwrap();
+        assert_eq!(encoded.type_id, SetupEffect::OPERATION);
+        SetupEffect::from_payload(&encoded.payload).unwrap()
+    }
+
+    /// Internal install row commands, availability and payload.
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn internal_resource_publishes_gated_commands_with_reviewed_digest() {
-        // Phase `internal_resource_publishes_every_install_command`.
+    fn internal_row_offers_gated_commands_bound_to_the_reviewed_digest() {
         // Catches an install command reachable only by clicking (spec §8).
-        {
-            let actions = internal_actions(&projection(InternalProjection::default()));
-            for id in [
-                "setup.internal.set-target-size",
-                "setup.internal.install",
-                "setup.internal.restart",
-                "setup.internal.retry",
-                "setup.internal.remove",
-                "setup.internal.firmware-settings",
-                "setup.internal.disable-fast-startup",
-                "setup.internal.restart-later",
-                "setup.internal.recheck",
-                "setup.internal.download",
-                "setup.internal.pause-download",
-                "setup.internal.resume-download",
-                "setup.internal.cancel-download",
-                "setup.internal.discard-download",
-                "setup.internal.release-download",
-            ] {
-                let action = actions
-                    .iter()
-                    .find(|action| action.id == id)
-                    .unwrap_or_else(|| panic!("missing {id}"));
-                assert!(!action.contract.availability.is_available(), "{id}");
-            }
-            let install = actions
+        let actions = internal_actions(&projection(InternalProjection::default()));
+        for (id, ..) in internal_commands(&InternalProjection::default()) {
+            let action = actions
                 .iter()
-                .find(|action| action.id == "setup.internal.install")
-                .unwrap();
-            assert_eq!(code(install), Some("full_os_review_only"));
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("missing {id}"));
+            assert_eq!(action.kind, OperationKind::Effect, "{id}");
+            assert!(!action.contract.availability.is_available(), "{id}");
         }
+        let install = actions
+            .iter()
+            .find(|action| action.id == "install-internal")
+            .unwrap();
+        assert_eq!(code(install), Some("full_os_review_only"));
+        let blocked = blocked(&projection(InternalProjection::default()));
+        assert!(
+            blocked
+                .iter()
+                .any(|blocked| blocked.id == "install-internal"
+                    && blocked.code == "full_os_review_only"),
+            "the declared effect is gated like the row's"
+        );
 
-        // Phase `internal_availability_follows_each_flag`.
-        // Catches availability flags wired to the wrong action.
-        {
-            let actions = internal_actions(&projection(InternalProjection {
-                on_review: true,
-                availability: InternalAvailability {
-                    install: true,
-                    firmware_settings: true,
-                    ..InternalAvailability::default()
-                },
-                ..InternalProjection::default()
-            }));
-            for action in &actions {
-                let expected = matches!(
-                    action.id.as_str(),
-                    "setup.internal.install" | "setup.internal.firmware-settings"
-                );
-                assert_eq!(
-                    action.contract.availability.is_available(),
-                    expected,
-                    "{}",
-                    action.id
-                );
-            }
-            let restart = actions
-                .iter()
-                .find(|action| action.id == "setup.internal.restart")
-                .unwrap();
-            assert_eq!(code(restart), Some("internal_not_staged"));
+        // Catches availability flags wired to the wrong command.
+        let actions = internal_actions(&projection(InternalProjection {
+            on_review: true,
+            availability: InternalAvailability {
+                install: true,
+                firmware_settings: true,
+                ..InternalAvailability::default()
+            },
+            ..InternalProjection::default()
+        }));
+        for action in &actions {
+            let expected = matches!(
+                action.id.as_str(),
+                "install-internal" | "internal-firmware-settings"
+            );
+            assert_eq!(
+                action.contract.availability.is_available(),
+                expected,
+                "{}",
+                action.id
+            );
         }
+        let restart = actions
+            .iter()
+            .find(|action| action.id == "restart-internal")
+            .unwrap();
+        assert_eq!(code(restart), Some("internal_not_staged"));
 
-        // Phase `internal_actions_carry_the_reviewed_digest_and_operation`.
-        // Catches an install or removal that does not name what the invoker saw,
-        // which is what lets the view refuse a stale invocation.
-        {
-            let state = projection(InternalProjection {
-                on_review: true,
-                reviewed: Some("a".repeat(64)),
-                pending_operation: Some("op-7".into()),
-                ..InternalProjection::default()
-            });
-            let actions = internal_actions(&state);
-            let decode_action = |id: &str| {
-                let encoded = actions
-                    .iter()
-                    .find(|action| action.id == id)
-                    .unwrap()
-                    .build_json(&serde_json::Map::new())
-                    .unwrap();
-                decode(&encoded.type_id, &encoded.payload).unwrap().unwrap()
-            };
-            assert_eq!(
-                decode_action("setup.internal.install"),
-                SetupOperation::InstallInternal {
-                    reviewed: "a".repeat(64)
-                }
-            );
-            assert_eq!(
-                decode_action("setup.internal.remove"),
-                SetupOperation::RemoveInternal {
-                    operation_id: "op-7".into()
-                }
-            );
-            let size = actions
+        // Catches an install or removal that does not name what the invoker
+        // saw, which is what lets the view refuse a stale invocation.
+        let state = projection(InternalProjection {
+            on_review: true,
+            reviewed: Some("a".repeat(64)),
+            pending_operation: Some("op-7".into()),
+            ..InternalProjection::default()
+        });
+        let actions = internal_actions(&state);
+        let action = |id: &str| actions.iter().find(|action| action.id == id).unwrap();
+        let none = serde_json::Map::new();
+        assert_eq!(
+            decoded(action("install-internal"), &none),
+            SetupEffect::InstallInternal {
+                reviewed: "a".repeat(64)
+            }
+        );
+        assert_eq!(
+            decoded(action("remove-internal"), &none),
+            SetupEffect::RemoveInternal {
+                operation_id: "op-7".into()
+            }
+        );
+        let size = action("set-internal-target-size");
+        let mut args = serde_json::Map::new();
+        args.insert("gib".into(), serde_json::json!(80));
+        assert_eq!(
+            decoded(size, &args),
+            SetupEffect::SetInternalTargetSize { gib: 80 }
+        );
+        args.insert("gib".into(), serde_json::json!("eighty"));
+        assert!(size.build_json(&args).is_err());
+    }
+
+    #[test]
+    fn folder_rows_bind_their_identity_and_take_the_mode() {
+        let mut state = projection(InternalProjection::default());
+        state.availability.folder_edits = true;
+        state.availability.connected = false;
+        state.selection.folders = vec![FolderProjection {
+            identity: "f-1".into(),
+            index: 0,
+            mode: "copy",
+            overridden: false,
+        }];
+        let selection = row(&state)
+            .into_resource()
+            .children
+            .into_iter()
+            .find(|child| child.kind == "imager.setup.selection")
+            .unwrap();
+        let folder = &selection.children[0];
+        assert_eq!(folder.id.as_str(), "imager.setup.folder.f-1");
+        let set_mode = folder
+            .actions
+            .iter()
+            .find(|action| action.id == "set-folder-mode")
+            .unwrap();
+        let mut args = serde_json::Map::new();
+        args.insert("mode".into(), serde_json::json!("later"));
+        assert_eq!(
+            decoded(set_mode, &args),
+            SetupEffect::SetFolderMode {
+                folder: "f-1".into(),
+                mode: "later".into()
+            }
+        );
+        args.insert("mode".into(), serde_json::json!("connected"));
+        assert!(
+            set_mode.build_json(&args).is_err(),
+            "connected folders are offered only when available"
+        );
+        let inherit = folder
+            .actions
+            .iter()
+            .find(|action| action.id == "use-common-mode")
+            .unwrap();
+        assert_eq!(code(inherit), Some("folder_mode_inherited"));
+        assert!(
+            folder
+                .actions
                 .iter()
-                .find(|action| action.id == "setup.internal.set-target-size")
-                .unwrap();
-            let mut args = serde_json::Map::new();
-            args.insert("gib".into(), serde_json::json!(80));
-            let encoded = size.build_json(&args).unwrap();
-            assert_eq!(
-                decode(&encoded.type_id, &encoded.payload).unwrap(),
-                Some(SetupOperation::SetInternalTargetSize { gib: 80 })
-            );
-            args.insert("gib".into(), serde_json::json!("eighty"));
-            assert!(size.build_json(&args).is_err());
-        }
+                .all(|action| action.kind == OperationKind::Effect)
+        );
     }
 }

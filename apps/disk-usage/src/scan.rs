@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Why a folder could not be listed, as the error view says it.
+pub const UNREADABLE_FOLDER: &str =
+    "It was moved or removed, or you don’t have permission to open it.";
+
 /// Cheap cooperative cancellation shared with a background scanner.
 #[derive(Clone, Debug, Default)]
 pub struct ScanCancellation(Arc<AtomicBool>);
@@ -25,7 +29,6 @@ pub struct Entry {
     pub name: String,
     pub bytes: u64,
     pub files: u64,
-    pub unreadable: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -36,6 +39,47 @@ pub struct ScanResult {
     pub files: u64,
     pub unreadable: u64,
     pub error: Option<String>,
+}
+
+impl ScanResult {
+    /// A finished scan of a made-up home folder: what a screenshot shows in
+    /// place of scanning the machine it is taken on.
+    pub fn sample() -> Self {
+        let path = PathBuf::from("/home/you");
+        let entries: Vec<Entry> = [
+            ("Projects", 84_200_000_000, 48_310),
+            ("Videos", 48_600_000_000, 1_204),
+            ("Photos", 31_800_000_000, 9_870),
+            ("Downloads", 19_400_000_000, 2_615),
+            ("Documents", 8_700_000_000, 4_132),
+            ("Music", 5_100_000_000, 1_086),
+            (".cache", 3_900_000_000, 12_408),
+            (".local", 3_400_000_000, 6_121),
+            ("Desktop", 2_600_000_000, 214),
+            ("Applications", 2_100_000_000, 3_870),
+            (".config", 1_900_000_000, 1_950),
+            ("Public", 900_000_000, 18),
+            ("Templates", 400_000_000, 9),
+        ]
+        .into_iter()
+        .map(|(name, bytes, files)| Entry {
+            path: path.join(name.to_lowercase()),
+            name: name.into(),
+            bytes,
+            files,
+        })
+        .collect();
+        let total = entries.iter().map(|entry| entry.bytes).sum();
+        let files = entries.iter().map(|entry| entry.files).sum();
+        Self {
+            path,
+            entries,
+            total,
+            files,
+            unreadable: 3,
+            error: None,
+        }
+    }
 }
 
 fn measure(path: &Path, cancellation: &ScanCancellation) -> (u64, u64, u64) {
@@ -69,10 +113,6 @@ fn measure(path: &Path, cancellation: &ScanCancellation) -> (u64, u64, u64) {
         })
 }
 
-pub fn scan(path: PathBuf) -> ScanResult {
-    scan_with_cancellation(path, &ScanCancellation::default())
-}
-
 pub fn scan_with_cancellation(path: PathBuf, cancellation: &ScanCancellation) -> ScanResult {
     let mut unreadable = 0_u64;
     let mut error = None;
@@ -95,7 +135,7 @@ pub fn scan_with_cancellation(path: PathBuf, cancellation: &ScanCancellation) ->
         }
     } else {
         unreadable = 1;
-        error = Some("The folder is unavailable or access was not granted".into());
+        error = Some(UNREADABLE_FOLDER.into());
     }
 
     let next = AtomicUsize::new(0);
@@ -124,7 +164,6 @@ pub fn scan_with_cancellation(path: PathBuf, cancellation: &ScanCancellation) ->
                             path: child_path.clone(),
                             bytes,
                             files,
-                            unreadable: denied,
                         });
                     } else {
                         result.1 = result.1.saturating_add(bytes);
@@ -143,7 +182,6 @@ pub fn scan_with_cancellation(path: PathBuf, cancellation: &ScanCancellation) ->
             name: "Files in this folder".into(),
             bytes: own_bytes,
             files: own_files,
-            unreadable: 0,
         });
     }
     entries.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.name.cmp(&b.name)));

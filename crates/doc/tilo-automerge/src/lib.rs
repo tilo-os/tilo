@@ -24,6 +24,11 @@
 
 #[cfg(feature = "heap-probe")]
 pub mod heap;
+pub mod read;
+mod write;
+
+pub use read::ReadTyped;
+pub use write::WriteTyped;
 
 use automerge::sync::{self, SyncDoc};
 use automerge::{AutoCommit, AutomergeError, Change, ChangeHash};
@@ -151,6 +156,33 @@ impl ApplyIncoming for AutoCommit {
         self.integrate();
         discard_unread_patches(self);
     }
+}
+
+/// Attribute exactly the newly inserted text to an author. Authorship marks do
+/// not expand into text subsequently inserted by another collaborator.
+///
+/// # Errors
+/// Returns the document error if the text object cannot be marked.
+pub fn mark_text_author(
+    doc: &mut impl automerge::transaction::Transactable,
+    object: &automerge::ObjId,
+    at: usize,
+    inserted: &str,
+    author: &str,
+) -> Result<(), automerge::AutomergeError> {
+    if inserted.is_empty() {
+        return Ok(());
+    }
+    let len = match doc.text_encoding() {
+        automerge::TextEncoding::Utf8CodeUnit => inserted.len(),
+        automerge::TextEncoding::Utf16CodeUnit => inserted.encode_utf16().count(),
+        _ => inserted.chars().count(),
+    };
+    doc.mark(
+        object,
+        automerge::marks::Mark::new("author".to_owned(), author, at, at.saturating_add(len)),
+        automerge::marks::ExpandMark::None,
+    )
 }
 
 #[cfg(test)]

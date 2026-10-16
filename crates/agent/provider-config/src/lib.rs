@@ -2,8 +2,9 @@
 //!
 //! This crate stores *descriptions* of model providers, never a
 //! bearer token. A profile can point at a system-vault item via
-//! [`SecretReference`], while the process that owns the secret service is
-//! responsible for resolving that reference at call time. Keeping this
+//! [`SecretReference`], or name a sign-in held by account custody via
+//! [`SignInCredential`], while the process that owns the secret service is
+//! responsible for resolving either at call time. Keeping this
 //! boundary here makes the same profile safe to render in Settings, sync as
 //! non-secret device intent, or hand to a sandboxed agent.
 
@@ -14,14 +15,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 pub mod local;
+/// Single-shot model calls in either provider dialect.
+pub mod transform;
 
 /// The `settings.json` section owned by this crate.
 pub const SETTINGS_SECTION: &str = "agent_providers";
+/// The key holding the providers of this device and its network, and the
+/// default: they stay on the device.
 const CONFIG_KEY: &str = "config";
+/// The key holding the hosted providers: they name no device, so they roam
+/// with the person.
+const HOSTED_KEY: &str = "hosted";
 
 /// The request dialect spoken by a provider endpoint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum ProviderProtocol {
     /// `/v1/chat/completions` and related OpenAI-compatible endpoints.
     #[default]
@@ -29,6 +37,8 @@ pub enum ProviderProtocol {
     /// Anthropic's `/v1/messages` API.
     Anthropic,
 }
+
+settings_store::read_through_json_value!(ProviderProtocol);
 
 impl ProviderProtocol {
     pub const ALL: &'static [Self] = &[Self::OpenAiCompatible, Self::Anthropic];
@@ -45,7 +55,7 @@ impl ProviderProtocol {
 /// vLLM server must remain distinct from a hosted API even though it shares the
 /// `OpenAI` wire protocol.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(remote = "Self", rename_all = "snake_case")]
 pub enum EndpointLocation {
     /// A provider-operated internet endpoint.
     #[default]
@@ -55,6 +65,8 @@ pub enum EndpointLocation {
     /// An endpoint on a LAN, VPN, or a user-managed server.
     PrivateNetwork,
 }
+
+settings_store::read_through_json_value!(EndpointLocation);
 
 impl EndpointLocation {
     pub const ALL: &'static [Self] = &[Self::Hosted, Self::ThisDevice, Self::PrivateNetwork];
@@ -79,12 +91,15 @@ impl EndpointLocation {
 /// variable name: the desktop broker can apply per-agent access policy before
 /// handing the secret to an outbound request.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct SecretReference {
     /// The broker/vault namespace, usually `tilo.secret-service`.
     pub vault: String,
     /// Opaque item locator within `vault`; never the secret value.
     pub locator: String,
 }
+
+settings_store::read_through_json_value!(SecretReference);
 
 impl SecretReference {
     pub fn provider_api_key(profile_id: &str) -> Self {
@@ -102,11 +117,115 @@ impl SecretReference {
     }
 }
 
+/// The issuer of a [`SignInCredential`] that signs in with Google.
+pub const GOOGLE_SIGN_IN: &str = "google";
+
+/// A sign-in held by account custody in place of an API key: the gateway
+/// mints a short-lived access token from it for each request and refreshes
+/// it when due. The grant itself lives in this device's vault under
+/// [`sign_in_grant_id`], derived from the profile id so a profile cannot
+/// name another account's grant (Gmail's, say).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
+pub struct SignInCredential {
+    /// Who signed the person in; [`GOOGLE_SIGN_IN`] is the one supported.
+    pub issuer: String,
+    /// The Google Cloud project billed for requests made with a person's own
+    /// credentials, sent as `x-goog-user-project`. Without it Google bills
+    /// the project of Tilo's `OAuth` client, which the person cannot use.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing_project: Option<String>,
+}
+
+settings_store::read_through_json_value!(SignInCredential);
+
+impl SignInCredential {
+    pub fn google(billing_project: impl Into<String>) -> Self {
+        Self {
+            issuer: GOOGLE_SIGN_IN.to_string(),
+            billing_project: Some(billing_project.into()),
+        }
+    }
+}
+
+/// The vault id of `profile_id`'s sign-in grant. Its own namespace, apart
+/// from the API keys (`agent-provider-…`), so neither can address the other.
+pub fn sign_in_grant_id(profile_id: &str) -> String {
+    format!("agent-model-grant-{profile_id}")
+}
+
+/// Vertex AI's default location; Google's newest models are served there
+/// first, some only there.
+pub const VERTEX_DEFAULT_LOCATION: &str = "global";
+/// The model a new Vertex AI provider offers.
+pub const VERTEX_DEFAULT_MODEL: &str = "gemini-4-argon";
+
+/// Whether `project` is a Google Cloud project id: lowercase letters,
+/// digits and hyphens, or a domain-scoped id (`example.com:project`).
+pub fn is_cloud_project_id(project: &str) -> bool {
+    !project.is_empty()
+        && project.len() <= 100
+        && project.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-.:".contains(&byte)
+        })
+}
+
+/// Whether `location` is a Vertex AI location name (`global`,
+/// `us-central1`, `europe-west4`).
+pub fn is_vertex_location(location: &str) -> bool {
+    !location.is_empty()
+        && location.len() <= 40
+        && location
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !location.starts_with('-')
+}
+
+/// Vertex AI's OpenAI-compatible endpoint for `project` in `location`. The
+/// global location is served from the global host, every other one from
+/// its regional host.
+pub fn vertex_endpoint(project: &str, location: &str) -> String {
+    let host = if location == VERTEX_DEFAULT_LOCATION {
+        "aiplatform.googleapis.com".to_string()
+    } else {
+        format!("{location}-aiplatform.googleapis.com")
+    };
+    format!("https://{host}/v1/projects/{project}/locations/{location}/endpoints/openapi")
+}
+
+/// The project and location of a [`vertex_endpoint`], or `None` for any
+/// other endpoint.
+pub fn vertex_target(endpoint: &str) -> Option<(String, String)> {
+    let rest = endpoint.trim().strip_prefix("https://")?;
+    let (host, path) = rest.split_once('/')?;
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix("/chat/completions").unwrap_or(path);
+    let path = path.strip_prefix("v1/projects/")?;
+    let (project, path) = path.split_once("/locations/")?;
+    let location = path.strip_suffix("/endpoints/openapi")?;
+    let canonical = vertex_endpoint(project, location);
+    (is_cloud_project_id(project)
+        && is_vertex_location(location)
+        && canonical.strip_prefix("https://")?.split_once('/')?.0 == host)
+        .then(|| (project.to_string(), location.to_string()))
+}
+
+/// The id Vertex AI's OpenAI-compatible endpoint takes for `model`: a
+/// publisher-qualified id as given, a bare Gemini name under `google/`.
+pub fn vertex_model_id(model: &str) -> String {
+    let model = model.trim();
+    if model.contains('/') {
+        model.to_string()
+    } else {
+        format!("google/{model}")
+    }
+}
+
 /// One model advertised by a profile. A model list is metadata, not a
 /// capability grant: individual agent tasks still require their own action
 /// permissions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct ModelDescriptor {
     /// Provider-native model id sent over the wire.
     pub id: String,
@@ -114,6 +233,10 @@ pub struct ModelDescriptor {
     pub label: String,
     /// Best known input-context size. `None` means unknown, not unlimited.
     pub context_window: Option<u32>,
+    /// Optional Settings-owned request policy. Runtime context is a configured
+    /// deployment limit, separate from this model's source context capacity.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub request_limits: Option<ModelRequestLimits>,
     /// Immutable release revision when this model comes from the signed local
     /// model catalogue. Hosted providers often cannot supply one, so absence
     /// means "not attested", never "latest".
@@ -131,17 +254,62 @@ pub struct ModelDescriptor {
     pub tool_calling: bool,
 }
 
+settings_store::read_through_json_value!(ModelDescriptor);
+
 impl Default for ModelDescriptor {
     fn default() -> Self {
         Self {
             id: String::new(),
             label: String::new(),
             context_window: None,
+            request_limits: None,
             revision: None,
             vision: false,
             face_recognition: false,
             tool_calling: true,
         }
+    }
+}
+
+/// Explicit request limits for one selected model; not a capability or runtime
+/// attestation. None on a descriptor preserves legacy request shaping.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self", deny_unknown_fields)]
+pub struct ModelRequestLimits {
+    pub max_output_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_context_tokens: Option<u32>,
+    /// Owner-configured Plan deadline ceiling; absent preserves 60 seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_timeout_ms: Option<u32>,
+}
+
+settings_store::read_through_json_value!(ModelRequestLimits);
+
+impl ModelRequestLimits {
+    /// Validate bounded settings without estimating the token count of a prompt.
+    ///
+    /// # Errors
+    /// Returns a diagnostic for an invalid allowance or contradictory context.
+    pub fn validate(&self, source_context: Option<u32>) -> Result<(), &'static str> {
+        if self.max_output_tokens == 0 || self.max_output_tokens > 65_536 {
+            return Err("Output allowance must be between 1 and 65536 tokens.");
+        }
+        if let Some(context) = self.runtime_context_tokens
+            && (context == 0
+                || context > 1_048_576
+                || self.max_output_tokens >= context
+                || source_context.is_some_and(|source| context > source))
+        {
+            return Err("Runtime context must fit the model and leave room beyond output.");
+        }
+        if self
+            .plan_timeout_ms
+            .is_some_and(|timeout| timeout == 0 || timeout > 900_000)
+        {
+            return Err("Plan timeout must be between 1 and 900000 milliseconds.");
+        }
+        Ok(())
     }
 }
 
@@ -166,7 +334,7 @@ impl ModelDescriptor {
 
 /// A configured model-provider endpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct ProviderProfile {
     pub id: String,
     pub label: String,
@@ -177,6 +345,11 @@ pub struct ProviderProfile {
     /// itself is never accepted or serialised by this type.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credential: Option<SecretReference>,
+    /// A sign-in in place of an API key (Google Vertex AI). Absent in
+    /// settings written before sign-in existed, so they read unchanged; a
+    /// reader that predates it ignores the field and asks for a key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sign_in: Option<SignInCredential>,
     pub enabled: bool,
     pub models: Vec<ModelDescriptor>,
     /// The default model id within `models`. Missing/unknown is represented
@@ -201,17 +374,22 @@ pub struct ProviderProfile {
     pub omit_params: Vec<String>,
 }
 
+settings_store::read_through_json_value!(ProviderProfile);
+
 /// Request fields a profile may not strip: without them there is no request.
 pub const REQUIRED_PARAMS: &[&str] = &["model", "messages", "tools", "tool_choice"];
 
 /// The output-token-limit field of an OpenAI-compatible provider.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub enum TokenLimitParam {
     #[serde(rename = "max_tokens")]
     MaxTokens,
     #[serde(rename = "max_completion_tokens")]
     MaxCompletionTokens,
 }
+
+settings_store::read_through_json_value!(TokenLimitParam);
 
 impl TokenLimitParam {
     pub fn key(self) -> &'static str {
@@ -224,6 +402,7 @@ impl TokenLimitParam {
 
 /// Where a provider takes its reasoning effort.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub enum ReasoningParam {
     /// `OpenAI` Chat Completions: top-level `"reasoning_effort": "<effort>"`.
     #[serde(rename = "reasoning_effort")]
@@ -236,8 +415,11 @@ pub enum ReasoningParam {
     Omit,
 }
 
+settings_store::read_through_json_value!(ReasoningParam);
+
 /// A profile's reasoning setting, applied by the gateway.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct ReasoningSetting {
     pub param: ReasoningParam,
     /// One of [`REASONING_EFFORTS`]; unused when `param` is `none`. Not every
@@ -247,8 +429,13 @@ pub struct ReasoningSetting {
     pub effort: String,
 }
 
+settings_store::read_through_json_value!(ReasoningSetting);
+
 /// The reasoning efforts a profile may name.
 pub const REASONING_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
+
+#[cfg(feature = "model")]
+tilo_resource::json_model!(ProviderProfile);
 
 impl Default for ProviderProfile {
     fn default() -> Self {
@@ -259,6 +446,7 @@ impl Default for ProviderProfile {
             endpoint: String::new(),
             location: EndpointLocation::default(),
             credential: None,
+            sign_in: None,
             enabled: true,
             models: Vec::new(),
             default_model: None,
@@ -290,6 +478,7 @@ impl ProviderProfile {
             endpoint: endpoint.to_string(),
             location: EndpointLocation::Hosted,
             credential: Some(SecretReference::provider_api_key(&id)),
+            sign_in: None,
             enabled: true,
             models: Vec::new(),
             default_model,
@@ -312,6 +501,7 @@ impl ProviderProfile {
             endpoint: "http://127.0.0.1:8000/v1".to_string(),
             location: EndpointLocation::ThisDevice,
             credential: None,
+            sign_in: None,
             enabled: true,
             models: Vec::new(),
             default_model: None,
@@ -319,6 +509,41 @@ impl ProviderProfile {
             reasoning: None,
             omit_params: Vec::new(),
         }
+    }
+
+    /// A Google Vertex AI profile for `project` in `location`, offering
+    /// `model`, signed in with Google rather than an API key. It speaks
+    /// Vertex AI's OpenAI-compatible endpoint, which accepts every field the
+    /// gateway sends (`stream_options`, `parallel_tool_calls`,
+    /// `max_completion_tokens`, `reasoning_effort`), so nothing is omitted.
+    pub fn google_vertex(project: &str, location: &str, model: &str) -> Self {
+        let id = uuid::Uuid::new_v4().to_string();
+        let model = ModelDescriptor {
+            label: model.trim().to_string(),
+            ..ModelDescriptor::new(vertex_model_id(model))
+        };
+        Self {
+            id,
+            label: "Google Vertex AI".to_string(),
+            protocol: ProviderProtocol::OpenAiCompatible,
+            endpoint: vertex_endpoint(project, location),
+            location: EndpointLocation::Hosted,
+            credential: None,
+            sign_in: Some(SignInCredential::google(project)),
+            enabled: true,
+            default_model: Some(model.id.clone()),
+            models: vec![model],
+            token_limit_param: None,
+            reasoning: None,
+            omit_params: Vec::new(),
+        }
+    }
+
+    /// Whether this profile signs in with Google instead of using a key.
+    pub fn signs_in_with_google(&self) -> bool {
+        self.sign_in
+            .as_ref()
+            .is_some_and(|sign_in| sign_in.issuer == GOOGLE_SIGN_IN)
     }
 
     pub fn display_label(&self) -> &str {
@@ -336,16 +561,30 @@ impl ProviderProfile {
     }
 }
 
+/// The hosted providers of a configuration, as they roam with the person:
+/// each names an endpoint on the internet and a reference to its key, never
+/// the key, which each device keeps in its own vault.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(remote = "Self", default)]
+pub struct HostedProfiles {
+    pub profiles: Vec<ProviderProfile>,
+}
+
+settings_store::read_through_json_value!(HostedProfiles);
+
 /// A portable profile list and the user's deliberate default. Kept separate
 /// from a task: tasks capture a chosen model at start so changing this default
 /// does not change work already in progress.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(remote = "Self", default)]
 pub struct ProviderConfig {
     pub profiles: Vec<ProviderProfile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_profile: Option<String>,
 }
+
+settings_store::read_through_json_value!(ProviderConfig);
 
 impl ProviderConfig {
     pub fn load() -> Self {
@@ -362,12 +601,66 @@ impl ProviderConfig {
     }
 
     fn from_section(section: &Map<String, Value>) -> Self {
-        section
+        let local = section
             .get(CONFIG_KEY)
             .cloned()
             .and_then(|value| serde_json::from_value::<Self>(value).ok())
-            .unwrap_or_default()
-            .sanitised()
+            .unwrap_or_default();
+        let hosted = section
+            .get(HOSTED_KEY)
+            .cloned()
+            .and_then(|value| serde_json::from_value::<HostedProfiles>(value).ok())
+            .unwrap_or_default();
+        Self::from_stored(local, hosted).sanitised()
+    }
+
+    /// This configuration as it is stored: the providers of this device and
+    /// its network with the default, which stay on the device, and the
+    /// hosted providers, which roam with the person.
+    #[must_use]
+    pub fn stored(self) -> (Self, HostedProfiles) {
+        let (hosted, local): (Vec<_>, Vec<_>) = self
+            .profiles
+            .into_iter()
+            .partition(|profile| profile.location == EndpointLocation::Hosted);
+        (
+            Self {
+                profiles: local,
+                default_profile: self.default_profile,
+            },
+            HostedProfiles { profiles: hosted },
+        )
+    }
+
+    /// The configuration stored as `local` and `hosted`; a profile stored in
+    /// both is the local one.
+    #[must_use]
+    pub fn from_stored(local: Self, hosted: HostedProfiles) -> Self {
+        let mut profiles = local.profiles;
+        for profile in hosted.profiles {
+            if !profiles.iter().any(|known| known.id == profile.id) {
+                profiles.push(profile);
+            }
+        }
+        Self {
+            profiles,
+            default_profile: local.default_profile,
+        }
+    }
+
+    /// The section's two keys for this configuration.
+    fn section(&self) -> std::io::Result<Map<String, Value>> {
+        let (local, hosted) = self.clone().sanitised().stored();
+        let mut section = Map::new();
+        section.insert(
+            CONFIG_KEY.to_string(),
+            serde_json::to_value(local).map_err(std::io::Error::other)?,
+        );
+        section.insert(
+            HOSTED_KEY.to_string(),
+            serde_json::to_value(hosted).map_err(std::io::Error::other)?,
+        );
+        Ok(section)
     }
 
     /// Merge our single configuration payload into the shared settings file.
@@ -379,13 +672,7 @@ impl ProviderConfig {
     /// Returns an error if the configuration cannot be serialised or the
     /// shared settings document cannot be updated.
     pub fn save(&self) -> std::io::Result<()> {
-        let config = self.clone().sanitised();
-        let mut section = Map::new();
-        section.insert(
-            CONFIG_KEY.to_string(),
-            serde_json::to_value(config).map_err(std::io::Error::other)?,
-        );
-        settings_store::update_section(SETTINGS_SECTION, section)
+        settings_store::update_section(SETTINGS_SECTION, self.section()?)
     }
 
     /// Save this configuration to the shared settings document at `path`.
@@ -395,13 +682,7 @@ impl ProviderConfig {
     /// Returns an error if the configuration cannot be serialised or the
     /// settings document at `path` cannot be updated.
     pub fn save_at(&self, path: &Path) -> std::io::Result<()> {
-        let config = self.clone().sanitised();
-        let mut section = Map::new();
-        section.insert(
-            CONFIG_KEY.to_string(),
-            serde_json::to_value(config).map_err(std::io::Error::other)?,
-        );
-        settings_store::update_section_at(path, SETTINGS_SECTION, section)
+        settings_store::update_section_at(path, SETTINGS_SECTION, self.section()?)
     }
 
     /// Validate storage and runtime-safe invariants, returning user-facing
@@ -435,6 +716,7 @@ impl ProviderConfig {
                     "Credential reference is incomplete.",
                 ));
             }
+            sign_in_issues(profile, &mut issues);
             let model_ids: BTreeSet<_> =
                 profile.models.iter().map(|model| model.id.trim()).collect();
             if model_ids.len() != profile.models.len() || model_ids.contains("") {
@@ -442,6 +724,13 @@ impl ProviderConfig {
                     &profile.id,
                     "Every model needs a unique id.",
                 ));
+            }
+            for model in &profile.models {
+                if let Some(limits) = &model.request_limits
+                    && let Err(message) = limits.validate(model.context_window)
+                {
+                    issues.push(ProfileIssue::new(&profile.id, message));
+                }
             }
             if profile.reasoning.as_ref().is_some_and(|reasoning| {
                 reasoning.param != ReasoningParam::Omit
@@ -518,7 +807,10 @@ impl ProviderConfig {
         Some(removed)
     }
 
-    fn sanitised(mut self) -> Self {
+    /// The configuration as it is stored and read: profiles without an id,
+    /// models without an id and defaults naming no model are dropped.
+    #[must_use]
+    pub fn sanitised(mut self) -> Self {
         // Do not turn unknown/malformed input into a usable provider.
         self.profiles
             .retain(|profile| !profile.id.trim().is_empty());
@@ -552,6 +844,34 @@ impl ProfileIssue {
     }
 }
 
+/// What is wrong with `profile`'s sign-in, if it has one.
+fn sign_in_issues(profile: &ProviderProfile, issues: &mut Vec<ProfileIssue>) {
+    if let Some(sign_in) = &profile.sign_in {
+        if profile.credential.is_some() {
+            issues.push(ProfileIssue::new(
+                &profile.id,
+                "Profile uses both an API key and a sign-in.",
+            ));
+        }
+        if sign_in.issuer != GOOGLE_SIGN_IN {
+            issues.push(ProfileIssue::new(
+                &profile.id,
+                "Profile signs in with an unsupported provider.",
+            ));
+        }
+        if sign_in
+            .billing_project
+            .as_deref()
+            .is_some_and(|project| !is_cloud_project_id(project))
+        {
+            issues.push(ProfileIssue::new(
+                &profile.id,
+                "Billing project is not a Google Cloud project id.",
+            ));
+        }
+    }
+}
+
 fn is_safe_endpoint(endpoint: &str, location: EndpointLocation) -> bool {
     let endpoint = endpoint.trim();
     if endpoint.is_empty() || endpoint.contains(char::is_whitespace) {
@@ -567,6 +887,83 @@ fn is_safe_endpoint(endpoint: &str, location: EndpointLocation) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_request_limits_preserve_legacy_and_validate_runtime_room() {
+        let legacy = ModelDescriptor::new("m");
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("request_limits")
+                .is_none()
+        );
+        let mut profile = ProviderProfile::local_vllm();
+        profile.models = vec![legacy];
+        let mut config = ProviderConfig {
+            profiles: vec![profile],
+            default_profile: None,
+        };
+        for (output, context, source, valid) in [
+            (512, Some(4096), Some(262_144), true),
+            (512, None, None, true),
+            (0, Some(4096), None, false),
+            (65_537, None, None, false),
+            (4096, Some(4096), None, false),
+            (512, Some(1_048_577), None, false),
+            (512, Some(8192), Some(4096), false),
+        ] {
+            config.profiles[0].models[0].context_window = source;
+            config.profiles[0].models[0].request_limits = Some(ModelRequestLimits {
+                max_output_tokens: output,
+                runtime_context_tokens: context,
+                plan_timeout_ms: None,
+            });
+            assert_eq!(config.validation_errors().is_empty(), valid);
+        }
+        for (timeout, valid) in [
+            (None, true),
+            (Some(1), true),
+            (Some(900_000), true),
+            (Some(0), false),
+            (Some(900_001), false),
+        ] {
+            let limits = ModelRequestLimits {
+                max_output_tokens: 512,
+                runtime_context_tokens: Some(4096),
+                plan_timeout_ms: timeout,
+            };
+            assert_eq!(limits.validate(None).is_ok(), valid);
+            if timeout.is_none() {
+                assert_eq!(
+                    serde_json::to_value(&limits).unwrap(),
+                    serde_json::json!({"max_output_tokens":512,"runtime_context_tokens":4096})
+                );
+            }
+        }
+        for malformed in [
+            serde_json::json!(true),
+            serde_json::json!("1000"),
+            serde_json::json!(-1),
+        ] {
+            assert!(
+                serde_json::from_value::<ModelRequestLimits>(serde_json::json!({
+                "max_output_tokens":512,"plan_timeout_ms":malformed}))
+                .is_err()
+            );
+        }
+        assert!(
+            serde_json::from_value::<ModelRequestLimits>(
+                serde_json::json!({"max_output_tokens":false})
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ModelRequestLimits>(
+                serde_json::json!({"max_output_tokens":512,"hidden_override":true})
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn request_shape_is_profile_configuration_not_host_inference() {
@@ -701,6 +1098,108 @@ mod tests {
         }
     }
 
+    /// Settings written before sign-in existed read unchanged, a sign-in
+    /// round-trips, and a profile without one writes no new field.
+    #[test]
+    fn sign_in_profiles_are_backward_compatible_settings() {
+        let older = serde_json::json!({
+            "profiles": [{
+                "id": "p", "label": "OpenRouter", "protocol": "open_ai_compatible",
+                "endpoint": "https://openrouter.ai/api/v1", "location": "hosted",
+                "credential": {"vault": "tilo.secret-service", "locator": "agent-provider/p/api-key"},
+                "enabled": true, "models": [{"id": "m"}], "default_model": "m"
+            }],
+            "default_profile": "p"
+        });
+        let config: ProviderConfig = serde_json::from_value(older).unwrap();
+        assert_eq!(config.profiles.len(), 1);
+        assert!(config.profiles[0].sign_in.is_none());
+        assert!(config.validation_errors().is_empty());
+        let written = serde_json::to_value(&config).unwrap();
+        assert!(written["profiles"][0].get("sign_in").is_none());
+
+        let vertex = ProviderProfile::google_vertex("tilo-509618", "global", "gemini-4-argon");
+        assert!(vertex.credential.is_none());
+        assert!(vertex.signs_in_with_google());
+        assert_eq!(
+            vertex.default_model.as_deref(),
+            Some("google/gemini-4-argon")
+        );
+        assert_eq!(vertex.models[0].label, "gemini-4-argon");
+        let config = ProviderConfig {
+            profiles: vec![vertex.clone()],
+            default_profile: Some(vertex.id.clone()),
+        };
+        assert!(config.validation_errors().is_empty());
+        let written = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            written["profiles"][0]["sign_in"],
+            serde_json::json!({"issuer": "google", "billing_project": "tilo-509618"})
+        );
+        assert_eq!(
+            serde_json::from_value::<ProviderConfig>(written).unwrap(),
+            config
+        );
+
+        for (credential, issuer, project) in [
+            (true, GOOGLE_SIGN_IN, "tilo-509618"),
+            (false, "elsewhere", "tilo-509618"),
+            (false, GOOGLE_SIGN_IN, "Not A Project"),
+        ] {
+            let mut invalid = vertex.clone();
+            invalid.credential = credential.then(|| SecretReference::provider_api_key(&invalid.id));
+            invalid.sign_in = Some(SignInCredential {
+                issuer: issuer.into(),
+                billing_project: Some(project.into()),
+            });
+            let config = ProviderConfig {
+                profiles: vec![invalid],
+                default_profile: None,
+            };
+            assert_eq!(config.validation_errors().len(), 1, "{issuer} {project}");
+        }
+        assert_ne!(sign_in_grant_id("p"), "agent-provider-p");
+    }
+
+    #[test]
+    fn vertex_endpoints_name_their_project_and_location() {
+        assert_eq!(
+            vertex_endpoint("tilo-509618", "global"),
+            "https://aiplatform.googleapis.com/v1/projects/tilo-509618/locations/global/endpoints/openapi"
+        );
+        assert_eq!(
+            vertex_endpoint("p-1", "europe-west4"),
+            "https://europe-west4-aiplatform.googleapis.com/v1/projects/p-1/locations/europe-west4/endpoints/openapi"
+        );
+        for (project, location) in [("tilo-509618", "global"), ("example.com:p", "us-central1")] {
+            assert_eq!(
+                vertex_target(&vertex_endpoint(project, location)),
+                Some((project.to_string(), location.to_string()))
+            );
+        }
+        assert_eq!(
+            vertex_target(&format!(
+                "{}/chat/completions",
+                vertex_endpoint("p", "global")
+            )),
+            Some(("p".into(), "global".into()))
+        );
+        // A regional location on the global host, or any other endpoint, is
+        // not a Vertex target.
+        assert_eq!(
+            vertex_target(
+                "https://aiplatform.googleapis.com/v1/projects/p/locations/us-central1/endpoints/openapi"
+            ),
+            None
+        );
+        assert_eq!(vertex_target("https://api.openai.com/v1"), None);
+        assert_eq!(vertex_model_id("gemini-4-argon"), "google/gemini-4-argon");
+        assert_eq!(vertex_model_id(" meta/llama-4 "), "meta/llama-4");
+        assert!(is_vertex_location("us-east5") && !is_vertex_location("US"));
+        assert!(!is_vertex_location("a/b") && !is_vertex_location(""));
+        assert!(is_cloud_project_id("tilo-509618") && !is_cloud_project_id("a/b"));
+    }
+
     #[test]
     fn save_round_trip_preserves_other_settings_and_never_needs_a_secret() {
         let dir = tempfile::tempdir().unwrap();
@@ -729,4 +1228,36 @@ mod tests {
         assert!(body.contains("appearance"));
         assert!(!body.contains("sk-live-secret"));
     }
+
+    /// A hosted provider is stored apart from the ones on this device, so it
+    /// roams with the person while a loopback endpoint and the default stay.
+    #[test]
+    fn hosted_providers_are_stored_apart_from_this_devices() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let hosted = ProviderProfile::hosted(ProviderProtocol::Anthropic);
+        let local = ProviderProfile::local_vllm();
+        let config = ProviderConfig {
+            default_profile: Some(local.id.clone()),
+            profiles: vec![local.clone(), hosted.clone()],
+        };
+        config.save_at(&path).unwrap();
+        assert_eq!(ProviderConfig::load_at(&path), config);
+        let document = settings_store::load_at(&path);
+        let section = document[SETTINGS_SECTION].as_object().unwrap();
+        let stored: ProviderConfig = serde_json::from_value(section[CONFIG_KEY].clone()).unwrap();
+        let roaming: HostedProfiles = serde_json::from_value(section[HOSTED_KEY].clone()).unwrap();
+        assert_eq!(stored.profiles, vec![local]);
+        assert_eq!(stored.default_profile, config.default_profile);
+        assert_eq!(roaming.profiles, vec![hosted]);
+        assert!(settings_store::continuity::is_personal(
+            "tilo.agent_providers.hosted"
+        ));
+        assert!(!settings_store::continuity::is_personal(
+            "tilo.agent_providers.config"
+        ));
+    }
 }
+
+/// Typed local-speech configuration and its private worker wire format.
+pub mod speech;

@@ -81,11 +81,7 @@ fn native_observer_follows_actual_wheel_and_selection() {
     let x = vp[0].as_f64().unwrap() + 50.0;
     let y = vp[1].as_f64().unwrap() + 60.0;
     h.cursor(x, y);
-    h.dispatch(&winit::event::WindowEvent::MouseWheel {
-        device_id: unsafe { std::mem::zeroed() },
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
-        phase: winit::event::TouchPhase::Moved,
-    });
+    h.dispatch(&ui::synthetic_input::mouse_wheel(0.0, -3.0));
     h.w.apply_layout(&h.taffy, h.node, Point::ORIGIN);
     let moved =
         h.w.native_input_snapshot(&h.state.doc, &h.state.root)
@@ -107,11 +103,7 @@ fn native_observer_follows_actual_wheel_and_selection() {
     assert_eq!(selected["selected_names"][0], h.w.entries()[index].name);
     assert_eq!(selected["order_hash"], initial["order_hash"]);
     assert_eq!(selected["offset_y"], moved["offset_y"]);
-    h.dispatch(&winit::event::WindowEvent::MouseWheel {
-        device_id: unsafe { std::mem::zeroed() },
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, 3.0),
-        phase: winit::event::TouchPhase::Moved,
-    });
+    h.dispatch(&ui::synthetic_input::mouse_wheel(0.0, 3.0));
     h.w.apply_layout(&h.taffy, h.node, Point::ORIGIN);
     let reversed =
         h.w.native_input_snapshot(&h.state.doc, &h.state.root)
@@ -139,25 +131,13 @@ fn native_pointer_observer_tracks_logical_cursor_and_survives_rebuild() {
         std::fs::write(temp.path().join(format!("file-{index:04}.txt")), b"note\n").unwrap();
     }
     let mut h = H::new(Some(temp.path()), 1200.0, 720.0);
-    let event = winit::event::WindowEvent::CursorMoved {
-        device_id: unsafe { std::mem::zeroed() },
-        position: winit::dpi::PhysicalPosition::new(1000.0, 400.0),
-    };
-    let mut handled = false;
-    let mut focus = None;
-    h.w.handle_event(
-        &event,
-        &mut ui::widget::EventCtx {
-            scale_factor: 2.0,
-            modifiers: &winit::event::Modifiers::default(),
-            state: &mut h.state.doc,
-            path: &h.state.root,
-            handled: &mut handled,
-            focus_target: &mut focus,
-            node_id: h.node,
-            taffy: &h.taffy,
-        },
-    );
+    let event = ui::synthetic_input::cursor_moved(1000.0, 400.0);
+    ui::testing::Dispatch::new()
+        .scale_factor(2.0)
+        .doc(&mut h.state.doc)
+        .path(&h.state.root)
+        .layout(&h.taffy, h.node)
+        .send(&mut h.w, &event);
     let snapshot =
         h.w.native_input_snapshot(&h.state.doc, &h.state.root)
             .unwrap();
@@ -165,11 +145,7 @@ fn native_pointer_observer_tracks_logical_cursor_and_survives_rebuild() {
     // Force the production content composition to replace the Scrollable.
     h.w.set_view_mode(crate::model::ViewMode::Grid);
     h.lay_out(1200.0, 720.0);
-    let wheel = winit::event::WindowEvent::MouseWheel {
-        device_id: unsafe { std::mem::zeroed() },
-        delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
-        phase: winit::event::TouchPhase::Moved,
-    };
+    let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
     h.dispatch(&wheel);
     let moved =
         h.w.native_input_snapshot(&h.state.doc, &h.state.root)
@@ -243,11 +219,7 @@ fn control_presence_real_files_scroll_skips_file_accessibility_but_inventory_kee
             body_expected,
             "also exercise the file body without a toolbar emitter short-circuit"
         );
-        h.dispatch(&winit::event::WindowEvent::MouseWheel {
-            device_id: unsafe { std::mem::zeroed() },
-            delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
-            phase: winit::event::TouchPhase::Moved,
-        });
+        h.dispatch(&ui::synthetic_input::mouse_wheel(0.0, -3.0));
         h.w.apply_layout(&h.taffy, h.node, Point::ORIGIN);
         assert_eq!(
             ui::widget::controls::has_action_control_bindings(&h.w),
@@ -292,7 +264,6 @@ fn control_presence_files_collaboration_panel_matches_inventory() {
             summary: "Summary".into(),
             lines: vec![],
             action: None,
-            history: None,
         });
         let expected = ui::widget::controls::control_action_bindings(&h.w)
             .iter()

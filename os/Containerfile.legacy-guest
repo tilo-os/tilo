@@ -1,0 +1,49 @@
+# syntax=docker/dockerfile:1.7
+# The Linux legacy VM guest: minimal Fedora bootc, Flatpak with Flathub, the
+# Wayland forwarder (waypipe), Xwayland for X11 apps, Mesa, and Tilo's guest
+# agent on vsock. .forgejo/workflows/build-legacy-guest.yml installs it to a
+# qcow2, wraps that in an OCI image, signs and pins it
+# (os/legacy-guest-snapshot.env). The agent binary is built by the same
+# workflow and placed at os/legacy-guest/agent/tilo-legacy-agent first.
+ARG BASE_REF
+FROM ${BASE_REF}
+
+# foot is a small Wayland terminal for guest tools, and the window the
+# end-to-end test (scripts/legacy-vm-e2e.py) opens.
+# This installs from live Fedora repositories, not the frozen snapshot the OS
+# images use. Tilo never ships Cisco's OpenH264: with the base's
+# fedora-cisco-openh264 repository enabled, its `openh264` would satisfy
+# libopenh264.so ahead of Fedora's `noopenh264` stub for any package that
+# links it, so the repository goes first and the finished rootfs is checked
+# below.
+RUN rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo \
+ && dnf install -y --setopt=install_weak_deps=False \
+      flatpak \
+      waypipe \
+      xorg-x11-server-Xwayland \
+      xwayland-satellite \
+      mesa-dri-drivers \
+      mesa-vulkan-drivers \
+      dbus-daemon \
+      polkit \
+      fuse3 \
+      foot \
+      dejavu-sans-mono-fonts \
+ && dnf clean all \
+ && flatpak remote-add --system --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+# The VM boots UEFI only (libvirt `firmware='efi'`). Without its BIOS
+# component bootupd installs only the EFI one, so a generic disk install needs
+# no BIOS boot partition.
+RUN rm -f /usr/lib/bootupd/updates/BIOS.json \
+ && test -f /usr/lib/bootupd/updates/EFI.json
+
+COPY os/legacy-guest/rootfs/ /
+COPY --chmod=0755 os/legacy-guest/agent/tilo-legacy-agent /usr/libexec/tilo-legacy-agent
+
+RUN --mount=type=bind,source=os/scripts/verify-no-cisco-openh264.sh,target=/run/tilo-verify-no-cisco-openh264.sh,ro \
+    systemctl enable tilo-legacy-agent.service \
+ && test -x /usr/libexec/tilo-legacy-agent \
+ && command -v waypipe xwayland-satellite flatpak foot \
+ && bash /run/tilo-verify-no-cisco-openh264.sh \
+ && bootc container lint

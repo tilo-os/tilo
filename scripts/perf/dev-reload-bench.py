@@ -14,7 +14,7 @@ is killed by process group on exit.
 Examples
 --------
     scripts/perf/dev-reload-bench.py ~/scratch/my-app --runs 5
-    scripts/perf/dev-reload-bench.py apps/hot-reload-demo --json target/reload.json
+    scripts/perf/dev-reload-bench.py apps/calculator --json target/reload.json
     # Fail when the median edit-to-pixels exceeds a budget:
     scripts/perf/dev-reload-bench.py APP --budget-ms 1000
 

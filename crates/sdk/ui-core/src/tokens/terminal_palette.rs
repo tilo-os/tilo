@@ -1,38 +1,16 @@
-use super::colors::{ACCENT_PRIMARY_IDX, Colors};
+use super::colors::{Colors, mix8};
 use crate::color_compat::ColorCompat;
 use vello::peniko::Color;
 
 /// Palette used by terminal-style widgets. Exposes default fg/bg and a 16-slot
 /// ANSI base palette. Higher-index colors (256/truecolor) are out of scope —
 /// consumers still derive those from the 16 anchors or from their own mapping.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TerminalPalette {
     pub fg_default: Color,
     pub bg_default: Color,
     /// ANSI 0..=15 (standard 8 + bright 8).
     pub ansi: [Color; 16],
-}
-
-/// Mix two colours in straight (non-premultiplied) 8-bit sRGB. `t = 0` → `a`.
-fn mix8(a: Color, b: Color, t: f32) -> Color {
-    let t = t.clamp(0.0, 1.0);
-    let l = |x: u8, y: u8| {
-        // x, y are u8 channels and t is clamped to 0.0..=1.0, so this convex
-        // combination is already bounded to 0.0..=255.0; the explicit clamp
-        // just makes that provable to the lint (and immune to fp rounding
-        // at the edges) rather than changing the result.
-        let v = (f32::from(x) * (1.0 - t) + f32::from(y) * t)
-            .clamp(0.0, 255.0)
-            .round();
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "v is clamped to 0.0..=255.0 immediately above, so this can never truncate or wrap"
-        )]
-        let channel = v as u8;
-        channel
-    };
-    Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
 /// Perceptual luminance in 0..=1 (Rec. 709 coefficients).
@@ -48,7 +26,9 @@ impl TerminalPalette {
     /// primary text and ground; the neutral ANSI anchors blend
     /// ground→foreground so both ends stay legible in light or dark.
     pub fn from_colors(c: &Colors) -> Self {
-        let bg = c.surfaces.base;
+        // The terminal stands on the window ground every app has: a terminal
+        // is content, not a well sunk into it.
+        let bg = c.surfaces.content;
         let fg = c.text_primary;
         let dark = luma(bg) < 0.5;
 
@@ -68,12 +48,11 @@ impl TerminalPalette {
         let red = c.semantic.danger;
         let green = c.semantic.success;
         let yellow = c.semantic.warning;
-        let blue = c.accent[ACCENT_PRIMARY_IDX];
-        // Keep cyan distinct from a blue-leaning accent by pulling the theme's
-        // "info" hue toward green.
-        let cyan = mix8(c.semantic.info, green, 0.35);
-        // The theme has no magenta; red + blue lands on a tasteful one.
-        let magenta = mix8(red, blue, 0.5);
+        // Blue, magenta and cyan come from the presence palette (265°, 325°
+        // and 205°), so they sit at the same lightness as each other.
+        let blue = c.presence.get(8);
+        let magenta = c.presence.get(10);
+        let cyan = c.presence.get(6);
 
         Self {
             fg_default: fg,

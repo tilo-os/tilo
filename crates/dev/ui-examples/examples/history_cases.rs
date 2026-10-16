@@ -13,7 +13,7 @@
 //! `TILO_SHOTS_THEME` picks the palette (`dark` by default, `light`, or any
 //! other [`Theme::named`] preset); the PNGs land in `<dir>/<theme>/`.
 //!
-//! Every case here builds an **automerge document**, edits it through `qdoc` (or
+//! Every case here builds an **automerge document**, edits it through `tilo-doc` (or
 //! through plain automerge, for the room-shaped documents that carry no editor
 //! schema), names runs of it through the real
 //! [`tilo_ui::history_groups`] API, and then derives the rows and bands with
@@ -33,11 +33,7 @@ use automerge::AutoCommit;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
-use tilo_ui::widget::history_scrubber::ScrubberGroup;
-use tilo_ui::{
-    ActivityTimeline, AuthorDirectory, GroupingConfig, HistoryEntry, HistoryScrubber,
-    HistorySource, Theme, Widget,
-};
+use tilo_ui::{ActivityTimeline, AuthorDirectory, HistoryEntry, HistorySource, Theme, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -61,20 +57,20 @@ fn now_i64() -> i64 {
 // Documents
 // =====================================================================
 
-/// A `qdoc` document with three working sessions: two by the local author either
+/// A `tilo-doc` document with three working sessions: two by the local author either
 /// side of a long break, one by a peer in between. Returns the document and the
 /// ids of every change, oldest first.
 fn three_session_doc() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
     let root = automerge::ROOT;
-    let c = qdoc::model::init(&mut doc, &root);
-    let mut ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
+    let c = tilo_doc::model::init(&mut doc, &root);
+    let mut ids = tilo_doc::IdGen::new(doc.get_actor().to_hex_string());
     let base = now_i64().saturating_sub(6 * 3600);
     tilo_resource::history::commit_stamped_at(&mut doc, base);
 
     let para = {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -88,7 +84,7 @@ fn three_session_doc() -> AutoCommit {
     // Session one: six edits about twenty seconds apart.
     for i in 0..6i64 {
         let at = text_len(&doc, &root);
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -104,11 +100,11 @@ fn three_session_doc() -> AutoCommit {
     peer.set_actor(automerge::ActorId::from("Ada Lovelace".as_bytes()));
     for i in 0..4i64 {
         let at = text_len(&peer, &root);
-        let Some(cc) = qdoc::model::open(&peer, &root).ok() else {
+        let Some(cc) = tilo_doc::model::open(&peer, &root).ok() else {
             continue;
         };
-        let mut pids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut {
+        let mut pids = tilo_doc::IdGen::new(peer.get_actor().to_hex_string());
+        let mut dm = tilo_doc::DocMut {
             doc: &mut peer,
             c: &cc,
             ids: &mut pids,
@@ -129,10 +125,10 @@ fn three_session_doc() -> AutoCommit {
     // Session three, three hours in, back to the local author.
     for i in 0..7i64 {
         let at = text_len(&doc, &root);
-        let Some(cc) = qdoc::model::open(&doc, &root).ok() else {
+        let Some(cc) = tilo_doc::model::open(&doc, &root).ok() else {
             continue;
         };
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &cc,
             ids: &mut ids,
@@ -147,10 +143,10 @@ fn three_session_doc() -> AutoCommit {
 }
 
 fn text_len(doc: &AutoCommit, root: &automerge::ObjId) -> usize {
-    let Some(c) = qdoc::model::open(doc, root).ok() else {
+    let Some(c) = tilo_doc::model::open(doc, root).ok() else {
         return 0;
     };
-    qdoc::model::materialize(doc, &c)
+    tilo_doc::model::materialize(doc, &c)
         .blocks
         .first()
         .map_or(0, |b| b.text.chars().count())
@@ -167,11 +163,11 @@ fn singleton_bands_doc() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
     let root = automerge::ROOT;
-    let c = qdoc::model::init(&mut doc, &root);
-    let mut ids = qdoc::IdGen::new(doc.get_actor().to_hex_string());
+    let c = tilo_doc::model::init(&mut doc, &root);
+    let mut ids = tilo_doc::IdGen::new(doc.get_actor().to_hex_string());
     tilo_resource::history::commit_stamped_at(&mut doc, now_i64().saturating_sub(900));
     let para = {
-        let mut dm = qdoc::DocMut {
+        let mut dm = tilo_doc::DocMut {
             doc: &mut doc,
             c: &c,
             ids: &mut ids,
@@ -190,11 +186,11 @@ fn singleton_bands_doc() -> AutoCommit {
         let mut peer = doc.fork();
         peer.set_actor(automerge::ActorId::from(who.as_bytes()));
         let at = text_len(&peer, &root);
-        let Some(cc) = qdoc::model::open(&peer, &root).ok() else {
+        let Some(cc) = tilo_doc::model::open(&peer, &root).ok() else {
             continue;
         };
-        let mut pids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
-        let mut dm = qdoc::DocMut {
+        let mut pids = tilo_doc::IdGen::new(peer.get_actor().to_hex_string());
+        let mut dm = tilo_doc::DocMut {
             doc: &mut peer,
             c: &cc,
             ids: &mut pids,
@@ -291,42 +287,6 @@ fn timeline(
     t
 }
 
-fn scrubber(w: f64, entries: Vec<HistoryEntry>, groups: Vec<ScrubberGroup>) -> HistoryScrubber {
-    let mut s = HistoryScrubber::new(entries);
-    s.set_groups(groups);
-    s.set_rect(Rect::new(0.0, 0.0, w, s.natural_height()));
-    s.set_now_for_test(now());
-    s
-}
-
-/// Turn the model's groups into the strip's segments, exactly as the word
-/// processor's panel does.
-fn segments(entries: &[HistoryEntry], named: &[tilo_ui::NamedRange]) -> Vec<ScrubberGroup> {
-    tilo_ui::group_entries(entries, named, &GroupingConfig::default())
-        .iter()
-        .map(|g| ScrubberGroup {
-            start: g.start,
-            end: g.end.saturating_sub(1),
-            label: g.name.clone(),
-            derived: g.title(entries),
-            record_id: g.record_id.clone(),
-            open: g.open,
-        })
-        .collect()
-}
-
-/// Rounds a rendered pixel measurement (always non-negative, far under
-/// `u32::MAX`) to a `u32` for `Shot::paint`'s `w`/`h` parameters.
-fn px_u32(v: f64) -> u32 {
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "v is a rendered pixel measurement, always non-negative and far below u32::MAX"
-    )]
-    let out = v.max(0.0).round() as u32;
-    out
-}
-
 pub fn run(args: &[String]) {
     let (theme_name, theme) = shot_theme();
     let dir = PathBuf::from(
@@ -348,17 +308,9 @@ pub fn run(args: &[String]) {
     let mut doc = three_session_doc();
     let (entries, named) = shoot_main_bands(&mut shot, &mut doc);
     shoot_long_and_nested(&mut shot, &doc, &entries);
-    let (open_entries, open_named) = shoot_open_band(&mut shot, &doc, &entries);
-    let single_entries = shoot_singleton_and_empty(&mut shot);
+    shoot_open_band(&mut shot, &doc, &entries);
+    shoot_singleton_and_empty(&mut shot);
     shoot_narrow_and_thousand(&mut shot, &entries, &named);
-    shoot_version_strip(
-        &mut shot,
-        &entries,
-        &named,
-        &open_entries,
-        &open_named,
-        &single_entries,
-    );
 
     println!("done: {} shots", shot.n);
     let _ = Point::ZERO;
@@ -562,7 +514,7 @@ fn synthetic_entry(i: i32) -> HistoryEntry {
     HistoryEntry {
         id: tilo_ui::HistoryEntryId(synthetic_id(i)),
         author: tilo_ui::HistoryAuthor::new(format!("Person {}", i / 2), hue, "0badf00d"),
-        op_class: collab_types::OpClass::Splice,
+        entry_kind: tilo_ui::widget::EntryKind::Text,
         artifact_kind: collab_types::ArtifactKind::Note,
         timestamp: now()
             .checked_sub(std::time::Duration::from_secs(elapsed))
@@ -601,67 +553,6 @@ fn shoot_narrow_and_thousand(
         t.row_count()
     );
     shot.paint("thousand-bands-synthetic", 520, 640, &mut t);
-}
-
-/// The version strip: default, parked-inside-a-version, naming, a still-open
-/// version, narrow widths, no versions at all, and no history at all. Split
-/// out of `run` to keep that under the line cap.
-fn shoot_version_strip(
-    shot: &mut Shot,
-    entries: &[HistoryEntry],
-    named: &[tilo_ui::NamedRange],
-    open_entries: &[HistoryEntry],
-    open_named: &[tilo_ui::NamedRange],
-    single_entries: &[HistoryEntry],
-) {
-    let last_tick = entries.len().saturating_sub(1);
-    let segs = segments(entries, named);
-    let mut s = scrubber(1000.0, entries.to_vec(), segs.clone());
-    let h = px_u32(s.natural_height());
-    s.set_current_tick(last_tick);
-    shot.paint("strip-versions", 1000, h, &mut s);
-
-    // Parked inside a named version.
-    let mut s = scrubber(1000.0, entries.to_vec(), segs.clone());
-    if let Some(g) = segs.iter().find(|g| g.label.is_some()) {
-        s.set_current_tick(g.end);
-    }
-    shot.paint("strip-inside-a-version", 1000, h, &mut s);
-
-    // Naming from the strip.
-    let mut s = scrubber(1000.0, entries.to_vec(), segs.clone());
-    s.set_current_tick(last_tick);
-    s.begin_naming_current_group();
-    shot.paint("strip-naming", 1000, h, &mut s);
-
-    // A version still open.
-    let open_segs = segments(open_entries, open_named);
-    let mut s = scrubber(1000.0, open_entries.to_vec(), open_segs);
-    s.set_current_tick(open_entries.len().saturating_sub(1));
-    shot.paint("strip-open-version", 1000, h, &mut s);
-
-    // Narrow strips: the button row has to shed buttons rather than overlap.
-    for w in [620u32, 460, 360] {
-        let mut s = scrubber(f64::from(w), entries.to_vec(), segs.clone());
-        s.set_current_tick(last_tick);
-        shot.paint(&format!("strip-narrow-{w}"), w, h, &mut s);
-    }
-
-    // The degenerate case: a strip that was never handed versions. One tick per
-    // change, nothing snapping — exactly what it was before.
-    let mut s = scrubber(1000.0, entries.to_vec(), Vec::new());
-    s.set_current_tick(last_tick);
-    let plain_h = px_u32(s.natural_height());
-    shot.paint("strip-no-versions", 1000, plain_h, &mut s);
-
-    // One change, and none at all.
-    let single_segs = segments(single_entries, &[]);
-    let mut s = scrubber(1000.0, single_entries.to_vec(), single_segs);
-    let single_h = px_u32(s.natural_height());
-    shot.paint("strip-bands-of-one", 1000, single_h, &mut s);
-    let mut s = scrubber(1000.0, Vec::new(), Vec::new());
-    let empty_h = px_u32(s.natural_height());
-    shot.paint("strip-no-history", 1000, empty_h, &mut s);
 }
 
 fn author_dir() -> AuthorDirectory {

@@ -13,14 +13,16 @@
 //! driving the screen, or an ordinary desktop) shows it; an unattended one
 //! answers [`Reply::Nobody`] and the app falls back to its unattended picker.
 
-use std::io::{BufRead, BufReader, Read as _, Write};
+mod contents;
+
+use std::io::{BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use collab_types::caps::Verb;
+use collab_types::caps::Access;
 use tilo_dialogs::shell::{Handshake, MAX_FRAME_BYTES, PROTOCOL, PickMode, Reply, Request};
 
 use crate::portal::{
@@ -51,6 +53,7 @@ pub struct OpenRequest {
 }
 
 pub struct ChooserService {
+    grants: GrantStoreHandle,
     opens: mpsc::Receiver<OpenRequest>,
     stop: Arc<AtomicBool>,
     acceptor: Option<std::thread::JoinHandle<()>>,
@@ -80,6 +83,7 @@ impl ChooserService {
         let listener = UnixListener::bind(&path)
             .map_err(|error| format!("bind chooser service {}: {error}", path.display()))?;
         let (opens_tx, opens_rx) = mpsc::channel();
+        let grants = context.grants.clone();
         let context = Arc::new(context);
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
@@ -112,6 +116,7 @@ impl ChooserService {
                 format!("spawn chooser service: {error}")
             })?;
         Ok(Self {
+            grants,
             opens: opens_rx,
             stop,
             acceptor: Some(acceptor),
@@ -119,9 +124,31 @@ impl ChooserService {
         })
     }
 
-    /// Opens asked for since the last call; each must be answered.
+    /// Opens still permitted at dispatch; each returned request must be answered.
     pub fn drain_opens(&self) -> Vec<OpenRequest> {
-        self.opens.try_iter().collect()
+        self.opens
+            .try_iter()
+            .filter_map(|mut open| {
+                // Admission can precede compositor dispatch by several frames.
+                // Resolve the path again against the original app's current
+                // workspace policy rather than handing over stale approval.
+                match permitted(
+                    &self.grants,
+                    &open.caller,
+                    std::slice::from_ref(&open.path),
+                    PickMode::Open,
+                ) {
+                    Ok(mut paths) => {
+                        open.path = paths.remove(0);
+                        Some(open)
+                    }
+                    Err(reason) => {
+                        let _ = open.reply.send(Err(reason));
+                        None
+                    }
+                }
+            })
+            .collect()
     }
 }
 
@@ -149,7 +176,7 @@ fn serve_connection(
     };
     let writer = Arc::new(Mutex::new(writer));
     let mut reader = BufReader::new(stream);
-    let Some(caller) = read_frame(&mut reader)
+    let Some(caller) = wire_frame::read_line(&mut reader, MAX_FRAME_BYTES)
         .ok()
         .flatten()
         .and_then(|frame| serde_json::from_slice::<Handshake>(&frame).ok())
@@ -157,8 +184,12 @@ fn serve_connection(
     else {
         return;
     };
+    let selections = Arc::new(contents::ConnectionGrants::default());
+    if selections.maintain().is_err() {
+        return;
+    }
     loop {
-        let request = match read_frame(&mut reader) {
+        let request = match wire_frame::read_line(&mut reader, MAX_FRAME_BYTES) {
             Ok(Some(frame)) => match serde_json::from_slice::<Request>(&frame) {
                 Ok(request) => request,
                 Err(error) => {
@@ -178,13 +209,24 @@ fn serve_connection(
         let opens = opens.clone();
         let caller = caller.clone();
         let writer = Arc::clone(&writer);
+        let selections = Arc::clone(&selections);
         let _ = std::thread::Builder::new()
             .name("tilo-chooser-req".into())
             .spawn(move || {
-                let reply = answer(&context, &opens, &caller, request);
+                let reply = if matches!(
+                    &request,
+                    Request::PickContents { .. }
+                        | Request::ReadContents { .. }
+                        | Request::ReleaseContents { .. }
+                ) {
+                    contents::answer(&context, &caller, request, &selections)
+                } else {
+                    answer(&context, &opens, &caller, request)
+                };
                 send(&writer, &reply);
             });
     }
+    selections.close();
 }
 
 /// The caller the launcher named, if its room is one of this session's.
@@ -205,6 +247,12 @@ fn answer(
     request: Request,
 ) -> Reply {
     match request {
+        Request::PickContents { id, .. }
+        | Request::ReadContents { id, .. }
+        | Request::ReleaseContents { id, .. } => Reply::Failed {
+            id,
+            reason: t("portal-chooser-file-grant-unavailable"),
+        },
         Request::Pick {
             id,
             mode,
@@ -217,11 +265,7 @@ fn answer(
             if !(context.presence)() {
                 return Reply::Nobody { id };
             }
-            let Some(scope) = scope_for(
-                context.grants.granted_paths(caller),
-                context.save_directory.as_deref(),
-                mode,
-            ) else {
+            let Some(scope) = authorized_scope(context, caller, mode) else {
                 return Reply::Failed {
                     id,
                     reason: t("portal-chooser-nothing-granted"),
@@ -300,6 +344,26 @@ fn answer(
     }
 }
 
+/// Derive picker reach from the requested operation's current authority.
+fn authorized_scope(
+    context: &ChooserContext,
+    caller: &PortalCaller,
+    mode: PickMode,
+) -> Option<PickerScope> {
+    let verb = if mode == PickMode::Save {
+        Access::Write
+    } else {
+        Access::Read
+    };
+    let granted = context
+        .grants
+        .granted_paths(caller)
+        .into_iter()
+        .filter(|path| context.grants.filesystem_path_allows(caller, path, verb))
+        .collect();
+    scope_for(granted, context.save_directory.as_deref(), mode)
+}
+
 /// The chooser's reach: the directories the app was granted (a granted file
 /// shows its folder), starting where the request is most likely to be
 /// answered. `None` when the app was granted nothing to choose from.
@@ -311,6 +375,7 @@ fn scope_for(
     let scope = PickerScope {
         initial_dir: PathBuf::new(),
         roots: Vec::new(),
+        home: None,
     }
     .with_granted_paths(granted);
     let first = scope.roots.first()?.clone();
@@ -351,9 +416,9 @@ fn permitted(
                 PickMode::Open | PickMode::Directory => path.canonicalize().ok(),
             };
             let verb = if mode == PickMode::Save {
-                Verb::Write
+                Access::Write
             } else {
-                Verb::Read
+                Access::Read
             };
             resolved
                 .filter(|resolved| grants.filesystem_path_allows(caller, resolved, verb))
@@ -377,30 +442,12 @@ fn send(writer: &Mutex<UnixStream>, reply: &Reply) {
     }
 }
 
-fn read_frame(reader: &mut BufReader<UnixStream>) -> std::io::Result<Option<Vec<u8>>> {
-    let mut frame = Vec::new();
-    let limit = u64::try_from(MAX_FRAME_BYTES)
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let count = reader.by_ref().take(limit).read_until(b'\n', &mut frame)?;
-    if count == 0 {
-        return Ok(None);
-    }
-    if frame.last() != Some(&b'\n') {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "chooser frame is too long or unterminated",
-        ));
-    }
-    frame.pop();
-    Ok(Some(frame))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::portal::FilePickerQueue;
     use crate::shell::state::{Capability, FsMode, GRANT_SESSION, Workspace, WorkspaceId};
+    use std::io::BufRead as _;
     use std::time::Instant;
 
     const APP: &str = "so.tilo.sheets";
@@ -409,6 +456,7 @@ mod tests {
         service: ChooserService,
         pickers: FilePickerQueue,
         present: Arc<AtomicBool>,
+        wakes: Arc<std::sync::atomic::AtomicU64>,
         room: String,
         socket: PathBuf,
         inbox: PathBuf,
@@ -419,7 +467,7 @@ mod tests {
 
     /// A room whose Sheets may read `in/` and write `out/`, and a folder
     /// beside them it was given nothing in.
-    fn session() -> Session {
+    fn session_with_save_hint(hint: bool) -> Session {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().canonicalize().unwrap();
         let (inbox, outbox, elsewhere) = (base.join("in"), base.join("out"), base.join("home"));
@@ -440,6 +488,7 @@ mod tests {
                 },
             );
         }
+        workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
         let room = workspace.room.to_string();
         let (grants, _) = GrantStoreHandle::test_with_workspace(workspace);
         let pickers = FilePickerQueue::new();
@@ -448,6 +497,8 @@ mod tests {
             let present = Arc::clone(&present);
             Arc::new(move || present.load(Ordering::Acquire))
         };
+        let wakes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let wake_counter = Arc::clone(&wakes);
         let socket = base.join("chooser.sock");
         let service = ChooserService::start_at(
             socket.clone(),
@@ -455,8 +506,10 @@ mod tests {
                 grants,
                 pickers: Arc::new(pickers.clone()),
                 presence,
-                save_directory: Some(outbox.clone()),
-                wake: Arc::new(|| {}),
+                save_directory: hint.then(|| outbox.clone()),
+                wake: Arc::new(move || {
+                    wake_counter.fetch_add(1, Ordering::Release);
+                }),
             },
         )
         .unwrap();
@@ -464,6 +517,7 @@ mod tests {
             service,
             pickers,
             present,
+            wakes,
             room,
             socket,
             inbox,
@@ -574,8 +628,42 @@ mod tests {
     }
 
     #[test]
+    fn save_without_a_directory_hint_uses_only_write_authorized_roots() {
+        let session = session_with_save_hint(false);
+        let mut app = App::launch(&session, APP, &session.room);
+        app.send(&pick(1, PickMode::Save));
+        let request = shown(&session);
+        let scope = request.scope.as_ref().unwrap();
+        assert_eq!(scope.initial_dir, session.outbox);
+        assert_eq!(scope.roots, vec![session.outbox.clone()]);
+        request
+            .reply
+            .send(Some(vec![session.outbox.join("copy.xlsx")]))
+            .unwrap();
+        assert_eq!(
+            app.reply(),
+            Some(Reply::Picked {
+                id: 1,
+                paths: vec![session.outbox.join("copy.xlsx")],
+            })
+        );
+        // Final authorization remains authoritative, even if a picker were
+        // to return a source path outside the write-scoped roots.
+        app.send(&pick(2, PickMode::Save));
+        shown(&session)
+            .reply
+            .send(Some(vec![session.inbox.join("x.xlsx")]))
+            .unwrap();
+        assert!(matches!(app.reply(), Some(Reply::Failed { id: 2, .. })));
+        assert_eq!(
+            std::fs::read(session.inbox.join("x.xlsx")).unwrap(),
+            b"sheet"
+        );
+    }
+
+    #[test]
     fn a_chooser_shows_only_granted_files_and_returns_only_granted_files() {
-        let session = session();
+        let session = session_with_save_hint(true);
         let mut app = App::launch(&session, APP, &session.room);
 
         // Phase `open_starts_in_the_grants_and_returns_the_chosen_file`.
@@ -657,8 +745,369 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
+    fn contents_picker_can_review_a_new_file_without_app_filesystem_grants() {
+        let session = session_with_save_hint(false);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &session.elsewhere);
+        let stream = UnixStream::connect(&session.socket).unwrap();
+        (&stream)
+            .write_all(
+                &launcher::services::chooser_handshake("so.tilo.notes", &session.room).unwrap(),
+            )
+            .unwrap();
+        let picker = tilo_dialogs::shell::picker(stream, None).unwrap();
+        let contents = picker.pick_contents(tilo_dialogs::portal::PickRequest::open(
+            "Review package",
+            "Review",
+        ));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let request = loop {
+            assert!(
+                contents.try_recv().is_err(),
+                "a new file must reach the owner picker, not fail on empty app grants"
+            );
+            if let Some(request) = session.pickers.drain().pop() {
+                break request;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the ordinary contents chooser was not mounted"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let scope = request
+            .scope
+            .as_ref()
+            .expect("host supplies its own chooser scope");
+        assert!(scope.roots.contains(&session.elsewhere));
+        request
+            .reply
+            .send(Some(vec![session.elsewhere.join("secret.xlsx")]))
+            .unwrap();
+        let chosen = contents.recv_timeout(Duration::from_secs(10)).unwrap();
+        let tilo_dialogs::portal::ContentsOutcome::Picked(files) = chosen else {
+            panic!("owner-selected contents must be delivered: {chosen:?}");
+        };
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].bytes, b"no");
+        assert_eq!(
+            files[0].location, None,
+            "private host paths are not replayable app capabilities"
+        );
+    }
+
+    fn published_bytes(encoded: &str) -> Vec<u8> {
+        use base64::Engine as _;
+        use std::io::Read as _;
+        let packed = base64::engine::general_purpose::STANDARD
+            .decode(encoded.lines().collect::<String>())
+            .unwrap();
+        let mut bytes = Vec::new();
+        flate2::read::GzDecoder::new(packed.as_slice())
+            .take(8 * 1024 * 1024)
+            .read_to_end(&mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn contents_picker_delivers_published_archive_to_normal_store_review() {
+        let snapshot = registry_types::CatalogueSnapshot::from_json(&published_bytes(
+            include_str!("../../../../../apps/store/fixtures/published/snapshot379.json.gz.b64"),
+        ))
+        .unwrap();
+        let entries = app_cli::client::classify_snapshot(
+            &snapshot,
+            "55d9a9c748bcfe34200832c18c5f0cf7932f17571612321eaa542474fa2abe06",
+            1_791_214_328,
+        )
+        .unwrap();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.entry.package_id == "so.tilo.store")
+            .unwrap();
+        let offered = entry
+            .entry
+            .versions
+            .iter()
+            .find(|v| {
+                v.version.starts_with("0.1.70738+")
+                    && v.target().is_some_and(|t| t.architecture == "x86_64")
+            })
+            .unwrap();
+        let offered = offered.tapp().unwrap();
+        let bytes = published_bytes(include_str!(
+            "../../../../../apps/store/fixtures/published/store70738-x86_64.tapp.gz.b64"
+        ));
+        assert_eq!(tilo_content::hash_bytes(&bytes), offered.tapp_blake3_hex);
+        let mut item = store::sources::tilo_to_store_item(
+            entry,
+            "Historical independently verified fixture",
+            &[],
+        );
+        item.versions
+            .retain(|v| v.root_hash_hex.as_deref() == Some(offered.tapp_root_hash_hex.as_str()));
+        let session = session_with_save_hint(false);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &session.elsewhere);
+        let path = session.elsewhere.join("package.tapp");
+        std::fs::write(&path, &bytes).unwrap();
+        let stream = UnixStream::connect(&session.socket).unwrap();
+        (&stream)
+            .write_all(
+                &launcher::services::chooser_handshake("so.tilo.store", &session.room).unwrap(),
+            )
+            .unwrap();
+        let picker = tilo_dialogs::shell::picker(stream, None).unwrap();
+        let chosen = picker.pick_contents(tilo_dialogs::portal::PickRequest::open(
+            "Review package",
+            "Review",
+        ));
+        shown(&session).reply.send(Some(vec![path])).unwrap();
+        let tilo_dialogs::portal::ContentsOutcome::Picked(mut files) =
+            chosen.recv_timeout(Duration::from_secs(10)).unwrap()
+        else {
+            panic!("actual Store chooser must receive selected bytes")
+        };
+        assert_eq!(files.len(), 1);
+        let selected = files.remove(0);
+        assert_eq!(selected.bytes, bytes);
+        assert!(selected.location.is_none());
+        let review = store::package_import::review(selected.bytes, &[item]).unwrap();
+        assert_eq!(
+            review.expected.package_root.to_hex(),
+            offered.tapp_root_hash_hex
+        );
+        assert_eq!(review.expected.size_bytes, offered.tapp_size_bytes);
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn contents_pending_selection_keeps_the_admitted_pregranted_root() {
+        let session = session_with_save_hint(false);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &session.elsewhere);
+        let stream = UnixStream::connect(&session.socket).unwrap();
+        (&stream)
+            .write_all(&launcher::services::chooser_handshake(APP, &session.room).unwrap())
+            .unwrap();
+        let picker = tilo_dialogs::shell::picker(stream, None).unwrap();
+        let contents =
+            picker.pick_contents(tilo_dialogs::portal::PickRequest::open("Review", "Review"));
+        let request = shown(&session);
+        assert!(
+            request
+                .scope
+                .as_ref()
+                .unwrap()
+                .roots
+                .contains(&session.inbox)
+        );
+        let retained = session.inbox.with_file_name("retained");
+        let outside = session.inbox.with_file_name("private");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("x.xlsx"), b"not the admitted root").unwrap();
+        std::fs::rename(&session.inbox, &retained).unwrap();
+        std::os::unix::fs::symlink(&outside, &session.inbox).unwrap();
+        request
+            .reply
+            .send(Some(vec![session.inbox.join("x.xlsx")]))
+            .unwrap();
+        let tilo_dialogs::portal::ContentsOutcome::Picked(files) =
+            contents.recv_timeout(Duration::from_secs(10)).unwrap()
+        else {
+            panic!("admitted directory descriptor must survive a root rename")
+        };
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files.first().unwrap().bytes,
+            b"sheet",
+            "replacement root cannot substitute outside contents"
+        );
+    }
+
+    fn content_request(id: u64) -> Request {
+        Request::PickContents {
+            id,
+            multiple: false,
+            title: "Review".into(),
+            accept_label: "Review".into(),
+            filters: Vec::new(),
+        }
+    }
+
+    fn selected_grant(
+        session: &Session,
+        app: &mut App,
+        id: u64,
+        path: PathBuf,
+    ) -> tilo_dialogs::shell::FilePortalGrant {
+        app.send(&content_request(id));
+        shown(session).reply.send(Some(vec![path])).unwrap();
+        match app.reply().unwrap() {
+            Reply::ContentsGranted { grants, .. } => {
+                assert_eq!(grants.len(), 1);
+                grants.into_iter().next().unwrap()
+            }
+            other => panic!("expected owner-selected grant: {other:?}"),
+        }
+    }
+
+    fn read_grant(
+        app: &mut App,
+        grant: &tilo_dialogs::shell::FilePortalGrant,
+        offset: u64,
+        max_bytes: u32,
+    ) -> Reply {
+        app.send(&Request::ReadContents {
+            id: 99,
+            grant: grant.clone(),
+            offset,
+            max_bytes,
+        });
+        app.reply().unwrap()
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn contents_grants_bind_connection_identity_offset_and_exact_file() {
+        let session = session_with_save_hint(false);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &session.elsewhere);
+        let mut owner = App::launch(&session, "so.tilo.notes", &session.room);
+        let grant = selected_grant(
+            &session,
+            &mut owner,
+            1,
+            session.elsewhere.join("secret.xlsx"),
+        );
+        let mut foreign = App::launch(&session, "so.tilo.notes", &session.room);
+        assert!(matches!(
+            read_grant(&mut foreign, &grant, 0, 1),
+            Reply::Failed { .. }
+        ));
+        assert!(
+            matches!(read_grant(&mut owner, &grant, 0, 1), Reply::ContentsChunk { bytes, eof: false, .. } if bytes == b"n")
+        );
+        assert!(
+            matches!(read_grant(&mut owner, &grant, 1, 1), Reply::ContentsChunk { bytes, eof: true, .. } if bytes == b"o")
+        );
+        assert!(
+            matches!(read_grant(&mut owner, &grant, 2, 1), Reply::Failed { .. }),
+            "EOF revokes the capability"
+        );
+        for field in 0..4 {
+            let grant = selected_grant(
+                &session,
+                &mut owner,
+                2,
+                session.elsewhere.join("secret.xlsx"),
+            );
+            let mut wrong = grant.clone();
+            match field {
+                0 => wrong.request = 500,
+                1 => wrong.name = "different".into(),
+                2 => wrong.size = 600,
+                _ => wrong.token = uuid::Uuid::new_v4().to_string(),
+            }
+            assert!(matches!(
+                read_grant(&mut owner, &wrong, 0, 1),
+                Reply::Failed { .. }
+            ));
+            owner.send(&Request::ReleaseContents { id: 100, grant });
+            assert!(matches!(
+                owner.reply(),
+                Some(Reply::ContentsReleased { .. })
+            ));
+        }
+        let grant = selected_grant(
+            &session,
+            &mut owner,
+            3,
+            session.elsewhere.join("secret.xlsx"),
+        );
+        assert!(
+            matches!(read_grant(&mut owner, &grant, 1, 1), Reply::Failed { .. }),
+            "non-sequential reads revoke"
+        );
+        let grant = selected_grant(
+            &session,
+            &mut owner,
+            4,
+            session.elsewhere.join("secret.xlsx"),
+        );
+        assert!(matches!(
+            read_grant(
+                &mut owner,
+                &grant,
+                0,
+                tilo_dialogs::shell::CONTENT_CHUNK_BYTES + 1
+            ),
+            Reply::Failed { .. }
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn contents_grants_refuse_outside_symlink_oversize_and_changed_files() {
+        let session = session_with_save_hint(false);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &session.elsewhere);
+        let mut app = App::launch(&session, "so.tilo.notes", &session.room);
+        let link = session.elsewhere.join("link.xlsx");
+        std::os::unix::fs::symlink(session.inbox.join("x.xlsx"), &link).unwrap();
+        let huge = session.elsewhere.join("huge.tapp");
+        std::fs::File::create(&huge)
+            .unwrap()
+            .set_len(tilo_dialogs::shell::MAX_CONTENT_BYTES + 1)
+            .unwrap();
+        for path in [session.inbox.join("x.xlsx"), link, huge] {
+            app.send(&content_request(1));
+            shown(&session).reply.send(Some(vec![path])).unwrap();
+            assert!(matches!(app.reply(), Some(Reply::Failed { .. })));
+        }
+        let path = session.elsewhere.join("secret.xlsx");
+        let grant = selected_grant(&session, &mut app, 2, path.clone());
+        assert!(matches!(
+            read_grant(&mut app, &grant, 0, 1),
+            Reply::ContentsChunk { .. }
+        ));
+        std::fs::write(&path, b"changed").unwrap();
+        assert!(matches!(
+            read_grant(&mut app, &grant, 1, 1),
+            Reply::Failed { .. }
+        ));
+        assert!(matches!(
+            read_grant(&mut app, &grant, 1, 1),
+            Reply::Failed { .. }
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn contents_picker_disconnect_cancels_pending_owner_request() {
+        let session = session_with_save_hint(false);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", &session.elsewhere);
+        let mut app = App::launch(&session, "so.tilo.notes", &session.room);
+        app.send(&content_request(1));
+        let request = shown(&session);
+        app.writer.shutdown(std::net::Shutdown::Both).unwrap();
+        let deadline = Instant::now().checked_add(Duration::from_secs(2)).unwrap();
+        while !request.reply.is_closed() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            request.reply.is_closed(),
+            "closed caller must revoke the pending chooser"
+        );
+    }
+
+    #[test]
     fn an_app_given_nothing_gets_no_chooser() {
-        let session = session();
+        let session = session_with_save_hint(true);
         let mut app = App::launch(&session, "so.tilo.notes", &session.room);
         app.send(&pick(1, PickMode::Open));
         assert!(matches!(app.reply(), Some(Reply::Failed { id: 1, .. })));
@@ -666,8 +1115,31 @@ mod tests {
     }
 
     #[test]
+    fn a_queued_open_rechecks_the_file_before_handing_it_to_the_compositor() {
+        let session = session_with_save_hint(true);
+        let mut app = App::launch(&session, APP, &session.room);
+        let path = session.inbox.join("x.xlsx");
+        app.send(&Request::Open {
+            id: 1,
+            path: path.clone(),
+        });
+        let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
+        while session.wakes.load(Ordering::Acquire) == 0 {
+            assert!(Instant::now() < deadline, "the open was never queued");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(session.elsewhere.join("secret.xlsx"), &path).unwrap();
+        assert!(
+            session.service.drain_opens().is_empty(),
+            "an admitted path now outside the grant must not reach the compositor"
+        );
+        assert!(matches!(app.reply(), Some(Reply::Failed { id: 1, .. })));
+    }
+
+    #[test]
     fn opening_a_granted_file_reaches_the_compositor_and_nothing_else_does() {
-        let session = session();
+        let session = session_with_save_hint(true);
         let mut app = App::launch(&session, APP, &session.room);
 
         app.send(&Request::Open {
@@ -707,7 +1179,7 @@ mod tests {
 
     #[test]
     fn a_launch_into_a_room_this_session_lacks_is_hung_up_on() {
-        let session = session();
+        let session = session_with_save_hint(true);
         let mut app = App::launch(&session, APP, "not-a-room");
         app.send(&pick(1, PickMode::Open));
         assert_eq!(app.reply(), None);

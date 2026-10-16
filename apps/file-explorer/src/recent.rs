@@ -1,13 +1,13 @@
 //! Recent files: what you opened or changed through Files, newest first.
 //!
-//! The list is personal and local: it lives beside the favourites in the
-//! Files configuration directory, holds paths only, and forgets entries whose
-//! file has gone. The Recent place in the sidebar lists it in recency order
-//! rather than by the folder sort.
+//! The list is a setting of this device: it holds this device's paths only,
+//! and the Recent listing skips entries whose file has gone. The Recent place
+//! in the sidebar lists it in recency order rather than by the folder sort.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use ui::storage::{Scope, SettingsSchema};
 
 /// The pseudo-location the Recent place navigates to. It is relative and
 /// scheme-like so it can never name a real directory Files would list or
@@ -16,8 +16,6 @@ pub const RECENT_LOCATION: &str = "recent://";
 
 /// How many entries are kept.
 pub const MAX_RECENT: usize = 200;
-
-const FILE_NAME: &str = "recent-files.json";
 
 pub fn location() -> PathBuf {
     PathBuf::from(RECENT_LOCATION)
@@ -92,29 +90,11 @@ impl RecentFiles {
             }
         }
     }
-
-    pub fn load(dir: &Path) -> Self {
-        std::fs::read(dir.join(FILE_NAME))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
-    }
-
-    /// # Errors
-    ///
-    /// Returns the I/O error if the list cannot be written.
-    pub fn save(&self, dir: &Path) -> std::io::Result<()> {
-        let body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
-        atomic_file::write_creating_parent(&dir.join(FILE_NAME), &body)
-    }
 }
 
-pub fn now_ms() -> u64 {
-    ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
+/// Paths name files on this device, so the list stays on it.
+impl SettingsSchema for RecentFiles {
+    const SCOPE: Scope = Scope::DeviceLocal;
 }
 
 #[cfg(test)]
@@ -187,12 +167,9 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_through_the_config_dir() {
-        let dir = tempfile::tempdir().unwrap();
+    fn forgetting_reports_whether_the_path_was_listed() {
         let mut recent = RecentFiles::default();
         recent.note(Path::new("/docs/a.txt"), RecentUse::Changed, 7);
-        recent.save(dir.path()).unwrap();
-        assert_eq!(RecentFiles::load(dir.path()), recent);
         assert!(recent.forget(Path::new("/docs/a.txt")));
         assert!(!recent.forget(Path::new("/docs/a.txt")));
     }

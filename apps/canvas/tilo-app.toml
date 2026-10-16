@@ -1,0 +1,56 @@
+[package]
+id = "so.tilo.canvas"
+name = "Canvas"
+category = "Multimedia"
+version = "0.1.0"
+kind = "app"
+runtime = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+aarch64 = "aarch64"
+
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+# Pictures an agent looks at or exports are kept in the app's content store;
+# an SVG or picture may be named by a path the sandbox lets it read, or
+# chosen in the file chooser. Artworks are opened and saved, and pictures
+# exported, where the person chooses in Files; the artworks worked on
+# lately are remembered in the app's own state.
+# Marks are copied and pasted through the clipboard.
+[capabilities]
+optional = ["clipboard", "app-files", "files.open", "files.paths", "files.save"]
+
+[resources]
+kinds = ["canvas.artwork"]
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+tilo-fs = "optional@1"
+# Select subject asks the gateway's on-device segmentation model; the app
+# still has no network and never sees the model.
+model-gateway = "optional@1"
+
+[entrypoint]
+bin = "bin/canvas"
+type = "gui"
+splash-budget = 250
+
+# Files opens a saved artwork in Canvas; a picture opens as an artwork the
+# size of the picture, one per file.
+[providers]
+mime = ["application/vnd.tilo.artwork+zip", "image/png", "image/jpeg", "image/webp"]
+ext = ["artwork", "png", "jpg", "jpeg", "webp"]

@@ -3,26 +3,18 @@
 //! yesterday to still verify after any client re-encodes the
 //! entry.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use registry_types::{
-    EntryAction, EntryChangeRequest, RegistryEntry, RegistryVersion, sign_change_request,
-    sign_entry, verify_change_request, verify_entry_signature,
+    EntryAction, EntryChangeRequest, EntryKind, RegistryEntry, RegistryVersion, TappArtifact,
+    VersionArtifact, sign_change_request, sign_entry, verify_change_request,
+    verify_entry_signature,
 };
 
 fn sample_entry(pubkey_hex: String) -> RegistryEntry {
     RegistryEntry {
         package_id: "so.tilo.editor".into(),
+        kind: EntryKind::App,
         name: "Editor".into(),
         description: "CRDT-native text editor".into(),
         tagline: "Edit together".into(),
@@ -37,17 +29,20 @@ fn sample_entry(pubkey_hex: String) -> RegistryEntry {
         publisher_pubkey_hex: pubkey_hex,
         versions: vec![RegistryVersion {
             version: "2026.06".into(),
-            tapp_url: "https://apps.tilo.so/editor/2026.06.tapp".into(),
-            tapp_root_hash_hex: "cd".repeat(32),
-            tapp_size_bytes: 12_345,
             released_at_unix: 1_800_000_000,
-            tapp_blake3_hex: "ef".repeat(32),
-            target: registry_types::RegistryTarget {
-                platform: registry_types::TILO_OS_PLATFORM.into(),
-                architecture: "x86_64".into(),
-                isa: "x86_64-v3".into(),
-                runtime: None,
-            },
+            artifact: VersionArtifact::Tapp(TappArtifact {
+                tapp_url: "https://apps.tilo.so/editor/2026.06.tapp".into(),
+                tapp_root_hash_hex: "cd".repeat(32),
+                tapp_size_bytes: 12_345,
+                tapp_blake3_hex: "ef".repeat(32),
+                target: registry_types::RegistryTarget {
+                    platform: registry_types::TILO_OS_PLATFORM.into(),
+                    architecture: "x86_64".into(),
+                    isa: "x86_64-v3".into(),
+                    runtime: None,
+                    interfaces: Vec::new(),
+                },
+            }),
         }],
         updated_at_unix: 1_800_000_100,
         signature_hex: String::new(),

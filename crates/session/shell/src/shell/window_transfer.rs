@@ -603,13 +603,12 @@ fn plan(
     }
     // The person carrying the window must be allowed to open this app in
     // the destination; the destination's own authority governs it there.
-    if destination_ws.owner.is_some() {
+    if destination_ws.owner().is_some() {
         let me = crate::shell::state::local_user_id_for_room(&destination_ws.room);
-        let actor = destination_ws.actor_for_person(&me);
-        if !destination_ws.allows(
-            &actor,
-            &crate::shell::state::ResourceRef::App(app_id.clone()),
-            crate::shell::state::Verb::Write,
+        if !destination_ws.person_allowed(
+            &me,
+            &tilo_action_policy::TreePath::root().app(app_id.clone()),
+            tilo_action_policy::ActionKind::Undoable,
         ) {
             return Err(MoveTabError::NotPermitted);
         }
@@ -970,7 +969,7 @@ fn follow(
     // Its launch opens this instance, which reopens on the record brought.
     let mut tree = st.tree_mut();
     tree.remember_local_app_record(tab, instance);
-    tree.flush_to_disk();
+    tree.queue_save();
     drop(tree);
     None
 }
@@ -1341,7 +1340,7 @@ fn place_in(st: &mut ChromeState, workspace: WorkspaceId, strip: StripId, tab: T
             .unwrap_or_default();
         tilo_desktop_model::desktop_doc::rewrite_strip_groups(&mut tree.doc, strip, &groups);
         tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
-        tree.flush_to_disk();
+        tree.queue_save();
         id
     };
     st.bump();
@@ -1478,10 +1477,6 @@ fn checkpoint(
 }
 
 /// Bring the record over and start the destination instance.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one ordered read, arrival and launch; a governed destination hands off early"
-)]
 fn begin(
     st: &mut ChromeState,
     transfers: &mut WindowTransfers,
@@ -1582,7 +1577,20 @@ fn begin(
             },
         },
     );
-    if let Err(reason) = launch(st, transfers, plan, tab, instance, resume.clone()) {
+    start(st, transfers, plan, mode, tab, carried, resume.clone())
+}
+
+/// Start the destination instance in `tab`, or roll the transfer back.
+fn start(
+    st: &mut ChromeState,
+    transfers: &mut WindowTransfers,
+    plan: &Plan,
+    mode: TransferMode,
+    tab: TabId,
+    carried: Box<Carried>,
+    resume: Option<(u16, Vec<u8>)>,
+) -> Option<Phase> {
+    if let Err(reason) = launch(st, transfers, plan, tab, carried.instance, resume) {
         roll_back(st, plan, Some(tab), &carried, &reason);
         return None;
     }
@@ -1644,7 +1652,7 @@ fn roll_back(
             let mut tree = st.tree_mut();
             let removed = crate::shell::tab_binding::remove_tab(&mut tree, tab);
             if removed {
-                tree.flush_to_disk();
+                tree.queue_save();
             }
             removed
         };
@@ -1657,10 +1665,7 @@ fn roll_back(
     // may still hold it, in which case it stays unreferenced. A governed
     // destination's owner accepted it into their room; it stays there.
     if !plan.destination.hosted
-        && let Ok(destination) = NativeProfile::open(
-            &carried.destination_root,
-            Some(&plan.destination.room.to_string()),
-        )
+        && let Some(destination) = destination_profile(plan, carried)
     {
         let _ = transfer::retire(
             destination.store(),
@@ -1724,12 +1729,9 @@ fn opened(
                 &plan.app_id,
                 &plan.title,
                 &carried.target,
-                t_args(
-                    "window-transfer-receipt-copied",
-                    &[
-                        ("window", plan.title.as_str().into()),
-                        ("from", plan.source.name.as_str().into()),
-                    ],
+                transferred(
+                    COPY_WINDOW_IN,
+                    &[("window", &plan.title), ("from", &plan.source.name)],
                 ),
             );
             None
@@ -1767,7 +1769,7 @@ fn close_source(
         _ => {
             let mut tree = st.tree_mut();
             if crate::shell::tab_binding::remove_tab(&mut tree, plan.tab) {
-                tree.flush_to_disk();
+                tree.queue_save();
             }
         }
     }
@@ -1775,19 +1777,21 @@ fn close_source(
     release(st, transfers, plan, tab, carried, source_lost)
 }
 
-fn profiles(plan: &Plan, carried: &Carried) -> Option<(NativeProfile, NativeProfile)> {
-    let source =
-        NativeProfile::open(&carried.source_root, Some(&plan.source.room.to_string())).ok()?;
-    let destination = NativeProfile::open(
+fn source_profile(plan: &Plan, carried: &Carried) -> Option<NativeProfile> {
+    NativeProfile::open(&carried.source_root, Some(&plan.source.room.to_string())).ok()
+}
+
+fn destination_profile(plan: &Plan, carried: &Carried) -> Option<NativeProfile> {
+    NativeProfile::open(
         &carried.destination_root,
         Some(&plan.destination.room.to_string()),
     )
-    .ok()?;
-    Some((source, destination))
+    .ok()
 }
 
 /// Once the old instance has let go of the record, bring over whatever it
-/// wrote after the transfer read it, and retire the source.
+/// wrote after the transfer read it where that can be merged, and finish the
+/// move.
 fn release(
     st: &mut ChromeState,
     transfers: &WindowTransfers,
@@ -1796,47 +1800,35 @@ fn release(
     carried: Box<Carried>,
     source_lost: bool,
 ) -> Option<Phase> {
-    if plan.source.hosted || plan.destination.hosted {
-        return hosted::release(st, transfers, plan, tab, carried, source_lost);
-    }
-    let Some((source, destination)) = profiles(plan, &carried) else {
-        failed(st, plan, &t("window-transfer-failed-storage"));
-        return None;
+    let released = if plan.source.hosted {
+        // Its writes go through the room's owner; it has let go once its
+        // window is gone.
+        Ok(source_lost || plan.surface.is_none() || tab_tile(st, plan.tab).is_none())
+    } else {
+        source_profile(plan, &carried)
+            .ok_or_else(|| t("window-transfer-failed-storage"))
+            .and_then(|source| {
+                transfer::writer_released(
+                    source.store(),
+                    &plan.app_id,
+                    source.workspace_id(),
+                    &carried.origin,
+                )
+                .map_err(|error| transfer_reason(&error))
+            })
     };
-    match transfer::writer_released(
-        source.store(),
-        &plan.app_id,
-        source.workspace_id(),
-        &carried.origin,
-    ) {
-        Ok(false) => return Some(Phase::Releasing { tab, carried }),
+    match released {
         Ok(true) => {}
-        Err(error) => {
-            failed(st, plan, &transfer_reason(&error));
+        Ok(false) => return Some(Phase::Releasing { tab, carried }),
+        Err(reason) => {
+            failed(st, plan, &reason);
             return None;
         }
     }
-    // What the old instance wrote before it stamped its document retired is
-    // what still comes along; the stamp itself stays with the source.
-    let last = match &carried.retired_at {
-        Some(heads) => transfer::read_until(
-            source.store(),
-            &plan.app_id,
-            source.workspace_id(),
-            &carried.origin,
-            heads,
-        ),
-        None => transfer::read(
-            source.store(),
-            &plan.app_id,
-            source.workspace_id(),
-            &carried.origin,
-        ),
-    };
-    let last = match last {
+    let last = match hosted::read_last(transfers, plan, &carried) {
         Ok(last) => last,
-        Err(error) => {
-            failed(st, plan, &transfer_reason(&error));
+        Err(reason) => {
+            failed(st, plan, &reason);
             return None;
         }
     };
@@ -1844,7 +1836,13 @@ fn release(
         finish_move(st, plan, &carried, false, source_lost);
         return None;
     }
-    drop((source, destination));
+    if plan.destination.hosted {
+        // Only its owner's route writes a governed record; what the old
+        // window wrote in its last moments stays in the source's history.
+        finish_move(st, plan, &carried, false, source_lost);
+        hosted::late_edits_stay(st, plan);
+        return None;
+    }
     merge_late(st, plan, tab, carried, last, source_lost)
 }
 
@@ -1859,7 +1857,7 @@ fn merge_late(
     last: AutoCommit,
     source_lost: bool,
 ) -> Option<Phase> {
-    let Some((_, destination)) = profiles(plan, &carried) else {
+    let Some(destination) = destination_profile(plan, &carried) else {
         failed(st, plan, &t("window-transfer-failed-storage"));
         return None;
     };
@@ -1919,7 +1917,7 @@ fn redeliver(
     since: Instant,
     source_lost: bool,
 ) -> Option<Phase> {
-    let Some((_, destination)) = profiles(plan, &carried) else {
+    let Some(destination) = destination_profile(plan, &carried) else {
         failed(st, plan, &t("window-transfer-failed-storage"));
         return None;
     };
@@ -1985,7 +1983,7 @@ fn finish_move(
         if carried.retired_at.is_none() {
             hosted::not_retired(st, plan);
         }
-    } else if let Some((source, _)) = profiles(plan, carried)
+    } else if let Some(source) = source_profile(plan, carried)
         && let Err(error) = transfer::retire(
             source.store(),
             &plan.app_id,
@@ -2003,12 +2001,9 @@ fn finish_move(
         &plan.app_id,
         &plan.title,
         carried.left(),
-        t_args(
-            "window-transfer-receipt-moved-out",
-            &[
-                ("window", window.into()),
-                ("to", plan.destination.name.as_str().into()),
-            ],
+        transferred(
+            MOVE_WINDOW_OUT,
+            &[("window", window), ("to", &plan.destination.name)],
         ),
     );
     receipt(
@@ -2017,12 +2012,9 @@ fn finish_move(
         &plan.app_id,
         &plan.title,
         &carried.target,
-        t_args(
-            "window-transfer-receipt-moved-in",
-            &[
-                ("window", window.into()),
-                ("from", plan.source.name.as_str().into()),
-            ],
+        transferred(
+            MOVE_WINDOW_IN,
+            &[("window", window), ("from", &plan.source.name)],
         ),
     );
     if source_lost {
@@ -2050,6 +2042,24 @@ fn finish_move(
     }
 }
 
+/// The shell's id in history entries: its messages are `shell-<action>`.
+const SHELL_APP: &str = "tilo.shell";
+/// A window copied into a workspace (`$window`, `$from`).
+const COPY_WINDOW_IN: &str = "copy-window-in";
+/// A window moved out of a workspace (`$window`, `$to`).
+const MOVE_WINDOW_OUT: &str = "move-window-out";
+/// A window moved into a workspace (`$window`, `$from`).
+const MOVE_WINDOW_IN: &str = "move-window-in";
+
+/// What a workspace's history records a transfer did.
+fn transferred(action: &str, args: &[(&str, &str)]) -> ui::tilo_actions::Did {
+    ui::tilo_actions::Did::verb(
+        ui::tilo_actions::ActionKey::new(SHELL_APP, "window", action),
+        args.iter()
+            .map(|(name, value)| ((*name).to_owned(), ui::tilo_actions::Scalar::text(value))),
+    )
+}
+
 /// Record a transfer in `workspace`'s activity, where consequential effects are kept.
 fn receipt(
     st: &ChromeState,
@@ -2057,10 +2067,11 @@ fn receipt(
     app_id: &str,
     title: &str,
     record: &RecordCheckout,
-    label: String,
+    what: ui::tilo_actions::Did,
 ) {
-    let mut context = ui::tilo_actions::ActionContext::default().with_app(app_id, title);
-    context.action_label = label;
+    let mut context = ui::tilo_actions::ActionContext::default()
+        .with_app(app_id, title)
+        .with_described(ui::tilo_actions::Described::new(what));
     context.resource = Some(ui::tilo_actions::ActionResource {
         id: record.id.as_str().to_owned(),
         kind: record.kind.as_str().to_owned(),

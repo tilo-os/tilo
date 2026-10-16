@@ -4,7 +4,7 @@
 //! only, so what someone wrote looks the same once it is sent. It is laid
 //! out by the widget that draws it, at the width that widget gives it.
 
-use qdoc::snapshot::BlockView;
+use tilo_doc::snapshot::BlockView;
 use ui::kurbo::{Affine, Rect};
 use ui::presence::PresenceCtx;
 use ui::vello::Scene;
@@ -93,6 +93,14 @@ impl RichTextView {
     #[must_use]
     pub fn rect(&self) -> Rect {
         self.host.rect()
+    }
+
+    /// How far the text starts inside the view's rect (see
+    /// [`BlockEditor::text_inset`]): what a bubble or a row lines its own
+    /// name, time or controls up with.
+    #[must_use]
+    pub fn text_inset(&self, theme: &Theme) -> f64 {
+        self.host.widget().text_inset(theme)
     }
 
     /// Paint the view where it was last laid out.

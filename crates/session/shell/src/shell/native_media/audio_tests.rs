@@ -117,6 +117,9 @@ struct Evidence {
     stops: AtomicUsize,
     closes: AtomicUsize,
     sent: AtomicU64,
+    /// Held across one packet's check, send and count, and by every stop, so
+    /// a packet that passed the check before a stop is counted before it.
+    send: Mutex<()>,
 }
 /// Real transport/codec backend. Capture state is one atomic fence that the
 /// broker's synchronous stop handle flips before any packet can follow.
@@ -169,6 +172,7 @@ impl MediaSession for AudioBackend {
             let mut index = 0u64;
             loop {
                 ticker.tick().await;
+                let _send = evidence.send.lock_recover();
                 if !capturing.load(Ordering::SeqCst) || !current() {
                     break;
                 }
@@ -196,6 +200,7 @@ impl MediaSession for AudioBackend {
             self.evidence.clone(),
         );
         Some(Arc::new(move || {
+            let _send = evidence.send.lock_recover();
             capturing.store(false, Ordering::SeqCst);
             client.stop_publication();
             evidence.stops.fetch_add(1, Ordering::SeqCst);
@@ -205,6 +210,7 @@ impl MediaSession for AudioBackend {
         self.stop_capture();
     }
     fn stop_capture(&mut self) {
+        let _send = self.evidence.send.lock_recover();
         self.capturing.store(false, Ordering::SeqCst);
         self.client.stop_publication();
         self.evidence.stops.fetch_add(1, Ordering::SeqCst);
@@ -261,10 +267,10 @@ impl Listener {
 )]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn chat_semantic_call_commands_drive_consented_real_native_call_audio() {
-    if OpusEncoder::new().is_none() {
-        eprintln!("SKIP: GStreamer Opus unavailable");
-        return;
-    }
+    assert!(
+        OpusEncoder::new().is_some(),
+        "native call proof requires GStreamer opusenc"
+    );
     let relay = Arc::new(LoopbackRelay::start(Arc::new(Identities)).unwrap());
     let owner = LocalSessionAuthority::new();
     let lifecycle = owner.lifecycle();

@@ -74,8 +74,7 @@ the resolver and offline check left their base package inventories unchanged.
 
 The local artifact digest is
 `localhost/tilo-rpms@sha256:3e8d4070f55b8e7975f0d9d236dab3969186c571707f825656f6bbe9b1f567ac`.
-Its preparation records are retained under
-`/home/xemmerling/tilo-install-prep/arm-rpm-artifact/` on the preparation machine.
+Its preparation records are retained on the preparation machine.
 The stricter signature helper subsequently rechecked each Fedora RPM; signed,
 wrong-key, tampered-payload and generated unsigned controls passed.
 

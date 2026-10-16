@@ -1,4 +1,5 @@
 use super::*;
+use crate::testing::Dispatch;
 use automerge::ROOT;
 
 #[test]
@@ -33,7 +34,7 @@ fn slash_menu_and_tooltips_are_semantic_and_viewport_bounded() {
         assert!(editor.perform_semantic_action(
             &heading,
             &crate::a11y::Action::Activate,
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &ROOT,
         ));
         assert!(matches!(editor.blocks[0].kind, BlockKind::Heading(1)));
@@ -92,32 +93,15 @@ fn slash_menu_and_tooltips_are_semantic_and_viewport_bounded() {
 
 fn type_text(editor: &mut BlockEditor, doc: &mut AutoCommit, text: &str) {
     for character in text.chars() {
-        let mut key: KeyEvent = unsafe { std::mem::zeroed() };
-        key.logical_key = Key::Character(character.to_string().into());
-        key.text = Some(character.to_string().into());
-        key.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-            winit::keyboard::NativeKeyCode::Unidentified,
+        let key = crate::synthetic_input::key_event(
+            Key::Character(character.to_string().into()),
+            Some(character.to_string().into()),
+            ElementState::Pressed,
         );
-        key.location = winit::keyboard::KeyLocation::Standard;
-        key.state = ElementState::Pressed;
-        let mut handled = false;
-        editor.handle_event(
-            &WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: key,
-                is_synthetic: false,
-            },
-            &mut crate::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &Modifiers::default(),
-                state: doc,
-                path: &ROOT,
-                handled: &mut handled,
-                focus_target: &mut None,
-                node_id: NodeId::new(0),
-                taffy: &TaffyTree::new(),
-            },
-        );
+        let handled = Dispatch::new()
+            .doc(doc)
+            .send(editor, &crate::synthetic_input::keyboard_input(key))
+            .handled;
         assert!(handled);
         editor.sync(doc, &ROOT);
     }
@@ -125,7 +109,7 @@ fn type_text(editor: &mut BlockEditor, doc: &mut AutoCommit, text: &str) {
 
 #[test]
 fn typed_list_and_task_markers_promote_preserving_identity_and_depth() {
-    fn typed_list_markers_promote_and_preserve_identity_through_reload() {
+    fn typed_list_markers_promote_in_place_and_emit_ops_on_the_same_block() {
         for (marker, expected) in [
             ("- ", BlockKind::Bullet { indent: 0 }),
             ("* ", BlockKind::Bullet { indent: 0 }),
@@ -155,24 +139,31 @@ fn typed_list_and_task_markers_promote_preserving_identity_and_depth() {
             ),
         ] {
             let mut doc = AutoCommit::new();
-            let list = doc.put_object(ROOT, "blocks", ObjType::List).unwrap();
             let mut editor = BlockEditor::new();
-            editor.bind_blocks(&mut doc, list.clone());
             editor.focus_block(0, CursorPlacement::Start);
             let id = editor.blocks[0].id.clone();
             type_text(&mut editor, &mut doc, marker);
             assert_eq!(editor.blocks[0].kind, expected, "{marker}");
             assert_eq!(editor.blocks[0].text(), "");
-            let bound = editor.blocks[0].line.bound_obj();
             type_text(&mut editor, &mut doc, "Buy milk");
             assert_eq!(editor.blocks[0].text(), "Buy milk");
             assert_eq!(editor.blocks[0].id, id);
-            assert_eq!(editor.blocks[0].line.bound_obj(), bound);
-            let mut reloaded = BlockEditor::new();
-            reloaded.bind_blocks(&mut doc, list);
-            assert_eq!(reloaded.blocks[0].kind, expected);
-            assert_eq!(reloaded.blocks[0].text(), "Buy milk");
-            assert_eq!(reloaded.blocks[0].id, id);
+            assert_eq!(
+                editor.take_edit_ops(),
+                vec![
+                    BlockEditOp::SetKind {
+                        block_id: id.clone(),
+                        kind: kind_to_str(&expected),
+                    },
+                    BlockEditOp::TextSplice {
+                        block_id: id,
+                        start: 0,
+                        end: 0,
+                        text: "Buy milk".into(),
+                    },
+                ],
+                "{marker}: the owner sees a conversion of the same block"
+            );
         }
     }
 
@@ -198,6 +189,6 @@ fn typed_list_and_task_markers_promote_preserving_identity_and_depth() {
         assert_eq!(editor.blocks[0].text(), "A literal - [ ] marker");
     }
 
-    typed_list_markers_promote_and_preserve_identity_through_reload();
+    typed_list_markers_promote_in_place_and_emit_ops_on_the_same_block();
     typed_task_conversion_preserves_nested_depth_and_literal_prose();
 }

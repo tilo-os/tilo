@@ -10,18 +10,14 @@
 //! (`group_row_<state>.png`) for by-eye inspection.
 
 #![allow(
-    clippy::unwrap_used,
     clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use crate::support::offscreen::OffscreenRenderer;
 use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use tilo_ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
@@ -32,13 +28,6 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::{
     AppKind, GroupRow, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth,
 };
-
-fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        OffscreenRenderer::new(w, h)
-    }))
-    .ok()
-}
 
 fn make_group(id: u64, tabs: &[(u64, &str, AppKind)]) -> WindowGroup {
     let tabs: Vec<(TabDescriptor, TileContent)> = tabs
@@ -128,7 +117,7 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
     {
         fn group_row_visual_journey_distinguishes_all_states() {
             let (w, h) = (960u32, 220u32);
-            let Some(mut renderer) = try_new_renderer(w, h) else {
+            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
                 eprintln!("offscreen: no wgpu adapter available — skipping group-row journey");
                 return;
             };
@@ -196,7 +185,7 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
     {
         fn group_row_fresh_render_is_deterministic() {
             let (w, h) = (600u32, 200u32);
-            let Some(mut renderer) = try_new_renderer(w, h) else {
+            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
                 eprintln!("offscreen: no wgpu adapter available — skipping determinism check");
                 return;
             };
@@ -226,13 +215,13 @@ fn group_row_journey_is_deterministic_and_distinguishes_all_states() {
 )]
 #[test]
 fn group_row_maximize_and_reorder_paint_visibly() {
-    // Case `group_row_maximized_paints_distinct_pixels_and_hides_siblings`.
+    // Case `group_row_maximized_paints_distinct_pixels_and_fades_siblings`.
     // Verified by checking the maximized group's stored rect absorbs the
-    // row's full inner width while the siblings' collapse to zero.
+    // row's full inner width while fading siblings keep their tiled width.
     {
-        fn group_row_maximized_paints_distinct_pixels_and_hides_siblings() {
+        fn group_row_maximized_paints_distinct_pixels_and_fades_siblings() {
             let (w, h) = (960u32, 220u32);
-            let Some(mut renderer) = try_new_renderer(w, h) else {
+            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
                 eprintln!("offscreen: no wgpu adapter available — skipping maximize scene");
                 return;
             };
@@ -263,14 +252,17 @@ fn group_row_maximize_and_reorder_paint_visibly() {
             let r0 = row.groups[0].get_rect();
             let r1 = row.groups[1].get_rect();
             let r2 = row.groups[2].get_rect();
+            // Maximize fades siblings on the fast curve; they keep their last
+            // tiled width as ghosts instead of collapsing to a degenerate rect
+            // (see group_row::maximize_fades_siblings_on_the_fast_curve_*).
             assert!(
-                r0.width() <= 0.5,
-                "left sibling must collapse to zero width when peer is maximized; got {}",
+                r0.width() > 1.0,
+                "left sibling must keep its tiled width while fading; got {}",
                 r0.width(),
             );
             assert!(
-                r2.width() <= 0.5,
-                "right sibling must collapse to zero width when peer is maximized; got {}",
+                r2.width() > 1.0,
+                "right sibling must keep its tiled width while fading; got {}",
                 r2.width(),
             );
             let row_w = row.get_rect().width();
@@ -281,7 +273,7 @@ fn group_row_maximize_and_reorder_paint_visibly() {
                 row_w,
             );
         }
-        group_row_maximized_paints_distinct_pixels_and_hides_siblings();
+        group_row_maximized_paints_distinct_pixels_and_fades_siblings();
     }
 
     // Case `group_row_reorder_drop_indicator_is_visible_mid_drag`.
@@ -290,12 +282,11 @@ fn group_row_maximize_and_reorder_paint_visibly() {
     // frame visibly differ from the idle strip.
     {
         fn group_row_reorder_drop_indicator_is_visible_mid_drag() {
-            use winit::dpi::PhysicalPosition;
-            use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+            use winit::event::{Modifiers, WindowEvent};
 
             // Wide enough that all three 600px groups + gaps fit on-screen.
             let (w, h) = (1900u32, 220u32);
-            let Some(mut renderer) = try_new_renderer(w, h) else {
+            let Some(mut renderer) = OffscreenRenderer::try_new(w, h).ok() else {
                 eprintln!("offscreen: no wgpu adapter available — skipping reorder shot");
                 return;
             };
@@ -325,7 +316,7 @@ fn group_row_maximize_and_reorder_paint_visibly() {
                     &mut tilo_ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &modifiers,
-                        state: &mut state,
+                        state: tilo_ui::widget::Edits::lend(&mut state),
                         path: &path,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -339,27 +330,13 @@ fn group_row_maximize_and_reorder_paint_visibly() {
             dispatch(
                 &mut row,
                 &taffy,
-                WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: PhysicalPosition::new(grab.x, grab.y),
-                },
+                tilo_ui::synthetic_input::cursor_moved(grab.x, grab.y),
             );
+            dispatch(&mut row, &taffy, tilo_ui::synthetic_input::mouse_press());
             dispatch(
                 &mut row,
                 &taffy,
-                WindowEvent::MouseInput {
-                    device_id: unsafe { std::mem::zeroed() },
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                },
-            );
-            dispatch(
-                &mut row,
-                &taffy,
-                WindowEvent::CursorMoved {
-                    device_id: unsafe { std::mem::zeroed() },
-                    position: PhysicalPosition::new(past_x, grab.y),
-                },
+                tilo_ui::synthetic_input::cursor_moved(past_x, grab.y),
             );
             assert!(
                 row.group_drag_active(),

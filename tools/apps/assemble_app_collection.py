@@ -23,6 +23,24 @@ def assemble(
 ) -> dict:
     if architecture not in ARCHITECTURES:
         raise ValueError(f"unsupported architecture: {architecture}")
+    publisher_file = runtime_dir / "runtime-bundle-publisher.hex"
+    publisher = publisher_file.read_text(encoding="utf-8").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", publisher):
+        raise ValueError("runtime bundle publisher must be a 64-hex Ed25519 key")
+    bundle_root = runtime_dir / "tilo-runtime"
+    versions = sorted(
+        path.name
+        for path in bundle_root.iterdir()
+        if path.is_dir() and not path.is_symlink() and (path / "bundle.toml").is_file()
+    )
+    if len(versions) != 1:
+        raise ValueError("collection must contain exactly one signed runtime version")
+    runtime_version = versions[0]
+    # Every member links this exact runtime build, and its signed manifest
+    # names it in place of the release its authored manifest declares.
+    if not re.fullmatch(r"[0-9A-Za-z.-]+\+native\.[0-9a-f]{32}", runtime_version):
+        raise ValueError(f"runtime {runtime_version!r} is not named by its ABI digest")
+    runtime_id = f"tilo-runtime/{runtime_version}"
     entries = []
     expected = set()
     for app in plan.get("catalog", []):
@@ -37,9 +55,13 @@ def assemble(
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"missing regular tapp: {filename}")
         expected.add(filename)
+        release = runtime_id.split("+native.", 1)[0]
+        if app.get("runtime") not in (release, runtime_id):
+            raise ValueError(f"{name} declares runtime {app.get('runtime')!r}, not {release!r}")
         entries.append(
             {
                 **app,
+                "runtime": runtime_id,
                 "file": filename,
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             }
@@ -49,23 +71,11 @@ def assemble(
         extra = ", ".join(sorted(actual - expected)) or "none"
         missing = ", ".join(sorted(expected - actual)) or "none"
         raise ValueError(f"tapp set mismatch (missing: {missing}; extra: {extra})")
-    publisher_file = runtime_dir / "runtime-bundle-publisher.hex"
-    publisher = publisher_file.read_text(encoding="utf-8").strip()
-    if not re.fullmatch(r"[0-9a-fA-F]{64}", publisher):
-        raise ValueError("runtime bundle publisher must be a 64-hex Ed25519 key")
-    bundle_root = runtime_dir / "tilo-runtime"
-    versions = sorted(
-        path.name
-        for path in bundle_root.iterdir()
-        if path.is_dir() and not path.is_symlink() and (path / "bundle.toml").is_file()
-    )
-    if len(versions) != 1:
-        raise ValueError("collection must contain exactly one signed runtime version")
     return {
         "format": 1,
         "architecture": architecture,
         "source": source,
-        "runtime": {"version": versions[0], "publisher": publisher.lower()},
+        "runtime": {"version": runtime_version, "publisher": publisher.lower()},
         "apps": entries,
     }
 

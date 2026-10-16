@@ -22,7 +22,7 @@ use media::StreamCodec;
 use media::realtime::{CodecFamily, local_capabilities};
 use shell::collab::encoder::{EncoderInit, FrameInput, build};
 use shell::config::EncoderChoice;
-use shell::network::decoder::{DecodedPixels, VideoDecoder};
+use tilo_callstream::surface_decoder::{DecodedPixels, VideoDecoder};
 
 const W: u32 = 640;
 const H: u32 = 360;

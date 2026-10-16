@@ -36,7 +36,8 @@ use chrono::NaiveDate;
 
 use crate::account::{CalDavConfig, RemoteCalendar};
 use crate::ics;
-use crate::model::{Event, Id, Model, Palette, Task};
+use crate::model::{Calendar, Event, Id, Palette, Task};
+use ui::tilo_resource::Keyed;
 
 #[cfg(any(feature = "live", test))]
 const MAX_XML_BYTES: usize = 8 * 1024 * 1024;
@@ -133,17 +134,20 @@ pub fn build_put_request(
 ) -> PutRequest {
     let collection = collection_url_for(config, calendar);
     let url = format!("{}/{}.ics", collection.trim_end_matches('/'), event.id);
-    let model = Model {
-        projects: Vec::new(),
-        events: vec![event.clone()],
-        tasks: Vec::new(),
-    };
     PutRequest {
         url,
-        body: ics::export(&model),
+        body: event_body(event),
         if_match: None,
         if_none_match: true,
     }
+}
+
+/// The one-event `VCALENDAR` `event` is uploaded as.
+pub fn event_body(event: &Event) -> String {
+    ics::export(&Calendar {
+        events: vec![event.clone()].into(),
+        ..Calendar::default()
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -230,26 +234,6 @@ pub async fn remove_jobs(jobs: &[RemoveJob]) -> MutationResult {
     }
 }
 
-/// Remove every queued event from its target `CalDAV` collection, returning the
-/// uids the server confirmed gone (so the caller can clear them from the delete
-/// outbox). Each job is a `(config, calendar, uid)` triple. Compiled with
-/// `live` this sends an HTTP `DELETE`; without the feature it removes nothing
-/// and returns an empty list — the queue is retained until a live build drains
-/// it, exactly like [`push_all`].
-pub async fn delete_all(
-    jobs: &[(CalDavConfig, RemoteCalendar, crate::model::Id)],
-) -> Vec<crate::model::Id> {
-    #[cfg(feature = "live")]
-    {
-        live::delete_all_live(jobs).await
-    }
-    #[cfg(not(feature = "live"))]
-    {
-        let _ = jobs;
-        Vec::new()
-    }
-}
-
 /// Resolve a collection href (absolute or relative to the configured server)
 /// to an absolute URL. Shared by the pull and push paths so both address the
 /// same resource.
@@ -316,29 +300,6 @@ pub fn pull_calendar(
     }
 }
 
-/// Synchronise every visible calendar for the **live** app.
-///
-/// Compiled with the `live` feature this performs real `CalDAV` requests
-/// (`REPORT` calendar-query, falling back to a plain `GET`) against each
-/// account's server and parses the returned `calendar-data` through
-/// [`ics::parse`]. Without that feature there is no transport, so it returns
-/// an empty [`SyncOutcome::Offline`] — it never invents entries. The live app
-/// runs it on the app runtime, off the UI thread.
-pub async fn sync_all(
-    accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
-    today: NaiveDate,
-) -> (SyncResult, SyncOutcome) {
-    #[cfg(feature = "live")]
-    {
-        live::sync_all_live(accounts, today).await
-    }
-    #[cfg(not(feature = "live"))]
-    {
-        let _ = (accounts, today);
-        (SyncResult::default(), SyncOutcome::Offline)
-    }
-}
-
 /// Synchronise with durable per-collection checkpoints supplied by the caller.
 /// Keeping the checkpoint in the Automerge document (rather than a transport
 /// cache) makes restart and collaborative hand-off deterministic.
@@ -355,27 +316,6 @@ pub async fn sync_all_with_checkpoints(
     {
         let _ = (accounts, today, checkpoints);
         (SyncResult::default(), SyncOutcome::Offline)
-    }
-}
-
-/// Upload every queued local event to its target `CalDAV` collection.
-///
-/// Each job is a `(config, calendar, event)` triple — the event and the remote
-/// calendar it was created on. Compiled with `live` this sends an `ETag`-free
-/// `PUT` of the event's `.ics` (via [`build_put_request`]) to each collection
-/// and returns the ids that stored successfully, so the caller can clear them
-/// from the outbox. Without the feature (headless / demo build) there is no
-/// transport, so it uploads nothing and returns an empty list — the queue is
-/// simply retained until a live build drains it.
-pub async fn push_all(jobs: &[(CalDavConfig, RemoteCalendar, Event)]) -> Vec<crate::model::Id> {
-    #[cfg(feature = "live")]
-    {
-        live::push_all_live(jobs).await
-    }
-    #[cfg(not(feature = "live"))]
-    {
-        let _ = jobs;
-        Vec::new()
     }
 }
 
@@ -436,20 +376,8 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             start: at(d(1), 0, 0),
             end: at(d(7), 23, 59),
             all_day: true,
-            location: String::new(),
             color: Palette::Red,
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: Vec::new(),
-            reminder_min: None,
-            calendar_id: None,
-            project: None,
+            ..Event::default()
         }],
         "icloud/holidays" => vec![Event {
             id: uuid::Uuid::new_v4(),
@@ -457,41 +385,19 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             start: at(d(9), 0, 0),
             end: at(d(9), 23, 59),
             all_day: true,
-            location: String::new(),
             color: Palette::Amber,
-            recurrence: Recurrence::None,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: Vec::new(),
-            reminder_min: None,
-            calendar_id: None,
-            project: None,
+            ..Event::default()
         }],
         "icloud/personal" => vec![Event {
             id: uuid::Uuid::new_v4(),
             title: "Family dinner".into(),
             start: at(d(2), 19, 0),
             end: at(d(2), 21, 0),
-            all_day: false,
             location: "Home".into(),
             color: Palette::Emerald,
             recurrence: Recurrence::Weekly,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: Vec::new(),
             reminder_min: Some(30),
-            calendar_id: None,
-            project: None,
+            ..Event::default()
         }],
         // "work/default" and any other collection.
         _ => vec![Event {
@@ -499,28 +405,18 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
             title: "Synced standup".into(),
             start: at(d(1), 9, 30),
             end: at(d(1), 9, 45),
-            all_day: false,
             location: "Meet".into(),
-            color: Palette::Indigo,
             recurrence: Recurrence::Weekdays,
-            recurrence_interval: 1,
-            recurrence_until: None,
-            recurrence_count: None,
-            recurrence_exdates: Vec::new(),
-            occurrence_overrides: Vec::new(),
-            timezone: "floating".into(),
-            organizer: None,
-            attendees: Vec::new(),
             reminder_min: Some(10),
-            calendar_id: None,
-            project: None,
+            ..Event::default()
         }],
     };
 
-    let model = Model {
-        projects: Vec::new(),
-        events,
-        tasks: Vec::new(),
+    let model = Calendar {
+        projects: Keyed::default(),
+        events: events.into(),
+        tasks: Keyed::default(),
+        ..Calendar::default()
     };
     ics::export(&model)
 }
@@ -657,14 +553,6 @@ mod live {
             DavError::Xml(error) => super::xml_error_message(error),
             DavError::Transport(error) => error.to_string(),
         }
-    }
-
-    /// Fetch every visible calendar across the configured accounts.
-    pub async fn sync_all_live(
-        accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
-        today: NaiveDate,
-    ) -> (SyncResult, SyncOutcome) {
-        sync_all_live_with_checkpoints(accounts, today, &[]).await
     }
 
     pub async fn sync_all_live_with_checkpoints(
@@ -855,33 +743,6 @@ mod live {
             .map_err(|_| "calendar response contains an invalid resource href".to_string())
     }
 
-    /// PUT every queued event to its target collection, returning the ids that
-    /// stored successfully. Best-effort: a failed upload leaves that event in
-    /// the outbox for the next attempt and does not abort the rest.
-    pub async fn push_all_live(
-        jobs: &[(CalDavConfig, RemoteCalendar, super::Event)],
-    ) -> Vec<crate::model::Id> {
-        let Ok(client) = client() else {
-            return Vec::new();
-        };
-        let mut pushed = Vec::new();
-        for (config, cal, event) in jobs {
-            let req = super::build_put_request(config, cal, event);
-            let resp = authenticated(&client, config)
-                .put(
-                    req.url.as_str(),
-                    req.body.into_bytes(),
-                    Some(CALENDAR_CONTENT_TYPE),
-                    Precondition::None,
-                )
-                .await;
-            if matches!(resp, Ok(r) if r.status().is_success()) {
-                pushed.push(event.id);
-            }
-        }
-        pushed
-    }
-
     pub async fn push_jobs_live(jobs: &[super::UploadJob]) -> super::MutationResult {
         let Ok(client) = client() else {
             return super::MutationResult::default();
@@ -931,30 +792,6 @@ mod live {
             }
         }
         result
-    }
-
-    /// DELETE every queued event resource, returning the uids the server
-    /// confirmed removed. Best-effort and per-resource: a failed delete leaves
-    /// that uid in the outbox for the next attempt and does not abort the rest.
-    pub async fn delete_all_live(
-        jobs: &[(CalDavConfig, RemoteCalendar, crate::model::Id)],
-    ) -> Vec<crate::model::Id> {
-        let Ok(client) = client() else {
-            return Vec::new();
-        };
-        let mut deleted = Vec::new();
-        for (config, cal, uid) in jobs {
-            let req = super::build_delete_request(config, cal, *uid);
-            let resp = authenticated(&client, config)
-                .delete(req.url.as_str(), Precondition::None)
-                .await;
-            // 2xx, or a 404 (already gone), both mean the resource is absent.
-            let gone = matches!(resp, Ok(r) if r.status().is_success() || r.status() == StatusCode::NOT_FOUND);
-            if gone {
-                deleted.push(*uid);
-            }
-        }
-        deleted
     }
 
     pub async fn remove_jobs_live(jobs: &[super::RemoveJob]) -> super::MutationResult {
@@ -1289,19 +1126,7 @@ mod tests {
         accounts: &[(CalDavConfig, Vec<RemoteCalendar>)],
         today: NaiveDate,
     ) -> (SyncResult, SyncOutcome) {
-        run(super::sync_all(accounts, today))
-    }
-
-    #[cfg(not(feature = "live"))]
-    fn delete_all(
-        jobs: &[(CalDavConfig, RemoteCalendar, crate::model::Id)],
-    ) -> Vec<crate::model::Id> {
-        run(super::delete_all(jobs))
-    }
-
-    #[cfg(not(feature = "live"))]
-    fn push_all(jobs: &[(CalDavConfig, RemoteCalendar, Event)]) -> Vec<crate::model::Id> {
-        run(super::push_all(jobs))
+        run(super::sync_all_with_checkpoints(accounts, today, &[]))
     }
 
     fn today() -> NaiveDate {
@@ -1389,14 +1214,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn write_requests_target_one_resource_and_stay_inert_without_live() {
         // Case `build_put_request_targets_collection_and_carries_event_ics`.
         {
-            use crate::model::{Event, Palette, Recurrence};
+            use crate::model::Event;
             use chrono::NaiveDate;
             let store = AccountStore::sample();
             let (account, cal) = store
@@ -1412,21 +1233,9 @@ mod tests {
                 title: "Kickoff".into(),
                 start,
                 end: start + chrono::Duration::hours(1),
-                all_day: false,
                 location: "Room 1".into(),
-                color: Palette::Indigo,
-                recurrence: Recurrence::None,
-                recurrence_interval: 1,
-                recurrence_until: None,
-                recurrence_count: None,
-                recurrence_exdates: Vec::new(),
-                occurrence_overrides: Vec::new(),
-                timezone: "floating".into(),
-                organizer: None,
-                attendees: Vec::new(),
-                reminder_min: None,
                 calendar_id: Some(cal.id.clone()),
-                project: None,
+                ..Event::default()
             };
             let req = build_put_request(&account.config, cal, &ev);
             // URL is the event resource under the collection.
@@ -1456,18 +1265,24 @@ mod tests {
             );
             assert!(del.url.ends_with(&format!("{uid}.ics")));
         }
-        // Case `delete_all_without_live_feature_removes_nothing`.
+        // Case `remove_jobs_without_live_feature_removes_nothing`.
         {
             // Symmetric with push: the headless build has no transport, so delete is
             // an honest no-op that keeps the queue rather than faking a success.
             let store = AccountStore::sample();
             let (account, cal) = store.all_calendars().next().unwrap();
-            let jobs = vec![(account.config.clone(), cal.clone(), uuid::Uuid::new_v4())];
+            let jobs = vec![RemoveJob {
+                config: account.config.clone(),
+                calendar: cal.clone(),
+                id: uuid::Uuid::new_v4(),
+                href: None,
+                etag: None,
+            }];
             #[cfg(not(feature = "live"))]
-            assert!(delete_all(&jobs).is_empty());
+            assert!(run(remove_jobs(&jobs)).confirmed.is_empty());
             let _ = jobs;
         }
-        // Case `push_all_without_live_feature_uploads_nothing`.
+        // Case `push_jobs_without_live_feature_uploads_nothing`.
         {
             // The default headless build has no transport: push is an honest no-op
             // that keeps the queue rather than fabricating a successful upload.
@@ -1482,25 +1297,18 @@ mod tests {
                 title: "x".into(),
                 start,
                 end: start,
-                all_day: false,
-                location: String::new(),
-                color: crate::model::Palette::Indigo,
-                recurrence: crate::model::Recurrence::None,
-                recurrence_interval: 1,
-                recurrence_until: None,
-                recurrence_count: None,
-                recurrence_exdates: Vec::new(),
-                occurrence_overrides: Vec::new(),
-                timezone: "floating".into(),
-                organizer: None,
-                attendees: Vec::new(),
-                reminder_min: None,
                 calendar_id: Some(cal.id.clone()),
-                project: None,
+                ..Event::default()
             };
-            let jobs = vec![(account.config.clone(), cal.clone(), ev)];
+            let jobs = vec![UploadJob {
+                config: account.config.clone(),
+                calendar: cal.clone(),
+                event: ev,
+                href: None,
+                etag: None,
+            }];
             #[cfg(not(feature = "live"))]
-            assert!(push_all(&jobs).is_empty());
+            assert!(run(push_jobs(&jobs)).confirmed.is_empty());
             let _ = jobs;
         }
         // Case `new_put_is_create_only_until_a_remote_etag_is_known`.

@@ -15,6 +15,34 @@ progress.fill = Sprite();
 progress.background.SetZ(20);
 progress.fill.SetZ(21);
 
+status.boot_image = Image("starting-tilo.png");
+status.shutdown_image = Image("shutting-down.png");
+status.help_image = Image("startup-help.png");
+status.heading = Sprite();
+status.help = Sprite(status.help_image);
+status.heading.SetZ(30);
+status.help.SetZ(30);
+
+fun show_normal_status()
+  {
+    local.center_x = Window.GetX() + Window.GetWidth() / 2;
+    local.shutdown = Plymouth.GetMode() == "shutdown";
+    if (shutdown)
+      global.status.image = status.shutdown_image;
+    else
+      global.status.image = status.boot_image;
+    status.heading.SetImage(status.image);
+    status.heading.SetPosition(center_x - status.image.GetWidth() / 2,
+                               Window.GetY() + Window.GetHeight() * 0.58, 30);
+    status.help.SetPosition(center_x - status.help_image.GetWidth() / 2,
+                            Window.GetY() + Window.GetHeight() * 0.78, 30);
+    status.heading.SetOpacity(1);
+    if (shutdown)
+      status.help.SetOpacity(0);
+    else
+      status.help.SetOpacity(1);
+  }
+
 fun place_brand(unlock_mode)
   {
     local.center_x = Window.GetX() + Window.GetWidth() / 2;
@@ -45,45 +73,62 @@ fun set_dialog_opacity(opacity)
 
 fun setup_dialog()
   {
-    local.center_x = Window.GetX() + Window.GetWidth() / 2;
-    local.entry_image = Image("entry.png");
-    local.lock_image = Image("lock.png");
-
     # Text is pre-rendered into these assets. Image.Text depends on fonts and
     # Pango data that intentionally are not carried in the small initramfs and
     # can otherwise turn an encrypted-root prompt into an invisible wait.
     global.dialog.heading_image = Image("unlock-heading.png");
     global.dialog.heading = Sprite(dialog.heading_image);
-    dialog.heading.SetPosition(center_x - dialog.heading_image.GetWidth() / 2,
-                               Window.GetY() + Window.GetHeight() * 0.48, 100);
-
     global.dialog.help_image = Image("unlock-help.png");
     global.dialog.help = Sprite(dialog.help_image);
-    dialog.help.SetPosition(center_x - dialog.help_image.GetWidth() / 2,
-                            Window.GetY() + Window.GetHeight() * 0.535, 100);
-
-    global.dialog.entry_x = center_x - entry_image.GetWidth() / 2;
-    global.dialog.entry_y = Window.GetY() + Window.GetHeight() * 0.59;
-    global.dialog.entry = Sprite(entry_image);
-    dialog.entry.SetPosition(dialog.entry_x, dialog.entry_y, 100);
-
-    global.dialog.lock = Sprite(lock_image);
-    dialog.lock.SetPosition(dialog.entry_x + 18,
-                            dialog.entry_y + entry_image.GetHeight() / 2 - lock_image.GetHeight() / 2,
-                            101);
+    global.dialog.retry_image = Image("unlock-retry.png");
+    global.dialog.retry = Sprite(dialog.retry_image);
+    dialog.retry.SetOpacity(0);
+    global.dialog.entry_image = Image("entry.png");
+    global.dialog.entry = Sprite(dialog.entry_image);
+    global.dialog.lock_image = Image("lock.png");
+    global.dialog.lock = Sprite(dialog.lock_image);
     global.dialog.bullet_image = Image("bullet.png");
     global.dialog.ready = 1;
+  }
+
+fun place_dialog()
+  {
+    local.center_x = Window.GetX() + Window.GetWidth() / 2;
+    dialog.heading.SetPosition(center_x - dialog.heading_image.GetWidth() / 2,
+                               Window.GetY() + Window.GetHeight() * 0.48, 100);
+    dialog.help.SetPosition(center_x - dialog.help_image.GetWidth() / 2,
+                            Window.GetY() + Window.GetHeight() * 0.535, 100);
+    dialog.retry.SetPosition(center_x - dialog.retry_image.GetWidth() / 2,
+                             Window.GetY() + Window.GetHeight() * 0.67, 100);
+    global.dialog.entry_x = center_x - dialog.entry_image.GetWidth() / 2;
+    global.dialog.entry_y = Window.GetY() + Window.GetHeight() * 0.59;
+    dialog.entry.SetPosition(dialog.entry_x, dialog.entry_y, 100);
+    dialog.lock.SetPosition(dialog.entry_x + 18,
+                            dialog.entry_y + dialog.entry_image.GetHeight() / 2
+                              - dialog.lock_image.GetHeight() / 2,
+                            101);
+    for (index = 0; dialog.bullet[index]; index++)
+      dialog.bullet[index].SetPosition(dialog.entry_x + 64 + index * 11,
+                                       dialog.entry_y + 24, 102);
   }
 
 fun display_password(prompt, bullets)
   {
     global.mode = "password";
+    global.password_bullets = bullets;
     place_brand(1);
     progress.background.SetOpacity(0);
     progress.fill.SetOpacity(0);
+    status.heading.SetOpacity(0);
+    status.help.SetOpacity(0);
     if (!global.dialog)
       setup_dialog();
+    place_dialog();
     set_dialog_opacity(1);
+    if (global.unlock_rejected)
+      dialog.retry.SetOpacity(1);
+    else
+      dialog.retry.SetOpacity(0);
 
     # Keep very long passphrases visually bounded while accepting them in full.
     local.visible_bullets = bullets;
@@ -107,10 +152,25 @@ fun display_password(prompt, bullets)
 fun display_normal()
   {
     global.mode = "normal";
+    if (dialog.ready)
+      dialog.retry.SetOpacity(0);
     place_brand(0);
     set_dialog_opacity(0);
     progress.background.SetOpacity(1);
     progress.fill.SetOpacity(1);
+    show_normal_status();
+  }
+
+fun display_hotplug()
+  {
+    # The splash usually starts on the firmware framebuffer and moves to the
+    # GPU driver's native mode once that loads, so the window can change size
+    # and scale mid-boot. Every position derives from the window: lay the
+    # current screen out again rather than keep the first framebuffer's.
+    if (global.mode == "password")
+      display_password("", global.password_bullets);
+    else
+      display_normal();
   }
 
 fun refresh()
@@ -132,14 +192,28 @@ fun boot_progress(duration, percent)
 
 fun display_message(text)
   {
-    # Plymouth sends low-level status strings here. The Tilo boot is deliberately
-    # quiet; recovery details remain available on the console with Escape.
+    # Root discovery forwards a confirmed passphrase rejection. Password
+    # prompt redraws alone cannot distinguish submission from backspacing.
+    if (text == "tilo-unlock-retry")
+      {
+        global.unlock_rejected = 1;
+        if (dialog.ready)
+          dialog.retry.SetOpacity(1);
+      }
+    if (text == "tilo-unlock-success")
+      {
+        global.unlock_rejected = 0;
+        if (dialog.ready)
+          dialog.retry.SetOpacity(0);
+      }
   }
 
 mode = "normal";
 place_brand(0);
+show_normal_status();
 Plymouth.SetRefreshFunction(refresh);
 Plymouth.SetBootProgressFunction(boot_progress);
 Plymouth.SetDisplayNormalFunction(display_normal);
 Plymouth.SetDisplayPasswordFunction(display_password);
 Plymouth.SetDisplayMessageFunction(display_message);
+Plymouth.SetDisplayHotplugFunction(display_hotplug);

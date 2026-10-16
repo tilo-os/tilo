@@ -145,6 +145,19 @@ pub fn ci_candidates(tag: &str, arch: &str) -> CiCandidates {
     }
 }
 
+/// A board dev image (`os/Containerfile.board`, for a board's
+/// `/usr/lib/tilo/hardware-profile.json` id) is published only as
+/// `tilo-vm:<ref>-<sha7>-<board>`: sealed, with the board's device tree in
+/// its UKI, so nothing here can build one from a base.
+pub fn board_candidates(tag: &str, board: &str) -> CiCandidates {
+    let tag = tag.strip_suffix(&format!("-{board}")).unwrap_or(tag);
+    let dev_tag = tag.strip_suffix("-ci").unwrap_or(tag);
+    CiCandidates {
+        dev_images: vec![format!("registry.tilo.so/tilo/tilo-vm:{dev_tag}-{board}")],
+        bases: Vec::new(),
+    }
+}
+
 /// The seven-hex commit a `sha:` tag (`main-<sha7>`) names.
 pub fn ci_commit(tag: &str) -> Option<&str> {
     tag.strip_prefix("main-")
@@ -157,7 +170,13 @@ pub fn ci_commit(tag: &str) -> Option<&str> {
 /// `tilo-ci:<ref>-<sha7>-<arch>` the image a dev image can be built FROM.
 /// `skopeo list-tags` output in, candidates out; several refs sort by name so
 /// the choice is stable.
-pub fn ci_ref_candidates(sha: &str, arch: &str, vm_tags: &str, ci_tags: &str) -> CiCandidates {
+pub fn ci_ref_candidates(
+    sha: &str,
+    arch: &str,
+    board: Option<&str>,
+    vm_tags: &str,
+    ci_tags: &str,
+) -> CiCandidates {
     fn tags(listing: &str) -> Vec<String> {
         serde_json::from_str::<serde_json::Value>(listing)
             .ok()
@@ -173,14 +192,16 @@ pub fn ci_ref_candidates(sha: &str, arch: &str, vm_tags: &str, ci_tags: &str) ->
                     .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
         })
     }
+    // A board's dev image is the only one that boots it, and has no base here.
+    let dev_suffix = board.map_or_else(|| format!("-{sha}-ci"), |board| format!("-{sha}-{board}"));
     let mut dev_images: Vec<String> = tags(vm_tags)
         .into_iter()
-        .filter(|tag| named_ref(tag, &format!("-{sha}-ci")))
+        .filter(|tag| named_ref(tag, &dev_suffix))
         .map(|tag| format!("registry.tilo.so/tilo/tilo-vm:{tag}"))
         .collect();
     let mut bases: Vec<String> = tags(ci_tags)
         .into_iter()
-        .filter(|tag| named_ref(tag, &format!("-{sha}-{arch}")))
+        .filter(|tag| board.is_none() && named_ref(tag, &format!("-{sha}-{arch}")))
         .map(|tag| format!("registry.tilo.so/tilo/tilo-ci:{tag}"))
         .collect();
     dev_images.sort();
@@ -290,6 +311,62 @@ pub fn import_layout_command(layout: &Path, image: &str) -> CommandLine {
 /// only bootc's composefs digest sees through.
 pub fn is_already_booted(bootc_stderr: &str) -> bool {
     bootc_stderr.contains("same fs-verity digest as the existing Some(Booted) deployment")
+}
+
+/// Did the registry refuse bootc's pull for want of a login? A private
+/// image is then copied through this host, whose credentials never reach
+/// the VM.
+pub fn is_auth_failure(bootc_stderr: &str) -> bool {
+    let text = bootc_stderr.to_ascii_lowercase();
+    ["unauthorized", "authentication required", "denied: "]
+        .iter()
+        .any(|needle| text.contains(needle))
+}
+
+/// Copy a registry image into the VM's host-side layout with this host's
+/// registry login (podman's or skopeo's `auth.json`), for `arch`.
+pub fn registry_export_command(
+    image: &str,
+    arch: &str,
+    layout: &Path,
+    digest_file: &Path,
+) -> CommandLine {
+    CommandLine::new(
+        "skopeo",
+        &["copy", "--quiet", "--dest-oci-accept-uncompressed-layers"],
+    )
+    .arg("--override-arch")
+    .arg(crate::ci::podman_arch(arch))
+    .arg("--digestfile")
+    .arg(digest_file.display().to_string())
+    .arg(format!("docker://{image}"))
+    .arg(format!("oci:{}:{LAYOUT_TAG}", layout.display()))
+}
+
+/// The labels of a registry image, for `arch`, without pulling it.
+pub fn registry_inspect_command(image: &str, arch: &str) -> CommandLine {
+    CommandLine::new("skopeo", &["inspect", "--override-arch"])
+        .arg(crate::ci::podman_arch(arch))
+        .arg(format!("docker://{image}"))
+}
+
+/// The `sh.tilo.image.flavour` label from `skopeo inspect` output.
+pub fn registry_flavour(inspect: &str) -> Option<String> {
+    serde_json::from_str::<Value>(inspect)
+        .ok()?
+        .pointer("/Labels/sh.tilo.image.flavour")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// bootc's refusal for want of space, as (free, needed) in its own units:
+/// `Insufficient free space for <image> (available: 2.3 GB required: 5.2 GB)`.
+pub fn insufficient_space(bootc_stderr: &str) -> Option<(String, String)> {
+    let (_, rest) = bootc_stderr.split_once("Insufficient free space for ")?;
+    let (_, rest) = rest.split_once("(available: ")?;
+    let (free, rest) = rest.split_once(" required: ")?;
+    let (needed, _) = rest.split_once(')')?;
+    Some((free.trim().to_owned(), needed.trim().to_owned()))
 }
 
 pub fn is_already_rollback(bootc_stderr: &str) -> bool {
@@ -581,7 +658,7 @@ pub fn parse_bootc_probe(output: &str) -> Option<bool> {
 /// What `upgrade` reads from the VM before it changes anything.
 pub fn vm_facts_script() -> String {
     format!(
-        "cat /proc/sys/kernel/random/boot_id; echo @@base; cat /usr/share/tilo-vm/base.json 2>/dev/null; echo; echo @@free; df -Pk /var | awk 'NR==2 {{print $4}}'; echo @@bootc; if command -v bootc >/dev/null 2>&1; then {}; else echo {NO_BOOTC}; fi",
+        "cat /proc/sys/kernel/random/boot_id; echo @@base; cat /usr/share/tilo-vm/base.json 2>/dev/null; echo; echo @@free; df -Pk /var | awk 'NR==2 {{print $4}}'; echo @@board; cat /usr/lib/tilo/hardware-profile.json 2>/dev/null; echo; echo @@bootc; if command -v bootc >/dev/null 2>&1; then {}; else echo {NO_BOOTC}; fi",
         bootc_line(&["status", "--json"])
     )
 }
@@ -600,7 +677,22 @@ pub struct VmFacts {
     pub boot_id: String,
     pub base: Option<Value>,
     pub free_bytes: Option<u64>,
+    /// The board the image was built for (`/usr/lib/tilo/hardware-profile.json`),
+    /// on a device running a board dev image.
+    pub board: Option<String>,
     pub bootc: BootcStatus,
+}
+
+impl VmFacts {
+    /// The CPU architecture the VM's image targets (from base.json), if it says.
+    pub fn arch(&self) -> Option<String> {
+        let target = self.base.as_ref()?.get("target")?.as_str()?;
+        target
+            .split('-')
+            .next()
+            .filter(|a| !a.is_empty())
+            .map(str::to_owned)
+    }
 }
 
 /// # Errors
@@ -613,9 +705,12 @@ pub fn parse_vm_facts(output: &str) -> Result<VmFacts, FactsError> {
     let (base, rest) = rest
         .split_once("@@free")
         .ok_or_else(|| cut("no base.json section"))?;
-    let (free, bootc) = rest
-        .split_once("@@bootc")
+    let (free, rest) = rest
+        .split_once("@@board")
         .ok_or_else(|| cut("no free space section"))?;
+    let (board, bootc) = rest
+        .split_once("@@bootc")
+        .ok_or_else(|| cut("no hardware profile section"))?;
     if bootc.trim() == NO_BOOTC {
         return Err(FactsError::NoBootc);
     }
@@ -627,13 +722,17 @@ pub fn parse_vm_facts(output: &str) -> Result<VmFacts, FactsError> {
             .parse::<u64>()
             .ok()
             .map(|kib| kib.saturating_mul(1024)),
+        board: serde_json::from_str::<Value>(board.trim())
+            .ok()
+            .and_then(|profile| profile.get("id")?.as_str().map(str::to_owned))
+            .filter(|id| !id.is_empty()),
         bootc: parse_bootc_status(bootc).map_err(FactsError::Unreadable)?,
     })
 }
 
 /// The host-side OCI layout for one VM.
 pub fn host_layout(vm: &str) -> PathBuf {
-    xdg_paths::cache_dir()
+    tilo_paths::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("tilo-vm")
         .join("images")
@@ -676,8 +775,11 @@ pub fn rsync_command(
     .arg("--rsh")
     .arg(rsh)
     .arg("--rsync-path")
-    .arg(format!(
-        "mkdir -p {LOCKS} {VM_LAYOUT} && flock --nonblock --conflict-exit-code 75 {LOCKS}/image.lock rsync"
+    .arg(crate::remote::rsync_path_as_root(
+        endpoint,
+        &format!(
+            "mkdir -p {LOCKS} {VM_LAYOUT} && flock --nonblock --conflict-exit-code 75 {LOCKS}/image.lock rsync"
+        ),
     ))
     .arg(source)
     .arg(format!("{}@{}:{VM_LAYOUT}/", endpoint.user, endpoint.host))
@@ -984,6 +1086,29 @@ mod tests {
         ));
     }
 
+    /// bootc's space refusal becomes the plain sentence the user reads.
+    #[test]
+    fn bootcs_space_refusal_reads_as_plain_language() {
+        let stderr = "error: Switching: Composefs Switching: Performing Upgrade Operation: Insufficient free space for registry.tilo.so/tilo/tilo-vm:pr-4227-4ab5dcc-lenovo-83ed (available: 2.3 GB required: 5.2 GB)";
+        let (free, needed) = insufficient_space(stderr).unwrap();
+        assert_eq!((free.as_str(), needed.as_str()), ("2.3 GB", "5.2 GB"));
+        let error = CliError::NoSpace {
+            place: "VM yoga".into(),
+            free,
+            what: "the new OS image".into(),
+            needed,
+        };
+        assert_eq!(
+            error.to_string(),
+            "not enough space on VM yoga: the new OS image needs 5.2 GB, 2.3 GB is free"
+        );
+        assert!(error.hint().contains("reused"), "{}", error.hint());
+        assert_eq!(
+            insufficient_space("error: Switching: pulling: connection refused"),
+            None
+        );
+    }
+
     /// A commit off main is found by its `<ref>-<sha7>` tags.
     #[test]
     fn a_pull_request_commit_resolves_through_its_ref_tags() {
@@ -993,7 +1118,7 @@ mod tests {
         let vm = r#"{"Repository":"registry.tilo.so/tilo/tilo-vm","Tags":["main-0000000-ci","pr-12-1a2b3c4-ci","pr-12-1a2b3c4-ci-x86_64","fix-x-1a2b3c4-ci","1a2b3c4-ci"]}"#;
         let ci =
             r#"{"Tags":["pr-12-1a2b3c4-x86_64","pr-12-1a2b3c4-aarch64","main-1a2b3c4x-x86_64"]}"#;
-        let found = ci_ref_candidates("1a2b3c4", "x86_64", vm, ci);
+        let found = ci_ref_candidates("1a2b3c4", "x86_64", None, vm, ci);
         assert_eq!(
             found.dev_images,
             vec![
@@ -1005,8 +1130,16 @@ mod tests {
             found.bases,
             vec!["registry.tilo.so/tilo/tilo-ci:pr-12-1a2b3c4-x86_64".to_owned()]
         );
-        let none = ci_ref_candidates("1a2b3c4", "aarch64", "not json", "{}");
+        let none = ci_ref_candidates("1a2b3c4", "aarch64", None, "not json", "{}");
         assert!(none.dev_images.is_empty() && none.bases.is_empty());
+        // A board takes only its own board image, and never a base to build from.
+        let boards = r#"{"Tags":["pr-7-1a2b3c4-ci","pr-7-1a2b3c4-lenovo-83ed","pr-7-1a2b3c4-orangepi-3b-v2-1"]}"#;
+        let board = ci_ref_candidates("1a2b3c4", "aarch64", Some("lenovo-83ed"), boards, ci);
+        assert_eq!(
+            board.dev_images,
+            vec!["registry.tilo.so/tilo/tilo-vm:pr-7-1a2b3c4-lenovo-83ed".to_owned()]
+        );
+        assert!(board.bases.is_empty());
         assert_eq!(
             list_tags_command("registry.tilo.so/tilo/tilo-vm").display(),
             "skopeo list-tags docker://registry.tilo.so/tilo/tilo-vm"
@@ -1052,6 +1185,46 @@ mod tests {
             for image in expected.dev_images {
                 assert!(is_dev_name(&image), "{image}");
             }
+            // A board device takes its board's image of the build, whatever tag form names it.
+            let board = CiCandidates {
+                dev_images: vec!["registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-lenovo-83ed".into()],
+                bases: Vec::new(),
+            };
+            for tag in [
+                "main-1a2b3c4",
+                "main-1a2b3c4-ci",
+                "main-1a2b3c4-lenovo-83ed",
+            ] {
+                assert_eq!(board_candidates(tag, "lenovo-83ed"), board, "{tag}");
+            }
+            assert!(is_dev_name(&board.dev_images[0]));
+        }
+
+        // Phase: a_private_image_is_copied_through_the_host.
+        {
+            assert!(is_auth_failure(
+                "error: Switching: pulling: reading manifest main-1a2b3c4-lenovo-83ed: unauthorized: authentication required"
+            ));
+            assert!(!is_auth_failure(
+                "error: Switching: pulling: connection refused"
+            ));
+            let copy = registry_export_command(
+                "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-lenovo-83ed",
+                "aarch64",
+                Path::new("/c/images/yoga"),
+                Path::new("/c/images/yoga.digest"),
+            );
+            assert_eq!(
+                copy.display(),
+                "skopeo copy --quiet --dest-oci-accept-uncompressed-layers --override-arch arm64 \
+                 --digestfile /c/images/yoga.digest docker://registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-lenovo-83ed \
+                 oci:/c/images/yoga:tilo-vm"
+            );
+            assert_eq!(
+                registry_flavour(r#"{"Labels":{"sh.tilo.image.flavour":"dev"}}"#).as_deref(),
+                Some("dev")
+            );
+            assert_eq!(registry_flavour(r#"{"Labels":null}"#), None);
         }
 
         // Phase: a_dev_image_built_from_a_ci_base_is_a_local_dev_name.
@@ -1124,20 +1297,23 @@ mod tests {
         // Phase: vm_facts_parse_in_one_round_trip.
         {
             let output = format!(
-                "b00t\n@@base\n{{\"image_digest\":\"sha256:aa\"}}\n\n@@free\n1024\n@@bootc\n{STATUS}\n"
+                "b00t\n@@base\n{{\"image_digest\":\"sha256:aa\",\"target\":\"aarch64-unknown-linux-gnu\"}}\n\n@@free\n1024\n@@board\n{{\"schema_version\":1,\"id\":\"lenovo-83ed\"}}\n@@bootc\n{STATUS}\n"
             );
             let facts = parse_vm_facts(&output).unwrap();
             assert_eq!(facts.boot_id, "b00t");
+            assert_eq!(facts.board.as_deref(), Some("lenovo-83ed"));
+            assert_eq!(facts.arch().as_deref(), Some("aarch64"));
             assert_eq!(facts.free_bytes, Some(1 << 20));
             assert_eq!(text(facts.base.as_ref(), "image_digest"), Some("sha256:aa"));
             assert!(facts.bootc.booted.is_some());
             assert!(matches!(
-                parse_vm_facts("b00t\n@@base\n\n@@free\n\n@@bootc\n"),
+                parse_vm_facts("b00t\n@@base\n\n@@free\n\n@@board\n\n@@bootc\n"),
                 Err(FactsError::Unreadable(_))
             ));
             // No bootc at all is its own answer, not a JSON parse error.
             assert_eq!(
-                parse_vm_facts("b00t\n@@base\n\n@@free\n1\n@@bootc\n@@nobootc\n").unwrap_err(),
+                parse_vm_facts("b00t\n@@base\n\n@@free\n1\n@@board\n\n@@bootc\n@@nobootc\n")
+                    .unwrap_err(),
                 FactsError::NoBootc
             );
         }

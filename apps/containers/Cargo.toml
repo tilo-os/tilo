@@ -21,13 +21,13 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-tilo-xdg-paths = { path = "../../crates/system/xdg-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 bounded-command = { path = "../../crates/system/bounded-command" }
+# Container shells open in Terminal through the shell's typed tool service.
+runtime-portal = { path = "../../crates/runtime/runtime-portal", default-features = false }
 automerge.workspace = true
-tilo-automerge.workspace = true
 blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -38,7 +38,6 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
-tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

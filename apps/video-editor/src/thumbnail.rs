@@ -30,12 +30,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(feature = "decode")]
-use std::time::Duration;
-
 #[cfg(any(feature = "decode", test))]
 use thumbnail::ThumbSize;
 use thumbnail::{ThumbKey, ThumbState, ThumbnailService};
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use vello::peniko::{Blob, ImageData};
 
 use crate::media::MediaSource;
 use crate::model::MediaId;
@@ -64,16 +62,7 @@ const MAX_FRAMES_PER_SOURCE: usize = 96;
 
 /// Decode workers the editor's pipeline runs — and therefore the cap on live
 /// `GStreamer` pipelines.
-#[cfg_attr(
-    not(feature = "decode"),
-    allow(dead_code, reason = "only the decoder path starts workers")
-)]
 const MAX_WORKERS: usize = 2;
-
-/// How long [`ThumbnailCache::warm_blocking`] waits for the pipeline to settle
-/// every frame it asked for.
-#[cfg(feature = "decode")]
-const WARM_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How far [`ThumbnailCache::frame_at`] will reach for an already-decoded
 /// neighbour while the exact bucket is still in flight. Two seconds of source
@@ -131,13 +120,7 @@ impl Thumb {
     /// Wrap owned pixels, building the render handle once.
     pub fn new(width: u32, height: u32, rgba: Arc<Vec<u8>>, real: bool) -> Self {
         let data: Arc<dyn AsRef<[u8]> + Send + Sync> = rgba.clone();
-        let image = ImageData {
-            data: Blob::new(data),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width,
-            height,
-        };
+        let image = ui::raster::rgba8(Blob::new(data), width, height);
         Self {
             width,
             height,
@@ -214,17 +197,34 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
 #[derive(Clone)]
 enum Slot {
     /// The pipeline has been asked for it (under this key) and has not
-    /// answered yet.
-    #[cfg_attr(
-        not(feature = "decode"),
-        allow(dead_code, reason = "only the decoder path asks for frames")
-    )]
+    /// answered yet. Only the decoder path asks for frames.
+    #[cfg(any(feature = "decode", test))]
     Pending(ThumbKey),
     /// A real decoded frame.
     Ready(Arc<Thumb>),
     /// The decode was attempted and produced nothing. **Terminal** — never
     /// requested again, and not pending.
     Failed,
+}
+
+impl Slot {
+    /// The key a decode is pending under, if one is.
+    fn pending_key(&self) -> Option<&ThumbKey> {
+        match self {
+            #[cfg(any(feature = "decode", test))]
+            Self::Pending(key) => Some(key),
+            _ => None,
+        }
+    }
+
+    /// The decoded frame, if the slot holds one.
+    fn ready(&self) -> Option<&Arc<Thumb>> {
+        if let Self::Ready(thumb) = self {
+            Some(thumb)
+        } else {
+            None
+        }
+    }
 }
 
 /// One source's frames, keyed by time bucket, plus the LRU stamps used to
@@ -258,6 +258,10 @@ pub struct ThumbnailCache {
     sources: HashMap<MediaId, (PathBuf, ThumbKey)>,
     /// Monotonic stamp for LRU eviction.
     clock: u64,
+    /// Whether real frames are decoded at all. A hermetic editor (a capture,
+    /// a past version) shows representative frames only, so what it draws
+    /// does not depend on when a decode lands.
+    decoding: bool,
     service: ThumbnailService,
 }
 
@@ -291,8 +295,15 @@ impl ThumbnailCache {
             #[cfg(feature = "decode")]
             sources: HashMap::new(),
             clock: 0,
+            decoding: true,
             service,
         }
+    }
+
+    /// Stop (or resume) decoding real frames: representative frames stand in
+    /// for every source while it is off.
+    pub fn set_decoding(&mut self, decoding: bool) {
+        self.decoding = decoding;
     }
 
     /// Pull settled decodes into the cache. Call each `sync`.
@@ -310,7 +321,7 @@ impl ThumbnailCache {
         }
         for (id, f) in &self.frames {
             for (bucket, slot) in &f.slots {
-                if let Slot::Pending(key) = slot {
+                if let Some(key) = slot.pending_key() {
                     match self.service.peek(key) {
                         Some(state) if state.is_loading() => {}
                         state => settled.push((*id, *bucket, state)),
@@ -390,7 +401,7 @@ impl ThumbnailCache {
         }
         if let Some(f) = self.frames.get_mut(&id) {
             for slot in f.slots.values_mut() {
-                if let Slot::Pending(key) = slot {
+                if let Some(key) = slot.pending_key() {
                     self.service.cancel(key);
                     *slot = Slot::Failed;
                 }
@@ -486,7 +497,7 @@ impl ThumbnailCache {
     /// flight. Only reached under the decode feature.
     #[cfg(feature = "decode")]
     fn request(&mut self, id: MediaId, source: &MediaSource, bucket: u32, at: f64) {
-        if self.undecodable.contains(&id) || !source.is_decodable() {
+        if !self.decoding || self.undecodable.contains(&id) || !source.is_decodable() {
             return;
         }
         // Already answered, already failed, or already in flight.
@@ -530,37 +541,6 @@ impl ThumbnailCache {
         }
     }
 
-    /// Decode `id`'s frames **synchronously**: the bin swatch at `at`, and —
-    /// when `cells` is non-zero — the filmstrip across `[in_point, out_point]`.
-    ///
-    /// The live app never blocks on a decoder; this exists for the
-    /// deterministic `--shots` capture and for tests, mirroring
-    /// [`crate::waveform::WaveformCache::warm_blocking`]. A one-shot render
-    /// has no frames to spare for the pipeline to finish in, and racing it
-    /// means the capture shows whichever of the two won — which is how a shot
-    /// ends up with the representative gradient where the real frame belongs.
-    ///
-    /// Failure is recorded exactly as the live path records it, so a source
-    /// that cannot be decoded is written off here too rather than retried.
-    pub fn warm_blocking(
-        &mut self,
-        id: MediaId,
-        palette: u8,
-        source: &MediaSource,
-        at: f64,
-        in_point: f64,
-        out_point: f64,
-        cells: usize,
-    ) {
-        self.ensure(id, palette, source, at);
-        self.ensure_strip(id, palette, source, in_point, out_point, cells);
-        #[cfg(feature = "decode")]
-        if self.has_pending() {
-            self.service.block_until_idle(WARM_TIMEOUT);
-            self.drain();
-        }
-    }
-
     /// The bin swatch for `id`, if one has been generated.
     pub fn get(&self, id: MediaId) -> Option<&Arc<Thumb>> {
         self.swatch.get(&id)
@@ -582,14 +562,15 @@ impl ThumbnailCache {
             }
             let lo = want.saturating_sub(NEAR_BUCKETS);
             let hi = want.saturating_add(NEAR_BUCKETS);
-            let below = f.slots.range(lo..want).rev().find_map(|(b, s)| match s {
-                Slot::Ready(th) => Some((want - b, th)),
-                _ => None,
-            });
-            let above = f.slots.range(want..=hi).find_map(|(b, s)| match s {
-                Slot::Ready(th) => Some((b - want, th)),
-                _ => None,
-            });
+            let below = f
+                .slots
+                .range(lo..want)
+                .rev()
+                .find_map(|(b, s)| s.ready().map(|th| (want - b, th)));
+            let above = f
+                .slots
+                .range(want..=hi)
+                .find_map(|(b, s)| s.ready().map(|th| (b - want, th)));
             let nearest = match (below, above) {
                 (Some((db, tb)), Some((da, ta))) => Some(if db <= da { tb } else { ta }),
                 (Some((_, tb)), None) => Some(tb),
@@ -615,7 +596,7 @@ impl ThumbnailCache {
             || self
                 .frames
                 .values()
-                .any(|f| f.slots.values().any(|s| matches!(s, Slot::Pending(_))))
+                .any(|f| f.slots.values().any(|s| s.pending_key().is_some()))
     }
 
     /// Bound what one source keeps: drop the least-recently-looked-at settled
@@ -631,7 +612,7 @@ impl ThumbnailCache {
         let mut settled: Vec<u32> = f
             .slots
             .iter()
-            .filter(|(_, s)| !matches!(s, Slot::Pending(_)))
+            .filter(|(_, s)| s.pending_key().is_none())
             .map(|(b, _)| *b)
             .collect();
         if settled.len() > MAX_FRAMES_PER_SOURCE {
@@ -817,27 +798,6 @@ mod tests {
                 "a source that never answers is given up on"
             );
             assert!(!cache.has_pending());
-        }
-        // Case `a_blocking_warm_on_an_unhydrated_source_leaves_the_representative`.
-        {
-            // The synchronous path must be as honest as the live one: no bytes
-            // means the representative frame stays and nothing is left outstanding.
-            let mut cache = ThumbnailCache::new();
-            let id = uuid::Uuid::new_v4();
-            cache.warm_blocking(id, 2, &projected("/nope.mp4"), 1.0, 0.0, 4.0, 6);
-            let t = cache.get(id).expect("a representative frame");
-            assert!(
-                !t.real,
-                "nothing was decoded, and it does not pretend otherwise"
-            );
-            assert!(
-                !cache.has_pending(),
-                "a blocking warm leaves nothing in flight"
-            );
-            assert!(
-                !cache.is_undecodable(id),
-                "un-hydrated is not the same as undecodable — the bytes may arrive"
-            );
         }
         // Case `one_bad_seek_does_not_condemn_a_source`.
         {

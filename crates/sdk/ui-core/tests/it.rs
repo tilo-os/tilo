@@ -49,6 +49,8 @@ mod container_update_forwarding;
 mod context_menu_test;
 #[path = "control_row_alignment.rs"]
 mod control_row_alignment;
+#[path = "copy_audit.rs"]
+mod copy_audit;
 #[cfg(unix)]
 #[path = "cross_process_presence_pump.rs"]
 mod cross_process_presence_pump;
@@ -61,8 +63,6 @@ mod design_token_audit;
 #[cfg(unix)]
 #[path = "diagnostics_outlive_a_closed_log_pipe.rs"]
 mod diagnostics_outlive_a_closed_log_pipe;
-#[path = "dnd_test.rs"]
-mod dnd_test;
 #[path = "file_picker_render_test.rs"]
 mod file_picker_render_test;
 #[path = "filled_control_labels_are_readable.rs"]
@@ -75,10 +75,6 @@ mod ghost_cursor_render_test;
 mod group_row_visual_journey;
 #[path = "host_entry_points.rs"]
 mod host_entry_points;
-#[path = "icon_grid_test.rs"]
-mod icon_grid_test;
-#[path = "identity_flow_layout.rs"]
-mod identity_flow_layout;
 #[path = "immersive_widget_geometry.rs"]
 mod immersive_widget_geometry;
 #[path = "incremental_render_regressions.rs"]
@@ -157,6 +153,8 @@ mod tooltip_test;
 mod touch_gestures_test;
 #[path = "typography_baseline_geometry.rs"]
 mod typography_baseline_geometry;
+#[path = "typography_token_audit.rs"]
+mod typography_token_audit;
 #[path = "typography_visual_regression.rs"]
 mod typography_visual_regression;
 #[path = "undo_per_author.rs"]
@@ -175,9 +173,6 @@ mod window_group_test;
 mod window_group_visual_journey;
 #[path = "workspace_view_test.rs"]
 mod workspace_view_test;
-#[cfg(feature = "webview-wpe")]
-#[path = "wpe_engine.rs"]
-mod wpe_engine;
 
 mod canonical_record_owner;
 

@@ -13,20 +13,25 @@
 //! conversion the compositor applies to every backend event.
 
 use automerge::{AutoCommit, ROOT};
-use shell::compositor::backend::headless::output_fixture;
+use shell::compositor::backend::headless::{output_fixture, resolve_output_arrangement};
 use shell::compositor::backend::layout::{event_to_logical, placements};
 use shell::compositor::backend::{
     BackendEvent, Output, combined_geometry, logical_geometry, output_geometry,
 };
 use shell::compositor::frame::FrameBuilder;
+use tilo_cpu_raster::{CpuRasterizer, Options, Region, Target};
 use vello::kurbo::{Point, Rect};
-use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use vello::peniko::Color;
+use winit::event::{ElementState, Modifiers, MouseButton};
 
 /// A frame builder laid out across `fixture`, painted once so the chrome's
 /// hit rectangles (filled in while drawing) are current.
 fn frame_across(fixture: &str) -> (FrameBuilder, Vec<Output>) {
-    let outputs = output_fixture(fixture).unwrap_or_else(|| panic!("fixture {fixture}"));
+    frame_on(output_fixture(fixture).unwrap_or_else(|| panic!("fixture {fixture}")))
+}
+
+/// [`frame_across`] for an arrangement given as outputs.
+fn frame_on(outputs: Vec<Output>) -> (FrameBuilder, Vec<Output>) {
     let mut fb = FrameBuilder::new(combined_geometry(&outputs));
     fb.set_output_geometry(output_geometry(&outputs));
     fb.relayout();
@@ -125,10 +130,7 @@ fn click_scene(fb: &mut FrameBuilder, outputs: &[Output], at: Point) {
     let placements = placements(outputs);
     let moved = event_to_logical(
         &placements,
-        BackendEvent::Input(WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: PhysicalPosition::new(at.x, at.y),
-        }),
+        BackendEvent::Input(ui::synthetic_input::cursor_moved(at.x, at.y)),
     );
     let BackendEvent::Input(moved) = moved else {
         panic!("a cursor event stays a cursor event");
@@ -136,16 +138,18 @@ fn click_scene(fb: &mut FrameBuilder, outputs: &[Output], at: Point) {
     let mut doc = AutoCommit::new();
     let mut focus = None;
     let mods = Modifiers::default();
-    fb.dispatch_event(&moved, &mods, &mut doc, &ROOT, &mut focus);
+    fb.dispatch_event(
+        &moved,
+        &mods,
+        &mut ui::widget::Edits::lend(&mut doc),
+        &ROOT,
+        &mut focus,
+    );
     for state in [ElementState::Pressed, ElementState::Released] {
         fb.dispatch_event(
-            &WindowEvent::MouseInput {
-                device_id: winit::event::DeviceId::dummy(),
-                state,
-                button: MouseButton::Left,
-            },
+            &ui::synthetic_input::mouse_input(state, MouseButton::Left),
             &mods,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &ROOT,
             &mut focus,
         );
@@ -207,4 +211,92 @@ fn an_offset_monitor_draws_its_part_at_its_own_scale_and_position() {
     let drawn = fb.layout_rect_to_scene(overview).expect("on the panel");
     assert_eq!(drawn.height(), overview.height() * 2.0);
     assert_eq!(drawn.width(), overview.width() * 2.0);
+}
+
+/// The alpha of every pixel in `area` of `scene`, rasterized at `size` scene
+/// pixels through the CPU replay of the scene's own encoding.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "pixel offsets into a few-megapixel test target cannot overflow usize"
+)]
+fn alphas(scene: &vello::Scene, size: (u32, u32), area: Region) -> Vec<u8> {
+    let (width, height) = size;
+    let stride = width as usize * 4;
+    let mut pixels = vec![0u8; stride * height as usize];
+    {
+        let mut target = Target::new(&mut pixels, width, height, stride).expect("target");
+        CpuRasterizer::new(Options::default()).render(
+            scene.encoding(),
+            &mut target,
+            Some(&[area]),
+            Color::TRANSPARENT,
+        );
+    }
+    (area.y..area.y + area.height)
+        .flat_map(|y| (area.x..area.x + area.width).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let at = y as usize * stride + x as usize * 4 + 3;
+            pixels.get(at).copied().expect("inside the target")
+        })
+        .collect()
+}
+
+/// A square patch of `side` scene pixels centred in `rect`.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "an output's centre is a small positive scene pixel coordinate"
+)]
+fn patch_in(rect: Rect, side: u32) -> Region {
+    let c = rect.center();
+    let half = f64::from(side) / 2.0;
+    Region::new((c.x - half) as u32, (c.y - half) as u32, side, side)
+}
+
+/// The workspace recap is a tiled window, and drawing it once opened a
+/// layer it never closed. Each display's pass is the logical desktop
+/// appended inside that display's clip, so the first display's clip stayed
+/// open around the second display's whole pass, which nested inside it and
+/// drew nothing: with a second, scaled monitor, opening Activity (or
+/// Super+H) blanked it. The arrangement is the acceptance VM's, a 1x monitor
+/// with a 1.25x one beside it.
+#[test]
+fn opening_the_activity_window_leaves_every_display_drawn() {
+    let outputs = resolve_output_arrangement("1920x1080@1,1280x800@1.25").expect("arrangement");
+    let (mut fb, outputs) = frame_on(outputs);
+    fb.with_chrome(|st| st.open_room_activity(None));
+    let _ = fb.paint_settled();
+    let scene = fb.paint_settled();
+
+    // The recap is drawn into the logical desktop, which every display's
+    // pass appends, so where it sits does not matter; that it is laid out
+    // on a display does, or this would prove nothing about it.
+    let recap = fb.host().room_activity().rect();
+    assert!(
+        recap.area() > 0.0
+            && outputs
+                .iter()
+                .any(|o| o.logical_rect().contains(recap.center())),
+        "the recap window is laid out on a display, got {recap:?}"
+    );
+    assert_eq!(
+        scene.encoding().n_open_clips,
+        0,
+        "the painted scene leaves no layer open"
+    );
+
+    let size = combined_geometry(&outputs);
+    for output in &outputs {
+        let blank = alphas(&scene, size, patch_in(output.scene_rect(), 16))
+            .into_iter()
+            .filter(|alpha| *alpha == 0)
+            .count();
+        assert_eq!(
+            blank,
+            0,
+            "display {} ({:?}) has {blank} fully transparent pixels at its centre with the recap open",
+            output.id.0,
+            output.scene_rect()
+        );
+    }
 }

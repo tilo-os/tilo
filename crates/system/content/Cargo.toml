@@ -14,7 +14,7 @@ homepage.workspace = true
 # `device` is not a default: it is a Tilo service client, which the native
 # runner (`tilo-ui/native`) and apps enable; on the web it adds nothing.
 default = ["dir"]
-dir = ["dep:tilo-advisory-lock", "dep:tilo-xdg-paths", "dep:tilo-files", "dep:tilo-paths"]
+dir = ["dep:tilo-advisory-lock", "dep:tilo-clock", "dep:tilo-files", "dep:tilo-paths"]
 # The device content store through the launcher's capability (`ContentStore::device`), which
 # `ContentStore::for_app` prefers when the process was handed one. Unix only.
 device = ["dir", "dep:runtime-fs"]
@@ -23,8 +23,8 @@ device = ["dir", "dep:runtime-fs"]
 tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock", optional = true }
 blake3.workspace = true
 thiserror.workspace = true
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", optional = true }
 tracing.workspace = true
-tilo-xdg-paths = { version = "0.1.0", path = "../xdg-paths", optional = true }
 # Where files have no native path (a browser page), content in the profile's app files.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths", optional = true }
@@ -39,7 +39,3 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The workspace-hack's native feature set does not build for wasm32.
-workspace-hack = { version = "0.1" }

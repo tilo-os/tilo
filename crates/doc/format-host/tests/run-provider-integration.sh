@@ -19,7 +19,7 @@ if ! rustup target list --installed | grep -Fxq wasm32-unknown-unknown; then
   exit 1
 fi
 
-crates/doc/qdoc-codec-markdown-wasm/build.sh
+crates/doc/tilo-doc-codec-markdown-wasm/build.sh
 
 cargo test -p format-host --test integration --locked -- \
   --include-ignored --nocapture --test-threads 1

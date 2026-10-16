@@ -106,23 +106,23 @@ impl std::fmt::Debug for NativeKeyCode {
         match self {
             Unidentified => {
                 debug_tuple = f.debug_tuple("Unidentified");
-            },
+            }
             Android(code) => {
                 debug_tuple = f.debug_tuple("Android");
                 debug_tuple.field(&format_args!("0x{code:04X}"));
-            },
+            }
             MacOS(code) => {
                 debug_tuple = f.debug_tuple("MacOS");
                 debug_tuple.field(&format_args!("0x{code:04X}"));
-            },
+            }
             Windows(code) => {
                 debug_tuple = f.debug_tuple("Windows");
                 debug_tuple.field(&format_args!("0x{code:04X}"));
-            },
+            }
             Xkb(code) => {
                 debug_tuple = f.debug_tuple("Xkb");
                 debug_tuple.field(&format_args!("0x{code:04X}"));
-            },
+            }
         }
         debug_tuple.finish()
     }
@@ -162,27 +162,27 @@ impl std::fmt::Debug for NativeKey {
         match self {
             Unidentified => {
                 debug_tuple = f.debug_tuple("Unidentified");
-            },
+            }
             Android(code) => {
                 debug_tuple = f.debug_tuple("Android");
                 debug_tuple.field(&format_args!("0x{code:04X}"));
-            },
+            }
             MacOS(code) => {
                 debug_tuple = f.debug_tuple("MacOS");
                 debug_tuple.field(&format_args!("0x{code:04X}"));
-            },
+            }
             Windows(code) => {
                 debug_tuple = f.debug_tuple("Windows");
                 debug_tuple.field(&format_args!("0x{code:04X}"));
-            },
+            }
             Xkb(code) => {
                 debug_tuple = f.debug_tuple("Xkb");
                 debug_tuple.field(&format_args!("0x{code:04X}"));
-            },
+            }
             Web(code) => {
                 debug_tuple = f.debug_tuple("Web");
                 debug_tuple.field(code);
-            },
+            }
         }
         debug_tuple.finish()
     }
@@ -1791,8 +1791,12 @@ mod modifiers_serde {
         where
             D: Deserializer<'de>,
         {
-            let ModifiersStateSerialize { shift_key, control_key, alt_key, super_key } =
-                ModifiersStateSerialize::deserialize(deserializer)?;
+            let ModifiersStateSerialize {
+                shift_key,
+                control_key,
+                alt_key,
+                super_key,
+            } = ModifiersStateSerialize::deserialize(deserializer)?;
             let mut m = ModifiersState::empty();
             m.set(ModifiersState::SHIFT, shift_key);
             m.set(ModifiersState::CONTROL, control_key);
@@ -1801,4 +1805,29 @@ mod modifiers_serde {
             Ok(m)
         }
     }
+}
+
+/// Immutable, configuration-only state of the ordinary focused Wayland keyboard.
+/// Symbols describe every physical position, never a typed input or compose buffer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyboardLayout {
+    pub depressed: u32,
+    pub latched: u32,
+    pub locked: u32,
+    pub group: u32,
+    pub keys: Vec<KeyboardLayoutKey>,
+}
+
+/// Effective native symbols at a physical position in the focused seat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyboardLayoutKey {
+    pub physical: PhysicalKey,
+    pub symbols: Vec<KeyboardLayoutSymbol>,
+}
+
+/// Native keysym metadata independent of key presses or composed text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyboardLayoutSymbol {
+    pub name: String,
+    pub text: String,
 }

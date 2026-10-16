@@ -39,10 +39,85 @@ export function pageWheelAsPixels(event,width,height) {
   return {deltaX:-x,deltaY:-y,deltaMode:0,clientX:event.clientX,clientY:event.clientY,
     ctrlKey:event.ctrlKey,shiftKey:event.shiftKey,altKey:event.altKey,metaKey:event.metaKey,bubbles:false,cancelable:true};
 }
+/** A mouse wheel's notches as the line deltas the native session reads from
+ * a wheel (libinput's wheel source, one line a notch), so a sideways notch
+ * pans the strip a line (40 px) and a vertical one scrolls by a line, as
+ * natively, whichever browser it came through. `undefined` for everything
+ * the runtime reads as it is: a trackpad's or a Mac mouse's continuous
+ * pixels, page deltas, and events the page made itself.
+ *
+ * Chrome and Safari report pixels for both kinds of device; a notch is told
+ * apart by its legacy `wheelDelta`, a multiple of 120 a notch, which a
+ * trackpad's never is beside its pixels (it is their -3 multiple there), and
+ * by moving at least about a line's worth of pixels a notch. Chromium sums
+ * the ticks along with the deltas when it merges queued wheel events
+ * (`WebMouseWheelEvent::Coalesce`), so a merged event's `wheelDelta` counts
+ * every notch in it, as many as its pixels do.
+ *
+ * Firefox reports a notch as several lines (six sideways, three down, by
+ * default), and only to a reader that asks for `deltaMode` first, so this
+ * must run before the runtime's own listener. Its `wheelDelta` is the
+ * notch's ticks times 120 (`WheelEvent::WheelDeltaX`), but when its content
+ * process merges queued events it sums their line deltas and keeps the
+ * first one's ticks (`CoalescedWheelData::Coalesce`), so a merged event's
+ * `wheelDelta` undercounts. The lines a notch moves are therefore learnt in
+ * `perNotch`, per axis, as the fewest seen per 120 of `wheelDelta`, and an
+ * event's lines are divided by them: three merged notches are three lines.
+ *
+ * Off a Mac, Chrome turns Shift+wheel into a sideways wheel; natively
+ * Shift+wheel stays vertical with Shift held, which content reads as
+ * sideways scrolling but the strip does not take as a sideways step, so it
+ * is turned back. */
+export function wheelNotchesAsLines(event,mac,perNotch={x:0,y:0}) {
+  if(!event.isTrusted)return undefined;
+  const mode=event.deltaMode;
+  if(mode!==0&&mode!==1)return undefined;
+  const wx=Number(event.wheelDeltaX)||0,wy=Number(event.wheelDeltaY)||0;
+  const dx=Number(event.deltaX)||0,dy=Number(event.deltaY)||0;
+  let x,y;
+  if(mode===1){
+    [x,y]=[notchLines(dx,wx,perNotch,'x'),notchLines(dy,wy,perNotch,'y')];
+  }else{
+    if((wx===0&&wy===0)||wx%120!==0||wy%120!==0)return undefined;
+    if(Math.abs(wx)===Math.abs(3*dx)&&Math.abs(wy)===Math.abs(3*dy))return undefined;
+    const notches=Math.max(Math.abs(wx),Math.abs(wy))/120,pixels=Math.max(Math.abs(dx),Math.abs(dy));
+    if(pixels/notches<20)return undefined;
+    [x,y]=[-wx/120||0,-wy/120||0];
+  }
+  if(!mac&&event.shiftKey&&y===0&&x!==0)[x,y]=[0,x];
+  return {deltaX:x,deltaY:y,deltaMode:1,clientX:event.clientX,clientY:event.clientY,
+    ctrlKey:event.ctrlKey,shiftKey:event.shiftKey,altKey:event.altKey,metaKey:event.metaKey,bubbles:false,cancelable:true};
+}
+/** The lines Firefox moves a notch by default, for an event that does not
+ * say through its `wheelDelta`. */
+const FIREFOX_NOTCH_LINES={x:6,y:3};
+function notchLines(lines,wheelDelta,perNotch,axis) {
+  if(lines===0)return 0;
+  if(wheelDelta!==0){
+    const seen=Math.abs(lines)/(Math.abs(wheelDelta)/120);
+    if(!(perNotch[axis]>0)||seen<perNotch[axis])perNotch[axis]=seen;
+  }
+  return lines/(perNotch[axis]>0?perNotch[axis]:FIREFOX_NOTCH_LINES[axis]);
+}
 const applicationCommands=new Set(['a','b','f','i','k','u','y','z']);
 const clipboardCommands=new Set(['c','v','x']);
+const desktopChordKeys=new Set(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','PageUp','PageDown','KeyO',
+  'Digit1','Digit2','Digit3','Digit4','Digit5','Digit6','Digit7','Digit8','Digit9']);
+/** The desktop's own chords (the browser shell's `chord`): Super with a
+ * navigation key, or the page's stand-in for Super, Alt+Shift (Ctrl+Option
+ * on a Mac). They belong to the desktop wherever the keyboard is in the
+ * surface, a focused text field included, as Super chords do natively. */
+export function isDesktopChord(event,mac) {
+  if(event.isComposing)return false;
+  const native=Boolean(event.metaKey)&&!event.altKey&&!event.ctrlKey;
+  const standIn=!event.metaKey&&Boolean(event.altKey)&&(mac?Boolean(event.ctrlKey)&&!event.shiftKey:Boolean(event.shiftKey)&&!event.ctrlKey);
+  if(!native&&!standIn)return false;
+  if(native&&(event.key==='Tab'||event.code==='Tab'))return true;
+  return desktopChordKeys.has(event.code)||desktopChordKeys.has(event.key)||/^[1-9]$/.test(String(event.key??''));
+}
 export function keyboardRoute(event,composing,mac) {
   if(composing||event.isComposing)return 'composition';
+  if(isDesktopChord(event,mac))return 'forward';
   const key=String(event.key??'');
   const lower=key.toLowerCase();
   const primary=mac?Boolean(event.metaKey):Boolean(event.ctrlKey);
@@ -60,6 +135,7 @@ export function modifierSnapshot(event) {
 }
 export function semanticKeyboardRoute(event,composing,mac) {
   if(keyboardRoute(event,composing,mac)!=='forward')return 'native';
+  if(isDesktopChord(event,mac))return 'forward';
   const key=String(event.key??'').toLowerCase();
   if(key==='enter'&&!event.ctrlKey&&!event.altKey&&!event.metaKey)return 'forward';
   if(key==='k')return 'forward';

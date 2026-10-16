@@ -1,0 +1,44 @@
+[Unit]
+Description=Rebuild and merge the Tilo extensions turned on
+Documentation=file:///usr/share/tilo/system-extensions/README.md
+# The sealed image never merges what /var holds by itself: systemd-sysext's
+# own service stays masked (docs/security/boot-chain.md). This unit does it on
+# purpose, at every boot and after every install, refresh or removal: it checks
+# each kept manifest's signature against the extension-manifest key again, checks
+# every kept artifact against the manifest, rebuilds each part for the booted
+# base from those bytes alone, refuses to merge if anything else is in the
+# sysext search path, and then runs `systemd-sysext refresh`. Nothing written to
+# /var since the last activation survives it unverified.
+#
+# It runs offline, before the greeter and the graphical target.
+# A part needing a new download for an updated base waits for
+# tilo-extension-refresh.timer.
+# Before the greeter, so the first session already finds the hardware video
+# driver merged (the compositor probes it once, at start).
+After=local-fs.target
+Before=graphical.target display-manager.service greetd.service
+# With nothing turned on and no part of ours left in the sysext search path,
+# `tilo-extension activate` returns at once and changes nothing; starting its
+# Python alone held the greeter 0.4-1.4 s on every boot. These are the
+# helper's own early-return conditions, so the unit runs exactly when the helper
+# has work: an extension is turned on, or parts are still present for it to
+# rebuild or unmerge (a removal deletes the opt-in first and then starts this
+# unit, which still finds the parts and unmerges them).
+ConditionPathExistsGlob=|/var/lib/tilo/extensions/*/enabled
+ConditionDirectoryNotEmpty=|/var/lib/extensions
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-extension activate
+# systemd-sysext must mount over /usr in the host's mount namespace, so this
+# unit takes no namespace-based sandboxing (ProtectSystem=, PrivateTmp=, ...):
+# any of them would give it a private namespace the merge would vanish into.
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

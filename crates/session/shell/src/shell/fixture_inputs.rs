@@ -102,7 +102,7 @@ mod tests {
 
     fn inputs(parent: &std::path::Path) -> ShellFixtureInputs {
         let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdk/ui-core/assets/fonts"),
+            ui::font_catalog::checkout_root(),
             "en-US",
         );
         let renderer = ui::text_render::TextRenderer::with_font_catalog(&catalog).unwrap();
@@ -123,7 +123,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 frame.host().fixture_provider_ids(),
-                vec!["actions", "notes", "editor", "records"]
+                vec!["actions", "records", "file-picker"]
             );
             assert_eq!(frame.chrome().active_local_user(), "shell-fixture");
             assert!(!frame.paint().encoding().is_empty());
@@ -196,45 +196,34 @@ mod tests {
 
     // Same cursor/press/release wire sequence as redraw_bench::dispatch_click.
     fn click(frame: &mut FrameBuilder, target: &str, document: &mut automerge::AutoCommit) {
-        use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+        use winit::event::Modifiers;
         let center = frame
             .widget_registry()
             .get(target)
             .expect("real widget target")
             .center();
         let mut focus = None;
-        let cursor = WindowEvent::CursorMoved {
-            device_id: DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(center.x, center.y),
-        };
+        let cursor = ui::synthetic_input::cursor_moved(center.x, center.y);
         let _ = frame.dispatch_event(
             &cursor,
             &Modifiers::default(),
-            document,
+            &mut ui::widget::Edits::lend(document),
             &automerge::ROOT,
             &mut focus,
         );
-        let press = WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        };
-        let release = WindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        };
+        let press = ui::synthetic_input::mouse_press();
+        let release = ui::synthetic_input::mouse_release();
         let pressed = frame.dispatch_event(
             &press,
             &Modifiers::default(),
-            document,
+            &mut ui::widget::Edits::lend(document),
             &automerge::ROOT,
             &mut focus,
         );
         let released = frame.dispatch_event(
             &release,
             &Modifiers::default(),
-            document,
+            &mut ui::widget::Edits::lend(document),
             &automerge::ROOT,
             &mut focus,
         );
@@ -279,7 +268,7 @@ mod tests {
             assert!(frame.chrome().records().open_records().is_empty());
             assert_eq!(
                 frame.host().fixture_provider_ids(),
-                vec!["actions", "notes", "editor", "records"]
+                vec!["actions", "records", "file-picker"]
             );
             assert!(!frame.paint().encoding().is_empty());
             click(&mut frame, "topbar_tray_pill", &mut document);
@@ -290,9 +279,6 @@ mod tests {
         }
 
         fn fixture_rebuild_keeps_explicit_actor_records_and_services() {
-            use crate::shell::{
-                crdt_text::CrdtTextBody, notes_app::BODY_KEY, tab_documents::tab_body,
-            };
             let parent = tempfile::tempdir().unwrap();
             let inputs = inputs(parent.path());
             let child = inputs.hosted.files.as_ref().unwrap().initial_dir.clone();
@@ -304,27 +290,6 @@ mod tests {
             let mut frame = FrameBuilder::with_fixture_inputs(tree, (3840, 2160), inputs).unwrap();
             let mut document = automerge::AutoCommit::new();
             frame.pump_apps(&mut document, &automerge::ROOT);
-            let store = frame.chrome().records().clone();
-            // A fixture may describe existing tabs, but constructing it must not
-            // fabricate document authority for every persisted sibling. Seed the
-            // one record this test explicitly owns before exercising its Notes
-            // operation and rebuild custody.
-            store
-                .create_record(&crate::shell::tab_documents::scratch_tab_record(note))
-                .expect("fixture explicitly creates its Notes record");
-            // The actual Notes CRDT operation edits the actual tab-bound record.
-            store
-                .with(&ui::record::RecordId::for_tab(note), |doc| {
-                    let mut body = CrdtTextBody::new(BODY_KEY);
-                    body.sync(doc, &automerge::ROOT);
-                    body.splice(doc, &automerge::ROOT, 0..0, "Retained fixture note");
-                })
-                .expect("actual Notes tab record bound");
-            frame.pump_apps(&mut document, &automerge::ROOT);
-            assert_eq!(
-                tab_body(&store, note, BODY_KEY).as_deref(),
-                Some("Retained fixture note")
-            );
             let room_index = frame.host().room_records();
             let home = frame
                 .chrome()
@@ -358,8 +323,8 @@ mod tests {
                     .workspaces
                     .last()
                     .unwrap()
-                    .owner
-                    .as_deref(),
+                    .owner()
+                    .map(String::as_str),
                 Some("shell-fixture")
             );
             assert!(std::rc::Rc::ptr_eq(
@@ -367,14 +332,10 @@ mod tests {
                 &frame.host().room_records()
             ));
             assert!(room_index.borrow().holds(home, &record.id));
-            assert_eq!(
-                tab_body(frame.chrome().records(), note, BODY_KEY).as_deref(),
-                Some("Retained fixture note")
-            );
-            assert_rebuilt_files(&mut frame, strip, files, &child, &mut document);
+            assert_rebuilt_files(&mut frame, strip, files, &child, &document);
             assert_eq!(
                 frame.host().fixture_provider_ids(),
-                vec!["actions", "notes", "editor", "records"]
+                vec!["actions", "records", "file-picker"]
             );
             assert_eq!(guard.attempts(), 0);
         }
@@ -434,6 +395,7 @@ mod tests {
                                     app_id: "peer".into(),
                                     label: "Peer".into(),
                                     note: String::new(),
+                                    missing: None,
                                 },
                                 _ => TileContent::AppPlaceholder {
                                     kind: AppKind::Other("live".into()),
@@ -505,21 +467,17 @@ mod tests {
         strip: crate::shell::state::StripId,
         files_tab: u64,
         child: &std::path::Path,
-        document: &mut automerge::AutoCommit,
+        document: &automerge::AutoCommit,
     ) {
-        use ui::widget::{TileContent, Widget};
+        use ui::widget::Widget;
         let group = frame.host_mut().group_at_for_tests(strip, 0).unwrap();
         assert!(group.set_active_tab(files_tab));
         let host = group.active_host_mut().unwrap();
         host.sync(document, &automerge::ROOT);
-        let TileContent::App(app) = host.content_mut() else {
-            panic!("actual Files app");
-        };
-        let files = app
-            .as_any_mut()
-            .unwrap()
-            .downcast_mut::<file_explorer::files_app::FileExplorerWidget>()
-            .unwrap();
+        frame.relayout();
+        let files = frame
+            .mounted_mut(file_explorer::mounted_files)
+            .expect("actual Files app");
         files.refresh();
         let entries = files.displayed_entries();
         assert_eq!(entries.len(), 1);

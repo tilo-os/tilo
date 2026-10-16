@@ -15,7 +15,8 @@
 //! No further wiring: the host publishes the status and drains the request by
 //! sweeping its `node_map`, so the control works at any depth.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
+use crate::widget::TaffyTreeExt;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -27,13 +28,8 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::undo::{UndoAccess, UndoRequest, UndoStatus};
 use crate::widget::Widget;
-use crate::widget::{Button, ButtonFace, ButtonStyle};
-
-/// Default footprint of an icon-only history control — a square toolbar
-/// button, matching the density icon buttons are placed at elsewhere.
-const ICON_ONLY_SIZE: (f32, f32) = (32.0, 32.0);
-/// Default footprint once a visible label is set.
-const LABELLED_SIZE: (f32, f32) = (96.0, 32.0);
+use crate::widget::button::FaceSizer;
+use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize};
 
 /// An Undo or Redo button wired to the host's history.
 ///
@@ -51,8 +47,10 @@ pub struct UndoButton {
     /// Hover tooltip, which also names the shortcut so the control teaches it
     /// rather than replacing it.
     tooltip: String,
-    style: ButtonStyle,
-    size: Option<(f32, f32)>,
+    role: ButtonRole,
+    control_size: ControlSize,
+    /// The face geometry seen in `build_layout`, for `measure`.
+    sizer: FaceSizer,
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
@@ -72,8 +70,9 @@ impl UndoButton {
             kind,
             label: String::new(),
             tooltip: format!("{} ({})", kind.title(), kind.shortcut()),
-            style: ButtonStyle::Ghost,
-            size: None,
+            role: ButtonRole::Plain,
+            control_size: ControlSize::Regular,
+            sizer: FaceSizer::stock(ControlSize::Regular),
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
@@ -114,18 +113,18 @@ impl UndoButton {
         self
     }
 
-    /// Override the button style. Defaults to
-    /// [`Ghost`](crate::widget::button::ButtonStyle::Ghost) — a history control
-    /// belongs in a toolbar, not competing with the primary action.
+    /// What the control does. Defaults to [`ButtonRole::Plain`]: a history
+    /// control belongs in a toolbar, not competing with the primary action.
     #[must_use]
-    pub fn with_style(mut self, style: ButtonStyle) -> Self {
-        self.style = style;
+    pub fn role(mut self, role: ButtonRole) -> Self {
+        self.role = role;
         self
     }
 
+    /// Its height and label role.
     #[must_use]
-    pub fn with_size(mut self, width: f32, height: f32) -> Self {
-        self.size = Some((width, height));
+    pub fn control_size(mut self, size: ControlSize) -> Self {
+        self.control_size = size;
         self
     }
 
@@ -185,48 +184,56 @@ impl Widget for UndoButton {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let (w, h) = self.size.unwrap_or(if self.label.is_empty() {
-            ICON_ONLY_SIZE
-        } else {
-            LABELLED_SIZE
-        });
+        // An icon-only control is a square of its size's height; a labelled
+        // one is measured (`measure`) to hold its label.
+        self.sizer = FaceSizer::of(self.control_size, theme);
         #[allow(
-            clippy::expect_used,
-            reason = "a fixed-size leaf style is valid and Widget cannot return a layout error"
+            clippy::cast_possible_truncation,
+            reason = "logical pixel counts far below f32 precision"
         )]
-        let node = taffy
-            .new_leaf(Style {
-                flex_shrink: 0.0,
-                size: Size {
-                    width: Dimension::length(w),
-                    height: Dimension::length(h),
-                },
-                ..Default::default()
-            })
-            .expect("fixed-size leaf style is valid");
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
+        let h = self.sizer.height() as f32;
+        let w = if self.label.is_empty() {
+            Dimension::length(h)
+        } else {
+            Dimension::auto()
+        };
+        let style = Style {
+            flex_shrink: 0.0,
+            size: Size {
+                width: w,
+                height: Dimension::length(h),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        _available: Size<taffy::AvailableSpace>,
+        text: &mut crate::text_render::TextRenderer,
+    ) -> Size<f32> {
+        let label = crate::i18n!(&self.label);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "logical pixel counts far below f32 precision"
+        )]
+        let (width, height) = (
+            self.sizer.intrinsic_width(text, Some(self.icon()), &label) as f32,
+            self.sizer.height() as f32,
+        );
+        Size {
+            width: known.width.unwrap_or(width),
+            height: known.height.unwrap_or(height),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        #[allow(
-            clippy::expect_used,
-            reason = "Widget apply_layout receives the node created by build_layout"
-        )]
-        let layout = taffy
-            .layout(node)
-            .expect("build_layout registered this node with the same tree");
-        let x = origin.x + f64::from(layout.location.x);
-        let y = origin.y + f64::from(layout.location.y);
-        let next = Rect::new(
-            x,
-            y,
-            x + f64::from(layout.size.width),
-            y + f64::from(layout.size.height),
-        );
+        let next = crate::widget::layout_rect(taffy, node, origin);
         if next != self.rect {
             self.rect = next;
             self.dirty = true;
@@ -247,7 +254,8 @@ impl Widget for UndoButton {
         // The shared button painter, not a private one: an Undo button must be
         // indistinguishable from the toolbar buttons beside it.
         let face = ButtonFace::new(self.rect, &label)
-            .style(self.style)
+            .role(self.role)
+            .control_size(self.control_size)
             .icon(self.icon())
             .accessible_name(&name)
             .hovered(self.is_hovered && self.is_available())
@@ -270,8 +278,7 @@ impl Widget for UndoButton {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical =
-                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let logical = ctx.logical(position);
                 let hover = self.rect.contains(logical);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
@@ -357,13 +364,14 @@ impl Widget for UndoButton {
 
     /// Keyboard (Enter / Space) and assistive-technology activation.
     ///
-    /// [`perform_action_at`](Widget::perform_action_at) defaults to forwarding
+    /// [`perform_action`](Widget::perform_action) defaults to forwarding
     /// here with the empty key path, so an AT operating the node lands on the
     /// same request a mouse release makes.
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _key_path: &[u64],
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action {
@@ -382,12 +390,12 @@ impl Widget for UndoButton {
                 // or, when there is nothing, why it is unavailable. Never a
                 // description of an action that is not on the stack.
                 .with_description(self.access.status().description(self.kind))
-                .with_state(AccessState {
-                    focused: self.is_focused && available,
-                    focusable: available,
-                    disabled: !available,
-                    ..Default::default()
-                }),
+                .with_state(
+                    AccessState::new()
+                        .focused(self.is_focused && available)
+                        .focusable(available)
+                        .disabled(!available),
+                ),
         )
     }
 
@@ -429,6 +437,7 @@ impl crate::undo::UndoControl for UndoButton {
 mod tests {
     use super::*;
     use crate::a11y::Action;
+    use crate::testing::dispatch;
     use automerge::AutoCommit;
     use automerge::ROOT;
 
@@ -453,13 +462,7 @@ mod tests {
     /// Hover, press, release over the control's centre — the real pointer
     /// path, not a shortcut into `activate`.
     fn click(b: &mut UndoButton) {
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let mods = winit::event::Modifiers::default();
-        let device: winit::event::DeviceId = unsafe { std::mem::zeroed() };
+        let device = winit::event::DeviceId::dummy();
         let centre = b.rect.center();
         for ev in [
             WindowEvent::CursorMoved {
@@ -477,19 +480,7 @@ mod tests {
                 button: MouseButton::Left,
             },
         ] {
-            b.handle_event(
-                &ev,
-                &mut crate::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &mods,
-                    state: &mut doc,
-                    path: &ROOT,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &taffy,
-                },
-            );
+            dispatch(b, &ev);
         }
     }
 
@@ -605,19 +596,29 @@ mod tests {
 
         // Case `assistive_activation_takes_the_same_route_as_a_click`.
         // Assistive technology reaches the same request as a mouse release —
-        // `perform_action_at` forwards the empty key path here.
+        // `perform_action` forwards the empty key path here.
         {
             let mut doc = AutoCommit::new();
             let mut b = button_at(UndoRequest::Redo, Rect::new(0.0, 0.0, 32.0, 32.0));
 
             assert!(
-                !b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT),
+                !b.perform_action(
+                    &Action::Activate,
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &ROOT
+                ),
                 "an unavailable verb declines the action"
             );
             assert_eq!(crate::undo::take_undo_request(&mut b), None);
 
             crate::undo::set_undo_status(&mut b, &mut || status(false, true));
-            assert!(b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT));
+            assert!(b.perform_action(
+                &Action::Activate,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
             assert_eq!(
                 crate::undo::take_undo_request(&mut b),
                 Some(UndoRequest::Redo)

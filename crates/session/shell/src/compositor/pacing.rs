@@ -13,8 +13,17 @@
 //! instead: there is no grid to stay locked to, only the panel's shortest frame time. A frame is
 //! due one interval after the previous one was shown, and content that arrives later than that is
 //! presented at once rather than held for the next fixed deadline.
+//!
+//! A presenter that waits for each page flip reports the vblank it retired on
+//! ([`FrameClock::note_retirement`]). The grid is then re-anchored on that vblank every frame, and a
+//! frame is due one *lead* before the next one: the time the worst recent frame took from its
+//! deadline to its queued flip, plus a margin ([`FrameLead`]). The frame built from the newest
+//! input reaches the very next vblank instead of queueing behind one that is still presenting.
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
+
+use crate::shell::present::{DisplayTiming, Retirement};
 
 /// Interval used when a backend cannot report a real refresh rate (headless, or implausible mode timing): 60 Hz exactly.
 pub const FALLBACK_INTERVAL: Duration = Duration::from_nanos(16_666_667);
@@ -120,17 +129,25 @@ pub struct FrameClock {
     presented: u64,
     /// Adaptive sync is engaged: pace by content readiness, not a fixed grid.
     adaptive: bool,
+    /// The grid is anchored on the vblanks a vblank-paced presenter reports
+    /// ([`Self::note_retirement`]) rather than on frame production.
+    vblank_locked: bool,
+    /// How far ahead of the next vblank a locked frame is due.
+    lead: Duration,
 }
 
 impl FrameClock {
     /// A clock ticking at `interval`, with its first deadline at `now` so the first frame isn't delayed.
     pub fn new(interval: Duration, now: Instant) -> Self {
+        let interval = sane(interval);
         Self {
-            interval: sane(interval),
+            interval,
             next_deadline: now,
             skipped: 0,
             presented: 0,
             adaptive: false,
+            vblank_locked: false,
+            lead: interval,
         }
     }
 
@@ -161,6 +178,7 @@ impl FrameClock {
             return false;
         }
         self.interval = interval;
+        self.lead = self.lead.min(interval);
         true
     }
 
@@ -233,10 +251,403 @@ impl FrameClock {
         self.next_deadline = next;
     }
 
+    /// Record a presenter retirement that may have blocked for longer than one frame.
+    ///
+    /// A vblank inside the interval after its deadline stays on the phase-locked
+    /// grid ([`Self::note_presented`]). A virtual scanout can return several
+    /// intervals later: the kernel waits up to 50 ms for a dumb-flush fence the
+    /// host does not signal, and phase-locking that late time adds one more
+    /// interval (~67 ms between paints at 60 Hz). When the retirement is already
+    /// more than one interval past the deadline it was admitted for, the frame
+    /// that was waiting is due at `at`.
+    pub fn note_blocked_retirement(&mut self, at: Instant) {
+        let overdue = self
+            .next_deadline
+            .checked_add(self.interval)
+            .is_some_and(|limit| at > limit);
+        if !overdue || self.adaptive {
+            self.note_presented(at);
+            return;
+        }
+        self.presented = self.presented.saturating_add(1);
+        let mut cursor = self.next_deadline;
+        while let Some(stepped) = cursor.checked_add(self.interval) {
+            if stepped >= at {
+                break;
+            }
+            cursor = stepped;
+            self.skipped = self.skipped.saturating_add(1);
+        }
+        self.next_deadline = at;
+    }
+
+    /// Whether deadlines are anchored on reported vblanks.
+    pub fn is_vblank_locked(&self) -> bool {
+        self.vblank_locked
+    }
+
+    /// How far ahead of the next vblank a locked frame is due.
+    pub fn lead(&self) -> Duration {
+        self.lead
+    }
+
+    /// Set how far ahead of the next vblank a locked frame is due, clamped to
+    /// [`MIN_LEAD`]..=one interval. A lead of one interval makes the frame due
+    /// at the vblank itself. The pending deadline moves with the lead, so the
+    /// grid keeps its vblank phase.
+    pub fn set_lead(&mut self, lead: Duration) {
+        let lead = lead.clamp(MIN_LEAD.min(self.interval), self.interval);
+        if self.vblank_locked && !self.adaptive {
+            let moved = if lead > self.lead {
+                self.next_deadline
+                    .checked_sub(lead.saturating_sub(self.lead))
+            } else {
+                self.next_deadline
+                    .checked_add(self.lead.saturating_sub(lead))
+            };
+            if let Some(moved) = moved {
+                self.next_deadline = moved;
+            }
+        }
+        self.lead = lead;
+    }
+
+    /// Re-anchor the grid on a measured vblank: the next frame is due one lead
+    /// before the vblank after it. A deadline already behind `now` is simply due.
+    pub fn note_vblank(&mut self, vblank: Instant) {
+        self.presented = self.presented.saturating_add(1);
+        self.vblank_locked = true;
+        if self.adaptive {
+            if let Some(next) = vblank.checked_add(self.interval) {
+                self.next_deadline = next;
+            }
+            return;
+        }
+        let next = vblank
+            .checked_add(self.interval)
+            .and_then(|next| next.checked_sub(self.lead));
+        if let Some(next) = next {
+            self.next_deadline = next;
+        }
+    }
+
+    /// The loop handed a frame to an asynchronous presenter at `at`. A locked
+    /// grid advances to its next point now, so a wakeup between the handoff
+    /// and the vblank is not mistaken for a due frame the presenter refused.
+    /// An unlocked clock keeps waiting for the retirement, as before.
+    pub fn note_submitted(&mut self, at: Instant) {
+        if !self.vblank_locked || self.adaptive {
+            return;
+        }
+        while self.next_deadline <= at {
+            let Some(stepped) = self.next_deadline.checked_add(self.interval) else {
+                break;
+            };
+            self.next_deadline = stepped;
+        }
+    }
+
+    /// Record one retirement from an asynchronous presenter.
+    ///
+    /// A vblank-paced presenter re-anchors the grid on the vblank it retired
+    /// on ([`Self::note_vblank`]); one that queued no flip (an unchanged frame)
+    /// leaves the grid where [`Self::note_submitted`] put it. Any other
+    /// presenter, or one that stopped being vblank-paced (readback, a VT
+    /// switch, a blank), drops the lock and paces by retirement time
+    /// ([`Self::note_blocked_retirement`]).
+    pub fn note_retirement(&mut self, at: Instant, timing: DisplayTiming) {
+        match (timing.vblank_paced, timing.vblank) {
+            (true, Some(vblank)) => self.note_vblank(vblank),
+            (true, None) if self.vblank_locked => {
+                self.presented = self.presented.saturating_add(1);
+            }
+            _ => {
+                self.vblank_locked = false;
+                self.note_blocked_retirement(at);
+            }
+        }
+    }
+
     /// The deadline currently being aimed at. Exposed for tests and diagnostics.
     pub fn next_deadline(&self) -> Instant {
         self.next_deadline
     }
+}
+
+/// Shortest lead a vblank-locked frame is due before its vblank.
+pub const MIN_LEAD: Duration = Duration::from_millis(1);
+/// Added to the worst recent frame cost: loop wakeup jitter, input drain and
+/// the flip ioctl are not in the measured span, and a frame that misses its
+/// vblank is a dropped frame.
+pub const LEAD_MARGIN: Duration = Duration::from_millis(2);
+/// Frames whose cost the lead covers: at most one second at 60 Hz of a busy
+/// desktop (see [`LEAD_MEMORY`] for a quiet one).
+const LEAD_WINDOW: usize = 64;
+/// How long one frame's cost keeps the lead up. Frames are not retired at a
+/// steady rate: typing paints a few sparse frames a second, so a count-only
+/// window stretches over a quarter minute, and a single repaint of the whole
+/// screen (a window opening, a texture upload) held the lead at a full
+/// interval for all of it. A frame built a whole interval ahead misses every
+/// later commit of the input it was built for, so each of those commits waits
+/// one more vblank. A second covers the frames that follow a slow one, the
+/// burst it belongs to; the newest frame's cost is always kept.
+pub const LEAD_MEMORY: Duration = Duration::from_millis(1000);
+
+/// The time from a frame's deadline to its queued page flip, over recent frames.
+///
+/// The lead is the worst of them plus [`LEAD_MARGIN`], not a mean or a
+/// percentile: a frame later than its lead misses the vblank it was built for,
+/// and with one frame in flight that vblank repeats the old image. Until a
+/// cost is known the lead is a whole interval, which makes the frame due at the
+/// vblank itself.
+#[derive(Debug, Clone, Default)]
+pub struct FrameLead {
+    costs: VecDeque<(Instant, Duration)>,
+}
+
+impl FrameLead {
+    /// Record one frame's deadline-to-flip cost, seen at `at`.
+    pub fn observe(&mut self, at: Instant, cost: Duration) {
+        if self.costs.len() == LEAD_WINDOW {
+            self.costs.pop_front();
+        }
+        self.costs.push_back((at, cost));
+        // Older frames of a quiet stretch age out; the newest stays.
+        while self.costs.len() > 1
+            && self
+                .costs
+                .front()
+                .is_some_and(|(seen, _)| at.saturating_duration_since(*seen) > LEAD_MEMORY)
+        {
+            self.costs.pop_front();
+        }
+    }
+
+    /// The worst cost in the window, once any is known.
+    pub fn worst(&self) -> Option<Duration> {
+        self.costs.iter().map(|(_, cost)| *cost).max()
+    }
+
+    /// How far ahead of its vblank a frame must be due, clamped to
+    /// [`MIN_LEAD`]..=`interval`.
+    pub fn lead(&self, interval: Duration) -> Duration {
+        self.worst().map_or(interval, |worst| {
+            worst
+                .saturating_add(LEAD_MARGIN)
+                .clamp(MIN_LEAD.min(interval), interval)
+        })
+    }
+
+    /// A frame does not fit one interval with margin. Building only after the
+    /// previous flip retired would then show every other vblank; the presenter
+    /// must accept the next frame while one presents, as it did before frames
+    /// were scheduled against the vblank.
+    pub fn render_bound(&self, interval: Duration) -> bool {
+        self.worst()
+            .is_some_and(|worst| worst.saturating_add(LEAD_MARGIN) > interval)
+    }
+}
+
+/// Env var that turns on the periodic `FRAME-PACING` line.
+pub const PACING_PROFILE_ENV: &str = "TILO_PROFILE_PRESENTATION";
+/// How often the `FRAME-PACING` line is written while frames retire.
+const PACING_WINDOW: Duration = Duration::from_secs(2);
+/// Frames handed over but not yet matched to a retirement. Only the newest
+/// retirement is observed, so older records are dropped as it passes them.
+const BUILT_FRAMES: usize = 8;
+
+/// A frame the loop handed to the presenter, kept until it retires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BuiltFrame {
+    serial: u64,
+    /// The deadline it was built for, or the wakeup that built it when that
+    /// was not on the grid (the first frame after an idle stretch).
+    start: Instant,
+    /// The vblank a locked clock built it for.
+    target_vblank: Option<Instant>,
+}
+
+/// One frame's pacing record, at its retirement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PacedFrame {
+    /// The frame's deadline to its queued flip, without time spent queued
+    /// behind an earlier frame ([`FrameLead::observe`]).
+    pub cost: Duration,
+    /// The frame's deadline to the vblank that showed it: the compositor's
+    /// share of input-to-photon for input that arrived just before the build.
+    pub build_to_vblank: Duration,
+    /// It reached a later vblank than the one its deadline was set for.
+    pub missed: bool,
+}
+
+impl PacedFrame {
+    fn of(built: BuiltFrame, retired: &Retirement, interval: Duration) -> Option<Self> {
+        let queued = retired.display.flip_queued_at?;
+        let vblank = retired.display.vblank?;
+        let cost = queued
+            .saturating_duration_since(built.start)
+            .saturating_sub(retired.queue_wait);
+        let missed = built
+            .target_vblank
+            .zip(interval.checked_div(2))
+            .and_then(|(target, half)| target.checked_add(half))
+            .is_some_and(|limit| vblank > limit);
+        Some(Self {
+            cost,
+            build_to_vblank: vblank.saturating_duration_since(built.start),
+            missed,
+        })
+    }
+}
+
+/// Schedules frames against the vblank a vblank-paced presenter reports.
+///
+/// The loop tells it when a frame is handed over ([`Self::note_built`]) and
+/// when the newest frame retires ([`Self::note_retired`]); it keeps the
+/// [`FrameClock`]'s lead at the worst recent frame cost and says how many
+/// frames the presenter must admit behind the one presenting.
+#[derive(Debug, Clone, Default)]
+pub struct VblankScheduler {
+    lead: FrameLead,
+    built: VecDeque<BuiltFrame>,
+    /// `Some` when [`PACING_PROFILE_ENV`] asked for the `FRAME-PACING` line.
+    window: Option<PacingWindow>,
+}
+
+impl VblankScheduler {
+    /// A scheduler that writes the `FRAME-PACING` line when
+    /// [`PACING_PROFILE_ENV`] is set.
+    pub fn from_env() -> Self {
+        Self {
+            window: std::env::var_os(PACING_PROFILE_ENV).map(|_| PacingWindow::default()),
+            ..Self::default()
+        }
+    }
+
+    /// The loop handed frame `serial` to the presenter, from the tick that
+    /// woke at `woke`. Call before [`FrameClock::note_submitted`] moves the
+    /// deadline the frame was built for.
+    pub fn note_built(&mut self, serial: u64, woke: Instant, clock: &FrameClock) {
+        let deadline = clock.next_deadline();
+        let on_grid = clock.is_vblank_locked()
+            && !clock.is_adaptive()
+            && deadline <= woke
+            && clock
+                .interval()
+                .checked_div(4)
+                .is_some_and(|quarter| woke.saturating_duration_since(deadline) <= quarter);
+        if self.built.len() == BUILT_FRAMES {
+            self.built.pop_front();
+        }
+        self.built.push_back(BuiltFrame {
+            serial,
+            start: if on_grid { deadline } else { woke },
+            target_vblank: on_grid
+                .then(|| deadline.checked_add(clock.lead()))
+                .flatten(),
+        });
+    }
+
+    /// The newest retired frame, seen once. Moves `clock` onto its vblank with
+    /// the lead the recent frame costs need, and returns the queue depth the
+    /// presenter must at least admit: 1 once a frame no longer fits an
+    /// interval, so building overlaps presenting again; otherwise 0.
+    pub fn note_retired(
+        &mut self,
+        retired: &Retirement,
+        clock: &mut FrameClock,
+        presenter_depth: usize,
+        now: Instant,
+    ) -> usize {
+        while self
+            .built
+            .front()
+            .is_some_and(|built| built.serial < retired.serial)
+        {
+            self.built.pop_front();
+        }
+        let built = self
+            .built
+            .front()
+            .copied()
+            .filter(|built| built.serial == retired.serial);
+        if built.is_some() {
+            self.built.pop_front();
+        }
+        let paced = built.and_then(|built| PacedFrame::of(built, retired, clock.interval()));
+        if let Some(frame) = paced {
+            self.lead.observe(now, frame.cost);
+        }
+        clock.set_lead(self.lead.lead(clock.interval()));
+        clock.note_retirement(retired.at, retired.display);
+        let min_depth = usize::from(self.lead.render_bound(clock.interval()));
+        if let Some(window) = self.window.as_mut() {
+            window.record(now, paced);
+            if let Some(line) = window.take_line(now, clock, presenter_depth.max(min_depth)) {
+                eprintln!("{line}");
+            }
+        }
+        min_depth
+    }
+}
+
+/// Aggregates [`PacedFrame`]s into the content-free `FRAME-PACING` line.
+#[derive(Debug, Clone, Default)]
+pub struct PacingWindow {
+    started: Option<Instant>,
+    retired: u64,
+    costs_us: Vec<u32>,
+    build_to_vblank_us: Vec<u32>,
+    missed: u64,
+}
+
+impl PacingWindow {
+    /// Count one retired frame; `paced` when it was shown by a measured flip.
+    pub fn record(&mut self, now: Instant, paced: Option<PacedFrame>) {
+        self.started.get_or_insert(now);
+        self.retired = self.retired.saturating_add(1);
+        if let Some(frame) = paced {
+            self.costs_us.push(micros(frame.cost));
+            self.build_to_vblank_us.push(micros(frame.build_to_vblank));
+            self.missed = self.missed.saturating_add(u64::from(frame.missed));
+        }
+    }
+
+    /// The `FRAME-PACING` line for the window, when [`PACING_WINDOW`] has
+    /// passed since its first frame. Starts a new window.
+    pub fn take_line(
+        &mut self,
+        now: Instant,
+        clock: &FrameClock,
+        queue_depth: usize,
+    ) -> Option<String> {
+        let started = self.started?;
+        if now.saturating_duration_since(started) < PACING_WINDOW {
+            return None;
+        }
+        let window = std::mem::take(self);
+        let cost = super::metrics::percentiles(&window.costs_us);
+        let photon = super::metrics::percentiles(&window.build_to_vblank_us);
+        Some(format!(
+            "FRAME-PACING retired={} vblank_frames={} missed={} queue_depth={queue_depth} \
+             vblank_locked={} interval_us={} lead_us={} cost_p50_us={} cost_p99_us={} \
+             build_to_vblank_p50_us={} build_to_vblank_p99_us={}",
+            window.retired,
+            window.build_to_vblank_us.len(),
+            window.missed,
+            clock.is_vblank_locked(),
+            clock.interval().as_micros(),
+            clock.lead().as_micros(),
+            cost.p50,
+            cost.p99,
+            photon.p50,
+            photon.p99,
+        ))
+    }
+}
+
+fn micros(duration: Duration) -> u32 {
+    u32::try_from(duration.as_micros()).unwrap_or(u32::MAX)
 }
 
 /// Clamp an interval into the range the refresh bounds imply, so a caller constructing a clock directly from a bad duration can't park the compositor.
@@ -430,6 +841,32 @@ mod tests {
                  immediately due again"
             );
         }
+        // Phase `a_retirement_later_than_one_interval_is_due_at_once`.
+        {
+            // Virtual scanout acceptance can return ~50 ms after the frame
+            // was admitted (three 60 Hz intervals: the kernel's dumb-flush
+            // fence timeout). Phase-locking that late timestamp onto the
+            // next grid point inserts another interval, so paints land ~67 ms
+            // apart. The frame that was waiting is due at the retirement.
+            let t0 = Instant::now();
+            let interval = Duration::from_nanos(16_666_666);
+            let mut clock = FrameClock::new(interval, t0);
+            let retired = t0 + Duration::from_millis(50);
+            clock.note_blocked_retirement(retired);
+            assert_eq!(clock.next_deadline(), retired);
+            assert!(
+                clock.due(retired),
+                "a stall longer than one interval must paint on the retirement"
+            );
+            // Inside the following interval the grid stays put, same as a
+            // slightly late vblank.
+            let mut locked = FrameClock::new(interval, t0);
+            locked.note_blocked_retirement(t0);
+            let slightly_late = t0 + interval + Duration::from_millis(4);
+            locked.note_blocked_retirement(slightly_late);
+            assert_eq!(locked.next_deadline(), t0 + 2 * interval);
+            assert!(!locked.due(slightly_late));
+        }
         // Phase `due_gates_presentation_between_deadlines`.
         {
             // Protocol traffic wakes the loop mid-interval; the paint gate must decline.
@@ -467,6 +904,273 @@ mod tests {
                 pending + Duration::from_micros(6_944)
             );
         }
+    }
+
+    fn paced(vblank: Option<Instant>) -> DisplayTiming {
+        DisplayTiming {
+            vblank_paced: true,
+            vblank,
+            flip_queued_at: None,
+        }
+    }
+
+    #[test]
+    fn vblank_locked_clock_builds_one_lead_before_the_next_vblank() {
+        let interval = Duration::from_nanos(16_666_667);
+        let t0 = Instant::now();
+        let mut clock = FrameClock::new(interval, t0);
+        assert!(!clock.is_vblank_locked());
+        clock.note_vblank(t0);
+        clock.set_lead(Duration::from_millis(4));
+        assert!(clock.is_vblank_locked());
+        assert!(
+            !clock.due(t0 + Duration::from_micros(12_600)),
+            "4 ms before the next vblank is 12.667 ms after this one"
+        );
+        assert!(clock.due(t0 + Duration::from_micros(12_700)));
+
+        // A late build steps to the next point of the same grid at handoff:
+        // a wakeup before the vblank is not a due frame.
+        let late_build = t0 + Duration::from_millis(14);
+        clock.note_submitted(late_build);
+        assert_eq!(
+            clock.next_deadline(),
+            (t0 + 2 * interval)
+                .checked_sub(Duration::from_millis(4))
+                .unwrap()
+        );
+        // The flip missed the vblank after t0 and landed one interval later.
+        // The grid keys off that vblank, not off the late build.
+        let landed = t0 + 2 * interval;
+        clock.note_retirement(landed + Duration::from_micros(300), paced(Some(landed)));
+        assert_eq!(
+            clock.next_deadline(),
+            (landed + interval)
+                .checked_sub(Duration::from_millis(4))
+                .unwrap(),
+            "no drift: the next deadline is one lead before the vblank after the one shown"
+        );
+
+        // An unchanged frame queues no flip: the grid stays where it is.
+        let pending = clock.next_deadline();
+        clock.note_submitted(pending);
+        let stepped = clock.next_deadline();
+        assert_eq!(stepped, pending + interval);
+        clock.note_retirement(pending + Duration::from_micros(200), paced(None));
+        assert_eq!(clock.next_deadline(), stepped);
+        assert!(clock.is_vblank_locked());
+
+        // Changing the lead moves the pending deadline with it.
+        clock.set_lead(Duration::from_millis(6));
+        assert_eq!(
+            clock.next_deadline(),
+            stepped.checked_sub(Duration::from_millis(2)).unwrap()
+        );
+        // A lead of a whole interval or more is due at the vblank itself.
+        clock.set_lead(Duration::from_secs(1));
+        assert_eq!(clock.lead(), interval);
+        clock.note_vblank(landed);
+        assert_eq!(clock.next_deadline(), landed);
+
+        // Readback, a blank or a VT switch: no longer vblank-paced. The lock
+        // drops and the retirement time paces the grid, as before.
+        let readback = landed + Duration::from_millis(50);
+        clock.note_retirement(readback, DisplayTiming::default());
+        assert!(!clock.is_vblank_locked());
+        assert_eq!(clock.next_deadline(), readback);
+        let before = clock.next_deadline();
+        clock.note_submitted(readback + Duration::from_millis(1));
+        assert_eq!(
+            clock.next_deadline(),
+            before,
+            "an unlocked clock still waits for the retirement"
+        );
+    }
+
+    #[test]
+    fn the_lead_covers_the_worst_recent_frame_and_reports_a_render_bound_loop() {
+        let interval = Duration::from_nanos(16_666_667);
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut lead = FrameLead::default();
+        assert_eq!(
+            lead.lead(interval),
+            interval,
+            "with no cost known, a frame is due at the vblank itself"
+        );
+        assert!(!lead.render_bound(interval));
+        lead.observe(at(0), Duration::from_millis(3));
+        lead.observe(at(16), Duration::from_millis(5));
+        lead.observe(at(33), Duration::from_millis(2));
+        assert_eq!(lead.lead(interval), Duration::from_millis(5) + LEAD_MARGIN);
+        lead.observe(at(50), Duration::ZERO);
+        assert_eq!(lead.worst(), Some(Duration::from_millis(5)));
+        // One slow frame covers the window after it, then ages out.
+        lead.observe(at(66), Duration::from_millis(15));
+        assert!(lead.render_bound(interval));
+        assert_eq!(lead.lead(interval), interval);
+        for n in (0u64..).take(LEAD_WINDOW) {
+            lead.observe(at(83 + n), Duration::from_millis(1));
+        }
+        assert!(!lead.render_bound(interval));
+        assert_eq!(lead.lead(interval), Duration::from_millis(1) + LEAD_MARGIN);
+    }
+
+    #[test]
+    fn a_slow_frame_stops_inflating_the_lead_once_the_burst_it_belongs_to_is_over() {
+        // Typing paints a few small frames a second. One repaint of the whole
+        // screen among them used to hold the lead at a full interval until 64
+        // more frames retired, about a quarter minute of typing, so every
+        // frame of it was built at the vblank before its own and missed the
+        // commits that followed its input.
+        let interval = Duration::from_nanos(16_666_667);
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let mut lead = FrameLead::default();
+        lead.observe(at(0), Duration::from_millis(7));
+        lead.observe(at(200), Duration::from_millis(33));
+        assert_eq!(lead.lead(interval), interval, "the burst keeps the lead up");
+        assert!(lead.render_bound(interval));
+        lead.observe(at(400), Duration::from_millis(7));
+        assert_eq!(lead.lead(interval), interval, "still inside its memory");
+        lead.observe(at(200 + 1001), Duration::from_millis(7));
+        assert_eq!(
+            lead.lead(interval),
+            Duration::from_millis(7) + LEAD_MARGIN,
+            "a second later the sparse frames set the lead again"
+        );
+        assert!(!lead.render_bound(interval));
+        // The newest frame's cost is kept however long ago it was.
+        let mut lone = FrameLead::default();
+        lone.observe(at(0), Duration::from_millis(9));
+        lone.observe(at(60_000), Duration::from_millis(4));
+        assert_eq!(lone.worst(), Some(Duration::from_millis(4)));
+    }
+
+    #[test]
+    fn the_scheduler_moves_frames_toward_the_vblank_they_are_shown_at() {
+        let interval = Duration::from_nanos(16_666_667);
+        let t0 = Instant::now();
+        let mut clock = FrameClock::new(interval, t0);
+        let mut scheduler = VblankScheduler::default();
+        let retire = |serial, vblank: Instant, queued: Option<Instant>| Retirement {
+            serial,
+            at: vblank + Duration::from_micros(150),
+            queue_wait: Duration::from_micros(50),
+            display: DisplayTiming {
+                vblank_paced: true,
+                vblank: Some(vblank),
+                flip_queued_at: queued,
+            },
+        };
+
+        // Frame 1 is built before any vblank is known: off the grid.
+        scheduler.note_built(1, t0, &clock);
+        clock.note_submitted(t0);
+        let v1 = t0 + Duration::from_millis(10);
+        let depth = scheduler.note_retired(
+            &retire(1, v1, Some(t0 + Duration::from_millis(4))),
+            &mut clock,
+            0,
+            v1,
+        );
+        assert_eq!(depth, 0);
+        // 4 ms from the build to the flip, less the 50 µs it was queued.
+        let lead = Duration::from_micros(3_950) + LEAD_MARGIN;
+        assert_eq!(clock.lead(), lead);
+        assert_eq!(
+            clock.next_deadline(),
+            (v1 + interval).checked_sub(lead).unwrap()
+        );
+
+        // Frame 2 is built on that deadline and shown at the next vblank.
+        let d2 = clock.next_deadline();
+        scheduler.note_built(2, d2, &clock);
+        clock.note_submitted(d2);
+        let v2 = v1 + interval;
+        scheduler.note_retired(
+            &retire(2, v2, Some(d2 + Duration::from_millis(3))),
+            &mut clock,
+            0,
+            v2,
+        );
+        assert_eq!(
+            clock.lead(),
+            lead,
+            "the worst cost in the window still sets the lead"
+        );
+        assert_eq!(
+            clock.next_deadline(),
+            (v2 + interval).checked_sub(lead).unwrap()
+        );
+
+        // A frame that takes longer than an interval needs overlap again.
+        let d3 = clock.next_deadline();
+        scheduler.note_built(3, d3, &clock);
+        clock.note_submitted(d3);
+        let v3 = v2 + 2 * interval;
+        let depth = scheduler.note_retired(
+            &retire(3, v3, Some(d3 + Duration::from_millis(17))),
+            &mut clock,
+            0,
+            v3,
+        );
+        assert_eq!(depth, 1, "a render-bound loop must pipeline");
+        assert_eq!(clock.lead(), interval);
+        assert_eq!(clock.next_deadline(), v3);
+
+        // A retirement for a frame never recorded (or older records skipped
+        // over) leaves the lead alone and still re-anchors the grid.
+        let v5 = v3 + interval;
+        scheduler.note_built(4, v3, &clock);
+        scheduler.note_built(5, v3, &clock);
+        scheduler.note_retired(&retire(5, v5, None), &mut clock, 0, v5);
+        assert!(
+            scheduler.built.is_empty(),
+            "records up to the retired serial are dropped"
+        );
+        assert_eq!(clock.next_deadline(), v5);
+    }
+
+    #[test]
+    fn a_paced_frame_reports_its_cost_its_photon_time_and_a_missed_vblank() {
+        let interval = Duration::from_nanos(16_666_667);
+        let start = Instant::now();
+        let built = BuiltFrame {
+            serial: 7,
+            start,
+            target_vblank: Some(start + Duration::from_millis(5)),
+        };
+        let retired = |vblank: Instant| Retirement {
+            serial: 7,
+            at: vblank,
+            queue_wait: Duration::from_millis(1),
+            display: DisplayTiming {
+                vblank_paced: true,
+                vblank: Some(vblank),
+                flip_queued_at: Some(start + Duration::from_millis(4)),
+            },
+        };
+        let on_time = PacedFrame::of(built, &retired(start + Duration::from_millis(5)), interval)
+            .expect("a measured flip");
+        assert_eq!(
+            on_time,
+            PacedFrame {
+                cost: Duration::from_millis(3),
+                build_to_vblank: Duration::from_millis(5),
+                missed: false,
+            }
+        );
+        let late = PacedFrame::of(
+            built,
+            &retired(start + Duration::from_millis(5) + interval),
+            interval,
+        )
+        .expect("a measured flip");
+        assert!(late.missed);
+        let mut no_flip = retired(start);
+        no_flip.display.flip_queued_at = None;
+        assert_eq!(PacedFrame::of(built, &no_flip, interval), None);
     }
 
     #[test]
@@ -507,10 +1211,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
     fn early_wakeups_neither_push_the_deadline_nor_drift() {
         // Phase `a_wakeup_that_does_not_paint_must_not_push_the_deadline_out`.
         {

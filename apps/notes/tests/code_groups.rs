@@ -1,5 +1,5 @@
 use crate::component_support::*;
-use notes::{doc::NotesDoc, markdown};
+use notes::{markdown, read};
 
 /// A panel showing `page` of `doc`, as a person opening it sees it.
 fn panel(doc: &automerge::AutoCommit, page: notes::PageId, title: &str) -> notes::MainPanel {
@@ -9,7 +9,7 @@ fn panel(doc: &automerge::AutoCommit, page: notes::PageId, title: &str) -> notes
 }
 
 fn exported(doc: &automerge::AutoCommit, page: notes::PageId) -> String {
-    notes::notebook::validate(doc).unwrap();
+    notes::read::validate(doc).unwrap();
     let panel = panel(doc, page, "Code");
     markdown::serialize(&markdown::blocks_to_specs(panel.editor().blocks()))
 }
@@ -23,9 +23,9 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
     eprintln!("phase list_children_include_real_paragraphs_and_fences_after_import_and_reopen");
     {
         let source = "1. Parent A\n\n  Paragraph child\n\n  ```python\n  first()\n  second()\n  ```\n\n  - [x] Child task\n    1. Grandchild\n\n2. Parent B\n";
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(f.child, source.as_bytes());
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let mut original = f.records.read(&checkout.id, Clone::clone).unwrap();
         let reopened = automerge::AutoCommit::load(&original.save()).unwrap();
         for doc in [&original, &reopened] {
@@ -72,36 +72,21 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
             );
             assert_eq!(markdown::parse(&actual), markdown::parse(source));
         }
-        let notes::actions::NotesAction::DuplicateSubtree { pages, .. } =
-            notes::actions::duplicate_subtree_action(&original, f.child).unwrap()
-        else {
-            panic!("duplicate action");
-        };
-        let copy = pages[0].destination.parse().unwrap();
-        NotesDoc::duplicate_subtree(&mut original, f.child, &pages).unwrap();
+        let copy = crate::component_support::duplicate(&mut original, f.child);
         assert_eq!(exported(&original, copy), exported(&original, f.child));
     }
 
     eprintln!("phase nested_content_indents_semantically_and_exits_code_into_the_same_list_item");
     {
-        use notes::actions;
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(f.child, b"1. Parent\n\n  Explanation\n\n  ```python\n  first()\n  second()\n  ```\n\n2. Next item\n");
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let rows = f
             .records
-            .read(&checkout.id, |doc| {
-                NotesDoc::page_block_snapshots(doc, f.child)
-            })
+            .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
             .unwrap();
         let mut live = driver(&f, 93, &checkout);
-        invoke(
-            &mut live,
-            93,
-            actions::page_resource_id(f.child),
-            "open",
-            None,
-        );
+        open_note(&mut live, 93, f.child, None);
         let before_revision = revision(&f, &checkout);
         live.perform_semantic_named(
             "block_editor",
@@ -166,7 +151,7 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
         let outside = f
             .records
             .read(&checkout.id, |doc| {
-                NotesDoc::page_blocks(doc, f.child)[4].nesting
+                read::page_blocks(doc, f.child)[4].nesting
             })
             .unwrap();
         assert_eq!(outside, 0);
@@ -195,13 +180,13 @@ fn code_fences_keep_their_groups_through_import_reopen_and_nesting() {
     {
         let source = "```python\nfirst()\n```\n\n```python\nsecond()\n```\n";
         let expected = markdown::serialize(&markdown::parse(source));
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(f.child, source.as_bytes());
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let mut original = f.records.read(&checkout.id, Clone::clone).unwrap();
         let reopened = automerge::AutoCommit::load(&original.save()).unwrap();
         for doc in [&original, &reopened] {
-            notes::notebook::validate(doc).unwrap();
+            notes::read::validate(doc).unwrap();
             let panel = panel(doc, f.child, "Separate fences");
             let actual = markdown::serialize(&markdown::blocks_to_specs(panel.editor().blocks()));
             assert_eq!(
@@ -222,26 +207,20 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
     eprintln!("phase deleting_first_fence_row_and_duplicating_keep_boundaries_and_new_group_ids");
     {
         let source = "```python\nfirst()\nkept()\n```\n\n```python\nsecond()\n```\n";
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(f.child, source.as_bytes());
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let mut doc = f.records.read(&checkout.id, Clone::clone).unwrap();
-        let first = NotesDoc::page_block_snapshots(&doc, f.child)[0].0.clone();
+        let first = read::page_block_snapshots(&doc, f.child)[0].0.clone();
         remove_block(&mut doc, f.child, &first);
         let expected = "```python\nkept()\n```\n\n```python\nsecond()\n```\n";
         let expected = markdown::serialize(&markdown::parse(expected));
         assert_eq!(exported(&doc, f.child), expected);
-        let notes::actions::NotesAction::DuplicateSubtree { pages, .. } =
-            notes::actions::duplicate_subtree_action(&doc, f.child).unwrap()
-        else {
-            panic!("duplicate action");
-        };
-        let destination = pages[0].destination.parse().unwrap();
-        NotesDoc::duplicate_subtree(&mut doc, f.child, &pages).unwrap();
+        let destination = crate::component_support::duplicate(&mut doc, f.child);
         let mut doc = automerge::AutoCommit::load(&doc.save()).unwrap();
         assert_eq!(exported(&doc, destination), expected);
         let groups = |page| {
-            NotesDoc::page_blocks(&doc, page)
+            read::page_blocks(&doc, page)
                 .into_iter()
                 .map(|block| block.code_group.unwrap())
                 .collect::<Vec<_>>()
@@ -286,26 +265,18 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
 
     eprintln!("phase closing_a_fence_in_the_middle_keeps_both_copy_buttons_addressable");
     {
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(
             f.child,
             b"```python\nfirst()\nsecond()\n\nthird()\nfourth()\n```\n",
         );
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let rows = f
             .records
-            .read(&checkout.id, |doc| {
-                NotesDoc::page_block_snapshots(doc, f.child)
-            })
+            .read(&checkout.id, |doc| read::page_block_snapshots(doc, f.child))
             .unwrap();
         let mut live = driver(&f, 96, &checkout);
-        invoke(
-            &mut live,
-            96,
-            notes::actions::page_resource_id(f.child),
-            "open",
-            None,
-        );
+        open_note(&mut live, 96, f.child, None);
         let original = copy_targets(&live);
         assert_eq!(original.len(), 1);
         live.perform_semantic_named(
@@ -364,7 +335,7 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
         );
         let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/notes-review/split-code-copy-dark.png");
-        live.render_window_png(&output);
+        live.render_png(&output);
         live.set_modifiers(&["ctrl".into()]);
         live.key("z");
         live.set_modifiers(&[]);
@@ -389,13 +360,7 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
         f.records.try_flush().unwrap();
         let f = f.reopen();
         let mut live = driver(&f, 96, &checkout);
-        invoke(
-            &mut live,
-            96,
-            notes::actions::page_resource_id(f.child),
-            "open",
-            None,
-        );
+        open_note(&mut live, 96, f.child, None);
         assert_eq!(copy_targets(&live), targets);
         for (target, expected) in targets
             .iter()
@@ -430,12 +395,12 @@ fn code_fence_edits_keep_identities_boundaries_and_copy_buttons() {
         live.resize((1000, 1000)).unwrap();
         let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/notes-review/split-code-copy-light-large.png");
-        live.render_window_png(&output);
+        live.render_png(&output);
         close_driver(&mut live);
     }
 }
 
-fn copy_targets(live: &ui::headless::Driver) -> Vec<String> {
+fn copy_targets(live: &ui::headless::FrameHarness) -> Vec<String> {
     fn collect(node: &ui::a11y::AccessNode, targets: &mut Vec<String>) {
         if let Some(target) = &node.action_target
             && target.starts_with("notes.code-copy:")

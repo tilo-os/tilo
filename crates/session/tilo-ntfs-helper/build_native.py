@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 """Offline, checksum-before-extraction native build. Never uses a system NTFS ABI."""
-import argparse, hashlib, json, os, pathlib, re, subprocess, tarfile
+import argparse, io, json, os, pathlib, re, subprocess, tarfile
+from source_artifact import PIN, SHA, source_bytes
 ROOT = pathlib.Path(__file__).resolve().parent
-PIN = "d327833ec1d5eb1358b6f2c37139f10a3460944d"
-SHA = "b90caed8fade648f119c767bd310419be56a2b0014b16e6b2c68b50bc6c7e9cd"
 def build(output, fixture=False):
-    archive = ROOT / "vendor/ntfs-3g-source.tar.gz"
-    if hashlib.sha256(archive.read_bytes()).hexdigest() != SHA:
-        raise RuntimeError("NTFS source checksum mismatch")
+    archive = source_bytes()
     output = pathlib.Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     src = output / ("ntfs-3g-" + PIN)
     if not src.exists():
-        with tarfile.open(archive) as tar:
+        with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
             # Trusted exact hash is required even on Python without extraction filters.
             tar.extractall(output)
     env = os.environ.copy()

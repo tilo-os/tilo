@@ -15,13 +15,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Rect, RoundedRect, Stroke, Vec2};
-use vello::peniko::{
-    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as Image, ImageFormat as Format,
-};
+use vello::peniko::{Color, Fill, ImageBrush, ImageData as Image};
 
 use crate::ColorCompat;
 use crate::theme::Theme;
 use crate::tokens::{Colors, Shadow};
+use tilo_lock::MutexRecover as _;
 
 /// Shared silhouette for lightweight desktop floats. The asymmetry is only
 /// one or two logical pixels along each edge: enough to feel soft and held,
@@ -184,13 +183,7 @@ fn bake(
             data.push((alpha * 255.0).round() as u8);
         }
     }
-    Image {
-        data: Blob::new(Arc::new(data)),
-        format: Format::Rgba8,
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width,
-        height,
-    }
+    crate::raster::rgba8_premultiplied(data, width, height)
 }
 
 fn build_shadow_sprites(r: u8, g: u8, b: u8) -> ShadowSprites {
@@ -237,9 +230,7 @@ fn sprites_for(r: u8, g: u8, b: u8) -> Arc<ShadowSprites> {
     // A panic elsewhere while the lock was held can't corrupt this map (a
     // plain sprite cache, not an invariant-bearing structure), so recover
     // the data instead of taking the whole render path down with it.
-    let mut map = cache
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut map = cache.lock_recover();
     cached_sprites(&mut map, (r, g, b))
 }
 
@@ -437,6 +428,24 @@ pub fn shadow(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, tok
     );
 }
 
+/// Every pixel [`shadow`] can paint under `rect`, antialiasing included, in
+/// `rect`'s coordinates; `None` when it paints nothing.
+pub fn shadow_bounds(rect: Rect, token: &Shadow) -> Option<Rect> {
+    if token.blur <= 0.0
+        || rect.width() <= 0.0
+        || rect.height() <= 0.0
+        || token.color.components[3] <= 0.0
+    {
+        return None;
+    }
+    // Vello paints the blur inside the rect grown by its kernel, 2.5
+    // standard deviations; one more pixel covers the shape's antialiasing.
+    let reach = 2.5 * std_dev_for(token.blur) + 1.0;
+    let offset = f64::from(token.offset_y);
+    let shadow_rect = Rect::new(rect.x0, rect.y0 + offset, rect.x1, rect.y1 + offset);
+    Some(shadow_rect.inflate(reach, reach))
+}
+
 /// The Gaussian standard deviation a CSS-style `blur` radius means.
 ///
 /// Halving is the conventional mapping, and vello cuts its kernel at
@@ -453,50 +462,60 @@ pub fn elevation(scene: &mut Scene, transform: Affine, rect: Rect, token: &Shado
     shadow(scene, transform, rect, 0.0, token);
 }
 
-/// The one contract for "is this small selectable chrome element active"
-/// — scope pills, filter chips, tab pills, toggle cards.
-///
-/// Quiet (HIG §9.5 "Chip quiet"): `surfaces.raised` under a rest edge
-/// derived from that fill by [`edge_on`], so the chip keeps a visible
-/// outline on a raised or overlay ground where the declared
-/// `border_standard` vanished. Selected: solid accent, no edge.
-pub fn chip_colors(theme: &Theme, selected: bool) -> (Color, Option<Color>) {
-    let c = &theme.tokens.colors;
-    if selected {
-        (c.accent[5], None)
-    } else {
-        (c.surfaces.raised, Some(edge_on(c.surfaces.raised)))
-    }
+/// The regions a window is made of (HIG §9.2). Each has one ground, and
+/// the framework paints it: an app declares which region an area is (a
+/// `NavShell` slot, or [`region`] in a painted app) and never fills it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Region {
+    /// The window ground, `surfaces.content`: every app's background.
+    Content,
+    /// The navigation column at the leading edge, `surfaces.sidebar`.
+    Sidebar,
+    /// The detail column at the trailing edge, `surfaces.inspector`.
+    Inspector,
 }
 
-/// Draw a pill / chip: a fully-rounded (or `radius`-rounded) filled rect
-/// with an optional 1px border. Pass `radius = None` for a fully-rounded
-/// capsule (`height/2`). The border is a crisp inset stroke on
-/// [`edge_outline`], like [`card`]: it covers the pill's outermost pixel
-/// row instead of straddling the edge as a half-covered, half-alpha smear.
-pub fn pill(
+/// Paint `region`'s ground over `rect` and return it, for the region's
+/// contents to measure against ([`Theme::on_ground`],
+/// [`Colors::lift_on`], [`edge_on`]).
+///
+/// A region is told apart from the content beside it by its tone. Where a
+/// material gives the two the same ground (high contrast), the region draws
+/// the hairline instead, on the edge it shares with content: the trailing
+/// edge of a sidebar, the leading edge of an inspector.
+pub fn region(
     scene: &mut Scene,
     transform: Affine,
     rect: Rect,
-    fill: Color,
-    border: Option<Color>,
-    radius: Option<f64>,
-) {
+    region: Region,
+    theme: &Theme,
+) -> Color {
+    let ground = theme.region(region);
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
-        return;
+        return ground;
     }
-    let r = radius.unwrap_or_else(|| rect.height() / 2.0);
-    let shape = RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, r);
-    scene.fill(Fill::NonZero, transform, fill, None, &shape);
-    if let Some(bc) = border {
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            bc,
-            None,
-            &edge_outline(rect, r),
-        );
+    scene.fill(Fill::NonZero, transform, ground, None, &rect);
+    let content = theme.tokens.colors.surfaces.content;
+    let shared_edge = match region {
+        Region::Content => None,
+        Region::Sidebar => Some(rect.x1.round() - 1.0),
+        Region::Inspector => Some(rect.x0.round()),
+    };
+    if let Some(x) = shared_edge
+        && region_needs_edge(ground, content)
+    {
+        let rule = Rect::new(x, rect.y0, x + 1.0, rect.y1);
+        scene.fill(Fill::NonZero, transform, edge_on(ground), None, &rule);
     }
+    ground
+}
+
+/// Whether a region tier is too close to the content ground to separate
+/// from it by tone alone.
+#[must_use]
+pub fn region_needs_edge(ground: Color, content: Color) -> bool {
+    let l = |c: Color| f64::from(crate::color::Oklch::from_color(c).l);
+    (l(ground) - l(content)).abs() < crate::tokens::colors::REGION_MIN_STEP
 }
 
 /// Alphas [`edge_on`] tries, ascending, until the hairline visibly moves the
@@ -597,16 +616,9 @@ pub fn edge_outline(rect: Rect, radius: f64) -> RoundedRect {
     RoundedRect::from_rect(rect.inset(-0.5), (radius - 0.5).max(0.0))
 }
 
-/// Whole logical pixels for an edged surface: a 1 px edge stroked on a
-/// fractional rect covers two device pixels at half coverage on each and
-/// stops registering. Layout may hand us fractions; the paint does not.
+/// Whole logical pixels for an edged surface ([`crate::paint::snap_rect`]).
 fn snap(rect: Rect) -> Rect {
-    Rect::new(
-        rect.x0.round(),
-        rect.y0.round(),
-        rect.x1.round(),
-        rect.y1.round(),
-    )
+    crate::paint::snap_rect(rect)
 }
 
 /// Fill a card / row / tile and give it its derived rest edge in one call —
@@ -669,22 +681,23 @@ pub fn card_on(
 }
 
 /// A floating Panel-role surface (menu, popover, sheet, toast) in one call:
-/// the theme's [`crate::chrome::panel_ground`] fill with the
-/// [`crate::chrome::panel_border`] edge on a crisp inset outline — HIG §9.5's
-/// Panel row, so an app never spells the fill + stroke pair itself. Rows
-/// inside it use [`separator`] with an `s3` inset and
-/// [`crate::chrome::selection_tier_on`] against the panel ground.
+/// the floating material ([`crate::floating_surface::Material::Floating`],
+/// the blurred backdrop under a panel-ground tint, opaque where blur is
+/// unavailable) with the [`crate::chrome::panel_border`] edge on a crisp
+/// inset outline — HIG §9.5's Panel row, so an app never spells the fill +
+/// stroke pair itself. Rows inside it use [`separator`] with an `s3` inset
+/// and [`crate::chrome::selection_tier_on`] against the panel ground.
 pub fn panel(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
     let rect = snap(rect);
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    scene.fill(
-        Fill::NonZero,
+    crate::floating_surface::paint_material(
+        scene,
         transform,
-        crate::chrome::panel_ground(theme),
-        None,
         &RoundedRect::from_rect(rect, radius),
+        crate::floating_surface::Material::Floating,
+        theme,
     );
     scene.stroke(
         &Stroke::new(1.0),
@@ -693,6 +706,68 @@ pub fn panel(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, them
         None,
         &edge_outline(rect, radius),
     );
+    floating_edge(scene, transform, rect, radius, theme);
+}
+
+/// The 1 px light edge a floating surface carries just inside its outline
+/// on a dark material ([`crate::tokens::Elevation::floating_edge`]); nothing
+/// on a light one. Paint it after the surface's body and border, at the
+/// surface's own radius: the edge's radius is concentric with it.
+pub fn floating_edge(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
+    let edge = theme.tokens.elevation.floating_edge;
+    if edge.a() == 0 {
+        return;
+    }
+    const INSET: f64 = 1.5;
+    let inner = snap(rect).inset(-INSET);
+    if inner.width() <= 0.0 || inner.height() <= 0.0 {
+        return;
+    }
+    let radii = &theme.tokens.radii;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a corner radius in logical pixels; f32 holds it exactly at UI scales"
+    )]
+    let inner_radius = radii.concentric(radius as f32, INSET as f32);
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        edge,
+        None,
+        &RoundedRect::from_rect(inner, f64::from(inner_radius)),
+    );
+}
+
+/// The boundary of authored content, independent of the pixels inside it.
+#[derive(Clone, Copy, Debug)]
+pub enum ContentFrame {
+    /// A square sheet on the canvas ground.
+    Sheet,
+    /// A thumbnail whose selected edge sits outside the image.
+    Thumbnail { selected: bool },
+}
+
+impl ContentFrame {
+    /// Paint only the frame, preserving every pixel of the content itself.
+    pub fn draw(self, scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+        let rule = f64::from(theme.tokens.metrics.chrome_rule_px).max(1.0);
+        let (radius, selected) = match self {
+            Self::Sheet => (0.0, false),
+            Self::Thumbnail { selected } => (f64::from(theme.tokens.radii.item), selected),
+        };
+        let (width, inset, color) = if selected {
+            (rule * 2.0, rule, theme.tokens.colors.text_primary)
+        } else {
+            (rule, 0.0, edge_on(theme.tokens.colors.surfaces.content))
+        };
+        scene.stroke(
+            &Stroke::new(width),
+            transform,
+            color,
+            None,
+            &rect.inflate(inset, inset).to_rounded_rect(radius + inset),
+        );
+    }
 }
 
 /// A 1 px separator between rows inside a surface: derived against
@@ -713,6 +788,103 @@ pub fn separator(
     scene.fill(Fill::NonZero, transform, edge_on(surface), None, &rule);
 }
 
+/// A 1 px vertical separator between two columns or panes, derived against
+/// `surface` like [`separator`], inset `inset` from both ends and centred
+/// on `x`. The column rule of a painted split, a gutter beside a list.
+pub fn vertical_separator(
+    scene: &mut Scene,
+    transform: Affine,
+    x: f64,
+    y0: f64,
+    y1: f64,
+    inset: f64,
+    surface: Color,
+) {
+    let (a, b) = (y0 + inset, y1 - inset);
+    if b <= a {
+        return;
+    }
+    let left = (x - 0.5).round();
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        edge_on(surface),
+        None,
+        &Rect::new(left, a, left + 1.0, b),
+    );
+}
+
+/// The edge of a viewport that content can scroll in from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContentEdge {
+    Top,
+    Bottom,
+    Leading,
+    Trailing,
+}
+
+/// How far a [`content_edge_fade`] reaches into the viewport, at most a
+/// third of it.
+pub(crate) const CONTENT_FADE_PX: f64 = 24.0;
+
+/// Fade content out toward `edge` of the viewport `rect`: the `ground` the
+/// content is drawn on, opaque at the edge and clear a short way in, eased
+/// so it has no start line. Paint it over the content, and only while
+/// more content can scroll in from that edge (a `Scrollable` with
+/// `with_edge_fade` does both). The replacement for a media scrim, a
+/// `DestOut` mask or a hand-made gradient at the end of a list.
+pub fn content_edge_fade(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    edge: ContentEdge,
+    ground: Color,
+) {
+    let along = match edge {
+        ContentEdge::Top | ContentEdge::Bottom => rect.height(),
+        ContentEdge::Leading | ContentEdge::Trailing => rect.width(),
+    };
+    let reach = CONTENT_FADE_PX.min(along / 3.0);
+    if reach <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let (band, strong, clear) = match edge {
+        ContentEdge::Top => (
+            Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + reach),
+            (rect.x0, rect.y0),
+            (rect.x0, rect.y0 + reach),
+        ),
+        ContentEdge::Bottom => (
+            Rect::new(rect.x0, rect.y1 - reach, rect.x1, rect.y1),
+            (rect.x0, rect.y1),
+            (rect.x0, rect.y1 - reach),
+        ),
+        ContentEdge::Leading => (
+            Rect::new(rect.x0, rect.y0, rect.x0 + reach, rect.y1),
+            (rect.x0, rect.y0),
+            (rect.x0 + reach, rect.y0),
+        ),
+        ContentEdge::Trailing => (
+            Rect::new(rect.x1 - reach, rect.y0, rect.x1, rect.y1),
+            (rect.x1, rect.y0),
+            (rect.x1 - reach, rect.y0),
+        ),
+    };
+    const STOPS: usize = 7;
+    let stops: [vello::peniko::ColorStop; STOPS] = std::array::from_fn(|i| {
+        #[allow(clippy::cast_precision_loss, reason = "i < STOPS, a single digit")]
+        let t = i as f32 / (STOPS - 1) as f32;
+        vello::peniko::ColorStop {
+            offset: t,
+            color: ground
+                .with_alpha(crate::overlay::scrim::fade_alpha(f64::from(t), 1.0))
+                .into(),
+        }
+    });
+    let gradient = vello::peniko::Gradient::new_linear(strong, clear).with_stops(stops.as_slice());
+    scene.fill(Fill::NonZero, transform, &gradient, None, &band);
+}
+
 /// The one device-pixel row a separator centred on `y` occupies: `y` is
 /// snapped so a caller passing a whole-pixel coordinate gets a crisp rule,
 /// not a two-row smear at half alpha (which would fall under
@@ -730,6 +902,60 @@ pub fn separator_rect(x0: f64, x1: f64, y: f64, inset: f64) -> Option<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_edge_fade_is_one_gradient_inside_its_edge_band() {
+        let ground = Theme::dark().tokens.colors.surfaces.content;
+        for edge in [
+            ContentEdge::Top,
+            ContentEdge::Bottom,
+            ContentEdge::Leading,
+            ContentEdge::Trailing,
+        ] {
+            let mut scene = Scene::new();
+            content_edge_fade(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 300.0, 200.0),
+                edge,
+                ground,
+            );
+            let tags = &scene.encoding().draw_tags;
+            assert_eq!(tags.len(), 1, "{edge:?}");
+            assert!(
+                tags[0] == vello_encoding::DrawTag::LINEAR_GRADIENT,
+                "{edge:?}"
+            );
+        }
+        // A viewport too small to fade paints nothing.
+        let mut scene = Scene::new();
+        content_edge_fade(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::ZERO,
+            ContentEdge::Top,
+            ground,
+        );
+        assert!(scene.encoding().draw_tags.is_empty());
+    }
+
+    #[test]
+    fn a_vertical_separator_is_one_crisp_column() {
+        let mut scene = Scene::new();
+        let surface = Theme::light().tokens.colors.surfaces.content;
+        vertical_separator(&mut scene, Affine::IDENTITY, 100.3, 0.0, 50.0, 4.0, surface);
+        assert_eq!(scene.encoding().draw_tags.len(), 1);
+        let mut empty = Scene::new();
+        vertical_separator(&mut empty, Affine::IDENTITY, 10.0, 0.0, 6.0, 4.0, surface);
+        assert!(
+            empty.encoding().draw_tags.is_empty(),
+            "inset past its length"
+        );
+        assert_eq!(
+            crate::paint::snap_rect(Rect::new(0.4, 1.6, 10.5, 9.49)),
+            Rect::new(0.0, 2.0, 11.0, 9.0)
+        );
+    }
 
     #[test]
     fn edges_and_chips_register_on_every_preset_surface() {
@@ -784,7 +1010,7 @@ mod tests {
             // A 16 % accent wash over the light panel is still a light surface.
             for theme in [Theme::light(), Theme::dark()] {
                 let ground = theme.tokens.colors.surfaces.raised;
-                let wash = theme.accent_primary.with_alpha(0.16);
+                let wash = theme.tokens.colors.text_primary.with_alpha(0.16);
                 let seen = crate::tokens::colors::composite(wash, ground);
                 let derived = edge_on(seen);
                 assert!(
@@ -881,36 +1107,30 @@ mod tests {
             assert!(edge_outline(rect, 0.0).radii().top_left.abs() < 1e-9);
         }
 
-        // Case `chip_colors_selected_is_solid_accent_no_border`.
-        {
-            let theme = Theme::dark();
-            let (fill, border) = chip_colors(&theme, true);
-            assert_eq!(fill, theme.tokens.colors.accent[5]);
-            assert!(border.is_none(), "selected chip has no border");
-            let (fill_idle, border_idle) = chip_colors(&theme, false);
-            assert_eq!(fill_idle, theme.tokens.colors.surfaces.raised);
-            assert!(border_idle.is_some(), "idle chip has a border");
-        }
-
-        // Case `chip_colors_quiet_edge_registers_on_every_preset`:
+        // Case `quiet_chip_edge_registers_on_every_preset`:
         // The quiet chip's edge is derived from its own fill, so it registers
         // on every preset — the declared `border_standard` it replaces measured
         // under the visibility floor on the dark preset's raised surface.
         {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let (fill, border) = chip_colors(&theme, false);
-                let edge = border.expect("quiet chip has an edge");
+                let quiet = crate::widget::ChipStyle::Neutral.colors(
+                    &theme,
+                    theme.tokens.colors.surfaces.content,
+                    false,
+                    false,
+                );
+                let edge = quiet.edge.expect("quiet chip has an edge");
                 assert_eq!(
                     edge,
-                    edge_on(fill),
+                    edge_on(quiet.fill),
                     "{}: edge derives from the fill",
                     theme.name
                 );
                 assert!(
-                    edge_delta(edge, fill) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                    edge_delta(edge, quiet.fill) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
                     "{}: quiet chip edge moved only {:.4}",
                     theme.name,
-                    edge_delta(edge, fill)
+                    edge_delta(edge, quiet.fill)
                 );
             }
         }

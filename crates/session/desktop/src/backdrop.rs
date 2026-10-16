@@ -11,10 +11,10 @@ use std::sync::Arc;
 
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
-use ui::permissions::{PermissionContext, PermissionScope};
-use ui::presence::{PresenceCtx, PresenceKey};
+use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::TaffyTreeExt;
 use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
@@ -299,7 +299,7 @@ impl DesktopBackdrop {
             return;
         }
 
-        // Same `std::mem::take` dance as `Column::draw_with_presence`,
+        // Same `std::mem::take` dance as `Column::draw`,
         // to avoid an aliasing borrow.
         let mut local = std::mem::take(&mut self.cached);
         local.reset();
@@ -439,8 +439,7 @@ impl Default for DesktopBackdrop {
 impl Widget for DesktopBackdrop {
     ui::provides!(
         dyn ui::permissions::capability::PermissionGated,
-        dyn ui::presence::capability::PublishesPresence,
-        dyn ui::undo::UndoPoints
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn build_layout(
@@ -464,39 +463,20 @@ impl Widget for DesktopBackdrop {
             ..Default::default()
         };
 
-        let node = if let Some(child) = child_node {
-            // `child` was just created in this same tree, so this is not
-            // reachable to fail; if it (impossibly) does, fall back to
-            // the child node itself rather than panicking this
-            // panic=abort process.
-            taffy.new_with_children(style, &[child]).unwrap_or(child)
-        } else {
-            match taffy.new_leaf(style) {
-                Ok(node) => node,
-                Err(err) => {
-                    // `TaffyTree::new_leaf` only ever returns `Ok` for a
-                    // fresh, unattached leaf; this arm exists so a
-                    // future upstream change degrades the backdrop
-                    // instead of aborting the whole session.
-                    tracing::error!("desktop_backdrop: leaf allocation failed: {err}");
-                    NodeId::from(0u64)
-                }
-            }
+        let Some(child) = child_node else {
+            return taffy.widget_leaf(style, node_map, self);
         };
+        // `child` was just created in this same tree, so this is not
+        // reachable to fail; if it (impossibly) does, fall back to
+        // the child node itself rather than panicking this
+        // panic=abort process.
+        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(layout) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
-        );
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
 
         if let Some(child) = &mut self.child {
             let Ok(children) = taffy.children(node) else {
@@ -519,28 +499,13 @@ impl Widget for DesktopBackdrop {
     ) {
         self.paint_backdrop(scene, transform, theme);
         if let Some(child) = &mut self.child {
-            child.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        self.paint_backdrop(scene, transform, theme);
-        if let Some(child) = &mut self.child {
-            child.draw_with_presence(
+            ui::widget::draw_child(
+                child.as_mut(),
                 scene,
                 transform,
                 text_renderer,
                 theme,
                 presence,
-                permissions,
             );
         }
     }
@@ -581,10 +546,6 @@ impl Widget for DesktopBackdrop {
         "DesktopBackdrop"
     }
 
-    fn is_focused(&self) -> bool {
-        false
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         self.child
             .as_mut()
@@ -614,28 +575,9 @@ impl Widget for DesktopBackdrop {
     }
 }
 
-impl ui::undo::UndoPoints for DesktopBackdrop {
-    fn needs_commit(&self) -> bool {
-        self.children().iter().any(|c| ui::undo::needs_commit(*c))
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            ui::undo::on_commit(child);
-        }
-    }
-}
+impl ui::presence::capability::PublishesPresence for DesktopBackdrop {}
 
-impl ui::presence::capability::PublishesPresence for DesktopBackdrop {
-    fn presence_key(&self) -> Option<PresenceKey> {
-        None
-    }
-}
-
-impl ui::permissions::capability::PermissionGated for DesktopBackdrop {
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        None
-    }
-}
+impl ui::permissions::capability::PermissionGated for DesktopBackdrop {}
 
 #[cfg(test)]
 mod tests {

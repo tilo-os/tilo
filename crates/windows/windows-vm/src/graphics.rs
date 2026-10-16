@@ -175,7 +175,7 @@ impl GraphicsCapabilities {
     /// a display controller's vfio-pci mediated type.
     #[must_use]
     pub fn mediated_assignment(&self, uuid: &str) -> Option<GraphicsAssignment> {
-        if !valid_uuid(uuid)
+        if !crate::config::is_uuid(uuid)
             || !self.devices.iter().any(|device| {
                 device.mediated_types.iter().any(|kind| {
                     kind.device_api == "vfio-pci"
@@ -202,7 +202,7 @@ impl GraphicsAssignment {
 <driver name='vfio'/><source><address domain='0x{domain}' bus='0x{bus}' slot='0x{slot}' function='0x{function}'/></source></hostdev>"
                 ))
             }
-            Self::MediatedDevice { uuid } if valid_uuid(uuid) => Some(format!(
+            Self::MediatedDevice { uuid } if crate::config::is_uuid(uuid) => Some(format!(
                 "<hostdev mode='subsystem' type='mdev' managed='no' model='vfio-pci'>\
 <source><address uuid='{}'/></source></hostdev>",
                 uuid.to_ascii_lowercase()
@@ -210,17 +210,6 @@ impl GraphicsAssignment {
             Self::MediatedDevice { .. } => None,
         }
     }
-}
-
-fn valid_uuid(value: &str) -> bool {
-    value.len() == 36
-        && value.bytes().enumerate().all(|(index, byte)| {
-            if matches!(index, 8 | 13 | 18 | 23) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        })
 }
 
 fn valid_pci_address(value: &str) -> bool {

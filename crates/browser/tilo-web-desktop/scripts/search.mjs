@@ -103,8 +103,8 @@ async function until(what, predicate, timeout = 20000) {
 
 try {
   await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false});
-  await tab.navigate(`${server.url}/index.html`);
-  await tab.waitFor("/frames [1-9]/.test(document.getElementById('status')?.textContent ?? '')", {timeout: 300000});
+  await tab.navigate(`${server.url}/`);
+  await tab.waitFor("/frames [1-9]/.test((document.documentElement.dataset.phase ?? '') + ' · frames ' + (document.documentElement.dataset.frames ?? 0) + ' · ' + (document.getElementById('status')?.textContent ?? ''))", {timeout: 300000});
   await sleep(2000);
   const mac = await tab.evaluate('/Mac/.test(navigator.platform)');
   // CDP modifier bits: Ctrl 2, Meta 4.

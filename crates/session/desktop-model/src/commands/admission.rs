@@ -20,10 +20,16 @@ pub fn resolve_open_app(
     owned: impl Fn(u64) -> bool,
 ) -> Result<DesktopCommand, String> {
     Ok(match command {
-        DesktopCommand::OpenApp { app } => DesktopCommand::OpenTab {
-            app,
-            placement: open_app_placement(workspace, &OpenContext::default(), owned)?,
-        },
+        DesktopCommand::OpenApp { app, beside } => {
+            let at = beside
+                .filter(|group| owned(*group))
+                .and_then(|group| OpenContext::beside(workspace, group))
+                .unwrap_or_default();
+            DesktopCommand::OpenTab {
+                app,
+                placement: open_app_placement(workspace, &at, owned)?,
+            }
+        }
         other => other,
     })
 }
@@ -97,8 +103,8 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
         | DesktopCommand::SaveShortcut { .. }
         | DesktopCommand::DeleteShortcut { .. }
         | DesktopCommand::ClaimNamespace { .. }
-        | DesktopCommand::SavePermissionProfile { .. }
-        | DesktopCommand::AssignPermissionProfile { .. }
+        | DesktopCommand::SavePreset { .. }
+        | DesktopCommand::AssignPreset { .. }
         | DesktopCommand::RecordEffectReceipt { .. }
         | DesktopCommand::GrantAppAction { .. }
         | DesktopCommand::RevokeAppAction { .. } => Ok(()),

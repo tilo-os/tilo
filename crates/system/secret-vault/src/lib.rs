@@ -29,16 +29,6 @@
 //! with an exclusive create, so concurrent creators all converge on the one
 //! key that reached disk.
 
-#![cfg_attr(
-    test,
-    allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::indexing_slicing,
-        reason = "in a test these are the assertion, not a hazard"
-    )
-)]
-
 use std::io::Read as _;
 use std::path::Path;
 
@@ -86,7 +76,8 @@ impl Custody {
     pub fn label(self) -> &'static str {
         match self {
             Self::System => "System keyring",
-            Self::LocalFile => "Local encrypted storage",
+            // The vault is sealed, but its key sits unsealed beside it.
+            Self::LocalFile => "Key file on this device, no keyring",
             #[cfg(windows)]
             Self::WindowsDpapi => "Windows user protection (DPAPI)",
         }
@@ -224,12 +215,6 @@ impl VaultFormat {
         }
     }
 
-    /// [`Self::load_or_create_key`] with [`Custody::System`], in `store`
-    /// rather than the platform's. For tests and hosts with their own store.
-    pub fn load_or_create_key_in(&self, dir: &Path, store: &SecretStore) -> Option<VaultKey> {
-        self.system_key(dir, store)
-    }
-
     /// The store and key naming this format's vault key: the `application`
     /// and `purpose` attributes, else the format's name.
     fn system_item(&self) -> (&'static str, &'static str) {
@@ -363,7 +348,7 @@ impl VaultFormat {
                     tracing::warn!(vault = self.name, %error, "could not create vault dir for key");
                     return None;
                 }
-                if private_fs::create_atomic(&path, key.expose_secret()).is_err() {
+                if tilo_files::native::private::create_atomic(&path, key.expose_secret()).is_err() {
                     tracing::warn!(vault = self.name, "vault key write failed");
                     return None;
                 }
@@ -389,8 +374,7 @@ impl VaultFormat {
 /// blocking API cannot use).
 #[cfg(not(windows))]
 pub fn system_store_available() -> bool {
-    tilo_secrets::availability(tilo_secrets::Feature::Blocking)
-        == tilo_secrets::Availability::Available
+    tilo_secrets::available(tilo_secrets::Feature::Blocking)
         && SecretStore::for_app("Tilo").probe_blocking().is_ok()
 }
 
@@ -404,7 +388,9 @@ fn vault_exists(dir: &Path) -> bool {
 /// One byte past the key width is enough to recognise a malformed key.
 fn read_key_bytes(path: &Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
     let mut bytes = Zeroizing::new(Vec::new());
-    private_fs::read(path)?.take(33).read_to_end(&mut bytes)?;
+    tilo_files::native::private::read(path)?
+        .take(33)
+        .read_to_end(&mut bytes)?;
     Ok(bytes)
 }
 

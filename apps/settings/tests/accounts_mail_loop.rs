@@ -1,29 +1,16 @@
 //! End-to-end proof of the Accounts → Mail loop.
 //!
 //! Adding an email account in the Settings "External Accounts" pane must
-//! persist to the shared account store + secret vault, and **Mail** must then
-//! read that exact account back through its own loader. This test drives the
-//! real Settings `sync` path (open form → fill fields → Save) — the same code
-//! the live UI runs — then loads the result with `mail::account::AccountStore`,
-//! the reader Mail uses at startup. No mocks: the two apps meet at the shared
-//! `accounts` crate on disk.
+//! persist to the shared account store + secret vault, in the shape the mail
+//! account loader reads at startup. This test drives the real Settings `sync`
+//! path (open form → fill fields → Save) — the same code the live UI runs —
+//! then reads the result straight back from the shared `accounts` crate on
+//! disk: the typed account record, its flattened connection config, and the
+//! sealed password. No mocks: the two apps meet at that store.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
-use automerge::AutoCommit;
-use automerge::transaction::Transactable;
-
+use settings::accounts::AccountKind;
 use settings::accounts::AccountRoot;
-use settings::panes::accounts::{ADD_MAIL_KEY, AccountsPane};
-use ui::widget::Widget;
+use settings::panes::accounts::{AccountViewCommand, AccountsPane};
 
 struct AcceptAccount;
 
@@ -38,7 +25,7 @@ impl settings::account_probe::AccountTester for AcceptAccount {
 }
 
 #[test]
-fn adding_an_email_account_in_settings_is_read_by_mail() {
+fn adding_an_email_account_in_settings_lands_in_the_shared_store() {
     // Settings writes and Mail reads the same explicit config root, so the
     // test never touches the user's accounts and needs no environment.
     let root_dir = tempfile::tempdir().unwrap();
@@ -53,12 +40,9 @@ fn adding_an_email_account_in_settings_is_read_by_mail() {
     // Drive the real Settings pane exactly as the UI would.
     let mut pane = AccountsPane::in_root(AccountRoot::at(&tilo_root))
         .with_account_tester(std::sync::Arc::new(AcceptAccount));
-    let mut doc = AutoCommit::new();
-    let root = automerge::ROOT;
 
     // 1) Click "Add" → the inline email form opens.
-    let _ = doc.put(&root, ADD_MAIL_KEY, true);
-    pane.sync(&mut doc, &root);
+    pane.command(AccountViewCommand::Add(AccountKind::Mail));
     assert!(pane.form_open(), "Add opens the inline form");
 
     // 2) Fill the form (a Gmail address so IMAP/SMTP autofill kicks in).
@@ -69,34 +53,40 @@ fn adding_an_email_account_in_settings_is_read_by_mail() {
     //    persists it to the shared store, and seals the password in the vault.
     pane.submit_form_for_test();
     assert!(
-        pane.finish_form_submission_for_test(&mut doc, &root),
+        pane.finish_form_submission_for_test(),
         "bounded account probe and disk transaction complete"
     );
     assert!(!pane.form_open(), "a successful save closes the form");
 
-    // ---- Now read it back the way MAIL does, through Mail's own loader. ----
-    let mail_store = mail::account::AccountStore::load_in(&tilo_root);
+    // ---- Read it back the way a consumer of the shared store does. ----
+    let shared = accounts::AccountStore::load_in(&tilo_root);
+    let email = accounts::AccountTypeId::from("email");
+    let listed = shared.list(&email);
+    assert_eq!(listed.len(), 1, "exactly the account Settings added");
+    let stored = listed[0];
     assert_eq!(
-        mail_store.len(),
-        1,
-        "Mail sees exactly the account Settings added"
+        shared.active_id(&email),
+        Some(&stored.id),
+        "the first account becomes the active one"
     );
 
-    let acct = mail_store.active_account().expect("an active account");
+    let config = stored
+        .config_as::<serde_json::Value>()
+        .expect("the connection config deserialises");
+    assert_eq!(config["email"], "ada@gmail.com", "the address round-trips");
     assert_eq!(
-        acct.config.email, "ada@gmail.com",
-        "the address round-trips"
+        config["imap_host"], "imap.gmail.com",
+        "Settings' autofill reached the shared store"
     );
+    assert_eq!(config["smtp_host"], "smtp.gmail.com");
     assert_eq!(
-        acct.config.imap_host, "imap.gmail.com",
-        "Settings' autofill reached Mail via the shared store"
+        config["imap_tls"], true,
+        "TLS defaults survive the round-trip"
     );
-    assert_eq!(acct.config.smtp_host, "smtp.gmail.com");
-    assert!(acct.config.imap_tls, "TLS defaults survive the round-trip");
 
-    // The password must NOT be in the plaintext store, but MUST be rehydrated
-    // from the sealed vault when Mail loads — the credential genuinely made it
-    // across, encrypted at rest.
+    // The password must NOT be in the plaintext store, but MUST be readable
+    // from the sealed vault: the credential genuinely made it across,
+    // encrypted at rest.
     let store_json =
         std::fs::read_to_string(accounts::store_path_in(&tilo_root)).expect("store.json exists");
     assert!(
@@ -104,7 +94,10 @@ fn adding_an_email_account_in_settings_is_read_by_mail() {
         "the password never touches the plaintext store: {store_json}"
     );
     assert_eq!(
-        acct.config.password, "s3cret-app-password",
-        "Mail rehydrates the password from the shared secret vault"
+        accounts::SecretVault::open_in(&tilo_root)
+            .get(&stored.id)
+            .map(|secret| secret.password),
+        Some("s3cret-app-password".to_string()),
+        "the password is sealed in the shared secret vault"
     );
 }

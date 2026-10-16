@@ -30,7 +30,8 @@ pub(crate) fn restore(
     record: &StoredRoom,
     now: SystemTime,
 ) -> Result<NativeCommittedView, String> {
-    if record.version != 2
+    if !matches!(record.version, 2 | 3)
+        || (record.version == 3) != record.effect_history_root.is_some()
         || room != record.room
         || record.generation == 0
         || record.continuity == 0
@@ -60,9 +61,8 @@ pub(crate) fn restore(
         return Err("native persisted descriptor acknowledgement is incomplete".into());
     }
     if let (Some(hint), Some(host)) = (&record.hint, &record.host) {
-        let metadata =
-            tilo_delivery_protocol::delivery_v3::descriptor::inspect_persisted_hint(hint, host)
-                .map_err(|e| e.to_string())?;
+        let metadata = tilo_delivery_protocol::descriptor::inspect_persisted_hint(hint, host)
+            .map_err(|e| e.to_string())?;
         if record.floor.as_ref().is_some_and(|floor| {
             floor.generation != metadata.generation || floor.digest != metadata.descriptor_digest
         }) {
@@ -85,6 +85,7 @@ pub(crate) fn restore(
         record: record.clone(),
     };
     publication::validate(&view)?;
+    crate::effect_receipt::validate(&view)?;
     Ok(view)
 }
 impl NativeWorkspaceOwner {
@@ -365,12 +366,17 @@ impl NativeWorkspaceOwner {
         if !peer.has_governance() {
             return Err("native enrollment is missing real admitted governance".into());
         }
-        let (role, _, _) = peer.permissions(enrollment.local_device().device_public_key, now)?;
-        let expected = match enrollment.verified_join().grant().role {
-            tilo_peer_state::join::MemberRole::Editor => collab_types::Role::Editor,
-            tilo_peer_state::join::MemberRole::Commenter => collab_types::Role::Commenter,
-            tilo_peer_state::join::MemberRole::Viewer => collab_types::Role::Viewer,
-        };
+        let role = peer
+            .permissions(enrollment.local_device().device_public_key, now)?
+            .role;
+        // A device of the governing person is the room's owner whatever its
+        // invitation granted: the owner holds its room like any member.
+        let expected =
+            if enrollment.local_device().user_public_key == bootstrap.authority.user_public_key {
+                collab_types::Role::Owner
+            } else {
+                enrollment.verified_join().grant().role.into()
+            };
         if role != expected {
             return Err("actual admitted role differs from signed enrollment role".into());
         }
@@ -393,24 +399,61 @@ impl NativeWorkspaceOwner {
             continuity: 0,
             floor: None,
             publication: Some(publication::StoredPublication::default()),
+            workspace_memberships: std::collections::BTreeMap::new(),
+            effect_receipts: std::collections::BTreeMap::new(),
+            effect_history_root: None,
         };
         self.publish_room(room, NativeCommittedView { peer, record }, Some(&pending))
     }
     /// Admit and durably commit a document write signed by this device,
     /// with its outgoing custody, before any receipt.
     ///
+    /// # Sequence contract
+    /// The envelope is signed before this owner turn starts, so its sequence
+    /// must come from [`collab_types::next_unordered_document_sequence`] (as
+    /// every SDK document signer does). A dense `floor + 1` read through
+    /// [`Self::with_current`] races [`Self::reconcile_outgoing`], which
+    /// reserves `floor + 1` for a recovery projection without exact evidence
+    /// in its own turn; the write is then refused as stale. A caller that
+    /// needs the dense sequence prepares it inside the turn with
+    /// [`Self::commit_document_with_current`].
+    ///
     /// # Errors
-    /// The request is not an admissible local document write, or the record
-    /// cannot be published.
+    /// The request is not an admissible local document write, its signed
+    /// sequence is stale, or the record cannot be published.
     pub fn commit_document(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        request: tilo_owner_commit::OwnerCommitRequest,
         now: SystemTime,
-    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitReceipt, String> {
-        use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt};
+    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
+        let room = RoomId::parse(&request.room).ok_or("invalid native document room")?;
+        self.commit_document_with_current(room, |_| Ok(request), now)
+    }
+
+    /// Prepare a signed local document mutation from the current committed
+    /// room and admit it in the same owner turn. This keeps its sequence and
+    /// document basis current when other publications race the caller.
+    ///
+    /// # Errors
+    /// The room is fenced, preparation fails, or exact admission and durable
+    /// publication refuse the prepared write.
+    pub fn commit_document_with_current(
+        &self,
+        room: RoomId,
+        prepare: impl FnOnce(
+            &crate::NativeCommittedView,
+        ) -> Result<tilo_owner_commit::OwnerCommitRequest, String>,
+        now: SystemTime,
+    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
+        use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt};
+        let _turn = self.0.mutation.lock();
+        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        let request = prepare(&candidate)?;
+        if RoomId::parse(&request.room) != Some(room) {
+            return Err("prepared native document room differs from selected room".into());
+        }
         let outgoing = publication::prepare(&request)?;
         let binding = request.binding()?;
-        let room = RoomId::parse(&request.room).ok_or("invalid native document room")?;
         let CommitOperation::Document {
             app,
             record,
@@ -419,8 +462,6 @@ impl NativeWorkspaceOwner {
         else {
             return Err("unsupported native owner commit family".into());
         };
-        let _turn = self.0.mutation.lock();
-        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
         let device = candidate.device().device_public_key;
         if envelope.author.as_bytes() != &device {
             return Err("native local publication signer differs from selected device".into());
@@ -460,6 +501,69 @@ impl NativeWorkspaceOwner {
         };
         self.publish_room(room, candidate, None)?;
         Ok(receipt)
+    }
+
+    /// Commit one typed Task Center command in the room owner's serialized
+    /// turn. Unlike an app document, this mutates the admitted room task
+    /// projection itself; it never creates a hidden application record.
+    ///
+    /// # Errors
+    /// The authority is no longer current, the command is stale or malformed,
+    /// or the durable owner cannot publish the resulting room generation.
+    pub fn commit_workspace_task_command(
+        &self,
+        request: tilo_owner_commit::OwnerCommitRequest,
+        now: SystemTime,
+    ) -> Result<tilo_owner_commit::OwnerCommitReceipt, String> {
+        use tilo_owner_commit::{CommitOperation, OwnerCommitReceipt};
+        let binding = request.binding()?;
+        let room = RoomId::parse(&request.room).ok_or("invalid native task room")?;
+        let CommitOperation::WorkspaceTaskCommand {
+            invocation,
+            authority,
+            command,
+        } = request.operation
+        else {
+            return Err("unsupported native task owner commit family".into());
+        };
+        let _turn = self.0.mutation.lock();
+        let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
+        if let tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Host { attestor }
+        | tilo_peer_state::workspace_task::WorkspaceTaskAuthority::Agent { attestor, .. } =
+            &authority
+        {
+            let admitted = match candidate.host() {
+                Some(host) => host == attestor && attestor.capabilities.can_act_as_host,
+                None => candidate.governor() == attestor,
+            };
+            if !admitted {
+                return Err("task command attestor is not the exact pinned workspace host".into());
+            }
+        }
+        let (changed, _) = candidate
+            .peer
+            .workspace_mut()
+            .apply_workspace_task_command(
+                invocation,
+                binding.request_digest,
+                &authority,
+                &command,
+                now,
+            )?;
+        if changed {
+            candidate.record.peer = candidate.peer.durable()?;
+            candidate.record.generation = candidate
+                .record
+                .generation
+                .checked_add(1)
+                .ok_or("native owner generation exhausted")?;
+            self.publish_room(room, candidate.clone(), None)?;
+        }
+        Ok(OwnerCommitReceipt {
+            binding,
+            generation: candidate.generation(),
+            aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
+        })
     }
 }
 pub(crate) fn ns(now: SystemTime) -> Result<u64, String> {

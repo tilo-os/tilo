@@ -8,8 +8,12 @@ export const MAX_PICK_BYTES=256*1024*1024;
 
 /** Open an `<input type=file>` chooser. Resolves `[{name,type,bytes}]`, or
  * `null` when the user cancels. `accept` is the attribute value ('' for any). */
-export function pickFiles(accept,multiple,{document:doc=globalThis.document}={}){
+export function pickFiles(accept,multiple,maxContentsBytes=null,{document:doc=globalThis.document}={}){
   return new Promise((resolve,reject)=>{
+    if(maxContentsBytes!=null&&(!Number.isSafeInteger(maxContentsBytes)||maxContentsBytes<0)){
+      reject(Error('Invalid contents byte limit'));return;
+    }
+    const limit=Math.min(MAX_PICK_BYTES,maxContentsBytes??MAX_PICK_BYTES);
     const input=doc.createElement('input');
     input.type='file';input.multiple=Boolean(multiple);if(accept)input.accept=accept;input.style.display='none';
     let settled=false;
@@ -20,8 +24,16 @@ export function pickFiles(accept,multiple,{document:doc=globalThis.document}={})
         const files=[...(input.files??[])];
         if(!files.length){settle(resolve,null);return;}
         const total=files.reduce((sum,file)=>sum+file.size,0);
-        if(total>MAX_PICK_BYTES)throw Error(`Chosen files are too large (${total} bytes; limit ${MAX_PICK_BYTES})`);
-        settle(resolve,await Promise.all(files.map(async file=>({name:file.name,type:file.type||null,bytes:new Uint8Array(await file.arrayBuffer())}))));
+        if(total>limit)throw Error(`Chosen files are too large (${total} bytes; limit ${limit})`);
+        const picked=[];
+        let remaining=limit;
+        for(const file of files){
+          const bytes=new Uint8Array(await file.slice(0,remaining+1).arrayBuffer());
+          if(bytes.byteLength>remaining)throw Error(`Chosen contents are too large (limit ${limit})`);
+          remaining-=bytes.byteLength;
+          picked.push({name:file.name,type:file.type||null,bytes});
+        }
+        settle(resolve,picked);
       }catch(error){settle(reject,error);}
     },{once:true});
     doc.body.append(input);

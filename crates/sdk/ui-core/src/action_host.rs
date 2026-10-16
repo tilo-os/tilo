@@ -17,9 +17,7 @@
 //! ```
 
 use automerge::{AutoCommit, ChangeHash};
-use tilo_actions::{
-    Action, ActionContext, ActionEnvelope, EncodedAction, OptimisticError, OptimisticQueue,
-};
+use tilo_actions::{Action, ActionContext, EncodedAction};
 
 /// Framework-owned action dispatch an app embeds as a single field.
 ///
@@ -43,21 +41,6 @@ pub struct ActionHost {
 impl ActionHost {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Authorize a direct widget affordance using its actual published action
-    /// contract and the current canonical component's live permission context.
-    /// Unbound native widgets retain their existing host policy.
-    ///
-    /// # Errors
-    /// Refuses missing/revoked owned custody or an action removed by the same
-    /// permission filter used for named resource actions.
-    pub fn authorize_resource_action(
-        doc: &AutoCommit,
-        resource: &tilo_actions::Resource,
-        action_id: &str,
-    ) -> Result<(), String> {
-        crate::bound_dispatch::authorize_current_resource_action(doc, resource, action_id)
     }
 
     /// Set task/session provenance inherited by later dispatches. Concrete
@@ -157,6 +140,18 @@ impl ActionHost {
         A: Action + serde::Serialize,
     {
         let encoded = EncodedAction::encode(type_id, action)?;
+        self.dispatch_encoded(doc, action, encoded, context)
+    }
+
+    /// [`Self::try_dispatch_with_context`] past encoding: one compiled copy
+    /// for every action type.
+    fn dispatch_encoded(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &dyn Action,
+        encoded: EncodedAction,
+        context: Option<ActionContext>,
+    ) -> Result<(), tilo_actions::ActionError> {
         let observed_before = crate::bound_dispatch::typed_action_before(doc);
         let before = observed_before.clone().unwrap_or_else(|| doc.get_heads());
         let mut transport = tilo_actions::LocalTransport::new();
@@ -184,58 +179,18 @@ impl ActionHost {
             ),
         };
         result?;
+        // Content from outside (fetched rows, a process's output) is nobody's
+        // undo step: it opens no bracket and is left out of the open one.
+        let step = action.change_kind().is_step();
         if let Some(before) = observed_before {
             let after = doc.get_heads();
-            crate::bound_dispatch::report_typed_action(doc, before, after);
+            crate::bound_dispatch::report_typed_action(doc, before, after, step);
         }
-        if self.commit_before.is_none() {
+        if step && self.commit_before.is_none() {
             self.commit_before = Some(before);
         }
         self.last_dispatched = Some(encoded);
         Ok(())
-    }
-
-    /// Apply an action immediately through an [`OptimisticQueue`] and return
-    /// the envelope an app should send to its model host.
-    ///
-    /// This is the remote counterpart to [`Self::dispatch`]: it preserves the
-    /// same undo bracket and inspection metadata, while acknowledgement,
-    /// rejection, reconnect, and authoritative updates remain transport
-    /// neutral in the queue. The widget API is unchanged because rendering
-    /// continues to read the local `doc` replica.
-    ///
-    /// # Errors
-    ///
-    /// Returns an encoding or action-application error, or
-    /// [`OptimisticError::LiveDiverged`] when `doc` was changed outside the
-    /// active optimistic session.
-    #[allow(
-        clippy::result_large_err,
-        reason = "callers need the structured optimistic/action error to distinguish rebase and transport recovery paths"
-    )]
-    pub fn dispatch_optimistic<A>(
-        &mut self,
-        doc: &mut AutoCommit,
-        queue: &mut OptimisticQueue,
-        type_id: &str,
-        action: &A,
-    ) -> Result<ActionEnvelope, OptimisticError>
-    where
-        A: Action + serde::Serialize,
-    {
-        let encoded = EncodedAction::encode(type_id, action)?;
-        let observed_before = crate::bound_dispatch::typed_action_before(doc);
-        let before = observed_before.clone().unwrap_or_else(|| doc.get_heads());
-        let envelope = queue.submit(doc, action, encoded.clone())?;
-        if let Some(before) = observed_before {
-            let after = doc.get_heads();
-            crate::bound_dispatch::report_typed_action(doc, before, after);
-        }
-        if self.commit_before.is_none() {
-            self.commit_before = Some(before);
-        }
-        self.last_dispatched = Some(encoded);
-        Ok(envelope)
     }
 
     /// Rising-edge: reading clears it, so it returns `Some` once per
@@ -256,7 +211,7 @@ mod tests {
     use automerge::transaction::Transactable;
     use automerge::{ROOT, ReadDoc, ScalarValue};
     use serde::{Deserialize, Serialize};
-    use tilo_actions::{ActionError, ActionRegistry, Doc, ExecutionLocus};
+    use tilo_actions::{ActionError, Doc, ExecutionLocus};
 
     /// Deterministic, no wall-clock / RNG — the executor's contract.
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -322,14 +277,7 @@ mod tests {
                     key: "score".into(),
                     value: 42,
                 },
-                ActionContext::for_action(
-                    "org.tilo.Test",
-                    "Test",
-                    &Put {
-                        key: "score".into(),
-                        value: 42,
-                    },
-                ),
+                ActionContext::for_app("org.tilo.Test", "Test"),
             );
             let changes = doc.get_changes(&[]);
             assert_eq!(
@@ -420,7 +368,7 @@ mod tests {
                     key: "score".into(),
                     value: 9,
                 },
-                ActionContext::for_resource("Set score", "counter:1", "counter", "Score"),
+                ActionContext::for_resource("counter:1", "counter", "Score"),
             );
             let heads = doc.get_heads();
             let change = doc
@@ -430,7 +378,13 @@ mod tests {
                 .message()
                 .and_then(|message| ActionContext::from_change_message(message))
                 .expect("context embedded in change");
-            assert_eq!(context.summary().as_deref(), Some("Set score · Score"));
+            assert_eq!(
+                context
+                    .resource
+                    .as_ref()
+                    .map(|resource| resource.label.as_str()),
+                Some("Score")
+            );
         }
 
         // Case `ambient_task_context_enriches_explicit_action_context`.
@@ -449,7 +403,7 @@ mod tests {
                     key: "k".into(),
                     value: 1,
                 },
-                ActionContext::for_resource("Set", "counter", "counter", "Counter"),
+                ActionContext::for_resource("counter", "counter", "Counter"),
             );
             let heads = doc.get_heads();
             let change = doc.get_change_by_hash(&heads[0]).unwrap();
@@ -469,40 +423,6 @@ mod tests {
                     .map(|resource| resource.id.as_str()),
                 Some("counter")
             );
-        }
-
-        // Case `optimistic_dispatch_is_visible_and_keeps_the_action_host_contract`.
-        {
-            let mut doc = AutoCommit::new();
-            doc.put(&ROOT, "seed", true).unwrap();
-            let before = doc.get_heads();
-            let mut queue = OptimisticQueue::new(&mut doc);
-            let mut host = ActionHost::new();
-            let action = Put {
-                key: "score".into(),
-                value: 42,
-            };
-
-            let envelope = host
-                .dispatch_optimistic(&mut doc, &mut queue, PUT_TYPE, &action)
-                .unwrap();
-
-            assert_eq!(
-                doc.get(&ROOT, "score").unwrap().unwrap().0.as_i64(),
-                Some(42),
-                "the UI reads the optimistic value before a reply"
-            );
-            assert_eq!(host.take_committed(), Some(before));
-            assert_eq!(host.last_dispatched(), Some(&envelope.action));
-            assert_eq!(queue.reconnect_batch(), std::slice::from_ref(&envelope));
-
-            let mut registry = ActionRegistry::new();
-            registry.register::<Put>(PUT_TYPE);
-            assert_eq!(
-                queue.acknowledge(envelope.id, &registry).unwrap(),
-                tilo_actions::Acknowledgement::Accepted
-            );
-            assert!(queue.is_settled());
         }
     }
 }

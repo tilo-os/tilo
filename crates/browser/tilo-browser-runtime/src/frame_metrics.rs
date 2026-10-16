@@ -19,6 +19,9 @@ pub(crate) struct FrameMetrics {
     /// Presented frames by what asked for each; a frame with several
     /// reasons counts once for every one.
     requesters: BTreeMap<String, u64>,
+    /// Retained layout passes that re-solved sizes, by each widget that
+    /// asked for it (`FrameHarness::layout_measure_requesters`).
+    measured_by: BTreeMap<String, u64>,
 }
 
 impl FrameMetrics {
@@ -27,6 +30,24 @@ impl FrameMetrics {
         self.samples.clear();
         self.dropped = 0;
         self.requesters.clear();
+        self.measured_by.clear();
+    }
+
+    /// Count one measured layout pass for each widget of `requesters`.
+    pub fn measured(&mut self, requesters: Vec<String>) {
+        if !self.enabled {
+            return;
+        }
+        for widget in requesters {
+            if self.measured_by.len() < LIMIT || self.measured_by.contains_key(&widget) {
+                let count = self.measured_by.entry(widget).or_default();
+                *count = count.saturating_add(1);
+            }
+        }
+    }
+
+    pub fn take_measured_by(&mut self) -> BTreeMap<String, u64> {
+        std::mem::take(&mut self.measured_by)
     }
 
     pub const fn enabled(&self) -> bool {
@@ -44,7 +65,8 @@ impl FrameMetrics {
         }
         for reason in reasons {
             if self.requesters.len() < LIMIT || self.requesters.contains_key(&reason) {
-                *self.requesters.entry(reason).or_default() += 1;
+                let count = self.requesters.entry(reason).or_default();
+                *count = count.saturating_add(1);
             }
         }
     }

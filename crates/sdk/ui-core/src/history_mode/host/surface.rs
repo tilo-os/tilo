@@ -19,21 +19,41 @@ impl HistoryHost {
     }
     fn build_presentation(
         &mut self,
-        live: Option<&mut dyn Widget>,
+        mut live: Option<&mut dyn Widget>,
         tree: &mut TaffyTree<()>,
         theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.admit_composition();
+        // Closed, the History control stands in the app's header row; open,
+        // the live app is inert, so the control moves into this bar.
+        let control = (self.open_button && !self.open && !self.invalid_owner)
+            .then_some(crate::widget::window_header::HistoryControl::Closed);
+        let presents = live
+            .as_deref_mut()
+            .is_some_and(|live| crate::widget::window_header::offer_history_control(live, control));
+        // Closed, the sync status reads as quiet text in the same row; open,
+        // it stays with this bar.
+        let status = (!self.open)
+            .then_some(self.sync_status.as_deref())
+            .flatten();
+        let presents_status = live
+            .as_deref_mut()
+            .is_some_and(|live| crate::widget::window_header::offer_sync_status(live, status));
+        if presents != self.app_presents_button || presents_status != self.app_presents_status {
+            self.app_presents_button = presents;
+            self.app_presents_status = presents_status;
+            self.rebuild_toolbar();
+        }
         let toolbar = self.toolbar.build_layout(tree, theme, nodes);
-        // Open History lays out its own navigation rows edge to edge; only
-        // the closed strip is inset like a bar.
+        // A selected change lays out its own navigation rows edge to edge;
+        // the strip holding the History control is inset like a bar.
         if self.has_toolbar_controls()
-            && !self.open
+            && self.selected.is_empty()
             && let Ok(style) = tree.style(toolbar)
         {
             let mut style = style.clone();
-            style.padding = crate::chrome::bar_padding(theme);
+            style.padding = crate::widget::toolbar::band_padding(theme);
             let _ = tree.set_style(toolbar, style);
         }
         self.toolbar_node = Some(toolbar);
@@ -42,23 +62,29 @@ impl HistoryHost {
         self.live_node = None;
         self.unavailable_node = None;
         let mut body_children = vec![];
-        if self.show_timeline() && !self.timeline_available() {
-            let message = self.unavailable.build_layout(tree, theme, nodes);
-            self.unavailable_node = Some(message);
-            body_children.push(message);
-        } else if self.show_timeline() {
-            let timeline = self.timeline.build_layout(tree, theme, nodes);
-            if let Ok(style) = tree.style(timeline) {
+        // The timeline's gutter: the whole width when narrow, a column beside
+        // the preview otherwise. Why there is no timeline stands in it too.
+        let gutter = |tree: &mut TaffyTree<()>, node: NodeId, width: f64| {
+            if let Ok(style) = tree.style(node) {
                 let mut style = style.clone();
-                style.size.width = if self.width < 600.0 {
+                style.size.width = if width < 600.0 {
                     Dimension::percent(1.0)
                 } else {
                     Dimension::length(320.0)
                 };
                 style.min_size.width = Dimension::length(0.0);
                 style.flex_shrink = 0.0;
-                let _ = tree.set_style(timeline, style);
+                let _ = tree.set_style(node, style);
             }
+        };
+        if self.show_timeline() && !self.timeline_available() {
+            let message = self.unavailable.build_layout(tree, theme, nodes);
+            gutter(tree, message, self.width);
+            self.unavailable_node = Some(message);
+            body_children.push(message);
+        } else if self.show_timeline() {
+            let timeline = self.timeline.build_layout(tree, theme, nodes);
+            gutter(tree, timeline, self.width);
             self.timeline_node = Some(timeline);
             body_children.push(timeline);
         }
@@ -77,10 +103,7 @@ impl HistoryHost {
             Style {
                 flex_direction: FlexDirection::Row,
                 flex_grow: 1.0,
-                min_size: Size {
-                    width: Dimension::length(0.0),
-                    height: Dimension::length(0.0),
-                },
+                min_size: Size::from_lengths(0.0, 0.0),
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
@@ -105,10 +128,7 @@ impl HistoryHost {
         let root = tree.parent_node(
             Style {
                 flex_direction: FlexDirection::Column,
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
+                size: Size::from_percent(1.0, 1.0),
                 ..Default::default()
             },
             &composition_children,
@@ -125,15 +145,10 @@ impl HistoryHost {
         !self.toolbar.children().is_empty()
     }
     fn body_origin(&self, tree: &TaffyTree<()>) -> Point {
-        let layout = self
-            .body_node
-            .and_then(|node| tree.layout(node).ok())
-            .copied()
-            .unwrap_or_default();
-        Point::new(
-            self.rect.x0 + f64::from(layout.location.x),
-            self.rect.y0 + f64::from(layout.location.y),
-        )
+        let origin = self.rect.origin();
+        self.body_node.map_or(origin, |node| {
+            crate::widget::layout_rect(tree, node, origin).origin()
+        })
     }
     pub(crate) fn apply_composition(
         &mut self,
@@ -192,7 +207,7 @@ impl Widget for HistoryHost {
     fn name(&self) -> &'static str {
         "History"
     }
-    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {}
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -202,15 +217,8 @@ impl Widget for HistoryHost {
         self.build_presentation(None, tree, theme, nodes)
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = tree.layout(node).copied().unwrap_or_default();
-        let origin = Point::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-        );
-        self.rect = Rect::from_origin_size(
-            origin,
-            (f64::from(layout.size.width), f64::from(layout.size.height)),
-        );
+        self.rect = crate::widget::layout_rect(tree, node, origin);
+        let origin = self.rect.origin();
         if let Some(toolbar) = self.toolbar_node {
             self.toolbar.apply_layout(tree, toolbar, origin);
         }
@@ -237,7 +245,12 @@ impl Widget for HistoryHost {
         presence: &PresenceCtx,
     ) {
         if self.has_toolbar_controls() {
-            crate::chrome::paint_bar(scene, transform, theme, self.toolbar.get_rect());
+            crate::standalone_history_host::bar_edge(
+                scene,
+                transform,
+                theme,
+                self.toolbar.get_rect(),
+            );
         }
         self.toolbar.draw(scene, transform, text, theme, presence);
         if self.show_timeline() && !self.timeline_available() {
@@ -250,9 +263,8 @@ impl Widget for HistoryHost {
             self.canvas_mut()
                 .draw(scene, transform, text, theme, presence);
         }
-        if let Some(panel) = &mut self.review {
-            panel.dialog.draw(scene, transform, text, theme, presence);
-        }
+        // The restore review is a modal: the host's top layer paints it
+        // (`draw_overlay` reaches it through `children_mut`).
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let (Some(panel), Some(node)) = (&mut self.review, self.review_node) {

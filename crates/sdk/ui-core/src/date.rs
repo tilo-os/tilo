@@ -81,17 +81,6 @@ pub fn weekday(days: i64) -> u32 {
         .map_or(0, |date| date.weekday().num_days_from_sunday())
 }
 
-/// Whether `year` is a Gregorian leap year.
-#[must_use]
-pub fn is_leap_year(year: i64) -> bool {
-    // The Gregorian cycle repeats every 400 years, so any year outside
-    // `chrono`'s range has the same answer as its residue.
-    i32::try_from(year.rem_euclid(400))
-        .ok()
-        .and_then(|year| NaiveDate::from_ymd_opt(year, 1, 1))
-        .is_some_and(|date| date.leap_year())
-}
-
 /// Number of days in `month` (1..=12) of `year`. A month outside 1..=12
 /// reads as 30 rather than panicking.
 ///
@@ -103,6 +92,8 @@ pub fn is_leap_year(year: i64) -> bool {
 /// ```
 #[must_use]
 pub fn days_in_month(year: i64, month: u32) -> u32 {
+    // The Gregorian cycle repeats every 400 years, so any year outside
+    // `chrono`'s range has the same answer as its residue.
     i32::try_from(year.rem_euclid(400))
         .ok()
         .and_then(|year| NaiveDate::from_ymd_opt(year, month, 1))
@@ -114,10 +105,6 @@ pub fn days_in_month(year: i64, month: u32) -> u32 {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "test arithmetic on small, in-range day counts"
-)]
 mod tests {
     use super::*;
 
@@ -169,7 +156,6 @@ mod tests {
             assert_eq!(days_in_month(2023, 0), 30);
             assert_eq!(days_in_month(2023, 13), 30);
             assert_eq!(days_in_month(-4, 2), 29);
-            assert!(is_leap_year(2000) && !is_leap_year(1900) && is_leap_year(-4));
         }
 
         // Case `absurd_inputs_saturate_instead_of_wrapping`.

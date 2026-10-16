@@ -4,6 +4,12 @@
 // `d<document>e<element>`; the document number is the world's, so a ref never
 // resolves in a later document.
 globalThis.__tiloPage ||= (() => {
+  const execNativeHistory = Document.prototype.execCommand;
+  const queryNativeHistory = Document.prototype.queryCommandEnabled;
+  const nativeHistory = () => ({
+    can_undo: Reflect.apply(queryNativeHistory, document, ['undo']),
+    can_redo: Reflect.apply(queryNativeHistory, document, ['redo'])
+  });
   const MAX_LINES = 1200, MAX_CHARS = 100000, MAX_VISITED = 40000;
   const MAX_TEXT = 200, MAX_NAME = 120, MAX_VALUE = 200, MAX_OPTIONS = 30;
   const INPUT_ROLES = {button: 'button', submit: 'button', reset: 'button', image: 'button',
@@ -29,6 +35,9 @@ globalThis.__tiloPage ||= (() => {
 
   const ids = new WeakMap(), refs = new Map();
   let next = 0, doc = 0;
+  // The outline this tab's agent last saw, for `changes`.
+  let lastLines = null;
+  const MAX_DIFF_CELLS = 4000000, MAX_SETTLE_POLL_MS = 50;
 
   const clean = (text, limit) => {
     const value = String(text ?? '').replace(/\s+/g, ' ').trim();
@@ -181,6 +190,93 @@ globalThis.__tiloPage ||= (() => {
   }
 
   function outline() {
+    const {lines} = outlineLines();
+    lastLines = lines;
+    return {ok: true, message: `Read ${lines.length} lines`, outline: lines.join('\n')};
+  }
+
+  // Lines added and removed since the last read, by longest common
+  // subsequence; refs are stable within a document, so an unchanged element
+  // keeps its line.
+  function changes() {
+    const before = lastLines, {lines} = outlineLines();
+    lastLines = lines;
+    if (!before)
+      return {ok: true, message: `First read: ${lines.length} lines`, outline: lines.join('\n')};
+    if (before.length * lines.length > MAX_DIFF_CELLS)
+      return {ok: true, message: `Too much changed to compare; the whole page, ${lines.length} lines`, outline: lines.join('\n')};
+    const n = before.length, m = lines.length;
+    const table = Array.from({length: n + 1}, () => new Uint32Array(m + 1));
+    for (let i = n - 1; i >= 0; i--)
+      for (let j = m - 1; j >= 0; j--)
+        table[i][j] = before[i] === lines[j] ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
+    const out = [];
+    let i = 0, j = 0, added = 0, removed = 0;
+    while (i < n || j < m) {
+      if (i < n && j < m && before[i] === lines[j]) { i++; j++; }
+      else if (j < m && (i >= n || table[i][j + 1] >= table[i + 1][j])) { out.push('+ ' + lines[j++]); added++; }
+      else { out.push('- ' + before[i++]); removed++; }
+    }
+    return {ok: true, message: added || removed ? `${added} lines added, ${removed} removed` : 'Nothing changed',
+      outline: out.join('\n')};
+  }
+
+  // What a click at viewport point (x, y) would hit.
+  function at(x, y) {
+    const hit = topmost(x, y);
+    if (!hit) return {ok: true, message: `Nothing at ${x}, ${y}`, data: {x, y, element: null}};
+    let target = null;
+    for (let node = hit; node && node.nodeType === 1; node = node.parentNode || node.host) {
+      if (INTERACTIVE.has(role(node)) || node.hasAttribute('onclick')) { target = node; break; }
+    }
+    const data = {x, y, element: describe(hit), interactive: !!target};
+    if (target) Object.assign(data, {ref: refOf(target), target: summary(target)});
+    return {ok: true, message: target ? `${summary(target)} [ref=${data.ref}] is at ${x}, ${y}` : `${describe(hit)} is at ${x}, ${y}`, data};
+  }
+
+  // Resolves once the document stops changing for `quiet` ms after it has
+  // loaded, or after `timeout` ms.
+  function settle(quiet, timeout) {
+    return new Promise(done => {
+      const start = performance.now();
+      let last = start, mutations = 0;
+      let resources = performance.getEntriesByType('resource').length;
+      const observer = new MutationObserver(records => { mutations += records.length; last = performance.now(); });
+      observer.observe(document, {subtree: true, childList: true, attributes: true, characterData: true});
+      const tick = () => {
+        const now = performance.now(), count = performance.getEntriesByType('resource').length;
+        if (count !== resources) { resources = count; last = now; }
+        const settled = document.readyState === 'complete' && now - last >= quiet;
+        if (settled || now - start >= timeout) {
+          observer.disconnect();
+          const waited = Math.round(now - start);
+          done({ok: true, message: settled ? `Settled after ${waited} ms` : `Still changing after ${waited} ms`,
+            data: {settled, waited_ms: waited, mutations, resources}});
+          return;
+        }
+        setTimeout(tick, Math.min(MAX_SETTLE_POLL_MS, quiet));
+      };
+      tick();
+    });
+  }
+
+  // The site a form sends its data to, when another than the page's own.
+  function foreignTarget(form, submitter) {
+    try {
+      // A submitter's `formAction` reads as the page's own URL unless it sets
+      // `formaction`; only then does it override the form's target.
+      const own = submitter && submitter.hasAttribute('formaction') ? submitter.formAction : '';
+      const action = new URL(own || form.action || location.href, location.href);
+      return action.origin !== location.origin && /^https?:$/.test(action.protocol) ? action.origin : null;
+    } catch { return null; }
+  }
+  function guardSubmission(form, submitter, allowed) {
+    const target = form && foreignTarget(form, submitter);
+    if (target && !allowed)
+      throw failure('cross_origin_submit', `This form sends its data to ${target}, another site than ${location.origin}; submit it with cross_origin to allow that`);
+  }
+
+  function outlineLines() {
     const lines = [];
     let chars = 0, visited = 0, truncated = false, pending = '', pendingDepth = 0;
     const emit = (depth, text) => {
@@ -280,7 +376,7 @@ globalThis.__tiloPage ||= (() => {
     flush();
     prune();
     if (truncated) lines.push('- text "… outline truncated; act on what is listed or scroll and read again"');
-    return {ok: true, message: `Read ${lines.length} lines`, outline: lines.join('\n')};
+    return {lines, truncated};
   }
 
   function clip(rect) {
@@ -321,9 +417,13 @@ globalThis.__tiloPage ||= (() => {
       throw failure('disabled', `${ref} is disabled`);
   }
 
-  function locate(ref) {
+  function locate(ref, crossOrigin) {
     const element = resolve(ref);
     enabled(element, ref);
+    // Clicking a submit button submits, so it needs the same consent.
+    if ((element.localName === 'button' || element.localName === 'input') &&
+        (element.type === 'submit' || element.type === 'image') && element.form)
+      guardSubmission(element.form, element, crossOrigin);
     let target = element, center = point(element);
     if (!center || !within(topmost(center.x, center.y), element)) {
       // Styled checkboxes hide the input itself and are operated through
@@ -344,8 +444,10 @@ globalThis.__tiloPage ||= (() => {
     return {ok: true, x: center.x, y: center.y, message: `Clicked ${summary(element)}`};
   }
 
-  function fill(ref, text) {
+  function fill(ref, text, allowSecret) {
     const element = resolve(ref), tag = element.localName, kind = type(element);
+    if (secret(element) && !allowSecret)
+      throw failure('secret_field', `${ref} is a password or card field; fill it with fill_secret, which keeps the text out of logs and history`);
     const field = tag === 'textarea' || (tag === 'input' && !NOT_TEXT.has(kind));
     if (!field && !element.isContentEditable)
       throw failure('not_editable', `${ref} (${summary(element)}) is not a text field; click or select it instead`);
@@ -402,12 +504,13 @@ globalThis.__tiloPage ||= (() => {
     return {ok: true, message: `Selected ${chosen.map(option => quote(label(option))).join(', ')} in ${summary(element)}`};
   }
 
-  function submit(ref) {
+  function submit(ref, crossOrigin) {
     const element = resolve(ref);
     const form = element.localName === 'form' ? element : element.form || element.closest('form');
     if (!form) throw failure('no_form', `${ref} is not in a form; click its submit button or press Enter instead`);
     const submitter = (element.localName === 'button' || element.localName === 'input') &&
       (element.type === 'submit' || element.type === 'image') && element.form === form ? element : null;
+    guardSubmission(form, submitter, crossOrigin);
     const invalid = [...form.elements].find(control => control.willValidate && !control.checkValidity());
     if (invalid)
       throw failure('invalid_form', `${refOf(invalid)} (${summary(invalid)}): ${clean(invalid.validationMessage, 300)}`);
@@ -415,9 +518,11 @@ globalThis.__tiloPage ||= (() => {
     return {ok: true, message: `Submitted ${summary(form)}`};
   }
 
-  function focus(ref) {
+  function focus(ref, key, crossOrigin) {
     const element = resolve(ref);
     enabled(element, ref);
+    // Enter in a form field submits it implicitly.
+    if (key === 'Enter' && element.form) guardSubmission(element.form, null, crossOrigin);
     element.scrollIntoView({block: 'center', behavior: 'instant'});
     element.focus({preventScroll: true});
     if (element.getRootNode().activeElement !== element)
@@ -425,17 +530,332 @@ globalThis.__tiloPage ||= (() => {
     return {ok: true, message: `Focused ${summary(element)}`};
   }
 
+  // Private text-input leases share this isolated world, not the page's agent
+  // log. Preparation never focuses a field or exports its contents. A final
+  // edit consumes its lease before page handlers run and uses Chromium's undo
+  // path; unlike fill(), it must never fall back to setting another value.
+  let textLease = null, committingTextLease = null, composing = false;
+  let nativeTextElement = null, nativeTextEditor = null;
+  const nativeSelection = ShadowRoot.prototype.getSelection;
+  function nativeTextInputElement() { return nativeTextElement; }
+  function configureNativeTextEditor(editor) {
+    const root = editor?.getRootNode();
+    // UA roots are internal, not author 'open'/'closed' roots. Reading their
+    // public mode getter hits Blink's unreachable branch; bind by native host.
+    if (!nativeTextElement || nativeTextElement !== activeTextElement() ||
+        !nativeTextElement.isConnected || root?.host !== nativeTextElement ||
+        !['email', 'number'].includes(type(nativeTextElement)) ||
+        typeof nativeSelection !== 'function') return false;
+    nativeTextEditor = editor;
+    return true;
+  }
+  const retireTextLease = () => {
+    if (textLease) {
+      textLease.revoked = true; clearTimeout(textLease.timer); textLease.observer.disconnect();
+    }
+    textLease = null; nativeTextElement = null; nativeTextEditor = null;
+    if (committingTextLease) committingTextLease.revoked = true;
+  };
+  addEventListener('blur', retireTextLease);
+  addEventListener('focusout', retireTextLease, true);
+  addEventListener('input', event => {
+    const owned = committingTextLease;
+    if (!owned?.nativeEdit || !event.isTrusted || !composedContains(owned.element, event.target))
+      retireTextLease();
+  }, true);
+  addEventListener('compositionstart', () => { composing = true; retireTextLease(); }, true);
+  addEventListener('compositionend', () => { composing = false; }, true);
+
+  function activeTextElement() {
+    let element = document.activeElement;
+    while (element?.shadowRoot?.activeElement) element = element.shadowRoot.activeElement;
+    return element;
+  }
+  function composedParent(node) {
+    if (node?.assignedSlot) return node.assignedSlot;
+    if (node?.parentNode || node?.host) return node.parentNode || node.host;
+    // Same-origin frame ancestors carry eligibility and mutation revocation.
+    // No universal-access world or cross-origin DOM bypass is requested.
+    return node?.nodeType === 9 ? node.defaultView?.frameElement : null;
+  }
+  function composedContains(ancestor, node) {
+    for (; node; node = composedParent(node)) if (node === ancestor) return true;
+    return false;
+  }
+  function composedReadOnly(element) {
+    for (let node = element; node; node = composedParent(node)) {
+      if (node.nodeType === 9 && node.defaultView.parent !== node.defaultView && !node.defaultView.frameElement)
+        throw failure('not_editable', 'The original frame ancestors cannot be observed');
+      if (node.nodeType === 1 && node.matches('[inert],[aria-readonly="true"],[aria-disabled="true"]')) return true;
+    }
+    return false;
+  }
+  function textSnapshot(element, allowNative = false) {
+    const composition = globalThis.__tiloTextComposition;
+    if (!composition || typeof composition.active !== 'function' || composition.active())
+      throw failure('text_input_composition', 'Composition state is active or unavailable');
+    if (!element?.isConnected || !document.hasFocus() || activeTextElement() !== element || composing)
+      throw failure('text_input_changed', 'The original text field is no longer available');
+    const textSecurity = getComputedStyle(element).webkitTextSecurity;
+    if (secret(element) || /(^|\s)(cc-[a-z-]+|one-time-code|current-password|new-password)(\s|$)/i.test(element.getAttribute('autocomplete') || '') ||
+        (textSecurity && textSecurity !== 'none'))
+      throw failure('secret_field', 'This field cannot accept deferred text input');
+    if (element.matches(':disabled') || element.readOnly ||
+        composedReadOnly(element))
+      throw failure('not_editable', 'This field is disabled or read-only');
+    const field = element.localName === 'textarea' ||
+      (element.localName === 'input' && ['text', 'search', 'email', 'url', 'tel', 'number'].includes(type(element)));
+    if (field) {
+      if (element.value.length > 262144) throw failure('text_input_large', 'This field is too large for deferred input');
+      if (!Number.isInteger(element.selectionStart) || !Number.isInteger(element.selectionEnd)) {
+        if (!allowNative || !['email', 'number'].includes(type(element)))
+          throw failure('not_editable', 'This field does not expose an editable selection');
+        if (nativeTextElement !== element || !nativeTextEditor?.isConnected ||
+            nativeTextEditor.getRootNode().host !== element) {
+          nativeTextElement = element; nativeTextEditor = null;
+          throw failure('text_input_native_required', 'The original field requires a native caret');
+        }
+        const root = nativeTextEditor.getRootNode();
+        const selection = Reflect.apply(nativeSelection, root, []);
+        if (!selection || selection.rangeCount !== 1 ||
+            !nativeTextEditor.contains(selection.anchorNode) ||
+            !nativeTextEditor.contains(selection.focusNode))
+          throw failure('not_editable', 'The native field has no local editable selection');
+        const raw = nativeTextEditor.textContent;
+        if (raw.length > 262144)
+          throw failure('text_input_large', 'This field is too large for deferred input');
+        return {field: true, multiline: false, maxLength: element.maxLength, native: true, editor: nativeTextEditor, root,
+          value: element.value, raw, anchor: selection.anchorNode, focus: selection.focusNode,
+          start: selection.anchorOffset, end: selection.focusOffset};
+      }
+      return {field: true, multiline: element.localName === 'textarea', maxLength: element.maxLength, value: element.value, start: element.selectionStart,
+        end: element.selectionEnd, direction: element.selectionDirection};
+    }
+    if (!element.isContentEditable || element.innerHTML.length > 262144)
+      throw failure('not_editable', 'The focused element is not an editable text field');
+    const selection = getSelection();
+    if (!selection || selection.rangeCount !== 1 || !element.contains(selection.anchorNode) ||
+        !element.contains(selection.focusNode))
+      throw failure('not_editable', 'The focused editor has no local editable selection');
+    const range = selection.getRangeAt(0);
+    const editableEndpoint = node => {
+      const owner = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+      return owner?.isContentEditable && !composedReadOnly(owner);
+    };
+    // An editable root can contain locked chips, widgets or readonly islands.
+    // Native replacement must not delete those merely because both endpoints
+    // belong to the surrounding editor. Check the complete original range too.
+    if (!editableEndpoint(selection.anchorNode) || !editableEndpoint(selection.focusNode) ||
+        [...element.querySelectorAll('[contenteditable="false" i], [aria-readonly="true" i], [readonly], :disabled')]
+          .some(island => range.intersectsNode(island)))
+      throw failure('not_editable', 'The original selection includes noneditable content');
+    return {field: false, multiline: true, whitespace: getComputedStyle(element).whiteSpace, value: element.innerHTML, anchor: selection.anchorNode,
+      focus: selection.focusNode, start: selection.anchorOffset, end: selection.focusOffset};
+  }
+  function validateNativeReplacement(lease, text) {
+    const snapshot = lease.snapshot;
+    if ([...text].some(character => /\p{Cc}/u.test(character) &&
+        !(character === '\n' && snapshot.multiline === true)))
+      throw failure('rejected', 'The original field cannot accept those control characters');
+    if (!snapshot.field && text.includes('\n') &&
+        !['pre', 'pre-wrap', 'break-spaces'].includes(snapshot.whitespace) &&
+        (text.startsWith('\n') || text.endsWith('\n') ||
+         text.split('\n').some(line => line && (/^\s/u.test(line) || /\s$/u.test(line)))))
+      throw failure('rejected', 'This rich field cannot preserve literal whitespace at paragraph boundaries');
+    if (snapshot.field && !snapshot.native && lease.element.maxLength >= 0 &&
+        snapshot.value.length - (snapshot.end - snapshot.start) + text.length > lease.element.maxLength)
+      throw failure('rejected', 'The original field cannot accept that much text');
+    if (!snapshot.native) return;
+    const prefixLength = (node, offset) => {
+      const range = document.createRange();
+      range.selectNodeContents(snapshot.editor); range.setEnd(node, offset);
+      return range.toString().length;
+    };
+    const anchor = prefixLength(snapshot.anchor, snapshot.start);
+    const focus = prefixLength(snapshot.focus, snapshot.end);
+    const value = snapshot.raw.slice(0, Math.min(anchor, focus)) + text +
+      snapshot.raw.slice(Math.max(anchor, focus));
+    if (lease.element.maxLength >= 0 && value.length > lease.element.maxLength)
+      throw failure('rejected', 'The original field cannot accept that much text');
+    // Native number editing filters invalid characters and can otherwise
+    // acknowledge an edit that silently deletes the selected original value.
+    // Validate the complete prospective value before dispatching page handlers.
+    if (type(lease.element) === 'number' &&
+        (!/^-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/.test(value) ||
+         !Number.isFinite(Number(value))))
+      throw failure('rejected', 'The original number field requires a finite number');
+  }
+  function sameTextSnapshot(lease) {
+    if (lease.revoked || performance.now() >= lease.expires) return false;
+    if (lease.observer.takeRecords().some(record => touchesTextLease(lease, record))) return false;
+    const current = textSnapshot(lease.element, lease.snapshot.native === true), original = lease.snapshot;
+    return Object.keys(original).every(key => current[key] === original[key]);
+  }
+  function touchesTextLease(lease, record) {
+    if (composedContains(lease.element, record.target)) return true;
+    if (record.type !== 'childList') return composedContains(record.target, lease.element);
+    // Sibling notifications/toolbars do not mutate this field. Removing or
+    // reparenting an original ancestor still retires it, even after restoration.
+    return [...record.addedNodes, ...record.removedNodes].some(node =>
+      lease.ancestors.has(node) || composedContains(node, lease.element));
+  }
+  addEventListener('selectionchange', () => {
+    if (textLease) {
+      try { if (!sameTextSnapshot(textLease)) retireTextLease(); }
+      catch (_) { retireTextLease(); }
+    }
+  }, true);
+  function insertParagraphText(owned, text, expires) {
+    // TypingCommand::InsertText splits LF into block paragraphs. In an inline
+    // rich selection Chromium can add a third rendered LF and lose formatting.
+    // Native line breaks stay literal; collapsed formatting commands retain the
+    // original typing style and remain in the same native typing undo group.
+    const toggles = ['bold', 'italic', 'underline', 'strikeThrough', 'subscript', 'superscript'];
+    let formats = owned.snapshot.field ? [] : toggles.map(name =>
+      [name, document.queryCommandState(name)]);
+    const valueNames = ['fontName', 'fontSize', 'foreColor', 'hiliteColor'];
+    let values = owned.snapshot.field ? [] : valueNames.map(name =>
+      [name, document.queryCommandValue(name)]);
+    const check = () => {
+      if (owned.revoked || Date.now() >= expires)
+        throw failure('text_input_changed', 'The original paragraph edit was interrupted');
+      // Every native command can dispatch page input handlers. Recheck focus,
+      // secrecy, writable state and composition before issuing another command;
+      // never redirect the rest of a paragraph after a handler changes focus.
+      const current = textSnapshot(owned.element, owned.snapshot.native === true);
+      if (current.multiline !== owned.snapshot.multiline ||
+          current.whitespace !== owned.snapshot.whitespace ||
+          current.maxLength !== owned.snapshot.maxLength)
+        throw failure('text_input_changed', 'The original paragraph policy changed');
+    };
+    const edit = (name, value) => {
+      check();
+      owned.nativeEdit = true;
+      try {
+        if (!document.execCommand(name, false, value))
+          throw failure('rejected', 'The original field did not accept the paragraph');
+      } finally { owned.nativeEdit = false; }
+      check();
+    };
+    for (const [index, part] of text.split('\n').entries()) {
+      if (index) edit('insertLineBreak');
+      for (const [name, enabled] of formats) {
+        check();
+        if (document.queryCommandState(name) !== enabled) edit(name);
+      }
+      for (const [name, value] of values) {
+        check();
+        if (value && document.queryCommandValue(name) !== value) edit(name, value);
+      }
+      if (part) edit('insertText', part);
+      if (index === 0 && part && !owned.snapshot.field) {
+        // A mixed-format selection has indeterminate query state. Let native
+        // replacement choose its initial typing style, then carry that collapsed
+        // style across the remaining breaks rather than formatting the selection.
+        formats = toggles.map(name => [name, document.queryCommandState(name)]);
+        values = valueNames.map(name => [name, document.queryCommandValue(name)]);
+      }
+    }
+  }
+  function guardedTextInput(command) {
+    if (!Number.isFinite(command.expires_ms) || Date.now() >= command.expires_ms)
+      throw failure('text_input_expired', 'The original text request expired');
+    if (textLease && performance.now() >= textLease.expires) retireTextLease();
+    if (command.action === 'prepare_text_input') {
+      if (textLease || committingTextLease) throw failure('busy', 'A text-input lease is already active');
+      const element = activeTextElement(), snapshot = textSnapshot(element, command.native_caret === true);
+      const bytes = crypto.getRandomValues(new Uint8Array(16));
+      const lease = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
+      textLease = {element, snapshot, lease, expires: performance.now() + 180000, revoked: false, started: false};
+      const owned = textLease;
+      owned.observer = new MutationObserver(records => {
+        if ((textLease === owned || committingTextLease === owned) &&
+            records.some(record => touchesTextLease(owned, record))) retireTextLease();
+      });
+      const options = {subtree: true, childList: true, characterData: true, attributes: true,
+        attributeFilter: ['type', 'readonly', 'disabled', 'autocomplete', 'contenteditable',
+          'aria-readonly', 'aria-disabled', 'inert', 'style', 'class', 'hidden', 'slot', 'name', 'maxlength']};
+      // Observe every composed root: nested shadow hosts carry eligibility too.
+      const roots = new Set([document]);
+      if (snapshot.native) roots.add(snapshot.root);
+      owned.ancestors = new Set();
+      for (let node = element; node; node = composedParent(node)) {
+        owned.ancestors.add(node);
+        roots.add(node.getRootNode());
+      }
+      for (const root of roots) owned.observer.observe(root, options);
+      owned.timer = setTimeout(() => { if (textLease === owned) retireTextLease(); }, 180000);
+      return {ok: true, message: 'Text input prepared', data: {lease, multiline: snapshot.multiline}, history: nativeHistory()};
+    }
+    if (!textLease || command.lease !== textLease.lease)
+      throw failure('text_input_retired', 'This text-input lease is no longer active');
+    const owned = textLease;
+    if (command.action === 'cancel_text_input') {
+      retireTextLease();
+      return {ok: true, message: 'Text input canceled'};
+    }
+    let unchanged;
+    try { unchanged = sameTextSnapshot(owned); }
+    catch (error) { retireTextLease(); throw error; }
+    if (!unchanged) {
+      retireTextLease();
+      throw failure('text_input_changed', 'The original text field or selection changed');
+    }
+    if (command.action === 'start_text_input') {
+      if (owned.started) throw failure('text_input_changed', 'This original session has already started');
+      owned.started = true;
+      clearTimeout(owned.timer);
+      owned.expires = performance.now() + 180000;
+      owned.timer = setTimeout(() => { if (textLease === owned) retireTextLease(); }, 180000);
+      return {ok: true, message: 'Original text session started', data: {lease: owned.lease, multiline: owned.snapshot.multiline}, history: nativeHistory()};
+    }
+    if (command.action === 'check_text_input') return {ok: true, message: 'Text input unchanged', data: {lease: owned.lease, multiline: owned.snapshot.multiline}, history: nativeHistory()};
+    if (command.action === 'undo_text_input' || command.action === 'redo_text_input') {
+      if (command.history_scope !== 'page')
+        throw failure('rejected', 'Field-scoped native history is not available');
+      if (owned.started) throw failure('text_input_changed', 'An active speech session owns this field');
+      try {
+        const verb = command.action === 'undo_text_input' ? 'undo' : 'redo';
+        if (!Reflect.apply(execNativeHistory, document, [verb]))
+          throw failure('rejected', 'The original field has no available history entry');
+        return {ok: true, message: 'Original page history invoked'};
+      } finally { retireTextLease(); }
+    }
+    if (typeof command.text !== 'string'  || !command.text ||
+        new TextEncoder().encode(command.text).length > 4096)
+      throw failure('invalid_request', 'The final text is empty or too large');
+    textLease = null; clearTimeout(owned.timer); committingTextLease = owned;
+    try {
+      validateNativeReplacement(owned, command.text);
+      const event = new InputEvent('beforeinput', {bubbles: true, composed: true,
+        cancelable: true, inputType: 'insertText', data: command.text});
+      if (!owned.element.dispatchEvent(event) || Date.now() >= command.expires_ms || !sameTextSnapshot(owned))
+        throw failure('text_input_changed', 'The page rejected or changed the original field');
+      validateNativeReplacement(owned, command.text);
+      if (command.text.includes('\n')) insertParagraphText(owned, command.text, command.expires_ms);
+      else if (!document.execCommand('insertText', false, command.text))
+        throw failure('rejected', 'The original field did not accept the text');
+      return {ok: true, message: 'Text input committed'};
+    } finally { owned.observer.disconnect(); committingTextLease = null; nativeTextElement = null; nativeTextEditor = null; }
+  }
+
   return {
+    nativeTextInputElement, configureNativeTextEditor,
     run(command) {
       try {
         if (!doc) doc = command.doc;
         switch (command.action) {
+          case 'prepare_text_input': case 'start_text_input': case 'check_text_input': case 'commit_text_input': case 'cancel_text_input': case 'undo_text_input': case 'redo_text_input':
+            return guardedTextInput(command);
           case 'outline': return outline();
-          case 'locate': return locate(command.element);
-          case 'fill': return fill(command.element, command.text);
+          case 'changes': return changes();
+          case 'at': return at(command.x, command.y);
+          case 'settle': return settle(command.quiet_ms, command.timeout_ms);
+          case 'locate': return locate(command.element, command.cross_origin);
+          case 'fill': return fill(command.element, command.text, command.secret);
           case 'select': return select(command.element, command.values);
-          case 'submit': return submit(command.element);
-          case 'focus': return focus(command.element);
+          case 'submit': return submit(command.element, command.cross_origin);
+          case 'focus': return focus(command.element, command.key, command.cross_origin);
         }
         return failure('invalid_request', 'Unknown page action');
       } catch (error) {

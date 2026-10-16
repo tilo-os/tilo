@@ -30,6 +30,7 @@ use std::time::Duration;
 
 use crate::media::MediaSource;
 use crate::model::MediaId;
+use ui::lock::MutexRecover as _;
 
 /// Peak resolution stored per source; the renderer samples this to fit a clip.
 pub const WAVE_BUCKETS: usize = 512;
@@ -411,9 +412,7 @@ impl WaveformCache {
             path: source.abs_path.clone(),
         };
         let (lock, cv) = &*self.work;
-        let mut w = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut w = lock.lock_recover();
         w.queue.push_back(task);
         if !w.running {
             w.running = true;
@@ -472,9 +471,7 @@ impl WaveformCache {
 impl Drop for WaveformCache {
     fn drop(&mut self) {
         let (lock, cv) = &*self.work;
-        let mut w = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut w = lock.lock_recover();
         w.shutdown = true;
         w.queue.clear();
         drop(w);
@@ -488,9 +485,7 @@ fn run_worker(work: &(Mutex<Work>, Condvar), tx: &Sender<(MediaId, Option<Vec<f3
     let (lock, cv) = work;
     loop {
         let task = {
-            let mut w = lock
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut w = lock.lock_recover();
             if w.shutdown {
                 w.running = false;
                 return;
@@ -521,9 +516,7 @@ fn run_worker(work: &(Mutex<Work>, Condvar), tx: &Sender<(MediaId, Option<Vec<f3
         };
         let peaks = peaks_from_file(&task.path, WAVE_BUCKETS);
         if tx.send((task.id, peaks)).is_err() {
-            let mut w = lock
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut w = lock.lock_recover();
             w.running = false;
             drop(w);
             return; // the cache is gone

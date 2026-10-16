@@ -18,7 +18,7 @@ const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DECODED_PIXELS: u64 = 8 * 1024 * 1024;
 const MAX_PLACEMENT_CELLS: u32 = 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TerminalImagePlacement {
     pub hash: String,
     pub mime: String,

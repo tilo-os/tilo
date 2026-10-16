@@ -1,5 +1,37 @@
 use crate::managed::*;
+#[cfg(target_os = "linux")]
+use package_store::InstalledPackage;
 use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "linux")]
+use std::path::Path;
+
+#[test]
+fn configured_managed_trust_never_inherits_the_installed_publisher() {
+    let (root, package, _) = installed();
+    let trust = PackageTrust::from_config_paths(
+        &root.path().join("absent-attestors.toml"),
+        &root.path().join("absent-revocations.toml"),
+    )
+    .unwrap();
+    assert!(trust.publishers.is_empty());
+    assert!(trust.attestors.is_empty());
+    assert!(
+        package.revalidate(&trust).is_err(),
+        "the real signed fixture must not supply its own host trust"
+    );
+}
+
+#[test]
+fn malformed_managed_trust_or_revocation_configuration_fails_closed() {
+    let root = tempfile::tempdir().unwrap();
+    let attestors = root.path().join("attestors.toml");
+    let revoked = root.path().join("revoked.toml");
+    std::fs::write(&attestors, "[[attestor]]\nid = [").unwrap();
+    assert!(PackageTrust::from_config_paths(&attestors, &revoked).is_err());
+    std::fs::write(&attestors, "").unwrap();
+    std::fs::write(&revoked, "[[revoked]]\npubkey_hex = [").unwrap();
+    assert!(PackageTrust::from_config_paths(&attestors, &revoked).is_err());
+}
 
 fn installed() -> (tempfile::TempDir, InstalledManagedPackage, PackageTrust) {
     installed_bytes(b"#!/bin/sh\nexit 0\n")
@@ -8,11 +40,7 @@ fn installed_bytes(binary: &[u8]) -> (tempfile::TempDir, InstalledManagedPackage
     let root = tempfile::tempdir().unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&[31; 32]);
     let public = key.verifying_key().to_bytes();
-    let hex: String = public.iter().fold(String::new(), |mut out, b| {
-        use std::fmt::Write as _;
-        let _ = write!(out, "{b:02x}");
-        out
-    });
+    let hex = hex::encode(public);
     let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
         r#"
 [package]
@@ -81,6 +109,162 @@ type = "cli"
     (root, package, trust)
 }
 
+#[cfg(target_os = "linux")]
+fn assert_normal_launch_expected_root(installed: &InstalledPackage) {
+    let original = &installed.package_id_hex;
+    let verify = |expected: &str| {
+        crate::run::verified_launch_installation(
+            installed,
+            &installed.manifest_path,
+            &installed.payload_root,
+            expected,
+        )
+    };
+    assert_eq!(
+        verify(original).unwrap().package_id,
+        WORKSPACE_AGENT_PACKAGE_ID
+    );
+    assert!(
+        verify(&"0".repeat(64)).is_err(),
+        "an upgraded root cannot inherit original declarations"
+    );
+    let opts = crate::run::RunOptions {
+        expected_package_hash: Some(original.clone()),
+        ..Default::default()
+    };
+    let manifest = verify(original).unwrap();
+    assert!(matches!(
+        crate::run::run_with(&manifest, &installed.payload_root, &opts),
+        Err(crate::run::RunError::InvalidServiceLaunch(_))
+    ));
+    assert!(
+        crate::run::verified_launch_installation(
+            installed,
+            Path::new("/wrong-manifest"),
+            &installed.payload_root,
+            original
+        )
+        .is_err(),
+        "another metadata path must be rejected before exec"
+    );
+    // A publisher revoked after install stops launching: the signed record's
+    // own publisher key is what the revocation list is matched against.
+    let record = package_store::integrity::read_record(
+        &package_store::integrity::record_dir(installed),
+        &installed.id,
+        original,
+    )
+    .unwrap();
+    let revoked = tilo_app_package::RevocationList {
+        revoked: vec![tilo_app_package::trust::RevokedKey {
+            pubkey_hex: hex::encode(record.root.publisher_identity),
+            reason: "publisher key compromised".into(),
+        }],
+    };
+    let refused = crate::run::verified_launch_installation_against(
+        installed,
+        &installed.manifest_path,
+        &installed.payload_root,
+        original,
+        &revoked,
+    )
+    .expect_err("a revoked publisher's package must not launch");
+    assert!(
+        refused.to_string().contains("revoked"),
+        "the refusal names the revocation: {refused}"
+    );
+    let unrelated = tilo_app_package::RevocationList {
+        revoked: vec![tilo_app_package::trust::RevokedKey {
+            pubkey_hex: "ab".repeat(32),
+            reason: "someone else".into(),
+        }],
+    };
+    assert!(
+        crate::run::verified_launch_installation_against(
+            installed,
+            &installed.manifest_path,
+            &installed.payload_root,
+            original,
+            &unrelated,
+        )
+        .is_ok(),
+        "another publisher's revocation does not refuse this package"
+    );
+    let mut renamed = installed.clone();
+    renamed.id = "so.tilo.chat".into();
+    assert!(
+        crate::run::verified_launch_installation(
+            &renamed,
+            &renamed.manifest_path,
+            &renamed.payload_root,
+            original,
+        )
+        .is_err(),
+        "a registry label cannot readdress signed package authority"
+    );
+}
+
+#[test]
+fn managed_package_verifies_actual_content_addressed_install() {
+    let (_legacy_root, legacy, trust) = installed();
+    let source = tempfile::tempdir().unwrap();
+    std::fs::create_dir(source.path().join("bin")).unwrap();
+    std::fs::copy(
+        legacy.payload_root().join("bin/agent"),
+        source.path().join("bin/agent"),
+    )
+    .unwrap();
+    let manifest = tilo_app_package::Manifest::from_toml_str(
+        &std::fs::read_to_string(legacy.manifest_path()).unwrap(),
+    )
+    .unwrap();
+    let packed = tilo_app_package::pack(
+        source.path(),
+        &manifest,
+        &tilo_app_package::SigningIdentity::from_signing_key(
+            ed25519_dalek::SigningKey::from_bytes(&[31; 32]),
+        ),
+    )
+    .unwrap();
+    let archive = tilo_app_package::tapp::write(Vec::new(), &packed.meta, Some(&packed)).unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let installed = package_store::PackageStore::at(destination.path())
+        .install(
+            archive.as_slice(),
+            |_| Ok(package_store::Admission::default()),
+            None,
+        )
+        .unwrap()
+        .package;
+    assert!(!installed.payload_root.join("manifest.toml").exists());
+    #[cfg(target_os = "linux")]
+    assert_normal_launch_expected_root(&installed);
+    assert!(
+        package_store::integrity::record_dir(&installed)
+            .join("signed-root")
+            .is_file()
+    );
+    let package = InstalledManagedPackage::verify(
+        installed,
+        destination.path().to_path_buf(),
+        packed.id(),
+        &trust,
+    )
+    .unwrap();
+    package.revalidate(&trust).unwrap();
+    assert!(
+        package
+            .revalidate(&PackageTrust {
+                publishers: vec![],
+                attestors: vec![],
+                revoked: tilo_app_package::trust::RevocationList::default(),
+            })
+            .is_err()
+    );
+    std::fs::write(package.manifest_path(), b"replaced metadata").unwrap();
+    assert!(package.revalidate(&trust).is_err());
+}
+
 #[test]
 fn managed_package_binds_installed_bytes_and_independent_trust() {
     let (_root, package, trust) = installed();
@@ -133,8 +317,10 @@ fn managed_descriptors_are_bound_and_consumed_once() {
         room: uuid::Uuid::new_v4().to_string(),
         app: WORKSPACE_AGENT_PACKAGE_ID.into(),
         agent: "agent-1".into(),
-        task: "task-1".into(),
-        run: "run-1".into(),
+        scope: ManagedLaunchScope::Task {
+            task: "task-1".into(),
+            run: "run-1".into(),
+        },
         launch: "launch-1".into(),
         generation: 1,
     };
@@ -157,12 +343,18 @@ fn managed_descriptors_are_bound_and_consumed_once() {
     )
     .unwrap();
     let required = [
-        ("collab".into(), "required@1".into()),
-        ("model-gateway".into(), "required@1".into()),
+        ("collab".into(), crate::manifest::service_req("required@1")),
+        (
+            "model-gateway".into(),
+            crate::manifest::service_req("required@1"),
+        ),
     ]
     .into_iter()
     .collect();
     let mut wrong = binding.clone();
+    wrong.scope = ManagedLaunchScope::AgentSession;
+    assert!(context.take_for_launch(&wrong, &required).is_err());
+    wrong.scope = binding.scope.clone();
     wrong.agent = "other".into();
     assert!(context.take_for_launch(&wrong, &required).is_err());
     let services = context.take_for_launch(&binding, &required).unwrap();
@@ -201,11 +393,72 @@ fn runtime(root: &std::path::Path) -> ManagedRuntime {
     )
     .unwrap();
     ManagedRuntime {
+        runtime_identity: runtime_bundle::component_pins::RetainedBundleTrust::from_verified(
+            &built,
+        )
+        .unwrap(),
         bundle_root: runtime_root,
         runtime_publisher: built.publisher_hex.unwrap(),
         sandbox_shim: std::env::current_exe().unwrap(),
         bwrap: std::env::current_exe().unwrap(),
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn managed_runtime_resolves_the_declared_bundle_only_with_host_policy() {
+    let (root, package, trust) = installed();
+    let fixture = runtime(root.path());
+    let manifest = package.revalidate(&trust).unwrap();
+    let mut options = crate::run::RunOptions {
+        runtime_root: Some(fixture.bundle_root.clone()),
+        require_runtime_publisher: Some(fixture.runtime_publisher.clone()),
+        ..Default::default()
+    };
+    let resolve = |options: &crate::run::RunOptions| {
+        ManagedRuntime::from_launch_options(
+            &manifest,
+            options,
+            fixture.sandbox_shim.clone(),
+            fixture.bwrap.clone(),
+        )
+    };
+    let selected = resolve(&options).unwrap();
+    assert_eq!(selected.bundle_root, fixture.bundle_root);
+    assert_eq!(selected.runtime_publisher, fixture.runtime_publisher);
+    let mut mismatched = selected;
+    mismatched.runtime_identity.root_hash = "00".repeat(32);
+    assert!(
+        ManagedLauncher::new(
+            package,
+            trust,
+            mismatched,
+            std::sync::Arc::new(CurrentAuthority(true.into()))
+        )
+        .err()
+        .unwrap()
+        .contains("identity differs")
+    );
+    options.require_runtime_publisher = Some("00".repeat(32));
+    assert!(resolve(&options).is_err());
+    options.require_runtime_publisher = Some(fixture.runtime_publisher);
+    options.allow_unsigned_runtime = true;
+    assert!(resolve(&options).is_err());
+    options.allow_unsigned_runtime = false;
+    options.allow_missing_runtime = true;
+    assert!(resolve(&options).is_err());
+    options.allow_missing_runtime = false;
+    let mut wrong_version = manifest;
+    wrong_version.runtime = Some("tilo-runtime/another-version".into());
+    assert!(
+        ManagedRuntime::from_launch_options(
+            &wrong_version,
+            &options,
+            fixture.sandbox_shim,
+            fixture.bwrap,
+        )
+        .is_err()
+    );
 }
 struct CurrentAuthority(std::sync::atomic::AtomicBool);
 impl ManagedLaunchAuthority for CurrentAuthority {
@@ -225,11 +478,59 @@ fn binding() -> ManagedBinding {
         room: uuid::Uuid::new_v4().to_string(),
         app: WORKSPACE_AGENT_PACKAGE_ID.into(),
         agent: "agent-1".into(),
-        task: "task-1".into(),
-        run: "run-1".into(),
+        scope: ManagedLaunchScope::Task {
+            task: "task-1".into(),
+            run: "run-1".into(),
+        },
         launch: "launch-1".into(),
         generation: 1,
     }
+}
+
+#[test]
+fn managed_session_scope_needs_no_fabricated_task_but_retains_route_validation() {
+    let mut session = binding();
+    let task = session.clone();
+    session.scope = ManagedLaunchScope::AgentSession;
+    session.validate().unwrap();
+    task.validate().unwrap();
+    assert_ne!(session, task, "scope is part of exact launch custody");
+    session.agent.clear();
+    assert!(session.validate().is_err());
+    session = binding();
+    session.scope = ManagedLaunchScope::Task {
+        task: String::new(),
+        run: "run-1".into(),
+    };
+    assert!(session.validate().is_err());
+    session.scope = ManagedLaunchScope::Task {
+        task: "task-1".into(),
+        run: "run with spaces".into(),
+    };
+    assert!(session.validate().is_err());
+    session.scope = ManagedLaunchScope::AgentSession;
+    session.generation = 0;
+    assert!(session.validate().is_err());
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn managed_agent_argv_uses_its_actual_package_not_the_document_default() {
+    let binding = binding();
+    assert_eq!(
+        managed_service_argv(&binding),
+        [
+            "--task-runs",
+            "--workspace",
+            &binding.room,
+            "--app",
+            WORKSPACE_AGENT_PACKAGE_ID,
+            "--agent-id",
+            &binding.agent,
+            "--name",
+            &binding.agent,
+        ]
+    );
 }
 #[test]
 fn managed_runtime_lease_cannot_survive_shutdown_or_mint_a_second_attempt() {

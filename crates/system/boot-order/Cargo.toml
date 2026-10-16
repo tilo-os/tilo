@@ -1,0 +1,26 @@
+[package]
+name = "tilo-boot-order"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Dual boot: enlists a booted Tilo after Windows in the firmware boot order, after checking every EFI fact, without changing the default."
+
+[lib]
+name = "tilo_boot_order"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-boot-order"
+path = "src/main.rs"
+
+[dependencies]
+# No-follow opens of EFI variables and the effective user, without FFI.
+rustix = { workspace = true, features = ["fs", "process", "std"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

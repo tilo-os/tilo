@@ -6,12 +6,17 @@ pub mod capability;
 mod geom;
 mod interaction;
 mod key;
+mod layer;
 mod render;
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use interaction::{
-    ACTIVE_INTERACTION_EXPIRY, InteractionCardPlacement, TERMINAL_INTERACTION_DWELL,
+    ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, InteractionCardPlacement,
+    TERMINAL_INTERACTION_DWELL,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
+#[cfg(feature = "native")]
+pub use layer::LayerMarks;
+pub use layer::{PresenceLayer, WidgetPresence};
 /// Shared with the other widgets that frame a label in fixed-pixel insets
 /// (the capture studio's docked recorder), so one rule decides how much
 /// larger than the default a label paints.
@@ -36,62 +41,44 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 /// real edit would license markers for every caret that moves afterward.
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
-/// Stable RGB colour for a collaborator. `me`/`alice`/`bob`/`charlie` are
-/// pinned; everything else hashes onto [`PEER_PALETTE`]. A pure function of
-/// the id alone: two hosts painting the same room see different peer sets
+/// Stable identity colour for a collaborator who has not chosen one: the
+/// presence hue [`crate::tokens::PresenceHue::of_identity`] derives from
+/// their id, as the sRGB colour in [`PEER_PALETTE`]. A pure function of the
+/// id alone: two hosts painting the same room see different peer sets
 /// (everyone but themselves), so a colour derived from who's present
 /// couldn't agree across machines.
+///
+/// This is the identity as it travels; paint it through
+/// `theme.tokens.colors.presence.of_rgb(..)`, which carries the hue at the
+/// active theme's presence lightness and chroma.
 pub fn user_color(user_id: &str) -> (u8, u8, u8) {
-    match user_id {
-        "me" => (0x63, 0x66, 0xf1),      // indigo-500
-        "alice" => (0xec, 0x48, 0x99),   // pink-500
-        "bob" => (0xf9, 0x73, 0x16),     // orange-500
-        "charlie" => (0x10, 0xb9, 0x81), // emerald-500
-        _ => {
-            // FNV-1a 64-bit: cheap, deterministic, no RNG state.
-            let mut hasher = fnv::FnvHasher::default();
-            std::hash::Hasher::write(&mut hasher, user_id.as_bytes());
-            let h = std::hash::Hasher::finish(&hasher);
-            // `PEER_PALETTE.len()` (24) is a nonzero compile-time constant,
-            // so the remainder can never divide by zero; the result is
-            // always < 24, so it always fits `usize`.
-            let idx = h.checked_rem(PEER_PALETTE.len() as u64).unwrap_or(0);
-            let idx = usize::try_from(idx).unwrap_or(0);
-            PEER_PALETTE.get(idx).copied().unwrap_or_default()
-        }
-    }
+    identity_rgb(crate::tokens::PresenceHue::of_identity(user_id))
 }
 
-/// Every colour a peer can be drawn in: a closed ring of 24, not a hash over
-/// all 360 hues — uniform sampling once put `dave`, `erin` and `sara` at
-/// hues 87/89/88, three people in one indistinguishable green. Twelve hues
-/// spaced ≥26° apart, plus twelve more offset and lifted in lightness so
-/// neighbours differ in brightness too.
-pub const PEER_PALETTE: [(u8, u8, u8); 24] = [
-    (0xf9, 0x73, 0x16), // orange-500 — pinned for "bob"
-    (0xdf, 0xdc, 0x3a),
-    (0x87, 0xdf, 0x3a),
-    (0x3a, 0xdf, 0x4a),
-    (0x10, 0xb9, 0x81), // emerald-500 — pinned for "charlie"
-    (0x3a, 0xce, 0xdf),
-    (0x3a, 0x84, 0xdf),
-    (0x63, 0x66, 0xf1), // indigo-500 — pinned for "me"
-    (0x89, 0x3a, 0xdf),
-    (0xdf, 0x3a, 0xdf),
-    (0xec, 0x48, 0x99), // pink-500 — pinned for "alice"
-    (0xdf, 0x3a, 0x42),
-    (0xf4, 0xcd, 0x71),
-    (0xd1, 0xf4, 0x71),
-    (0x89, 0xf4, 0x71),
-    (0x71, 0xf4, 0xa3),
-    (0x71, 0xf4, 0xe4),
-    (0x71, 0xc8, 0xf4),
-    (0x71, 0x90, 0xf4),
-    (0x90, 0x71, 0xf4),
-    (0xd3, 0x71, 0xf4),
-    (0xf4, 0x71, 0xd3),
-    (0xf4, 0x71, 0x94),
-    (0xf4, 0x89, 0x71),
+/// A presence hue as the identity colour it travels as.
+pub fn identity_rgb(hue: crate::tokens::PresenceHue) -> (u8, u8, u8) {
+    PEER_PALETTE.get(hue.slot()).copied().unwrap_or_default()
+}
+
+/// Every colour a peer can be drawn in: the design language's twelve
+/// presence hues (`tokens::colors::PRESENCE_HUES`, 30° apart) at the dark
+/// material's presence lightness and chroma (OKLCH L 0.74, C 0.14, gamut
+/// mapped), as sRGB. Equal lightness and chroma, so no participant looks
+/// more important than another; a closed ring rather than a hash over all
+/// 360 hues, so two people never land a few degrees apart.
+pub const PEER_PALETTE: [(u8, u8, u8); 12] = [
+    (0xf7, 0x85, 0x7d), // 25°  red
+    (0xed, 0x91, 0x4c), // 55°  orange — pinned for "bob"
+    (0xd3, 0xa3, 0x29), // 85°  amber
+    (0xa8, 0xb5, 0x40), // 115° olive
+    (0x6e, 0xc2, 0x72), // 145° green — pinned for "charlie"
+    (0x00, 0xc7, 0xa6), // 175° teal
+    (0x00, 0xc1, 0xd1), // 205° cyan
+    (0x38, 0xb8, 0xf6), // 235° sky
+    (0x81, 0xa8, 0xff), // 265° blue — pinned for "me"
+    (0xb2, 0x98, 0xf9), // 295° violet
+    (0xd7, 0x8a, 0xdb), // 325° magenta
+    (0xee, 0x83, 0xaf), // 355° pink — pinned for "alice"
 ];
 
 /// Give everyone in a room a colour nobody else in it is wearing.
@@ -169,12 +156,26 @@ mod color_tests {
 
     #[test]
     fn user_colours_are_pinned_or_hashed_onto_a_distinct_ring() {
-        // phase: pinned_ids_match_concept_palette
+        // phase: pinned_ids_take_their_slots
         {
-            assert_eq!(user_color("me"), (0x63, 0x66, 0xf1));
-            assert_eq!(user_color("alice"), (0xec, 0x48, 0x99));
-            assert_eq!(user_color("bob"), (0xf9, 0x73, 0x16));
-            assert_eq!(user_color("charlie"), (0x10, 0xb9, 0x81));
+            assert_eq!(user_color("me"), PEER_PALETTE[8]);
+            assert_eq!(user_color("alice"), PEER_PALETTE[11]);
+            assert_eq!(user_color("bob"), PEER_PALETTE[1]);
+            assert_eq!(user_color("charlie"), PEER_PALETTE[4]);
+        }
+        // phase: the_ring_is_the_dark_presence_palette
+        {
+            let palette = crate::tokens::Colors::dark().presence;
+            for (slot, rgb) in PEER_PALETTE.iter().enumerate() {
+                let painted = palette.get(slot);
+                for (a, b) in [
+                    (rgb.0, painted.to_rgba8().r),
+                    (rgb.1, painted.to_rgba8().g),
+                    (rgb.2, painted.to_rgba8().b),
+                ] {
+                    assert!(a.abs_diff(b) <= 1, "slot {slot}: {rgb:?} vs {painted:?}");
+                }
+            }
         }
         // phase: unknown_ids_fall_through_to_stable_hash
         {
@@ -255,17 +256,17 @@ mod color_tests {
     #[test]
     fn a_room_assigns_distinct_agreed_stable_colours() {
         // phase: a_room_never_puts_two_people_in_one_colour
-        // The case the ring alone can't fix: `carol` hashes onto exactly the
+        // The case the ring alone can't fix: `judy` hashes onto exactly the
         // pink `alice` is pinned to, so one of them has to move.
         {
             assert_eq!(
-                user_color("carol"),
+                user_color("judy"),
                 user_color("alice"),
                 "this test is guarding a real collision; if the hash moved, \
              pick another colliding pair rather than deleting the test",
             );
 
-            let room = ["alice", "bob", "carol", "danah", "erin", "dana"];
+            let room = ["alice", "bob", "judy", "danah", "erin", "dana"];
             let assigned = assign_peer_colors(&room, &[]);
             assert_eq!(assigned.len(), room.len());
             for (i, a) in room.iter().enumerate() {
@@ -285,7 +286,7 @@ mod color_tests {
         }
         // phase: every_machine_in_a_room_agrees_on_who_is_what_colour
         {
-            let room = ["alice", "bob", "carol"];
+            let room = ["alice", "bob", "judy"];
             for me in room {
                 let mut mine: Vec<&str> = room.iter().copied().filter(|u| *u != me).collect();
                 mine.push(me);
@@ -300,11 +301,11 @@ mod color_tests {
         // A colour the roster handed out explicitly is not available to be
         // computed onto, or an invited peer and a live one could collide.
         {
-            let taken = user_color("carol"); // == alice's pink
-            let assigned = assign_peer_colors(&["carol"], &[taken]);
+            let taken = user_color("judy"); // == alice's pink
+            let assigned = assign_peer_colors(&["judy"], &[taken]);
             assert_ne!(
-                assigned["carol"], taken,
-                "carol took a colour the roster had already spoken for",
+                assigned["judy"], taken,
+                "judy took a colour the roster had already spoken for",
             );
         }
         // phase: a_late_arrival_leaves_the_others_alone
@@ -336,6 +337,24 @@ pub enum ParticipantKind {
     #[default]
     Person,
     Agent,
+    /// A Shortcut running steps for a person.
+    Shortcut,
+    /// An application acting under its own identity.
+    App,
+    /// An installed bot acting as itself, for its installer.
+    Bot,
+}
+
+impl From<tilo_actions::ActorKind> for ParticipantKind {
+    fn from(kind: tilo_actions::ActorKind) -> Self {
+        match kind {
+            tilo_actions::ActorKind::Person => Self::Person,
+            tilo_actions::ActorKind::Agent => Self::Agent,
+            tilo_actions::ActorKind::Shortcut => Self::Shortcut,
+            tilo_actions::ActorKind::App => Self::App,
+            tilo_actions::ActorKind::Bot => Self::Bot,
+        }
+    }
 }
 
 impl From<bool> for ParticipantKind {
@@ -382,7 +401,7 @@ impl PresenceUser {
 /// One "just typed" highlight span: the run a peer inserted and when.
 /// [`PresenceCtx::active_typing`] turns its age into an alpha and prunes it
 /// once past [`TYPING_FADE`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct TypingMark {
     range: SelectionRange,
     born: Instant,
@@ -452,8 +471,57 @@ pub const POINTER_IDLE: Duration = Duration::from_secs(5);
 /// [`POINTER_IDLE`]. See [`PresenceCtx::pointer_opacity`].
 pub const POINTER_FADE: Duration = Duration::from_millis(400);
 
+/// Longest a peer's pointer takes to glide to a newly heard position. Peers
+/// publish at ~30 Hz, so a moving pointer glides over the gap between its
+/// last two samples (~33 ms) and arrives as the next one is due; this caps
+/// the glide after a pause, so a pointer that sat still for a while does
+/// not drift lazily to where it was just put. See
+/// [`PresenceCtx::pointer_position_at`].
+pub const POINTER_EASE_MAX: Duration = Duration::from_millis(100);
+
 /// A pointer's last-known `(x, y)` per user, at each [`PresenceKey`].
 pub type PointerPositions = HashMap<PresenceKey, Vec<(UserId, (f32, f32))>>;
+
+/// How a peer's pointer glides from where it was shown to where it was last
+/// heard. `offset` is relative to the stored position, so a pointer carried
+/// along with what it is anchored to (a scrolling tile) glides with it.
+#[derive(Debug, Clone, Copy)]
+struct PointerGlide {
+    /// Where the glide started, minus the stored position.
+    offset: (f32, f32),
+    /// When the glide started: the instant the new position was heard.
+    since: Instant,
+    /// How long it lasts — the gap between the last two samples, capped at
+    /// [`POINTER_EASE_MAX`]. Never zero.
+    span: Duration,
+    /// When the pointer was last heard at a *different* position, which
+    /// times the next glide.
+    moved: Instant,
+}
+
+impl PointerGlide {
+    /// Where the pointer stored at `target` shows at `now`.
+    fn at(&self, target: (f32, f32), now: Instant) -> (f32, f32) {
+        let progress =
+            now.saturating_duration_since(self.since).as_secs_f32() / self.span.as_secs_f32();
+        let rest = 1.0 - smoothstep(progress);
+        (
+            target.0 + self.offset.0 * rest,
+            target.1 + self.offset.1 * rest,
+        )
+    }
+
+    fn easing(&self, now: Instant) -> bool {
+        self.offset != (0.0, 0.0) && now.saturating_duration_since(self.since) < self.span
+    }
+}
+
+/// Cubic smoothstep over `0..=1`: a glide starts and lands gently rather than
+/// snapping at each sample boundary.
+fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct PresenceCtx {
@@ -463,6 +531,10 @@ pub struct PresenceCtx {
     /// [`Self::prune_pointers`] can retire one gone quiet — without it a
     /// crashed peer's cursor stays painted for the rest of the session.
     pointer_seen: HashMap<(PresenceKey, UserId), Instant>,
+    /// How each pointer in [`Self::pointers`] glides between samples; see
+    /// [`Self::pointer_position_at`]. Absent for a pointer seen at only one
+    /// position, which is shown where it is.
+    pointer_glides: HashMap<(PresenceKey, UserId), PointerGlide>,
     pub selections: HashMap<PresenceKey, Vec<(UserId, SelectionRange)>>,
     pub carets: HashMap<PresenceKey, Vec<(UserId, usize)>>,
     /// Ephemeral visual relationships, keyed by `(room, follower)`. They
@@ -480,6 +552,9 @@ pub struct PresenceCtx {
     /// use this in addition to colour so an agent cannot be mistaken for a
     /// person when names are hidden, elided, or inaccessible.
     participant_kinds: HashMap<UserId, ParticipantKind>,
+    /// The person each agent, Shortcut or app acts for, as the broker
+    /// admitted it: "Claude, for Ada".
+    acting_for: HashMap<UserId, UserId>,
     /// Short room-level intentions, separate from pointer/caret state. The
     /// origin remains visible so inferred prose is never presented as a quote.
     statuses: HashMap<UserId, crate::live_collaboration::LiveStatus>,
@@ -488,6 +563,9 @@ pub struct PresenceCtx {
     /// input device: applications may project its stable resource anchor to
     /// native geometry, while the generic painter shows a compact fallback.
     interactions: HashMap<tilo_actions::InvocationId, interaction::InteractionPresenceEntry>,
+    /// Last marker tip actually painted for each agent. This is local visual
+    /// continuity only: it never enters pointer presence or action state.
+    interaction_markers: HashMap<UserId, interaction::AgentMarkerContinuity>,
     /// Per-user "just typed" highlight spans, keyed by presence scope and
     /// faded out by [`PresenceCtx::active_typing`] over [`TYPING_FADE`].
     /// Not serialised — purely a local render effect.
@@ -501,6 +579,11 @@ pub struct PresenceCtx {
     /// `Cell` so containers (Scrollable) can scope-push a tighter inner
     /// viewport without needing `&mut PresenceCtx` everywhere.
     pub viewport: std::cell::Cell<Option<vello::kurbo::Rect>>,
+    /// The authority the subtree being drawn holds, scoped by whoever hands
+    /// it one (a host, a bound component) through [`Self::with_permissions`]
+    /// and read by gated widgets through [`Self::permits`]. `None` gates
+    /// nothing.
+    permissions: std::cell::RefCell<Option<crate::permissions::PermissionContext>>,
     /// Each peer's last broadcast [`ViewSubset`](crate::view::ViewSubset) —
     /// where they're looking, distinct from their cursor. Read by
     /// **attach/follow** to bind the local viewport to a chosen peer.
@@ -542,6 +625,33 @@ impl PresenceCtx {
 
     pub fn pop_viewport(&self, prev: Option<vello::kurbo::Rect>) {
         self.viewport.set(prev);
+    }
+
+    /// Draw with `permissions` as the authority gated widgets check, then
+    /// restore the outer one.
+    pub fn with_permissions<R>(
+        &self,
+        permissions: crate::permissions::PermissionContext,
+        draw: impl FnOnce() -> R,
+    ) -> R {
+        let outer = self.permissions.replace(Some(permissions));
+        let out = draw();
+        self.permissions.replace(outer);
+        out
+    }
+
+    /// Whether the authority of the subtree being drawn covers `scope`.
+    /// Outside any [`Self::with_permissions`] everything is allowed.
+    pub fn permits(&self, scope: &crate::permissions::PermissionScope) -> bool {
+        self.permissions
+            .borrow()
+            .as_ref()
+            .is_none_or(|permissions| permissions.check(scope))
+    }
+
+    /// The authority of the subtree being drawn, if anyone scoped one.
+    pub fn permission_context(&self) -> Option<crate::permissions::PermissionContext> {
+        self.permissions.borrow().clone()
     }
 }
 
@@ -609,6 +719,14 @@ impl PresenceCtx {
             return;
         }
         self.self_participant = Some((id, name.into()));
+    }
+
+    /// Clear the room-certified spelling of this session after a complete
+    /// roster replacement no longer contains an exact self row. Local
+    /// process identities remain in `own`; this only withdraws the room's
+    /// authenticated answer.
+    pub(crate) fn clear_self_participant(&mut self) {
+        self.self_participant = None;
     }
 
     /// Which participant in the room this session is, if the room has said.
@@ -687,6 +805,12 @@ impl PresenceCtx {
     /// but being here does not. Single-location like `set_caret`/
     /// `set_selection`: a person has one pointer, so this moves it rather
     /// than adding a new entry under a different scope.
+    ///
+    /// A move heard at a later instant than the last is a new sample, and
+    /// the pointer glides to it ([`Self::pointer_position_at`]). A move
+    /// stamped with the *same* instant is that sample re-placed — the tile
+    /// it is anchored to moved — so it is carried there with no glide of its
+    /// own, any glide already in flight riding along.
     pub fn set_pointer_at(
         &mut self,
         key: &PresenceKey,
@@ -703,7 +827,12 @@ impl PresenceCtx {
         }
         self.pointers.retain(|_, list| !list.is_empty());
         self.pointer_seen.retain(|(k, u), _| k == key || u != &user);
+        self.pointer_glides
+            .retain(|(k, u), _| k == key || u != &user);
 
+        let stored = self.pointer_for(key, &user);
+        let heard = self.pointer_seen.get(&(key.clone(), user.clone())).copied();
+        self.glide_pointer(key, &user, stored.zip(heard), pos, now);
         let list = self.pointers.entry(key.clone()).or_default();
         if let Some(entry) = list.iter_mut().find(|(u, _)| *u == user) {
             entry.1 = pos;
@@ -726,31 +855,114 @@ impl PresenceCtx {
         }
     }
 
+    /// Start, keep or drop `user`'s glide at `key` for a move to `pos` heard
+    /// at `now`. `stored` is the position held until now and when it was
+    /// heard; `None` for a pointer not seen here before.
+    fn glide_pointer(
+        &mut self,
+        key: &PresenceKey,
+        user: &UserId,
+        stored: Option<((f32, f32), Instant)>,
+        pos: (f32, f32),
+        now: Instant,
+    ) {
+        let id = (key.clone(), user.clone());
+        // First sight is placed where it is: there is nowhere to glide from.
+        let Some((stored, heard)) = stored else {
+            self.pointer_glides.remove(&id);
+            return;
+        };
+        // A restatement, or the same sample carried with its anchor.
+        if stored == pos || heard == now {
+            return;
+        }
+        let glide = self.pointer_glides.get(&id).copied();
+        let shown = glide.map_or(stored, |glide| glide.at(stored, now));
+        let moved = glide.map_or(heard, |glide| glide.moved);
+        let span = now.saturating_duration_since(moved).min(POINTER_EASE_MAX);
+        if span.is_zero() {
+            self.pointer_glides.remove(&id);
+            return;
+        }
+        self.pointer_glides.insert(
+            id,
+            PointerGlide {
+                offset: (shown.0 - pos.0, shown.1 - pos.1),
+                since: now,
+                span,
+                moved: now,
+            },
+        );
+    }
+
+    /// Where to paint `user`'s pointer at `key` at `now`: on its way from
+    /// where it was shown to where it was last heard, eased over the gap
+    /// between its last two samples (at most [`POINTER_EASE_MAX`]), so a
+    /// ~30 Hz stream of samples moves smoothly on a faster display instead
+    /// of stepping. `None` when there is no such pointer. Painters of peer
+    /// pointers read this rather than [`Self::pointer_for`]'s raw position,
+    /// except under reduced motion, where the raw position is the answer.
+    pub fn pointer_position_at(
+        &self,
+        key: &PresenceKey,
+        user: &UserId,
+        now: Instant,
+    ) -> Option<(f32, f32)> {
+        let target = self.pointer_for(key, user)?;
+        Some(
+            self.pointer_glides
+                .get(&(key.clone(), user.clone()))
+                .map_or(target, |glide| glide.at(target, now)),
+        )
+    }
+
+    /// Whether any pointer is still gliding at `now` (see
+    /// [`Self::pointer_position_at`]) — a reason to paint the next frame too.
+    pub fn pointers_easing(&self, now: Instant) -> bool {
+        self.pointer_glides.values().any(|glide| glide.easing(now))
+    }
+
     /// Retire every pointer nobody has restated within `horizon`. Returns
     /// whether anything was retired — a reason to repaint. `horizon` must
     /// comfortably exceed the ~1s restate interval, so this notices a peer
     /// gone quiet rather than blinking one whose keepalive was briefly
     /// delayed. Only the pointer goes — the peer stays in [`Self::here`],
-    /// since going quiet about pointing is not leaving.
+    /// since going quiet about pointing is not leaving — and with it the
+    /// peer's [`Self::remote_cursors`] record of that pointer, as
+    /// [`Self::clear_pointer`] does, so a peer that vanished leaves nothing
+    /// for a window to keep repainting.
     pub fn prune_pointers(&mut self, now: Instant, horizon: Duration) -> bool {
         let seen = &mut self.pointer_seen;
-        let mut retired = false;
+        let mut retired = Vec::new();
         self.pointers.retain(|key, list| {
             list.retain(|(user, _)| {
                 let fresh = seen
                     .get(&(key.clone(), user.clone()))
                     .is_some_and(|t| now.saturating_duration_since(*t) < horizon);
                 if !fresh {
-                    retired = true;
+                    retired.push(user.clone());
                 }
                 fresh
             });
             !list.is_empty()
         });
-        if retired {
-            seen.retain(|_, t| now.saturating_duration_since(*t) < horizon);
+        if retired.is_empty() {
+            return false;
         }
-        retired
+        seen.retain(|_, t| now.saturating_duration_since(*t) < horizon);
+        self.pointer_glides.retain(|id, _| seen.contains_key(id));
+        for user in retired {
+            // A person has one pointer; once it is gone from every scope the
+            // cursor record of it goes too.
+            if !self
+                .pointers
+                .values()
+                .any(|list| list.iter().any(|(u, _)| *u == user))
+            {
+                self.remove_remote_cursor(&user.0);
+            }
+        }
+        true
     }
 
     /// How opaque to paint `user`'s pointer at `key`: fully until the last
@@ -859,6 +1071,29 @@ impl PresenceCtx {
         }
     }
 
+    /// Paint `user` in the presence colour they wear — their choice, or the
+    /// one their stable identity derives, as their own machine said it — in
+    /// place of the colour their id derives here. Recolours a cursor already
+    /// on screen.
+    pub fn set_presence_hue(&mut self, user: UserId, hue: crate::tokens::PresenceHue) {
+        let rgb = identity_rgb(hue);
+        if self.color_overrides.get(&user) == Some(&rgb) {
+            return;
+        }
+        for cursor in &mut self.remote_cursors {
+            if cursor.user_id == user.0 {
+                let alpha = cursor.color[3];
+                cursor.color = [
+                    f32::from(rgb.0) / 255.0,
+                    f32::from(rgb.1) / 255.0,
+                    f32::from(rgb.2) / 255.0,
+                    alpha,
+                ];
+            }
+        }
+        self.color_overrides.insert(user, rgb);
+    }
+
     pub fn color_for(&self, user: &UserId) -> (u8, u8, u8) {
         if let Some(rgb) = self.color_overrides.get(user) {
             return *rgb;
@@ -869,11 +1104,7 @@ impl PresenceCtx {
     /// Seeded from the collab roster. Overwrites any prior name.
     pub fn set_display_name(&mut self, user: UserId, name: impl Into<String>) {
         let name = name.into();
-        let shown = if self.is_agent(&user) {
-            crate::history_source::agent_display_label(&name)
-        } else {
-            name.clone()
-        };
+        let shown = self.kind_label(&user, &name);
         // Relabel any already-drawn pill too, in case the pointer arrived first.
         for cursor in &mut self.remote_cursors {
             if cursor.user_id == user.0 {
@@ -908,22 +1139,72 @@ impl PresenceCtx {
             .unwrap_or_default()
     }
 
+    /// Whether `user` is software acting for someone (an agent, a Shortcut,
+    /// an app) rather than a person: drawn with the agent mark.
     pub fn is_agent(&self, user: &UserId) -> bool {
-        self.participant_kind(user) == ParticipantKind::Agent
+        self.participant_kind(user) != ParticipantKind::Person
+    }
+
+    /// Record whom `user` acts for, as the broker admitted it; `None` when
+    /// it acts for nobody in particular.
+    pub fn set_acting_for(&mut self, user: impl AsRef<UserId>, person: Option<UserId>) {
+        let user = user.as_ref().clone();
+        match person {
+            Some(person) => self.acting_for.insert(user.clone(), person),
+            None => self.acting_for.remove(&user),
+        };
+        let shown = self.display_name(&user);
+        for cursor in &mut self.remote_cursors {
+            if cursor.user_id == user.0 {
+                cursor.label.clone_from(&shown);
+            }
+        }
+    }
+
+    /// The person `user` acts for, if it is an agent, a Shortcut or an app
+    /// acting for one.
+    pub fn acting_for(&self, user: &UserId) -> Option<&UserId> {
+        self.acting_for.get(user)
     }
 
     /// The friendly name to show for `user`, falling back to the raw id
-    /// when the roster hasn't announced one. Never blank.
+    /// when the roster hasn't announced one. Never blank. Software acting
+    /// for a person is named with that person ("Claude, for Ada"), else
+    /// with its kind ("Claude · Agent").
     pub fn display_name(&self, user: &UserId) -> String {
         let name = self
             .names
             .get(user)
             .cloned()
             .unwrap_or_else(|| user.0.clone());
-        if self.is_agent(user) {
-            crate::history_source::agent_display_label(&name)
-        } else {
-            name
+        self.kind_label(user, &name)
+    }
+
+    fn kind_label(&self, user: &UserId, name: &str) -> String {
+        let kind = self.participant_kind(user);
+        if kind == ParticipantKind::Person {
+            return name.to_owned();
+        }
+        if let Some(person) = self.acting_for.get(user) {
+            let person = self.names.get(person).unwrap_or(&person.0);
+            return crate::i18n::widget_format(
+                "participant-acting-for",
+                &[("name", name.into()), ("person", person.as_str().into())],
+            );
+        }
+        match kind {
+            ParticipantKind::Shortcut => {
+                crate::i18n::widget_format("participant-shortcut", &[("name", name.into())])
+            }
+            ParticipantKind::App => {
+                crate::i18n::widget_format("participant-app", &[("name", name.into())])
+            }
+            ParticipantKind::Bot => {
+                crate::i18n::widget_format("participant-bot", &[("name", name.into())])
+            }
+            ParticipantKind::Person | ParticipantKind::Agent => {
+                crate::history_source::agent_display_label(name)
+            }
         }
     }
 
@@ -1236,16 +1517,30 @@ impl PresenceCtx {
     // `shell::peer_presence` and app crates outside this file's ownership,
     // so narrowing it would ripple into call sites out of scope for this
     // pass.
-    #[allow(
-        clippy::needless_pass_by_value,
-        clippy::too_many_lines,
-        reason = "public wire-decode API called from crates outside ui; narrowing payload to &PresencePayload would require updating call sites out of scope for this pass"
-    )]
     pub fn apply_remote_presence(
         &mut self,
         user_id: String,
         key: PresenceKey,
         payload: crate::collaboration::PresencePayload,
+    ) -> RemotePresenceEffect {
+        self.apply_remote_presence_at(user_id, key, payload, crate::time::now())
+    }
+
+    /// [`Self::apply_remote_presence`] with the instant the frame was heard
+    /// supplied. A compositor re-placing a pointer it heard earlier (its tile
+    /// moved) passes the original instant, so the move is carried rather
+    /// than read as the peer moving again ([`Self::set_pointer_at`]); tests
+    /// pass a clock they control.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "public wire-decode API called from crates outside ui; narrowing payload to &PresencePayload would require updating call sites out of scope for this pass"
+    )]
+    pub fn apply_remote_presence_at(
+        &mut self,
+        user_id: String,
+        key: PresenceKey,
+        payload: crate::collaboration::PresencePayload,
+        now: Instant,
     ) -> RemotePresenceEffect {
         use crate::collaboration::PresencePayload::{
             Arrived, Caret, Following, Interaction, Left, Pointer, Selection, Status, Typing,
@@ -1291,14 +1586,13 @@ impl PresenceCtx {
                 // by the frame's coordinate space — see `pointer_owner_for`.
                 let uid = UserId(user_id.clone());
                 let owner = self.pointer_owner_for(&key);
-                self.set_pointer(&key, uid, (x, y));
+                self.set_pointer_at(&key, uid, (x, y), now);
                 self.upsert_remote_cursor_owned(user_id, [x, y], None, 1.0, owner);
             }
             Caret { pos } => {
                 // Feed BOTH stores: in-app BlockEditor reads `carets`
                 // (set_caret); the cross-process overlay reads `remote_caret`.
                 let uid = UserId(user_id.clone());
-                let now = crate::time::now();
                 // Derive a typing mark from a caret that advanced under the
                 // same scope, not only from an explicit `Typing` payload —
                 // an agent/SDK peer publishing bare caret moves has no
@@ -1329,12 +1623,7 @@ impl PresenceCtx {
                 self.set_remote_selection(user_id, key, start, end);
             }
             Typing { start, end } => {
-                self.record_peer_typing(
-                    UserId(user_id),
-                    key,
-                    SelectionRange { start, end },
-                    crate::time::now(),
-                );
+                self.record_peer_typing(UserId(user_id), key, SelectionRange { start, end }, now);
             }
             Interaction(update) => {
                 // Semantic action presence has its own resource/anchor model.
@@ -1424,6 +1713,7 @@ impl PresenceCtx {
                 for list in self.pointers.values_mut() {
                     list.retain(|(u, _)| u != &uid);
                 }
+                self.pointer_glides.retain(|(_, u), _| u != &uid);
                 self.remove_remote_cursor(&user_id);
                 let _ = key;
             }
@@ -1444,6 +1734,7 @@ impl PresenceCtx {
         }
         self.pointers.retain(|_, list| !list.is_empty());
         self.pointer_seen.retain(|(_, u), _| u != &uid);
+        self.pointer_glides.retain(|(_, u), _| u != &uid);
         let cursors = self.remote_cursors.len();
         self.remove_remote_cursor(user_id);
         before != self.pointers.values().map(Vec::len).sum::<usize>()
@@ -1453,6 +1744,7 @@ impl PresenceCtx {
     pub fn unregister_peer(&mut self, user_id: &str) {
         let uid = UserId(user_id.to_owned());
         self.participant_kinds.remove(&uid);
+        self.acting_for.remove(&uid);
         for list in self.here.values_mut() {
             list.retain(|u| u != &uid);
         }
@@ -1460,6 +1752,7 @@ impl PresenceCtx {
             list.retain(|(u, _)| u != &uid);
         }
         self.pointer_seen.retain(|(_, u), _| u != &uid);
+        self.pointer_glides.retain(|(_, u), _| u != &uid);
         for list in self.carets.values_mut() {
             list.retain(|(u, _)| u != &uid);
         }
@@ -1608,6 +1901,45 @@ mod color_override_tests {
 #[cfg(test)]
 mod remote_cursor_tests {
     use super::*;
+
+    #[test]
+    fn a_peer_wears_the_colour_their_machine_says() {
+        let mut ctx = PresenceCtx::empty();
+        let peer = UserId("peer@42".into());
+        ctx.upsert_remote_cursor(peer.0.clone(), [1.0, 2.0], None);
+        assert_eq!(ctx.color_for(&peer), user_color("peer@42"));
+        ctx.set_presence_hue(peer.clone(), crate::tokens::PresenceHue::Violet);
+        let violet = identity_rgb(crate::tokens::PresenceHue::Violet);
+        assert_eq!(ctx.color_for(&peer), violet);
+        let painted = ctx.remote_cursors[0].color;
+        assert!((painted[0] - f32::from(violet.0) / 255.0).abs() < 1e-3);
+        assert!((painted[3] - 1.0).abs() < f32::EPSILON, "alpha is kept");
+        let packed = crate::collaboration::Collaborator {
+            id: peer.0.clone(),
+            name: "Ada".into(),
+            colour: Some(crate::tokens::PresenceHue::Violet),
+            is_agent: false,
+            is_self: false,
+        }
+        .packed_colour();
+        assert_eq!(
+            crate::collaboration::Collaborator::colour_from_packed(packed),
+            Some(crate::tokens::PresenceHue::Violet),
+            "every presence colour survives the roster's wire"
+        );
+        for hue in crate::tokens::PresenceHue::ALL {
+            let (r, g, b) = identity_rgb(hue);
+            let packed = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
+            assert_eq!(
+                crate::collaboration::Collaborator::colour_from_packed(packed),
+                Some(hue)
+            );
+        }
+        assert_eq!(
+            crate::collaboration::Collaborator::colour_from_packed(0),
+            None
+        );
+    }
 
     #[test]
     fn remote_cursors_upsert_in_place_and_remove() {
@@ -1854,10 +2186,6 @@ mod string_id_wrapper_tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, one labelled phase per merged case"
-    )]
     fn peers_keep_stable_colours_and_honest_labels_in_any_arrival_order() {
         // phase: presence_user_color_is_stable_and_distinct
         {
@@ -2446,6 +2774,154 @@ mod own_identity_tests {
             assert!(ctx.is_own_identity(&me.0));
             assert!(ctx.is_own_identity("so.tilo.chat"));
         }
+    }
+
+    /// Peers publish at ~30 Hz; a pointer painted raw steps on a faster
+    /// display. Each new sample is glided to over the gap since the last.
+    #[test]
+    fn pointer_position_eases_between_samples() {
+        let t0 = crate::time::now();
+        let room = PresenceKey::Workspace { id: "r".into() };
+        let peer = UserId("peer@7".into());
+        let gap = Duration::from_millis(33);
+        let mut ctx = PresenceCtx::default();
+        ctx.set_pointer_at(&room, peer.clone(), (0.0, 0.0), t0);
+        assert_eq!(
+            ctx.pointer_position_at(&room, &peer, t0),
+            Some((0.0, 0.0)),
+            "a first sample is shown where it is: nowhere to glide from",
+        );
+        assert!(!ctx.pointers_easing(t0));
+
+        let t1 = t0 + gap;
+        ctx.set_pointer_at(&room, peer.clone(), (33.0, 0.0), t1);
+        assert_eq!(
+            ctx.pointer_for(&room, &peer),
+            Some((33.0, 0.0)),
+            "the store holds what was heard; only the paint glides",
+        );
+        assert_eq!(ctx.pointer_position_at(&room, &peer, t1), Some((0.0, 0.0)));
+        let (x, y) = ctx
+            .pointer_position_at(&room, &peer, t1 + gap / 2)
+            .expect("a pointer");
+        assert!((x - 16.5).abs() < 0.01 && y.abs() < f32::EPSILON, "{x}");
+        let (x, _) = ctx
+            .pointer_position_at(&room, &peer, t1 + gap / 4)
+            .expect("a pointer");
+        assert!(
+            (x - 33.0 * smoothstep(0.25)).abs() < 0.05,
+            "eased, not linear: {x}"
+        );
+        assert!(
+            ctx.pointers_easing(t1 + gap / 2),
+            "mid-glide asks for frames"
+        );
+        assert_eq!(
+            ctx.pointer_position_at(&room, &peer, t1 + gap),
+            Some((33.0, 0.0)),
+            "and lands as the next sample is due",
+        );
+        assert!(!ctx.pointers_easing(t1 + gap), "a landed pointer is quiet");
+
+        // A sample arriving mid-glide starts from where the pointer shows.
+        let t2 = t1 + gap / 2;
+        ctx.set_pointer_at(&room, peer.clone(), (66.0, 0.0), t2);
+        let (x, _) = ctx
+            .pointer_position_at(&room, &peer, t2)
+            .expect("a pointer");
+        assert!((x - 16.5).abs() < 0.01, "no jump back or ahead: {x}");
+
+        // A restatement does not restart anything.
+        let landed = t2 + POINTER_EASE_MAX;
+        ctx.set_pointer_at(&room, peer.clone(), (66.0, 0.0), landed);
+        assert_eq!(
+            ctx.pointer_position_at(&room, &peer, landed),
+            Some((66.0, 0.0))
+        );
+        assert!(!ctx.pointers_easing(landed));
+
+        // After sitting still, the glide is capped rather than spread over
+        // the whole pause.
+        let later = landed + Duration::from_secs(2);
+        ctx.set_pointer_at(&room, peer.clone(), (100.0, 0.0), later);
+        assert!(ctx.pointers_easing(later + POINTER_EASE_MAX / 2));
+        assert_eq!(
+            ctx.pointer_position_at(&room, &peer, later + POINTER_EASE_MAX),
+            Some((100.0, 0.0)),
+        );
+    }
+
+    /// A pointer anchored to a tile is re-placed, under the instant it was
+    /// heard, every time that tile moves: it rides the tile, glide and all.
+    #[test]
+    fn a_pointer_carried_with_its_tile_keeps_its_glide() {
+        let t0 = crate::time::now();
+        let room = PresenceKey::Workspace { id: "r".into() };
+        let peer = UserId("peer@7".into());
+        let gap = Duration::from_millis(40);
+        let mut ctx = PresenceCtx::default();
+        ctx.set_pointer_at(&room, peer.clone(), (100.0, 0.0), t0);
+        ctx.set_pointer_at(&room, peer.clone(), (140.0, 0.0), t0 + gap);
+        // The tile scrolls 30 px left; nothing new was heard.
+        ctx.set_pointer_at(&room, peer.clone(), (110.0, 0.0), t0 + gap);
+        let (x, _) = ctx
+            .pointer_position_at(&room, &peer, t0 + gap + gap / 2)
+            .expect("a pointer");
+        assert!(
+            (x - 90.0).abs() < 0.01,
+            "halfway from 70 to 110 in the scrolled frame: {x}"
+        );
+
+        // A pointer that never moved is carried with no glide at all.
+        let still = UserId("peer@8".into());
+        ctx.set_pointer_at(&room, still.clone(), (10.0, 10.0), t0);
+        ctx.set_pointer_at(&room, still.clone(), (40.0, 10.0), t0);
+        assert_eq!(
+            ctx.pointer_position_at(&room, &still, t0),
+            Some((40.0, 10.0))
+        );
+    }
+
+    /// A pointer retired for going quiet takes its glide with it, so when it
+    /// is heard again it appears where it is rather than gliding from where
+    /// it was last seen seconds ago.
+    #[test]
+    fn quiet_pointer_is_retired_after_idle_and_returns_without_a_glide() {
+        let t0 = crate::time::now();
+        let room = PresenceKey::Workspace { id: "r".into() };
+        let peer = UserId("peer@7".into());
+        let mut ctx = PresenceCtx::default();
+        ctx.set_pointer_at(&room, peer.clone(), (0.0, 0.0), t0);
+        ctx.set_pointer_at(
+            &room,
+            peer.clone(),
+            (50.0, 0.0),
+            t0 + Duration::from_millis(30),
+        );
+        let quiet = t0 + Duration::from_millis(30) + POINTER_IDLE;
+        assert!(ctx.prune_pointers(quiet, POINTER_IDLE));
+        assert_eq!(ctx.pointer_position_at(&room, &peer, quiet), None);
+        assert!(!ctx.pointers_easing(quiet));
+
+        ctx.set_pointer_at(&room, peer.clone(), (500.0, 0.0), quiet);
+        assert_eq!(
+            ctx.pointer_position_at(&room, &peer, quiet),
+            Some((500.0, 0.0))
+        );
+
+        // A pointer that arrived as a frame is also on record as a remote
+        // cursor; retiring the pointer retires that record, or a peer who
+        // vanished keeps a window repainting for the rest of the session.
+        let mut ctx = PresenceCtx::default();
+        ctx.apply_remote_presence_at(
+            peer.0.clone(),
+            room.clone(),
+            crate::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
+            t0,
+        );
+        assert_eq!(ctx.remote_cursors.len(), 1);
+        assert!(ctx.prune_pointers(t0 + POINTER_IDLE, POINTER_IDLE));
+        assert!(ctx.remote_cursors.is_empty(), "{:?}", ctx.remote_cursors);
     }
 
     #[test]

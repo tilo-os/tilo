@@ -25,16 +25,21 @@ hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["
 chacha20poly1305.workspace = true
 # Password-derived keys.
 argon2.workspace = true
-# Key identifiers and the HKDF steps of formats this crate still reads.
+# Key identifiers, the HKDF steps of formats this crate still reads, and
+# the HKDF + AES-GCM wraps a browser computes with WebCrypto.
 hkdf = "0.13"
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 sha2.workspace = true
+# The Secret Service's session transport (`secret_service`): the RFC 2409
+# Oakley group, AES-128-CBC and PKCS#7, as the specification fixes them.
+aes = "0.9"
+cbc = { version = "0.2", features = ["alloc"] }
+num-bigint = "0.4"
 getrandom.workspace = true
+hex.workspace = true
 subtle = "2.6"
 zeroize.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-hex.workspace = true
 
 [lints]
 workspace = true

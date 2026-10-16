@@ -27,27 +27,9 @@ pub(crate) fn document_at(live: &AutoCommit, heads: &[ChangeHash]) -> AutoCommit
     frozen
 }
 
-/// Every name and value `root` exposes to assistive technology, depth first.
-pub(crate) fn root_texts(root: &dyn Widget) -> Vec<String> {
-    fn node(access: &crate::a11y::AccessNode, out: &mut Vec<String>) {
-        out.extend(access.name.clone());
-        out.extend(access.value.clone());
-        for child in &access.children {
-            node(child, out);
-        }
-    }
-    fn visit(widget: &dyn Widget, out: &mut Vec<String>) {
-        if let Some(access) = widget.accessibility() {
-            node(&access, out);
-        }
-        widget.for_each_child(&mut |child| visit(child, out));
-    }
-    let mut out = Vec::new();
-    visit(root, &mut out);
-    out
-}
-
-pub(crate) struct FrozenRootPreview {
+/// A past version drawn by a read-only root of the app over its frozen
+/// document.
+pub struct FrozenRootPreview {
     root: Box<dyn Widget>,
     doc: Option<AutoCommit>,
     label: String,
@@ -57,8 +39,8 @@ pub(crate) struct FrozenRootPreview {
 
 impl FrozenRootPreview {
     /// `label` names what is shown ("Calendar", "Document") for assistive
-    /// technology; `doc` is a [`document_at`] snapshot the preview owns.
-    pub(crate) fn new(root: Box<dyn Widget>, doc: AutoCommit, label: impl Into<String>) -> Self {
+    /// technology; `doc` is the frozen version the preview owns.
+    pub fn new(root: Box<dyn Widget>, doc: AutoCommit, label: impl Into<String>) -> Self {
         Self {
             root,
             doc: Some(doc),
@@ -66,6 +48,18 @@ impl FrozenRootPreview {
             bounds: Rect::ZERO,
             view: PreviewView::default(),
         }
+    }
+
+    /// Open scrolled to `view`, where the person left the previous version.
+    #[must_use]
+    pub fn with_view(mut self, view: PreviewView) -> Self {
+        self.view = view;
+        self
+    }
+
+    /// The root drawing the version.
+    pub fn root(&self) -> &dyn Widget {
+        self.root.as_ref()
     }
 }
 
@@ -78,7 +72,7 @@ impl HistoryPreview for FrozenRootPreview {
     fn layout(
         &mut self,
         bounds: Rect,
-        _text: &mut TextRenderer,
+        text: &mut TextRenderer,
         theme: &Theme,
     ) -> Result<(), String> {
         self.bounds = bounds;
@@ -90,12 +84,15 @@ impl HistoryPreview for FrozenRootPreview {
         if let Some(doc) = self.doc.take() {
             frame = frame.with_state(crate::State::from_doc(doc));
         }
+        // The view is measured by the renderer that draws it — the live
+        // window's, with its fonts and text scale — or a label laid out by
+        // another renderer can come out too narrow and collapse to "…".
+        std::mem::swap(&mut frame.text, text);
         frame.sync(self.root.as_mut());
-        let laid_out = frame
-            .layout(self.root.as_mut())
-            .map_err(|error| error.to_string());
+        let laid_out = frame.layout(self.root.as_mut());
+        std::mem::swap(&mut frame.text, text);
         self.doc = Some(std::mem::take(&mut frame.state.doc));
-        laid_out
+        laid_out.map_err(|error| error.to_string())
     }
 
     fn draw(
@@ -133,7 +130,7 @@ impl HistoryPreview for FrozenRootPreview {
         );
         PreviewAccessibility {
             description: std::iter::once(heading)
-                .chain(root_texts(self.root.as_ref()))
+                .chain(crate::a11y::texts(self.root.as_ref()))
                 .collect::<Vec<_>>()
                 .join("\n"),
             pages: Vec::new(),

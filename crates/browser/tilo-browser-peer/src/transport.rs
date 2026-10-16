@@ -19,7 +19,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use tilo_relay_protocol::live::{
-    ANCHOR_TAG_SAME_SCOPE, ANCHOR_TAG_SCOPED, LiveAnchor, LiveFrame, MAX_OBJECT_ID_BYTES,
+    AnchorScope, LiveAnchor, LiveFrame, read_selection_anchors, selection_anchors,
 };
 use ui::collaboration::{
     ActionDirectoryRequest, CollabEvent, CollabRequest, CollabTransport, DocumentPublicationError,
@@ -71,37 +71,22 @@ fn workspace(route: &RouteSpec) -> Option<u64> {
     tilo_relay_protocol::room_workspace_id(&route.cluster_id.to_string()).ok()
 }
 
-fn push_uvarint(out: &mut Vec<u8>, mut value: u64) {
-    loop {
-        let byte = u8::try_from(value & 0x7f).unwrap_or(0);
-        value >>= 7;
-        if value == 0 {
-            out.push(byte);
-            return;
-        }
-        out.push(byte | 0x80);
-    }
-}
-
-fn read_uvarint(bytes: &[u8]) -> Option<(u64, &[u8])> {
-    let mut value = 0u64;
-    for (index, (byte, shift)) in bytes.iter().zip((0u32..64).step_by(7)).enumerate() {
-        value |= u64::from(byte & 0x7f).checked_shl(shift)?;
-        if byte & 0x80 == 0 {
-            return Some((value, bytes.get(index.checked_add(1)?..)?));
-        }
-    }
-    None
-}
-
 /// A caret (`start == end`) or selection in the editor `key` as the live
-/// plane's selection anchors; `None` when the key does not fit an anchor.
+/// plane's selection anchors. A key too long for the anchor (a framework
+/// resource key naming a long item id) travels as its scope digest, which the
+/// receiving editor resolves against its own keys
+/// ([`PresenceKey::digest_form`]); `None` when even that does not fit.
 pub fn presence_anchors(
     key: &PresenceKey,
     start: usize,
     end: usize,
 ) -> Option<(LiveAnchor, LiveAnchor)> {
-    anchors(key, start, end)
+    selection_anchors(
+        &postcard::to_stdvec(key).ok()?,
+        || key.scope_digest(),
+        u64::try_from(start).ok()?,
+        u64::try_from(end).ok()?,
+    )
 }
 
 /// The editor key and range of selection anchors made by
@@ -110,31 +95,11 @@ pub fn read_presence_anchors(
     anchor: &LiveAnchor,
     head: &LiveAnchor,
 ) -> Option<(PresenceKey, usize, usize)> {
-    read_anchors(anchor, head)
-}
-
-fn anchors(key: &PresenceKey, start: usize, end: usize) -> Option<(LiveAnchor, LiveAnchor)> {
-    let mut anchor = vec![ANCHOR_TAG_SCOPED];
-    push_uvarint(&mut anchor, u64::try_from(start).ok()?);
-    anchor.extend(postcard::to_stdvec(key).ok()?);
-    let mut head = vec![ANCHOR_TAG_SAME_SCOPE];
-    push_uvarint(&mut head, u64::try_from(end).ok()?);
-    (anchor.len() <= MAX_OBJECT_ID_BYTES)
-        .then_some((LiveAnchor { cursor: anchor }, LiveAnchor { cursor: head }))
-}
-
-fn read_anchors(anchor: &LiveAnchor, head: &LiveAnchor) -> Option<(PresenceKey, usize, usize)> {
-    let (&tag, rest) = anchor.cursor.split_first()?;
-    if tag != ANCHOR_TAG_SCOPED {
-        return None;
-    }
-    let (start, key) = read_uvarint(rest)?;
-    let key: PresenceKey = postcard::from_bytes(key).ok()?;
-    let (&tag, rest) = head.cursor.split_first()?;
-    if tag != ANCHOR_TAG_SAME_SCOPE {
-        return None;
-    }
-    let (end, _) = read_uvarint(rest)?;
+    let (scope, start, end) = read_selection_anchors(anchor, head)?;
+    let key = match scope {
+        AnchorScope::Key(key) => postcard::from_bytes(key).ok()?,
+        AnchorScope::Digest(digest) => PresenceKey::from_scope_digest(digest),
+    };
     Some((
         key,
         usize::try_from(start).ok()?,
@@ -161,7 +126,7 @@ impl RelayCollabTransport {
         Self {
             inbound: peer.events(),
             peer,
-            live: crate::live::LiveState::new(crate::clock::now_ms()),
+            live: crate::live::LiveState::new(tilo_clock::unix_now_ms()),
             primary: None,
             confirm_pending: false,
             primary_results: VecDeque::new(),
@@ -218,15 +183,15 @@ impl RelayCollabTransport {
             });
         let frame = self
             .live
-            .publish_presence(crate::clock::now_ms(), |presence| {
+            .publish_presence(tilo_clock::unix_now_ms(), |presence| {
                 presence.focus.clone_from(&focus);
                 match payload {
                     PresencePayload::Pointer { x, y } => presence.pointer = Some([*x, *y]),
                     PresencePayload::Caret { pos } => {
-                        presence.selection = anchors(key, *pos, *pos);
+                        presence.selection = presence_anchors(key, *pos, *pos);
                     }
                     PresencePayload::Selection { start, end } => {
-                        presence.selection = anchors(key, *start, *end);
+                        presence.selection = presence_anchors(key, *start, *end);
                     }
                     PresencePayload::Left => {
                         presence.pointer = None;
@@ -271,15 +236,16 @@ impl RelayCollabTransport {
                 PeerEvent::LiveMember { device, active, .. } => {
                     self.live.member(device, active);
                 }
-                // Remote actions are the page's (`agents.mjs`, `actionsV1`),
-                // consumed from their own event queue. The toolkit keeps its
+                // Remote actions and voice are the page's (`agents.mjs`,
+                // `actionsV1`, `voice-peer.mjs`), consumed from their own queues. The toolkit keeps its
                 // documents in the collaboration manager, so another
                 // volunteer answers compaction requests.
                 PeerEvent::DocumentRejected(_)
                 | PeerEvent::Committed { .. }
                 | PeerEvent::RemoteAction { .. }
                 | PeerEvent::RemoteActionUndeliverable { .. }
-                | PeerEvent::CompactionRequested { .. } => {}
+                | PeerEvent::CompactionRequested { .. }
+                | PeerEvent::Voice(_) => {}
             }
         }
         if self.confirm_pending
@@ -297,7 +263,7 @@ impl RelayCollabTransport {
         };
         if self
             .live
-            .receive(from, frame, crate::clock::now_ms())
+            .receive(from, frame, tilo_clock::unix_now_ms())
             .is_none()
         {
             return;
@@ -313,7 +279,7 @@ impl RelayCollabTransport {
         if let Some((key, start, end)) = presence
             .selection
             .as_ref()
-            .and_then(|(anchor, head)| read_anchors(anchor, head))
+            .and_then(|(anchor, head)| read_presence_anchors(anchor, head))
         {
             let payload = if start == end {
                 PresencePayload::Caret { pos: start }

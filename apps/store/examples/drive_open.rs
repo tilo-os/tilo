@@ -1,5 +1,5 @@
 //! Headless driver for the store's action pipeline — exercises the
-//! *real* typed lifecycle path (`store.app` action → lifecycle queue →
+//! *real* typed path (Store effect → admitted package operation →
 //! `actions::execute`) without a compositor.
 //!
 //! Used by `verify-open-flow.sh` to prove, against a real
@@ -16,19 +16,13 @@
 //!
 //! Exit code 0 = the driven action's outcome was ok.
 
-use automerge::AutoCommit;
-use ui::tilo_actions::{InvocationId, OperationKind};
-use ui::widget::Widget;
-
-use store::StoreApp;
+use store::app::Admitted;
 use store::model::{
     ActionKind, InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust,
 };
+use store::worker::Request;
+use store::{StoreApp, StoreEffect};
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "this intentionally linear headless driver documents and verifies the complete visible action-to-worker contract in one place"
-)]
 fn main() {
     let action = std::env::args().nth(1).unwrap_or_else(|| "open".into());
     let id = std::env::var("TILO_STORE_ITEM_ID").unwrap_or_else(|_| "so.tilo.hello".into());
@@ -50,6 +44,7 @@ fn main() {
         InstalledState::Not
     };
     let item = StoreItem {
+        bot: None,
         id: id.clone(),
         name,
         description: "driven by verify-open-flow.sh".into(),
@@ -71,6 +66,7 @@ fn main() {
             download_url: if url.is_empty() { None } else { Some(url) },
             root_hash_hex: None,
             size_bytes: 0,
+            runtime: None,
         }],
         publisher_pubkey_hex: Some("aa".repeat(32)),
         installed,
@@ -80,65 +76,31 @@ fn main() {
     let mut app = StoreApp::new();
     app.set_items(vec![item.clone()]);
 
-    // Drive the exact resource action the visible button and an agent use.
-    // A click never becomes a transient CRDT edge: the action host validates
-    // the current item and queues one lifecycle operation for the worker.
-    let (pact, action_code) = match action.as_str() {
-        "open" => (ActionKind::Open, "open"),
-        "mark-installed" => (ActionKind::MarkInstalled, "pin"),
+    // Admit the exact effect the visible button and an agent invoke: the
+    // Store checks it against the current item and hands the worker one
+    // package operation.
+    let (pact, effect) = match action.as_str() {
+        "open" => (ActionKind::Open, StoreEffect::OpenApp { app: id.clone() }),
+        "mark-installed" => (
+            ActionKind::MarkInstalled,
+            StoreEffect::Pin { app: id.clone() },
+        ),
         other => {
             eprintln!("unknown action: {other}");
             std::process::exit(2);
         }
     };
-    let mut doc = AutoCommit::new();
-    let invocation = InvocationId::new();
-    let payload =
-        serde_json::to_vec(&vec![id.clone(), action_code.to_string()]).unwrap_or_default();
-    if app
-        .start_operation(
-            &ui::widget::ResourceOperation::local(
-                invocation,
-                OperationKind::Effect,
-                "store.app",
-                &payload,
-            ),
-            &mut doc,
-            &automerge::ROOT,
-        )
-        .is_err()
-    {
-        eprintln!("typed Store action was refused");
-        std::process::exit(3);
-    }
-    let pending = app.take_lifecycle_actions();
-    println!("driven action → lifecycle operations: {pending:?}");
-    let Some((pid, queued_action, queued_invocation)) = pending.into_iter().next() else {
-        eprintln!("no lifecycle operation produced — action wiring is broken");
+    let Ok(Admitted::Job(job)) = app.admit(effect) else {
+        eprintln!("typed Store effect was refused");
         std::process::exit(3);
     };
-    assert_eq!(pid, id, "pending action targets the clicked item");
-    assert_eq!(
-        queued_action, pact,
-        "lifecycle action preserves the resource action"
-    );
-    assert_eq!(
-        queued_invocation, invocation,
-        "worker completion is tied to the action invocation"
-    );
-    if action == "open" {
-        assert_eq!(
-            pact,
-            ActionKind::Open,
-            "primary click resolved to Open (not Install)"
-        );
-    } else {
-        assert_eq!(
-            pact,
-            ActionKind::MarkInstalled,
-            "pin click resolved to MarkInstalled"
-        );
-    }
+    println!("driven effect → worker request: {:?}", job.request);
+    let Request::Act(queued, queued_action) = job.request else {
+        eprintln!("no package operation produced — effect wiring is broken");
+        std::process::exit(3);
+    };
+    assert_eq!(queued.id, id, "the operation targets the clicked item");
+    assert_eq!(queued_action, pact, "the operation is the effect's");
 
     // Execute the action for real (download → tilo-install install →
     // run, or tilo-install pin), exactly as the worker thread would.

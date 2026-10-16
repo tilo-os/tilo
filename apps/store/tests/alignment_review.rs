@@ -1,4 +1,4 @@
-//! Geometry regressions from the 2026-09-16 UI alignment review (unit A3).
+//! Geometry regressions for the Store's pages.
 //!
 //! The Store composes its pages from shared `ui` widgets; these tests lay the
 //! real `StoreApp` out through the same `sync → build_layout → compute_layout
@@ -6,9 +6,6 @@
 //! against the theme's spacing scale.
 
 #![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
     clippy::panic,
     clippy::float_cmp,
     reason = "in a test these are the assertion, not a hazard"
@@ -16,16 +13,10 @@
 
 use store::StoreApp;
 use ui::headless::Framed;
-use ui::text_render::TextRenderer;
 use ui::widget::Widget;
 use vello::kurbo::Rect;
 
-fn spacing() -> ui::tokens::Spacing {
-    ui::tokens::Spacing::default()
-}
-
-fn lay_out(mut app: StoreApp, (w, h): (f32, f32)) -> Framed<StoreApp> {
-    app.set_layout_width_hint(f64::from(w));
+fn lay_out(app: StoreApp, (w, h): (f32, f32)) -> Framed<StoreApp> {
     Framed::new(
         ui::State::new(),
         app,
@@ -45,6 +36,16 @@ fn first_named(root: &dyn Widget, label: &str) -> Rect {
     let mut out = None;
     walk(root, &mut |w| {
         if out.is_none() && w.accessibility().and_then(|n| n.name).as_deref() == Some(label) {
+            out = Some(w.get_rect());
+        }
+    });
+    out.unwrap_or_else(|| panic!("no widget named {label:?}"))
+}
+
+fn last_named(root: &dyn Widget, label: &str) -> Rect {
+    let mut out = None;
+    walk(root, &mut |w| {
+        if w.accessibility().and_then(|n| n.name).as_deref() == Some(label) {
             out = Some(w.get_rect());
         }
     });
@@ -79,243 +80,225 @@ fn close(a: f64, b: f64, what: &str) {
     );
 }
 
-/// Browse summary, remotes heading, compact hero and secondary headers share one composition.
+fn staged(scenario: &str) -> StoreApp {
+    let mut app = store::fixture::seeded_app();
+    app.stage_scene(Some(scenario));
+    app
+}
+
+/// The catalogue's toolbar and its sections share one column and one centre line.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "cases merged from separate tests; each case stays self-contained"
-)]
-fn browse_and_secondary_pages_share_one_composition() {
-    // Case `browse_summary_shares_the_pickers_centre_line`.
-    {
-        let app = store::shots::seeded_app();
-        let app = lay_out(app, (1200.0, 800.0));
-        let source = by_test_id(&*app, "store.source-filter");
-        let category = by_test_id(&*app, "store.category-filter");
-        let summary = first_named(&*app, "6 apps from 2 configured sources");
+fn catalogue_toolbar_and_sections_share_one_column() {
+    let theme = ui::Theme::dark();
+    let app = lay_out(store::fixture::seeded_app(), (1200.0, 800.0));
+    let summary = first_named(&*app, "6 apps from 2 sources");
+    let search = by_test_id(&*app, "search-open");
+    let refresh = by_test_id(&*app, "store.refresh");
+    // The actions stand in the window's header row, beside History.
+    close(
+        search.center().y,
+        refresh.center().y,
+        "the actions share a centre line",
+    );
+    assert!(
+        refresh.y1 <= summary.y0,
+        "the actions sit in the header row above the catalogue"
+    );
+
+    // Every section starts on the summary's leading edge.
+    let sections = by_widget_name(&*app, "Section");
+    assert!(!sections.is_empty(), "the catalogue shows its groups");
+    let trailing = sections[0].x1;
+    for section in &sections {
         close(
-            source.center().y,
-            category.center().y,
-            "pickers share a centre line",
+            section.x0,
+            summary.x0,
+            "sections start on the summary's leading edge",
         );
-        close(
-            summary.center().y,
-            source.center().y,
-            "summary text centred on the pickers, not on the label+picker stack",
-        );
-        // The labels row and the controls row resolve to the same column edges.
-        close(
-            first_named(&*app, "Source").x0,
-            source.x0,
-            "Source label over its picker",
-        );
-        close(
-            first_named(&*app, "Category").x0,
-            category.x0,
-            "Category label over its picker",
-        );
+        close(section.x1, trailing, "sections end on one trailing edge");
+    }
+    // The scroll bar's gutter stays free: no card reaches the window edge.
+    let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+    for card in by_widget_name(&*app, "Card") {
         assert!(
-            summary.x0 > category.x1,
-            "summary {summary:?} sits in its own third column after {category:?}"
-        );
-    }
-
-    // Case `remotes_heading_hugs_its_first_card`.
-    {
-        let sp = spacing();
-        let mut app = store::shots::seeded_app();
-        app.show_remotes_for_shot();
-        let app = lay_out(app, (1200.0, 800.0));
-        let heading = first_named(&*app, "Configured remotes");
-        let remote_title = first_named(&*app, "Flathub");
-        // The card is the outermost container surface around the remote's title
-        // that starts below the heading (inner flex wrappers sit inside its
-        // padding).
-        #[expect(
-            clippy::suspicious_operation_groupings,
-            reason = "edge-by-edge containment test: each side compares like with like"
-        )]
-        let card = by_widget_name(&*app, "Container")
-            .into_iter()
-            .filter(|c| {
-                c.y0 > heading.y1
-                    && c.x0 <= remote_title.x0
-                    && c.x1 >= remote_title.x1
-                    && c.y0 <= remote_title.y0
-                    && c.y1 >= remote_title.y1
-            })
-            .max_by(|a, b| a.area().partial_cmp(&b.area()).unwrap())
-            .expect("a card surface holds the configured remote");
-        close(
-            card.y0 - heading.y1,
-            f64::from(sp.s2),
-            "heading to its first card",
-        );
-        // The form card above and the heading are one page step apart, which is
-        // larger than the heading's own gap to its cards.
-        let form_title = first_named(&*app, "Add a remote");
-        #[expect(
-            clippy::suspicious_operation_groupings,
-            reason = "edge-by-edge containment test: each side compares like with like"
-        )]
-        let form_card = by_widget_name(&*app, "Container")
-            .into_iter()
-            .filter(|c| {
-                c.x0 <= form_title.x0
-                    && c.x1 >= form_title.x1
-                    && c.y0 <= form_title.y0
-                    && c.y1 >= form_title.y1
-                    && c.y1 < heading.y0
-            })
-            .max_by(|a, b| a.area().partial_cmp(&b.area()).unwrap())
-            .expect("a card surface holds the add-remote form");
-        close(
-            heading.y0 - form_card.y1,
-            f64::from(sp.s3),
-            "form card to list heading",
-        );
-    }
-
-    // Case `compact_detail_hero_keeps_one_section_gap_between_artwork_and_title`.
-    {
-        let sp = spacing();
-        let mut app = store::shots::seeded_app();
-        app.focus_detail_for_shot("so.tilo.notes");
-        let app = lay_out(app, (480.0, 900.0));
-        let artwork = by_widget_name(&*app, "StoreArtwork")[0];
-        let title = first_named(&*app, "Notes");
-        close(
-            title.y0 - artwork.y1,
-            f64::from(sp.s6),
-            "artwork to title (no spacer stacked on the column gap)",
-        );
-        let back = by_test_id(&*app, "store.detail.back");
-        assert!(
-            artwork.y0 > back.y1,
-            "artwork {artwork:?} stays below the back control {back:?}"
-        );
-    }
-
-    // Case `secondary_pages_share_one_header_composition`.
-    {
-        let sp = spacing();
-        let mut remotes = store::shots::seeded_app();
-        remotes.show_remotes_for_shot();
-        let remotes = lay_out(remotes, (1200.0, 800.0));
-        let mut safety = store::shots::seeded_app();
-        safety.show_safety_for_shot();
-        let safety = lay_out(safety, (1200.0, 800.0));
-
-        let remotes_title = first_named(&*remotes, "Flatpak remotes");
-        let safety_title = first_named(&*safety, "Trust & moderation");
-        close(
-            remotes_title.height(),
-            safety_title.height(),
-            "titles use one size",
-        );
-        close(
-            remotes_title.y0,
-            safety_title.y0,
-            "titles start on one line",
-        );
-        let remotes_back = by_test_id(&*remotes, "store.remotes.back");
-        let safety_back = by_test_id(&*safety, "store.safety.back");
-        close(
-            remotes_title.y0 - remotes_back.y1,
-            f64::from(sp.s3),
-            "remotes: back control to title",
-        );
-        close(
-            safety_title.y0 - safety_back.y1,
-            f64::from(sp.s3),
-            "safety: back control to title",
-        );
-        let remotes_subtitle = first_named(
-            &*remotes,
-            "Repositories are machine-scoped and every change runs through the package worker.",
-        );
-        close(
-            remotes_subtitle.y0 - remotes_title.y1,
-            f64::from(sp.s2),
-            "title to explanation",
+            card.x1 <= 1200.0 - gutter,
+            "card {card:?} must not reach the scroll bar gutter"
         );
     }
 }
 
-// ---- round two (2026-09-17) ----
-
-/// The status pill never covers card actions and its landing zone follows text scale.
+/// The catalogue is titled like every page, has no permanent status pill, and its actions fit a narrow window.
 #[test]
-fn status_pill_stays_off_card_actions_at_every_text_scale() {
-    // Case `status_pill_never_floats_over_a_card_action`.
-    // The floating status pill — and the hover band that reveals it — lives at
-    // the catalogue's bottom-left, on the cards' own leading edge. Every card
-    // puts its actions at its trailing edge, so at no window size does the pill
-    // sit on an Install, Open or Details button (round one's T7: at 800 × 700
-    // the bottom-right pill covered the last card's Install).
-    {
-        let theme = ui::Theme::dark();
-        let sp = spacing();
-        for (w, h) in [
-            (1200.0, 800.0),
-            (1366.0, 768.0),
-            (800.0, 700.0),
-            (480.0, 900.0),
-        ] {
-            let mut app = store::shots::seeded_app();
-            app.arm_status_bubble_for_shots();
-            let app = lay_out(app, (w, h));
-            let mut tr = TextRenderer::new();
-            let pill = app.status_bubble_rect(&theme, &mut tr);
-            close(
-                pill.y1,
-                f64::from(h) - f64::from(sp.s4),
-                &format!("{w}×{h}: pill sits one s4 above the bottom edge"),
+fn catalogue_has_a_title_no_status_pill_and_actions_that_fit() {
+    let app = lay_out(store::fixture::seeded_app(), (520.0, 820.0));
+    let mut names = Vec::new();
+    walk(&*app, &mut |w| {
+        if let Some(name) = w.accessibility().and_then(|node| node.name) {
+            names.push(name);
+        }
+    });
+    assert!(
+        names.iter().any(|name| name == "Apps"),
+        "the header row names the page: {names:?}"
+    );
+    assert_eq!(
+        names.iter().filter(|name| *name == "App Store").count(),
+        1,
+        "only the window itself carries the app's name: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|name| name.contains("apps available")),
+        "no persistent status pill: {names:?}"
+    );
+    for id in [
+        "search-open",
+        "store.remotes",
+        "store.safety",
+        "store.refresh",
+    ] {
+        let rect = by_test_id(&*app, id);
+        assert!(
+            rect.x0 >= 0.0 && rect.x1 <= 520.0,
+            "{id} {rect:?} must fit a 520 px window"
+        );
+    }
+}
+
+/// Secondary pages share one header composition: the window's title, then the body.
+#[test]
+fn secondary_pages_share_one_header_composition() {
+    let remotes = lay_out(staged("remotes"), (1200.0, 800.0));
+    let safety = lay_out(staged("moderation"), (1200.0, 800.0));
+
+    let remotes_title = first_named(&*remotes, "Flatpak remotes");
+    let safety_title = first_named(&*safety, "Trust and moderation");
+    close(
+        remotes_title.height(),
+        safety_title.height(),
+        "titles use one size",
+    );
+    close(
+        remotes_title.y0,
+        safety_title.y0,
+        "titles start on one line",
+    );
+    let explanation = first_named(
+        &*remotes,
+        "Browse software from your configured repositories. Repositories supplied by this device stay available; repositories you add belong to your account.",
+    );
+    let form_title = first_named(&*remotes, "Add a remote");
+    assert!(
+        explanation.y0 >= remotes_title.y1,
+        "repository scope explanation follows the shared header"
+    );
+    assert!(
+        explanation.y1 < form_title.y0,
+        "the complete explanation fits before the add form"
+    );
+    assert!(
+        explanation.width() > 0.0 && explanation.height() > 0.0,
+        "repository scope guidance is visible"
+    );
+}
+
+/// The details page stacks its identity at the token gap and aligns its facts with the hero.
+#[test]
+fn details_page_aligns_identity_and_facts() {
+    let theme = ui::Theme::dark();
+    let tight = f64::from(theme.tokens.spacing.s2);
+    for width in [480.0, 1200.0] {
+        let app = lay_out(staged("detail"), (width, 900.0));
+        let title = last_named(&*app, "Notes");
+        let source = first_named(&*app, "Tilo app, version 0.1.0");
+        close(
+            source.y0 - title.y1,
+            tight,
+            "name to its source line is one tight step",
+        );
+        let details = first_named(&*app, "Details");
+        let trust = first_named(&*app, "Trust");
+        assert!(
+            details.y1 < trust.y0,
+            "sections stack in reading order without overlap"
+        );
+        assert_eq!(
+            by_widget_name(&*app, "PropertyList").len(),
+            1,
+            "one property list, so every value starts on one edge"
+        );
+    }
+}
+
+/// A publisher's pitch and previews precede the package facts, while the
+/// complete description stays readable in every shipped theme.
+#[test]
+fn publisher_presentation_precedes_package_facts() {
+    for theme in [
+        ui::Theme::dark(),
+        ui::Theme::light(),
+        ui::Theme::high_contrast(),
+    ] {
+        for width in [480.0, 1200.0] {
+            let mut store = staged("detail");
+            store.set_image_store(Some(store::fixture::artwork_store()));
+            let app = Framed::new(
+                ui::State::new(),
+                store,
+                ui::headless::viewport((width, 1600.0)),
+                theme.clone(),
             );
-            assert!(
-                pill.x0 >= 0.0 && pill.width() > 0.0,
-                "{w}×{h}: pill {pill:?} is inside the window"
-            );
-            let buttons = by_widget_name(&*app, "Button");
-            assert!(
-                !buttons.is_empty(),
-                "{w}×{h}: the catalogue shows card actions"
-            );
-            for button in buttons {
-                let overlap = pill.intersect(button);
-                assert!(
-                    overlap.width() <= 0.0 || overlap.height() <= 0.0,
-                    "{w}×{h}: pill {pill:?} overlaps a button {button:?}"
-                );
+            let pitch = first_named(&*app, "Ideas worth keeping, together.");
+            let previews = first_named(&*app, "Previews");
+            let description = by_test_id(&*app, "store.detail.description");
+            let facts = first_named(&*app, "Details");
+            let first_preview = by_test_id(&*app, "store.preview.so.tilo.notes.0");
+            for index in 0..3 {
+                let preview = by_test_id(&*app, &format!("store.preview.so.tilo.notes.{index}"));
+                assert!(preview.x0 >= 0.0 && preview.x1 <= width);
+                if width == 1200.0 {
+                    close(
+                        preview.y0,
+                        first_preview.y0,
+                        "all wide previews share a row",
+                    );
+                }
             }
-            // On the catalogue's leading edge — shared with the masthead's own
-            // leading control on a compact window — never inside the card column.
-            let leftmost_button_x0 = by_widget_name(&*app, "Button")
-                .iter()
-                .map(|b| b.x0)
-                .fold(f64::MAX, f64::min);
-            assert!(
-                pill.x0 <= leftmost_button_x0 + 0.5,
-                "{w}×{h}: pill {pill:?} starts at or before every button ({leftmost_button_x0})"
-            );
+            assert!(pitch.y1 < previews.y0, "the pitch precedes artwork");
+            assert!(previews.y1 < description.y0, "artwork precedes long copy");
+            assert!(description.y1 < facts.y0, "copy precedes package facts");
+            for rect in [pitch, description] {
+                assert!(rect.width() > 0.0 && rect.height() > 0.0);
+                assert!(rect.x0 >= 0.0 && rect.x1 <= width);
+            }
         }
     }
+}
 
-    // Case `status_pill_landing_zone_follows_the_text_scale`.
-    // The landing zone under the last row is the pill's own band (its height
-    // plus an `s4` above and below), so it follows the text scale instead of
-    // restating one number.
-    {
-        let sp = spacing();
-        let one = StoreApp::status_bubble_band(&ui::Theme::dark());
-        let two = StoreApp::status_bubble_band(&ui::Theme::dark().with_text_scale(2.0));
-        assert!(
-            one >= 30.0 + 2.0 * sp.s4,
-            "1× band ({one}) reserves the pill floor plus two margins"
-        );
-        assert!(
-            two > one,
-            "200 % band ({two}) is taller than the 1× band ({one})"
-        );
+/// Every page starts on the catalogue's leading edge, at any width, and the
+/// sections of a reading page end on one trailing edge.
+#[test]
+fn pages_share_one_leading_edge_and_reading_pages_one_trailing_edge() {
+    for width in [800.0, 1200.0] {
+        // As tall as the pages, so neither scrolls and reserves a bar's gutter.
+        let catalogue = lay_out(store::fixture::seeded_app(), (width, 1400.0));
+        let edge = first_named(&*catalogue, "6 apps from 2 sources").x0;
+        for scenario in ["detail", "remotes", "moderation"] {
+            let page = lay_out(staged(scenario), (width, 1400.0));
+            let first = if scenario == "detail" {
+                by_widget_name(&*page, "Avatar")[0]
+            } else {
+                by_widget_name(&*page, "Section")[0]
+            };
+            close(
+                first.x0,
+                edge,
+                &format!("{scenario} starts on the catalogue's edge at {width}"),
+            );
+            let sections = by_widget_name(&*page, "Section");
+            let trailing = sections[0].x1;
+            for section in &sections {
+                close(section.x1, trailing, "sections end on one trailing edge");
+            }
+        }
     }
 }

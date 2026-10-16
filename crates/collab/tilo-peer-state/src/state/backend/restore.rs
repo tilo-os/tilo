@@ -69,6 +69,7 @@ pub(in crate::state) fn restore(
         wire,
         exact,
         version,
+        sealed,
     } = decoded;
     let stored_room = wire.base.room;
     let stored_authority = wire.base.authority;
@@ -142,7 +143,7 @@ pub(in crate::state) fn restore(
                 covered_snapshot: document
                     .covered_snapshot
                     .map(|original| NativeCheckpoint { original }),
-                sealed: Vec::new(),
+                sealed: super::SealedLog::default(),
             },
         );
     }
@@ -162,8 +163,7 @@ pub(in crate::state) fn restore(
         native_cut_publisher: None,
         _retention: (),
     };
-    let mut media_policy = None;
-    if let Some(doc) = &core.room_doc {
+    let media_policy = if let Some(doc) = &core.room_doc {
         let read = doc.read();
         let policy = media::read::parse(
             &read,
@@ -229,8 +229,10 @@ pub(in crate::state) fn restore(
                 _ => invalid(BoundedPeerInvalid::Media),
             })?;
         }
-        media_policy = policy;
-    }
+        policy
+    } else {
+        None
+    };
     if let Some(exact) = &core.exact_admissions {
         for (key, _) in exact.iter() {
             let floor = core
@@ -248,6 +250,10 @@ pub(in crate::state) fn restore(
                 return Err(invalid(BoundedPeerInvalid::ExactFloor));
             }
         }
+    }
+    for (route, ops) in sealed {
+        super::super::sealed_history::restore(&mut core, &route, ops)
+            .map_err(|_| invalid(BoundedPeerInvalid::Sealed))?;
     }
     let media = super::media::cache(&core, media_policy, limits)?;
     Ok(BoundedStatePeer::from_core(core, media, *limits))

@@ -17,11 +17,11 @@ description = "Host services a Tilo UI process borrows from whatever hosts it."
 
 [features]
 # Thread-local chooser and URI backends a test selects for scoped requests.
-test-support = ["tilo-dialogs/test-support"]
+test-support = ["tilo-dialogs/test-support", "tilo-clock/test-support"]
 # The native desktop services (`native::services`): each platform crate's
 # system backend, speech, and the backends below. Without it the crate is the
 # host vocabulary only, and a host installs its own `host::HostServices`.
-native = ["dep:tokio", "dep:jni", "dep:ndk-context"]
+native = ["dep:tokio", "dep:jni", "dep:ndk-context", "dep:tilo-files"]
 # Screen capture through the XDG Desktop Portal. Linux only: the native
 # runner turns it on for Linux targets, and it enables nothing elsewhere.
 # File choosers, OpenURI and location are platform crates' (`tilo-dialogs`,
@@ -32,11 +32,13 @@ portal = ["native", "dep:ashpd"]
 # runs on the workspace's tokio backend; the server lives on its own thread
 # with a private runtime.
 mpris = ["native", "dep:zbus", "dep:tilo-media"]
-# Kept for compatibility: `tilo-notify` selects each target's notifications
-# without a feature.
-notifications = ["native"]
 
 [dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# The authenticated host updates the app process's portable network hints.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", default-features = false }
+# Bounded reads of the host-selected read-only policy projection.
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 hex.workspace = true
 image = { workspace = true, features = ["png"] }
 tilo-rt.workspace = true

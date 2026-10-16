@@ -34,20 +34,6 @@ impl VtGrid {
         self.parser.advance(&mut self.grid, bytes);
     }
 
-    /// Resize the grid (e.g. on a window resize). Content is preserved from
-    /// the top-left; the cursor is clamped into the new bounds.
-    pub fn resize(&mut self, cols: usize, rows: usize) {
-        self.grid.resize(cols.max(1), rows.max(1));
-    }
-
-    pub fn cols(&self) -> usize {
-        self.grid.cols
-    }
-
-    pub fn rows(&self) -> usize {
-        self.grid.rows
-    }
-
     /// The current cursor cell (col, row), for drawing the block caret.
     pub fn cursor(&self) -> (usize, usize) {
         (self.grid.cx, self.grid.cy)
@@ -97,17 +83,6 @@ impl Grid {
             pen_color: None,
             pen_bold: false,
         }
-    }
-
-    fn resize(&mut self, cols: usize, rows: usize) {
-        for row in &mut self.cells {
-            row.resize(cols, Cell::blank());
-        }
-        self.cells.resize(rows, vec![Cell::blank(); cols]);
-        self.cols = cols;
-        self.rows = rows;
-        self.cx = self.cx.min(cols.saturating_sub(1));
-        self.cy = self.cy.min(rows.saturating_sub(1));
     }
 
     /// Move to the start of the next line, scrolling the buffer up if the
@@ -362,16 +337,6 @@ mod tests {
             for line in g.lines() {
                 assert_eq!(plain_text(&line).trim(), "");
             }
-        }
-
-        eprintln!("phase resize_preserves_and_clamps");
-        {
-            let mut g = VtGrid::new(10, 3);
-            g.feed(b"keep");
-            g.resize(6, 2);
-            assert_eq!(g.cols(), 6);
-            assert_eq!(g.rows(), 2);
-            assert_eq!(plain_text(&g.lines()[0]), "keep");
         }
     }
 }

@@ -1,17 +1,18 @@
-//! Project-wide search: find a string across every text file under the project
-//! root, without the UI thread ever waiting for the filesystem.
+//! Project text search: find a string across every text file under the project
+//! root, without the UI thread ever waiting for the filesystem. The platform
+//! search lists what it finds (see `search_provider.rs`).
 //!
 //! Searching this repository means walking tens of thousands of files. Doing
 //! that between two frames would freeze the window for seconds, so a [`Job`]
 //! runs the walk on a worker thread and streams batches of [`Hit`]s back over a
-//! channel that the app drains once per frame — the same shape the portal and
-//! the language-server reader use. Results appear progressively as they are
-//! found rather than all at once at the end, and [`Job::cancel`] stops a walk
+//! channel that the provider drains — the same shape the portal and the
+//! language-server reader use. Results appear progressively as they are found
+//! rather than all at once at the end, and [`Job::cancel`] stops a walk
 //! the moment the query changes, so typing does not pile up eight live searches.
 //!
 //! The matcher itself is [`line_matches`], which is also what the in-buffer
 //! find bar uses — one definition of "what counts as a match" for both, so the
-//! count in the find bar and the hits in the panel can never disagree.
+//! count in the find bar and the hits in the palette can never disagree.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,7 +24,7 @@ use crate::disk;
 /// How many hits a single search will report before it stops. A query like `e`
 /// over a large repository matches millions of times; past a few thousand the
 /// list has stopped being a search result and become a denial of service
-/// against the person reading it. The UI says plainly when it truncated.
+/// against the person reading it. The editor says plainly when it truncated.
 pub const MAX_HITS: usize = 5_000;
 
 /// A no-match query must not be able to turn an arbitrarily huge checkout into
@@ -122,17 +123,10 @@ pub enum Msg {
 pub struct Job {
     rx: Receiver<Msg>,
     cancel: Arc<AtomicBool>,
-    query: Query,
     finished: bool,
 }
 
 impl Job {
-    /// The query this job is running, so the app can ignore a stale job's
-    /// results after the user has typed on.
-    pub fn query(&self) -> &Query {
-        &self.query
-    }
-
     /// Whether the worker reported completion.
     pub fn is_finished(&self) -> bool {
         self.finished
@@ -178,7 +172,7 @@ pub fn start(root: &Path, query: Query) -> Job {
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = cancel.clone();
     let root = root.to_path_buf();
-    let worker_query = query.clone();
+    let worker_query = query;
     // The OS refusing to spawn a worker thread (resource exhaustion) is not
     // fatal here: `tx` drops with the closure, so `rx` reports done
     // immediately and the search just comes back empty instead of crashing
@@ -193,7 +187,6 @@ pub fn start(root: &Path, query: Query) -> Job {
     Job {
         rx,
         cancel,
-        query,
         finished: false,
     }
 }
@@ -278,26 +271,15 @@ pub fn walk(root: &Path, query: &Query, cancel: &AtomicBool, emit: &mut dyn FnMu
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
-            let Ok(md) = std::fs::metadata(&path) else {
-                continue;
-            };
-            if md.len() > disk::MAX_TEXT_BYTES {
-                continue;
-            }
             if files >= MAX_FILES_SCANNED {
                 truncated = true;
                 break 'walk;
             }
-            let Ok(bytes) = std::fs::read(&path) else {
+            // Reuse the editor's bounded read: a file may grow after stat.
+            let Ok(loaded) = disk::load(&path) else {
                 continue;
             };
-            let Ok(text) = String::from_utf8(bytes) else {
-                continue;
-            };
-            let sniff_len = text.len().min(8192);
-            if text.as_bytes().get(..sniff_len).unwrap_or(&[]).contains(&0) {
-                continue;
-            }
+            let text = loaded.text;
             files += 1;
             let rel = relative_display(root, &path);
             for (idx, line) in text.lines().enumerate() {
@@ -641,7 +623,6 @@ mod tests {
     fn the_background_job_streams_results_and_finishes() {
         let d = fixture();
         let mut job = start(d.path(), q("needle"));
-        assert_eq!(job.query().needle, "needle");
         let mut hits = Vec::new();
         let deadline = ui::time::now() + HANG_BOUND;
         while ui::time::now() < deadline {

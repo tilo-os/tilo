@@ -6,6 +6,7 @@ use crate::state::now_ns;
 use automerge::AutoCommit;
 use automerge::ROOT;
 use automerge::transaction::Transactable;
+use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::RevocationList;
 use web_time::Duration;
@@ -69,7 +70,7 @@ fn native_publication_preserves_original_member_author_and_exact_retry() {
     let before = doc.get_heads();
     doc.put(ROOT, "member-published", "original signed operation")
         .unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "member-published");
     let message = host
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
         .unwrap();
@@ -114,7 +115,7 @@ fn native_publication_rechecks_pinned_publisher_and_original_author_revocations(
     let heads = doc.get_heads();
     doc.put(ROOT, "member-change", "retained signed member packet")
         .unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "member-change");
     let message = host
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
@@ -171,6 +172,7 @@ fn native_publication_closed_families_do_not_promote_presence_or_requests() {
             since: vec![],
             room: peer.room().into(),
             invite_id: None,
+            nonce: 0,
         },
         NeighbourMsg::PresenceCleared {
             peer: 0,
@@ -258,13 +260,13 @@ fn assert_deferred_governor_revalidation(reopen: bool) {
     let mut doc = AutoCommit::load(&source.document("test.app", "tab:1").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "predecessor", true).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "predecessor");
     let predecessor = source
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "native-descendant", true).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "native-descendant");
     let descendant = source
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
@@ -327,13 +329,13 @@ fn native_publication_streaming_cut_accepts_complete_out_of_order_original_packe
     let mut doc = AutoCommit::load(&source.document("test.app", "tab:1").unwrap()).unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "parent", true).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "parent");
     let parent = source
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
     let heads = doc.get_heads();
     doc.put(ROOT, "child", true).unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "child");
     let child = source
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &member, now)
         .unwrap();
@@ -421,13 +423,13 @@ fn native_publication_streaming_cut_preserves_preexisting_relay_pending() {
     let mut doc = AutoCommit::load(&author.document("test.app", "tab:1").unwrap()).unwrap();
     let before = doc.get_heads();
     doc.put(ROOT, "pending-parent", "parent").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "pending-parent");
     let _parent = author
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
         .unwrap();
     let before = doc.get_heads();
     doc.put(ROOT, "pending-child", "child").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "pending-child");
     let child = author
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
         .unwrap();
@@ -478,13 +480,13 @@ fn native_publication_streaming_cut_cannot_drop_rejected_deferred_input() {
     let mut doc = AutoCommit::load(&author.document("test.app", "tab:1").unwrap()).unwrap();
     let before = doc.get_heads();
     doc.put(ROOT, "governor-parent", "parent").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "governor-parent");
     let parent = author
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &governor, now)
         .unwrap();
     let before = doc.get_heads();
     doc.put(ROOT, "revoked-member-child", "child").unwrap();
-    doc.commit();
+    doc.commit_edit("fixture", "revoked-member-child");
     let child = author
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &member, now)
         .unwrap();
@@ -521,7 +523,7 @@ fn native_publication_streaming_cut_requires_complete_room_history() {
     let mut room = receiver.admitted_room().unwrap().clone();
     let before = room.get_heads();
     room.put(ROOT, "cut-room-parent", "parent").unwrap();
-    room.commit();
+    room.commit_edit("fixture", "cut-room-parent");
     let parent = NeighbourMsg::SyncResp {
         room: receiver.core.room.clone(),
         changes: room
@@ -532,7 +534,7 @@ fn native_publication_streaming_cut_requires_complete_room_history() {
     };
     let before = room.get_heads();
     room.put(ROOT, "cut-room-child", "child").unwrap();
-    room.commit();
+    room.commit_edit("fixture", "cut-room-child");
     let child = NeighbourMsg::SyncResp {
         room: receiver.core.room.clone(),
         changes: room

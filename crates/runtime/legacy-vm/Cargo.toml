@@ -1,0 +1,55 @@
+[package]
+name = "legacy-vm"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Per-user legacy VMs: one unprivileged libvirt domain per guest OS, woken on launch and snapshotted when idle."
+
+[lib]
+name = "legacy_vm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tilo-legacy"
+path = "src/main.rs"
+
+[features]
+default = ["relay-stream"]
+# `tilo-legacy relay-stream`, for a relay's KVM worker. Off for crates that
+# only read the legacy app registry (environments' command shims), so they
+# do not link a video encoder.
+relay-stream = ["dep:image", "dep:tilo-callstream", "dep:tilo-relay-protocol"]
+
+[dependencies]
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+collab-types = { path = "../../collab/collab-types" }
+fnv.workspace = true
+# `relay-stream`: a window screenshot's pixels, encoded as H.264 for a
+# relay's legacy window stream.
+image = { workspace = true, features = ["png"], optional = true }
+tilo-callstream = { path = "../../collab/tilo-callstream", optional = true }
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol", optional = true }
+legacy-agent-protocol = { path = "../legacy-agent-protocol" }
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-libvirt-domain = { path = "../../system/libvirt-domain" }
+tilo-paths = { path = "../../platform/tilo-paths" }
+tilo-sandbox-core = { path = "../../system/sandbox-core" }
+wire-frame = { path = "../../system/wire-frame", features = ["postcard"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-desktop-entry = { path = "../../system/desktop-entry" }
+
+[lints]
+workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }

@@ -4,6 +4,7 @@ use super::{
     HistoryRegistrationError, HistorySourceRegistration, PreviewInput, PreviewSide, PreviewView,
     canvas::PreviewCanvas,
 };
+use crate::widget::ButtonRole;
 use crate::{
     i18n::I18nManager,
     presence::PresenceCtx,
@@ -11,10 +12,10 @@ use crate::{
     theme::Theme,
     widget::{ActivityTimeline, Button, Column, Row, TaffyTreeExt, Text, TextInput, Widget},
 };
-use automerge::{AutoCommit, transaction::Transactable};
+use automerge::AutoCommit;
 use std::{
     cell::{Cell, RefCell},
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     rc::Rc,
 };
 use taffy::{Dimension, FlexDirection, NodeId, Size, Style, TaffyTree};
@@ -26,6 +27,7 @@ use winit::event::WindowEvent;
 #[derive(Clone, Copy)]
 enum Command {
     Live,
+    Earlier,
     Activity,
     Before,
     After,
@@ -33,7 +35,7 @@ enum Command {
     NextPage,
     Scope(usize),
     Review(review::ReviewCommand),
-    FileParent(collab_types::FileVersionId),
+    FileParent(fs_protocol::FileVersionId),
     FileUndo,
     FileRedo,
     FileCheck,
@@ -69,6 +71,13 @@ pub(super) struct Composition {
     preview: Option<super::PreviewSide>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Walks of a History's owned layout subtrees on this thread, so tests
+    /// can hold a focus-order recomputation to one walk, not one per node.
+    pub(crate) static OWNERSHIP_WALKS: Cell<usize> = const { Cell::new(0) };
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent presentation, focus and refresh flags are not mutually exclusive modes"
@@ -89,12 +98,12 @@ pub struct HistoryHost {
     controller: Option<HistoryController>,
     files: Option<super::files_session::FileController>,
     retired_files: Vec<super::files_session::FileController>,
-    requested_file_version: Option<collab_types::FileVersionId>,
+    requested_file_version: Option<fs_protocol::FileVersionId>,
     observed_file_binding: Option<uuid::Uuid>,
     file_target_resolved: bool,
     toolbar: Column,
     timeline: ActivityTimeline,
-    unavailable: Text,
+    unavailable: crate::widget::EmptyState,
     unavailable_node: Option<NodeId>,
     open_requested: Rc<Cell<bool>>,
     /// The change to select once History next refreshes open.
@@ -103,6 +112,13 @@ pub struct HistoryHost {
     /// Whether the closed toolbar offers its own History button. Off where
     /// the host's chrome (a menu bar, the Tilo shell) presents History.
     open_button: bool,
+    /// Embedded hosts may provide a fallback; app windows use their existing header.
+    fallback_bar: bool,
+    /// The live app draws the window's header row, which holds the History
+    /// control while History is closed, so this toolbar draws none then.
+    app_presents_button: bool,
+    /// The app's header row shows the sync status, so this bar does not.
+    app_presents_status: bool,
     commands: Rc<RefCell<VecDeque<Command>>>,
     selected: Vec<crate::HistoryEntryId>,
     before: PreviewCanvas,
@@ -135,6 +151,12 @@ pub struct HistoryHost {
     body_node: Option<NodeId>,
     timeline_node: Option<NodeId>,
     canvas_node: Option<NodeId>,
+    /// What the frame being drawn painted ([`Self::draw_compared`]), and
+    /// what the last presented frame did ([`Self::paint_presented`]).
+    #[cfg(feature = "native")]
+    painting: Option<Scene>,
+    #[cfg(feature = "native")]
+    painted: Option<Scene>,
 }
 impl HistoryHost {
     /// Request the same read-only presentation as the History button. Restore
@@ -170,6 +192,38 @@ impl HistoryHost {
         self.open
     }
 
+    /// The window's History door as this History serves it: the same
+    /// Open, Open at and Hide as the standalone door, without session rows.
+    pub(crate) fn door_resource(&self) -> tilo_actions::Resource {
+        crate::standalone_history_host::history_resource(!self.invalid_owner, self.is_open())
+    }
+
+    /// Run one History door operation resolved against [`Self::door_resource`]
+    /// (a header History control, the History shortcut): it opens, opens at
+    /// a change, or closes exactly as this History's own button does.
+    pub(crate) fn invoke_door(
+        &mut self,
+        encoded: &tilo_actions::EncodedAction,
+    ) -> Result<(), String> {
+        use crate::standalone_history_host::{HISTORY_OPERATION, HistoryCommand, decode_entry};
+        if encoded.type_id != HISTORY_OPERATION {
+            return Err("Unsupported History operation".into());
+        }
+        match serde_json::from_slice(&encoded.payload) {
+            Ok(HistoryCommand::Open) if self.request_open() => Ok(()),
+            Ok(HistoryCommand::OpenAt { entry })
+                if decode_entry(&entry).is_ok_and(|entry| self.request_open_at(entry)) =>
+            {
+                Ok(())
+            }
+            Ok(HistoryCommand::Hide) => {
+                self.request_close();
+                Ok(())
+            }
+            _ => Err("Unsupported History operation".into()),
+        }
+    }
+
     /// The changes the timeline would list now, in causal order, whether
     /// or not History is open.
     #[cfg(any(feature = "native", test))]
@@ -183,8 +237,13 @@ impl HistoryHost {
             .unwrap_or_default()
     }
 
-    /// The host's own chrome presents History: drop the toolbar's button.
-    #[cfg(any(feature = "native", test))]
+    /// The host presents History elsewhere, or the system surface omits
+    /// document chrome: retain History custody without its closed button.
+    pub(crate) fn remove_fallback_bar(&mut self) {
+        self.fallback_bar = false;
+        self.rebuild_toolbar();
+    }
+
     pub(crate) fn remove_open_button(&mut self) {
         self.open_button = false;
         self.rebuild_toolbar();
@@ -206,34 +265,24 @@ impl HistoryHost {
             .find(|source| source.scope() == scope.key)
             .ok_or(HistoryRegistrationError::InvalidScopes)?;
 
+        // History projects when it opens; a launch only learns the frontier.
         let controller = match source {
             HistorySourceRegistration::HostDocument { resource, .. }
             | HistorySourceRegistration::OwnedDocument { resource, .. } => Some(
-                HistoryController::new(resource.clone(), &source.document(doc)?)
-                    .map_err(|_| HistoryRegistrationError::ForeignSource)?,
+                HistoryController::unprojected(resource.clone(), source.committed_heads(doc)?),
             ),
             HistorySourceRegistration::Unversioned { .. }
             | HistorySourceRegistration::CheckedFiles { .. } => None,
         };
-        let unavailable = Text::new(match registration.sources.first() {
+        let unavailable = unavailable_state(match registration.sources.first() {
             Some(HistorySourceRegistration::Unversioned { reason, .. }) => reason,
             _ => "history-mode-content-unavailable",
         });
         let request = Rc::new(Cell::new(false));
-        let clicked = request.clone();
         let toolbar = Column::new()
             .with_no_padding()
             .with_gap(4.0)
-            .with_intrinsic_height()
-            .push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Button::new("history-open", "History", None)
-                            .fit_content(32.0)
-                            .on_click(move || clicked.set(true)),
-                    ))
-                    .push(Box::new(Text::new(scope.title))),
-            ));
+            .with_intrinsic_height();
         let mut host = Self {
             enclosing_owner: None,
             embedded: false,
@@ -246,7 +295,7 @@ impl HistoryHost {
             review: None,
             review_request: None,
             review_node: None,
-            clock: review::unix_now,
+            clock: crate::time::try_unix_now,
             controller,
             files: None,
             retired_files: vec![],
@@ -261,6 +310,9 @@ impl HistoryHost {
             requested_entry: None,
             open: false,
             open_button: true,
+            fallback_bar: true,
+            app_presents_button: false,
+            app_presents_status: false,
             rect: Rect::ZERO,
             chrome_node: None,
             live_node: None,
@@ -291,9 +343,46 @@ impl HistoryHost {
             control_domain: None,
             control_lease: None,
             invalid_owner: false,
+            #[cfg(feature = "native")]
+            painting: None,
+            #[cfg(feature = "native")]
+            painted: None,
         };
         host.rebuild_toolbar();
         Ok(host)
+    }
+
+    /// Draw into a scene of its own, append that to `scene`, and say whether
+    /// it differs from what the last presented frame painted: a window that
+    /// shows the live app under an unchanged History toolbar repaints only
+    /// what the app's widgets damage.
+    #[cfg(feature = "native")]
+    pub(crate) fn draw_compared(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut crate::text_render::TextRenderer,
+        (theme, presence): (&crate::theme::Theme, &crate::presence::PresenceCtx),
+    ) -> bool {
+        let mut own = self.painting.take().unwrap_or_default();
+        own.reset();
+        Widget::draw(self, &mut own, transform, text, theme, presence);
+        scene.append(&own, None);
+        let changed = self.painted.as_ref().map_or_else(
+            || !own.encoding().draw_tags.is_empty(),
+            |was| !was.encoding_eq(&own),
+        );
+        self.painting = Some(own);
+        changed
+    }
+
+    /// The frame drawn last was presented: what the next frame's paint is
+    /// compared with.
+    #[cfg(feature = "native")]
+    pub(crate) fn paint_presented(&mut self) {
+        if let Some(painting) = self.painting.take() {
+            self.painted = Some(painting);
+        }
     }
     pub(crate) fn set_control_domain(&mut self, domain: &crate::ControlDomain) {
         self.control_domain = Some(domain.clone());
@@ -306,8 +395,28 @@ impl HistoryHost {
         self.rebuild_toolbar();
     }
     pub(crate) fn validate_root(&self, root: &dyn Widget) -> Result<(), HistoryRegistrationError> {
+        let _phase = tilo_resource::profiling::Phase::start("ui.history_root_validation");
         self.registration
             .validate_root_with_owner(root, self.enclosing_owner.as_ref())
+    }
+    /// Whether this is the History of the tile that hosts `owner`'s app.
+    pub(crate) fn encloses(&self, owner: &super::HistoryOwner) -> bool {
+        self.enclosing_owner
+            .as_ref()
+            .is_some_and(|enclosing| enclosing.same_owner(owner))
+    }
+    /// The app the tile holding this History hosts.
+    pub(crate) fn enclosing_owner(&self) -> Option<&super::HistoryOwner> {
+        self.enclosing_owner.as_ref()
+    }
+    /// The History door actions a control in the hosted app can run now:
+    /// Open while closed, Hide while open, none for an invalid owner.
+    pub(crate) fn door_addresses(&self) -> std::collections::HashSet<tilo_actions::ActionAddress> {
+        tilo_actions::door::survey(&[self.door_resource()])
+            .into_iter()
+            .filter(|descriptor| descriptor.contract.availability.is_available())
+            .map(|descriptor| descriptor.address)
+            .collect()
     }
     pub(crate) fn set_enclosing_owner(&mut self, owner: Option<super::HistoryOwner>) {
         self.embedded = true;
@@ -385,6 +494,30 @@ impl HistoryHost {
             .find(|source| source.scope() == key)
             .expect("validated scope")
     }
+    /// The checked-file scope whose content asked to show a file's history
+    /// while another scope is shown: opening a file's history from the app
+    /// (its History command on a selected file) moves to that file's scope.
+    fn file_scope_asking_to_open(&self) -> Option<usize> {
+        if matches!(
+            self.source(),
+            HistorySourceRegistration::CheckedFiles { .. }
+        ) {
+            return None;
+        }
+        self.registration
+            .definition
+            .scopes
+            .iter()
+            .position(|scope| {
+                self.registration.sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        HistorySourceRegistration::CheckedFiles { scope: key, source }
+                            if *key == scope.key && source.wants_open()
+                    )
+                })
+            })
+    }
     pub(crate) fn validate(&self) -> Result<(), HistoryRegistrationError> {
         if self.invalid_owner {
             return Err(HistoryRegistrationError::UnsupportedOwner);
@@ -414,7 +547,8 @@ impl HistoryHost {
         self.open_requested.set(false);
         self.open = true;
         self.returning_live = false;
-        self.unavailable = Text::new(&HistoryRegistrationError::UnsupportedOwner.to_string());
+        self.unavailable =
+            unavailable_state(&HistoryRegistrationError::UnsupportedOwner.to_string());
         self.toolbar_dirty = true;
         true
     }
@@ -576,6 +710,7 @@ impl HistoryHost {
                     super::owner::OwnerKind::Component(binding) => {
                         let origin = super::pending_controls::PendingControlOrigin::Component(
                             crate::bound_dispatch::BoundActionTarget {
+                                input: crate::bound_dispatch::Input::Discrete,
                                 binding: binding.clone(),
                                 address: crate::bound_dispatch::BoundActionAddress {
                                     instance_id: binding.instance_id,
@@ -682,6 +817,17 @@ impl HistoryHost {
         // The caller completed the final suspended-output discard. Later live
         // emissions into these queues retain their ordinary dispatch semantics.
         self.suspended_control_queues.clear();
+    }
+    /// Closed, with nothing in flight: no input captured or asked for, no
+    /// focus saved or being returned, no control return and no review
+    /// requested. Only input (or a refresh, which recomposes) moves a
+    /// surface out of rest, so a frame that had neither leaves it here.
+    pub(crate) fn at_rest(&self) -> bool {
+        !self.captures_input()
+            && self.saved_focus.is_none()
+            && !self.returning_live
+            && self.control_lease.is_none()
+            && !self.has_review_request()
     }
     pub(crate) fn has_settled_control_return(&self) -> bool {
         self.control_lease.is_some() && !self.captures_input() && !self.returning_live
@@ -790,17 +936,14 @@ impl HistoryHost {
     #[cfg(test)]
     pub(crate) fn activate_retained_control_for_test(&mut self, id: &str) -> bool {
         fn activate(widget: &mut dyn Widget, id: &str) -> bool {
-            if widget.test_id() == Some(id) {
-                return widget.perform_action(
+            crate::widget::find_test_id_mut(widget, id).is_some_and(|widget| {
+                widget.perform_action(
                     &crate::a11y::Action::Activate,
-                    &mut AutoCommit::new(),
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT,
-                );
-            }
-            widget
-                .children_mut()
-                .into_iter()
-                .any(|child| activate(child, id))
+                )
+            })
         }
         // Invokes the retained production button callback. No phase, lease,
         // descriptor, or producer behavior is replaced by this access seam.
@@ -905,17 +1048,51 @@ impl HistoryHost {
     pub(crate) fn returning_live(&self) -> bool {
         self.returning_live
     }
-    pub(crate) fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool {
-        let mut pending: Vec<_> = [
+    fn owned_layout_roots(&self) -> [Option<NodeId>; 5] {
+        [
             self.toolbar_node,
             self.timeline_node,
             self.canvas_node,
             self.unavailable_node,
             self.review_node,
         ]
-        .into_iter()
-        .flatten()
-        .collect();
+    }
+    pub(crate) fn extend_focus_denials(&self, tree: &TaffyTree<()>, denied: &mut HashSet<NodeId>) {
+        if !self.captures_input() && !self.has_saved_focus() {
+            return;
+        }
+        let owned = self.owned_nodes(tree);
+        let mut pending: Vec<_> = self.chrome_node.into_iter().collect();
+        while let Some(node) = pending.pop() {
+            if owned.contains(&node) {
+                continue;
+            }
+            // Ownership is exempted per surface, before combining denials.
+            // An already denied parent may still have descendants exempted by
+            // another surface, so its children must always be visited here.
+            denied.insert(node);
+            pending.extend(tree.children(node).unwrap_or_default());
+        }
+    }
+    /// Every layout node this History owns, collected in one walk: the set
+    /// [`Self::owns_node`] answers for one node, for callers that ask it of
+    /// every node in a composition.
+    pub(crate) fn owned_nodes(&self, tree: &TaffyTree<()>) -> HashSet<NodeId> {
+        #[cfg(test)]
+        OWNERSHIP_WALKS.with(|walks| walks.set(walks.get() + 1));
+        let mut owned = HashSet::new();
+        let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
+        while let Some(node) = pending.pop() {
+            if owned.insert(node) {
+                pending.extend(tree.children(node).unwrap_or_default());
+            }
+        }
+        owned
+    }
+    pub(crate) fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool {
+        #[cfg(test)]
+        OWNERSHIP_WALKS.with(|walks| walks.set(walks.get() + 1));
+        let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
         while let Some(candidate) = pending.pop() {
             if candidate == node {
                 return true;
@@ -955,11 +1132,22 @@ impl HistoryHost {
         }
     }
     pub(crate) fn needs_refresh(&self, doc: &AutoCommit, width: f64) -> bool {
+        self.refresh_without_owners(width)
+            .unwrap_or_else(|| self.heads_need_refresh(doc))
+    }
+    /// [`Self::needs_refresh`] as far as it can be answered without reading
+    /// an owner's document: `None` leaves it to the committed frontier
+    /// ([`Self::heads_need_refresh`]). What other threads deliver (asset and
+    /// file results) and what is queued for the surface are read here.
+    pub(crate) fn refresh_without_owners(&self, width: f64) -> Option<bool> {
         if self.invalid_owner {
-            return false;
+            return Some(false);
         }
         if self.assets.has_results() {
-            return true;
+            return Some(true);
+        }
+        if self.file_scope_asking_to_open().is_some() {
+            return Some(true);
         }
         if let HistorySourceRegistration::CheckedFiles { source, .. } = self.source()
             && (source.target().map(|target| target.binding) != self.observed_file_binding
@@ -973,7 +1161,7 @@ impl HistoryHost {
                     .iter()
                     .any(super::files_session::FileController::has_results))
         {
-            return true;
+            return Some(true);
         }
         if !self.pending_control_recovery.is_empty()
             || self.toolbar_dirty
@@ -983,24 +1171,46 @@ impl HistoryHost {
             || !self.commands.borrow().is_empty()
             || (self.width < 600.0) != (width < 600.0)
         {
-            return true;
+            return Some(true);
         }
         let selected = self.timeline_selection();
         if !selected.is_empty() && selected != self.selected {
-            return true;
+            return Some(true);
         }
-        if matches!(
+        matches!(
             self.source(),
             HistorySourceRegistration::CheckedFiles { .. }
-        ) {
-            return false;
-        }
-        let Ok(document) = self.source().document(doc) else {
+        )
+        .then_some(false)
+    }
+    /// Whether the shown source's committed frontier asks for a refresh: it
+    /// cannot be read, or an open History has not taken it up yet.
+    pub(crate) fn heads_need_refresh(&self, doc: &AutoCommit) -> bool {
+        let _phase = tilo_resource::profiling::Phase::start("ui.history_heads");
+        let Ok(heads) = self.source().committed_heads(doc) else {
             return true;
         };
-        self.controller.as_ref().is_some_and(|controller| {
-            super::sorted_heads(document.base_heads()) != controller.observed_live_heads
-        })
+        // Closed history does not consume the new frontier in refresh.
+        // Leave it pending until opening, instead of rebuilding every frame.
+        self.open
+            && self.controller.as_ref().is_some_and(|controller| {
+                super::sorted_heads(heads) != controller.observed_live_heads
+            })
+    }
+    /// Whether every document this surface answers for is a hosted
+    /// component's (or the host's own), whose standing a quiet frame's
+    /// witness follows: its record's frontier, and whether it can be read
+    /// at all. A legacy tile's document is not followed.
+    pub(crate) fn owners_followed_by_frame_witness(&self) -> bool {
+        let followed =
+            |owner: &super::HistoryOwner| matches!(owner.0, super::owner::OwnerKind::Component(_));
+        self.enclosing_owner.as_ref().is_none_or(followed)
+            && self.registration.sources.iter().all(|source| match source {
+                HistorySourceRegistration::OwnedDocument { owner, .. } => followed(owner),
+                HistorySourceRegistration::CheckedFiles { .. }
+                | HistorySourceRegistration::HostDocument { .. }
+                | HistorySourceRegistration::Unversioned { .. } => true,
+            })
     }
     pub(crate) fn review_is_open(&self) -> bool {
         self.review.is_some()
@@ -1028,8 +1238,11 @@ impl HistoryHost {
             .is_some_and(HistoryController::has_live_updates);
         let target_changed = self.reconcile_file_target();
         let mut changed = target_changed || std::mem::take(&mut self.toolbar_dirty);
+        let started = crate::time::now();
+        let mut opening = false;
         if self.open_requested.replace(false) {
             self.open = !self.open;
+            opening = self.open;
             self.returning_live = !self.open;
             if !self.open {
                 self.close_files_presentation();
@@ -1037,6 +1250,9 @@ impl HistoryHost {
             changed = true;
         }
         let requested = self.requested_entry.take().filter(|_| self.open);
+        if let Some(scope) = self.file_scope_asking_to_open() {
+            self.commands.borrow_mut().push_back(Command::Scope(scope));
+        }
         let commands: Vec<_> = self.commands.borrow_mut().drain(..).collect();
         for command in commands {
             // These callbacks were produced by the superseded presentation.
@@ -1105,6 +1321,13 @@ impl HistoryHost {
                         controller.back_to_live();
                     }
                 }
+                Command::Earlier => {
+                    if let Ok(document) = self.source().document(doc)
+                        && let Some(controller) = &mut self.controller
+                    {
+                        let _ = controller.show_earlier(&document);
+                    }
+                }
                 Command::PreviousPage | Command::NextPage => {
                     self.canvas_mut()
                         .navigate(if matches!(command, Command::NextPage) {
@@ -1139,13 +1362,15 @@ impl HistoryHost {
                         match self.source() {
                             HistorySourceRegistration::HostDocument { resource, .. }
                             | HistorySourceRegistration::OwnedDocument { resource, .. } => {
-                                if let Ok(document) = self.source().document(doc) {
-                                    self.controller =
-                                        HistoryController::new(resource.clone(), &document).ok();
+                                if let Ok(heads) = self.source().committed_heads(doc) {
+                                    self.controller = Some(HistoryController::unprojected(
+                                        resource.clone(),
+                                        heads,
+                                    ));
                                 }
                             }
                             HistorySourceRegistration::Unversioned { reason, .. } => {
-                                self.unavailable = Text::new(reason);
+                                self.unavailable = unavailable_state(reason);
                             }
                             HistorySourceRegistration::CheckedFiles { .. } => {
                                 self.close_files_presentation();
@@ -1202,6 +1427,18 @@ impl HistoryHost {
                 changed = true;
             }
             self.timeline.set_entries(controller.entries().to_vec());
+            if opening {
+                // One line per opening, for gates and logs that keep History
+                // fast on long histories.
+                crate::diag!(
+                    "HISTORY-OPEN listed={} earlier={} ms={}",
+                    controller.entries().len(),
+                    controller.has_earlier(),
+                    crate::time::now()
+                        .saturating_duration_since(started)
+                        .as_millis()
+                );
+            }
             if let Some(entry) = requested
                 && self.selected == [entry]
                 && let Some(index) = self
@@ -1224,9 +1461,7 @@ impl HistoryHost {
     }
     fn command_button(&self, id: &str, label: &str, command: Command) -> Button {
         let queue = self.commands.clone();
-        Button::new(id, label, None)
-            .fit_content(32.0)
-            .on_click(move || queue.borrow_mut().push_back(command))
+        Button::new(id, label).on_click(move || queue.borrow_mut().push_back(command))
     }
     fn preview_page_toolbar(&self, mut toolbar: Column) -> Column {
         if let Some(preview) = &self.canvas().preview {
@@ -1262,12 +1497,6 @@ impl HistoryHost {
     fn rebuild_toolbar(&mut self) {
         #[cfg(test)]
         self.pending_control_callbacks.clear();
-        let title = self
-            .registration
-            .definition
-            .scopes
-            .get(self.active_scope)
-            .map_or("history-mode-title", |scope| scope.title);
         let mut toolbar = Column::new()
             .with_no_padding()
             .with_gap(4.0)
@@ -1278,16 +1507,18 @@ impl HistoryHost {
             return;
         }
         if self.selected.is_empty() {
-            if self.open_button || self.open {
+            if (self.fallback_bar && self.open_button && !self.app_presents_button) || self.open {
                 let clicked = self.open_requested.clone();
                 toolbar = toolbar.push(Box::new(
                     Row::new()
+                        .with_justify(taffy::JustifyContent::FlexEnd)
                         .push(Box::new(
-                            Button::new("history-open", "history-mode-title", None)
-                                .fit_content(32.0)
-                                .on_click(move || clicked.set(true)),
-                        ))
-                        .push(Box::new(Text::new(title))),
+                            crate::standalone_history_host::history_control_face(
+                                "history-open",
+                                crate::widget::window_header::HistoryControl::of(self.open),
+                            )
+                            .on_click(move || clicked.set(true)),
+                        )),
                 ));
             }
             for review in self.pending_controls.review() {
@@ -1346,7 +1577,7 @@ impl HistoryHost {
                                 .with_spellcheck(false)
                                 .with_autocorrect(false)
                                 .with_id(&format!("{id}-phrase"))
-                                .with_placeholder(&I18nManager::format(
+                                .with_placeholder(I18nManager::format(
                                     "history-mode-type-to-confirm",
                                     &[("phrase", expected.into())],
                                 ))
@@ -1367,9 +1598,7 @@ impl HistoryHost {
                         self.pending_control_callbacks
                             .insert(id.clone(), callback.clone());
                         row = row.push(Box::new(
-                            Button::new(&id, label, None)
-                                .fit_content(32.0)
-                                .on_click(move || callback.invoke()),
+                            Button::new(&id, label).on_click(move || callback.invoke()),
                         ));
                     } else {
                         let command =
@@ -1381,9 +1610,7 @@ impl HistoryHost {
                         self.pending_control_callbacks
                             .insert(id.clone(), callback.clone());
                         row = row.push(Box::new(
-                            Button::new(&id, label, None)
-                                .fit_content(32.0)
-                                .on_click(move || callback.invoke()),
+                            Button::new(&id, label).on_click(move || callback.invoke()),
                         ));
                     }
                     let commands = self.pending_controls.commands();
@@ -1397,8 +1624,7 @@ impl HistoryHost {
                     self.pending_control_callbacks
                         .insert(cancel_id.clone(), callback.clone());
                     row = row.push(Box::new(
-                        Button::new(&cancel_id, "history-mode-cancel", None)
-                            .fit_content(32.0)
+                        Button::new(&cancel_id, "history-mode-cancel")
                             .on_click(move || callback.invoke()),
                     ));
                 }
@@ -1407,8 +1633,20 @@ impl HistoryHost {
             for failure in &self.pending_control_capture_failures {
                 toolbar = toolbar.push(Box::new(Text::new(failure)));
             }
+            if self.open
+                && self
+                    .controller
+                    .as_ref()
+                    .is_some_and(HistoryController::has_earlier)
+            {
+                toolbar = toolbar.push(Box::new(self.command_button(
+                    "history-earlier",
+                    "history-mode-earlier",
+                    Command::Earlier,
+                )));
+            }
         } else {
-            let mut header = Row::new().push(Box::new(Text::new(title)));
+            let mut header = Row::new();
             if self.width < 600.0 && !self.activity_page {
                 header = header.push(Box::new(self.command_button(
                     "history-activity",
@@ -1438,7 +1676,7 @@ impl HistoryHost {
             ] {
                 let mut button = self.command_button(id, label, command);
                 if self.side == side {
-                    button = button.primary();
+                    button = button.role(ButtonRole::Primary);
                 }
                 compare = compare.push(Box::new(button));
             }
@@ -1499,14 +1737,18 @@ impl HistoryHost {
                     Command::Scope(index),
                 );
                 if index == self.active_scope {
-                    button = button.primary();
+                    button = button.role(ButtonRole::Primary);
                 }
                 scopes = scopes.push(Box::new(button));
             }
             toolbar = toolbar.push(Box::new(scopes));
         }
         toolbar = self.files_toolbar(toolbar);
-        if let Some(status) = &self.sync_status {
+        if let Some(status) = self
+            .sync_status
+            .as_ref()
+            .filter(|_| !self.app_presents_status)
+        {
             toolbar = toolbar.push(Box::new(
                 Text::new(status).with_live(crate::a11y::Politeness::Polite),
             ));
@@ -1555,3 +1797,16 @@ mod review;
 mod media;
 
 mod files;
+
+/// Why a scope has no History, where its timeline would stand: History is
+/// unavailable, and the reason (a message key or the owner's own text)
+/// says why.
+pub(super) fn unavailable_state(reason: &str) -> crate::widget::EmptyState {
+    crate::widget::EmptyState::new(I18nManager::lookup_plain("history-mode-unavailable"))
+        .with_icon(crate::icons::Icon::History)
+        .with_message(I18nManager::lookup_plain(reason))
+}
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "refresh_heads_tests.rs"]
+mod refresh_heads_tests;

@@ -30,9 +30,14 @@ pub enum WorkArea {
     /// An 8 px band above and below the strips.
     #[default]
     Framed,
-    /// Window surfaces meet the bottom edge and `top` px separate them from
-    /// the top bar. A maximized window abuts the bar directly.
-    Flush { top: f32 },
+    /// `top` px separate the first strip (its windows' tab row) from the
+    /// top bar and `bottom` px separate the windows from the bottom edge,
+    /// with nothing else in between (the navigation leaves are zero-height
+    /// and add no gap). A maximized or fullscreen window abuts the bar and
+    /// the bottom edge directly. [`DesktopSurface::style_work_area`]
+    /// applies this on every frame, so a maximize reconciled into a live
+    /// surface (no rebuild) drops the margins too.
+    Flush { top: f32, bottom: f32 },
 }
 pub struct SurfaceChrome {
     pub navigation: NavigationChrome,
@@ -71,6 +76,9 @@ pub enum ReconcileOutcome {
 }
 
 pub struct DesktopSurface {
+    work_area: WorkArea,
+    /// Last fullscreen presentation a host reported to `style_work_area`.
+    fullscreen: bool,
     pub(crate) external_navigation: bool,
     column_index: usize,
     pub(crate) navigation: crate::navigation::Navigation,
@@ -136,6 +144,7 @@ pub fn build_group(
             let checked = matches!(
                 &resolution,
                 crate::resolver::TileResolution::Component(_)
+                    | crate::resolver::TileResolution::App(..)
                     | crate::resolver::TileResolution::Retained(_)
             );
             let mut host = resolution.mount(failures, wake.clone());
@@ -234,20 +243,8 @@ impl DesktopSurface {
             WorkArea::Framed => {
                 column.with_vertical_padding(if external_navigation { 0.0 } else { 8.0 })
             }
-            WorkArea::Flush { top } => {
-                let maximized = tree.active_workspace().is_some_and(|w| {
-                    w.strips
-                        .iter()
-                        .flat_map(|s| &s.window_groups)
-                        .any(|g| g.maximized)
-                });
-                let column = column.with_vertical_padding(0.0);
-                if maximized {
-                    column.with_gap(0.0)
-                } else {
-                    column.with_extra_top_padding(top)
-                }
-            }
+            // Styled by `style_work_area` once the rows exist.
+            WorkArea::Flush { .. } => column,
         };
         if !external_navigation {
             column = column
@@ -316,6 +313,8 @@ impl DesktopSurface {
                 .filling(),
         );
         let mut surface = Self {
+            work_area: chrome.work_area,
+            fullscreen: false,
             external_navigation,
             column_index: usize::from(!external_navigation),
             navigation: crate::navigation::Navigation::default(),
@@ -354,7 +353,39 @@ impl DesktopSurface {
                 .collect(),
         };
         surface.sync_navigation(tree);
+        surface.restyle_work_area();
         surface
+    }
+    /// Space the strip column for what it shows now: a
+    /// [`WorkArea::Flush`] column keeps its margins around tiled windows
+    /// and none around a maximized or fullscreen one. Hosts that know about
+    /// a fullscreen presentation call this every frame; a maximize arrives
+    /// through `reconcile` without a rebuild, so the decision cannot be
+    /// taken once when the column is built.
+    pub fn style_work_area(&mut self, fullscreen: bool) {
+        self.fullscreen = fullscreen;
+        self.restyle_work_area();
+    }
+    fn restyle_work_area(&mut self) {
+        let WorkArea::Flush { top, bottom } = self.work_area else {
+            return;
+        };
+        let expanded = self.fullscreen
+            || self
+                .order
+                .iter()
+                .filter_map(|id| self.row(*id))
+                .any(|row| row.groups.iter().any(|g| g.maximized));
+        let (top, bottom) = if expanded { (0.0, 0.0) } else { (top, bottom) };
+        if let Some(column) = self.work_area_mut() {
+            column.set_vertical_padding(0.0);
+            // The zero-height navigation leaves ahead of the rows are
+            // separated by the column gap too; two stray gaps used to
+            // stack above the first strip on top of `top`.
+            column.set_gap(0.0);
+            column.set_extra_top_padding(top);
+            column.set_extra_bottom_padding(bottom);
+        }
     }
     /// The primary display's full top bar, when the surface draws one.
     pub fn topbar(&self) -> Option<&crate::topbar::TopBarChrome> {
@@ -395,9 +426,40 @@ impl DesktopSurface {
     pub fn workspace_context(&self) -> Option<(tilo_desktop_model::WorkspaceId, RoomId)> {
         self.context
     }
+    /// The tabs this surface hosts.
+    pub fn tab_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.tiles.keys().copied()
+    }
+    /// A frame was presented: every strip's window groups may step their
+    /// width springs again ([`GroupRow::frame_presented`]).
+    pub fn frame_presented(&mut self) {
+        for id in self.strip_ids() {
+            if let Some(row) = self.row_mut(id) {
+                row.frame_presented();
+            }
+        }
+    }
+
     pub fn strip_ids(&self) -> Vec<StripId> {
         self.order.clone()
     }
+    /// Whether retained close visuals still need reconciliation. They are not canonical windows.
+    pub fn has_closing_visuals(&self) -> bool {
+        self.order
+            .iter()
+            .filter_map(|id| self.row(*id))
+            .any(|row| row.groups.iter().any(UiGroup::is_closing))
+    }
+
+    /// Whether a same-workspace rebuild would discard a still-visible close transition.
+    pub fn close_animation_in_flight(&self) -> bool {
+        self.order.iter().filter_map(|id| self.row(*id)).any(|row| {
+            row.groups
+                .iter()
+                .any(|group| group.is_closing() && !group.close_complete())
+        })
+    }
+
     pub fn row(&self, id: StripId) -> Option<&GroupRow> {
         self.row_at(*self.rows.get(&id)?)
     }
@@ -518,6 +580,29 @@ impl DesktopSurface {
         }
         out
     }
+    /// A client that exits after refusing or deferring a close request
+    /// retires its still-visible window here, once. This must precede every
+    /// rebuild decision, which would otherwise drop the window unanimated.
+    pub fn retire_departed_requested_groups(&mut self, tree: &DesktopTree) {
+        for id in self.order.clone() {
+            let Some(row) = self.row_mut(id) else {
+                continue;
+            };
+            for group in &mut row.groups {
+                if group.close_was_requested()
+                    && !group.is_closing()
+                    && !tree.workspaces.iter().any(|w| {
+                        w.strips
+                            .iter()
+                            .any(|s| s.window_groups.iter().any(|g| g.id == group.id))
+                    })
+                {
+                    group.start_closing();
+                }
+            }
+        }
+    }
+
     /// Reconcile retained groups and hosts. A changed strip set requires rebuilding with host chrome.
     #[expect(
         clippy::too_many_lines,
@@ -538,6 +623,7 @@ impl DesktopSurface {
         if workspace.strips.iter().map(|s| s.id).collect::<Vec<_>>() != self.order {
             return ReconcileOutcome::RebuildRequired;
         }
+        self.retire_departed_requested_groups(tree);
         let empty = workspace
             .strips
             .iter()
@@ -545,6 +631,11 @@ impl DesktopSurface {
         if self
             .empty_workspace_visible
             .is_some_and(|visible| visible != empty)
+            && !self.order.iter().filter_map(|id| self.row(*id)).any(|row| {
+                row.groups
+                    .iter()
+                    .any(|group| group.is_closing() && !group.close_complete())
+            })
         {
             return ReconcileOutcome::RebuildRequired;
         }
@@ -632,17 +723,47 @@ impl DesktopSurface {
                 .map(|g| g.id)
                 .collect();
             for id in stale {
+                if row
+                    .groups
+                    .iter()
+                    .any(|g| g.id == id && g.is_closing() && !g.close_complete())
+                {
+                    // The declared close (and the ✕) start the close animation
+                    // before the tree drop is reconciled; keep the last
+                    // frame here until its motion-token deadline.
+                    continue;
+                }
                 if let Some(group) = row.groups.iter_mut().find(|g| g.id == id) {
                     reports.extend(ui::component_lifecycle::close_components(group));
                 }
                 changed |= row.remove_group_by_id(id);
             }
+            let closing_slots: Vec<_> = row
+                .groups
+                .iter()
+                .enumerate()
+                .filter(|(_, group)| {
+                    group.is_closing()
+                        && !strip.window_groups.iter().any(|live| live.id == group.id)
+                })
+                .map(|(index, group)| (index, group.id))
+                .collect();
             // The row lays groups out display by display; on one display
             // that is the strip's own order.
             for (index, group) in display_ordered(&tree.outputs, strip)
                 .into_iter()
                 .enumerate()
             {
+                if let Some(dying) = row
+                    .groups
+                    .iter_mut()
+                    .find(|candidate| candidate.id == group.id && candidate.is_closing())
+                {
+                    // Undo may restore the canonical identity during the fade. Its dying
+                    // host is not a live application; resolve the restored window afresh.
+                    reports.extend(ui::component_lifecycle::close_components(dying));
+                    row.remove_group_by_id(group.id);
+                }
                 if !row.groups.iter().any(|g| g.id == group.id) {
                     changed = true;
                     let mut fresh = UiGroup::from_hosts(
@@ -655,13 +776,17 @@ impl DesktopSurface {
                     fresh.start_spawn_animation();
                     row.insert_group(fresh, index);
                 }
-                changed |= row.reorder_group_by_id(group.id, index);
                 let Some(live) = row.groups.iter_mut().find(|g| g.id == group.id) else {
                     continue;
                 };
-                changed |=
-                    live.width() != ui_width(group.width) || live.maximized != group.maximized;
-                live.set_width(ui_width(group.width));
+                // Width is a local intent committed on release. An unrelated
+                // snapshot revision must not reset a captured edge to its saved
+                // width or re-arm the width spring underneath the pointer.
+                if !live.edge_resize_in_flight() || live.maximized != group.maximized {
+                    changed |= live.width() != ui_width(group.width);
+                    live.set_width(ui_width(group.width));
+                }
+                changed |= live.maximized != group.maximized;
                 live.maximized = group.maximized;
                 let stale: Vec<_> = live
                     .tabs()
@@ -728,6 +853,7 @@ impl DesktopSurface {
                                     let checked = matches!(
                                         &other,
                                         crate::resolver::TileResolution::Component(_)
+                                            | crate::resolver::TileResolution::App(..)
                                             | crate::resolver::TileResolution::Retained(_)
                                     );
                                     let mut host = other.mount(&mut failures, wake_sink.clone());
@@ -781,6 +907,7 @@ impl DesktopSurface {
                         let checked = matches!(
                             &resolution,
                             crate::resolver::TileResolution::Component(_)
+                                | crate::resolver::TileResolution::App(..)
                                 | crate::resolver::TileResolution::Retained(_)
                         );
                         let mut host = resolution.mount(&mut failures, wake_sink.clone());
@@ -806,6 +933,26 @@ impl DesktopSurface {
                     changed |= live.set_active_tab(group.active_tab);
                 }
             }
+            // Closing visuals retain their strip slots while the live groups follow
+            // canonical order. Reordering only live groups would move a closing
+            // neighbour behind them and animate across its occupied footprint.
+            let mut live_order = display_ordered(&tree.outputs, strip)
+                .into_iter()
+                .map(|group| group.id);
+            let mut closing_order = closing_slots.iter().copied().peekable();
+            let mut visual_order = Vec::with_capacity(row.groups.len());
+            for index in 0..row.groups.len() {
+                if closing_order.peek().is_some_and(|(slot, _)| *slot == index) {
+                    if let Some((_, id)) = closing_order.next() {
+                        visual_order.push(id);
+                    }
+                } else if let Some(id) = live_order.next() {
+                    visual_order.push(id);
+                }
+            }
+            for (index, id) in visual_order.into_iter().enumerate() {
+                changed |= row.reorder_group_by_id(id, index);
+            }
         }
         for (_, (_, mut host)) in moved {
             reports.extend(ui::component_lifecycle::close_components(&mut host));
@@ -821,6 +968,7 @@ impl DesktopSurface {
         self.failures.extend(failures);
         self.close_reports.extend(reports);
         self.sync_navigation(tree);
+        self.restyle_work_area();
         if changed {
             ReconcileOutcome::Updated
         } else {
@@ -894,6 +1042,7 @@ impl DesktopSurface {
         };
         let mut next = Self::build(tree, records, &mut retained, chrome);
         next.inherit_navigation(self);
+        next.style_work_area(self.fullscreen);
         for (_, mut host) in retained.hosts {
             next.close_reports
                 .extend(ui::component_lifecycle::close_components(&mut host));
@@ -905,6 +1054,52 @@ impl DesktopSurface {
         inherited.retain(|wake| std::sync::Arc::strong_count(wake) > 1);
         self.retained_wakes = inherited;
     }
+    /// The backdrop and the window content: everything [`Self::draw_bar`]
+    /// paints over. A host drawing the desktop in one scene draws what sits
+    /// between the windows and the top bar (the docked wheel, notices,
+    /// floating surfaces) after this and before [`Self::draw_bar`], the
+    /// order [`Self::draw_sections`] composes the same layers in.
+    pub fn draw_below_bar(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.external_navigation {
+            self.root.draw(scene, transform, text, theme, presence);
+            return;
+        }
+        for path in [&[0, 0][..], &[0, 1, 1]] {
+            if let Some(layer) = child_mut(self.root.as_mut(), path) {
+                layer.draw(scene, transform, text, theme, presence);
+            }
+        }
+    }
+
+    /// The top bar and the other displays' compact bars, over everything
+    /// [`Self::draw_below_bar`] drew: anchored chrome may extend below the
+    /// bar's band and must stay on top of window content. With external
+    /// navigation the root drew everything already.
+    pub fn draw_bar(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.external_navigation {
+            return;
+        }
+        for path in [&[0, 1, 0][..], &[0, 2]] {
+            if let Some(layer) = child_mut(self.root.as_mut(), path) {
+                layer.draw(scene, transform, text, theme, presence);
+            }
+        }
+    }
+
     /// Separate recordings preserve native retained scene and capture layering.
     pub fn draw_sections(
         &mut self,
@@ -942,7 +1137,7 @@ impl Widget for DesktopSurface {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let wake = self.take_component_wake();
         self.root.update(doc, path) || wake
     }
@@ -977,18 +1172,8 @@ impl Widget for DesktopSurface {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if self.external_navigation {
-            self.root.draw(scene, transform, text, theme, presence);
-            return;
-        }
-        // Window content paints under the top bar: anchored chrome may extend
-        // below the bar's band and must stay on top of it.
-        let layers: [&[usize]; 4] = [&[0, 0], &[0, 1, 1], &[0, 1, 0], &[0, 2]];
-        for path in layers {
-            if let Some(layer) = child_mut(self.root.as_mut(), path) {
-                layer.draw(scene, transform, text, theme, presence);
-            }
-        }
+        self.draw_below_bar(scene, transform, text, theme, presence);
+        self.draw_bar(scene, transform, text, theme, presence);
     }
     fn handle_event(
         &mut self,
@@ -1048,15 +1233,5 @@ pub fn ui_width(width: WindowWidth) -> ui::widget::WindowWidth {
         WindowWidth::Normal => ui::widget::WindowWidth::Normal,
         WindowWidth::Wide => ui::widget::WindowWidth::Wide,
         WindowWidth::Fraction(p) => ui::widget::WindowWidth::Fraction(p),
-    }
-}
-
-/// The persisted width for a toolkit width.
-pub fn model_width(width: ui::widget::WindowWidth) -> WindowWidth {
-    match width {
-        ui::widget::WindowWidth::Narrow => WindowWidth::Narrow,
-        ui::widget::WindowWidth::Normal => WindowWidth::Normal,
-        ui::widget::WindowWidth::Wide => WindowWidth::Wide,
-        ui::widget::WindowWidth::Fraction(p) => WindowWidth::Fraction(p),
     }
 }

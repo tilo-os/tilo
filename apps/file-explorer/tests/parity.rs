@@ -1,11 +1,8 @@
 #![allow(
     clippy::unwrap_used,
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::string_slice,
     clippy::float_cmp,
     clippy::panic,
-    clippy::unreachable,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -28,6 +25,7 @@ fn e(name: &str, is_dir: bool, size: u64, mime: &str, year: i32) -> Entry {
         share: None,
         history: None,
         rich_metadata: None,
+        observed: None,
     }
 }
 
@@ -198,31 +196,6 @@ fn file_explorer_widget_constructs_with_sensible_default_path() {
     assert_eq!(cwd, file_explorer::model::initial_path());
 }
 
-#[test]
-fn sidebar_shortcuts_width_and_active_highlight() {
-    sidebar_shows_fixed_seven_shortcuts_when_home_present();
-    sidebar_highlights_active_shortcut();
-    sidebar_has_fixed_width_180();
-}
-
-fn sidebar_shows_fixed_seven_shortcuts_when_home_present() {
-    use file_explorer::sidebar::build_shortcuts;
-    use ui::icons::Icon;
-    crate::common::pin_locale();
-    let home = Some(PathBuf::from("/home/test"));
-    let shortcuts = build_shortcuts(home.as_deref());
-    assert_eq!(shortcuts.len(), 7);
-    assert_eq!(shortcuts[0].0, Icon::Home);
-    assert_eq!(shortcuts[0].1, "Home");
-    assert_eq!(shortcuts[6].0, Icon::HardDrive);
-    assert_eq!(shortcuts[6].1, "Root");
-
-    let none = build_shortcuts(None);
-    assert_eq!(none.len(), 1);
-    assert_eq!(none[0].0, Icon::HardDrive);
-    assert_eq!(none[0].1, "Root");
-}
-
 // ---------------------------------------------------------------------------
 // Behavioural parity tests
 // ---------------------------------------------------------------------------
@@ -236,7 +209,7 @@ fn navigation_selection_loading_and_terminal_commands() {
     single_click_selects_single_entry();
     error_state_shows_message_and_retry_button();
     loading_state_shown_during_navigation();
-    open_terminal_button_spawns_quick_terminal_subprocess();
+    open_terminal_asks_the_shell_for_terminal_in_this_directory();
 }
 
 fn back_button_moves_to_parent_and_noops_at_root() {
@@ -326,9 +299,11 @@ fn initial_path_prefers_workspace_then_legacy_then_user_home_then_cwd_then_root(
     // Assert the exact startup path for the current environment, including
     // configured mounts and the sandbox's granted user home. An explicit
     // workspace override suppresses the legacy /workspace fallback.
-    use file_explorer::model::{initial_path, user_home, workspace_roots};
+    use file_explorer::model::{initial_path, user_home, workspace_record_authority_roots};
     let p = initial_path();
-    let workspace = workspace_roots().into_iter().next();
+    // A configured mount, not `~/Shared`: received shares are a sidebar
+    // place, and an empty one is no window to open on.
+    let workspace = workspace_record_authority_roots().into_iter().next();
     let legacy = PathBuf::from("/workspace");
     let home = user_home();
     let cwd = std::env::current_dir().ok();
@@ -344,29 +319,6 @@ fn initial_path_prefers_workspace_then_legacy_then_user_home_then_cwd_then_root(
     } else {
         assert_eq!(p, PathBuf::from("/"), "root is the final fallback");
     }
-}
-
-fn sidebar_highlights_active_shortcut() {
-    use file_explorer::sidebar::{active_shortcut_index, build_shortcuts};
-    let home = PathBuf::from("/home/tester");
-    let shortcuts = build_shortcuts(Some(&home));
-    // The Home shortcut is at index 0 and must be the active one when
-    // `current_path == home`.
-    assert_eq!(active_shortcut_index(&shortcuts, &home), Some(0));
-    // A non-shortcut path must not match any sidebar row.
-    assert_eq!(
-        active_shortcut_index(&shortcuts, &PathBuf::from("/tmp")),
-        None
-    );
-    // Root at the end of the list.
-    assert_eq!(
-        active_shortcut_index(&shortcuts, &PathBuf::from("/")),
-        shortcuts.len().checked_sub(1)
-    );
-}
-
-fn sidebar_has_fixed_width_180() {
-    assert!((file_explorer::sidebar::SIDEBAR_WIDTH_PX - 180.0).abs() < f32::EPSILON);
 }
 
 fn sort_by_name_places_alpha_order_with_dirs_first() {
@@ -400,54 +352,29 @@ fn sort_order_toggle_reverses_non_dir_group_but_keeps_dirs_first() {
     assert_eq!(desc_names, vec!["dir_z", "dir_a", "zeta.txt", "alpha.txt"]);
 }
 
-fn open_terminal_button_spawns_quick_terminal_subprocess() {
-    use file_explorer::files_app::CommandRunner;
-
-    #[derive(Default)]
-    struct MockRunner {
-        calls: Vec<(String, std::path::PathBuf)>,
-    }
-    impl CommandRunner for MockRunner {
-        fn spawn(&mut self, program: &str, cwd: &std::path::Path) -> std::io::Result<()> {
-            self.calls.push((program.to_string(), cwd.to_path_buf()));
-            Ok(())
+fn open_terminal_asks_the_shell_for_terminal_in_this_directory() {
+    let mut w = FileExplorerWidget::new();
+    let dir = std::path::PathBuf::from("/var/workspace/Projects");
+    w.navigate(dir.clone());
+    assert_eq!(
+        w.terminal_intent(),
+        runtime_portal::tools::ToolIntent::Terminal {
+            directory: Some(dir.to_string_lossy().into_owned())
         }
-        fn spawn_arg(
-            &mut self,
-            program: &str,
-            _arg: &std::path::Path,
-            cwd: &std::path::Path,
-        ) -> std::io::Result<()> {
-            self.calls.push((program.to_string(), cwd.to_path_buf()));
-            Ok(())
-        }
-        fn open_default(&mut self, _path: &std::path::Path) -> ui::portal::LaunchChannel {
-            std::sync::mpsc::channel().1
-        }
-    }
-
-    let w = FileExplorerWidget::new();
-    let mut runner = MockRunner::default();
-    w.open_terminal(&mut runner).unwrap();
-    assert_eq!(runner.calls.len(), 1);
-    assert_eq!(runner.calls[0].0, "terminal");
-    assert_eq!(runner.calls[0].1, w.current_path());
+    );
+    // A path the request cannot carry still opens Terminal, just not there.
+    w.navigate(std::path::PathBuf::from("/tmp/line\nbreak"));
+    assert_eq!(
+        w.terminal_intent(),
+        runtime_portal::tools::ToolIntent::Terminal { directory: None }
+    );
 }
 
 #[test]
 fn list_and_grid_builders_compose_real_file_views() {
-    list_mode_has_name_size_modified_columns();
     list_build_yields_a_file_view();
     grid_mode_uses_responsive_file_view();
-    grid_cell_metrics_are_documented_values();
     draw_composition_exercises_the_five_pass_pipeline();
-}
-
-fn list_mode_has_name_size_modified_columns() {
-    // The type glyph is now drawn inline in the Name column, so the header
-    // columns are Name / Size / Modified.
-    use file_explorer::views::list_view::COLUMN_KEYS;
-    assert_eq!(COLUMN_KEYS, ["name", "size", "modified"]);
 }
 
 fn list_build_yields_a_file_view() {
@@ -470,6 +397,7 @@ fn list_build_yields_a_file_view() {
         share: None,
         history: None,
         rich_metadata: None,
+        observed: None,
     }];
     let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
     let drop_targets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -488,16 +416,10 @@ fn grid_mode_uses_responsive_file_view() {
     use file_explorer::command::new_sink;
     use file_explorer::model::Entry;
     use file_explorer::views::file_view::FileView;
-    use file_explorer::views::grid_view::{GRID_CELL_HEIGHT, GRID_CELL_WIDTH, build_grid};
+    use file_explorer::views::grid_view::build_grid;
     use std::path::PathBuf;
     use ui::SelectionModel;
 
-    // Compile-time, not a runtime assertion on constants: the metrics are
-    // `const`, so their sanity can (and should) be checked at build time.
-    const _: () = assert!(
-        GRID_CELL_WIDTH > 0.0 && GRID_CELL_HEIGHT > 0.0,
-        "cell metrics are sane"
-    );
     let entries = vec![Entry {
         name: "a.txt".into(),
         path: PathBuf::from("/a.txt"),
@@ -512,6 +434,7 @@ fn grid_mode_uses_responsive_file_view() {
         share: None,
         history: None,
         rich_metadata: None,
+        observed: None,
     }];
     let sel = SelectionModel::new();
     let sink = new_sink();
@@ -524,13 +447,6 @@ fn grid_mode_uses_responsive_file_view() {
         .with_thumbs(None);
     let w = build_grid(view);
     assert_eq!(ui::widget::Widget::name(&*w), "FileView");
-}
-
-fn grid_cell_metrics_are_documented_values() {
-    // Pins the default grid cell size so a regression in the grid builder is
-    // caught (the grid derives its column count from these).
-    assert!((file_explorer::views::grid_view::GRID_CELL_WIDTH - 112.0).abs() < f64::EPSILON);
-    assert!((file_explorer::views::grid_view::GRID_CELL_HEIGHT - 104.0).abs() < f64::EPSILON);
 }
 
 fn loading_state_shown_during_navigation() {

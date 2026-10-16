@@ -62,9 +62,18 @@ impl SourceInventory {
         directory.validate()?;
         let before = Metadata::from_file(&directory.file)?;
         self.insert(relative, &before)?;
-        let opened = cap_std::fs::Dir::from_std_file(directory.file.try_clone()?);
-        for entry in opened.entries()? {
-            let name = entry?.file_name();
+        // Read the listing before descending so each level keeps only its
+        // pinned directory open. Holding the listing's descriptors across the
+        // recursion exhausts macOS's default limit of 256 well before the
+        // depth limit below can refuse the selection.
+        let names = cap_std::fs::Dir::from_std_file(directory.file.try_clone()?)
+            .entries()?
+            // One more than the inventory admits, so an oversized folder is
+            // refused by `insert` without buffering its whole listing.
+            .take(MAX_ENTRIES + 1)
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<io::Result<Vec<_>>>()?;
+        for name in names {
             let path = relative.join(&name);
             let metadata = metadata_nofollow(&directory.file, Path::new(&name))?;
             if metadata.is_dir() && !metadata.is_symlink() {
@@ -126,7 +135,8 @@ impl SourceInventory {
     }
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[cfg(test)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tests {
     use super::*;
     #[test]
@@ -143,6 +153,9 @@ mod tests {
             Ok(_) => panic!("deep inventory must require a smaller selection"),
             Err(error) => error,
         };
-        assert!(error.to_string().contains("select a smaller folder"));
+        assert!(
+            error.to_string().contains("select a smaller folder"),
+            "unexpected refusal: {error}"
+        );
     }
 }

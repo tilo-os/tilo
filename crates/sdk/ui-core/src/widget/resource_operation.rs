@@ -1,9 +1,32 @@
 //! The one entry through which the retained tree admits an exported effect or
 //! view operation: [`Widget::start_operation`].
 
-use super::{ResourceOperationStart, Widget};
+use super::Widget;
 use crate::invocation_scope::ResourceInvocationScope;
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use automerge::ObjId;
+
+/// Result of admitting an effect/view operation into a widget.
+///
+/// `Accepted` is deliberately distinct from success: the widget must later
+/// report progress and exactly one terminal [`tilo_actions::InvocationUpdate`]
+/// from [`Widget::poll_resource_operation`]. This keeps queued and streaming
+/// work from being reported as completed merely because it entered a queue.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ResourceOperationStart {
+    Completed(tilo_actions::ActionOutput),
+    Accepted,
+}
+
+impl ResourceOperationStart {
+    /// The output of an operation that finished on return; `None` while it
+    /// is still pending.
+    pub fn completed(self) -> Option<tilo_actions::ActionOutput> {
+        match self {
+            Self::Completed(output) => Some(output),
+            Self::Accepted => None,
+        }
+    }
+}
 
 /// What a handler matches on. Reachable only through
 /// [`ResourceOperation::unscoped`] or [`ResourceOperation::with_custody`], so a
@@ -17,6 +40,99 @@ pub struct OperationRequest<'a> {
     pub payload: &'a [u8],
 }
 
+/// Inert routing facts captured from the actual resolved record owner.
+/// These are neither a certificate nor permission to execute a host job.
+#[derive(Clone, Debug)]
+pub struct OperationTarget {
+    route: crate::collaboration::RouteSpec,
+    address: tilo_actions::ActionAddress,
+}
+impl OperationTarget {
+    pub(crate) fn new(
+        route: crate::collaboration::RouteSpec,
+        address: tilo_actions::ActionAddress,
+    ) -> Self {
+        Self { route, address }
+    }
+    pub fn route(&self) -> &crate::collaboration::RouteSpec {
+        &self.route
+    }
+    pub fn address(&self) -> &tilo_actions::ActionAddress {
+        &self.address
+    }
+
+    /// Request one approved ID on this dispatch target's acknowledged record route.
+    /// The broker recovers actual caller/target authority from the invocation.
+    ///
+    /// # Errors
+    /// Refuses other action types, absent routing, malformed IDs or unavailable transport.
+    pub fn approved_check(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        check_id: &str,
+    ) -> Result<crate::invocation_scope::ApprovedCheckFuture, String> {
+        if self.address.action != runtime_collab::approved_checks::ACTION_ID
+            || self.address.resource.is_empty()
+            || self.route.record.as_deref().is_none_or(str::is_empty)
+        {
+            return Err("approved check requires the exact dispatched project resource".into());
+        }
+        #[cfg(feature = "broker-transport")]
+        {
+            let request = runtime_collab::approved_checks::Request {
+                version: 1,
+                invocation: invocation.0.to_string(),
+                check_id: check_id.into(),
+            };
+            let receive =
+                crate::collaboration::approved_checks::enqueue(&self.route.channel_id(), request)?;
+            Ok(Box::pin(async move {
+                receive
+                    .await
+                    .map_err(|_| "approved-check transport retired")?
+            }))
+        }
+        #[cfg(not(feature = "broker-transport"))]
+        {
+            let _ = (invocation, check_id);
+            Err("approved project checks require the admitted native broker transport".into())
+        }
+    }
+    /// Observe reported phases for the exact dispatched project check.
+    ///
+    /// # Errors
+    /// Refuses other action types, absent routing, malformed IDs or unavailable transport.
+    pub fn approved_check_reported(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        check_id: &str,
+    ) -> Result<crate::invocation_scope::ApprovedCheckReportedWork, String> {
+        if self.address.action != runtime_collab::approved_checks::ACTION_ID
+            || self.address.resource.is_empty()
+            || self.route.record.as_deref().is_none_or(str::is_empty)
+        {
+            return Err("approved check requires the exact dispatched project resource".into());
+        }
+        #[cfg(feature = "broker-transport")]
+        {
+            crate::invocation_scope::reported_check_work(
+                &self.route.channel_id(),
+                runtime_collab::approved_checks::Request {
+                    version: 1,
+                    invocation: invocation.0.to_string(),
+                    check_id: check_id.into(),
+                },
+                None,
+            )
+        }
+        #[cfg(not(feature = "broker-transport"))]
+        {
+            let _ = (invocation, check_id);
+            Err("approved project checks require the admitted native broker transport".into())
+        }
+    }
+}
+
 /// An exported effect/view operation offered to the retained tree.
 ///
 /// A *required* operation — a hosted invocation admitted for its original
@@ -28,6 +144,7 @@ pub struct OperationRequest<'a> {
 pub struct ResourceOperation<'a> {
     request: OperationRequest<'a>,
     scope: Option<&'a ResourceInvocationScope>,
+    target: Option<&'a OperationTarget>,
 }
 
 impl std::fmt::Debug for ResourceOperation<'_> {
@@ -56,6 +173,7 @@ impl<'a> ResourceOperation<'a> {
                 payload,
             },
             scope: None,
+            target: None,
         }
     }
 
@@ -74,7 +192,18 @@ impl<'a> ResourceOperation<'a> {
                 payload,
             },
             scope: Some(scope),
+            target: None,
         }
+    }
+
+    pub(crate) fn with_target(mut self, target: Option<&'a OperationTarget>) -> Self {
+        self.target = target;
+        self
+    }
+
+    /// Exact inert record routing facts when the dispatcher observed an owner.
+    pub fn target(&self) -> Option<&OperationTarget> {
+        self.target
     }
 
     pub fn invocation(&self) -> tilo_actions::InvocationId {
@@ -120,7 +249,7 @@ impl<'a> ResourceOperation<'a> {
     pub fn start(
         &self,
         widget: &mut (impl Widget + ?Sized),
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         widget.start_operation(self, doc, path)
@@ -137,14 +266,13 @@ impl<'a> ResourceOperation<'a> {
 pub(crate) fn start_without_document_writes(
     widget: &mut (impl Widget + ?Sized),
     op: &ResourceOperation<'_>,
-    doc: &mut AutoCommit,
+    doc: &mut crate::widget::Edits<'_>,
     path: &ObjId,
 ) -> Result<Option<ResourceOperationStart>, String> {
     // `get_heads` would commit the caller's open transaction.
-    let heads = doc.base_heads();
-    let pending = doc.pending_ops();
+    let before = crate::doc::settle_mark(doc);
     let started = widget.start_operation(op, doc, path);
-    if doc.pending_ops() != pending || doc.base_heads() != heads {
+    if crate::doc::settle_mark(doc) != before {
         return Err("a read-only operation wrote the document; bytes were retained".into());
     }
     started
@@ -160,7 +288,7 @@ pub(crate) fn start_without_document_writes(
 pub fn start_in_children<W: Widget + ?Sized>(
     widget: &mut W,
     op: &ResourceOperation<'_>,
-    doc: &mut AutoCommit,
+    doc: &mut crate::widget::Edits<'_>,
     path: &ObjId,
 ) -> Result<Option<ResourceOperationStart>, String> {
     op.check()?;
@@ -181,6 +309,7 @@ pub fn start_in_children<W: Widget + ?Sized>(
 mod tests {
     use super::*;
     use crate::widget::{Button, Decorator};
+    use automerge::transaction::Transactable;
 
     /// Answers `"probe.write"` by writing `written` into the document.
     struct Writer {
@@ -201,7 +330,7 @@ mod tests {
         fn start_operation(
             &mut self,
             op: &ResourceOperation<'_>,
-            doc: &mut AutoCommit,
+            doc: &mut crate::widget::Edits<'_>,
             _: &ObjId,
         ) -> Result<Option<ResourceOperationStart>, String> {
             if op
@@ -210,7 +339,8 @@ mod tests {
             {
                 return Ok(None);
             }
-            doc.put(automerge::ROOT, "written", true)
+            doc.document_mut()
+                .put(automerge::ROOT, "written", true)
                 .map_err(|error| error.to_string())?;
             Ok(Some(ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
@@ -218,7 +348,11 @@ mod tests {
         }
     }
 
-    fn offer(widget: &mut Writer, doc: &mut AutoCommit, type_id: &str) -> Result<bool, String> {
+    fn offer(
+        widget: &mut Writer,
+        doc: &mut crate::widget::Edits<'_>,
+        type_id: &str,
+    ) -> Result<bool, String> {
         let op = ResourceOperation::local(
             tilo_actions::InvocationId::new(),
             tilo_actions::OperationKind::View,
@@ -231,20 +365,31 @@ mod tests {
     #[test]
     fn a_read_only_caller_keeps_its_open_edits_and_refuses_a_writing_handler() {
         let mut widget = Writer {
-            inner: Button::new("probe", "Probe", None),
+            inner: Button::new("probe", "Probe"),
         };
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "typing", "pending").unwrap();
         let pending = doc.pending_ops();
 
-        assert_eq!(offer(&mut widget, &mut doc, "probe.other"), Ok(false));
+        assert_eq!(
+            offer(
+                &mut widget,
+                &mut crate::widget::Edits::lend(&mut doc),
+                "probe.other"
+            ),
+            Ok(false)
+        );
         assert_eq!(
             doc.pending_ops(),
             pending,
             "observing the document must not commit the caller's open transaction"
         );
 
-        let refused = offer(&mut widget, &mut doc, "probe.write");
+        let refused = offer(
+            &mut widget,
+            &mut crate::widget::Edits::lend(&mut doc),
+            "probe.write",
+        );
         assert!(refused.is_err(), "a handler that wrote must be refused");
         assert!(
             doc.pending_ops() > pending,

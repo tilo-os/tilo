@@ -3,12 +3,11 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 static ROOT: OnceLock<PathBuf> = OnceLock::new();
 static PRIVATE_ROOT: OnceLock<PathBuf> = OnceLock::new();
-pub const PRIVATE_ROOT_PREFIX: &str = "tilo-browser-private-";
-pub const PRIVATE_ROOT_MARKER: &str = ".tilo-private-root-v1";
-pub const PRIVATE_ROOT_MARKER_CONTENT: &str = "tilo-browser-owned-private-root-v1\n";
-pub const PRIVATE_ROOT_LOCK: &str = ".tilo-private-root.lock";
+use ui::webview::chromium::{
+    PRIVATE_ROOT_HELPER, PRIVATE_ROOT_LOCK, PRIVATE_ROOT_MARKER, PRIVATE_ROOT_MARKER_CONTENT,
+    PRIVATE_ROOT_PREFIX, is_owned_private_root,
+};
 const PRIVATE_ROOT_OWNER: &str = ".tilo-private-owner-pid";
-const PRIVATE_ROOT_HELPER: &str = ".tilo-private-helper-pid";
 /// Configure the optional browser data root once for this process.
 ///
 /// # Errors
@@ -34,6 +33,35 @@ pub fn configure(root: Option<&str>) -> Result<(), String> {
     }
     Ok(())
 }
+/// Route this process's browser data for the window it opens: a private
+/// window gets an isolated private root, removed when it is done; any other
+/// window the root `TILO_BROWSER_APP_ROOT` names, else the platform's.
+///
+/// # Errors
+/// Returns an error when the private root cannot be allocated or the data
+/// root is invalid.
+pub fn prepare_window(private: bool) -> Result<(), String> {
+    static PREPARED: OnceLock<Result<(), String>> = OnceLock::new();
+    PREPARED
+        .get_or_init(|| {
+            if !private {
+                return configure(None);
+            }
+            let root = allocate_private_root()?;
+            let text = root
+                .to_str()
+                .ok_or_else(|| "Private browser root is not valid UTF-8".to_string())?;
+            configure(Some(text)).inspect_err(|_| {
+                if is_owned_private_root(&root) {
+                    let _ = std::fs::remove_dir_all(&root);
+                }
+            })?;
+            tracing::info!(private_root = %root.display(), "Private browser root allocated");
+            Ok(())
+        })
+        .clone()
+}
+
 pub fn explicit_root() -> Option<&'static Path> {
     ROOT.get().map(PathBuf::as_path)
 }
@@ -41,11 +69,6 @@ pub fn data_dir() -> Option<PathBuf> {
     ROOT.get()
         .cloned()
         .or_else(|| tilo_paths::data_dir().map(|p| p.join("tilo-browser")))
-}
-pub fn config_dir() -> Option<PathBuf> {
-    ROOT.get()
-        .cloned()
-        .or_else(|| tilo_paths::config_dir().map(|p| p.join("tilo-browser")))
 }
 pub fn cache_dir() -> Option<PathBuf> {
     ROOT.get()
@@ -64,7 +87,8 @@ pub fn allocate_private_root() -> Result<PathBuf, String> {
             std::env::temp_dir().join(format!("{PRIVATE_ROOT_PREFIX}{}", uuid::Uuid::new_v4()));
         match std::fs::create_dir(&root) {
             Ok(()) => {
-                private_fs::restrict_directory(&root).map_err(|error| error.to_string())?;
+                tilo_files::native::private::restrict_directory(&root)
+                    .map_err(|error| error.to_string())?;
                 let initialized = write_private_root_file(
                     &root.join(PRIVATE_ROOT_MARKER),
                     PRIVATE_ROOT_MARKER_CONTENT.as_bytes(),
@@ -91,24 +115,10 @@ pub fn allocate_private_root() -> Result<PathBuf, String> {
     Err("Could not allocate a unique private browser root".into())
 }
 
-pub fn is_owned_private_root(root: &Path) -> bool {
-    std::fs::symlink_metadata(root)
-        .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
-        && root
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .is_some_and(|name| name.starts_with(PRIVATE_ROOT_PREFIX))
-        && std::fs::symlink_metadata(root.join(PRIVATE_ROOT_MARKER)).is_ok_and(|metadata| {
-            metadata.is_file() && !metadata.file_type().is_symlink() && metadata.len() <= 64
-        })
-        && std::fs::read_to_string(root.join(PRIVATE_ROOT_MARKER))
-            .is_ok_and(|value| value == PRIVATE_ROOT_MARKER_CONTENT)
-}
-
 fn write_private_root_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
-    private_fs::owner_only(&mut options);
+    tilo_files::native::private::owner_only(&mut options);
     let mut file = options.open(path)?;
     std::io::Write::write_all(&mut file, bytes)
 }

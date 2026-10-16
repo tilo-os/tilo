@@ -342,11 +342,7 @@ fn playback_source_from_print(v: &Value) -> Option<PlaybackSource> {
     };
     Some(PlaybackSource {
         url,
-        format: format!("{}; {}", str_field(v, "ext"), str_field(v, "vcodec")),
         has_audio: !acodec.is_empty() && acodec != "none",
-        width: u64_field(v, "width") as u32,
-        height: u64_field(v, "height") as u32,
-        fps: f64_field(v, "fps").round().max(1.0) as u8,
         quality,
     })
 }
@@ -382,9 +378,7 @@ fn f64_field(v: &Value, key: &str) -> f64 {
 
 /// Today, as days since the civil epoch (UTC).
 fn today_days() -> i64 {
-    ui::time::wall()
-        .duration_since(ui::time::UNIX_EPOCH)
-        .map_or(0, |d| (d.as_secs() / 86_400) as i64)
+    (ui::time::unix_now() / 86_400) as i64
 }
 
 const MONTHS: [&str; 12] = [
@@ -776,9 +770,6 @@ mod tests {
             let src = playback_source_from_print(&v).expect("a playable source");
             assert_eq!(src.url, "https://gv/muxed");
             assert!(src.has_audio, "muxed format carries audio");
-            assert_eq!(src.height, 360);
-            assert_eq!(src.width, 640);
-            assert_eq!(src.fps, 30);
             assert_eq!(src.quality, "360p");
         }
         // Case `parses_video_only_source_without_audio`:

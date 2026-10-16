@@ -56,13 +56,6 @@ pub trait ComponentLifecycle: Widget {
             .collect()
     }
 
-    /// A durable writer owned by this root rather than the host. `None` means
-    /// no such writer exists. Implementations wait for all pending writes and
-    /// report failure; a queued flush is not success.
-    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-        None
-    }
-
     /// Admit or defer the primary native window's ordinary close request.
     /// Roots that defer must later produce a one-shot close intent.
     fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
@@ -73,6 +66,37 @@ pub trait ComponentLifecycle: Widget {
     fn take_window_close_intent(&mut self) -> bool {
         false
     }
+
+    /// The component this root's own component asked to show in its place
+    /// ([`AppComponent::take_replacement`](crate::application::AppComponent::take_replacement)),
+    /// for the host that mounted it. A component nested deeper answers to
+    /// the host that mounted it, so the default reaches no child.
+    fn take_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
+        None
+    }
+
+    /// One-shot: the durability of this root's own component's record changed
+    /// since this was last asked, and the root already synced with the new
+    /// state. A host that asks (an [`App`](crate::App)) presents it with a
+    /// frame of its own, not a rebuilt tree; one that does not ask sees it
+    /// through `take_structure_dirty`.
+    fn take_save_status_presentation(&mut self) -> bool {
+        false
+    }
+}
+
+/// Whether the record `widget`'s own component shows changed durability,
+/// which the root has synced with and a frame must present.
+pub fn take_save_status_presentation(widget: &mut dyn Widget) -> bool {
+    capability_mut::<dyn ComponentLifecycle>(widget)
+        .is_some_and(ComponentLifecycle::take_save_status_presentation)
+}
+
+/// The component `widget`'s own component asked to show in its place.
+pub fn take_replacement(
+    widget: &mut dyn Widget,
+) -> Option<crate::application::ComponentReplacement> {
+    capability_mut::<dyn ComponentLifecycle>(widget)?.take_replacement()
 }
 
 /// Unsaved external documents under `widget`.
@@ -140,13 +164,6 @@ pub fn take_component_close_reports(
         .collect()
 }
 
-/// Flush `widget`'s own durable writer, if it has one.
-pub fn try_flush_owned_persistence(
-    widget: &mut (impl Widget + ?Sized),
-) -> Option<Result<(), String>> {
-    capability_mut::<dyn ComponentLifecycle>(widget)?.try_flush_owned_persistence()
-}
-
 /// `widget`'s answer to an ordinary window close request.
 pub fn on_window_close_requested(widget: &mut (impl Widget + ?Sized)) -> WindowCloseAdmission {
     capability_mut::<dyn ComponentLifecycle>(widget).map_or(
@@ -159,4 +176,16 @@ pub fn on_window_close_requested(widget: &mut (impl Widget + ?Sized)) -> WindowC
 pub fn take_window_close_intent(widget: &mut (impl Widget + ?Sized)) -> bool {
     capability_mut::<dyn ComponentLifecycle>(widget)
         .is_some_and(ComponentLifecycle::take_window_close_intent)
+}
+
+/// A presentation can request activation without changing its document or owner.
+pub trait WindowActivation {
+    /// Consume one request to reveal this presentation's existing native window.
+    fn take_window_activation_intent(&self) -> bool;
+}
+
+/// Consume an activation request through the root's existing capability door.
+pub fn take_window_activation_intent(widget: &(impl Widget + ?Sized)) -> bool {
+    capability::<dyn WindowActivation>(widget)
+        .is_some_and(WindowActivation::take_window_activation_intent)
 }

@@ -19,9 +19,13 @@ mod durable_local_matrix {
     }
     impl Environment {
         fn new() -> Self {
+            Self::with_owner_initializer(crate::test_owner::SessionOwner::initialize)
+        }
+        fn with_owner_initializer(
+            initialize: impl FnOnce(&std::path::Path) -> Result<crate::test_owner::SessionOwner, String>,
+        ) -> Self {
             let root = tempfile::tempdir().unwrap();
-            let mut owner =
-                crate::test_owner::SessionOwner::initialize(&root.path().join("owner")).unwrap();
+            let mut owner = initialize(&root.path().join("owner")).unwrap();
             let cert = owner.peer().authority().clone();
             let key = owner.signing_key().clone();
             let person = owner.person_key().clone();
@@ -32,14 +36,22 @@ mod durable_local_matrix {
                 crate::test_support::WorkspaceId(84),
                 "Durable actual RPC",
             );
-            workspace.room = tilo_desktop_model::RoomId::parse(owner.peer().room()).unwrap();
-            workspace.set_owner(principal_id_for_root(cert.user_public_key));
-            workspace.owner = None;
-            workspace.capabilities = workspace
-                .capabilities
-                .into_iter()
-                .map(|cap| cap.with_expiry(start / 1_000_000_000 + 50))
-                .collect();
+            workspace.set_room(tilo_desktop_model::RoomId::parse(owner.peer().room()).unwrap());
+            // Someone the room grants everything until 50 seconds after the
+            // start, and nothing after.
+            let principal = principal_id_for_root(cert.user_public_key);
+            let changes = tilo_action_policy::Grant::new(
+                "changes-for-a-while",
+                tilo_action_policy::Subject::Person(principal.clone()),
+                workspace.node(),
+                tilo_action_policy::KindSet::ALL,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Subject::Person(principal),
+            )
+            .with_lifetime(tilo_action_policy::Lifetime::Until(
+                (start / 1_000_000_000 + 50) * 1000,
+            ));
+            workspace.grant(changes);
             let route = CrdtRoute::record(
                 "so.tilo.word-processor",
                 workspace.room.to_string(),
@@ -90,13 +102,18 @@ mod durable_local_matrix {
     }
     impl Rig {
         async fn new(env: &Environment) -> Self {
+            Self::with_services(env, env.membership.services()).await
+        }
+        async fn with_services(env: &Environment, services: HostServices) -> Self {
             let fanout = Arc::new(FanoutState::new());
-            let (state, _) = CapnpBrokerState::new(
+            let (state, bridge_rx) = CapnpBrokerState::new_configured(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 env.publisher.clone(),
-                Some(env.membership.clone()),
+                Some(env.membership.authority()),
                 None,
+                None,
+                services,
             );
             assert!(
                 state
@@ -107,11 +124,11 @@ mod durable_local_matrix {
             state
                 .invocation_host()
                 .expect("actual broker journal available after normal stop/open");
-            let directories = super::signed_worker::empty_directories();
+            let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
             let (worker, authorize) =
                 join_worker(&state, &directories, &env.route, &env.cert, &env.key, 903).await;
             let handle = &worker.handle;
-            publish(handle).await;
+            publish_for(handle, &env.route.app_id).await;
             let stream = handle.subscribe_stable_invocations().await.unwrap();
             let (_, binding) = handle
                 .resolve_published_action_for_invocation(
@@ -189,10 +206,16 @@ mod durable_local_matrix {
         }
     }
     async fn publish(handle: &runtime_collab::ChannelHandle) -> Rc<RefCell<TestActionDirectory>> {
+        publish_for(handle, "so.tilo.word-processor").await
+    }
+    async fn publish_for(
+        handle: &runtime_collab::ChannelHandle,
+        app: &str,
+    ) -> Rc<RefCell<TestActionDirectory>> {
         let state = directory_state("original-r1");
         handle
             .publish_action_directory(
-                "so.tilo.word-processor",
+                app,
                 capnp_rpc::new_client(DurableDirectory {
                     state: state.clone(),
                 }),
@@ -318,19 +341,14 @@ mod durable_local_matrix {
             .run_until(async {
                 let env = Environment::new();
                 let rig = Rig::new(&env).await;
-                let agent_grant = {
-                    let mut tree = env.membership.write();
-                    tree.workspaces[0].grant_capability(CapOverride::membership(
-                        Subject::agent("scribe"),
-                        env.route.cluster_id.clone(),
-                        Verb::Write,
-                    ))
-                };
-                env.membership.write().workspaces[0].grant_capability(CapOverride::grant(
-                    Subject::agent("scribe"),
-                    collab_types::Scope::App(env.route.app_id.clone()),
-                    Verb::Write,
-                ));
+                use crate::test_support::{Grants as _, KindSet};
+                let agent_grant =
+                    env.membership.write().workspaces[0].admit_agent("scribe", KindSet::READ);
+                env.membership.write().workspaces[0].allow_app(
+                    tilo_action_policy::Subject::agent("scribe"),
+                    &env.route.app_id,
+                    KindSet::ALL,
+                );
                 let person = rig.caller(&env, 904, None).await;
                 let agent = rig.caller(&env, 905, Some("scribe")).await;
                 let invocation = id(0xb001);
@@ -397,7 +415,7 @@ mod durable_local_matrix {
                     rig.state.invocation_statuses("agent:scribe").is_empty(),
                     "legacy actor-only status cannot disclose AuthenticatedLocal rows"
                 );
-                env.membership.write().workspaces[0].revoke_capability(&agent_grant);
+                env.membership.write().workspaces[0].revoke_grant(&agent_grant);
                 assert!(
                     agent
                         .handle
@@ -417,6 +435,137 @@ mod durable_local_matrix {
                 assert!(!admitted.result.unwrap().uncertain);
                 no_delivery(&rig).await;
                 drop(person);
+                drop(agent);
+                rig.stop().await;
+            })
+            .await;
+    }
+
+    /// An edit a durable, certified invocation's effect submits is admitted
+    /// as that invocation's caller: under their grants, and refused beyond
+    /// them; a certified caller whose certificate no longer verifies
+    /// continues nothing.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                use tilo_actions::remote::{
+                    InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
+                };
+                let env = Environment::new();
+                let rig = Rig::new(&env).await;
+                let room = env.route.cluster_id.clone();
+                {
+                    use crate::test_support::{Grants as _, KindSet, Subject, TreePath};
+                    let workspace = &mut env.membership.write().workspaces[0];
+                    workspace.admit_agent("scribe", KindSet::READ);
+                    workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
+                    workspace.deny(
+                        Subject::agent("scribe"),
+                        &TreePath::root()
+                            .app(env.route.app_id.clone())
+                            .any(tilo_action_policy::Level::Kind)
+                            .resource("document-1:body")
+                            .action("erase"),
+                        KindSet::ALL,
+                    );
+                }
+                let agent = rig.caller(&env, 905, Some("scribe")).await;
+                let invocation = id(0xc001);
+                invoke(&agent.handle, &rig.binding, invocation)
+                    .await
+                    .unwrap();
+                let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
+                assert_eq!(delivered.actor, "agent:scribe");
+
+                // The running invocation keeps its certified caller.
+                let continued = rig
+                    .state
+                    .continuing_caller(903, invocation)
+                    .expect("the durable invocation's caller");
+                assert_eq!(
+                    continued,
+                    tilo_actions::remote::Caller::local_agent("scribe").in_room(room.clone())
+                );
+                assert!(rig.state.continuing_caller(904, invocation).is_none());
+
+                // Its edits are admitted as the agent: what the grants allow,
+                // and not what one denies.
+                let action = |action: &str| PublishedAction {
+                    semantic_identity: None,
+                    resource: "document-1:body".into(),
+                    action: action.into(),
+                    resource_kind: "document".into(),
+                    resource_label: "Document".into(),
+                    action_label: action.into(),
+                    description: None,
+                    operation_kind: tilo_actions::OperationKind::Effect,
+                    params: Vec::new(),
+                    contract: tilo_actions::ActionContract::default(),
+                    input: PublishedInput::None,
+                    view: None,
+                };
+                rig.state
+                    .replace_published_surfaces_for_test(vec![PublishedSurface {
+                        peer_id: 903,
+                        app_id: env.route.app_id.clone(),
+                        route: env.route.clone(),
+                        actions: vec![action("edit"), action("erase")],
+                        live: true,
+                    }]);
+                let mut app = rig.state.capture_invocations_for_test(903);
+                let edit = |action: &str| InvokeRequest {
+                    on_behalf_of: Some(invocation),
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: RemoteActionTarget {
+                        provider: tilo_actions::remote::OWN_PROVIDER.into(),
+                        address: tilo_actions::ActionAddress::new("document-1:body", action),
+                    },
+                    argument: InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    wait_ms: None,
+                    appearance: None,
+                };
+                assert!(matches!(
+                    rig.state
+                        .action_invoke(&continued, Some(903), None, &edit("edit"))
+                        .poll_ready(),
+                    PendingPoll::Ready(Ok(_))
+                ));
+                assert_eq!(app.try_recv().unwrap().actor, "agent:scribe");
+                assert!(!matches!(
+                    rig.state
+                        .action_invoke(&continued, Some(903), None, &edit("erase"))
+                        .poll_ready(),
+                    PendingPoll::Ready(Ok(_))
+                ));
+                assert!(app.try_recv().is_err(), "the denied edit reaches no app");
+
+                // A remote device's certified caller is checked again each
+                // time: revoked, it continues nothing.
+                let certified = rig
+                    .state
+                    .verify_action_caller(&room, &presentation(&room, &env.cert, &env.key))
+                    .unwrap();
+                let certified = crate::collab_broker_capnp::ContinuingCaller::Certified {
+                    caller: Box::new(certified),
+                    foreign_restriction: false,
+                    direct: None,
+                };
+                assert_eq!(
+                    certified.current(&rig.state),
+                    Some(
+                        tilo_actions::remote::Caller::authenticated(
+                            env.cert.user_public_key,
+                            env.cert.device_public_key
+                        )
+                        .in_room(room.clone())
+                    )
+                );
+                *env.authority.certificate.lock().unwrap() = None;
+                assert!(certified.current(&rig.state).is_none());
                 drop(agent);
                 rig.stop().await;
             })
@@ -615,8 +764,10 @@ mod durable_local_matrix {
                     self.entered.send(()).unwrap();
                     self.release.notified().await;
                 }
-                write_directory_row(results.get().init_resolution().init_found(), &self.row);
-                Ok(())
+                runtime_collab::write_action_directory_row(
+                    results.get().init_resolution().init_found(),
+                    &self.row,
+                )
             })
         }
     }
@@ -873,4 +1024,88 @@ mod durable_local_matrix {
             })
             .await;
     }
+    #[tokio::test(flavor = "current_thread")]
+    async fn host_execution_retirement_refuses_actual_retained_worker_custody() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let env = Environment::new();
+                let rig = Rig::new(&env).await;
+                let descriptor = directory_state("original-r1")
+                    .borrow()
+                    .row()
+                    .descriptor
+                    .unwrap();
+                rig.worker
+                    .handle
+                    .publish_actions(&env.route.app_id, &[descriptor])
+                    .await
+                    .unwrap();
+                let admitted = rig
+                    .state
+                    .host_workers
+                    .lock()
+                    .unwrap()
+                    .get(&903)
+                    .unwrap()
+                    .clone();
+                let caller = admitted.caller(&env.route.cluster_id).in_new_execution();
+                let origin =
+                    crate::collab_broker_capnp::published_invocation::InvocationCaller::Local {
+                        route: env.route.clone(),
+                        admitted: Box::new(admitted),
+                    };
+                let invocation = tilo_actions::InvocationId::new();
+                let request = tilo_actions::remote::InvokeRequest {
+                    invocation,
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider: "903".into(),
+                        address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                    },
+                    argument: tilo_actions::remote::InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    on_behalf_of: None,
+                    wait_ms: None,
+                    appearance: None,
+                };
+                assert!(matches!(
+                    rig.state
+                        .action_invoke_with_origin(&caller, None, None, Some(&origin), &request,)
+                        .poll_ready(),
+                    tilo_actions::remote::PendingPoll::Ready(Ok(_))
+                ));
+                let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
+                let request = ui::invocation_scope::PublishedInvocationRequest {
+                    wire_id: delivered.id,
+                    invocation,
+                    address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
+                    argument: delivered.argument,
+                    actor: delivered.actor,
+                    participant: Some(tilo_actions::ParticipantId::for_execution(
+                        caller.execution_id().unwrap(),
+                    )),
+                };
+                let lease = (rig.authorize)(&request).unwrap();
+                lease.check().unwrap();
+                caller.retire_execution();
+                assert!(
+                    lease.check().is_err(),
+                    "retained checked effects cannot outlive their execution"
+                );
+                assert!(
+                    (rig.authorize)(&request).is_err(),
+                    "same delivered request cannot remint custody"
+                );
+                rig.stop().await;
+            })
+            .await;
+    }
+
+    include!("display_control_tests.rs");
+    include!("admitted_local_host_tests.rs");
+    include!("certified_launch_tests.rs");
+    include!("observed_launch_tests.rs");
+    include!("keyboard_map_read_authority_tests.rs");
+    include!("store_directory_publication_tests.rs");
 }

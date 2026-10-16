@@ -1,0 +1,556 @@
+//! The boundary every medium sits behind.
+//!
+//! A [`MediumEngine`] simulates one kind of paint. It is given a layer's
+//! marks one at a time and paints them into its own [`LayerSim`], which it
+//! can composite to pixels at any point. Engines are deterministic: the same
+//! marks with the same seeds give the same pixels on every machine, so a
+//! painting syncs as marks and every collaborator simulates it locally.
+//!
+//! A [`Preset`] is plain data over an engine: its parameters, a suggested
+//! ground and a palette. Presets are what users share; engines are code.
+//! The built-in engines are linked in; a sandboxed plug-in engine implements
+//! the same two traits behind a process boundary.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+
+use crate::brush::StrokePoint;
+use crate::colour::{Paint, Pigment};
+use crate::field::ColourField;
+use crate::ground::{Heightfield, Texture};
+
+/// How a medium's layer composes onto what is beneath it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Blend {
+    /// Opaque paint covers what is beneath it.
+    Normal,
+    /// Transparent pigment darkens what is beneath it, as glazes do.
+    Multiply,
+}
+
+/// One tunable of an engine.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ParamSpec {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
+}
+
+impl ParamSpec {
+    pub fn new(id: &str, label: &str, description: &str, range: (f32, f32), default: f32) -> Self {
+        Self {
+            id: id.to_owned(),
+            label: label.to_owned(),
+            description: description.to_owned(),
+            min: range.0,
+            max: range.1,
+            default,
+        }
+    }
+}
+
+/// Parameter values over an engine's specs: unknown ids are ignored, missing
+/// ones take the spec default and every value is clamped to its range.
+#[derive(Clone, Debug)]
+pub struct Settings {
+    specs: Arc<[ParamSpec]>,
+    values: BTreeMap<String, f32>,
+}
+
+impl Settings {
+    pub fn new(specs: Arc<[ParamSpec]>, values: &BTreeMap<String, f32>) -> Self {
+        let mut settings = Self {
+            specs,
+            values: BTreeMap::new(),
+        };
+        settings.merge(values);
+        settings
+    }
+
+    /// These settings with `overrides` on top.
+    #[must_use]
+    pub fn with(&self, overrides: &BTreeMap<String, f32>) -> Self {
+        let mut settings = self.clone();
+        settings.merge(overrides);
+        settings
+    }
+
+    fn merge(&mut self, values: &BTreeMap<String, f32>) {
+        for (id, value) in values {
+            if let Some(spec) = self.specs.iter().find(|spec| spec.id == *id)
+                && value.is_finite()
+            {
+                self.values
+                    .insert(id.clone(), value.clamp(spec.min, spec.max));
+            }
+        }
+    }
+
+    pub fn get(&self, id: &str) -> f32 {
+        self.values.get(id).copied().unwrap_or_else(|| {
+            self.specs
+                .iter()
+                .find(|spec| spec.id == id)
+                .map_or(0.0, |spec| spec.default)
+        })
+    }
+
+    /// Every parameter's effective value.
+    pub fn resolved(&self) -> BTreeMap<String, f32> {
+        self.specs
+            .iter()
+            .map(|spec| (spec.id.clone(), self.get(&spec.id)))
+            .collect()
+    }
+}
+
+/// The support a layer is painted on, in simulation cells.
+///
+/// A canvas is the whole layer's grid, or a window of it: `origin` is where
+/// its first cell lies in the whole grid at the same scale. Everything an
+/// engine derives from position (the ground's tooth, the mottling of a wash,
+/// the brushwork laying in a region) is taken in whole-grid cells, so a
+/// window simulates the same paint as the whole grid there, and two windows
+/// side by side meet without a seam in their texture.
+#[derive(Clone, Debug)]
+pub struct Canvas {
+    pub width: usize,
+    pub height: usize,
+    /// Cells per artwork unit.
+    pub scale: f32,
+    pub ground: Arc<Heightfield>,
+    /// The whole-grid cell of this grid's first cell.
+    pub origin: (usize, usize),
+}
+
+impl Canvas {
+    /// The whole layer's grid over `ground`.
+    pub fn whole(scale: f32, ground: Arc<Heightfield>) -> Self {
+        Self {
+            width: ground.width,
+            height: ground.height,
+            scale,
+            ground,
+            origin: (0, 0),
+        }
+    }
+
+    /// A window of the whole grid at `origin`, the size of `ground`, which
+    /// must be the window's own ([`Heightfield::window`]).
+    pub fn window(scale: f32, ground: Arc<Heightfield>, origin: (usize, usize)) -> Self {
+        Self {
+            width: ground.width,
+            height: ground.height,
+            scale,
+            ground,
+            origin,
+        }
+    }
+
+    /// The whole-grid position of cell `(x, y)` of this grid.
+    pub(crate) fn absolute(&self, x: f32, y: f32) -> (f32, f32) {
+        (
+            x + crate::grid::float(self.origin.0),
+            y + crate::grid::float(self.origin.1),
+        )
+    }
+}
+
+/// A brush stroke, in cell coordinates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Stroke {
+    pub points: Vec<StrokePoint>,
+    pub size: f32,
+    pub paint: Paint,
+    pub opacity: f32,
+    /// Paint into the layer while it is still wet (blending, bleeding),
+    /// rather than over paint that has dried.
+    pub wet: bool,
+    /// Per-mark parameter overrides on top of the preset.
+    #[serde(default)]
+    pub params: BTreeMap<String, f32>,
+    /// What the stroke grows into: twigs, or a cluster of dabs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form: Option<crate::form::Form>,
+    /// Closed outlines the paint stays inside, as a painter cuts a stroke
+    /// in against an edge; anywhere when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clip: Vec<Vec<(f32, f32)>>,
+}
+
+/// A filled region laid in with a brush, in cell coordinates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Fill {
+    /// Closed outlines; overlapping ones follow the non-zero rule.
+    pub contours: Vec<Vec<(f32, f32)>>,
+    pub paint: Paint,
+    pub opacity: f32,
+    pub wet: bool,
+    /// The width of the brush that lays the region in.
+    pub brush: f32,
+    /// The direction of the brushwork, in degrees.
+    pub angle: f32,
+    #[serde(default)]
+    pub params: BTreeMap<String, f32>,
+    /// Colour that changes across the region, mixed as it is laid in;
+    /// `paint` gives the handling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<ColourField>,
+}
+
+/// Paint taken off the layer along a path, in cell coordinates: an eraser.
+/// It is ordered like any mark: it lifts what earlier marks left under it,
+/// and later marks paint over the place it cleared.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Erase {
+    /// The path; pressure scales the width, as for a stroke.
+    pub points: Vec<StrokePoint>,
+    pub size: f32,
+    /// `0..=1`: how much of the paint under the eraser it takes off (1
+    /// clears it).
+    pub strength: f32,
+    /// `0..=1`: a hard eraser's edge is crisp; a soft one fades out over its
+    /// outer half.
+    pub hardness: f32,
+    /// Closed outlines the eraser stays inside; anywhere when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clip: Vec<Vec<(f32, f32)>>,
+}
+
+/// One mark as a medium receives it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Mark {
+    Stroke(Stroke),
+    Fill(Fill),
+    Erase(Erase),
+}
+
+fn scaled_contours(contours: &[Vec<(f32, f32)>], scale: f32) -> Vec<Vec<(f32, f32)>> {
+    contours
+        .iter()
+        .map(|contour| {
+            contour
+                .iter()
+                .map(|(x, y)| (x * scale, y * scale))
+                .collect()
+        })
+        .collect()
+}
+
+fn scaled_points(points: &[StrokePoint], scale: f32) -> Vec<StrokePoint> {
+    points
+        .iter()
+        .map(|point| StrokePoint::new(point.x * scale, point.y * scale, point.pressure))
+        .collect()
+}
+
+impl Mark {
+    /// This mark with artwork coordinates converted to cells.
+    #[must_use]
+    pub fn scaled(&self, scale: f32) -> Self {
+        match self {
+            Self::Stroke(stroke) => Self::Stroke(Stroke {
+                points: scaled_points(&stroke.points, scale),
+                size: stroke.size * scale,
+                form: stroke.form.map(|form| form.scaled(scale)),
+                clip: scaled_contours(&stroke.clip, scale),
+                ..stroke.clone()
+            }),
+            Self::Fill(fill) => Self::Fill(Fill {
+                contours: scaled_contours(&fill.contours, scale),
+                brush: fill.brush * scale,
+                field: fill.field.as_ref().map(|field| field.scaled(scale)),
+                ..fill.clone()
+            }),
+            Self::Erase(erase) => Self::Erase(Erase {
+                points: scaled_points(&erase.points, scale),
+                size: erase.size * scale,
+                clip: scaled_contours(&erase.clip, scale),
+                ..erase.clone()
+            }),
+        }
+    }
+
+    /// This mark moved by `(dx, dy)` cells: a whole-grid mark as a window
+    /// whose origin is `(-dx, -dy)` receives it.
+    #[must_use]
+    pub fn translated(&self, dx: f32, dy: f32) -> Self {
+        let shift = |contours: &Vec<Vec<(f32, f32)>>| -> Vec<Vec<(f32, f32)>> {
+            contours
+                .iter()
+                .map(|contour| contour.iter().map(|(x, y)| (x + dx, y + dy)).collect())
+                .collect()
+        };
+        match self {
+            Self::Stroke(stroke) => Self::Stroke(Stroke {
+                points: stroke
+                    .points
+                    .iter()
+                    .map(|point| StrokePoint::new(point.x + dx, point.y + dy, point.pressure))
+                    .collect(),
+                clip: shift(&stroke.clip),
+                ..stroke.clone()
+            }),
+            Self::Fill(fill) => Self::Fill(Fill {
+                contours: shift(&fill.contours),
+                field: fill.field.as_ref().map(|field| field.translated(dx, dy)),
+                ..fill.clone()
+            }),
+            Self::Erase(erase) => Self::Erase(Erase {
+                points: erase
+                    .points
+                    .iter()
+                    .map(|point| StrokePoint::new(point.x + dx, point.y + dy, point.pressure))
+                    .collect(),
+                clip: shift(&erase.clip),
+                ..erase.clone()
+            }),
+        }
+    }
+
+    /// The cells the mark can reach: its outline or path, grown by its
+    /// brush and whatever it grows into. `None` for a mark with no points.
+    pub fn reach(&self) -> Option<[f32; 4]> {
+        let (points, grow): (Vec<(f32, f32)>, f32) = match self {
+            Self::Stroke(stroke) => {
+                let length: f32 = stroke
+                    .points
+                    .windows(2)
+                    .map(|pair| match pair {
+                        [a, b] => (b.x - a.x).hypot(b.y - a.y),
+                        _ => 0.0,
+                    })
+                    .sum();
+                // Dabs scatter about the path; twigs fork off it, each
+                // shorter than the limb.
+                let form = match stroke.form {
+                    None => 0.0,
+                    Some(crate::form::Form::Dabs {
+                        scatter,
+                        length: dab,
+                        ..
+                    }) => scatter + dab.max(stroke.size),
+                    Some(crate::form::Form::Branch { .. }) => length,
+                    // Hatching fills the outline, its lines ending up to a
+                    // third of their spacing past its edge.
+                    Some(crate::form::Form::Hatch { spacing, .. }) => {
+                        spacing.max(stroke.size * 0.5).max(0.5) * 0.5
+                    }
+                };
+                (
+                    stroke
+                        .points
+                        .iter()
+                        .map(|point| (point.x, point.y))
+                        .collect(),
+                    stroke.size + form,
+                )
+            }
+            Self::Fill(fill) => (
+                fill.contours.iter().flatten().copied().collect(),
+                fill.brush * 2.0,
+            ),
+            Self::Erase(erase) => (
+                erase
+                    .points
+                    .iter()
+                    .map(|point| (point.x, point.y))
+                    .collect(),
+                erase.size,
+            ),
+        };
+        let mut bounds = [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        for (x, y) in points
+            .into_iter()
+            .filter(|(x, y)| x.is_finite() && y.is_finite())
+        {
+            bounds = [
+                bounds[0].min(x),
+                bounds[1].min(y),
+                bounds[2].max(x),
+                bounds[3].max(y),
+            ];
+        }
+        bounds[0].is_finite().then_some([
+            bounds[0] - grow,
+            bounds[1] - grow,
+            bounds[2] + grow,
+            bounds[3] + grow,
+        ])
+    }
+
+    /// Per-mark parameter overrides; an eraser has none.
+    pub fn params(&self) -> &BTreeMap<String, f32> {
+        static NONE: BTreeMap<String, f32> = BTreeMap::new();
+        match self {
+            Self::Stroke(stroke) => &stroke.params,
+            Self::Fill(fill) => &fill.params,
+            Self::Erase(_) => &NONE,
+        }
+    }
+
+    /// Whether the mark works into the wet layer. An eraser is not a wet
+    /// mark, but the engines lift paint without drying the layer first.
+    pub fn wet(&self) -> bool {
+        match self {
+            Self::Stroke(stroke) => stroke.wet,
+            Self::Fill(fill) => fill.wet,
+            Self::Erase(_) => false,
+        }
+    }
+}
+
+/// One layer's simulation state.
+pub trait LayerSim: Send + Sync {
+    /// Paint one mark. `seed` makes its randomness reproducible.
+    fn apply(&mut self, mark: &Mark, seed: u64);
+
+    /// The layer as it looks once dry: straight-alpha sRGB RGBA8, row-major,
+    /// `width * height * 4` bytes. Does not change the state.
+    fn composite(&self) -> Vec<u8>;
+
+    fn clone_box(&self) -> Box<dyn LayerSim>;
+}
+
+/// A kind of paint.
+pub trait MediumEngine: Send + Sync {
+    fn id(&self) -> &str;
+    fn label(&self) -> &str;
+    fn description(&self) -> &str;
+    fn parameters(&self) -> Arc<[ParamSpec]>;
+    fn blend(&self) -> Blend;
+    fn new_layer(&self, canvas: &Canvas, settings: Settings) -> Box<dyn LayerSim>;
+}
+
+/// A shareable medium: an engine with its parameters, a suggested ground and
+/// a palette of named pigments.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Preset {
+    pub id: String,
+    pub label: String,
+    pub engine: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub params: BTreeMap<String, f32>,
+    #[serde(default)]
+    pub ground: Option<Texture>,
+    #[serde(default)]
+    pub palette: Vec<Pigment>,
+}
+
+impl Preset {
+    /// Check a preset against the engines it names, with a message an agent
+    /// can act on.
+    ///
+    /// # Errors
+    /// Names the first invalid id, engine, parameter or pigment.
+    pub fn validate(&self, engines: &Engines) -> Result<(), String> {
+        if !valid_id(&self.id) {
+            return Err(format!(
+                "medium id {:?} must be 1-48 lowercase letters, digits or '-'",
+                self.id
+            ));
+        }
+        let engine = engines.get(&self.engine).ok_or_else(|| {
+            format!(
+                "unknown engine {:?}; engines are {}",
+                self.engine,
+                engines.ids().join(", ")
+            )
+        })?;
+        let specs = engine.parameters();
+        for (id, value) in &self.params {
+            let spec = specs.iter().find(|spec| spec.id == *id).ok_or_else(|| {
+                format!(
+                    "engine {:?} has no parameter {id:?}; it has {}",
+                    self.engine,
+                    specs
+                        .iter()
+                        .map(|spec| spec.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?;
+            if !(spec.min..=spec.max).contains(value) {
+                return Err(format!(
+                    "{id} must be within {}..={}, got {value}",
+                    spec.min, spec.max
+                ));
+            }
+        }
+        for pigment in &self.palette {
+            if crate::colour::parse_hex(&pigment.colour).is_none() {
+                return Err(format!(
+                    "pigment {:?} colour {:?} must be #rrggbb",
+                    pigment.name, pigment.colour
+                ));
+            }
+            if !valid_id(&pigment.name) {
+                return Err(format!(
+                    "pigment name {:?} must be lowercase words joined by '-'",
+                    pigment.name
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn valid_id(id: &str) -> bool {
+    (1..=48).contains(&id.len())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+/// The engines a host can simulate.
+#[derive(Clone)]
+pub struct Engines {
+    engines: Vec<Arc<dyn MediumEngine>>,
+}
+
+impl Engines {
+    /// The built-in engines.
+    pub fn builtin() -> Self {
+        Self {
+            engines: vec![
+                Arc::new(crate::watercolour::Watercolour::new()),
+                Arc::new(crate::oil::Oil::new()),
+            ],
+        }
+    }
+
+    pub fn get(&self, id: &str) -> Option<Arc<dyn MediumEngine>> {
+        self.engines
+            .iter()
+            .find(|engine| engine.id() == id)
+            .cloned()
+    }
+
+    pub fn ids(&self) -> Vec<&str> {
+        self.engines.iter().map(|engine| engine.id()).collect()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn MediumEngine>> {
+        self.engines.iter()
+    }
+}
+
+impl std::fmt::Debug for Engines {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_list().entries(self.ids()).finish()
+    }
+}

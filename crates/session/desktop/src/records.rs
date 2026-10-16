@@ -1,5 +1,5 @@
 use ui::record::{RecordCheckout, RecordId, RecordKind, RecordStore};
-use ui::widget::{Widget, WindowGroup as UiGroup};
+use ui::widget::WindowGroup as UiGroup;
 
 /// Record type for a tab whose content is the app's own, unsaved
 /// document — a scratch note, an untitled buffer. The shell only needs
@@ -43,14 +43,7 @@ pub fn apply_creation_failures(
 /// the shell (re)builds the widget tree. The binding travels with the
 /// tile, so a tab dragged into another group keeps its document.
 pub fn bind_group_records(group: &mut UiGroup, store: &RecordStore) {
-    let tabs: Vec<_> = group.tabs().iter().map(|tab| tab.id).collect();
-    for tab in tabs {
-        if let Some(host) = group.host_for_tab_mut(tab)
-            && host.callback_binding().is_none()
-        {
-            host.bind_record(store.clone(), scratch_tab_record(tab));
-        }
-    }
+    group.bind_tab_records(store, scratch_tab_record);
 }
 
 /// Checked package records preserve tab identity; Chat is the room package-primary record.
