@@ -106,6 +106,73 @@ fn a_comment_written_rich_keeps_its_marks_and_plain_text() {
 }
 
 #[test]
+fn deleting_a_comment_preserves_its_highlight_and_other_threads() {
+    let mut replica = planned_replica(1);
+    let highlight = hl(1);
+    replica
+        .apply(add_annotation_on(&highlight, "source-1"))
+        .expect("highlight");
+    for id in ["deleted", "kept"] {
+        replica
+            .apply(add_comment_action(id, Some(&highlight.id), None, id))
+            .expect("comment on highlight");
+    }
+    replica
+        .apply(add_reply_action_with_id("kept", "reply", "Keep this reply"))
+        .expect("reply");
+    replica
+        .apply(delete_comment_action("deleted"))
+        .expect("delete just one thread");
+    let state = markup(&replica);
+    assert_eq!(state.list_annotations()[0].id, highlight.id);
+    let comments = state.list_comments();
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].id, "kept");
+    assert_eq!(comments[0].replies[0].body, "Keep this reply");
+
+    replica
+        .apply(delete_comment_action("kept"))
+        .expect("delete last thread");
+    assert!(markup(&replica).list_comments().is_empty());
+    assert_eq!(markup(&replica).list_annotations()[0].id, highlight.id);
+}
+
+#[test]
+fn deleting_a_note_thread_removes_only_an_orphaned_note_marker() {
+    let mut replica = planned_replica(1);
+    replica
+        .apply(crate::actions::create_note_on_action(
+            &crate::actions::NoteDraft {
+                anno_id: "note",
+                comment_id: "opening",
+                color: Swatch::Yellow,
+                body: "Opening thread",
+            },
+            "source-1",
+            (10.0, 20.0),
+        ))
+        .expect("sticky note");
+    replica
+        .apply(add_comment_action(
+            "other",
+            Some("note"),
+            None,
+            "Other thread",
+        ))
+        .expect("second thread");
+    replica
+        .apply(delete_comment_action("opening"))
+        .expect("delete opening thread");
+    assert_eq!(markup(&replica).list_annotations()[0].id, "note");
+    assert_eq!(markup(&replica).list_comments()[0].body, "Other thread");
+    replica
+        .apply(delete_comment_action("other"))
+        .expect("delete last thread");
+    assert!(markup(&replica).list_comments().is_empty());
+    assert!(markup(&replica).list_annotations().is_empty());
+}
+
+#[test]
 fn annotations_round_trip_recolor_reposition_and_delete() {
     let mut replica = planned_replica(3);
     let a = hl(2);
