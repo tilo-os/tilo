@@ -193,3 +193,148 @@ fn a_live_maximize_abuts_the_bar_and_the_bottom_edge() {
         bounds.group
     );
 }
+
+/// "Hide the top bar until the pointer is near it": the window's tab row
+/// takes the bar's strip at the top of the panel. Pushing the pointer to the
+/// top edge shows the bar over the window, in its docked place, and the bar
+/// (not the window under it) takes the pointer there; heading back down
+/// into the window hides it, and the window keeps its place throughout.
+#[test]
+fn a_hidden_top_bar_gives_the_window_its_strip_and_shows_over_it_when_reached_for() {
+    use shell::shell::input_policy::chrome_captures_pointer;
+    use tilo_desktop::chrome::TopBarPresence;
+    use vello::kurbo::Point;
+
+    let mut panel = Panel::new();
+    let (docked, _) = panel.group();
+    let bar = panel.top_bar();
+    assert!(
+        (docked.tab_bar.y0 - bar.y1).abs() < 0.5,
+        "docked: under the bar"
+    );
+
+    panel.fb.host_mut().set_hide_top_bar_for_tests(true);
+    panel.settle();
+    assert_eq!(panel.fb.chrome().top_bar_presence(), TopBarPresence::Hidden);
+    let (hidden, _) = panel.group();
+    let screen = panel.output.logical_rect();
+    assert!(
+        (hidden.tab_bar.y0 - screen.y0).abs() < 0.5,
+        "the tab row takes the bar's strip: {:?}",
+        hidden.tab_bar
+    );
+
+    // Resting in the window, nothing shows.
+    panel.fb.host_mut().note_pointer(Point::new(700.0, 500.0));
+    panel.settle();
+    assert_eq!(panel.fb.chrome().top_bar_presence(), TopBarPresence::Hidden);
+    assert!(
+        !chrome_captures_pointer(&panel.fb),
+        "the window has the pointer"
+    );
+
+    // A push up against the top edge shows it: at once when the path brakes
+    // into the edge, else after the short rest against it that leaves a
+    // click there to the window.
+    for y in [400.0, 300.0, 200.0, 100.0, 40.0, 0.0] {
+        panel.fb.host_mut().note_pointer(Point::new(700.0, y));
+    }
+    let pushed = panel.fb.chrome().top_bar_presence();
+    if pushed != TopBarPresence::Shown {
+        let due = panel
+            .fb
+            .host()
+            .top_bar_reveal_deadline()
+            .expect("resting against the edge is due to show the bar");
+        panel.fb.host_mut().sync_top_bar_presence(due);
+    }
+    assert_eq!(panel.fb.chrome().top_bar_presence(), TopBarPresence::Shown);
+    panel.settle();
+    assert_eq!(
+        panel.fb.chrome().top_bar_presence(),
+        TopBarPresence::Shown,
+        "it stays while the pointer is on it"
+    );
+    assert!(
+        chrome_captures_pointer(&panel.fb),
+        "the shown bar, not the window under it, takes the pointer"
+    );
+    let (shown, _) = panel.group();
+    assert_eq!(shown.tab_bar, hidden.tab_bar, "nothing under it moved");
+
+    // Heading back down into the window hides it.
+    for y in [12.0, 60.0, 160.0, 300.0] {
+        panel.fb.host_mut().note_pointer(Point::new(700.0, y));
+    }
+    panel.settle();
+    assert_eq!(panel.fb.chrome().top_bar_presence(), TopBarPresence::Hidden);
+    assert!(!chrome_captures_pointer(&panel.fb));
+
+    panel.fb.host_mut().set_hide_top_bar_for_tests(false);
+    panel.settle();
+    assert_eq!(panel.fb.chrome().top_bar_presence(), TopBarPresence::Docked);
+    let (again, _) = panel.group();
+    drop(panel);
+    assert!((again.tab_bar.y0 - bar.y1).abs() < 0.5, "docked again");
+}
+
+/// The bar hidden and a maximized window's bar hidden too: reaching for the
+/// top shows the top stack the way it reads, the desktop's bar at the top
+/// and the window's bar under it, neither covering the other.
+#[test]
+fn with_both_bars_hidden_reaching_for_the_top_shows_the_desktop_bar_over_the_windows_bar() {
+    use tilo_desktop::chrome::TopBarPresence;
+    use vello::kurbo::Point;
+
+    let mut panel = Panel::new();
+    panel.toggle_maximized();
+    panel.settle();
+    panel.fb.host_mut().set_hide_top_bar_for_tests(true);
+    panel.settle();
+    assert_eq!(panel.fb.chrome().top_bar_presence(), TopBarPresence::Hidden);
+    let screen = panel.output.logical_rect();
+    let (at_rest, _) = panel.group();
+    assert!(
+        (at_rest.group.y0 - screen.y0).abs() < 0.5,
+        "the maximized window takes the whole height: {:?}",
+        at_rest.group
+    );
+    assert_eq!(at_rest.restore, None, "its bar hides at rest");
+
+    for y in [400.0, 300.0, 200.0, 100.0, 40.0, 0.0] {
+        panel.fb.host_mut().note_pointer(Point::new(700.0, y));
+    }
+    let pushed = panel.fb.chrome().top_bar_presence();
+    if pushed != TopBarPresence::Shown {
+        let due = panel
+            .fb
+            .host()
+            .top_bar_reveal_deadline()
+            .expect("resting against the edge is due to show the bar");
+        panel.fb.host_mut().sync_top_bar_presence(due);
+    }
+    assert_eq!(panel.fb.chrome().top_bar_presence(), TopBarPresence::Shown);
+    // The window's bar reads the same path; settle its own rest the same way.
+    panel
+        .fb
+        .host_mut()
+        .group_row_mut_for_tests(STRIP)
+        .expect("the strip has a row")
+        .groups
+        .iter_mut()
+        .find(|g| g.id == GROUP)
+        .expect("the group is laid out")
+        .elapse_maximized_chrome_intent();
+    panel.settle();
+
+    let bar = panel.top_bar();
+    let (stack, _) = panel.group();
+    drop(panel);
+    let restore = stack.restore.expect("the window's bar shows too");
+    let close = stack.close.expect("with its close control");
+    assert!(
+        restore.y0 >= bar.y1 - 0.5 && close.y0 >= bar.y1 - 0.5,
+        "the window's bar {restore:?} {close:?} stands below the desktop's {bar:?}"
+    );
+    assert_eq!(stack.group, at_rest.group, "the window itself did not move");
+}

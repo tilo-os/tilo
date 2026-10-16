@@ -1877,6 +1877,13 @@ pub struct DesktopControlsConfig {
     /// window and strip navigation and for carrying the focused group. The ordinary arrow bindings remain
     /// available.
     pub vim_mode: bool,
+    /// Hide the desktop's top bar until the pointer reaches for the top
+    /// edge: windows take the whole height, and the bar
+    /// shows over them while it is used. Off by default, so the bar's clock,
+    /// workspace and status stay in view until the person chooses otherwise.
+    /// Per device: a small laptop panel and a large desk display want
+    /// different answers.
+    pub hide_top_bar: bool,
 }
 
 /// A stable, per-user identifier for a control that may appear in Quick

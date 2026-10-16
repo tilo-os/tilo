@@ -58,6 +58,7 @@ mod shortcuts;
 mod strip_indicators;
 mod switcher_layer;
 mod tab_menu;
+mod top_bar_reveal;
 
 pub use controller::{ControllerDelivery, ControllerKey};
 use layers::{
@@ -723,6 +724,8 @@ pub struct ShellOverlayHost {
     /// Shows the ribbon and the rail while the position they report is
     /// changing, and fades them out once it stops.
     strip_indicators: strip_indicators::StripIndicators,
+    /// When the top bar the person hides shows over the windows.
+    top_bar_reveal: top_bar_reveal::TopBarReveal,
     /// A direct strip pan (touchpad or touch) is in progress or settling.
     /// Its frames, and the frame it comes to rest on, are composited from
     /// layers drawn before it began, so the chrome they hold (the ribbon and
@@ -1907,6 +1910,7 @@ impl ShellOverlayHost {
         );
         self.prepare_quick_settings_transition(theme, flags);
         self.prepare_strip_indicators(Instant::now());
+        self.sync_top_bar_presence(Instant::now());
         let quick_settings_transition_visible = self.qs_transition.is_visible(Instant::now());
         // The panel, the ribbon and the rail are each a damage part of the
         // section: a change to one repaints that one.
@@ -2462,6 +2466,7 @@ impl ShellOverlayHost {
             strip_ribbon_hover: None,
             strip_rail_hover: None,
             strip_indicators: strip_indicators::StripIndicators::default(),
+            top_bar_reveal: top_bar_reveal::TopBarReveal::default(),
             strip_pan_active: false,
             qs_refresh: inputs.qs_refresh,
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
@@ -2861,6 +2866,113 @@ impl ShellOverlayHost {
             return;
         };
         self.with_maximized_group(|group| group.note_maximized_press(p));
+        if let Some((display, bar)) = self.top_bar_reveal_geometry() {
+            self.top_bar_reveal.on_press(p, display, bar);
+        }
+    }
+
+    /// The display whose top edge the full bar stands on, and the strip the
+    /// bar takes there. `None` without a desktop surface.
+    fn top_bar_reveal_geometry(&self) -> Option<(Rect, Rect)> {
+        let display = self
+            .primary_output()
+            .map_or(self.rect, |output| output.rect());
+        let bar = self
+            .content
+            .as_any()?
+            .downcast_ref::<tilo_desktop::composition::DesktopSurface>()?
+            .topbar()?
+            .get_rect();
+        let bar = if bar.is_zero_area() {
+            Rect::new(
+                display.x0,
+                display.y0,
+                display.x1,
+                display.y0 + f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX),
+            )
+        } else {
+            bar
+        };
+        Some((display, bar))
+    }
+
+    /// Whether something the bar opened holds it shown: one of its menus,
+    /// the workspace name being edited, or the bar's own editor or keyboard
+    /// focus.
+    fn top_bar_held_open(&self) -> bool {
+        let chrome_holds = self.chrome.as_ref().is_some_and(|chrome| {
+            let state = chrome.borrow();
+            state.overlays.quick_settings
+                || state.overlays.collaborators
+                || state.overlays.ws_settings
+                || state.overlays.clock
+                || state.editing_workspace_name.is_some()
+        });
+        chrome_holds
+            || self
+                .content
+                .as_any()
+                .and_then(|content| {
+                    content.downcast_ref::<tilo_desktop::composition::DesktopSurface>()
+                })
+                .and_then(tilo_desktop::composition::DesktopSurface::topbar)
+                .is_some_and(crate::shell::topbar_chrome::TopBarChrome::holds_itself_shown)
+    }
+
+    /// Bring the bar's presence up to date at `now`: the person's choice,
+    /// the pointer's requests, and what holds it open.
+    pub fn sync_top_bar_presence(&mut self, now: Instant) {
+        self.top_bar_reveal
+            .set_hide(self.desktop_controls.config().hide_top_bar);
+        self.top_bar_reveal.settle(now);
+        let presence = self.top_bar_reveal.presence(self.top_bar_held_open());
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().set_top_bar_presence(presence);
+        }
+        // While the bar shows over the windows' top edge, a maximized
+        // window's own bar stands below it rather than under it: the two
+        // read top to bottom as one stack.
+        let inset = if presence == tilo_desktop::chrome::TopBarPresence::Shown {
+            self.top_bar_reveal_geometry()
+                .map_or(0.0, |(_, bar)| bar.height())
+        } else {
+            0.0
+        };
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: same stable boxed-row contract as the other
+            // `group_row_ptrs` accessors; `&mut self` gives unaliased access.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for group in &mut row.groups {
+                group.set_top_overlay_inset(inset);
+            }
+        }
+    }
+
+    /// Whether the pointer is on the top bar the person hides while it shows
+    /// over the windows: it takes the pointer from the window under it, and
+    /// only the pointer.
+    pub(crate) fn top_bar_captures_pointer(&self) -> bool {
+        let shown = self.chrome.as_ref().is_some_and(|chrome| {
+            chrome.borrow().top_bar_presence() == tilo_desktop::chrome::TopBarPresence::Shown
+        });
+        shown
+            && self.last_cursor.is_some_and(|p| {
+                self.top_bar_reveal_geometry()
+                    .is_some_and(|(_, bar)| bar.contains(p))
+            })
+    }
+
+    /// Test hook: as if the person had turned "hide the top bar" on or off.
+    pub fn set_hide_top_bar_for_tests(&mut self, hide: bool) {
+        let mut config = self.desktop_controls.config();
+        config.hide_top_bar = hide;
+        self.desktop_controls = DesktopControlsSource::Explicit(config);
+        self.sync_top_bar_presence(Instant::now());
+    }
+
+    /// When the top bar's reveal next has something to settle.
+    pub fn top_bar_reveal_deadline(&self) -> Option<Instant> {
+        self.top_bar_reveal.deadline()
     }
 
     pub fn open_screenshot_markup(
@@ -9586,6 +9698,13 @@ impl ShellOverlayHost {
         self.with_maximized_group(|group| {
             group.note_maximized_pointer(p);
         });
+        // So does the top bar the person hides, by the same model.
+        if let Some((display, bar)) = self.top_bar_reveal_geometry() {
+            let now = Instant::now();
+            if self.top_bar_reveal.on_motion(p, display, bar, now) {
+                self.sync_top_bar_presence(now);
+            }
+        }
     }
 
     /// Retire raw direct-touch contacts at a compositor ownership boundary
@@ -20589,7 +20708,7 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 15] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 16] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -20664,6 +20783,7 @@ impl ShellOverlayHost {
                 "strip-indicators",
                 self.strip_indicators.next_wake_deadline_at(now),
             ),
+            ("top-bar-reveal", self.top_bar_reveal.deadline()),
             (
                 "launchpad-app",
                 self.pending_launchpad_app

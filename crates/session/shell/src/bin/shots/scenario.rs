@@ -84,6 +84,12 @@ pub enum Action {
     /// gesture snapshots — useful for the new tab-bar `hover_drop_idx`
     /// indicator which only paints between press and release.
     MoveCursor(Point),
+    /// Move the pointer as the compositor does: the host notes it (the
+    /// top-edge reveals read the path even over a client), then the move is
+    /// dispatched.
+    CompositorPointer(Point),
+    /// Turn "hide the top bar until the pointer is near it" on or off.
+    HideTopBar(bool),
     /// Synthesise a left-button `Pressed` at the current cursor.
     /// Caller owns the matching `MouseRelease`.
     MousePress,
@@ -576,6 +582,11 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         }
         Action::Relayout => driver.relayout(),
         Action::MoveCursor(p) => driver.move_cursor(*p),
+        Action::CompositorPointer(p) => {
+            driver.host_mut().note_pointer(*p);
+            driver.move_cursor(*p);
+        }
+        Action::HideTopBar(hide) => driver.host_mut().set_hide_top_bar_for_tests(*hide),
         Action::MoveCursorNamed(name) => match driver.resolve_named_centre(name) {
             Some(p) => driver.move_cursor(p),
             None => eprintln!(
@@ -3196,6 +3207,38 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Key(Key::Named(NamedKey::ArrowRight)),
                 Action::Key(Key::Named(NamedKey::Enter)),
                 Action::Snapshot("03-hidden-status"),
+            ],
+        },
+        Scenario {
+            name: "top_bar_hidden_reveal",
+            description: "Hide the top bar until the pointer is near it: the \
+             window takes the bar's strip; a push to the top edge shows the bar \
+             over the window in its docked place; heading back down hides it.",
+            actions: vec![
+                // The keyboard in a window, as in use: a bar holding the
+                // keyboard stays shown.
+                Action::ClickAt(Point::new(900.0, 500.0)),
+                Action::Wait(2),
+                Action::Snapshot("00-docked"),
+                Action::HideTopBar(true),
+                Action::Wait(4),
+                Action::Snapshot("01-hidden"),
+                Action::CompositorPointer(Point::new(900.0, 400.0)),
+                Action::CompositorPointer(Point::new(900.0, 260.0)),
+                Action::CompositorPointer(Point::new(900.0, 120.0)),
+                Action::CompositorPointer(Point::new(900.0, 30.0)),
+                Action::CompositorPointer(Point::new(900.0, 0.0)),
+                Action::Wait(20),
+                Action::Snapshot("02-reached-for"),
+                Action::CompositorPointer(Point::new(1100.0, 10.0)),
+                Action::CompositorPointer(Point::new(1400.0, 12.0)),
+                Action::Wait(4),
+                Action::Snapshot("03-along-the-bar"),
+                Action::CompositorPointer(Point::new(1300.0, 60.0)),
+                Action::CompositorPointer(Point::new(1100.0, 200.0)),
+                Action::CompositorPointer(Point::new(900.0, 400.0)),
+                Action::Wait(4),
+                Action::Snapshot("04-hidden-again"),
             ],
         },
         Scenario {

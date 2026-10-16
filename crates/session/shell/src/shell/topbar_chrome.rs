@@ -232,6 +232,7 @@ impl DesktopChromeSource for NativeChrome {
             topbar_widgets: Some(self.widgets.borrow().clone()),
             // The strip ribbon already places strips on this desktop.
             strip_places: None,
+            top_bar: state.top_bar_presence(),
         }
     }
 
