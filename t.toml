@@ -2024,7 +2024,7 @@ on = ["main"]
 [[check]]
 name = "image-room-service-context"
 run = "bash tools/ci/publish/room-service-context.sh /target/publish/room-service/context"
-inputs = ["tools/ci/publish/lib.sh", "Cargo.lock", "crates/hosting/tilo-room-service/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-protocol/**", "crates/browser/tilo-browser-runtime/**", "crates/browser/tilo-browser-compute/**", "crates/browser/tilo-web-desktop/**", "apps/chat/**", "apps/discord/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py", "tools/ci/publish/room-service-context.sh"]
+inputs = ["tools/ci/publish/lib.sh", "Cargo.lock", "os/scripts/verify-no-cisco-openh264.sh", "crates/hosting/tilo-room-service/**", "crates/hosting/tilo-relay/**", "crates/hosting/tilo-relay-shell/**", "crates/hosting/tilo-relay-protocol/**", "crates/browser/tilo-browser-runtime/**", "crates/browser/tilo-browser-compute/**", "crates/browser/tilo-web-desktop/**", "apps/chat/**", "apps/discord/**", "scripts/moq-browser/**", "crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py", "tools/ci/publish/room-service-context.sh"]
 outputs = ["/target/publish/room-service/context/**"]
 git = true
 requires = ["arch=x86_64"]
@@ -2034,7 +2034,7 @@ default = false
 [[check]]
 name = "image-room-service"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
-run = "bash tools/ci/publish/oci-build.sh /target/publish/room-service/context /target/publish/room-service/context/Containerfile /target/publish/room-service"
+run = "bash tools/ci/publish/oci-build.sh /target/publish/room-service/context /target/publish/room-service/context/Containerfile /target/publish/room-service --build-arg SOURCE_REVISION=$(cat /target/publish/room-service/context/source-revision)"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh"]
 needs = ["image-room-service-context"]
 outputs = ["/target/publish/room-service/image.oci.tar", "/target/publish/room-service/digest"]
