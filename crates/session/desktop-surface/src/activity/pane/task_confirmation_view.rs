@@ -301,12 +301,13 @@ impl RoomActivityPane {
             else {
                 continue;
             };
+            let agent = self.agent_label(&confirmation.agent_id);
             if self.noticed_confirmations.insert(confirmation.id.clone()) {
                 notices.push(ConfirmationNotice {
                     room: snapshot.room.clone(),
                     task_id: task.id.clone(),
                     task_title: task.title.clone(),
-                    agent: confirmation.agent_id.clone(),
+                    agent,
                     action: confirmation.draft.action_label.clone(),
                     gist: confirmation.draft.gist(),
                 });
@@ -644,7 +645,7 @@ impl RoomActivityPane {
         let meta = t_args(
             "activity-confirm-meta",
             &[
-                ("agent", confirmation.agent_id.as_str().into()),
+                ("agent", self.agent_label(&confirmation.agent_id).into()),
                 ("resource", draft.resource_label.as_str().into()),
             ],
         );
@@ -788,7 +789,7 @@ impl RoomActivityPane {
                     (TaskAction::EditDraft, ButtonRole::Secondary),
                     (TaskAction::DeclineDraft, ButtonRole::Secondary),
                 ],
-                Some(TaskAction::AlwaysAllow),
+                self.may_grant.then_some(TaskAction::AlwaysAllow),
             ),
             ConfirmMode::Edit => (
                 &[
@@ -854,7 +855,22 @@ impl RoomActivityPane {
             );
             self.task_action_rects.push((action, rect));
         }
-        row + height
+        let mut bottom = row + height;
+        if mode == ConfirmMode::Review && self.may_grant {
+            // Always allow writes the workspace's agent access, which only
+            // the device that manages the workspace can do; say so before
+            // it is pressed rather than after it is refused.
+            let caption = paint.theme.text(TextRole::Caption);
+            bottom = draw_text(
+                paint,
+                &t("activity-confirm-always-note"),
+                &caption,
+                (body.x0, bottom + gap),
+                text_width(body.width()),
+                true,
+            );
+        }
+        bottom
     }
 }
 

@@ -242,6 +242,14 @@ struct WorkSessionBoundary {
     direction: BoundaryDirection,
 }
 
+/// Where the reviewed task sits in its scrolling viewport.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct ReviewScroll {
+    offset: f64,
+    content: f64,
+    viewport: Option<Rect>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TaskAction {
     ApproveRun,
@@ -855,6 +863,15 @@ pub struct RoomActivityPane {
     selected_task: Option<String>,
     /// Whether the reviewed task shows its run counters and owner sample.
     review_details: bool,
+    /// The reviewed task's scroll: how far its content has moved up inside
+    /// the viewport it was last painted in, and how tall that content was.
+    review_scroll: ReviewScroll,
+    /// Display names of the active workspace's collaborators, agents
+    /// included, by id: tasks and their cards name agents by id.
+    collaborator_names: HashMap<String, String>,
+    /// Whether the person here may change the workspace's agent access,
+    /// which an "Always allow" answer does.
+    may_grant: bool,
     task_rects: Vec<(String, Rect)>,
     new_task_rect: Option<Rect>,
     task_action_rects: Vec<(TaskAction, Rect)>,
@@ -1094,6 +1111,9 @@ impl RoomActivityPane {
             task_source: None,
             selected_task: None,
             review_details: false,
+            review_scroll: ReviewScroll::default(),
+            collaborator_names: HashMap::new(),
+            may_grant: false,
             task_rects: Vec::new(),
             new_task_rect: None,
             task_action_rects: Vec::new(),
@@ -2349,6 +2369,25 @@ impl RoomActivityPane {
             self.morning_source_offset = 0;
         }
         self.task_room = room;
+        self.collaborator_names = tree
+            .active_workspace()
+            .map(|workspace| {
+                workspace
+                    .collaborators
+                    .iter()
+                    .filter(|row| !row.name.trim().is_empty() && row.name != row.id)
+                    .map(|row| (row.id.clone(), row.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let now = self
+            .now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        let local = self.local_user();
+        self.may_grant = tree.active_workspace().is_some_and(|workspace| {
+            workspace.may_govern_at(&local, tilo_action_policy::roles::governance::GRANT, now)
+        });
         self.morning_workspace = tree.active.raw();
         let origin = self.refresh_task_review();
         let tree_tasks = tree
@@ -4718,6 +4757,12 @@ impl RoomActivityPane {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // Where the focused control was painted last frame, before this
+        // frame forgets its rectangles: the reviewed task scrolls it into view.
+        let focused = self
+            .keyboard_focus
+            .as_ref()
+            .and_then(|focus| self.rect_for_focus(focus));
         self.task_rects.clear();
         self.task_action_rects.clear();
         self.task_route_rects.clear();
@@ -4769,12 +4814,14 @@ impl RoomActivityPane {
         }
 
         if reviewed {
-            self.draw_review_tasks(
+            self.draw_scrolling_review(
                 &mut PaintCtx::new(scene, transform, tr, theme),
-                Rect::new(x0, y, x1, self.sheet.y1),
+                Rect::new(x0, y, x1, self.sheet.y1 - 8.0),
+                focused,
             );
             return;
         }
+        self.review_scroll.viewport = None;
 
         if self.task_compose_open {
             let composer = Rect::new(x0, y, x1, y + 164.0);
@@ -5522,6 +5569,14 @@ impl RoomActivityPane {
         point: Point,
         tree: &mut impl ActivityTree,
     ) -> Option<RoomActivityOutcome> {
+        // A reviewed task scrolled under the header is not clickable there.
+        if self
+            .review_scroll
+            .viewport
+            .is_some_and(|viewport| !viewport.contains(point))
+        {
+            return None;
+        }
         if self.new_task_rect.is_some_and(|rect| rect.contains(point)) {
             self.keyboard_focus = Some(ActivityFocus::NewTask);
             self.open_task_composer(tree);
@@ -5595,9 +5650,18 @@ impl RoomActivityPane {
         self.person_label(&task.created_by)
     }
 
+    /// An agent (or anyone acting on a task) by the name the workspace
+    /// knows it by, falling back to how a participant id is read.
+    pub(super) fn agent_label(&self, id: &str) -> String {
+        self.collaborator_names
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| self.person_label(id))
+    }
+
     /// A participant id as people read it: their name, "You", or a short
     /// handle, never the raw key.
-    fn person_label(&self, id: &str) -> String {
+    pub(super) fn person_label(&self, id: &str) -> String {
         let handle = automerge::ActorId::from(id.as_bytes()).to_hex_string();
         let authors = self.source.authors();
         if authors.is_registered(&handle) {
@@ -6363,6 +6427,12 @@ impl RoomActivityPane {
             && let Some(outcome) = self.handle_pointer_click(point, tree, records)
         {
             return outcome;
+        }
+
+        if let (Some(point), WindowEvent::MouseWheel { delta, .. }) = (cursor, event)
+            && self.scroll_review(point, delta)
+        {
+            return handled_outcome();
         }
 
         if !self.timeline_is_visible() {
