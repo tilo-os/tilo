@@ -906,6 +906,12 @@ fn status(status: StatusCode, message: &str) -> Response<Body> {
 fn session_status(error: &SessionError) -> Response<Body> {
     match error {
         SessionError::Gone => status(StatusCode::UNAUTHORIZED, "session ended"),
+        // Typed, so the device acts on the host's reason (see
+        // `protocol::SessionRefusal`).
+        SessionError::Denied(refusal) => match postcard::to_allocvec(refusal) {
+            Ok(body) => reply(StatusCode::FORBIDDEN, body),
+            Err(_) => reply(StatusCode::INTERNAL_SERVER_ERROR, Vec::new()),
+        },
         SessionError::Refused(reason) => status(StatusCode::FORBIDDEN, reason),
         SessionError::Busy => status(StatusCode::SERVICE_UNAVAILABLE, "busy"),
     }

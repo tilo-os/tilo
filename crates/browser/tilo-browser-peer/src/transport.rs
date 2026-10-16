@@ -304,7 +304,7 @@ impl CollabTransport for RelayCollabTransport {
                 TransportStatus::Degraded("reconnecting to the host; edits are queued".into())
             }
             TransportPhase::Failed => {
-                TransportStatus::Closed("the host no longer accepts this browser".into())
+                TransportStatus::Closed("the workspace’s host did not let this browser in".into())
             }
             TransportPhase::Closed => TransportStatus::Closed("peer session closed".into()),
         }

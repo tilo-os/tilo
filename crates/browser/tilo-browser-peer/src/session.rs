@@ -42,9 +42,57 @@ const PING_INTERVAL: Duration = Duration::from_secs(15);
 const CHANNEL_TICK: Duration = Duration::from_secs(1);
 /// Sealed documents held per route while this device waits for its keys.
 const MAX_HELD_DOCUMENTS: usize = 4096;
-/// Consecutive refused handshakes after which the host is taken to have
-/// rejected this device (revoked or unknown) rather than to be unreachable.
+/// Consecutive refusals with no reason (an iroh host closing the handshake)
+/// after which the host is taken to no longer admit this device rather than
+/// to be unreachable. A refusal that says why decides at once.
 const REFUSALS_BEFORE_FAILING: u32 = 3;
+/// The host does not admit this device's person (`not-admitted`): it never
+/// knew them, forgot them (its state was reset, or it pruned them) or a room
+/// took them out. The page joins again where the room's door lets it.
+const NOT_ADMITTED: (&str, &str) = (
+    "not-admitted",
+    "This workspace’s host no longer has you as a member.",
+);
+
+/// What a failed connection says about this device.
+#[derive(Debug, PartialEq, Eq)]
+enum Refusal {
+    /// The host was not reached, or something in front of it answered:
+    /// retried with backoff, never counted against the device.
+    Reachability,
+    /// The host turned the device away without saying why: counted, and
+    /// taken as [`NOT_ADMITTED`] after [`REFUSALS_BEFORE_FAILING`] in a row.
+    Unexplained,
+    /// The host said why: the session stops with this failure code and copy
+    /// until the page acts on it.
+    Final(&'static str, &'static str),
+}
+
+fn refusal(error: &LinkError) -> Refusal {
+    use tilo_relay_protocol::web::SessionRefusal;
+    match error {
+        LinkError::Denied(SessionRefusal::NotAdmitted) => {
+            Refusal::Final(NOT_ADMITTED.0, NOT_ADMITTED.1)
+        }
+        LinkError::Denied(SessionRefusal::DeviceRevoked) => Refusal::Final(
+            "device-revoked",
+            "This browser was removed from your devices, so it can’t open this workspace anymore.",
+        ),
+        LinkError::Denied(SessionRefusal::CertificateInvalid) => Refusal::Final(
+            "certificate-rejected",
+            "The workspace’s host did not accept how this browser signed in.",
+        ),
+        LinkError::HostChanged => {
+            Refusal::Final("host-changed", "This workspace’s host was set up again.")
+        }
+        // A stale handshake is simply run again.
+        LinkError::Denied(SessionRefusal::Handshake)
+        | LinkError::Unavailable(_)
+        | LinkError::Malformed(_)
+        | LinkError::Sign(_) => Refusal::Reachability,
+        LinkError::Refused(_) => Refusal::Unexplained,
+    }
+}
 /// How long a connected session waits for the host to admit its rooms before
 /// it reports `admission-timeout`. Checked on the keep-alive tick.
 const ADMISSION_TIMEOUT_MS: u64 = 30_000;
@@ -107,7 +155,8 @@ pub enum TransportPhase {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
     /// `FailureCode`: `transport-unavailable`, `transport-ended`,
-    /// `certificate-expired`, `certificate-rejected`, `identity-revoked`,
+    /// `certificate-expired`, `certificate-rejected`, `not-admitted`,
+    /// `device-revoked`, `host-changed`,
     /// `protocol-rejected`, `permission-required`, `signature-rejected`,
     /// `storage-transaction-failed`, `admission-timeout`, and the codes the
     /// page reports (see [`PeerHandle::report_failure`]).
@@ -1386,18 +1435,19 @@ impl Task {
                     }
                 }
                 Err(error) => {
-                    // A host that answered but refused the handshake has
-                    // rejected this device; anything else is reachability.
-                    refusals = if matches!(error, LinkError::Refused(_) | LinkError::Malformed(_)) {
-                        refusals.saturating_add(1)
-                    } else {
-                        0
+                    let stop = match refusal(&error) {
+                        Refusal::Final(code, message) => Some((code, message)),
+                        Refusal::Unexplained => {
+                            refusals = refusals.saturating_add(1);
+                            (refusals >= REFUSALS_BEFORE_FAILING).then_some(NOT_ADMITTED)
+                        }
+                        Refusal::Reachability => {
+                            refusals = 0;
+                            None
+                        }
                     };
-                    if refusals >= REFUSALS_BEFORE_FAILING {
-                        self.fail(
-                            "certificate-rejected",
-                            "The host no longer accepts this browser. Certify it again.",
-                        );
+                    if let Some((code, message)) = stop {
+                        self.fail(code, message);
                         self.update(|status| {
                             status.phase = TransportPhase::Failed;
                             status.authenticated = false;
@@ -2936,9 +2986,9 @@ async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link,
 }
 
 /// How a failed iroh dial reads to the session loop: reachability
-/// (`Unavailable`, retried with backoff) or a host that answered and turned
-/// this device away (`Refused`/`Malformed`, which fail the session after
-/// `REFUSALS_BEFORE_FAILING` in a row). Every variant is named, so a new
+/// (`Unavailable`, `Malformed`, retried with backoff) or a host that turned
+/// this device away without saying why (`Refused`, which fails the session
+/// after `REFUSALS_BEFORE_FAILING` in a row). Every variant is named, so a new
 /// client error must be classified here rather than fall into a default.
 #[cfg(feature = "iroh")]
 fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkError {
@@ -3166,6 +3216,44 @@ mod tests {
             admission_state(&status(&[]), Some(since), u64::MAX),
             Admission::Admitted
         );
+    }
+
+    #[test]
+    fn a_refusal_that_says_why_decides_and_a_proxys_page_never_counts() {
+        use tilo_relay_protocol::web::SessionRefusal;
+        let code = |error| match refusal(&error) {
+            Refusal::Final(code, _) => code,
+            Refusal::Unexplained => "unexplained",
+            Refusal::Reachability => "reachability",
+        };
+        assert_eq!(
+            code(LinkError::Denied(SessionRefusal::NotAdmitted)),
+            "not-admitted"
+        );
+        assert_eq!(
+            code(LinkError::Denied(SessionRefusal::DeviceRevoked)),
+            "device-revoked"
+        );
+        assert_eq!(
+            code(LinkError::Denied(SessionRefusal::CertificateInvalid)),
+            "certificate-rejected"
+        );
+        assert_eq!(code(LinkError::HostChanged), "host-changed");
+        assert_eq!(
+            code(LinkError::Denied(SessionRefusal::Handshake)),
+            "reachability"
+        );
+        // An HTML error page from a proxy does not decode: reachability.
+        assert_eq!(
+            code(LinkError::Malformed("unexpected end of input".into())),
+            "reachability"
+        );
+        assert_eq!(
+            code(LinkError::Unavailable("status 502".into())),
+            "reachability"
+        );
+        assert_eq!(code(LinkError::Sign("locked".into())), "reachability");
+        assert_eq!(code(LinkError::Refused("io: closed".into())), "unexplained");
     }
 }
 

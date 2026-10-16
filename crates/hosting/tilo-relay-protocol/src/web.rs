@@ -15,8 +15,8 @@
 //! | `/node` | — | [`NodeInfo`] |
 //! | `/certify` | `CertificationRequest` | `CertifyReply` |
 //! | `/certify/wait` | request digest `[u8; 32]` | `CertifyReply` (long-poll) |
-//! | `/session` | [`Hello`] | [`SessionChallenge`] |
-//! | `/session/finish` | [`SessionFinish`] | [`SessionGrant`] |
+//! | `/session` | [`Hello`] | [`SessionChallenge`]; `403` [`SessionRefusal`] |
+//! | `/session/finish` | [`SessionFinish`] | [`SessionGrant`]; `403` [`SessionRefusal`] |
 //! | `/send` | `Vec<Envelope>` | `204` |
 //! | `/events` | [`EventsRequest`] | [`EventsPage`] (long-poll) |
 //! | `/live/grant` | workspace id `u64` | [`LiveGrant`] |
@@ -201,6 +201,48 @@ pub struct SessionChallenge {
     pub ack: HelloAck,
     /// Identifies this handshake for [`SessionFinish`].
     pub handshake: [u8; 16],
+}
+
+/// Why the host turned a session handshake away: the body of a `403` from
+/// `/session` or `/session/finish`, so a device decides what to do from the
+/// host's own reason rather than from how often it was refused.
+///
+/// The handshake checks the device's certificate, the host's revocations
+/// and its live trust policy, which is one allow list for the whole host.
+/// So it tells a revoked device apart from a person the host does not admit,
+/// but not why it does not admit them: one it never knew, one it forgot (its
+/// state was reset, or it pruned them after an absence) and one a room
+/// removed or banned all read [`Self::NotAdmitted`]. Whether such a person
+/// may come back is the room's door to answer, not the handshake's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionRefusal {
+    /// The host admits nobody of this device's person: joining again, where
+    /// the room lets them, admits them anew.
+    NotAdmitted,
+    /// This device is on the host's revocation list. It never comes back;
+    /// its person's other devices are unaffected.
+    DeviceRevoked,
+    /// The certificate did not verify, or was not valid at the host's time:
+    /// a newly issued certificate for the same device may be admitted.
+    CertificateInvalid,
+    /// The handshake itself failed: it was unknown or too old by its second
+    /// step, or the challenge signature did not verify. A new handshake may
+    /// succeed.
+    Handshake,
+}
+
+impl SessionRefusal {
+    /// The refusal for a failed [`crate::auth`] check.
+    #[must_use]
+    pub fn from_auth(error: &crate::auth::AuthError) -> Self {
+        use crate::auth::AuthError;
+        match error {
+            AuthError::Revoked => Self::DeviceRevoked,
+            AuthError::PolicyReject => Self::NotAdmitted,
+            AuthError::Cert(_) => Self::CertificateInvalid,
+            AuthError::BadChallengeSig | AuthError::EndpointMismatch => Self::Handshake,
+        }
+    }
 }
 
 /// The device's signature over the host's challenge.

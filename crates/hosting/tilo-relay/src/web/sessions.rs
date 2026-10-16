@@ -26,7 +26,7 @@ use crate::handshake::EndpointTrust;
 use crate::transport::Envelope;
 use crate::web::protocol::{
     Cursor, EventsPage, MAX_PAGE_BYTES, MAX_PAGE_ENVELOPES, SessionChallenge, SessionGrant,
-    envelope_bytes,
+    SessionRefusal, envelope_bytes,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -50,7 +50,9 @@ const DUPLEX_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) enum SessionError {
     /// Unknown, expired or ended session (401).
     Gone,
-    /// Malformed or failed handshake, or an invalid cursor (400/403).
+    /// The handshake turned the device away, for the reason it is told (403).
+    Denied(SessionRefusal),
+    /// An undeliverable envelope or an invalid cursor (403).
     Refused(String),
     /// Capacity (503).
     Busy,
@@ -187,7 +189,7 @@ impl Sessions {
             .begin(EndpointTrust::Live(&self.web.relay.trust_policy), hello)
             .map_err(|error| {
                 self.web.relay.metrics.inc_auth_rejected();
-                SessionError::Refused(error.to_string())
+                SessionError::Denied(SessionRefusal::from_auth(&error))
             })?;
         let handshake: [u8; 16] = rand::random();
         let mut handshakes = lock(&self.handshakes);
@@ -216,10 +218,10 @@ impl Sessions {
         let pending = lock(&self.handshakes)
             .remove(handshake)
             .filter(|pending| pending.started.elapsed() < HANDSHAKE_TTL)
-            .ok_or_else(|| SessionError::Refused("unknown handshake".into()))?;
+            .ok_or(SessionError::Denied(SessionRefusal::Handshake))?;
         let peer = pending.pending.finish(ack2).map_err(|error| {
             self.web.relay.metrics.inc_auth_rejected();
-            SessionError::Refused(error.to_string())
+            SessionError::Denied(SessionRefusal::from_auth(&error))
         })?;
         self.web.relay.metrics.inc_conns_authed();
         if lock(&self.live).len() >= self.limits.max_sessions {

@@ -356,7 +356,7 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
         async move { (snapshot.phase == "failed").then_some(snapshot) }
     })
     .await;
-    assert_eq!(failed.error_code, Some("certificate-rejected"));
+    assert_eq!(failed.error_code, Some("device-revoked"));
     assert_eq!(browser.status().phase, TransportPhase::Failed);
     browser.close();
     laptop_peer.close();

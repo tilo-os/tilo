@@ -78,7 +78,7 @@ test('a kept membership the host refuses once the session starts is joined again
   options.connect = async connected => {
     calls.connected.push(connected);
     return {room: connected.room, dispose: async () => { disposed = true; },
-      whenReady: async () => { throw new Error('The host no longer accepts this browser. Certify it again.'); }};
+      whenReady: async () => { throw new Error('This workspace’s host no longer has you as a member.'); }};
   };
   const peer = await joinViaHost(options);
   assert.ok(disposed);
