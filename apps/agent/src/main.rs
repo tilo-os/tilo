@@ -77,9 +77,14 @@ struct Cli {
     provider: Option<String>,
 }
 
-/// The total model budget of one managed action decision (all its turns).
-/// The launcher passes no `--model-timeout-ms`, so this is the default there.
-const MANAGED_MODEL_TIMEOUT_MS: u64 = 30_000;
+/// The model budget of one turn of a managed action decision: the most the
+/// model gateway gives one provider call. The launcher passes no
+/// `--model-timeout-ms`, so this is the default there. Hosted reasoning
+/// models answer most turns in a few seconds but take 15 to 35 seconds on a
+/// measurable share of them (Gemini on Vertex AI did on several turns of
+/// one desktop session); a shorter cut fails those turns after the provider has
+/// already done, and billed, the work.
+const MANAGED_MODEL_TIMEOUT_MS: u64 = 60_000;
 
 /// The model deadline when `--model-timeout-ms` is not given. A desktop that
 /// hands over its model selection (`provider_given`) launched the agent for
