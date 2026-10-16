@@ -1758,27 +1758,7 @@ impl CollaboratorsOverlay {
             .get(VISIBLE_ROWS)
             .map_or(rows_h, |top| top - list_top);
         self.visible_height = list_top + visible_rows_h + tail_h;
-        // Under the bar at the Panel margin, its trailing edge (scroll gutter
-        // included) the same margin in from the host's: never off a narrow
-        // host. The height scrolls inside the host (`configure_scroll`).
-        let (width, margin) = if self.panel_width > 0.0 {
-            (self.panel_width, self.panel_margin)
-        } else {
-            (
-                f64::from(ui::tokens::Metrics::BASE.panel_width_list)
-                    .min(host.width() - 2.0 * f64::from(ui::tokens::Spacing::BASE.s2))
-                    .max(1.0),
-                f64::from(ui::tokens::Spacing::BASE.s2),
-            )
-        };
-        let x1 = host.x1 - margin - self.scroll_gutter;
-        let y0 = host.y0 + f64::from(crate::topbar::TOPBAR_HEIGHT_PX) + margin;
-        self.panel = Rect::new(
-            (x1 - (width - self.scroll_gutter)).max(host.x0 + margin),
-            y0,
-            x1,
-            y0 + height,
-        );
+        self.panel = self.placed_panel(host, height);
         self.activity = Rect::new(
             self.panel.x0 + 8.0,
             self.panel.y1 - footer_h + 4.0,
@@ -1825,6 +1805,31 @@ impl CollaboratorsOverlay {
             self.join = Rect::ZERO;
         }
         self.layout_own_block();
+    }
+
+    /// The panel, `height` tall: under the bar at the Panel margin, its
+    /// trailing edge (scroll gutter included) the same margin in from the
+    /// host's, so it is never off a narrow host. The height scrolls inside
+    /// the host (`configure_scroll`).
+    fn placed_panel(&self, host: Rect, height: f64) -> Rect {
+        let (width, margin) = if self.panel_width > 0.0 {
+            (self.panel_width, self.panel_margin)
+        } else {
+            (
+                f64::from(ui::tokens::Metrics::BASE.panel_width_list)
+                    .min(host.width() - 2.0 * f64::from(ui::tokens::Spacing::BASE.s2))
+                    .max(1.0),
+                f64::from(ui::tokens::Spacing::BASE.s2),
+            )
+        };
+        let x1 = host.x1 - margin - self.scroll_gutter;
+        let y0 = host.y0 + f64::from(crate::topbar::TOPBAR_HEIGHT_PX) + margin;
+        Rect::new(
+            (x1 - (width - self.scroll_gutter)).max(host.x0 + margin),
+            y0,
+            x1,
+            y0 + height,
+        )
     }
 
     /// Place the own block's parts from its measured heights, top down.
