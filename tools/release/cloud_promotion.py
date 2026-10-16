@@ -42,6 +42,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tomllib
 from typing import Callable, Iterable, Mapping
 import urllib.error
 import urllib.parse
@@ -245,9 +246,11 @@ class Registry:
             raise PromotionError(f"{service.image}@{digest}: its config blob is missing or altered")
         document = config.json()
         labels = (document.get("config") or {}).get("Labels") or {}
-        revision = labels.get("org.opencontainers.image.revision", "")
-        if not COMMIT.fullmatch(revision):
-            raise PromotionError(f"{service.image}@{digest} carries no source revision label")
+        # Images t builds carry no revision label: a build is reused for every later commit with
+        # the same inputs, so the publishing run's receipt names the revision instead.
+        revision = labels.get("org.opencontainers.image.revision") or ""
+        if revision and not COMMIT.fullmatch(revision):
+            raise PromotionError(f"{service.image}@{digest} carries a malformed source revision label")
         platform = f"{document.get('os')}/{document.get('architecture')}"
         return Image(service.name, digest, revision, platform)
 
@@ -283,6 +286,40 @@ class Git:
     def committed(self, revision: str) -> dt.datetime:
         stamp = self.run("show", "-s", "--format=%cI", revision).stdout.strip()
         return dt.datetime.fromisoformat(stamp)
+
+    def image_unchanged(self, service: Service, old: str, new: str) -> str | None:
+        """Why `service`'s image built at `new` may differ from the one built at `old`, or None.
+
+        t builds an image once per set of inputs and reuses it for later commits, so stable
+        publishes an image again only when what it is built from changed. The image checks'
+        definitions in t.toml and the files they read are what t keys that build by.
+        """
+        names = (f"image-{service.name}-context", f"image-{service.name}")
+
+        def checks(revision: str) -> dict[str, dict]:
+            shown = self.run("show", f"{revision}:t.toml", check=False)
+            if shown.returncode:
+                return {}
+            try:
+                document = tomllib.loads(shown.stdout)
+            except tomllib.TOMLDecodeError:
+                return {}
+            return {each["name"]: each for each in document.get("check", []) if each.get("name") in names}
+
+        before, after = checks(old), checks(new)
+        if not after:
+            return f"t.toml at {new[:12]} declares no image checks for it"
+        if before != after:
+            return f"its image checks in t.toml changed between {old[:12]} and {new[:12]}"
+        inputs = sorted({glob for each in after.values() for glob in each.get("inputs", [])})
+        if not inputs:
+            return "its image checks list no inputs"
+        diff = self.run("diff", "--quiet", old, new, "--", *(f":(glob){glob}" for glob in inputs), check=False)
+        if diff.returncode == 1:
+            return f"files it is built from changed between {old[:12]} and {new[:12]}"
+        if diff.returncode:
+            raise PromotionError(f"git diff {old[:12]} {new[:12]}: {diff.stderr.strip()}")
+        return None
 
     def pulls(self, old: str, new: str) -> list[tuple[str, str]]:
         """Main's own commits between two revisions, newest first, as (short id, title)."""
@@ -334,18 +371,57 @@ def promotable(registry: Registry, git: Git, main: str, limit: int = SEARCH_DEPT
     return None
 
 
-def verified_images(registry: Registry, revision: str, receipts: Mapping[str, Image]) -> dict[str, Image]:
-    """Both images built from `revision`, checked against the registry and any receipts."""
+def verified_images(registry: Registry, git: Git, revision: str, receipts: Mapping[str, Image]) -> dict[str, Image]:
+    """Both images for `revision`, checked against the registry and any receipts.
+
+    A receipt names the revision whose run published it; its `sha-<revision>` tag must hold the
+    receipt's digest. A revision label, where the image has one, names the commit it was built
+    at, which is that revision or, for a build t reused, an earlier one.
+    """
     images = {}
     for service in SERVICES:
         receipt = receipts.get(service.name)
+        published = receipt.revision if receipt else revision
         image = registry.image(service, receipt.digest if receipt else f"sha-{revision}")
-        if image.revision != revision:
-            raise PromotionError(f"{image.reference(service)} is labelled {image.revision}, not {revision}")
+        if receipt:
+            tagged = registry.image(service, f"sha-{published}").digest
+            if tagged != receipt.digest:
+                raise PromotionError(f"{service.image}:sha-{published} is {tagged}, "
+                                     f"not the receipt's {receipt.digest}")
+        if image.revision and image.revision != published and not git.contains(image.revision, published):
+            raise PromotionError(f"{image.reference(service)} is labelled {image.revision}, not {published}")
         if image.platform != PLATFORM:
             raise PromotionError(f"{image.reference(service)} is {image.platform}; production runs {PLATFORM}")
-        images[service.name] = dataclasses.replace(image, build=receipt.build if receipt else None)
+        images[service.name] = dataclasses.replace(image, revision=published,
+                                                   build=receipt.build if receipt else None)
     return images
+
+
+def receipts_revision(git: Git, receipts: Mapping[str, Image]) -> str | None:
+    """The revision a set of receipts promotes: the newest of theirs.
+
+    Stable publishes an image again only when what it is built from changed, so the two
+    receipts of stable's latest images often name different commits. They promote the newer one
+    only if the other image's inputs did not change in between, so both are what that commit
+    builds.
+    """
+    if not receipts:
+        return None
+    if set(receipts) != {service.name for service in SERVICES}:
+        raise PromotionError("give a receipt for both images, or none")
+    revisions = {name: git.commit(image.revision) for name, image in receipts.items()}
+    newest = next((each for each in revisions.values()
+                   if all(git.contains(other, each) for other in revisions.values())), None)
+    if newest is None:
+        raise PromotionError("the receipts come from different revisions on diverged histories: "
+                             + ", ".join(sorted(set(revisions.values()))))
+    for name, revision in revisions.items():
+        if revision != newest:
+            why = git.image_unchanged(_service(name), revision, newest)
+            if why:
+                raise PromotionError(f"the receipts come from different revisions ({revision[:12]}, "
+                                     f"{newest[:12]}) and the {_service(name).title} may differ: {why}")
+    return newest
 
 
 @dataclasses.dataclass(frozen=True)
@@ -521,8 +597,9 @@ class Plan:
             pin, image = self.current[service.name], self.images[service.name]
             was = f"`{pin.digest[:19]}…` ({_short(pin.revision)}, {pin.source})"
             lines.append(f"| {service.title} | `{service.manifest}` | {was} | `{image.digest}` |")
-        lines += ["", f"Each digest's `org.opencontainers.image.revision` label is `{self.revision}` "
-                      f"and its platform is `{PLATFORM}` (checked in the registry by content)."]
+        lines += ["", f"Each image is what `{self.revision}` builds, its platform is `{PLATFORM}` (checked "
+                      "in the registry by content), and a revision label, where it has one, is that "
+                      "commit or one it builds identically from."]
         runs = [f"[{image.build.get('workflow')}]({image.build.get('url')})"
                 for image in self.images.values() if image.build and image.build.get("url")]
         if runs:
@@ -577,13 +654,9 @@ def build_plan(registry: Registry, git: Git, main: str, revision: str | None,
                receipts: Mapping[str, Image], current: Mapping[str, Pin],
                texts: Mapping[str, str] | None, allow_rollback: bool = False) -> Plan:
     head = git.commit(main)
-    revisions = {image.revision for image in receipts.values()}
-    if len(revisions) > 1:
-        raise PromotionError("the receipts come from different revisions: " + ", ".join(sorted(revisions)))
-    if receipts and set(receipts) != {service.name for service in SERVICES}:
-        raise PromotionError("give a receipt for both images, or none")
-    if revisions:
-        chosen = git.commit(next(iter(revisions)))
+    from_receipts = receipts_revision(git, receipts)
+    if from_receipts:
+        chosen = from_receipts
         if revision and git.commit(revision) != chosen:
             raise PromotionError(f"--revision {revision} disagrees with the receipts ({chosen})")
     elif revision:
@@ -596,7 +669,7 @@ def build_plan(registry: Registry, git: Git, main: str, revision: str | None,
         chosen = found
     if not git.contains(chosen, head):
         raise PromotionError(f"{chosen} is not on {main}; production only runs main")
-    images = verified_images(registry, chosen, receipts)
+    images = verified_images(registry, git, chosen, receipts)
     known = [pin.revision for pin in current.values() if pin.revision]
     oldest = None
     for each in known:
@@ -621,7 +694,8 @@ def build_plan(registry: Registry, git: Git, main: str, revision: str | None,
 # --- Drift -------------------------------------------------------------------
 
 def drift_report(registry: Registry, git: Git, transport: Transport, main: str,
-                 pins: Mapping[str, Pin] | None, now: dt.datetime) -> tuple[str, dict, list[str]]:
+                 pins: Mapping[str, Pin] | None, now: dt.datetime,
+                 receipts: Mapping[str, Image] | None = None) -> tuple[str, dict, list[str]]:
     """The markdown report, its JSON form and the problems that fail the run."""
     head = git.commit(main)
     problems: list[str] = []
@@ -652,12 +726,12 @@ def drift_report(registry: Registry, git: Git, transport: Transport, main: str,
                                 f"{pin.revision[:12]}: the rollout did not happen or failed")
         services[service.name] = entry
         lines.append(f"| {service.title} | {runs} | {behind} | {age} | {pinned} |")
-    ready = promotable(registry, git, head)
+    ready = receipts_revision(git, receipts) if receipts else promotable(registry, git, head)
     lines.append("")
     if ready:
         lines.append(f"Newest revision ready to promote (both images published): `{ready[:12]}`, "
-                     f"{git.count(ready, head)} commits behind main. Promote it with the "
-                     "`Release / Cloud promotion` workflow's manual run.")
+                     f"{git.count(ready, head)} commits behind main. Promote it with "
+                     "`t dispatch cloud-promotion --ref stable`.")
     else:
         lines.append(f"No commit among main's last {SEARCH_DEPTH} has both images published.")
     for problem in problems:
@@ -742,7 +816,7 @@ def command_drift(args, registry: Registry, git: Git, transport: Transport) -> i
     if texts is not None:
         pins = resolve_current(registry, pins_from_manifests(texts, source), "pinned")
     report, document, problems = drift_report(registry, git, transport, args.main, pins,
-                                              dt.datetime.now(dt.timezone.utc))
+                                              dt.datetime.now(dt.timezone.utc), receipts_from(args.receipt))
     print(report, end="")
     if args.summary:
         with open(args.summary, "a", encoding="utf-8") as summary:
@@ -790,6 +864,8 @@ def parser() -> argparse.ArgumentParser:
     drift.add_argument("--infra", help="an infra checkout to compare the running revisions with")
     drift.add_argument("--summary", help="append the report to this file (the job summary)")
     drift.add_argument("--json", help="write the report as JSON here")
+    drift.add_argument("--receipt", action="append", default=[],
+                       help="the receipt of an image ready to promote; give both or none")
     return root
 
 

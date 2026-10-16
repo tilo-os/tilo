@@ -32,6 +32,10 @@ context = "{dir}/context"
 containerfile = "{dir}/context/Containerfile"
 cost = "minutes"
 
+# Stable's receipt is what cloud-promotion promotes.
+[product.publish]
+pointers = { room-service = "{dir}/receipt.json" }
+
 [[product]]
 family = "services"
 name = "web-entry"
@@ -51,6 +55,9 @@ cost = "heavy"
 context = "{dir}/context"
 containerfile = "{dir}/context/Containerfile"
 cost = "minutes"
+
+[product.publish]
+pointers = { web-entry = "{dir}/receipt.json" }
 
 [[product]]
 family = "services"
