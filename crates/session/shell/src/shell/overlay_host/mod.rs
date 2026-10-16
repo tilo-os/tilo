@@ -11040,7 +11040,7 @@ impl ShellOverlayHost {
             hovered: self.strip_ribbon_hover.is_some() || self.strip_rail_hover.is_some(),
         };
         if std::mem::take(&mut self.strip_pan_active) {
-            self.strip_indicators.rebase(position);
+            self.strip_indicators.settle_after_pan(position);
         } else {
             self.strip_indicators.observe(position, now);
         }
