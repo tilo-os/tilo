@@ -16,7 +16,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use thiserror::Error;
 
 /// Current on-disk catalogue schema.
@@ -586,58 +585,6 @@ impl Resolver<'_> {
         };
         plan_from_record(record, kind)
     }
-}
-
-/// Convert UMU's launcher metadata into the same normalized query used by the
-/// catalogue. Unknown fields are deliberately ignored for forward compatibility.
-///
-/// # Errors
-///
-/// Returns an error when metadata is not an object or contains no usable
-/// application identity.
-pub fn query_from_umu_metadata(metadata: &Value) -> Result<ApplicationQuery, CatalogueError> {
-    let object = metadata
-        .as_object()
-        .ok_or(CatalogueError::UmuMetadataNotObject)?;
-    let get = |names: &[&str]| {
-        names
-            .iter()
-            .find_map(|name| object.get(*name))
-            .and_then(|value| match value {
-                Value::String(value) => Some(value.clone()),
-                Value::Number(value) => Some(value.to_string()),
-                _ => None,
-            })
-    };
-    let query = ApplicationQuery {
-        package_id: get(&["package_id", "packageId"]),
-        app_id: get(&["app_id", "appId", "application_id"]),
-        // UMU calls the Steam app identity `appid`; it is a game ID, not an
-        // AppUserModelId. Keeping the two namespaces distinct preserves
-        // deterministic precedence in the resolver.
-        game_id: get(&["game_id", "gameId", "appid"]),
-        store: get(&["store", "store_name", "storeName"]),
-        store_product: get(&["store_product", "storeProduct", "codename", "code_name"]),
-        executable: get(&["executable", "exe", "command"]),
-        executable_sha256: get(&["executable_sha256", "exe_sha256", "sha256"]),
-        installer_sha256: get(&["installer_sha256", "installerSha256", "installer_sha256sum"]),
-        publisher: get(&["publisher", "developer"]),
-        product: get(&["product", "name", "title"]),
-    };
-    if query.package_id.is_none()
-        && query.app_id.is_none()
-        && query.game_id.is_none()
-        && query.store.is_none()
-        && query.store_product.is_none()
-        && query.executable.is_none()
-        && query.executable_sha256.is_none()
-        && query.installer_sha256.is_none()
-        && query.publisher.is_none()
-        && query.product.is_none()
-    {
-        return Err(CatalogueError::UmuMetadataEmpty);
-    }
-    Ok(query)
 }
 
 /// A row from UMU's upstream compatibility CSV. The parser intentionally
@@ -1570,10 +1517,6 @@ pub enum CatalogueError {
     InvalidProtonRunner { id: String, family: String },
     #[error("VM record {id:?} must use the windows-vm runner, not {family:?}")]
     InvalidVmRunner { id: String, family: String },
-    #[error("UMU metadata must be a JSON object")]
-    UmuMetadataNotObject,
-    #[error("UMU metadata did not contain a usable application identity")]
-    UmuMetadataEmpty,
     #[error("invalid UMU CSV: {0}")]
     InvalidUmuCsv(String),
     #[error("invalid Bottles recipe: {0}")]
@@ -1824,20 +1767,6 @@ mod tests {
 
     #[test]
     fn umu_csv_imports_proton_records_with_primary_store_ids() {
-        // Phase `umu_metadata_maps_known_aliases`.
-        {
-            let numeric_metadata = serde_json::json!({ "appid": 123 });
-            let numeric_query = query_from_umu_metadata(&numeric_metadata)
-                .expect("numeric app id is usable metadata");
-            assert_eq!(numeric_query.game_id.as_deref(), Some("123"));
-
-            // Numeric app IDs are accepted by UMU in practice, but must be
-            // represented as strings before matching catalogue keys.
-            let metadata = serde_json::json!({ "appid": "123", "exe": "Game\\game.exe" });
-            let query = query_from_umu_metadata(&metadata).expect("usable metadata");
-            assert_eq!(query.game_id.as_deref(), Some("123"));
-            assert_eq!(query.executable.as_deref(), Some("Game\\game.exe"));
-        }
         // Phase `parses_umu_csv_and_builds_proton_records`.
         {
             let csv = "TITLE,STORE,CODENAME,UMU_ID,EXTRA\n\"A, Great Game\",steam,GreatGame,123,ignored\n";
