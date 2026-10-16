@@ -76,7 +76,7 @@ tilo-esp-write = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
 tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "os/Containerfile", "os/components.toml"]
 tilo-firstboot-files = ["os/usr/libexec/tilo-firstboot-user"]
 tilo-font-catalog = ["crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
-tilo-fs = ["os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+tilo-fs = ["os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
 tilo-image-policy-check = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit"]
 tilo-imager-profile = ["apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs", "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt", "os/usr/libexec/tilo-installer-profile-extract"]
 tilo-install-helpers = ["os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition"]
@@ -133,7 +133,7 @@ tilo-esp-write = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
 tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "os/Containerfile", "os/components.toml"]
 tilo-firstboot-files = ["os/usr/libexec/tilo-firstboot-user"]
 tilo-font-catalog = ["crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
-tilo-fs = ["os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+tilo-fs = ["os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
 tilo-image-policy-check = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit"]
 tilo-imager-profile = ["apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs", "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt", "os/usr/libexec/tilo-installer-profile-extract"]
 tilo-install-helpers = ["os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition"]
@@ -190,7 +190,7 @@ tilo-esp-write = ["os/usr/libexec/tilo-deployment", "os/dev/uki-cmdline.py"]
 tilo-extension = ["os/usr/share/tilo/system-extensions/sysext.d/*.json", "os/etc/polkit-1/rules.d/49-tilo-extension.rules", "os/usr/lib/systemd/system/tilo-extension@.service", "os/usr/lib/systemd/system/tilo-extension-activate.service", "os/usr/lib/systemd/system/tilo-extension-refresh.timer", "os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf", "os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension", "os/usr/libexec/tilo-install", "keys/extensions.pub", "keys/cosign.pub", "os/Containerfile", "os/components.toml"]
 tilo-firstboot-files = ["os/usr/libexec/tilo-firstboot-user"]
 tilo-font-catalog = ["crates/sdk/ui-core/assets/fonts/**", "tools/font-catalog.py"]
-tilo-fs = ["os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "tools/test-assets.py", "tools/test-assets-build.rs"]
+tilo-fs = ["os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf", "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/artifacts.json", "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*", "tools/test-assets.py", "tools/test-assets-build.rs"]
 tilo-image-policy-check = ["os/etc/containers/policy.json", "os/usr/libexec/tilo-security-audit"]
 tilo-imager-profile = ["apps/imager/src/model.rs", "apps/imager/src/profile.rs", "apps/imager/src/profile_cli.rs", "crates/session/install-profile-model/src/lib.rs", "crates/session/install-profile-model/locales.txt", "os/usr/libexec/tilo-installer-profile-extract"]
 tilo-install-helpers = ["os/usr/libexec/tilo-install", "os/usr/libexec/tilo-guided-partition"]
@@ -2100,9 +2100,10 @@ on = ["main"]
 
 # The release rehearsal (tools/ci/publish/rehearsal): a one-file image that runs the whole chain
 # as a release does, so the chain is proven on t without publishing anything anyone deploys.
-# Main publishes `dev-<commit>` when its inputs change; `t dispatch publish-release-rehearsal
-# --ref stable` signs it with the release key in KMS (identity token, AWS role), publishes
-# `sha-<commit>` with the signature and a receipt, and sets stable's `release-rehearsal` pointer.
+# Main publishes `dev-<commit>` when its inputs change. A tag `v0-rehearsal-<n>` (or `t dispatch
+# publish-release-rehearsal --ref stable`) runs it as a release: it is signed with the release key in
+# KMS (identity token, AWS role), published as `sha-<commit>` with the signature and a receipt, and
+# the reference's `release-rehearsal` pointer is set. No other check runs on such a tag.
 [[check]]
 name = "image-release-rehearsal"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
@@ -2124,7 +2125,7 @@ outputs = ["/target/publish/release-rehearsal/payload.json", "/target/publish/re
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com" }
 requires = ["arch=x86_64"]
-on = ["dispatch"]
+on = ["dispatch", "tag:v0-rehearsal-*"]
 
 [[check]]
 name = "publish-release-rehearsal"
@@ -2137,7 +2138,7 @@ outputs = ["/target/publish/release-rehearsal/receipt.json"]
 pointers = { release-rehearsal = "/target/publish/release-rehearsal/receipt.json" }
 id_token = ["registry.tilo.so"]
 requires = ["arch=x86_64"]
-on = ["main", "dispatch"]
+on = ["main", "dispatch", "tag:v0-rehearsal-*"]
 # END generated
 
 # BEGIN generated by tools/ci/t_toml.py: products-ci-images
@@ -2642,7 +2643,7 @@ outputs = ["/target/publish/relay/payload.json", "/target/publish/relay/signatur
 id_token = ["sts.amazonaws.com"]
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 requires = ["arch=x86_64"]
-on = ["tag:v*"]
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
 
 [[check]]
 name = "publish-relay"
@@ -2653,11 +2654,11 @@ needs = ["image-relay", "sign-relay"]
 outputs = ["/target/publish/relay/receipt.json"]
 id_token = ["registry.tilo.so"]
 requires = ["arch=x86_64"]
-on = ["tag:v*"]
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*"]
 
 # The Linux legacy VM guest (os/Containerfile.legacy-guest, tools/ci/publish/legacy-guest.sh):
-# the guest agent built here, the guest image built with it on a privileged x86_64 node,
-# installed to a disk and booted once until the agent serves, then the whole path end to end
+# the guest agent built here, the guest image built with it as root in an x86_64 micro-VM
+# step, installed to a disk and booted once until the agent serves, then the whole path end to end
 # (legacy-guest-e2e: the disk through `tilo-legacy` against a headless shell, a window, typed
 # text, a shared directory, suspend and resume). Stable signs (with a transparency log entry,
 # since `tilo-legacy` verifies requiring one) and publishes the disk and sets the
@@ -2670,7 +2671,7 @@ inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/
 needs = ["legacy-guest-agent"]
 outputs = ["/target/publish/legacy-guest/image/image.oci.tar", "/target/publish/legacy-guest/image/digest"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
-privileged = true
+isolation = "vm"
 writable_sources = true
 cpus = 8
 memory = "16G"
@@ -3049,13 +3050,16 @@ cpus = 16
 memory = "32G"
 default = false
 
+# As root in a micro-VM step with a /dev/kvm of its own: the guest boots under KVM nested in it.
 [[check]]
 name = "legacy-guest-e2e"
-run = "bash tools/ci/publish/legacy-guest.sh e2e /target/publish/legacy-guest/image /target/publish/legacy-guest/e2e-bin registry.tilo.so/tilo/tilo-builder@sha256:7706dd82cbb5598be302186d1d4748a44bbd2e67f6608e7bc150236046ef120e"
-inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/legacy-guest.sh", "os/dev/legacy-vm-e2e.sh", "scripts/legacy-vm-e2e.py"]
+run = "bash tools/ci/publish/legacy-guest-e2e.sh /target/publish/legacy-guest/image /target/publish/legacy-guest/e2e-bin"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/legacy-guest-e2e.sh", "os/dev/legacy-vm-e2e.sh", "scripts/legacy-vm-e2e.py"]
 needs = ["image-legacy-guest", "legacy-guest-e2e-binaries"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
-privileged = true
+isolation = "vm"
+cpus = 8
+memory = "16G"
 timeout_secs = 5400
 default = false
 
@@ -3286,6 +3290,60 @@ default = false
 
 
 # BEGIN generated by tools/ci/t_toml.py: products-windows-compat
+# The FEX toolchain (os/Containerfile.fex-buildroot), with the pinned NASM, built natively on
+# aarch64: the image the payload compiles in.
+[[check]]
+name = "image-fex-buildroot"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash tools/ci/publish/windows-compat.sh fex-buildroot /target/publish/fex-buildroot"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.fex-buildroot", "os/base-snapshot.env", "os/tests/fex-assembler.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", ".containerignore", "tools/ci/publish/windows-compat.sh"]
+outputs = ["/target/publish/fex-buildroot/image.oci.tar", "/target/publish/fex-buildroot/digest"]
+requires = ["arch=aarch64"]
+isolation = "vm"
+cost = "heavy"
+cpus = 8
+memory = "32G"
+timeout_secs = 5400
+default = false
+
+[[check]]
+name = "publish-fex-buildroot"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-fex-buildroot-candidate /target/publish/fex-buildroot '{commit}'"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-fex-buildroot"]
+outputs = ["/target/publish/fex-buildroot/receipt.json"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=x86_64"]
+on = ["dispatch"]
+
+# The x86 headers and libraries FEX's thunks compile against (os/Containerfile.fex-x86-sdk),
+# installed natively on x86_64 so RPM scriptlets run.
+[[check]]
+name = "image-fex-x86-sdk"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash tools/ci/publish/windows-compat.sh fex-x86-sdk /target/publish/fex-x86-sdk"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-build.sh", "tools/ci/publish/oci-run.sh", "os/Containerfile.fex-x86-sdk", "os/base-snapshot.env", ".containerignore", "tools/ci/publish/windows-compat.sh"]
+outputs = ["/target/publish/fex-x86-sdk/image.oci.tar", "/target/publish/fex-x86-sdk/digest"]
+requires = ["arch=x86_64"]
+isolation = "vm"
+cost = "heavy"
+cpus = 4
+memory = "16G"
+timeout_secs = 5400
+default = false
+
+[[check]]
+name = "publish-fex-x86-sdk"
+image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
+run = "bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-fex-x86-sdk-candidate /target/publish/fex-x86-sdk '{commit}'"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/oci-publish.sh", "os/dev/install-cached-cosign.sh", "os/dev/cache-github-assets.sh", "os/external-assets/github-assets.tsv", "keys/cosign.pub"]
+needs = ["image-fex-x86-sdk"]
+outputs = ["/target/publish/fex-x86-sdk/receipt.json"]
+id_token = ["registry.tilo.so"]
+requires = ["arch=x86_64"]
+on = ["dispatch"]
+
 # The tooling Wine is rebuilt in (os/Containerfile.wine-tools): Mock, podman and the producer
 # scripts, natively on x86_64. The Wine steps below run in it as their micro-VM's userspace.
 [[check]]
@@ -3315,9 +3373,9 @@ on = ["dispatch"]
 
 # The x86 Windows guest, as root in micro-VM steps running the wine-tools image just built
 # (tools/ci/publish/wine.sh): the pinned Wine source fetched and verified once; per target, Mock
-# resolves its build dependencies with the network, then rebuilds Wine from that bundle alone,
-# offline. Every image is an archive named by the digest it is published with, so the contracts
-# the steps write name what is published.
+# resolves its build dependencies with the network, then wine-build-<target> rebuilds Wine from
+# that bundle alone, offline, into the RPMs and their contract. Every image is an archive named
+# by the digest it is published with, so the contracts the steps write name what is published.
 [[check]]
 name = "wine-resolve-x86_64"
 image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }
@@ -3334,6 +3392,21 @@ timeout_secs = 3600
 default = false
 
 [[check]]
+name = "wine-build-x86_64"
+image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }
+run = "bash tools/ci/publish/wine.sh build x86_64 /target/windows-compat/wine-build-x86_64"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+needs = ["wine-resolve-x86_64"]
+outputs = ["/target/windows-compat/wine-build-x86_64/**"]
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+cpus = 16
+memory = "32G"
+timeout_secs = 14400
+default = false
+
+[[check]]
 name = "wine-resolve-i686"
 image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }
 run = "bash tools/ci/publish/wine.sh resolve i686 /target/windows-compat/wine-resolve-i686"
@@ -3346,6 +3419,21 @@ cost = "heavy"
 cpus = 4
 memory = "8G"
 timeout_secs = 3600
+default = false
+
+[[check]]
+name = "wine-build-i686"
+image = { check = "image-wine-tools", path = "/target/publish/wine-tools/image.oci.tar" }
+run = "bash tools/ci/publish/wine.sh build i686 /target/windows-compat/wine-build-i686"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/wine.sh"]
+needs = ["wine-resolve-i686"]
+outputs = ["/target/windows-compat/wine-build-i686/**"]
+requires = ["arch=x86_64", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+cpus = 16
+memory = "32G"
+timeout_secs = 14400
 default = false
 
 [[check]]

@@ -4316,6 +4316,51 @@ mod tests {
         }
     }
 
+    /// tmpfiles' `C` never overwrites, so a machine keeps the capability list
+    /// of the image it was installed with across every update. Each version
+    /// the image ever seeded must still mount with the grant it gave, through
+    /// the same loader fs.service uses. `tools/policy/check_seeded_state_history.py`
+    /// requires today's default to be among them.
+    #[test]
+    fn every_capability_list_an_image_ever_seeded_still_mounts_with_its_grant() {
+        use fs::Access;
+
+        let history = os_file("os/tests/seeded-state/var/lib/tilo/fs-capabilities.json");
+        let mut versions: Vec<_> = std::fs::read_dir(&history)
+            .expect("the seeded capability list history must exist")
+            .map(|entry| entry.expect("history entry").path())
+            .collect();
+        versions.sort();
+        assert!(
+            versions.len() >= 2,
+            "the history must hold the pre-authority list and today's: {versions:?}"
+        );
+        let identity: IdentityKey = [0x5A; 32];
+        for path in &versions {
+            let local = vec![parse_principal("person:local").unwrap()];
+            let file = CapabilityFile::load(path, identity, local).unwrap_or_else(|error| {
+                panic!(
+                    "{} must still load on an upgraded machine: {error}",
+                    path.display()
+                )
+            });
+            let handle = file.handle();
+            assert!(
+                handle.permits(&identity, "/notes/today.md", Access::Write),
+                "{} must still let the local session write its workspace",
+                path.display()
+            );
+            let outsider = CapabilityFile::load(path, identity, Vec::new())
+                .expect("loads")
+                .handle();
+            assert!(
+                !outsider.permits(&identity, "/notes/today.md", Access::Read),
+                "{} must grant only its named principal",
+                path.display()
+            );
+        }
+    }
+
     #[test]
     fn cli_parses_mount_lines_principals_and_persisted_tickets() {
         // Phase `mount_command_line_parses`.
