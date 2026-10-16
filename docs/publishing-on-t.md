@@ -29,14 +29,12 @@ of this is described in its [pipelines document](https://code.tilo.so/tilo/t/src
   them, and only for `stable` and `v*` tags.
 - **t decides who gets tokens and secrets**, from its server config, never from this
   repository: each audience (`[[oidc.audience]]`) and each `[[secret]]` names the references
-  (`refs`) and node labels (`nodes`) it may reach. A run of someone's working tree never gets
-  any.
-- **Release jobs run on fresh machines.** Secrets for releases reach only nodes labelled
-  `release`, which take nothing but trusted jobs. Those nodes are `t worker --once` pods under
-  Kata: one job per VM. Only workers whose token may offer the `release` label get it, so the
-  token the other workers share can't claim release secrets. With `isolated_nodes = ["release"]`
-  in the server config, the builds a release needs run there too, so no node that ran someone's
-  working tree builds what is signed.
+  (`refs`) it may reach. A run of someone's working tree never gets any.
+- **Credentials reach only a kernel of their own.** A check holding a secret or an identity
+  token runs as a micro-VM step (t's README, "Micro-VM steps"): a guest kernel nothing else
+  shares, on any node that runs them, so no machines are set aside for releases. The builds a
+  release signs run in trusted runs only from trusted results, in fresh directories, never from
+  a working tree's cache.
 
 ## How a workflow becomes checks
 
@@ -178,12 +176,52 @@ A variant can carry more than the architecture where names differ (`deb = "arm64
 
 `tools/tests/test_publish_chain.py` covers the generator and the scripts' channel rules.
 
+## Rehearsing a release
+
+`release-rehearsal` (in `tools/ci/products.toml`) is a one-file image
+(`tools/ci/publish/rehearsal`) that runs the chain every product runs, so a release can be
+proven on t without releasing anything anyone deploys:
+
+- every push to main publishes `registry.tilo.so/tilo/release-rehearsal:dev-<commit>` when its
+  inputs changed, and sets main's `release-rehearsal` pointer to the receipt;
+- a tag `v0-rehearsal-<n>` runs it as a release, and nothing else runs on such a tag (the relay
+  releases on version tags only, `v1.2.3`): `sign-release-rehearsal` exchanges a
+  `sts.amazonaws.com` identity token for the signing role and signs the build's digest with the
+  release key in KMS, `publish-release-rehearsal` pushes `sha-<commit>` with the signature
+  attached, verifies it against `keys/cosign.pub`, writes the receipt and sets the tag's
+  `release-rehearsal` pointer. `t dispatch publish-release-rehearsal --ref stable` does the same
+  on stable's head.
+
+```sh
+git tag v0-rehearsal-2 origin/main && git push origin v0-rehearsal-2
+t main          # published: sign-release-rehearsal, publish-release-rehearsal; pointers
+cosign verify --insecure-ignore-tlog=true --key keys/cosign.pub \
+  registry.tilo.so/tilo/release-rehearsal:sha-$(git rev-parse v0-rehearsal-2)
+```
+
+The same chain runs against a local t server without any credential: give the server
+`[env] TILO_PUBLISH_DRY_RUN = "/tmp/dry-registry"`, an `[oidc]` table and a worker that runs
+micro-VM steps, then `t dispatch publish-release-rehearsal --ref stable`. Signing then uses a
+throwaway key and publishing an OCI layout in the step.
+
+## Mirrored images
+
+The images the publishing checks run in (buildah, skopeo) and the bases t's own web interface
+builds from are mirrored into `registry.tilo.so/tilo/<name>` and pinned there by digest:
+quay.io rebuilds its version tags and deletes the manifests they replace, so a pin on quay.io
+stops resolving within days. `tools/ci/publish/mirrored-images.tsv` lists each mirror, its
+upstream tag and the digest; `mirror-images`, on main with a registry identity token, copies each
+digest across with `--preserve-digests` (the mirror's digest is upstream's) while upstream still
+serves it. To move one forward, put the new digest in that file and in the pins in one commit.
+
 ## Declared in t.toml
 
 | chain | build (no secrets) | sign (stable) | publish (main, development tag) | release (stable) |
 |---|---|---|---|---|
 | room service | `image-room-service-context`, `image-room-service` | `sign-room-service` | `publish-room-service`: `dev-<commit>` | `publish-room-service`: `sha-<commit>`, signed, receipt |
 | web entry | `image-web-entry-context`, `image-web-entry` | `sign-web-entry` | `publish-web-entry`: `dev-<commit>` | `publish-web-entry`: `sha-<commit>`, signed, receipt |
+| release rehearsal | `image-release-rehearsal` | `sign-release-rehearsal` (`v0-rehearsal-*` tags, dispatch) | `publish-release-rehearsal`: `dev-<commit>` | `publish-release-rehearsal`: `sha-<commit>`, signed, receipt, the `release-rehearsal` pointer |
+| mirrored images | | | `mirror-images`: the digests of `tools/ci/publish/mirrored-images.tsv` | |
 | ci-fast, ci-control | `image-ci-fast`, `image-ci-control` (built on the ci-fast just built), `image-ci-fast-smoke` (runs both) | | `publish-ci-fast`, `publish-ci-control`: `sha-<commit>` | (CI tooling, not a product) |
 | registry server | `image-registry-server` (compiled in the Containerfile, then its image test) | | `publish-registry-server`: `sha-<commit>`, receipt for GitOps | |
 | relay | `rpm-snapshot` (the published frozen snapshot, verified), `image-relay` | `sign-relay` (`v*` tags, with a transparency log entry) | | `publish-relay` (`v*` tags): `<version>`, `sha-<commit>`, signed |
@@ -299,25 +337,27 @@ see `t.toml`): `check.yml`, `lint.yml`, `browser-auth-e2e.yml`, `ci-filesystem.y
 
 ## Identity tokens and secrets
 
-Registry pushes and KMS signing use identity tokens from t (issuer `https://code.tilo.so/t`,
+Registry pushes and KMS signing use identity tokens from t (issuer `https://t.tilo.so`, formerly
+`https://code.tilo.so/t`, both trusted while the old one retires;
 subject `repo:tilo/tilo:ref:refs/heads/<branch>` or `…:ref:refs/tags/<tag>`). Which runs get
 them is t's server config; what they may do is the other side's:
 
-| audience | refs | nodes | accepted by |
-|---|---|---|---|
-| `registry.tilo.so` | `main`, `stable`, `tag:v*` | `release` | registry.tilo.so, as the password of the user `oidc`: tilo/tilo may push under `tilo/` from `main`, `stable` and `v*` tags |
-| `sts.amazonaws.com` | `stable`, `tag:v*` | `release` | the AWS role `TiloTReleaseSigner`, for `stable` and `v*` tags of tilo/tilo only: `kms:Sign`, `kms:GetPublicKey` and `kms:DescribeKey` on the three release keys |
+| audience | refs | accepted by |
+|---|---|---|
+| `registry.tilo.so` | `main`, `stable`, `tag:v*` | registry.tilo.so, as the password of the user `oidc`: tilo/tilo may push under `tilo/` from `main`, `stable` and `v*` tags |
+| `sts.amazonaws.com` | `stable`, `tag:v*` | the AWS role `TiloTReleaseSigner`, for `stable` and `v*` tags of tilo/tilo only: `kms:Sign`, `kms:GetPublicKey` and `kms:DescribeKey` on the three release keys |
 
 The key reference (`COSIGN_KEY_REF`) and the role (`AWS_SIGNING_ROLE_ARN`) are not secret; the
 signing checks set them in `t.toml`. What has no OpenID Connect verifier yet stays a secret in
 t's server config (sops-encrypted in the infra repository), none in this repository:
 
-| name | refs | nodes | what |
-|---|---|---|---|
-| `TAPP_PUBLISHER_IDENTITY`, `RUNTIME_BUNDLE_SIGNING_KEY` | `stable`, `tag:*` | `release` | the app and runtime publisher identities, for the app and OS chains once ported |
-| `TILO_MODEL_CATALOG_SIGNING_KEY` | `stable` | `release` | the local model catalog's signing seed: `sign-model-catalog`, `review-speech-catalog` |
-| `REGISTRY_TOKEN` | `stable` | `release` | a Forgejo token that may write generic packages, which do not take t's identity tokens: `publish-model-catalog` |
-| `INFRA_PROMOTION_TOKEN` | `stable` | `release` | may create branches and pull requests on the infra repository: `cloud-promotion` |
+| name | refs | what |
+|---|---|---|
+| `TAPP_PUBLISHER_IDENTITY`, `RUNTIME_BUNDLE_SIGNING_KEY` | `stable`, `tag:*` | the app and runtime publisher identities, for the app and OS chains |
+| `DEV_APP_PUBLISHER_IDENTITY` | `main` | the development app publisher identity, for development app collections from main |
+| `TILO_MODEL_CATALOG_SIGNING_KEY` | `stable`, `tag:*` | the local model catalog's signing seed: `sign-model-catalog`, `review-speech-catalog` |
+| `REGISTRY_TOKEN` | `stable`, `tag:*` | a Forgejo token that may write generic packages, which do not take t's identity tokens: `publish-model-catalog` |
+| `INFRA_PROMOTION_TOKEN` | `stable` | may create branches and pull requests on the infra repository: `cloud-promotion` (not in t's config yet) |
 
 `sign-apps-*` take `TAPP_PUBLISHER_IDENTITY` and `RUNTIME_BUNDLE_SIGNING_KEY`, `submit-apps` only
 `TAPP_PUBLISHER_IDENTITY` (registry entries are signed by the identity that signed the tapp), and
@@ -425,14 +465,12 @@ prepared cutover (with sign-off) can drop the build, test, package and sign step
 - **Cross-workflow polling.** `await-rpm-snapshot.sh` and Release / OS poll Forgejo for other
   runs; on t the consumer `needs` the producer, which is cached when its fingerprint is
   published.
-- **Optional needs.** A release check `needs` its signing check, which only runs on stable, so a
-  development and a release publication are separate checks.
 - **Inputs from a cargo package's dependencies.** A `[[check]]` lists its input globs by hand;
   the context builds use the workflows' path filters.
-- **Running a check in an image built in the same run** (the builder's canary jobs).
-- **Service containers and Docker daemons** are gone: images build with buildah inside the
-  sandbox, and tests that start containers need `privileged = true`.
+- **Service containers and Docker daemons** are gone: images build with buildah, and tests that
+  start containers run as micro-VM steps (`isolation = "vm"`), as root in a guest of their own.
 - **A Mac for release jobs.** Checks on macOS run on the host, so Developer ID signing needs a
   Mac labelled `release` that takes nothing else.
-- **Compiler cache for isolated builds.** Release builds run in fresh directories; the remote
-  sccache the runners use is not wired into t checks.
+- **A guest kernel for `arch=any` micro-VM steps** on the deployed server: until it boots them
+  with the node's own guest, the signing and publishing checks require `arch=x86_64`
+  (`CREDENTIAL_REQUIRES` in `tools/ci/products.py`).
