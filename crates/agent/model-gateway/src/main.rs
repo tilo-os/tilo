@@ -622,9 +622,16 @@ const MAX_PROVIDER_TIMEOUT: Duration = Duration::from_secs(60);
 // request (`ProviderFailure::unprocessed`), in `plan_send`.
 const RETRY_ATTEMPTS: u32 = 4;
 /// Every POST one Plan may make, the first included.
-const PLAN_ATTEMPTS: u32 = 3;
+const PLAN_ATTEMPTS: u32 = 5;
 const FIRST_RETRY_WAIT: Duration = Duration::from_millis(500);
 const LONGEST_RETRY_WAIT: Duration = Duration::from_secs(4);
+/// The first pause before a Plan asks a refusing provider again, doubled
+/// each time up to [`LONGEST_PLAN_WAIT`]. A shared hosted quota (Vertex AI's
+/// dynamic shared quota answers HTTP 429 while it is busy) stays busy for
+/// tens of seconds, not the second a single client's rate limit lasts, so a
+/// Plan rides it out for as long as its own budget leaves room to answer.
+const FIRST_PLAN_WAIT: Duration = Duration::from_secs(1);
+const LONGEST_PLAN_WAIT: Duration = Duration::from_secs(8);
 const ROOM_TO_ANSWER: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2792,6 +2799,21 @@ fn retry_wait(retry: u32, asked_for: Option<Duration>) -> Duration {
         .min(LONGEST_RETRY_WAIT)
 }
 
+/// The pause before a Plan's retry `retry` (1-based): what the provider asked
+/// for, else a doubling backoff from [`FIRST_PLAN_WAIT`].
+fn plan_retry_wait(retry: u32, asked_for: Option<Duration>) -> Duration {
+    if let Some(wait) = asked_for {
+        return wait;
+    }
+    let doubling = 1u32
+        .checked_shl(retry.saturating_sub(1))
+        .unwrap_or(u32::MAX);
+    FIRST_PLAN_WAIT
+        .checked_mul(doubling)
+        .unwrap_or(LONGEST_PLAN_WAIT)
+        .min(LONGEST_PLAN_WAIT)
+}
+
 async fn while_busy<L, W, WF, A, AF>(left: L, mut wait: W, mut attempt: A) -> Result<String, String>
 where
     L: Fn() -> Option<Duration>,
@@ -2876,7 +2898,7 @@ where
             Ok(answer) => return Ok(answer),
             Err(failure) => failure,
         };
-        let waiting = retry_wait(
+        let waiting = plan_retry_wait(
             made,
             match failure.again {
                 Again::Soon(asked_for) => asked_for,
