@@ -29,6 +29,7 @@
 pub mod appdir;
 pub mod capabilities;
 pub mod capture;
+pub mod chromium_frame;
 #[cfg(target_os = "linux")]
 pub mod dbus_proxy;
 pub mod dev_env;

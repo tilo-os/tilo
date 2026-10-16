@@ -383,6 +383,18 @@ def _ozone_flag(ctx, res, flag: str) -> None:
     expect(hits, f"no Chromium process runs with --ozone-platform={flag}")
 
 
+def _system_title_bar(ctx, res) -> None:
+    """Chromium draws no caption buttons or drag area of its own under Tilo's tab row.
+
+    Its Wayland default is a custom frame with them; the host launch turns on the system
+    title bar ("Use system title bar and borders") in the profile it starts with."""
+    got = ctx.vm.exec("python3 -c 'import json,os; p=os.path.expanduser(\"~/.config/chromium/Default/Preferences\"); "
+                      "print(json.load(open(p)).get(\"browser\", {}).get(\"custom_chrome_frame\"))' 2>&1; true").strip()
+    res.metrics["custom_chrome_frame"] = got
+    expect(got == "False", f"Chromium's profile keeps its own frame (custom_chrome_frame={got!r}): "
+                           "it draws caption buttons under Tilo's tab row")
+
+
 def _no_running(ctx, res, app: DailyApp) -> None:
     """A browser left from an earlier check would take this launch over as a new window.
 
@@ -422,9 +434,10 @@ def _daily(app: DailyApp, interact, after_open=None):
 
 
 check("A08", AREA, "Chromium on Wayland (ozone, the Electron path): window, focus, content, "
-                   "scale on both outputs, typing, clipboard both ways, exit on close")(
+                   "system title bar, scale on both outputs, typing, clipboard both ways, "
+                   "exit on close")(
     _daily(CHROMIUM_WAYLAND, lambda ctx, res, app, sid: _text_field(ctx, res, app, sid, undo=False),
-           lambda ctx, res: _ozone_flag(ctx, res, "wayland")))
+           lambda ctx, res: (_ozone_flag(ctx, res, "wayland"), _system_title_bar(ctx, res))))
 check("A09", AREA, "Chromium forced onto X11 through Xwayland: window, focus, content, "
                    "scale on both outputs, typing, clipboard both ways, exit on close")(
     _daily(CHROMIUM_X11, lambda ctx, res, app, sid: _text_field(ctx, res, app, sid, undo=False),

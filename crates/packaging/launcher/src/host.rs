@@ -167,6 +167,22 @@ fn spawn_with(
             launch.desktop_id
         );
     }
+    // Tilo's tab row is the window's only chrome; see `chromium_frame`.
+    match crate::chromium_frame::seed(launch) {
+        Ok(profiles) => {
+            for profile in profiles {
+                eprintln!(
+                    "tilo-launcher: {} uses the system title bar in {}",
+                    launch.desktop_id,
+                    profile.display()
+                );
+            }
+        }
+        Err(error) => eprintln!(
+            "tilo-launcher: {} keeps its own title bar: {error}",
+            launch.desktop_id
+        ),
+    }
     let mut cmd = launch.to_command();
     cmd.stdin(Stdio::null());
     configure_host_launch_session(&mut cmd);
