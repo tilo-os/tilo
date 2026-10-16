@@ -236,7 +236,7 @@ serves it. To move one forward, put the new digest in that file and in the pins 
 | desktop | `desktop-preflight` (packaging inputs), `desktop-package-amd64`, `desktop-package-arm64` (privileged) | | | `publish-desktop-payload`: the OS payloads, the `desktop-payload` pointer |
 | macOS | `runtime-macos` (main), `sdk-macos`, `apps-macos` (nightly), `runtime-macos-app` (dispatch, ad hoc signed) | | | |
 | Windows ARM64 | `windows-arm64-tilo-vm`, `windows-arm64-imager` (dispatch, cross-built) | | | |
-| Windows compatibility payloads | `image-fex-buildroot` (aarch64), `image-fex-x86-sdk`; `image-wine-tools`, then in it as micro-VM steps `wine-source` (the verified Wine source), `wine-resolve-x86_64`, `-i686` (Mock's build dependencies) and `wine-build-x86_64`, `-i686` (Wine rebuilt offline) | | `publish-fex-buildroot`, `publish-fex-x86-sdk`, `publish-wine-tools` (dispatch) | (development candidates only) |
+| Windows compatibility payloads | `image-fex-buildroot` (aarch64), `image-fex-x86-sdk`, `image-fex-payload-context` (the verified FEX source), `image-fex-payload` (aarch64); `image-wine-tools`, then in it as micro-VM steps `wine-source` (the verified Wine source), `wine-resolve-x86_64`, `-i686` (Mock's build dependencies) and `wine-build-x86_64`, `-i686` (Wine rebuilt offline) | | `publish-fex-payload` (dispatch, after `publish-fex-buildroot` and `publish-fex-x86-sdk`, which it names): the `fex-payload-candidate` pointer; `publish-wine-tools` (dispatch) | (development candidates only) |
 
 `t test image-room-service` builds the image from your tree exactly as a release would, without
 publishing anything. The publishing checks run only as trusted runs; `t test publish-room-service`
