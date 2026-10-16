@@ -454,12 +454,19 @@ fn parse_external_link(
     let label = line.get(at + 1..label_end)?;
     let url = line.get(label_end + 2..url_end)?;
     (!label.is_empty() && safe_external_url(url)).then_some(())?;
+    let label = parse_inline(label);
     let start = plain.len();
-    plain.push_str(label);
+    plain.push_str(&label.text);
     marks.push(MarkSpan::new(
         start..plain.len(),
         Mark::ExternalLink(url.to_string()),
     ));
+    marks.extend(label.marks.into_iter().map(|inner| {
+        MarkSpan::new(
+            (inner.range.start + start)..(inner.range.end + start),
+            inner.mark,
+        )
+    }));
     Some(url_end + 1)
 }
 
