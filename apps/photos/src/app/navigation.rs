@@ -92,16 +92,10 @@ impl PhotosApp {
         let Some((target_day, _, _)) = target else {
             return Err(tr("photos-error-day-gone"));
         };
-        if let Some(offset) = self
-            .timeline_projection
-            .day_offset(target_day, self.timeline_viewport_height)
-        {
-            self.timeline_scroll_y = offset;
-            return Ok(());
-        }
-        // A semantic action can arrive before the first painted frame. Build
-        // the same lightweight metadata projection now so the jump is exact
-        // rather than falling back to a guessed fixed-height row.
+        // The previous projection may describe a filtered collection or an
+        // older library snapshot. Rebuild against the timeline being opened
+        // before resolving its offset, even if that day was already present.
+        // This also handles actions arriving before the first painted frame.
         self.timeline_projection
             .replace(library.photos.values().map(|photo| {
                 TimelinePhoto {
