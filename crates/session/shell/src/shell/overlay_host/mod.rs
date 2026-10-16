@@ -10915,12 +10915,6 @@ impl ShellOverlayHost {
         self.strip_indicators.alpha_at(now, reduce_motion)
     }
 
-    /// Show the ribbon and rail as navigation would, for captures of them.
-    pub fn show_strip_indicators_for_tests(&mut self) {
-        self.prepare_strip_indicators(Instant::now());
-        self.strip_indicators.poke(Instant::now());
-    }
-
     /// The strip ribbon for the active workspace, anchored to the content
     /// area's right edge. Costs no layout — it sits in
     /// [`STRIP_TRAILING_GUTTER_PX`], which the strips already leave clear.

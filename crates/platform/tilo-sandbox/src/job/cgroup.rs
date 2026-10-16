@@ -585,11 +585,6 @@ impl Direct {
         })
     }
 
-    /// The directory job cgroups are made in.
-    pub fn jobs_dir(&self) -> &Path {
-        &self.jobs
-    }
-
     /// Controllers each job cgroup has.
     pub fn controllers(&self) -> &[String] {
         &self.controllers

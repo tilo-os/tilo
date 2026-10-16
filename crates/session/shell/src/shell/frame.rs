@@ -4767,17 +4767,6 @@ impl FrameBuilder {
         self.layout_osk_overlay();
     }
 
-    /// Reconcile authenticated app-owned toplevels with the compositor's
-    /// presentation pass. Widgets are retained by surface id so a geometry
-    /// update never resets buffer sequence, mapping state, or opening chrome.
-    pub fn set_floating_surfaces(&mut self, surfaces: &[(u64, String, Rect)]) {
-        let surfaces = surfaces
-            .iter()
-            .map(|(id, app, rect)| (*id, app.clone(), *rect, None))
-            .collect::<Vec<_>>();
-        self.set_floating_surfaces_with_input(&surfaces);
-    }
-
     /// Reconcile exact authenticated interactive bounds separately from the
     /// transparent native allocation that contains the surface's shadow.
     pub fn set_floating_surfaces_with_input(
