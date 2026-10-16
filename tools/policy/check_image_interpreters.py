@@ -74,8 +74,8 @@ def is_interpreter_script(path: Path) -> bool:
     try:
         with path.open("rb") as handle:
             first_line = handle.readline(512)
-    except (FileNotFoundError, IsADirectoryError):
-        return False
+    except OSError as error:
+        raise OSError(f"Cannot inspect tracked overlay file {path}: {error}") from error
     program = shebang_interpreter(first_line)
     return program is not None and INTERPRETER.fullmatch(program) is not None
 
@@ -128,7 +128,7 @@ def main() -> int:
     try:
         new, stale = check(ROOT)
         baseline = load_baseline(ROOT)
-    except BaselineError as error:
+    except (BaselineError, OSError, UnicodeError, subprocess.CalledProcessError) as error:
         print(f"  {error}")
         return 1
     for path in new:

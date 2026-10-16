@@ -40,6 +40,7 @@ fs.writeFileSync(path.join(root,'crates/browser/tilo-browser-runtime/web/media-m
 """)
         cli = common + '''if sys.argv[1:]==["examples","--json"]:
  print(os.environ["FIXTURE_EXAMPLES"])
+ sys.exit(int(os.environ.get("DISCOVERY_EXIT", "0")))
 else:
  assert sys.argv[1:5]==["build","--json","--platform","web"]
  if sys.argv[5].endswith("/"+os.environ.get("FAIL_APP","-")):sys.exit(7)
@@ -101,6 +102,23 @@ else:
             self.assertEqual(result.returncode, 23, result.stderr)
             self.assertFalse(calls.exists())
             self.assertFalse((root/'bundles').exists())
+
+    def test_failed_or_malformed_discovery_cannot_pass_as_empty_selection(self):
+        cases = [
+            ('{"result":{"examples":[]}}', '19'),
+            ('{"result":{"examples":[{"name":"counter","web":true}]}}', '19'),
+            ('not JSON', '0'),
+        ]
+        for payload, status in cases:
+            with self.subTest(payload=payload, status=status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                env, calls = self.fixture(root, [])
+                env.update(FIXTURE_EXAMPLES=payload, DISCOVERY_EXIT=status)
+                result = subprocess.run(['bash', str(root/'tools/ci/build-web-examples.sh'), 'example-counter'],
+                                        env=env, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn('no web-capable example selected', result.stdout)
+                self.assertFalse(calls.exists())
 
     def test_empty_selection_does_not_install_or_build_shared_assets(self):
         with tempfile.TemporaryDirectory() as directory:

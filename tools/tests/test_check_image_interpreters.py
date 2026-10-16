@@ -63,6 +63,23 @@ class ImageInterpreterTests(unittest.TestCase):
     def test_baselined_script_and_shell_glue_pass(self) -> None:
         self.assertEqual(checker.check(self.root), ([], []))
 
+    def test_unreadable_tracked_file_is_not_a_clean_inventory(self) -> None:
+        relative = "os/usr/libexec/unobserved"
+        self.write(relative, "#!/usr/bin/env python3\n")
+        path = self.root / relative
+        path.unlink()
+        # Both a missing checkout file and a directory in its place used to
+        # disappear from the inventory, hiding a new extensionless script.
+        for directory in (False, True):
+            with self.subTest(directory=directory):
+                if directory:
+                    path.mkdir()
+                out = io.StringIO()
+                with mock.patch.object(checker, "ROOT", self.root), contextlib.redirect_stdout(out):
+                    self.assertEqual(checker.main(), 1)
+                self.assertIn("Cannot inspect", out.getvalue())
+                self.assertIn("unobserved", out.getvalue())
+
     def test_new_shebang_script_fails(self) -> None:
         self.write("os/usr/libexec/new-thing", "#!/usr/bin/env python3\n")
         self.write("os/etc/tilo/hook", "#!/usr/bin/python3 -I\n")
