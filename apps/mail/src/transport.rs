@@ -43,26 +43,13 @@ use crate::model::{Addr, Attachment, Draft, Folder, Message};
 /// compose header fields) into a list of addresses. Tolerates `Name <addr>`
 /// and bare `addr` forms.
 pub fn parse_addr_list(s: &str) -> Vec<Addr> {
-    s.split([',', ';'])
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .map(parse_single_addr)
-        .collect()
-}
-
-fn parse_single_addr(s: &str) -> Addr {
-    // Walk from the '<' rather than mixing absolute and relative byte offsets:
-    // the two are only interchangeable while the delimiters stay ASCII, and
-    // slicing a str at a stale offset panics.
-    if let Some(open) = s.find('<')
-        && let Some(name) = s.get(..open)
-        && let Some(rest) = s.get(open + 1..)
-        && let Some(close) = rest.find('>')
-        && let Some(email) = rest.get(..close)
-    {
-        return Addr::new(name.trim().trim_matches('"'), email.trim());
-    }
-    Addr::bare(s.to_string())
+    // Use the same mailbox grammar as incoming headers: punctuation inside
+    // a quoted display name is not a recipient separator.
+    mail_parser::parsers::MessageStream::new(s.as_bytes())
+        .parse_address()
+        .as_address()
+        .map(|addresses| addresses.iter().map(addr_from_parsed).collect())
+        .unwrap_or_default()
 }
 
 /// Build a real RFC 5322 / MIME message from a draft, via `mail-builder`.
