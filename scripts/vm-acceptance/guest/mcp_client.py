@@ -20,6 +20,7 @@ import select
 import subprocess
 import sys
 import time
+import tempfile
 
 BIN = os.environ.get("ACC_MCP_BIN", "tilo-runtime-mcp")
 INITIALIZE_S = float(os.environ.get("ACC_MCP_INITIALIZE_S", "90"))
@@ -47,28 +48,42 @@ def daemons() -> set[int]:
 
 class Client:
     def __init__(self):
-        self.proc = subprocess.Popen([BIN, "--connect"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, text=True, bufsize=1)
+        # Diagnostics must not fill a pipe while we wait for a protocol reply.
+        self.stderr = tempfile.TemporaryFile()
+        try:
+            self.proc = subprocess.Popen([BIN, "--connect"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=self.stderr, bufsize=0)
+        except BaseException:
+            self.stderr.close()
+            raise
+        self.buffer = b""
+        self.eof = False
         self.next_id = 0
         self.trace: list[dict] = []
 
     def send(self, message: dict) -> None:
         self.trace.append({"to": "server", "message": message})
-        self.proc.stdin.write(json.dumps(message) + "\n")
+        self.proc.stdin.write((json.dumps(message) + "\n").encode())
         self.proc.stdin.flush()
 
     def read(self, timeout: float):
         """The next JSON line, `None` at EOF, or `"timeout"`."""
-        ready, _, _ = select.select([self.proc.stdout], [], [], timeout)
-        if not ready:
-            return "timeout"
-        line = self.proc.stdout.readline()
-        if not line:
+        deadline = time.monotonic() + timeout
+        while b"\n" not in self.buffer and not self.eof:
+            ready, _, _ = select.select([self.proc.stdout], [], [], max(0, deadline - time.monotonic()))
+            if not ready:
+                return "timeout"
+            chunk = os.read(self.proc.stdout.fileno(), 65536)
+            self.eof = not chunk
+            self.buffer += chunk
+        if not self.buffer:
             return None
+        line, separator, rest = self.buffer.partition(b"\n")
+        self.buffer = rest if separator else b""
         try:
             message = json.loads(line)
-        except json.JSONDecodeError:
-            message = {"unparsed": line[:300]}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            message = {"unparsed": line[:300].decode(errors="replace")}
         self.trace.append({"from": "server", "message": message})
         return message
 
@@ -96,10 +111,20 @@ class Client:
         except OSError:
             pass
         try:
-            self.proc.wait(timeout=5)
+            # Drain stdout too: a server may finish by writing notifications.
+            self.proc.stdin = None
+            self.proc.communicate(timeout=5)
         except subprocess.TimeoutExpired:
             self.proc.kill()
-        return (self.proc.stderr.read() or "")[-1500:]
+            self.proc.communicate()
+        finally:
+            self.proc.stdout.close()
+        self.stderr.seek(0, os.SEEK_END)
+        self.stderr.seek(max(0, self.stderr.tell() - 1500))
+        try:
+            return self.stderr.read().decode(errors="replace")
+        finally:
+            self.stderr.close()
 
 
 def text_of(reply) -> str:
