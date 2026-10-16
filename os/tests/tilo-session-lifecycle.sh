@@ -298,6 +298,25 @@ head -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid
 grep -Fqx "desktop-output --backend drm trace=$slow_dir/frame-trace.csv" "$slow_dir/latest.log"
 tail -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=5 logout_request=no restart_request=no$'
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+# A full or failing disk must never keep the person from logging in. Here the
+# state directory cannot exist at all (its parent is a file), so every write
+# the wrapper and the recorder try fails, as on a full disk; the tests may run
+# as a namespace root, which permissions would not stop. The desktop still
+# starts, its exit status still comes back, and its output still reaches the
+# journal (stdout).
+mkdir -p "$tmp/full-state"
+printf 'not a directory\n' >"$tmp/full-state/tilo"
+full_dir="$tmp/full-state/tilo/session-logs"
+set +e
+XDG_STATE_HOME="$tmp/full-state" XDG_RUNTIME_DIR="$runtime_dir" \
+  TILO_SESSION_TEST_LOG="$tmp/full-log" TILO_SESSION_DESKTOP_STATUS=6 \
+  timeout 20 "$test_wrapper" --backend drm >"$tmp/full-stdout" 2>"$tmp/full-stderr"
+status=$?
+set -e
+[ "$status" = 6 ] || { cat "$tmp/full-stderr" >&2; exit 1; }
+grep -Fqx "desktop-output --backend drm trace=$full_dir/frame-trace.csv" "$tmp/full-stdout"
+grep -Fqx 'desktop --backend drm' "$tmp/full-log"
+[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 # A process that inherited the compositor's output must not keep the wrapper,
 # and so the session unit, alive after the compositor exits. Its own state
 # directory keeps this from rotating the record the checks below read.
