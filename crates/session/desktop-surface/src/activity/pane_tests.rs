@@ -4124,6 +4124,182 @@ mod task_review_tests {
         }
     }
 
+    /// Three reviewed tasks: the one in progress was approved, carries an
+    /// instruction and reports executing; the others wait their turn.
+    fn crowded_review_fixture() -> (WorkspaceTree, RoomActivityPane, Rc<ReviewHost>) {
+        use tilo_desktop_model::{
+            WorkspaceTaskApproval, WorkspaceTaskDirection, WorkspaceTaskExecution,
+            WorkspaceTaskExecutionPhase,
+        };
+        let (mut tree, mut pane, host) = review_fixture();
+        let now = i64::try_from(ui::time::try_unix_now().unwrap()).unwrap();
+        let active = tree.active;
+        for title in [
+            "Replace the parenthesis with a real link found by web search",
+            "Summarise this week's meeting notes for the team",
+        ] {
+            tree.create_workspace_task(
+                active,
+                title,
+                "local",
+                Some("scribe".into()),
+                WorkspaceTaskRoute::Model,
+                None,
+            )
+            .unwrap();
+        }
+        {
+            let mut snapshot = host.snapshot.borrow_mut();
+            snapshot.sampled_at_secs = now;
+            snapshot.tasks = tree.active_workspace().unwrap().tasks.clone();
+            for (index, task) in snapshot.tasks.iter_mut().enumerate() {
+                task.status = if index == 0 {
+                    WorkspaceTaskStatus::InProgress
+                } else {
+                    WorkspaceTaskStatus::Queued
+                };
+                task.updated_at = now.saturating_sub(i64::try_from(index).unwrap());
+            }
+            let first = snapshot.tasks[0].id.clone();
+            let control = snapshot
+                .controls
+                .remove(&pane.selected_task.clone().unwrap());
+            let mut control = control.unwrap();
+            if let Some(run) = control.active_run.as_mut() {
+                run.approval = Some(WorkspaceTaskApproval {
+                    person: "local".into(),
+                    device: [0; 32],
+                    approved_at: now.saturating_sub(120),
+                    instruction_revision: 0,
+                });
+            }
+            control.execution = Some(WorkspaceTaskExecution {
+                run_epoch: 3,
+                sequence: 1,
+                phase: WorkspaceTaskExecutionPhase::Executing,
+                updated_at: now.saturating_sub(30),
+            });
+            control
+                .directions
+                .push(WorkspaceTaskDirection::owner_admitted(
+                    1,
+                    uuid::Uuid::nil(),
+                    "local".into(),
+                    "Use the https address".into(),
+                    now.saturating_sub(60),
+                ));
+            snapshot.controls.insert(first.clone(), control);
+            let rest: Vec<String> = snapshot
+                .tasks
+                .iter()
+                .skip(1)
+                .map(|task| task.id.clone())
+                .collect();
+            for id in rest {
+                snapshot
+                    .controls
+                    .insert(id, tilo_desktop_model::WorkspaceTaskControl::default());
+            }
+            pane.selected_task = Some(first);
+        }
+        pane.refresh(&mut tree);
+        (tree, pane, host)
+    }
+
+    fn review_action_rect(pane: &RoomActivityPane, action: TaskAction) -> Option<Rect> {
+        pane.task_action_rects
+            .iter()
+            .find_map(|(candidate, rect)| (*candidate == action).then_some(*rect))
+    }
+
+    #[test]
+    fn review_paging_keeps_previous_left_and_next_right() {
+        let (mut tree, mut pane, _) = crowded_review_fixture();
+        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 640.0));
+        paint_header_fixture(&mut pane, &Theme::dark());
+        assert!(review_action_rect(&pane, TaskAction::PreviousTasks).is_none());
+        let next_first = review_action_rect(&pane, TaskAction::NextTasks).unwrap();
+        pane.apply_task_action(TaskAction::NextTasks, &mut tree);
+        paint_header_fixture(&mut pane, &Theme::dark());
+        let previous = review_action_rect(&pane, TaskAction::PreviousTasks).unwrap();
+        let next = review_action_rect(&pane, TaskAction::NextTasks).unwrap();
+        assert_eq!(next, next_first, "Next stays where it was");
+        assert!(previous.x1 < next.x0, "Previous sits left of Next");
+        pane.apply_task_action(TaskAction::NextTasks, &mut tree);
+        paint_header_fixture(&mut pane, &Theme::dark());
+        assert!(review_action_rect(&pane, TaskAction::NextTasks).is_none());
+        assert_eq!(
+            review_action_rect(&pane, TaskAction::PreviousTasks),
+            Some(previous),
+            "Previous keeps its place when Next is gone"
+        );
+    }
+
+    #[test]
+    fn review_counters_wait_behind_details() {
+        let (mut tree, mut pane, _) = crowded_review_fixture();
+        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 640.0));
+        let task_height = |pane: &mut RoomActivityPane| {
+            paint_header_fixture(pane, &Theme::dark());
+            pane.task_rects[0].1.height()
+        };
+        let collapsed = task_height(&mut pane);
+        assert!(!pane.review_details);
+        assert!(review_action_rect(&pane, TaskAction::Details).is_some());
+        pane.apply_task_action(TaskAction::Details, &mut tree);
+        assert!(pane.review_details);
+        assert!(
+            task_height(&mut pane) > collapsed,
+            "details add the run counters under the task"
+        );
+        assert_eq!(
+            pane.access_control(&ActivityFocus::TaskAction(TaskAction::Details))
+                .unwrap()
+                .expanded,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn task_center_has_no_workspace_scope_toggle() {
+        let (_, mut pane, _) = crowded_review_fixture();
+        pane.layout_window(Rect::new(0.0, 0.0, 640.0, 640.0));
+        paint_header_fixture(&mut pane, &Theme::dark());
+        assert!(
+            pane.scope_rects.is_empty(),
+            "tasks always belong to the active workspace"
+        );
+    }
+
+    #[test]
+    fn task_center_render_matrix() {
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/task-center-renders");
+        std::fs::create_dir_all(&output).unwrap();
+        for locale in ["en-US", "de-DE"] {
+            let _ = t("activity-title-tasks");
+            ui::i18n::I18nManager::set_locale(locale);
+            for (name, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
+                for details in [false, true] {
+                    let (mut tree, mut pane, _) = crowded_review_fixture();
+                    pane.layout_window(Rect::new(0.0, 0.0, 640.0, 640.0));
+                    if details {
+                        pane.apply_task_action(TaskAction::Details, &mut tree);
+                    }
+                    let scene = paint_header_fixture(&mut pane, &theme);
+                    let mut renderer = ui::offscreen::OffscreenRenderer::new(640, 640);
+                    let suffix = if details { "-details" } else { "" };
+                    renderer.render_png(
+                        &scene,
+                        theme.tokens.colors.surfaces.content,
+                        output.join(format!("{locale}-{name}{suffix}.png")),
+                    );
+                }
+            }
+        }
+        ui::i18n::I18nManager::set_locale("en-US");
+    }
+
     #[test]
     fn review_retry_is_offered_for_waiting_tasks_only() {
         let (mut tree, mut pane, host) = review_fixture();

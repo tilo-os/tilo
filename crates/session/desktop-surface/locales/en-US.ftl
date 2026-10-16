@@ -1080,19 +1080,19 @@ notification-alarm-action-title = { $action }: { $title }
 notification-alarm-action-subtitle = For this alarm occurrence
 notification-alarm-action-retry = Keep this notification and try again.
 
-activity-task-review-unavailable = Authenticated task controls are unavailable. Existing work history remains readable.
-activity-task-review-history = Review action history
+activity-task-review-unavailable = Can't reach the workspace owner right now, so tasks can't be changed. Their history is still readable.
+activity-task-review-history = See changes
 activity-task-steer = Change instructions
-activity-task-cancel-run = Cancel this run
-activity-task-retry-run = Retry task
+activity-task-cancel-run = Cancel task
+activity-task-retry-run = Try again
 activity-task-direction-send = Send instructions
 activity-task-direction-close = Back to task
-activity-task-direction-label = Public task instructions
+activity-task-direction-label = Instructions for the agent
 activity-task-direction-placeholder = Describe the change you want the agent to make
-activity-task-direction-observation = Instructions for run { $epoch }, after revision { $revision }. A changed run requires another review.
-activity-task-review-saving = Waiting for the workspace owner to save…
-activity-task-review-saved = Saved by the workspace owner. Agent application is shown separately.
-activity-task-review-refused = Not saved. Your draft is retained. { $detail }
+activity-task-direction-observation = Tell the agent what to do differently. It follows your instructions from its next step, and everyone in this workspace can see them.
+activity-task-review-saving = Saving…
+activity-task-review-saved = Saved. The agent's response will show up here.
+activity-task-review-refused = Couldn't save. Your draft is kept. { $detail }
 
 activity-confirm-waiting = Waiting for your confirmation
 activity-confirm-confirmed = Confirmed
@@ -1134,25 +1134,42 @@ activity-confirm-notice-review = Review
 
 activity-task-next = Next task
 activity-task-previous = Previous task
-activity-task-review-source = Workspace owner · generation { $generation } · sampled { $time }
-activity-task-review-status = { $status } · Agent: { $agent }
-activity-task-review-frontier = Run { $epoch } · instructions { $revision } · agent applied { $applied }
-activity-task-review-direction = { $author }: { $text }
+activity-task-review-source = Workspace owner's copy · version { $generation } · checked { $time }
+activity-task-review-status = { $status ->
+        [queued] { $agent } hasn't started yet
+        [in-progress] { $agent } is working on it
+        [waiting] { $agent } stopped before finishing
+        [done] { $agent } finished this
+       *[cancelled] Cancelled
+    }
+activity-task-review-frontier = Run { $epoch } · { $revision ->
+        [one] 1 instruction sent
+       *[other] { $revision } instructions sent
+    } · { $applied } applied by the agent
+activity-task-review-direction = { $author }: “{ $text }”
 activity-task-review-missing = This task is no longer available in this workspace.
 
-activity-task-approve-run = Approve run
+activity-task-review-status-unassigned = { $status ->
+        [done] Done
+        [cancelled] Cancelled
+       *[other] Nobody is working on this yet
+    }
+activity-task-details = Details
+activity-task-hide-details = Hide details
+activity-task-position = { $index } of { $count }
+activity-task-run-approved-by-you = You approved this · { $time }
+activity-task-approve-run = Approve
 activity-task-run-approved = Approved by { $person } · { $time }
-activity-task-awaiting-acceptance = Awaiting agent acceptance · may be offline
-activity-task-run-accepted = Agent accepted this run · last report { $time }
-activity-task-run-planning = Agent is planning this run · last report { $time }
-activity-task-run-executing = Agent is processing this run · last report { $time }
-
+activity-task-awaiting-acceptance = Waiting for the agent to pick this up. It may be offline.
+activity-task-run-accepted = The agent picked this up · last update { $time }
+activity-task-run-planning = The agent is planning the steps · last update { $time }
+activity-task-run-executing = The agent is making changes · last update { $time }
 topbar-cpu-reading = CPU { $value }
 topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, temperature { $temperature }
 
 activity-morning-choose = Choose for morning
 activity-morning-remove = Remove morning source
-activity-morning-empty = Morning sources: choose a resource in Explore → Details. Up to eight sources; no sources connected automatically.
+activity-morning-empty = Morning sources: choose a resource in History → Details. Up to eight sources; none are connected automatically.
 activity-morning-description = Chosen morning sources · provider previews from authorized workspace resources. Refresh or draft a schedule explicitly.
 activity-morning-unavailable = This source isn't available here
 activity-morning-source-unnamed = Chosen source

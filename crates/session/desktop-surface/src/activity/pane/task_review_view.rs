@@ -4,9 +4,13 @@ use super::{
     ActivityFocus, ActivityTree, ActivityView, Duration, ElementState, Key, LensSelection,
     Modifiers, NamedKey, PaintCtx, PresenceCtx, Rect, RoomActivityPane, SystemTime, TaskAction,
     TaskListOrigin, TextRole, Widget, WindowEvent, at, draw_task_button, format_relative_time, t,
-    t_args, task_status_label, text_width,
+    t_args, text_width,
 };
 use crate::activity::{TaskReviewCommand, TaskReviewRequest, TaskReviewSnapshot};
+use ui::icons::Icon;
+use ui::text_render::TextWeight;
+use ui::widget::{ButtonRole, ControlSize};
+use vello::peniko::Color;
 
 #[derive(Clone)]
 pub(super) struct ApprovalFrontier {
@@ -249,13 +253,7 @@ impl RoomActivityPane {
         let gap = f64::from(paint.theme.tokens.spacing.s3);
         let width = text_width(bounds.width() - 2.0 * gap);
         let mut y = bounds.y0 + gap;
-        let summary = t_args(
-            "activity-task-direction-observation",
-            &[
-                ("epoch", draft.run_epoch.into()),
-                ("revision", draft.revision.into()),
-            ],
-        );
+        let summary = t("activity-task-direction-observation");
         let (_, h) = paint.text.measure_style(&summary, Some(width), &style);
         paint.text.draw_style(
             paint.scene,
@@ -359,71 +357,182 @@ impl RoomActivityPane {
     }
 }
 
+/// Where a reviewed task's actions sit in their row: what moves the task on
+/// comes first, leaving it alone or ending it last.
+fn review_action_rank(action: TaskAction) -> u8 {
+    match action {
+        TaskAction::ApproveRun => 0,
+        TaskAction::StartAgent => 1,
+        TaskAction::RetryRun => 2,
+        TaskAction::Steer => 3,
+        TaskAction::OpenResource => 4,
+        TaskAction::ReviewHistory => 5,
+        TaskAction::CancelRun => 7,
+        TaskAction::Details => 8,
+        _ => 6,
+    }
+}
+
 impl RoomActivityPane {
-    fn draw_review_action_grid(
+    /// The reviewed task's actions as buttons at their natural width,
+    /// flowing onto further rows when the sheet is narrow.
+    fn draw_review_actions(
         &mut self,
         paint: &mut PaintCtx<'_>,
         bounds: Rect,
-        mut y: f64,
+        y: f64,
         actions: &[TaskAction],
+        task: &tilo_desktop_model::WorkspaceTask,
     ) {
-        let gap = f64::from(paint.theme.tokens.spacing.s3);
-        let height =
-            f64::from(paint.theme.text(TextRole::Body).line_height_px()).max(28.0) + 2.0 * gap;
-        let width = (bounds.width() - 3.0 * gap) / 2.0;
-        for pair in actions.chunks(2) {
-            if y + gap + height > bounds.y1 - gap {
+        let gap = f64::from(paint.theme.tokens.spacing.s2);
+        let height = ui::widget::ButtonFace::height(ControlSize::Regular, paint.theme);
+        let (mut x, mut y) = (bounds.x0, y);
+        for (index, action) in actions.iter().enumerate() {
+            let label = self.task_action_label(*action, task);
+            let role = match action {
+                TaskAction::ApproveRun | TaskAction::StartAgent | TaskAction::RetryRun
+                    if index == 0 =>
+                {
+                    ButtonRole::Primary
+                }
+                TaskAction::Details => ButtonRole::Plain,
+                _ => ButtonRole::Secondary,
+            };
+            let face = ui::widget::ButtonFace::new(Rect::ZERO, &label).role(role);
+            let width = face
+                .intrinsic_width(paint.text, paint.theme)
+                .min(bounds.width());
+            if x > bounds.x0 && x + width > bounds.x1 {
+                x = bounds.x0;
+                y += height + gap;
+            }
+            if y + height > bounds.y1 {
                 break;
             }
-            for (action, left) in pair.iter().zip([true, false]) {
-                let x = if left {
-                    bounds.x0 + gap
-                } else {
-                    bounds.x0 + 2.0 * gap + width
-                };
-                let rect = Rect::new(x, y + gap, x + width, y + gap + height);
-                draw_task_button(
-                    paint.scene,
-                    paint.transform,
-                    paint.text,
-                    paint.theme,
-                    rect,
-                    &action.label(),
-                    false,
-                );
-                self.task_action_rects.push((*action, rect));
-            }
-            y += height + gap;
+            let rect = Rect::new(x, y, x + width, y + height);
+            ui::widget::Button::paint(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
+                &ui::widget::ButtonFace::new(rect, &label).role(role),
+            );
+            self.task_action_rects.push((*action, rect));
+            x += width + gap;
         }
     }
+
+    /// "2 of 8" between Previous and Next. Each keeps its side whether or
+    /// not the other is offered, so a button never moves under the pointer.
+    fn draw_review_pager(&mut self, paint: &mut PaintCtx<'_>, bounds: Rect, y: f64) -> f64 {
+        let height = ui::widget::ButtonFace::height(ControlSize::Small, paint.theme);
+        let caption = paint.theme.text(TextRole::Caption);
+        let position = t_args(
+            "activity-task-position",
+            &[
+                ("index", self.review_task_offset.saturating_add(1).into()),
+                ("count", self.tasks.len().into()),
+            ],
+        );
+        let (w, h) = paint.text.measure_style(&position, None, &caption);
+        paint.text.draw_style(
+            paint.scene,
+            &position,
+            paint.theme.tokens.colors.text_dim,
+            at(
+                paint.transform,
+                bounds.center().x - f64::from(w) / 2.0,
+                y + (height - f64::from(h)) / 2.0,
+            ),
+            None,
+            &caption,
+        );
+        let previous = self.review_task_offset > 0;
+        let next = self.review_task_offset.saturating_add(1) < self.tasks.len();
+        for (action, shown, icon, leading) in [
+            (TaskAction::PreviousTasks, previous, Icon::ChevronLeft, true),
+            (TaskAction::NextTasks, next, Icon::ChevronRight, false),
+        ] {
+            if !shown {
+                continue;
+            }
+            let label = action.label();
+            let face = ui::widget::ButtonFace::new(Rect::ZERO, &label)
+                .icon(icon)
+                .control_size(ControlSize::Small)
+                .role(ButtonRole::Plain);
+            let width = face.intrinsic_width(paint.text, paint.theme);
+            let x0 = if leading {
+                bounds.x0
+            } else {
+                bounds.x1 - width
+            };
+            let rect = Rect::new(x0, y, x0 + width, y + height);
+            ui::widget::Button::paint(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
+                &ui::widget::ButtonFace::new(rect, &label)
+                    .icon(icon)
+                    .control_size(ControlSize::Small)
+                    .role(ButtonRole::Plain),
+            );
+            self.task_action_rects.push((action, rect));
+        }
+        y + height + f64::from(paint.theme.tokens.spacing.s3)
+    }
+
+    /// What happened to the run, the last instruction, and — behind
+    /// Details — the owner's sample and the run counters.
+    fn review_evidence(
+        &self,
+        snapshot: &TaskReviewSnapshot,
+        control: &tilo_desktop_model::WorkspaceTaskControl,
+    ) -> Vec<String> {
+        let now = self.now();
+        let local = self.local_user();
+        let mut lines = task_run_evidence(control, now, |id| {
+            (id != local).then(|| self.person_label(id))
+        });
+        if let Some(direction) = control.directions.last() {
+            lines.push(t_args(
+                "activity-task-review-direction",
+                &[
+                    ("author", self.person_label(&direction.author).into()),
+                    ("text", direction.text.as_str().into()),
+                ],
+            ));
+        }
+        if self.review_details {
+            lines.push(review_source(snapshot, now));
+            lines.push(review_frontier(control));
+        }
+        lines
+    }
+
     pub(super) fn draw_review_tasks(&mut self, paint: &mut PaintCtx<'_>, bounds: Rect) {
         self.review_approval = None;
         let gap = f64::from(paint.theme.tokens.spacing.s3);
-        let style = paint.theme.text(TextRole::Body);
-        let width = text_width(bounds.width() - 2.0 * gap);
+        let body = paint.theme.text(TextRole::Body);
+        let caption = paint.theme.text(TextRole::Caption);
+        let inner = Rect::new(bounds.x0 + gap, bounds.y0, bounds.x1 - gap, bounds.y1 - gap);
+        let width = text_width(inner.width());
+        let x = inner.x0;
         let mut y = bounds.y0 + gap;
         let Some(Ok(snapshot)) = self.task_review.clone() else {
             return;
         };
         let snapshot = &*snapshot;
-        let source = review_source(snapshot, self.now());
-        draw_review_line(paint, &source, &style, width, bounds.x0 + gap, &mut y);
-        if let Some(notice) = &self.review_notice {
-            draw_review_line(paint, notice, &style, width, bounds.x0 + gap, &mut y);
-        }
+        let primary = paint.theme.tokens.colors.text_primary;
+        let dim = paint.theme.tokens.colors.text_dim;
         if self
             .requested_review_task
             .as_ref()
             .is_some_and(|id| !self.tasks.iter().any(|task| &task.id == id))
         {
-            draw_review_line(
-                paint,
-                &t("activity-task-review-missing"),
-                &style,
-                width,
-                bounds.x0 + gap,
-                &mut y,
-            );
+            let missing = t("activity-task-review-missing");
+            draw_review_line(paint, (&missing, primary), &body, width, x, &mut y);
             return;
         }
         let selected = self
@@ -434,40 +543,67 @@ impl RoomActivityPane {
             .unwrap_or(self.review_task_offset)
             .min(self.tasks.len().saturating_sub(1));
         let Some(task) = self.tasks.get(self.review_task_offset).cloned() else {
-            draw_review_line(
-                paint,
-                &t("activity-tasks-empty"),
-                &style,
-                width,
-                bounds.x0 + gap,
-                &mut y,
-            );
+            let empty = t("activity-tasks-empty");
+            draw_review_line(paint, (&empty, primary), &body, width, x, &mut y);
             return;
         };
         self.selected_task = Some(task.id.clone());
-        let top = y;
-        draw_review_line(paint, &task.title, &style, width, bounds.x0 + gap, &mut y);
-        let summary = t_args(
-            "activity-task-review-status",
-            &[
-                ("status", task_status_label(task.status).into()),
-                (
-                    "agent",
-                    task.assigned_agent
-                        .clone()
-                        .unwrap_or_else(|| t("activity-task-executor-none"))
-                        .into(),
-                ),
-            ],
-        );
-        draw_review_line(paint, &summary, &style, width, bounds.x0 + gap, &mut y);
-        y = self.draw_task_evidence(paint, (snapshot, &task), bounds, (top, y));
-        let mut actions = self.task_actions_for(&task);
-        if self.review_task_offset > 0 {
-            actions.insert(0, TaskAction::PreviousTasks);
+        if self.tasks.len() > 1 {
+            y = self.draw_review_pager(paint, inner, y);
         }
-        if self.review_task_offset.saturating_add(1) < self.tasks.len() {
-            actions.insert(0, TaskAction::NextTasks);
+        let top = y;
+        // What the task is, in its own words: wrapped, at most two lines.
+        let title_style = body.clone().with_weight(TextWeight::Medium);
+        let (_, line_h) = paint.text.measure_style(&task.title, None, &title_style);
+        let (_, title_h) = paint
+            .text
+            .measure_style(&task.title, Some(width), &title_style);
+        let title = if title_h > 2.0 * line_h + 1.0 {
+            // Elided to a little under two lines' run, so the wrap lands on
+            // the second line whatever the word breaks.
+            paint
+                .text
+                .elide_to_width_style(&task.title, 1.8 * width, &title_style)
+        } else {
+            task.title.clone()
+        };
+        let (_, title_h) = paint.text.measure_style(&title, Some(width), &title_style);
+        paint.text.draw_style(
+            paint.scene,
+            &title,
+            primary,
+            at(paint.transform, x, y),
+            Some(width),
+            &title_style,
+        );
+        y += f64::from(title_h) + f64::from(paint.theme.tokens.spacing.s2);
+        // Who is doing it and where it stands.
+        let state = review_state_line(&task);
+        draw_review_line(paint, (&state, primary), &body, width, x, &mut y);
+        if let Some(notice) = self.review_notice.clone() {
+            draw_review_line(paint, (&notice, dim), &caption, width, x, &mut y);
+        }
+        // An action the run paused at is answered on its own card; the run
+        // evidence returns once it is answered.
+        let confirmation = self
+            .reviewed_confirmation(&task.id)
+            .map(|(_, confirmation)| confirmation);
+        if confirmation.is_none()
+            && let Some(control) = snapshot.controls.get(&task.id)
+        {
+            for line in self.review_evidence(snapshot, control) {
+                draw_review_line(paint, (&line, dim), &caption, width, x, &mut y);
+            }
+        }
+        self.task_rects
+            .push((task.id.clone(), Rect::new(bounds.x0, top, bounds.x1, y)));
+        if let Some(confirmation) = &confirmation {
+            y = self.draw_confirmation_card(paint, inner, y + gap, confirmation);
+        }
+        let mut actions = self.task_actions_for(&task);
+        actions.sort_by_key(|action| review_action_rank(*action));
+        if snapshot.controls.contains_key(&task.id) {
+            actions.push(TaskAction::Details);
         }
         let approval = snapshot.controls.get(&task.id).and_then(|control| {
             Some(ApprovalFrontier {
@@ -481,7 +617,7 @@ impl RoomActivityPane {
                     .map_or(0, |direction| direction.revision),
             })
         });
-        self.draw_review_action_grid(paint, bounds, y, &actions);
+        self.draw_review_actions(paint, inner, y + gap, &actions, &task);
         if self
             .task_action_rects
             .iter()
@@ -491,39 +627,11 @@ impl RoomActivityPane {
         }
     }
 }
-impl RoomActivityPane {
-    /// What the owner records of `task`'s run: the action it paused at, as
-    /// a card the person answers, or its run evidence.
-    fn draw_task_evidence(
-        &mut self,
-        paint: &mut PaintCtx<'_>,
-        (snapshot, task): (&TaskReviewSnapshot, &tilo_desktop_model::WorkspaceTask),
-        bounds: Rect,
-        (top, mut y): (f64, f64),
-    ) -> f64 {
-        let gap = f64::from(paint.theme.tokens.spacing.s3);
-        let width = text_width(bounds.width() - 2.0 * gap);
-        let confirmation = self
-            .reviewed_confirmation(&task.id)
-            .map(|(_, confirmation)| confirmation);
-        if confirmation.is_none()
-            && let Some(control) = snapshot.controls.get(&task.id)
-        {
-            draw_control_evidence(paint, control, width, bounds.x0 + gap, &mut y, self.now());
-        }
-        self.task_rects
-            .push((task.id.clone(), Rect::new(bounds.x0, top, bounds.x1, y)));
-        if let Some(confirmation) = &confirmation {
-            let inner = Rect::new(bounds.x0 + gap, bounds.y0, bounds.x1 - gap, bounds.y1);
-            y = self.draw_confirmation_card(paint, inner, y + gap, confirmation);
-        }
-        y
-    }
-}
 
+/// One line of the reviewed task, elided rather than run past the sheet.
 fn draw_review_line(
     paint: &mut PaintCtx<'_>,
-    text: &str,
+    (text, color): (&str, Color),
     style: &ui::text_render::TextStyle,
     width: f32,
     x: f64,
@@ -534,7 +642,7 @@ fn draw_review_line(
     paint.text.draw_style(
         paint.scene,
         &text,
-        paint.theme.tokens.colors.text_primary,
+        color,
         at(paint.transform, x, *y),
         Some(width),
         style,
@@ -542,15 +650,21 @@ fn draw_review_line(
     *y += f64::from(height) + f64::from(paint.theme.tokens.spacing.s2);
 }
 
-fn draw_control_evidence(
-    paint: &mut PaintCtx<'_>,
-    control: &tilo_desktop_model::WorkspaceTaskControl,
-    width: f32,
-    x: f64,
-    y: &mut f64,
-    now: SystemTime,
-) {
-    let style = paint.theme.text(TextRole::Body);
+/// Who is doing the task and where it stands, as one sentence.
+fn review_state_line(task: &tilo_desktop_model::WorkspaceTask) -> String {
+    let status = ("status", task.status.key().into());
+    match task.assigned_agent.as_deref() {
+        Some(agent) => t_args(
+            "activity-task-review-status",
+            &[status, ("agent", agent.into())],
+        ),
+        None => t_args("activity-task-review-status-unassigned", &[status]),
+    }
+}
+
+/// The run counters the owner keeps, for someone checking why a run
+/// waits: which run, how many instructions, how many the agent applied.
+fn review_frontier(control: &tilo_desktop_model::WorkspaceTaskControl) -> String {
     let revision = control
         .directions
         .last()
@@ -567,30 +681,14 @@ fn draw_control_evidence(
         },
         |run| run.applied_direction_revision,
     );
-    let status = t_args(
+    t_args(
         "activity-task-review-frontier",
         &[
             ("epoch", control.run_epoch.into()),
             ("revision", revision.into()),
             ("applied", applied.into()),
         ],
-    );
-    draw_review_line(paint, &status, &style, width, x, y);
-    for line in task_run_evidence(control, now) {
-        let line = paint.text.elide_to_width_style(&line, width, &style);
-        draw_review_line(paint, &line, &style, width, x, y);
-    }
-    if let Some(direction) = control.directions.last() {
-        let text = t_args(
-            "activity-task-review-direction",
-            &[
-                ("author", direction.author.as_str().into()),
-                ("text", direction.text.as_str().into()),
-            ],
-        );
-        let text = paint.text.elide_to_width_style(&text, width, &style);
-        draw_review_line(paint, &text, &style, width, x, y);
-    }
+    )
 }
 
 fn review_source(snapshot: &TaskReviewSnapshot, now: SystemTime) -> String {
@@ -614,9 +712,12 @@ fn review_source(snapshot: &TaskReviewSnapshot, now: SystemTime) -> String {
     )
 }
 
+/// What happened to the active run in plain words. `person` names an
+/// approver, or gives `None` for the person looking.
 pub(super) fn task_run_evidence(
     control: &tilo_desktop_model::WorkspaceTaskControl,
     now: SystemTime,
+    person: impl Fn(&str) -> Option<String>,
 ) -> Vec<String> {
     let Some(approval) = control
         .active_run
@@ -633,13 +734,14 @@ pub(super) fn task_run_evidence(
             now,
         )
     };
-    let approved = t_args(
-        "activity-task-run-approved",
-        &[
-            ("person", approval.person.as_str().into()),
-            ("time", time(approval.approved_at).into()),
-        ],
-    );
+    let when = ("time", time(approval.approved_at).into());
+    let approved = match person(&approval.person) {
+        Some(name) => t_args(
+            "activity-task-run-approved",
+            &[("person", name.into()), when],
+        ),
+        None => t_args("activity-task-run-approved-by-you", &[when]),
+    };
     let phase = control.execution.as_ref().map_or_else(
         || t("activity-task-awaiting-acceptance"),
         |execution| {

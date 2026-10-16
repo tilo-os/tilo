@@ -1105,18 +1105,18 @@ notification-alarm-action-title = { $action }: { $title }
 notification-alarm-action-subtitle = Für dieses Weckereignis
 notification-alarm-action-retry = Behalte diese Benachrichtigung und versuche es erneut.
 
-activity-task-review-unavailable = Authentifizierte Aufgabensteuerung ist nicht verfügbar. Der bisherige Verlauf bleibt lesbar.
-activity-task-review-history = Aktionsverlauf prüfen
+activity-task-review-unavailable = Der Arbeitsbereich ist gerade nicht erreichbar, daher lassen sich Aufgaben nicht ändern. Ihr Verlauf bleibt lesbar.
+activity-task-review-history = Änderungen ansehen
 activity-task-steer = Anweisungen ändern
-activity-task-cancel-run = Diesen Lauf abbrechen
-activity-task-retry-run = Aufgabe erneut versuchen
+activity-task-cancel-run = Aufgabe abbrechen
+activity-task-retry-run = Erneut versuchen
 activity-task-direction-send = Anweisungen senden
 activity-task-direction-close = Zurück zur Aufgabe
-activity-task-direction-label = Öffentliche Aufgabenanweisungen
+activity-task-direction-label = Anweisungen für den Agenten
 activity-task-direction-placeholder = Beschreibe, was der Agent ändern soll
-activity-task-direction-observation = Anweisungen für Lauf { $epoch } nach Revision { $revision }. Ein geänderter Lauf muss erneut geprüft werden.
-activity-task-review-saving = Warten auf das Speichern durch den Arbeitsbereich…
-activity-task-review-saved = Im Arbeitsbereich gespeichert. Die Anwendung durch den Agenten wird separat angezeigt.
+activity-task-direction-observation = Sag dem Agenten, was er anders machen soll. Er folgt deinen Anweisungen ab seinem nächsten Schritt, und alle in diesem Arbeitsbereich können sie sehen.
+activity-task-review-saving = Wird gespeichert…
+activity-task-review-saved = Gespeichert. Die Reaktion des Agenten erscheint hier.
 activity-task-review-refused = Nicht gespeichert. Dein Entwurf bleibt erhalten. { $detail }
 
 activity-confirm-waiting = Wartet auf deine Bestätigung
@@ -1159,25 +1159,42 @@ activity-confirm-notice-review = Ansehen
 
 activity-task-next = Nächste Aufgabe
 activity-task-previous = Vorherige Aufgabe
-activity-task-review-source = Arbeitsbereich · Generation { $generation } · Stand { $time }
-activity-task-review-status = { $status } · Agent: { $agent }
-activity-task-review-frontier = Lauf { $epoch } · Anweisungen { $revision } · vom Agenten angewendet { $applied }
-activity-task-review-direction = { $author }: { $text }
+activity-task-review-source = Stand beim Arbeitsbereich · Version { $generation } · abgerufen { $time }
+activity-task-review-status = { $status ->
+        [queued] { $agent } hat noch nicht angefangen
+        [in-progress] { $agent } arbeitet daran
+        [waiting] { $agent } hat angehalten, ohne fertig zu werden
+        [done] { $agent } ist damit fertig
+       *[cancelled] Abgebrochen
+    }
+activity-task-review-frontier = Lauf { $epoch } · { $revision ->
+        [one] 1 Anweisung gesendet
+       *[other] { $revision } Anweisungen gesendet
+    } · { $applied } vom Agenten übernommen
+activity-task-review-direction = { $author }: „{ $text }“
 activity-task-review-missing = Diese Aufgabe ist in diesem Arbeitsbereich nicht mehr verfügbar.
 
-activity-task-approve-run = Ausführung freigeben
-activity-task-run-approved = Genehmigt von { $person } · { $time }
-activity-task-awaiting-acceptance = Warte auf Annahme · Agent möglicherweise offline
-activity-task-run-accepted = Agent hat diesen Lauf angenommen · letzter Bericht { $time }
-activity-task-run-planning = Agent plant diesen Lauf · letzter Bericht { $time }
-activity-task-run-executing = Agent bearbeitet diesen Lauf · letzter Bericht { $time }
-
+activity-task-review-status-unassigned = { $status ->
+        [done] Erledigt
+        [cancelled] Abgebrochen
+       *[other] Noch arbeitet niemand daran
+    }
+activity-task-details = Details
+activity-task-hide-details = Details ausblenden
+activity-task-position = { $index } von { $count }
+activity-task-run-approved-by-you = Von dir freigegeben · { $time }
+activity-task-approve-run = Freigeben
+activity-task-run-approved = Freigegeben von { $person } · { $time }
+activity-task-awaiting-acceptance = Wartet darauf, dass der Agent die Aufgabe übernimmt. Er ist vielleicht offline.
+activity-task-run-accepted = Der Agent hat die Aufgabe übernommen · zuletzt { $time }
+activity-task-run-planning = Der Agent plant die Schritte · zuletzt { $time }
+activity-task-run-executing = Der Agent nimmt Änderungen vor · zuletzt { $time }
 topbar-cpu-reading = CPU { $value }
 topbar-monitor-summary = CPU { $cpu }, RAM { $ram }, Temperatur { $temperature }
 
 activity-morning-choose = Für den Morgen auswählen
 activity-morning-remove = Morgenquelle entfernen
-activity-morning-empty = Morgenquellen: Ressource unter Erkunden → Details auswählen. Bis zu acht Quellen; keine automatische Verbindung.
+activity-morning-empty = Morgenquellen: Ressource unter Verlauf → Details auswählen. Bis zu acht Quellen; keine wird automatisch verbunden.
 activity-morning-description = Ausgewählte Morgenquellen · Anbieter-Vorschauen aus autorisierten Ressourcen. Aktualisierung oder Zeitplan ausdrücklich wählen.
 activity-morning-unavailable = Diese Quelle ist hier nicht verfügbar
 activity-morning-source-unnamed = Gewählte Quelle
