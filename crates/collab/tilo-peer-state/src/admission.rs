@@ -328,6 +328,13 @@ impl ExactAdmissions {
         *self = next;
         Ok(())
     }
+    /// Whether the index holds more than half of what it may: its sealed
+    /// records' histories are then worth compacting, which folds their
+    /// entries into marks.
+    pub(crate) fn pressed(&self) -> bool {
+        self.len() > MAX_EXACT_ADMISSIONS / 2
+            || self.total_bytes(0, 0) > MAX_EXACT_ADMISSION_BYTES / 2
+    }
     /// The encoded size with `more` entries of `bytes` in all added.
     fn total_bytes(&self, more: usize, bytes: usize) -> usize {
         self.entry_bytes

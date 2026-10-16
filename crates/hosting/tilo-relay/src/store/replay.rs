@@ -120,6 +120,28 @@ impl WorkspaceStore {
             .store(true, Ordering::SeqCst);
     }
 
+    /// The next entry of the directory a capture lists, past the retained
+    /// lineages it leaves out: a room keeps far more lineages than a
+    /// newcomer is replayed (each author's part of every record, on-demand
+    /// ones included), and stepping over one is not a step of work.
+    fn next_listed(&self, build: &mut ReplayBuild) -> Result<Option<fs::DirEntry>, StoreError> {
+        loop {
+            let Some(entry) = build.outer.as_mut().invariant("outer missing")?.next() else {
+                return Ok(None);
+            };
+            let entry = entry?;
+            if build.phase == 2 && entry.file_type()?.is_dir() {
+                let name = entry.file_name();
+                if self.leaves_out(&name, &entry.path())?
+                    || (!build.every_record && self.leaves_out_on_demand(&name)?)
+                {
+                    continue;
+                }
+            }
+            return Ok(Some(entry));
+        }
+    }
+
     /// Whether a capture leaves the retained lineage `name` at `lineage`
     /// out. A lineage is classified by its checkpoint once, then from
     /// memory: no capture reads it again.
@@ -1193,8 +1215,7 @@ impl WorkspaceStore {
                         }
                     }
                 }
-            } else if let Some(entry) = build.outer.as_mut().invariant("outer missing")?.next() {
-                let entry = entry?;
+            } else if let Some(entry) = self.next_listed(build)? {
                 let name = entry.file_name();
                 let kind = entry.file_type()?;
                 match build.phase {
