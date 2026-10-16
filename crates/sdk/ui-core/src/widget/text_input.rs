@@ -3589,6 +3589,7 @@ impl TextInput {
     pub fn set_read_only(&mut self, read_only: bool) {
         if self.read_only != read_only {
             self.read_only = read_only;
+            self.pending_paste = None;
             self.drop_shaped_layouts();
             self.model_layout_dirty = true;
         }

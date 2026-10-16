@@ -4366,7 +4366,7 @@ fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
     Widget::sync(&mut input, &document, &automerge::ROOT);
     assert_eq!(&*changes.borrow(), &["abc"]);
 
-    for change in 0..3 {
+    for change in 0..4 {
         drive(&mut input, &mut document, &char_key("v"), mods(true, false));
         let reply = clipboard.0.lock().unwrap().take().unwrap();
         match change {
@@ -4378,9 +4378,27 @@ fn delayed_paste_publishes_once_and_cancels_when_the_target_changes() {
                 input.set_cursor_pos(0);
                 input.set_cursor_pos(3);
             }
-            _ => {
+            2 => {
                 input.set_text("changed");
                 input.set_text("abc");
+            }
+            _ => {
+                input.set_read_only(true);
+                let _ = reply.send(Some("stale".into()));
+                Widget::sync(&mut input, &document, &automerge::ROOT);
+                assert_eq!(
+                    input.value(),
+                    "abc",
+                    "read-only fields reject pending paste"
+                );
+                input.set_read_only(false);
+                Widget::sync(&mut input, &document, &automerge::ROOT);
+                assert_eq!(
+                    input.value(),
+                    "abc",
+                    "re-enabling must not revive stale paste"
+                );
+                continue;
             }
         }
         let _ = reply.send(Some("stale".into()));
