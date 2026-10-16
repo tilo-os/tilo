@@ -341,13 +341,15 @@ completeness does not exempt a screen from these requirements.
 - **Interactive things look interactive** and give feedback: hover, press, focus,
   and disabled are all distinct; a control that does nothing yet is a defect
   (§ functionality), and a control that *looks* dead is a craft defect.
-- **Nothing moves under the pointer.** Pointing at a clickable control, or
-  heading for one, is intent to click it: hover never reveals, expands or
-  collapses anything that would move that control. What expands on hover to
-  show more opens on a clear request to see more (a short rest on its body,
-  away from its controls) and stays open by menu aim (the pointer's path
-  heading for what it revealed), not by a long timer
-  (`widget::hover_intent`).
+- **An aimed-at control never moves; passing over one is not hovering it.**
+  A pointer that settles on a control (its speed falling toward zero with
+  the path ending inside it) is aiming at it: nothing reveals, expands or
+  collapses that would move that control while it is there. A pointer still
+  moving on past a control is in transit: the control shows no hover state
+  and holds nothing back, so a pointer that crosses a tab's × on its way to
+  the chips still opens the tab. What expands on hover to show more opens
+  after a short rest on it and stays open by menu aim (the pointer's path
+  heading for what it revealed), not by a long timer (`widget::hover_intent`).
 - **Theme-driven, pixel-clean.** Every color and metric comes from the `Theme`
   (§ toolkit) so light/dark and every temperature look intentional; no hard-coded
   colors, no 1px seams from mismatched fills, no clipped glyphs or overlapping

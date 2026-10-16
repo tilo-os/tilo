@@ -1173,7 +1173,8 @@ impl TabBar {
         }
         let alpha = chip_alpha_at(zone, CLOSE_HIT_PX);
         let close_r = shift_rect(close_rect_target, offset);
-        let close_hover = !suppress_hover && Some(i) == self.hover_close_idx;
+        let close_hover =
+            !suppress_hover && Some(i) == self.hover_close_idx && self.pointer_settled();
         if self.modified_ids.contains(&t.id) && !is_hover && !close_hover {
             // Unsaved changes, pointer elsewhere: the slot reads as a dot
             // rather than an ×. Hovering swaps it back (below), so the tab
@@ -1256,7 +1257,7 @@ impl TabBar {
         if self.show_maximize && max_rect_target.area() > 0.0 {
             let alpha = chip_alpha_at(zone, MAX_CHIP_REACH);
             let max_r = shift_rect(max_rect_target, offset);
-            let max_hover = Some(i) == self.hover_max_idx;
+            let max_hover = Some(i) == self.hover_max_idx && self.pointer_settled();
             if max_hover {
                 // The same round the close chip gets, centred on the glyph,
                 // rather than a capsule the height of the hit rect: three
@@ -1286,7 +1287,7 @@ impl TabBar {
         if search_rect_target.area() > 0.0 {
             let alpha = chip_alpha_at(zone, CHIP_CLUSTER_W);
             let search_r = shift_rect(search_rect_target, offset);
-            let search_hover = Some(i) == self.hover_search_idx;
+            let search_hover = Some(i) == self.hover_search_idx && self.pointer_settled();
             if search_hover {
                 let ring = chip_hover_ring(search_r);
                 let chip = RoundedRect::from_rect(ring, ring.height() / 2.0);
@@ -1633,10 +1634,20 @@ impl TabBar {
     /// `on_cursor_moved`. Returns whether a pill is open by pointer now.
     #[cfg(any(test, debug_assertions))]
     pub fn elapse_hover_dwell(&mut self) -> bool {
-        if let Some(due) = self.hover_intent.deadline() {
-            self.hover_intent.settle(due);
+        // Every deadline lies ahead of the instant it is asked at, and each
+        // settle retires the one it reached, so this ends.
+        let mut now = crate::time::now();
+        while let Some(due) = self.hover_intent.deadline(now) {
+            now = due;
+            self.hover_intent.settle(now);
         }
         self.hover_intent.open().is_some()
+    }
+
+    /// Whether the pointer is aiming at the controls it is on rather than
+    /// passing over them: a control's hover wash shows only then.
+    fn pointer_settled(&self) -> bool {
+        self.hover_intent.settled(crate::time::now())
     }
 
     /// Hold every in-flight reveal curve `at` milliseconds along it. The curve runs
@@ -2370,7 +2381,7 @@ impl TabBar {
         if !self.close_affordance_visible_for_tests(idx, theme) {
             return None;
         }
-        let close_hover = Some(idx) == self.hover_close_idx;
+        let close_hover = Some(idx) == self.hover_close_idx && self.pointer_settled();
         let is_hover = Some(idx) == self.hover_idx;
         if close_hover {
             Some(theme.tokens.colors.semantic.danger.with_alpha_factor(0.8))
@@ -2390,7 +2401,7 @@ impl TabBar {
         if !self.close_affordance_visible_for_tests(idx, theme) {
             return None;
         }
-        let close_hover = Some(idx) == self.hover_close_idx;
+        let close_hover = Some(idx) == self.hover_close_idx && self.pointer_settled();
         let is_active = self.tabs[idx].id == self.active_id;
         Some(if close_hover {
             vello::peniko::Color::from_rgba8(255, 255, 255, 255)
@@ -3311,7 +3322,7 @@ impl Widget for TabBar {
         // opening pill finishes.
         let reveal = self.reveal_in_flight();
         // A dwell or an aim hold still to run out: the next layout settles it.
-        let hover_intent = self.hover_intent.deadline().is_some();
+        let hover_intent = self.hover_intent.deadline(crate::time::now()).is_some();
         let busy = !self.reduce_motion && self.marks.values().any(|m| *m == TabMark::Busy);
         let drag_lift = !self.reduce_motion
             && self.pending_drag.is_some()
@@ -5522,7 +5533,7 @@ mod tests {
             dispatch(&mut b, &release);
             assert_eq!(b.drop_zone_target(), None, "release clears target");
             assert!(
-                b.hover_intent.deadline().is_some() && b.needs_animation_frame(),
+                b.hover_intent.deadline(crate::time::now()).is_some() && b.needs_animation_frame(),
                 "release clears the drag target but keeps the resting pointer's \
                  hover dwell running, so the pill under it still opens",
             );
@@ -7148,7 +7159,12 @@ mod tests {
             "the dwell counts from entry, not the last sample"
         );
         assert!(b.tab_rects()[1].width() > idle + 1.0);
-        assert_eq!(b.hover_intent.deadline(), None, "nothing left to wake for");
+        let quiet = t0 + Duration::from_millis(dwell) + crate::widget::hover_intent::SETTLE;
+        assert_eq!(
+            b.hover_intent.deadline(quiet),
+            None,
+            "nothing left to wake for"
+        );
     }
 
     /// A pointer sweeping across the row (to reach a window below, say)
@@ -7405,6 +7421,89 @@ mod tests {
         }
     }
 
+    /// Passing over the × is not hovering it. A pointer that crosses the
+    /// active pill's × at speed, coming from the pill to its right on its way
+    /// to where the chips will be, opens the pill on the usual dwell from
+    /// entry, and the × lights no hover wash on the way through.
+    #[test]
+    fn crossing_the_close_button_at_speed_toward_the_chips_expands_the_pill() {
+        use crate::widget::hover_intent::DWELL;
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut b = four_tab_bar();
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        let r = b.tab_rects()[0];
+        let close = b.close_hit_rect(0).expect("the active pill shows its ×");
+        let y = r.center().y;
+        let from = Point::new(b.tab_rects()[1].x0 + 10.0, y);
+        // Where the search chip will sit once the pill has opened.
+        let to = Point::new(close.x0 - 30.0, y);
+        let t0 = crate::time::now();
+        let mut entered = None;
+        let mut crossed_x = false;
+        // About 2 px/ms (the stretch is about 80 px), a sample per 8 ms frame.
+        let steps = 5;
+        sample_at(&mut b, t0, 0, from, &theme);
+        for (k, p) in path(from, to, steps).into_iter().enumerate() {
+            let ms = 8 * (u64::try_from(k).unwrap() + 1);
+            sample_at(&mut b, t0, ms, p, &theme);
+            if entered.is_none() && r.contains(p) {
+                entered = Some(ms);
+            }
+            if close.contains(p) {
+                crossed_x = true;
+                let wash = at_time(t0 + Duration::from_millis(ms), || {
+                    b.close_chip_color_for_tests(0, &theme)
+                });
+                let danger = theme.tokens.colors.semantic.danger.with_alpha_factor(0.8);
+                assert_ne!(wash, Some(danger), "the × lit up under a passing pointer");
+            }
+        }
+        assert!(crossed_x, "the path crosses the ×");
+        let entered = entered.expect("the path enters the pill");
+        let dwell = u64::try_from(DWELL.as_millis()).unwrap();
+        layout_at(&mut b, t0, entered + dwell, &theme);
+        assert!(chips_open(&b, 0), "crossing the × still opens the pill");
+    }
+
+    /// A slow approach that comes to rest on the × is aim: the pill never
+    /// opens, the × never moves, and the × shows its hover wash once the
+    /// pointer has settled.
+    #[test]
+    fn a_slow_approach_that_stops_on_the_close_button_is_aim() {
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut b = four_tab_bar();
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        let rest = row_geometry(&b);
+        let r = b.tab_rects()[0];
+        let close = b.close_hit_rect(0).expect("the active pill shows its ×");
+        let x = close.center();
+        let t0 = crate::time::now();
+        // From the title onto the ×'s centre at 0.1 px/ms.
+        let start = Point::new(close.x0 - 20.0, r.center().y);
+        sample_at(&mut b, t0, 0, start, &theme);
+        // The stretch is 36 px: one pixel per sample.
+        let steps = 36;
+        let mut ms = 0;
+        for p in path(start, x, steps) {
+            ms += 10;
+            sample_at(&mut b, t0, ms, p, &theme);
+            assert_eq!(row_geometry(&b), rest, "the row moved at {p:?}");
+        }
+        for later in [50, 100, 300, 1_000, 10_000] {
+            layout_at(&mut b, t0, ms + later, &theme);
+            assert!(
+                !chips_open(&b, 0),
+                "opened {later} ms after stopping on the ×"
+            );
+            assert_eq!(row_geometry(&b), rest, "the × moved {later} ms in");
+        }
+        let wash = at_time(t0 + Duration::from_millis(ms + 1_000), || {
+            b.close_chip_color_for_tests(0, &theme)
+        });
+        let danger = theme.tokens.colors.semantic.danger.with_alpha_factor(0.8);
+        assert_eq!(wash, Some(danger), "a settled pointer lights the ×");
+    }
+
     /// Seeing more takes a pause on the pill's body. A pointer that was
     /// heading for the × and stops short on the title opens it only once it
     /// has clearly stopped heading there, not after the bare dwell.
@@ -7607,7 +7706,11 @@ mod tests {
             frames.push(("01-on-x".to_owned(), shoot(&mut b, x)));
             for later in [100, 200, 400, 1_000] {
                 layout_at(&mut b, t0, ms + later, &theme);
-                frames.push((format!("02-rest-{later:04}ms"), shoot(&mut b, x)));
+                let at = t0 + Duration::from_millis(ms + later);
+                frames.push((
+                    format!("02-rest-{later:04}ms"),
+                    at_time(at, || shoot(&mut b, x)),
+                ));
             }
             sheet("rest-on-x", frames);
         }
@@ -7685,7 +7788,11 @@ mod tests {
             frames.push(("00-on-target".to_owned(), shoot(&mut b, edge)));
             for later in [100, 200, 400, 1_000] {
                 layout_at(&mut b, t0, 12 + later, &theme);
-                frames.push((format!("01-rest-{later:04}ms"), shoot(&mut b, edge)));
+                let at = t0 + Duration::from_millis(12 + later);
+                frames.push((
+                    format!("01-rest-{later:04}ms"),
+                    at_time(at, || shoot(&mut b, edge)),
+                ));
             }
             sheet("rest-on-x-target-edge", frames);
         }
@@ -7715,8 +7822,38 @@ mod tests {
                 }
             }
             layout_at(&mut b, t0, ms + 1_000, &theme);
-            frames.push(("02-rest-1000ms".to_owned(), shoot(&mut b, to)));
+            let at = t0 + Duration::from_millis(ms + 1_000);
+            frames.push((
+                "02-rest-1000ms".to_owned(),
+                at_time(at, || shoot(&mut b, to)),
+            ));
             sheet("toward-neighbour-x", frames);
+        }
+
+        // 5. From the pill on the right, across the active pill's × at speed,
+        //    onto where its chips will be: transit, so it opens.
+        {
+            let mut b = four_tab_bar();
+            lay_out_at_width_with(&mut b, 900.0, &theme);
+            shoot(&mut b, Point::ZERO);
+            lay_out_at_width_with(&mut b, 900.0, &theme);
+            let y = b.tab_rects()[0].center().y;
+            let close = b.close_hit_rect(0).expect("×");
+            let from = Point::new(b.tab_rects()[1].x0 + 10.0, y);
+            let to = Point::new(close.x0 - 30.0, y);
+            let t0 = crate::time::now();
+            let mut frames = Vec::new();
+            sample_at(&mut b, t0, 0, from, &theme);
+            frames.push(("00-start".to_owned(), shoot(&mut b, from)));
+            let mut ms = 0;
+            for (k, p) in path(from, to, 5).into_iter().enumerate() {
+                ms += 8;
+                sample_at(&mut b, t0, ms, p, &theme);
+                frames.push((format!("01-cross-{k}"), shoot(&mut b, p)));
+            }
+            layout_at(&mut b, t0, ms + 120, &theme);
+            frames.push(("02-rest-120ms".to_owned(), shoot(&mut b, to)));
+            sheet("cross-x-to-chips", frames);
         }
     }
 
