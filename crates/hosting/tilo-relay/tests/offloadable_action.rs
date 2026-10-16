@@ -27,9 +27,9 @@ use tilo_actions::{
 };
 use tilo_clock::unix_now_ms;
 use tilo_relay::offload::{
-    ComputePlacement, DeviceOffload, DeviceOffloadConfig, LocalTransform, OffloadError,
-    OffloadIdentity, OffloadJob, OffloadRelay, OffloadRoute, Offloader, OffloaderParts,
-    PlacementQuery, RanOn, RelayPlacement, WorkspaceContent, start_route,
+    ComputePlacement, DeviceOffload, DeviceOffloadConfig, DeviceRevocations, LocalTransform,
+    OffloadError, OffloadIdentity, OffloadJob, OffloadRelay, OffloadRoute, Offloader,
+    OffloaderParts, PlacementQuery, RanOn, RelayPlacement, WorkspaceContent, start_route,
 };
 use tilo_relay::{
     ComputeClient, ComputeEnvelope, ComputeJobBinding, ComputeJobPhase, ComputeOutputSource,
@@ -1248,7 +1248,7 @@ fn offload_identity(user: &TestUser, device: &TestDevice) -> OffloadIdentity {
         user_public_key: user.user_pk,
         device_cert: device.cert.clone(),
         device_signing_key: device.sk.clone(),
-        revocations: RevocationList::new(),
+        revocations: Arc::new(RevocationList::new()),
     }
 }
 
@@ -1344,6 +1344,7 @@ async fn a_session_route_started_from_its_home_relay_offloads_and_falls_back_tru
         rooms: std::collections::HashMap::from([(ROOM.to_owned(), WORKSPACE)]),
     };
     let route = DeviceOffload::spawn(
+        config.trust(),
         start_route(
             config.clone(),
             client_endpoint().await,
@@ -1404,12 +1405,14 @@ async fn a_session_route_started_from_its_home_relay_offloads_and_falls_back_tru
     // invocation runs here, and the door is told why.
     let (stranger_package, _) =
         installed_package(&root.path().join("stranger"), PACKAGE, ENTRYPOINT);
+    let stranger_config = DeviceOffloadConfig {
+        identity: offload_identity(&someone_else, &stranger),
+        ..config
+    };
     let refused = DeviceOffload::spawn(
+        stranger_config.trust(),
         start_route(
-            DeviceOffloadConfig {
-                identity: offload_identity(&someone_else, &stranger),
-                ..config
-            },
+            stranger_config,
             client_endpoint().await,
             Arc::clone(&store),
             Arc::new(FixtureCatalogue(stranger_package)),
@@ -1428,4 +1431,211 @@ async fn a_session_route_started_from_its_home_relay_offloads_and_falls_back_tru
     assert!(reason.contains("did not start"), "{reason}");
     jobs.abort();
     serving.abort();
+}
+
+/// The person's device revocations as the laptop knows them, which they
+/// change while its route runs.
+#[derive(Default)]
+struct LiveRevocations(Mutex<RevocationList>);
+
+impl LiveRevocations {
+    /// The person revokes `device`.
+    fn revoke(&self, user: &TestUser, device: [u8; 32]) {
+        let mut entry = RevocationEntry {
+            user_public_key: user.user_pk,
+            revoked_device_public_key: device,
+            revoked_at_ns: 1,
+            reason: RevocationReason::Stolen,
+            signature: [0; 64],
+        };
+        sign_revocation_entry(&mut entry, &user.user_sk).unwrap();
+        self.0.lock().unwrap().insert(entry).unwrap();
+    }
+}
+
+impl DeviceRevocations for LiveRevocations {
+    fn current(&self) -> Result<RevocationList, String> {
+        Ok(self.0.lock().unwrap().clone())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_revoked_relay_gets_no_route_and_one_revoked_while_up_is_torn_down() {
+    let user = TestUser::fresh("offload owner");
+    let relay_device = user.enrol("relay", DeviceCapabilities::host());
+    let relay_key = relay_device.device_pubkey();
+    let laptop = user.enrol("laptop", DeviceCapabilities::primary());
+    let laptop_key = laptop.device_pubkey();
+    let relay = Box::pin(spawn_relay(
+        &user,
+        relay_device,
+        &[WORKSPACE],
+        &[laptop_key],
+    ))
+    .await;
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(fs::store::ContentStore::memory());
+    let media = DocumentMedia::new(Arc::clone(&store));
+    let scope = BlobScope::new(ROOM, PHOTOS).unwrap();
+    let hash = media
+        .store(&scope, b"a photograph".to_vec())
+        .await
+        .unwrap()
+        .to_hex();
+    let request = make_thumbnails_request(&[hash]);
+    let route = |revocations: Arc<LiveRevocations>| {
+        let config = DeviceOffloadConfig {
+            relay: OffloadRelay {
+                address: relay.relay.node_addr(),
+                device: relay_key,
+            },
+            identity: OffloadIdentity {
+                revocations,
+                ..offload_identity(&user, &laptop)
+            },
+            rooms: std::collections::HashMap::from([(ROOM.to_owned(), WORKSPACE)]),
+        };
+        let (package, _) = installed_package(&root.path().join("laptop"), PACKAGE, ENTRYPOINT);
+        let store = Arc::clone(&store);
+        async move {
+            DeviceOffload::spawn(
+                config.trust(),
+                start_route(
+                    config,
+                    client_endpoint().await,
+                    store,
+                    Arc::new(FixtureCatalogue(package)),
+                ),
+                &tokio::runtime::Handle::current(),
+            )
+        }
+    };
+
+    // The person revoked the relay: the laptop never routes anything to it,
+    // whatever the relay itself still believes.
+    let revoked = Arc::new(LiveRevocations::default());
+    revoked.revoke(&user, relay_key);
+    let refused = route(Arc::clone(&revoked)).await;
+    settled(&refused).await;
+    let Some(Err(error)) = refused.started() else {
+        panic!("a revoked relay gets no route: {:?}", refused.started());
+    };
+    assert!(error.contains("has been revoked"), "{error}");
+    let Offloaded::RunHere { reason } = refused.offload(request.clone()).await else {
+        panic!("nothing is offloaded to a revoked relay");
+    };
+    assert!(reason.contains("did not start"), "{reason}");
+    assert!(reason.contains("has been revoked"), "{reason}");
+
+    // A trusted relay gets a route; revoking it while the route is up tears
+    // the route down, and every offloadable invocation runs here again.
+    let revocations = Arc::new(LiveRevocations::default());
+    let live = route(Arc::clone(&revocations)).await;
+    settled(&live).await;
+    assert_eq!(live.started(), Some(Ok(())), "the relay admits the laptop");
+    revocations.revoke(&user, relay_key);
+    tilo_test_env::within("the revoked relay's route to be torn down", async {
+        while live.started() == Some(Ok(())) {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    let Some(Err(error)) = live.started() else {
+        panic!("torn down: {:?}", live.started());
+    };
+    assert!(error.contains("has been revoked"), "{error}");
+    let Offloaded::RunHere { reason } = live.offload(request).await else {
+        panic!("nothing is offloaded once the relay is revoked");
+    };
+    assert!(reason.contains("torn down"), "{reason}");
+    assert!(reason.contains("has been revoked"), "{reason}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_busy_room_never_backs_up_the_placement_session() {
+    /// Envelopes the session drains before placement is asked: twice its
+    /// inbound bound.
+    const DRAINED: u64 = 512;
+    let user = TestUser::fresh("offload owner");
+    let relay_device = user.enrol("relay", DeviceCapabilities::host());
+    let relay_key = relay_device.device_pubkey();
+    let laptop = user.enrol("laptop", DeviceCapabilities::primary());
+    let laptop_key = laptop.device_pubkey();
+    let desktop = user.enrol("desktop", DeviceCapabilities::primary());
+    let desktop_key = desktop.device_pubkey();
+    let relay = Box::pin(spawn_relay(
+        &user,
+        relay_device,
+        &[WORKSPACE],
+        &[laptop_key, desktop_key],
+    ))
+    .await;
+    let address = relay.relay.node_addr();
+    let placement = RelayPlacement::new(
+        relay_session(address.clone(), &user, &laptop).await,
+        relay_key,
+    );
+
+    // A collaborator on the desktop keeps the room busy — a pointer moving
+    // without pause — and every frame of it reaches the laptop's placement
+    // session too, until the test is done.
+    let collaborator = relay_session(address, &user, &desktop).await;
+    let busy = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let traffic = tokio::spawn({
+        let busy = Arc::clone(&busy);
+        async move {
+            let mut frame = 0_u64;
+            while busy.load(std::sync::atomic::Ordering::Relaxed) {
+                frame = frame.wrapping_add(1);
+                collaborator
+                    .outbound
+                    .send(Envelope::Presence {
+                        workspace_id: WORKSPACE,
+                        payload: frame.to_le_bytes().to_vec(),
+                    })
+                    .await
+                    .unwrap();
+                if frame % 64 == 0 {
+                    tokio::task::yield_now().await;
+                }
+            }
+            frame
+        }
+    });
+    // The session drains far past its inbound bound with nobody asking.
+    tilo_test_env::within("the room's traffic to reach the placement session", async {
+        while placement.dropped() < DRAINED {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    // Placement still answers at once, mid-traffic: no answer is buried
+    // behind traffic it never reads, or dropped by a relay whose queue to
+    // the session is full.
+    let asked = std::time::Instant::now();
+    let placed = tilo_test_env::within(
+        "placement in a busy room",
+        placement.place(PlacementQuery {
+            workspace_id: WORKSPACE,
+            app: PACKAGE,
+            gpu: false,
+            input_bytes: 1,
+            inputs: &[],
+            local_wall_ms: None,
+        }),
+    )
+    .await
+    .expect("placement answers in a busy room");
+    assert_eq!(placed.worker, None, "no device advertises compute");
+    assert!(
+        asked.elapsed() < tilo_relay::offload::PLACEMENT_TIMEOUT / 2,
+        "placement took {:?} in a busy room",
+        asked.elapsed()
+    );
+    busy.store(false, std::sync::atomic::Ordering::Relaxed);
+    let sent = tilo_test_env::within("the collaborator to stop", traffic)
+        .await
+        .unwrap();
+    assert!(sent >= DRAINED, "the room was busy: {sent} frames");
 }
