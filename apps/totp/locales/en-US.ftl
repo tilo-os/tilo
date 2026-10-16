@@ -27,6 +27,7 @@ totp-add-advanced = Advanced options
 totp-add-label-algorithm = Algorithm
 totp-add-label-digits = Digits
 totp-add-label-period = Period in seconds
+totp-add-invalid-period = Enter a whole number of seconds between 5 and 300
 
 ## Footer
 totp-add-cancel = Cancel

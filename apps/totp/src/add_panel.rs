@@ -1071,8 +1071,9 @@ impl AddAccountPanel {
         let period = Values::text(&self.values.period)
             .trim()
             .parse::<u32>()
-            .unwrap_or(30)
-            .clamp(5, 300);
+            .ok()
+            .filter(|period| (5..=300).contains(period))
+            .ok_or_else(|| problem(FieldId::Period, &t("totp-add-invalid-period")))?;
         let algorithm = Algorithm::ALL
             .get(self.values.algorithm.with(|selected| *selected))
             .copied()
@@ -1508,6 +1509,36 @@ pub(crate) mod tests {
             .unwrap()
             .content_mut()
             .overflows));
+    }
+
+    #[test]
+    fn invalid_period_keeps_the_form_open_until_corrected() {
+        let mut app = opened((1280, 900));
+        panel(&mut app, |p| {
+            p.apply_uri("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP&period=45");
+        });
+        settle(&mut app);
+        let count = app.state().list().len();
+        for invalid in ["", "typo", "0", "4", "301", "4294967296"] {
+            panel(&mut app, |p| p.values.period.set(invalid.into()));
+            click(&mut app, "Add account");
+            assert!(panel(&mut app, |p| p.is_open()));
+            assert_eq!(app.state().list().len(), count);
+            assert_eq!(panel(&mut app, |p| Values::text(&p.values.period)), invalid);
+            assert_eq!(
+                panel(&mut app, |p| p.problem()),
+                Some(t("totp-add-invalid-period"))
+            );
+        }
+        panel(&mut app, |p| p.values.period.set("45".into()));
+        click(&mut app, "Add account");
+        assert!(!panel(&mut app, |p| p.is_open()));
+        let accounts = app.state().list();
+        assert_eq!(accounts.len(), count + 1);
+        assert_eq!(
+            accounts.iter().find(|a| a.issuer == "Acme").unwrap().period,
+            45
+        );
     }
 
     #[test]
