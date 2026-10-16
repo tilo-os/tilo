@@ -16217,6 +16217,7 @@ dependencies = [
  "tilo-lock",
  "tilo-model-gateway",
  "tilo-moq",
+ "tilo-net",
  "tilo-peer-state",
  "tilo-reference",
  "tilo-relay",

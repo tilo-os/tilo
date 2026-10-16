@@ -117,6 +117,7 @@ tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 iroh.workspace = true
 url.workspace = true
 # tilo-browser-peer's test support (its HTTPS client), included by path.
+tilo-net = { path = "../../platform/tilo-net" }
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
@@ -134,7 +135,7 @@ tilo-reference = { path = "../../collab/reference" }
 
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.
-ignored = ["bytes", "channel-crypto", "http-body-util", "hyper", "hyper-util", "neighbour-wire", "rustls", "sha2", "tokio-rustls"]
+ignored = ["bytes", "channel-crypto", "http-body-util", "hyper", "hyper-util", "neighbour-wire", "rustls", "sha2", "tilo-net", "tokio-rustls"]
 
 [lints]
 workspace = true
