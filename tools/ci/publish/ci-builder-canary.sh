@@ -56,6 +56,9 @@ case $mode in
     export CARGO_TARGET_DIR=$scratch/builder-canary-browser-target
     export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets
     mkdir -p "$CARGO_TARGET_DIR"
+    # nextest keeps its store (JUnit reports) under the workspace's target/ unless told otherwise.
+    store_config=$scratch/builder-canary-nextest.toml
+    printf '[store]\ndir = "%s"\n' "$CARGO_TARGET_DIR/nextest" > "$store_config"
     test "${CHROME:-}" = /usr/lib64/chromium-browser/chromium-browser \
       || die "CHROME is ${CHROME:-unset}, not the builder's Chromium"
     "$CHROME" --version
@@ -71,10 +74,10 @@ try {
 }
 JS
     bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --no-tests=fail \
-      --target-dir "$CARGO_TARGET_DIR" -p tilo-browser-peer --test end_to_end --test passkey_root --test node_workspace --test voice_browsers \
+      --target-dir "$CARGO_TARGET_DIR" --tool-config-file "tilo-canary:$store_config" -p tilo-browser-peer --test end_to_end --test passkey_root --test node_workspace --test voice_browsers \
       -E 'binary(end_to_end) or binary(passkey_root) or binary(node_workspace) or binary(voice_browsers)'
     bash tools/ci/t-nextest.sh cargo nextest run --locked --profile ci --no-tests=fail \
-      --target-dir "$CARGO_TARGET_DIR" -p tilo-agent-participant --test host_agents \
+      --target-dir "$CARGO_TARGET_DIR" --tool-config-file "tilo-canary:$store_config" -p tilo-agent-participant --test host_agents \
       -E 'test(=the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart) or test(=a_browser_sees_every_task_of_an_agent_live_and_after_a_reload) or test(=the_creator_and_a_joined_page_both_see_every_task_live)'
     ;;
   *) die 'usage: ci-builder-canary.sh cold|warm DIR, or browser' ;;
