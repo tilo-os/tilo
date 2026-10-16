@@ -2818,6 +2818,10 @@ needs = ["rpm-snapshot"]
 outputs = ["/target/publish/env-runtime/trees/env-runtime-tree-x86_64.tar", "/target/publish/env-runtime/trees/env-runtime-rpms-x86_64.txt"]
 requires = ["arch=x86_64"]
 cost = "heavy"
+# A micro-VM step can't grow past what it reserves, and buildah installs and exports the whole
+# runtime tree: the default 4 GiB guest ran out of memory.
+cpus = 4
+memory = "8G"
 default = false
 
 [[check]]
@@ -2830,6 +2834,10 @@ needs = ["rpm-snapshot"]
 outputs = ["/target/publish/env-runtime/trees/env-runtime-tree-aarch64.tar", "/target/publish/env-runtime/trees/env-runtime-rpms-aarch64.txt"]
 requires = ["arch=aarch64"]
 cost = "heavy"
+# A micro-VM step can't grow past what it reserves, and buildah installs and exports the whole
+# runtime tree: the default 4 GiB guest ran out of memory.
+cpus = 4
+memory = "8G"
 default = false
 
 [[check]]
