@@ -692,6 +692,7 @@ impl Room {
             return;
         }
         let mut outgoing: Vec<Pending> = Vec::new();
+        let mut opening: Vec<DocumentRoute> = Vec::new();
         for (&id, mounted) in &mut self.mounts {
             for store in mounted.attachment.stores.borrow().iter() {
                 let (app, home) = store.package_and_home();
@@ -700,6 +701,17 @@ impl Room {
                 }
                 for checkout in store.open_records() {
                     let key = (app.clone(), wire_record(&checkout.id).to_owned());
+                    // A record a join does not replay is asked for when a
+                    // mount first opens it.
+                    if !mounted.records.contains_key(&key)
+                        && neighbour_wire::record_sync(&key.1) != neighbour_wire::RecordSync::Eager
+                    {
+                        opening.push(DocumentRoute {
+                            app_id: app.clone(),
+                            cluster_id: self.uuid.clone(),
+                            record: key.1.clone(),
+                        });
+                    }
                     let replica = mounted
                         .records
                         .entry(key.clone())
@@ -720,6 +732,11 @@ impl Room {
                         Err(error) => warn(&format!("{}/{}: {error}", key.0, key.1)),
                     }
                 }
+            }
+        }
+        for route in opening {
+            if self.peer.open_record(self.workspace, route).is_err() {
+                return;
             }
         }
         // Records first: a desktop naming a new tab's record must not reach

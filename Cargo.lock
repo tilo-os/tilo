@@ -16844,6 +16844,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "hex",
  "js-sys",
+ "neighbour-wire",
  "postcard",
  "serde",
  "serde_json",
