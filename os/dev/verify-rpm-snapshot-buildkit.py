@@ -138,7 +138,7 @@ def verify(ref):
         raise ValueError("expanded metadata layer exceeds its size bound")
     with tarfile.open(fileobj=io.BytesIO(content), mode="r:") as layer:
         members = [m for m in layer.getmembers()
-                   if m.name in (MANIFEST_PATH, "./" + MANIFEST_PATH)]
+                   if Path(m.name).as_posix() == MANIFEST_PATH]
         if len(members) != 1 or not members[0].isreg():
             raise ValueError("frozen RPM snapshot has no regular package manifest")
         actual = layer.extractfile(members[0]).read().decode("utf-8")
