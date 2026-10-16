@@ -95,9 +95,11 @@ pub(crate) fn format_code(name: &str) -> Option<String> {
 }
 
 /// The cells `rows` write rightward and down from `start`: "=…" a formula,
-/// "" a clear, null a skip, and an exact ISO date ("2026-10-22", optionally
-/// with a time "2026-10-22T09:30") a real date: its serial in the date
-/// format, so it calculates and exports as a date. Other text stays text.
+/// "" a clear, null a skip, a leading apostrophe ("'007") text without the
+/// apostrophe, as typing it does, and an exact ISO date ("2026-10-22",
+/// optionally with a time "2026-10-22T09:30") a real date: its serial in the
+/// date format, so it calculates and exports as a date. Other text stays
+/// text.
 ///
 /// # Errors
 ///
@@ -148,9 +150,15 @@ pub(crate) fn cell_write(
             addr_to_a1(col, row)
         )
     })?;
-    let date = value.as_str().and_then(crate::infer::iso_date_entry);
-    let (raw, fmt) = match date {
-        Some(date) => (date.raw, Some(date.format.as_str())),
+    // A marked `'=x` keeps its apostrophe: without it the raw would be a
+    // formula, the opposite of what the marker asked for.
+    let typed = value.as_str().and_then(|text| {
+        crate::infer::text_marked(text)
+            .filter(|text| !text.raw.starts_with('='))
+            .or_else(|| crate::infer::iso_date_entry(text))
+    });
+    let (raw, fmt) = match typed {
+        Some(typed) => (typed.raw, Some(typed.format.as_str())),
         None => (raw, None),
     };
     Ok(Some(CellWrite { col, row, raw, fmt }))
@@ -687,9 +695,31 @@ fn significant(number: f64) -> f64 {
     format!("{number:.14e}").parse().unwrap_or(number)
 }
 
-fn json_value(value: &CellValue) -> serde_json::Value {
+/// The ISO text of date serial `serial` ("2026-10-22", with "T09:30" when it
+/// holds a time of day): what `set-cells` takes back as the same date, so a
+/// read date can be written again and a model never sees a bare serial.
+fn iso_date_text(serial: f64) -> String {
+    let date = crate::model::serial_to_date(serial, DateStyle::Iso);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a fractional part times 86400 is below 86401, exact in i64"
+    )]
+    let seconds = (serial.fract().abs() * 86400.0).round() as i64;
+    match (seconds / 3600 % 24, seconds % 3600 / 60, seconds % 60) {
+        (0, 0, 0) => date,
+        (hour, minute, 0) => format!("{date}T{hour:02}:{minute:02}"),
+        (hour, minute, second) => format!("{date}T{hour:02}:{minute:02}:{second:02}"),
+    }
+}
+
+/// `value` as a read answers it; a number in a date-formatted cell (`format`)
+/// is its ISO date, the way the sheet shows it, not the serial behind it.
+fn json_value(value: &CellValue, format: Option<CellFormat>) -> serde_json::Value {
     match value {
         CellValue::Empty => serde_json::Value::Null,
+        CellValue::Number(serial) if matches!(format, Some(CellFormat::Date(_))) => {
+            serde_json::Value::String(iso_date_text(*serial))
+        }
         CellValue::Number(number) => serde_json::Number::from_f64(significant(*number))
             .map_or_else(
                 || serde_json::Value::String(number.to_string()),
@@ -702,8 +732,9 @@ fn json_value(value: &CellValue) -> serde_json::Value {
     }
 }
 
-/// `rows` are computed values (numbers stay numbers), `formulas`, `bold` and
-/// `formats` name only the cells that have them.
+/// `rows` are computed values (numbers stay numbers, dates read as ISO
+/// text), `formulas`, `bold` and `formats` name only the cells that have
+/// them.
 fn project_read(
     document: &AutoCommit,
     _heads: &[ChangeHash],
@@ -766,7 +797,9 @@ fn range_content(
             line.push(
                 values
                     .get(&(col, row))
-                    .map_or(serde_json::Value::Null, json_value),
+                    .map_or(serde_json::Value::Null, |value| {
+                        json_value(value, snap.fmt.get(&(col, row)).copied())
+                    }),
             );
             if let Some(raw) = snap.raw.get(&(col, row)).filter(|raw| raw.starts_with('=')) {
                 formulas.insert(addr_to_a1(col, row), raw.clone().into());

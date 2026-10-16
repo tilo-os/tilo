@@ -43,12 +43,8 @@ pub fn infer_entry(input: &str, default_currency: Currency) -> Inferred {
         };
     }
 
-    // A literal wrapped in quotes is forced text (drop the quotes).
-    if trimmed.len() >= 2 && trimmed.starts_with('\'') {
-        return Inferred {
-            raw: trimmed.get(1..).unwrap_or("").to_string(),
-            format: CellFormat::Text,
-        };
+    if let Some(text) = text_marked(trimmed) {
+        return text;
     }
 
     // Booleans.
@@ -240,6 +236,19 @@ fn parse_date(s: &str) -> Option<f64> {
 
 /// An exact ISO date (see [`iso_date_serial`]) as the cell typing it makes:
 /// its serial shown in the ISO date format, as an XLSX import stores a date.
+/// `input` led by an apostrophe, the spreadsheet marker for "this is text":
+/// the rest stored in the text format without the marker (`'S-89761` is
+/// `S-89761`). Typed entries and API writes share it, so a value never
+/// carries the marker into the cell.
+pub(crate) fn text_marked(input: &str) -> Option<Inferred> {
+    let trimmed = input.trim();
+    let rest = trimmed.strip_prefix('\'').filter(|rest| !rest.is_empty())?;
+    Some(Inferred {
+        raw: rest.to_string(),
+        format: CellFormat::Text,
+    })
+}
+
 pub(crate) fn iso_date_entry(text: &str) -> Option<Inferred> {
     iso_date_serial(text).map(|serial| Inferred {
         raw: trim_float(serial),

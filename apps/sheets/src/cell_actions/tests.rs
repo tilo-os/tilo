@@ -367,8 +367,9 @@ fn read_cells_answers_number_formats_by_their_format_cells_names() {
 }
 
 /// An ISO date written by `set-cells` is a real date: a serial in the date
-/// format that calculates, reads as a number, shows as the date and exports
-/// to XLSX as a date. Other date-like text stays text.
+/// format that calculates, reads back as the ISO date it was written as,
+/// shows as the date and exports to XLSX as a date. Other date-like text
+/// stays text.
 #[test]
 fn set_cells_turns_exact_iso_dates_into_real_dates() {
     let mut doc = workbook(&[&["task", "start", "days", "end"]]);
@@ -387,11 +388,11 @@ fn set_cells_turns_exact_iso_dates_into_real_dates() {
     let serial = crate::model::date_to_serial(2026, 10, 22);
     assert_eq!(
         answered["rows"][0],
-        json!(["Launch", serial, 10.0, serial + 10.0])
+        json!(["Launch", "2026-10-22", 10.0, serial + 10.0]),
+        "the date reads as written; the sum in a general cell is its serial"
     );
     assert_eq!(answered["formats"], json!({"B2": "date", "B3": "date"}));
-    let review = answered["rows"][1][1].as_f64().unwrap();
-    assert!((review - (serial + 9.5 / 24.0)).abs() < 1e-6, "{review}");
+    assert_eq!(answered["rows"][1][1], json!("2026-10-22T09:30"));
     assert_eq!(
         read(&doc, Some("B4:B7"))["rows"],
         json!([
@@ -425,6 +426,47 @@ fn set_cells_turns_exact_iso_dates_into_real_dates() {
     let impossible = rows[4][1].as_ref().unwrap();
     assert_eq!(impossible.raw, "2026-02-30");
     assert_ne!(impossible.format, CellFormat::Date(DateStyle::Iso));
+}
+
+/// A date read from a date-formatted cell goes back in through `set-cells`
+/// as the same date, while a number in a general cell stays a number.
+#[test]
+fn read_cells_answers_dates_as_iso_text_that_set_cells_takes_back() {
+    let mut doc = workbook(&[&["due", "count"]]);
+    invoke(
+        &mut doc,
+        "set-cells",
+        &json!({"start": "A2", "rows": [["2026-10-22", 46307]]}),
+    );
+    let first = read(&doc, Some("A2:B2"))["rows"].clone();
+    assert_eq!(first, json!([["2026-10-22", 46307.0]]));
+    invoke(
+        &mut doc,
+        "set-cells",
+        &json!({"start": "A3", "rows": [[first[0][0].clone()]]}),
+    );
+    assert_eq!(read(&doc, Some("A3"))["rows"], json!([["2026-10-22"]]));
+    assert_eq!(raws(&doc)[1][0], raws(&doc)[2][0]);
+}
+
+/// A leading apostrophe marks a value as text, as typing it does: the cell
+/// holds the value without it and in the text format.
+#[test]
+fn set_cells_drops_the_apostrophe_that_marks_text() {
+    let mut doc = workbook(&[&["ref", "code"]]);
+    invoke(
+        &mut doc,
+        "set-cells",
+        &json!({"start": "A2", "rows": [["'S-89761", "'Q3 note"], ["'", "it's"]]}),
+    );
+    assert_eq!(
+        read(&doc, Some("A2:B3"))["rows"],
+        json!([["S-89761", "Q3 note"], ["'", "it's"]])
+    );
+    assert_eq!(
+        read(&doc, Some("A2:B3"))["formats"],
+        json!({"A2": "text", "B2": "text"})
+    );
 }
 
 #[test]
