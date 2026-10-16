@@ -88,7 +88,16 @@ class RebindTests(unittest.TestCase):
             self.assertEqual(after['usr/share/tilo/trust/tilo-main-registry-owner.pub'], b'cd' * 32 + b'\n')
         restart_fixture(self)
         with self.subTest(phase="interrupted_replacement_leaves_acceptance_blocking_marker"):
-            with patch.object(rebind.os, 'replace', side_effect=OSError('fixture interruption')):
+            # Staging the replacement uses os.replace too (install-public-trust
+            # writes atomically); interrupt only the writes into the image.
+            real_replace = os.replace
+
+            def interrupted(source, destination, *args, **kwargs):
+                if Path(destination).is_relative_to(self.image):
+                    raise OSError('fixture interruption')
+                return real_replace(source, destination, *args, **kwargs)
+
+            with patch.object(rebind.os, 'replace', side_effect=interrupted):
                 with self.assertRaises(OSError):
                     rebind.replace(self.image, **self.arguments)
             with self.assertRaisesRegex(ValueError, 'verified initramfs regeneration'):
