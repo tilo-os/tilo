@@ -402,9 +402,10 @@ fn scenario(desktop: &Desktop) {
 /// runs it failed over two days, the desktop doing nothing).
 ///
 /// Without the probe, nine 2 s windows over both variants on one CI run
-/// read 0.0-3.0%, and 6.0% once under the pressure variant. What is left
-/// is mostly the Files app's Nearby snapshot poll, every 2 s, each a loop
-/// turn whose pump took 50-160 ms on that runner.
+/// read 0.0-3.0%, and 6.0% once under the pressure variant. Most of that was
+/// the Files app's Nearby snapshot poll, every 2 s, each a loop turn whose
+/// pump took 50-160 ms on that runner; Files now asks only when the shell
+/// announces a Nearby change, and an idle desktop announces none.
 ///
 /// What the bound must still catch is a loop that turns on its own with
 /// nothing to do: the probe's 20 turns a second read 16-31%, so a loop

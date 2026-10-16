@@ -1740,6 +1740,7 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             }
             "NearbyTransferCommandResult"
         }
+        CollabEvent::NearbyTransferChanged => "NearbyTransferChanged",
         CollabEvent::Realtime(event) => {
             serialized_bytes(event, &mut meter);
             "Realtime"
@@ -4097,6 +4098,38 @@ fn follow_channel_keys(
     });
 }
 
+/// Follow what a Nearby Send snapshot would show on `channel` for as long
+/// as the route lives, handing the app a [`CollabEvent::NearbyTransferChanged`]
+/// after each change. The first wait (from 0) answers at once, so an app
+/// that may use Nearby Send learns its first view without asking on a
+/// timer, and learns it again after the broker comes back. The call is
+/// pending without traffic while nothing changes. The broker answers only
+/// the certified Files route; every other route stops after its first
+/// refusal.
+fn follow_nearby_transfer(channel: runtime_collab::ChannelHandle, inbound_tx: InboundBridge) {
+    tokio::task::spawn_local(async move {
+        let mut after = 0;
+        loop {
+            match channel.nearby_transfer_changed(after).await {
+                Ok(change) if change != after => {
+                    after = change;
+                    if !inbound_tx.send_durable(CollabEvent::NearbyTransferChanged) {
+                        return;
+                    }
+                }
+                Ok(_) => {
+                    tracing::warn!("collab: the broker reported unchanged Nearby Send as changed");
+                    return;
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "collab: this route does not follow Nearby Send");
+                    return;
+                }
+            }
+        }
+    });
+}
+
 /// SDK-side event loop: dispatches outbound requests to SDK calls, and
 /// spawns one subscription task per stream on the first `join_channel`.
 // Not `Send`: `client` wraps a capnp-rpc handle (`Rc`-based, `!Send`), and
@@ -4704,6 +4737,7 @@ async fn ensure_sdk_route(
     if encrypted {
         follow_channel_keys(channel.clone(), channel_id.clone(), key_signals.clone());
     }
+    follow_nearby_transfer(channel.clone(), inbound_tx.clone());
     // The streams are independent: subscribing to them together costs the
     // join one broker round trip instead of one per stream.
     let ((), (), (), (), (), (), (), presence) = tokio::join!(
