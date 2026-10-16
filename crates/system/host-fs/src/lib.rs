@@ -24,9 +24,6 @@ use std::fs::Metadata;
 use std::io;
 use std::path::Path;
 
-/// Whether this platform has Unix permission bits ([`mode`] returns `Some`).
-pub const HAS_MODE: bool = cfg!(unix);
-
 /// The Unix permission and file-type bits of `metadata` (`st_mode`), or
 /// `None` on platforms without them.
 #[inline]

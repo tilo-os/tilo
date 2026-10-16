@@ -18,7 +18,3 @@ pub mod shim;
 pub mod state;
 
 pub use shim::{ShimError, ShimInstall, locate_shim_source, remove_shims, write_shims};
-
-/// The name of the binary as registered with Cargo. Exposed for
-/// integration tests that want to invoke it via `CARGO_BIN_EXE_*`.
-pub const BINARY_NAME: &str = "tilo-install";

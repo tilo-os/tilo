@@ -964,7 +964,8 @@ impl PortalContext {
     /// Build a context wired with null spawners — `FileChooser` cancels every
     /// request and `ScreenCast` explicitly reports that no capture producer is
     /// available. Used by tests that only care about the response-code path.
-    pub fn new_with_null_spawners(
+    #[cfg(test)]
+    pub(crate) fn new_with_null_spawners(
         grants: GrantStoreHandle,
         prompts: PromptQueueHandle,
         caller_map: CallerMap,

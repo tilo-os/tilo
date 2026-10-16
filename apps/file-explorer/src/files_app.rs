@@ -6399,8 +6399,7 @@ where
 
 /// Remove the installed route, restoring the standalone fallback. Used by
 /// tests, which share the thread-local with each other.
-#[cfg(test)]
-pub(crate) fn clear_document_opener() {
+pub fn clear_document_opener() {
     DOCUMENT_OPENER.with(|slot| *slot.borrow_mut() = None);
 }
 
@@ -6448,8 +6447,7 @@ impl FileExplorerWidget {
     /// # Errors
     ///
     /// Returns the OS error if launching the entry's associated app fails.
-    #[cfg(test)]
-    pub(crate) fn open_entry<R: CommandRunner>(
+    pub fn open_entry<R: CommandRunner>(
         &mut self,
         idx: usize,
         runner: &mut R,

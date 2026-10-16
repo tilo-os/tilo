@@ -7479,18 +7479,6 @@ impl SpatialInputState {
     }
 }
 
-/// Drain input that already passed exact-route, lease, expiry, and capability
-/// validation. The native compositor is the sole consumer.
-pub fn take_spatial_input() -> Vec<(
-    crate::shell::personal_continuity::DeviceId,
-    FabricInputEvent,
-)> {
-    spatial_input_state().lock().map_or_else(
-        |_| Vec::new(),
-        |mut spatial| spatial.inbound.drain(..).collect(),
-    )
-}
-
 fn native_display_connectors(
     snapshot: &settings_store::hardware::DisplayHardwareSnapshot,
 ) -> Vec<crate::shell::device_fabric::DisplayConnectorPlacement> {

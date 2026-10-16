@@ -132,11 +132,14 @@ class Session:
         sockets = sorted(p for p in os.listdir(self.runtime)
                          if p.startswith("wayland-") and not p.endswith(".lock"))
         bus = session_bus_address(self.proc.pid)
-        if sockets and bus:
-            subprocess.run(
-                ["dbus-update-activation-environment",
-                 f"WAYLAND_DISPLAY={sockets[0]}", f"XDG_RUNTIME_DIR={self.runtime}"],
-                env={**self.env, "DBUS_SESSION_BUS_ADDRESS": bus}, check=False)
+        if not sockets:
+            raise RuntimeError(f"no Wayland display socket in {self.runtime}")
+        if not bus:
+            raise RuntimeError(f"no session bus address for process {self.proc.pid}")
+        subprocess.run(
+            ["dbus-update-activation-environment",
+             f"WAYLAND_DISPLAY={sockets[0]}", f"XDG_RUNTIME_DIR={self.runtime}"],
+            env={**self.env, "DBUS_SESSION_BUS_ADDRESS": bus}, check=True)
 
     def session_pids(self) -> dict[int, str]:
         """Every live process of this user running under this session's
@@ -250,10 +253,14 @@ def proc_state(pid: int) -> str | None:
     try:
         status = pathlib.Path(f"/proc/{pid}/status").read_text()
         wchan = pathlib.Path(f"/proc/{pid}/wchan").read_text().strip()
-    except OSError:
+    except (FileNotFoundError, ProcessLookupError):
+        # Processes may exit between enumeration and inspection. Other
+        # failures (notably permission errors) do not establish an exit.
         return None
     st = re.search(r"State:\s+(\S)", status)
-    if st and st.group(1) in ("Z", "X"):
+    if st is None:
+        raise RuntimeError(f"missing State in /proc/{pid}/status")
+    if st.group(1) in ("Z", "X"):
         return None
     rss = re.search(r"VmRSS:\s+(\d+)", status)
     threads = re.search(r"Threads:\s+(\d+)", status)

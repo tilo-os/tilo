@@ -443,6 +443,23 @@ fn sign_collaboration_join(bound: &Bound<'_>, workspace_id: &str) -> Response {
     }
 }
 
+/// The denial for a document op the receipt does not admit, naming why: an
+/// app told only "denied" cannot tell a missing grant from a change it
+/// failed to name.
+fn denial(
+    decided: Result<collab_types::Receipt, collab_types::receipt::ReceiptRefusal>,
+) -> Option<Response> {
+    match decided {
+        Ok(collab_types::Receipt::Admit) => None,
+        Ok(collab_types::Receipt::Hold) => Some(Response::Denied(
+            "the app's surface is not here to decide this document action".into(),
+        )),
+        Err(refusal) => Some(Response::Denied(format!(
+            "workspace role or capability denies this document action: {refusal}"
+        ))),
+    }
+}
+
 /// Validate the entire unsigned document envelope before lending it the
 /// certified device signature. The app cannot turn this into a generic
 /// signing oracle: workspace/app are fixed by the launch handshake, artifact
@@ -530,25 +547,22 @@ fn sign_collaboration_op(
         let allows = |node: &tilo_action_policy::TreePath, kind| {
             workspace.answer_at(&principal_id, node, kind, unix_now()) == Answer::Allow
         };
-        Some(
-            collab_types::decide_op(
-                &op,
-                &record,
-                None,
-                None,
-                &collab_types::Surfaces::process(),
-                &allows,
-            )
-            .is_ok_and(|receipt| receipt == collab_types::Receipt::Admit),
-        )
+        Some(collab_types::decide_op(
+            &op,
+            &record,
+            None,
+            None,
+            &collab_types::Surfaces::process(),
+            &allows,
+        ))
     });
-    let allowed = match decided {
+    let decided = match decided {
         None => return Response::Denied("workspace is not available".into()),
         Some(None) => return Response::Denied("identity is not a workspace member".into()),
-        Some(Some(allowed)) => allowed,
+        Some(Some(decided)) => decided,
     };
-    if !allowed {
-        return Response::Denied("workspace role or capability denies this document action".into());
+    if let Some(denied) = denial(decided) {
+        return denied;
     }
     let signing_bytes = match op.signing_bytes() {
         Ok(bytes) => bytes,

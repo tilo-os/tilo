@@ -36,7 +36,7 @@ pub enum IntegrityError {
         "no integrity record for {0} — it was installed before integrity records existed, or the record was deleted. Reinstall to create one."
     )]
     NoRecord(String),
-    #[error("reading integrity record at {path}: {source}")]
+    #[error("reading package integrity data at {path}: {source}")]
     Read {
         path: PathBuf,
         #[source]
@@ -234,7 +234,8 @@ fn check_signature(root: &SignedRoot) -> Result<(), IntegrityError> {
 /// # Errors
 ///
 /// Returns an [`IntegrityError`] when the record is missing or broken, or
-/// the installed manifest differs from the signed one. File-level damage is
+/// the installed manifest differs from the signed one, or the payload tree
+/// cannot be enumerated. File-level damage is
 /// reported in the [`Report`], not as an error.
 pub fn verify(package: &InstalledPackage, payload_root: &Path) -> Result<Report, IntegrityError> {
     let record = read_record(&record_dir(package), &package.id, &package.package_id_hex)?;
@@ -278,7 +279,7 @@ pub fn verify(package: &InstalledPackage, payload_root: &Path) -> Result<Report,
         .chain(manifest_rel.as_deref())
         .collect();
     let mut unexpected = Vec::new();
-    collect_unexpected(payload_root, payload_root, &expected, &mut unexpected);
+    collect_unexpected(payload_root, payload_root, &expected, &mut unexpected)?;
     unexpected.sort();
 
     Ok(Report {
@@ -289,24 +290,42 @@ pub fn verify(package: &InstalledPackage, payload_root: &Path) -> Result<Report,
 }
 
 /// Everything under the payload root the collection does not name.
-fn collect_unexpected(root: &Path, dir: &Path, expected: &BTreeSet<&str>, out: &mut Vec<String>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+fn collect_unexpected(
+    root: &Path,
+    dir: &Path,
+    expected: &BTreeSet<&str>,
+    out: &mut Vec<String>,
+) -> Result<(), IntegrityError> {
+    let read_error = |source| IntegrityError::Read {
+        path: dir.to_path_buf(),
+        source,
     };
-    for entry in entries.flatten() {
+    let entries = std::fs::read_dir(dir).map_err(read_error)?;
+    for entry in entries {
+        let entry = entry.map_err(read_error)?;
         let path = entry.path();
-        if path.is_dir() {
-            collect_unexpected(root, &path, expected, out);
+        let file_type = entry.file_type().map_err(|source| IntegrityError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        // Inspect the payload tree itself, not directories a symlink points
+        // outside it (or back into it).
+        if file_type.is_dir() {
+            collect_unexpected(root, &path, expected, out)?;
             continue;
         }
-        let Ok(rel) = path.strip_prefix(root) else {
-            continue;
-        };
+        let rel = path
+            .strip_prefix(root)
+            .map_err(|error| IntegrityError::Read {
+                path: path.clone(),
+                source: std::io::Error::other(error),
+            })?;
         let rel = rel.to_string_lossy().replace('\\', "/");
         if !expected.contains(rel.as_str()) {
             out.push(rel);
         }
     }
+    Ok(())
 }
 
 /// Where a package ships its public surface: the resources its records
@@ -334,11 +353,17 @@ mod tests {
     /// A materialised tree plus the record beside it, as an install writes
     /// them.
     fn fixture(root: &Path) -> InstalledPackage {
+        fixture_with_collection(
+            root,
+            Collection::from_entries([
+                ("bin/app".to_string(), BlobHash::of(b"binary bytes")),
+                ("data.txt".to_string(), BlobHash::of(b"hello")),
+            ]),
+        )
+    }
+
+    fn fixture_with_collection(root: &Path, collection: Collection) -> InstalledPackage {
         let manifest_bytes = b"[package]\nid = \"so.tilo.example\"\n".to_vec();
-        let collection = Collection::from_entries([
-            ("bin/app".to_string(), BlobHash::of(b"binary bytes")),
-            ("data.txt".to_string(), BlobHash::of(b"hello")),
-        ]);
         let collection_bytes = collection.encode();
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
         let mut signed = SignedRoot::unsigned(
@@ -379,6 +404,20 @@ mod tests {
             payload_bytes: 0,
             system: false,
         }
+    }
+
+    #[test]
+    fn verification_requires_an_observable_payload_tree_even_without_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let package = fixture_with_collection(tmp.path(), Collection::from_entries([]));
+        std::fs::remove_dir_all(&package.payload_root).unwrap();
+        let error = verify(&package, &package.payload_root).unwrap_err();
+        assert!(matches!(error, IntegrityError::Read { path, source }
+            if path == package.payload_root && source.kind() == std::io::ErrorKind::NotFound));
+
+        std::fs::write(&package.payload_root, b"not a directory").unwrap();
+        assert!(matches!(verify(&package, &package.payload_root),
+            Err(IntegrityError::Read { path, .. }) if path == package.payload_root));
     }
 
     #[test]

@@ -53,6 +53,51 @@ class PreflightTests(unittest.TestCase):
                 with self.subTest(name=name):
                     self.assertTrue(preflight.verify_receipt(preflight.make_receipt(data, 0, 4), baseline, 64_000))
 
+    def test_media_safety_facts_must_be_explicit_booleans(self):
+        baseline = self.baseline()
+        for source_key, receipt_key in (("IsBoot", "is_boot"), ("IsSystem", "is_system"),
+                                        ("IsReadOnly", "is_read_only"), ("IsOffline", "is_offline")):
+            for value in (None, 0, "", "False", True):
+                with self.subTest(field=source_key, value=value):
+                    data = observed()
+                    data["MediaDisk"][source_key] = value
+                    current = preflight.make_receipt(data, 0, 4)
+                    self.assertTrue(preflight.verify_receipt(current, baseline, 64_000))
+            with self.subTest(field=source_key, phase="missing_observation"):
+                data = observed()
+                del data["MediaDisk"][source_key]
+                current = preflight.make_receipt(data, 0, 4)
+                self.assertTrue(preflight.verify_receipt(current, baseline, 64_000))
+            with self.subTest(field=receipt_key, phase="missing_receipt_fact"):
+                current = self.baseline()
+                del current["external_media"][receipt_key]
+                self.assertTrue(preflight.verify_receipt(current, baseline, 64_000))
+
+    def test_equal_unknown_windows_identities_do_not_prove_preservation(self):
+        for section, field, values in (
+            ("WindowsDisk", "UniqueId", (None, "", " ")),
+            ("WindowsDisk", "Size", (-1, 0)),
+            ("WindowsDisk", "PartitionStyle", (None, "")),
+            ("Partitions", "Guid", (None, "", "invalid", "00000000-0000-0000-0000-000000000000")),
+            ("Partitions", "PartitionNumber", (-1, 0)),
+            ("Partitions", "Offset", (-1,)),
+            ("Partitions", "Size", (-1, 0)),
+        ):
+            for value in values:
+                with self.subTest(section=section, field=field, value=value):
+                    data = observed()
+                    row = data[section][0] if section == "Partitions" else data[section]
+                    row[field] = value
+                    before = preflight.make_receipt(data, 0, 4)
+                    current = preflight.make_receipt(data, 0, 4)
+                    self.assertIn("Windows disk or EFI System Partition identity is missing, invalid, or changed from the baseline",
+                                  preflight.verify_receipt(current, before, 64_000))
+        with self.subTest(phase="missing_keys_in_saved_receipts"):
+            before, current = self.baseline(), self.baseline()
+            del before["windows_esp"]["guid"]
+            del current["windows_esp"]["guid"]
+            self.assertTrue(preflight.verify_receipt(current, before, 64_000))
+
     def test_bitlocker_states(self):
         with self.subTest(phase="accepts_suspended_encryption_without_requiring_full_decryption"):
             self.assertTrue(preflight.bitlocker_ready_for_planned_boot_change(
