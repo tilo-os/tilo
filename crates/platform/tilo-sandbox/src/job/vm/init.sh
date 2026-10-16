@@ -115,6 +115,20 @@ t_mount() {
 	fi
 }
 
+# `t_which PROGRAM`: PROGRAM's path, looked up in the step's own PATH (T_PATH) where it has no
+# slash, in the step's root.
+t_which() {
+	case $1 in */*) echo "$1"; return 0 ;; esac
+	old_ifs=$IFS
+	IFS=:
+	for d in $T_PATH; do
+		[ -n "$d" ] && [ -f "$d/$1" ] && [ -x "$d/$1" ] && { IFS=$old_ifs; echo "$d/$1"; return 0; }
+	done
+	IFS=$old_ifs
+	echo "t-vm: $1: not found in $T_PATH" >&2
+	return 1
+}
+
 # `t_output PATTERN`: every file matching PATTERN (a glob over absolute paths, where `*` also
 # matches `/`), listed for the output tar.
 t_output() {
