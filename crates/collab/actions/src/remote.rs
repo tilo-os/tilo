@@ -37,6 +37,7 @@ pub const APPLICATION_ACTIVATE_TYPE: &str = "tilo.app.activate-window";
 
 mod catalogue;
 pub mod feedback;
+pub mod own_device;
 mod pending;
 mod wait;
 

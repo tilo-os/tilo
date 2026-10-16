@@ -1885,6 +1885,7 @@ pub fn native_services(
                 as Arc<dyn tilo_action_broker::services::WifiContinuityServices>
         }),
         nearby_transfer,
+        own_device: NativeOwnDevice::service(network.as_ref()),
         workspace_control: network.map(|network| {
             Arc::new(NativeWorkspaceControl(network)) as Arc<dyn WorkspaceControlServices>
         }),
@@ -1894,6 +1895,41 @@ pub fn native_services(
         display_control,
         live_activities: Some(super::live_activities::board()),
         ..Default::default()
+    }
+}
+
+/// The network carrying an application's action to another of the
+/// person's own devices.
+struct NativeOwnDevice(Arc<super::network::ShellNetwork>);
+
+impl NativeOwnDevice {
+    /// The service over `network`; none without a network.
+    fn service(
+        network: Option<&Arc<super::network::ShellNetwork>>,
+    ) -> Option<Arc<dyn tilo_action_broker::services::OwnDeviceActions>> {
+        network.map(|network| {
+            Arc::new(Self(Arc::clone(network)))
+                as Arc<dyn tilo_action_broker::services::OwnDeviceActions>
+        })
+    }
+}
+
+impl tilo_action_broker::services::OwnDeviceActions for NativeOwnDevice {
+    fn invoke(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        checked: &tilo_actions::remote::own_device::Checked,
+        request: &tilo_actions::remote::InvokeRequest,
+    ) -> Result<
+        tilo_actions::remote::Pending<tilo_action_broker::services::OwnDeviceOutcome>,
+        tilo_actions::remote::ActionHostError,
+    > {
+        let tilo_actions::remote::CallerPrincipal::Person(person) = caller.principal() else {
+            return Err(tilo_actions::remote::ActionHostError::NotPermitted);
+        };
+        self.0
+            .invoke_own_device(person, checked, request)
+            .map_err(|reason| tilo_actions::remote::ActionHostError::Refused { reason })
     }
 }
 
