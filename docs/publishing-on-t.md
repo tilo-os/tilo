@@ -479,6 +479,3 @@ prepared cutover (with sign-off) can drop the build, test, package and sign step
   start containers run as micro-VM steps (`isolation = "vm"`), as root in a guest of their own.
 - **A Mac for release jobs.** Checks on macOS run on the host, so Developer ID signing needs a
   Mac labelled `release` that takes nothing else.
-- **A guest kernel for `arch=any` micro-VM steps** on the deployed server: until it boots them
-  with the node's own guest, the signing and publishing checks require `arch=x86_64`
-  (`CREDENTIAL_REQUIRES` in `tools/ci/products.py`).

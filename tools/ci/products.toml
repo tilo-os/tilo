@@ -823,7 +823,7 @@ needs = ["publish-wine-tools", "wine-build-x86_64", "wine-build-i686", "image-wi
 outputs = ["/target/windows-compat/wine-build-*/*/receipt.json", "/target/windows-compat/wine-paired/receipt.json", "/target/windows-compat/windows-guest/*/receipt.json", "/target/windows-compat/windows-guest/guest/reference"]
 pointers = { windows-guest-candidate = "/target/windows-compat/windows-guest/guest/reference" }
 id_token = ["registry.tilo.so"]
-requires = ["arch=x86_64"]
+requires = ["arch=any"]
 on = ["dispatch"]
 
 [[matrix]]
@@ -864,6 +864,6 @@ env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:key/60953
 id_token = ["tilo-extension-manifests"]
 # Generic packages take no identity token.
 secrets = ["REGISTRY_TOKEN"]
-requires = ["arch=x86_64"]
+requires = ["arch=any"]
 cache = false
 on = ["schedule:40 4 * * *", "dispatch"]
