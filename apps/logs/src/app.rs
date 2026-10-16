@@ -880,6 +880,14 @@ impl LogsApp {
             self.inspected = Inspected::Stale;
         }
         self.entries = entries;
+        if let Some(id) = &self.selected_entry {
+            self.sel_raw = self
+                .entries
+                .iter()
+                .position(|entry| actions::entry_resource_id(entry) == *id)
+                .and_then(|index| i64::try_from(index).ok())
+                .unwrap_or(-1);
+        }
         self.source_error = None;
         self.rebuild_facets();
         self.recompute_filtered();
@@ -982,6 +990,38 @@ mod tests {
             revision,
             "an unchanged poll does not rebuild the table"
         );
+    }
+
+    #[test]
+    fn refresh_keeps_selection_on_its_record_or_shows_no_selection() {
+        let mut app = captured((1280, 800));
+        let (mut entries, id) = surface(&mut app, |viewer| {
+            (
+                viewer.entries.clone(),
+                actions::entry_resource_id(&viewer.entries[1]),
+            )
+        });
+        app.effect(&JournalEffect::SelectEntry {
+            entry_id: id.clone(),
+        })
+        .unwrap();
+        entries.remove(0);
+        surface(&mut app, |viewer| viewer.show_read(Ok(entries.clone())));
+        app.settle();
+        surface(&mut app, |viewer| {
+            assert_eq!(viewer.effective_selected(), Some(0));
+            assert_eq!(viewer.shared.borrow().selected, Some(0));
+            assert_eq!(viewer.inspected, Inspected::Entry(id.clone()));
+        });
+        entries.remove(0);
+        surface(&mut app, |viewer| viewer.show_read(Ok(entries)));
+        app.settle();
+        surface(&mut app, |viewer| {
+            assert_eq!(viewer.selected_entry.as_deref(), Some(id.as_str()));
+            assert_eq!(viewer.effective_selected(), None);
+            assert_eq!(viewer.shared.borrow().selected, None);
+            assert_eq!(viewer.inspected, Inspected::Nothing);
+        });
     }
 
     #[test]
