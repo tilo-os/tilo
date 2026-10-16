@@ -866,6 +866,54 @@ fn app_opens_unicode_repository_and_commits_exact_unicode_file() {
     assert_eq!(fs::read_to_string(path.join(file)).unwrap(), contents);
 }
 
+#[cfg(unix)]
+#[test]
+fn dangling_symlinks_can_be_staged_and_discarded() {
+    use std::os::unix::fs::symlink;
+
+    let (_dir, path) = init_repo();
+    let link = path.join("link");
+    symlink("missing-target", &link).unwrap();
+    repo::stage_file(&path, "link").unwrap();
+    let repository = open(&path);
+    let entry = repository
+        .index()
+        .unwrap()
+        .get_path(Path::new("link"), 0)
+        .unwrap();
+    assert_eq!(entry.mode, 0o120000);
+    assert_eq!(
+        repository.find_blob(entry.id).unwrap().content(),
+        b"missing-target"
+    );
+    repo::commit(&path, "add link").unwrap();
+
+    // Changing the target must stage the replacement link, not a deletion.
+    fs::remove_file(&link).unwrap();
+    symlink("another-missing-target", &link).unwrap();
+    repo::stage_file(&path, "link").unwrap();
+    let entry = open(&path)
+        .index()
+        .unwrap()
+        .get_path(Path::new("link"), 0)
+        .unwrap();
+    assert_eq!(entry.mode, 0o120000);
+    assert_eq!(
+        repository.find_blob(entry.id).unwrap().content(),
+        b"another-missing-target"
+    );
+
+    // Discard removes an untracked link even when there is no target.
+    let untracked = path.join("untracked-link");
+    symlink("missing-target", &untracked).unwrap();
+    repo::discard_file(&path, "untracked-link").unwrap();
+    assert!(untracked.symlink_metadata().is_err());
+    assert_eq!(
+        fs::read_link(&link).unwrap(),
+        Path::new("another-missing-target")
+    );
+}
+
 #[test]
 fn untracked_files_preview_their_contents_before_staging() {
     use git_client::model::DiffKey;
