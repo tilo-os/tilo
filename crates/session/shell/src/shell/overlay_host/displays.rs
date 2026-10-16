@@ -449,11 +449,18 @@ impl ShellOverlayHost {
         } else {
             Vec::new()
         };
+        let screens: Vec<Rect> = distinct_outputs(&self.outputs)
+            .into_iter()
+            .map(OutputGeometry::rect)
+            .collect();
         let presenting = self.focused_output();
         let beside_rail = presenting
             .as_ref()
             .is_some_and(|o| primary.as_ref().is_some_and(|p| p.id == o.id));
         if let Some(surface) = self.desktop_surface_mut() {
+            if let Some(backdrop) = surface.backdrop_mut() {
+                backdrop.set_displays(&screens);
+            }
             if let Some(bar) = surface.topbar_mut() {
                 bar.set_placement(primary.map(|p| p.rect()));
             }
@@ -472,6 +479,17 @@ impl ShellOverlayHost {
                 bars.set_displays(&others);
             }
         }
+    }
+
+    /// The rectangles the desktop's wallpaper is fitted to, one per display.
+    #[cfg(test)]
+    pub(crate) fn wallpaper_displays(&self) -> Vec<Rect> {
+        self.content
+            .as_any()
+            .and_then(|content| content.downcast_ref::<tilo_desktop::composition::DesktopSurface>())
+            .and_then(tilo_desktop::composition::DesktopSurface::backdrop)
+            .map(tilo_desktop::backdrop::DesktopBackdrop::display_rects)
+            .unwrap_or_default()
     }
 
     /// Where each top bar is drawn: the full bar (flagged `true`) and every
