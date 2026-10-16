@@ -40,7 +40,7 @@ CREDENTIAL_REQUIRES = ["arch=x86_64"]
 # Keys of a product table, and of its `context` and `build` tables, that are not check fields.
 PRODUCT_KEYS = {"name", "about", "repository", "arches", "index", "dev", "release", "release_on",
                 "tlog", "context", "build", "gates", "anonymous", "after_publish", "publish",
-                "dir", "out"}
+                "dir", "out", "dispatch"}
 STEP_KEYS = {"run", "test", "containerfile", "context", "build_args", "name", "about"}
 # Fields the generator writes itself, so a product can't set them by accident.
 OWN_FIELDS = {"name", "run", "needs", "optional_needs", "on", "id_token", "secrets"}
@@ -154,6 +154,10 @@ class Product:
         self.release_on: list[str] = data.get("release_on", ["stable"])
         self.dir: str = data.get("dir", f"/target/publish/{self.name}")
         self.gates: list[str] = data.get("gates", [])
+        # Development tags are pushed when main changes, or with `dispatch = true` only when
+        # someone asks (`t dispatch publish-<name> --ref main`): for builds too costly to run
+        # on every change of their inputs.
+        self.dev_on: list[str] = ["dispatch"] if data.get("dispatch") else ["main"]
         for field in ("anonymous", "after_publish", "publish", "tlog"):
             if field in data and not (self.dev or self.release):
                 raise ProductError(f"{self.name}: {field} without tags to publish (dev, release)")
@@ -306,9 +310,9 @@ class Product:
             raise ProductError(f"{self.name}: publish takes run, inputs, outputs and pointers")
         if self.dev and self.release:
             channel = "any"
-            on = ["main", *self.release_on]
+            on = [*self.dev_on, *self.release_on]
         elif self.dev:
-            channel, on = "dev", ["main"]
+            channel, on = "dev", self.dev_on
         else:
             channel, on = "release", self.release_on
         lines, outputs = [], []
