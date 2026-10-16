@@ -7637,7 +7637,7 @@ fn draw_block(
                 ctx.scene,
                 &label,
                 ctx.theme.tokens.colors.text_primary,
-                translated(ctx.transform, origin.x, origin.y),
+                ctx.transform.pre_translate((origin.x, origin.y).into()),
                 None,
                 &style,
             );
