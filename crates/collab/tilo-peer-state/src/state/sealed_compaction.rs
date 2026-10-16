@@ -66,7 +66,7 @@ impl StatePeer {
         {
             return Err("a sealed compaction is a checkpoint for the record's channel".into());
         }
-        let payload = SealedCompaction::new(&document.sealed, ciphertext)
+        let payload = SealedCompaction::new(&document.sealed.to_vec(), ciphertext)
             .map_err(err)?
             .encode()
             .map_err(err)?;
@@ -115,29 +115,32 @@ fn merge_sealed(
     document: &super::Document,
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, String> {
-    let mut waiting = document
-        .sealed
-        .iter()
-        .map(|write| DocumentMutation::decode(&open(write)?).map_err(err))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut merged = document.doc.clone();
-    while !waiting.is_empty() {
-        let before = waiting.len();
-        let mut blocked = Vec::new();
-        for mutation in waiting {
-            match crate::document::merge_committed_with_status(&mut merged, &mutation)
-                .map_err(|error| format!("{error:?}"))?
-            {
-                crate::document::MergeOutcome::Changed(_) => {}
-                crate::document::MergeOutcome::MissingDependencies => blocked.push(mutation),
+    // One isolated merge of every write, which takes them in causal order
+    // whatever order they were admitted in: a merge per write copied the
+    // whole record into the isolate each time.
+    let mut history = Vec::new();
+    for write in document.sealed.iter() {
+        match DocumentMutation::decode(&open(write)?).map_err(err)? {
+            DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => {
+                history.extend_from_slice(&bytes);
             }
         }
-        if blocked.len() == before {
-            return Err("sealed history does not merge into a complete record".into());
-        }
-        waiting = blocked;
     }
-    Ok(merged.save())
+    let mut merged = document.doc.clone();
+    if history.is_empty() {
+        return Ok(merged.save());
+    }
+    match crate::document::merge_committed_with_status(
+        &mut merged,
+        &DocumentMutation::Incremental(history),
+    )
+    .map_err(|error| format!("{error:?}"))?
+    {
+        crate::document::MergeOutcome::Changed(_) => Ok(merged.save()),
+        crate::document::MergeOutcome::MissingDependencies => {
+            Err("sealed history does not merge into a complete record".into())
+        }
+    }
 }
 
 impl StatePeer {
@@ -303,7 +306,7 @@ impl StatePeer {
             .documents
             .iter()
             .filter(|(_, document)| {
-                let bytes: usize = document.sealed.iter().map(|op| op.payload.len()).sum();
+                let bytes = document.sealed.bytes();
                 document.sealed.len() >= super::MAX_SEALED_OPS / 4 * 3
                     || bytes >= super::MAX_SEALED_BYTES / 4 * 3
             })
@@ -318,11 +321,18 @@ impl StatePeer {
         let author = Ed25519PublicKey::from_bytes(self.core.authority.device_public_key);
         let mut messages = Vec::new();
         for (route, document) in &self.core.documents {
-            let published = before
+            let published: Vec<&SignedOp> = before
                 .and_then(|before| before.core.documents.get(route))
-                .map_or(&[][..], |prior| prior.sealed.as_slice());
-            for op in &document.sealed {
-                if op.author == author && !published.contains(op) {
+                .map(|prior| {
+                    prior
+                        .sealed
+                        .iter()
+                        .filter(|op| op.author == author)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for op in document.sealed.iter().filter(|op| op.author == author) {
+                if !published.contains(&op) {
                     messages.push(NeighbourMsg::AppDocument {
                         peer: peer_handle(author.as_bytes()),
                         app_id: route.app.clone(),

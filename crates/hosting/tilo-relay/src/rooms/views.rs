@@ -120,7 +120,7 @@ impl Rooms {
             None => None,
         };
         let primary_governor = (source.record.is_empty()
-            && room.peer().document(&source.app_id, "").is_some())
+            && room.peer().holds_document(&source.app_id, ""))
         .then_some(room.peer().authority().device_public_key);
         if keys.is_none() && primary_governor.is_none() {
             return Err(if room.stewardship.is_none() {

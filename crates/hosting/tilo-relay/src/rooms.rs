@@ -353,7 +353,7 @@ impl GovernedRoom {
         else {
             return;
         };
-        if self.peer.document(app_id, record_id).is_none() {
+        if !self.peer.holds_document(app_id, record_id) {
             return;
         }
         if let Err(error) = self.peer.receive_from(
@@ -1185,20 +1185,12 @@ impl Rooms {
         };
         let (app_id, record_id) = (app_id.clone(), record_id.clone());
         let room = self.room(room).await.map_err(|error| error.to_string())?;
+        let waiting = crate::timing::start();
         let mut room = room.lock().await;
-        if room.peer().document(&app_id, &record_id).is_some() {
-            room.follow(author, message);
-            // Before the record's sealed history is full: past its bound the
-            // copy would stop following the record.
-            #[cfg(any(feature = "agents", feature = "web"))]
-            if let Err(error) = self.compact_sealed_histories(&mut room).await {
-                tracing::warn!(room = %room.room(), %error, "governed room did not compact a sealed record");
-            }
-            let _ = self.inner.record_writes.send(RecordWrite {
-                room: room.room().to_owned(),
-                app: app_id,
-                record: record_id,
-            });
+        crate::timing::window("room.follow_wait", waiting);
+        if room.peer().holds_document(&app_id, &record_id) {
+            self.follow_write(&mut room, author, message, (app_id, record_id))
+                .await;
             return Ok(());
         }
         if envelope.encryption.is_some() {
@@ -1397,6 +1389,42 @@ impl Rooms {
             admission.durable().await?;
         }
         Ok(())
+    }
+
+    /// Take `message`, `author`'s write to the record `(app, record)` the
+    /// governor holds, into its copy, compact the room's sealed histories
+    /// before one is full (past its bound the copy would stop following
+    /// the record), and tell whoever follows the room's records.
+    #[cfg_attr(
+        not(any(feature = "agents", feature = "web")),
+        expect(
+            clippy::unused_async,
+            reason = "only a relay that stewards channels compacts what it follows"
+        )
+    )]
+    async fn follow_write(
+        &self,
+        room: &mut GovernedRoom,
+        author: [u8; 32],
+        message: neighbour_wire::NeighbourMsg,
+        (app, record): (String, String),
+    ) {
+        let following = crate::timing::start();
+        room.follow(author, message);
+        crate::timing::window("room.follow", following);
+        #[cfg(any(feature = "agents", feature = "web"))]
+        {
+            let compacting = crate::timing::start();
+            if let Err(error) = self.compact_sealed_histories(room).await {
+                tracing::warn!(room = %room.room(), %error, "governed room did not compact a sealed record");
+            }
+            crate::timing::window("room.compact", compacting);
+        }
+        let _ = self.inner.record_writes.send(RecordWrite {
+            room: room.room().to_owned(),
+            app,
+            record,
+        });
     }
 
     /// Queue channel governance messages in the host's order as this

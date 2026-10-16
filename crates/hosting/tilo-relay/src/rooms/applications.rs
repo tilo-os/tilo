@@ -429,7 +429,7 @@ impl Rooms {
         governed
             .peer()
             .check_workspace_administration(governor.device_public_key, system_time(now))?;
-        if governed.peer().document(app, record).is_some() {
+        if governed.peer().holds_document(app, record) {
             return Ok(false);
         }
         // The factory is the app's own code: it runs in a confined app
