@@ -22,9 +22,10 @@ use ui::widget::Widget;
 
 /// Held by every test that queues settings changes from a thread marked as
 /// the UI thread. The queue is the process's own
-/// ([`ui::storage::flush_settings_writes`]), and a write from any other
-/// thread stores it first, so another test's background or off-thread
-/// write would store this test's queued change before it looked.
+/// ([`ui::storage::flush_settings_writes`]) and one background job stores
+/// all of it: the first test to queue a change schedules that job on its
+/// own executor, so another test's queued change would wait for, or be
+/// stored by, an executor that test does not run.
 pub(crate) static SETTINGS_QUEUE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The first toggle in the content pane, right of the sidebar.
