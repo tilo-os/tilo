@@ -1087,6 +1087,66 @@ fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool
 }
 
 #[test]
+fn read_only_context_menu_copies_without_offering_or_applying_edits() {
+    let services = crate::host::HostServices::null();
+    let _host = crate::host::enter(&services);
+    crate::text_selection::clipboard_copy("clipboard");
+    let mut input = TextInput::local().with_initial_value("source");
+    input.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+    input.select_all();
+    input.open_text_menu_at([20.0, 20.0]);
+    let cut = input
+        .context_actions
+        .iter()
+        .position(|action| matches!(action, Some(CtxAction::Cut)))
+        .unwrap();
+    input.set_read_only(true);
+    assert!(
+        !input.dispatch_context_action(cut),
+        "a menu opened before read-only cannot edit"
+    );
+    assert_eq!(input.value(), "source");
+    assert_eq!(
+        crate::text_selection::clipboard_paste().as_deref(),
+        Some("clipboard")
+    );
+    input.context_menu.close();
+
+    let mut doc = AutoCommit::new();
+    drive(
+        &mut input,
+        &mut doc,
+        &cursor_moved(20.0, 20.0),
+        mods(false, false),
+    );
+    drive(
+        &mut input,
+        &mut doc,
+        &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+        mods(false, false),
+    );
+    assert!(input.context_menu.is_open());
+    let labels = input.context_menu_labels();
+    assert!(labels.iter().any(|label| label == "Copy"));
+    assert!(
+        !labels
+            .iter()
+            .any(|label| label == "Cut" || label == "Paste")
+    );
+    let copy = input
+        .context_actions
+        .iter()
+        .position(|action| matches!(action, Some(CtxAction::Copy)))
+        .unwrap();
+    input.dispatch_context_action(copy);
+    assert_eq!(
+        crate::text_selection::clipboard_paste().as_deref(),
+        Some("source")
+    );
+    assert_eq!(input.value(), "source");
+}
+
+#[test]
 fn context_menu_opens_on_right_click_dispatches_and_dismisses() {
     // Case `right_click_selects_word_and_opens_menu_with_expected_labels`.
     {

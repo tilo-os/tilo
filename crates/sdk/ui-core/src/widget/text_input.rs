@@ -4775,13 +4775,14 @@ impl TextInput {
         }
 
         let can_share = self.shareable_selection().is_some();
-        let can_paste = clipboard_paste().is_some_and(|s| !s.is_empty());
+        let can_paste = !self.read_only && clipboard_paste().is_some_and(|s| !s.is_empty());
 
         let mut menu = ContextMenu::new();
         let mut actions: Vec<Option<CtxAction>> = Vec::new();
         self.refresh_spelling();
         if let (Some((start, end)), Some(correction)) =
             (self.selection_range(), self.last_autocorrection.as_ref())
+            && !self.read_only
             && start == correction.start
             && end == correction.end
         {
@@ -4794,6 +4795,7 @@ impl TextInput {
             actions.push(None);
         }
         if let Some((start, end)) = self.selection_range()
+            && !self.read_only
             && self.spell_spans.contains(&(start, end))
             && let Some(word) = self.text.get(start..end)
         {
@@ -4841,8 +4843,10 @@ impl TextInput {
             actions.push(None);
         }
         if can_share {
-            menu.push(MenuItem::action("Cut", || {}));
-            actions.push(Some(CtxAction::Cut));
+            if !self.read_only {
+                menu.push(MenuItem::action("Cut", || {}));
+                actions.push(Some(CtxAction::Cut));
+            }
             menu.push(MenuItem::action("Copy", || {}));
             actions.push(Some(CtxAction::Copy));
         }
@@ -4874,6 +4878,17 @@ impl TextInput {
         let Some(Some(action)) = self.context_actions.get(idx).cloned() else {
             return false;
         };
+        if self.read_only
+            && matches!(
+                action,
+                CtxAction::Cut
+                    | CtxAction::Paste
+                    | CtxAction::ApplySpelling { .. }
+                    | CtxAction::UndoAutocorrection
+            )
+        {
+            return false;
+        }
         match action {
             CtxAction::Cut => self.do_cut(),
             CtxAction::Copy => self.do_copy(),
@@ -5663,7 +5678,7 @@ impl Widget for TextInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } if self.is_hovered && !self.effectively_disabled() && !self.read_only => {
+            } if self.is_hovered && !self.effectively_disabled() => {
                 self.handle_right_click(ctx.focus_target, ctx.node_id, ctx.handled);
             }
             WindowEvent::MouseInput {
